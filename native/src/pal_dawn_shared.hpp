@@ -69,10 +69,6 @@
 #include <windows.h>
 #endif
 
-#ifndef BBLITE_GPU_SHADER_DIR
-#define BBLITE_GPU_SHADER_DIR "shaders"
-#endif
-
 namespace bbl::pal {
 
 // A shared blend tuple in this API's state; the operation is always add
@@ -585,7 +581,7 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
     }
 #endif
     SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
-#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
+#if BBLITE_HAS_GAMEPAD
     init_flags |= SDL_INIT_GAMEPAD;
 #endif
     if (!initialize_run_sdl(init_flags)) {
@@ -700,7 +696,7 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
 #endif
 
     WGPURequestAdapterOptions adapter_options = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
-#if defined(BBLITE_DAWN_DXC) && BBLITE_DAWN_DXC
+#if BBLITE_DAWN_DXC
     // This pin's Dawn compiles HLSL with DXC and loads the matching
     // validator DLL first; enable the same adapter toggle so native
     // shader codegen matches the reference captures.

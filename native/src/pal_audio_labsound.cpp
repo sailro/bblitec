@@ -18,7 +18,7 @@
 #include <bblite/pal_audio.hpp>
 
 #include <bblite/pal.hpp>
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 #include <bblite/pal_event_loop.hpp>
 #endif
 
@@ -74,7 +74,7 @@ struct AudioContextState {
     Status status = Status::Running;
     double sample_rate = 48000.0;
     double closed_time = 0.0;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     bool polling_events = false;
 #endif
 };
@@ -82,7 +82,7 @@ struct AudioContextState {
 struct AudioSourceState {
     bool started = false;
     bool completed = false;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     std::weak_ptr<EventLoop::Inbox> inbox;
     std::uint64_t completion = 0;
     bool event_pull = false;
@@ -98,7 +98,7 @@ struct AudioSourceState {
 struct AudioNodeRecord {
     std::shared_ptr<lab::AudioNode> node;
     std::shared_ptr<AudioSourceState> source;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     std::array<PlatformEventListeners<void()>, 2> ended;
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(ended); }
 #endif
@@ -150,7 +150,7 @@ struct ContextRecord {
             // while the record and context still retain the destination.
             device->setDestinationNode({});
         }
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
         for (const auto& [identity, entry] : graph) {
             (void)identity;
             if (entry.source && entry.source->event_pull)
@@ -263,7 +263,7 @@ void collect_audio_graph(ContextRecord& context) {
     context.has_draining_tails = false;
     for (auto& [identity, entry] : context.graph) {
         entry.reached = false;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
         if (entry.source && entry.source->completed && entry.source->event_pull) {
             context.context->removeAutomaticPullNode(entry.node);
             entry.source->event_pull = false;
@@ -365,7 +365,7 @@ std::unordered_map<std::uint32_t, ContextRecord>& contexts() {
     return map;
 }
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 /** LabSound's automatic event dispatch is disabled. A bounded realm timer
  * also pumps completion for applications with no rendering frame. */
 void poll_audio_events(std::uint32_t id) {
@@ -608,7 +608,7 @@ template <typename Node> AudioNodeHandle create_node(AudioContextHandle context)
         std::static_pointer_cast<Node>(value->node)->setOnEnded([completion] {
             if (auto state = completion.lock()) {
                 state->completed = true;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
                 state->post_completion();
 #endif
             }
@@ -788,7 +788,7 @@ void audio_close_context(AudioContextHandle context) {
         record.device->stop();
     record.state->closed_time = record.context->currentTime();
     record.state->status = AudioContextState::Status::Closed;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     for (auto& [identity, entry] : record.graph) {
         (void)identity;
         if (entry.source)
@@ -823,7 +823,7 @@ void audio_collect_finished() {
     }
 }
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
                               js::Callback<void()> callback, bool capture, bool once) {
     require_node(node);
@@ -1181,7 +1181,7 @@ static void audio_node_start_impl(AudioNodeHandle node, double when, double offs
                            static_cast<float>(duration), 0);
         }
         node.ownership->source->started = true;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
         retain_audio_completion(node);
 #endif
         if (runtime_trace_enabled()) {
@@ -1201,7 +1201,7 @@ static void audio_node_start_impl(AudioNodeHandle node, double when, double offs
     }
     scheduled->start(static_cast<float>(when));
     node.ownership->source->started = true;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     retain_audio_completion(node);
 #endif
     if (runtime_trace_enabled()) {

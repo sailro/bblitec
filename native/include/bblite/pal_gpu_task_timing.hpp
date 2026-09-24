@@ -139,7 +139,7 @@ struct GpuTaskTimingState {
 inline std::shared_ptr<GpuTaskTimingState> gpu_task_timing_state(Engine& engine) {
     if (!engine.gpu_task_timing) {
         auto state = std::make_shared<GpuTaskTimingState>();
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
         if (engine.offscreen_run && !engine.device_disposed) {
             state->device = std::shared_ptr<OffscreenDevice>(engine.offscreen_run,
                                                              &engine.offscreen_run->device());

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <bblite/js_gc.hpp>
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 #include <bblite/js_realm_state.hpp>
 #endif
 
@@ -75,7 +75,7 @@ template <typename... Functions> [[nodiscard]] auto make_recursive_group(Functio
 }
 
 inline std::size_t next_callback_identity() {
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     return realm_state.callback_identity++;
 #else
     static std::size_t next = std::numeric_limits<std::size_t>::max() / 2;

@@ -2,25 +2,25 @@
 #include <bblite/pal_image.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
 #include <bblite/pal_ui.hpp>
 #endif
 #include <bblite/upstream/camera_controls.hpp>
 #include <bblite/upstream/camera_math.hpp>
 // The pin's own inverse image processing, for the linear-frame clear color.
 #include <bblite/upstream/pinned_inverse_image_processing.hpp>
-#if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
+#if BBLITE_HAS_GEOMETRY_OUTPUT
 #include <bblite/upstream/frame_graph_geometry.hpp>
 #endif
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
 #include <bblite/upstream/frame_graph_post_process.hpp>
 #include <bblite/upstream/post_process_shaders.hpp>
 #endif
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 #endif
-#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+#if BBLITE_HAS_CLUSTERED_LIGHTS
 #include <bblite/upstream/clustered_light.hpp>
 #endif
 
@@ -45,13 +45,13 @@
 #include "pal_texture_upload_cache.hpp"
 #include "pal_sdl_compute_texture.hpp"
 #include "pal_frame_session.hpp"
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
 #include "pal_sdl_gpu_text.hpp"
 #endif
 #if BBLITE_HAS_BILLBOARDS
 #include "pal_sdl_gpu_billboard.hpp"
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
 #include "pal_sdl_gpu_sprite.hpp"
 #endif
 #if BBLITE_HAS_SPLATS
@@ -60,7 +60,7 @@
 #if BBLITE_HAS_PICKING
 #include "pal_sdl_gpu_picking.hpp"
 #endif
-#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+#if BBLITE_HAS_EFFECT_TASK
 #include "pal_sdl_gpu_effect.hpp"
 #endif
 #include "pal_render_capture.hpp"
@@ -68,7 +68,7 @@
 #include "pal_node_capture_state.hpp"
 #endif
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #include "pal_sdl_gpu_shared.hpp"
@@ -76,7 +76,7 @@
 #include <bblite/pal_gpu_task_timing.hpp>
 #include "pal_sdl_gpu_timestamp.hpp"
 #endif
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
 #include "pal_sdl_gpu_temporal.hpp"
 #include "pal_temporal_shared.hpp"
 #include <variant>
@@ -84,21 +84,17 @@
 #if BBLITE_OFFSCREEN_SURFACES
 #include "pal_sdl_gpu_offscreen.hpp"
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
 #include "pal_sprite_ui_sdl.hpp"
 #endif
-#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+#if BBLITE_HAS_CLUSTERED_LIGHTS
 #include "pal_sdl_gpu_clustered.hpp"
 #endif
 #endif
 
-#ifndef BBLITE_GPU_SHADER_DIR
-#define BBLITE_GPU_SHADER_DIR "shaders"
-#endif
-
 namespace bbl::pal {
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 namespace {
 
 /** The shared cull enum in this API's; the pipeline-kind facts come from
@@ -206,7 +202,7 @@ struct GpuMeshResources {
     // thin-instance arm. `pinned_instance_matrices` states the conversion.
     SDL_GPUBuffer* pinned_instances = nullptr;
 #endif
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
     // Both material families sample the pin's rgba32float bone palette.
     SDL_GPUTexture* pinned_bone_texture = nullptr;
     std::uint32_t pinned_bone_count = 0;
@@ -770,7 +766,7 @@ struct GpuRenderTarget {
 [[maybe_unused]] std::shared_ptr<GpuRenderTarget> retain_render_target(SDL_GPUDevice* device,
                                                                        GpuRenderTarget& target);
 
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
 /**
  * One post-process pass's SDL_GPU state.
  *
@@ -821,13 +817,13 @@ struct GpuPostProcessTask {
     std::vector<int> texture_sources;
     /** The effect's uniform block, sized once and refilled per frame. */
     std::vector<float> uniform_data;
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
     bool temporal_recorded = false;
 #endif
 };
 #endif
 
-#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+#if BBLITE_HAS_SCREEN_SPACE
 /**
  * A screen-space producer or temporal resolve: the pin's own dedicated
  * pipeline (`ensureProducerPipeline`, `ensurePipeline`), built from the
@@ -921,14 +917,14 @@ struct GpuState : SdlGpuDevice {
     };
     std::unordered_map<const LocalCubemapRecord*, std::unique_ptr<LocalCubemap>> local_cubemaps;
 #endif
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
     std::unique_ptr<SdlTextRenderer> text;
 #endif
-#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+#if BBLITE_HAS_CLUSTERED_LIGHTS
     /** The clustered light field's three data textures and their sampler. */
     ClusteredLightGpu clustered;
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
     SpriteUiSdlResources ui;
     UiSdlReadableSurface ui_readable_surface;
 #endif
@@ -952,7 +948,7 @@ struct GpuState : SdlGpuDevice {
     using StorageBuffer = VersionedGpuBuffer<SDL_GPUBuffer*>;
     std::vector<StorageBuffer> storage_buffers;
     std::vector<SDL_GPUTextureSamplerBinding> shader_texture_binding_scratch;
-#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+#if BBLITE_HAS_EFFECT_TASK
     // One built pass per effect render task, keyed by task index and built
     // lazily against the target's own format and sample count -- the pin
     // keys its own pipeline cache by exactly that pair.
@@ -1017,7 +1013,7 @@ struct GpuState : SdlGpuDevice {
     std::vector<PinnedStageShadowRows> pinned_fragment_shadow_rows;
 #endif
 #endif
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
     // Paired with every bone palette binding. The pin reads the palette with
     // textureLoad, so the sampler is never consulted; SDL_GPU still binds the
     // pair together.
@@ -1196,7 +1192,7 @@ struct GpuState : SdlGpuDevice {
      * parallel to its own render plan.
      */
     std::vector<std::vector<GpuMesh>> overlay_meshes;
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
     /**
      * Which meshes this frame's bone-palette sweep has already streamed.
      *
@@ -1220,7 +1216,7 @@ struct GpuState : SdlGpuDevice {
     /** The last `GpuRenderTarget::allocation` handed out. */
     std::uint32_t render_target_allocations = 0;
     std::vector<GpuGeometryTask> geometry_tasks;
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
     // Per frame task, one entry per pass it records.
     std::vector<std::vector<GpuPostProcessTask>> post_process_tasks;
     /** The distinct stage pairs and pipelines those passes draw with. */
@@ -1234,7 +1230,7 @@ struct GpuState : SdlGpuDevice {
     SDL_GPUSampler* post_process_bilinear_sampler = nullptr;
     SDL_GPUSampler* post_process_nearest_sampler = nullptr;
 #endif
-#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+#if BBLITE_HAS_SCREEN_SPACE
     /**
      * The distinct producer/resolve stages the screen-space tasks draw,
      * kept for the device's lifetime.
@@ -1667,7 +1663,7 @@ const GpuState::EsmBlur* esm_caster_params_for(const GpuState& state, const Engi
         // base-colour stand-in below is what the binding resolves to.
         return {};
 #endif
-#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+#if BBLITE_HAS_CLUSTERED_LIGHTS
     // The clustered field's three, from the container the scene holds.
     // Integer payloads bind as storage textures; the float payload
     // retains its unused sampler binding.
@@ -2083,7 +2079,7 @@ void sync_morph_weights(GpuBufferUploadBatch& uploads, GpuMesh& mesh, const Mode
 }
 #endif
 
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
 /**
  * One rgba32float upload through this backend's copy pass, staged through
  * the state's one transfer buffer: a pose streams every frame, so the
@@ -2344,7 +2340,7 @@ void draw_pinned_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPU
             }
         }
 #endif
-#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+#if BBLITE_HAS_CLUSTERED_LIGHTS
         // The clustered field's params block. It belongs to the container
         // the scene was given rather than to this material, which is why it
         // resolves here and not through the material slot table.
@@ -3234,7 +3230,7 @@ PinnedResource standard_resource_for(GpuState& state, const GpuMesh& mesh,
     for (const upstream::StandardBindingResource& row : upstream::standard_binding_resources) {
         if (name != row.texture_name && name != row.sampler_name)
             continue;
-#if defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_STANDARD_SKELETON
         if (row.source == upstream::MaterialTextureSource::bone_palette) {
             return {mesh.pinned_bone_texture, state.pinned_bone_sampler};
         }
@@ -3447,7 +3443,7 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
                            bool shadow_pass = false,
                            // The generator whose map that pass writes, when it writes one.
                            std::uint32_t esm_shadow_index = invalid_handle
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                            ,
                            std::vector<PreparedSdlDraw>* deferred = nullptr,
                            const std::shared_ptr<PersistentSceneUniforms>& deferred_scene = {}
@@ -3460,7 +3456,7 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
         standard_variant_pipeline(state, variant, draw.pipeline, geometry_task, shadow_pass,
                                   esm_shadow_index, task_samples, target);
     if (
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
         deferred == nullptr &&
 #endif
         variant_pipeline != bound_pipeline) {
@@ -3475,7 +3471,7 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
     const upstream::StandardMaterialUniforms material_block =
         standard_material_block(material, features);
     const upstream::StandardUvTransformUniforms uv_block = standard_uv_block(material, features);
-#if defined(BBLITE_HAS_STANDARD_UV_TRANSFORM) && BBLITE_HAS_STANDARD_UV_TRANSFORM
+#if BBLITE_HAS_STANDARD_UV_TRANSFORM
     const upstream::StandardUvTxUniforms uv_transform_block = standard_uv_transform_block(material);
 #endif
     const auto resolve = [&](const std::string& block) -> PinnedStageBlock {
@@ -3491,7 +3487,7 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
             return {&material_block, sizeof(material_block)};
         if (block == "up")
             return {&uv_block, sizeof(uv_block)};
-#if defined(BBLITE_HAS_STANDARD_UV_TRANSFORM) && BBLITE_HAS_STANDARD_UV_TRANSFORM
+#if BBLITE_HAS_STANDARD_UV_TRANSFORM
         if (block == "stdUvTx") {
             return {&uv_transform_block, sizeof(uv_transform_block)};
         }
@@ -3565,7 +3561,7 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
     if (pinned_record_instance_colored(record))
         instance_colors = mesh.instance_colors;
 #endif
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
     if (deferred) {
         PreparedSdlDraw prepared;
         prepared.pipeline = variant_pipeline;
@@ -4344,7 +4340,7 @@ void release_frame_graph_textures(GpuState& state, const Engine* preserve = null
         task.depth = nullptr;
         task.params = nullptr;
     }
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
     for (std::vector<GpuPostProcessTask>& passes : state.post_process_tasks) {
         for (GpuPostProcessTask& task : passes) {
             task = {};
@@ -4359,7 +4355,7 @@ void release_frame_graph_textures(GpuState& state, const Engine* preserve = null
         state.post_process_present = nullptr;
     }
 #endif
-#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+#if BBLITE_HAS_EFFECT_TASK
     // An effect pass outlives no build either: its pipeline was built
     // against the target's format and sample count, and a rebuilt graph may
     // change both.
@@ -4497,7 +4493,7 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
     if (state.geometry_tasks.size() < engine.frame_tasks.size()) {
         state.geometry_tasks.resize(engine.frame_tasks.size());
     }
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
     if (state.post_process_tasks.size() < engine.frame_tasks.size()) {
         state.post_process_tasks.resize(engine.frame_tasks.size());
     }
@@ -4666,7 +4662,7 @@ void release_gpu_mesh_resources([[maybe_unused]] GpuState* state, GpuMeshResourc
         mesh.pinned_vertices = nullptr;
     }
 #endif
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
     if (mesh.pinned_bone_texture) {
         SDL_ReleaseGPUTexture(state->device, mesh.pinned_bone_texture);
         mesh.pinned_bone_texture = nullptr;
@@ -4770,15 +4766,15 @@ void prune_shared_composed_material_textures(GpuState& state) {
 
 void release(GpuState& state) {
     state.depth_copy_pipeline.reset();
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
     state.text.reset();
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
     release_sprite_ui_sdl_resources(state.device, state.ui);
     state.ui_readable_surface.release(state.device);
 #endif
     release_frame_graph_textures(state);
-#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+#if BBLITE_HAS_SCREEN_SPACE
     // The screen-space programs key only the generated stage table's
     // formats, so they outlive every frame-graph rebuild and go with the
     // device.
@@ -4836,7 +4832,7 @@ void release(GpuState& state) {
     }
     state.splat_passes.clear();
 #endif
-#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+#if BBLITE_HAS_CLUSTERED_LIGHTS
     release_clustered_lights(state.device, state.clustered);
 #endif
     for (GpuMesh& mesh : state.meshes) {
@@ -4942,7 +4938,7 @@ void release(GpuState& state) {
     if (state.ground_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.ground_sampler);
     }
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
     if (state.post_process_bilinear_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.post_process_bilinear_sampler);
         state.post_process_bilinear_sampler = nullptr;
@@ -4987,7 +4983,7 @@ void release(GpuState& state) {
         state.shadow_filtering_sampler = nullptr;
     }
 #endif
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
     if (state.pinned_bone_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.pinned_bone_sampler);
     }
@@ -5076,7 +5072,7 @@ void release(GpuState& state) {
     state.release();
 }
 
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
 /** Builds the entry `post_process_program` below found missing. */
 GpuPostProcessProgram build_post_process_program(GpuState& state, std::uint32_t module_index,
                                                  SDL_GPUTextureFormat format,
@@ -5365,7 +5361,7 @@ void record_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle
 }
 #endif
 
-#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+#if BBLITE_HAS_SCREEN_SPACE
 /** Builds the entry `screen_space_program` below found missing. */
 GpuScreenSpaceProgram build_screen_space_program(GpuState& state, std::uint32_t stage) {
     const upstream::ScreenSpaceShaderInfo& info = upstream::screen_space_shader_infos.at(stage);
@@ -5715,7 +5711,7 @@ inline void ensure_pick_pipelines(GpuState& state) {
     // each mode retains its own affine fragment and attachment contract.
     std::array<SDL_GPUVertexAttribute, 3> deform_attributes{};
     deform_attributes[0] = {0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0};
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
     deform_attributes[1] = {1, 0, SDL_GPU_VERTEXELEMENTFORMAT_UINT4,
                             static_cast<Uint32>(offsetof(GpuVertex, joint_indices))};
     deform_attributes[2] = {2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
@@ -5866,7 +5862,7 @@ inline void record_cloud_pick_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderP
 #endif
 #endif
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::RenderItem& item,
                               GpuBufferUploadBatch* buffer_uploads = nullptr) {
     const ModelGeometry& geometry = engine.geometries[item.geometry];
@@ -6064,7 +6060,7 @@ GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::R
                     material_slot_fallback(slot_row.fallback, material, standard_material));
                 binding.sampler = create_texture_sampler(
                     state.device, data ? data->sampler : TextureSamplerState{});
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
                 if (engine.device_recovery && !engine.device_recovery->fallback.object &&
                     (!data || !data->has_image())) {
                     engine.device_recovery->fallback = publish_gpu_texture_identity(engine);
@@ -6217,7 +6213,7 @@ GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::R
     return gpu_mesh;
 }
 
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
 void sync_sdl_scene_sprites(GpuState& state, Engine& engine, std::vector<SpritePass>& sprite_passes,
                             std::vector<SDL_GPUTexture*>& sprite_render_textures,
                             SDL_GPUTextureFormat swapchain_format) {
@@ -6256,7 +6252,7 @@ void sync_sdl_scene_sprites(GpuState& state, Engine& engine, std::vector<SpriteP
 #endif
 #endif
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
+#if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
 PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::RenderPlan& root_plan,
                            const std::vector<upstream::RenderPlan>& overlay_plans,
                            const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
@@ -6334,7 +6330,7 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
 #if BBLITE_DEFORM_PICKING_MORPH
         sync_morph_weights(pose_uploads, gpu, engine.geometries[item.geometry], record);
 #endif
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
         if (record.skinned)
             write_pinned_bone_texture(state, gpu, record);
 #endif
@@ -6496,7 +6492,7 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
             bind_stage_textures(
                 pass, deform_program->vertex_slots, false, "deformation pick",
                 [&](const std::string& name, std::size_t) -> SDL_GPUTextureSamplerBinding {
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
                     if (name == "boneSampler")
                         return {gpu.pinned_bone_texture, state.pinned_bone_sampler};
 #endif
@@ -6587,25 +6583,25 @@ PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::Rend
 }
 #endif
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 class SdlSceneRun {
 
     struct Resources {
         GpuState state;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         UiRmlRuntime* ui_runtime = nullptr;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         std::vector<SpritePass> sprite_passes;
         std::vector<SDL_GPUTexture*> sprite_render_textures;
         SceneSpritePass scene_sprite_pass;
         bool has_scene_sprite_pass = false;
 #endif
         ~Resources() {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
             destroy_ui_rml_runtime(ui_runtime);
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
             if (has_scene_sprite_pass)
                 release_scene_sprite_pass(state.device, scene_sprite_pass);
             for (SpritePass& pass : sprite_passes)
@@ -6643,7 +6639,7 @@ class SdlSceneRun {
         std::vector<upstream::RenderDrawLists> task_draw_lists;
         std::uint64_t synced_render_topology_version = 0, synced_draw_list_epoch = 0;
         std::uint32_t synced_material_family_mask = 0;
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
         std::optional<SdlTextResourceOps> text_ops;
 #endif
         CameraPointerState pointer_state;
@@ -6660,7 +6656,7 @@ class SdlSceneRun {
         std::optional<PickHookGuard> pick_hook_guard;
 #endif
         std::optional<GpuBufferUploadBatch> frame_buffer_uploads;
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
         std::optional<DrawCountScope> draw_count_scope;
 #endif
         explicit State(Engine& target) : FrameSession(target) {}
@@ -6670,7 +6666,7 @@ class SdlSceneRun {
         // Keep construction explicit while optional inspects this nested type.
         Frame() {}
         bool yield_when_skipped = false, graph = false;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         const UiRenderFrame* ui_frame = nullptr;
         SDL_GPUTexture* present_swapchain = nullptr;
 #endif
@@ -6772,7 +6768,7 @@ class SdlSceneRun {
             write_render_capture(frame_options.render_capture_path, "sdl_gpu", scene, engine,
                                  *camera, render_plan, matrix, static_cast<int>(width),
                                  static_cast<int>(height), frame
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
                                  ,
                                  &state.text->owner->capture
 #elif BBLITE_NODE_GEOMETRY_VARIANTS > 0
@@ -6812,19 +6808,19 @@ public:
         [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
         [[maybe_unused]] auto& transmission_enabled = data_.transmission_enabled;
         [[maybe_unused]] auto& state = data_.resources.state;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& sprite_render_textures = data_.resources.sprite_render_textures;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& scene_sprite_pass = data_.resources.scene_sprite_pass;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
 #endif
         [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
@@ -6882,7 +6878,7 @@ public:
             offscreen ? SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM :
 #endif
                       SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         ui_runtime = create_ui_rml_runtime(engine, state.window,
                                            static_cast<std::uint32_t>(engine.options.width),
                                            static_cast<std::uint32_t>(engine.options.height));
@@ -7106,7 +7102,7 @@ public:
         SDL_GPUColorTargetDescription color_target{};
         color_target.format =
             transmission_enabled ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT : swapchain_format;
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         // Sprite rendering contexts and their render targets may be created
         // by a before-render callback. Mirror all newly appended CPU records
         // in handle order both here and immediately after each callback run.
@@ -7637,7 +7633,7 @@ public:
         if (!state.depth_sampler) {
             gpu_error("SDL_CreateGPUSampler depth");
         }
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
         {
             SDL_GPUSamplerCreateInfo post_process_info{};
             post_process_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
@@ -7825,7 +7821,7 @@ public:
         synced_draw_list_epoch = engine.draw_list_epoch;
         synced_material_family_mask = scene.material_family_mask;
 
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
         state.text = std::make_unique<SdlTextRenderer>(
             state.device, !environment_variable("BBLITE_RENDER_CAPTURE").empty());
         auto& text_ops = data_.text_ops.emplace(state.text->owner);
@@ -7845,7 +7841,7 @@ public:
         text_ops.sampler = state.text->sampler;
 #endif
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
 
 #endif
 
@@ -7866,7 +7862,7 @@ public:
         // shares one copy-pass submission instead of paying a
         // transfer-buffer create/release per frame.
         data_.frame_buffer_uploads.emplace(state.device);
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
         data_.draw_count_scope.emplace(engine);
 #endif
     }
@@ -7881,7 +7877,7 @@ public:
         [[maybe_unused]] auto& pointer_state = data_.pointer_state;
         [[maybe_unused]] auto& surface_pointer_state = data_.surface_pointer_state;
         [[maybe_unused]] auto& state = data_.resources.state;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
 #endif
         [[maybe_unused]] auto& hidden_test_pass = data_.frame_options.test_pass;
@@ -7902,13 +7898,13 @@ public:
                                             surface_pointer_state);
         };
 
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
         engine.draw_call_count = 0;
 #endif
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
         state.node_capture.capture.begin_frame(static_cast<std::uint64_t>(frame));
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         poll_platform_events(
             engine, running, hidden_test_pass,
             [&](SDL_Event& event) { return handle_ui_rml_event(*ui_runtime, event); },
@@ -8009,7 +8005,7 @@ public:
         [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
         [[maybe_unused]] auto& active_registered_scenes = data_.active_registered_scenes;
         [[maybe_unused]] auto& scene = data_.scene;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
 #endif
         [[maybe_unused]] auto& delta_ms = current_frame().delta_ms;
@@ -8032,10 +8028,10 @@ public:
 #if BBLITE_GPU_TASK_TIMING
         begin_gpu_task_timing_frame(engine);
 #endif
-#if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
+#if BBLITE_COMPUTE_FRAME_GRAPH
         begin_compute_frame_prefix(engine);
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame.
         update_ui_rml_runtime(*ui_runtime, width, height);
@@ -8062,16 +8058,16 @@ public:
         [[maybe_unused]] auto& camera_trace_state = data_.camera_trace_state;
         [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
         [[maybe_unused]] auto& state = data_.resources.state;
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& sprite_render_textures = data_.resources.sprite_render_textures;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& scene_sprite_pass = data_.resources.scene_sprite_pass;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
 #endif
         CameraRecord* const camera = active_camera();
@@ -8079,7 +8075,7 @@ public:
         [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
         [[maybe_unused]] auto& cluster_buffer_path = data_.frame_options.cluster_buffer_path;
         [[maybe_unused]] auto& screenshot_frame = data_.frame_options.screenshot_frame;
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
         [[maybe_unused]] auto& text_ops = *data_.text_ops;
 #endif
 #if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
@@ -8109,7 +8105,7 @@ public:
         profile_transformed_meshes = 0;
         profile_transformed_vertices = 0;
         trace_dynamic_frame(engine, delta_ms, frame);
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         // `_update` for every sprite context precedes every `_record`,
         // sharing the scene's one batched upload submission. Registration
         // controls drawing, not whether its layer data stays current.
@@ -8396,7 +8392,7 @@ public:
             // (render-task-base.ts).
             upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, *camera);
         }
-#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
         // The pin's bone palettes for every draw the gate resolves,
         // streamed here because a copy pass cannot open inside the render
         // pass. The draw branch below keys its skinned handling on the
@@ -8423,7 +8419,7 @@ public:
                     if (streamed[draw.item_index])
                         continue;
                     bool skeleton_draw = false;
-#if defined(BBLITE_STANDARD_SKELETON)
+#if BBLITE_STANDARD_SKELETON
                     if (draw.item.material_kind == upstream::RenderMaterialKind::standard) {
                         const std::size_t variant =
                             standard_variant_for_draw(palette_scene, engine, draw);
@@ -8509,7 +8505,7 @@ public:
         // scene block the pin never writes (see `active_camera`).
         frame_pass_matrices = {matrix.data(), &frame_view, &frame_projection};
         frame_pass_matrices.camera_position = &frame_camera_position;
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
         validate_text_scene(scene);
         state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
         const std::optional<TextCameraInput> text_camera =
@@ -8541,7 +8537,7 @@ public:
                 upload_splat_pass(state.device, engine, splat, frame_view);
         }
 #endif
-#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+#if BBLITE_HAS_CLUSTERED_LIGHTS
         // The cluster binning, in the same place the splat sort runs and
         // for the same reason: it reads this frame's camera and the draw
         // below reads what it wrote. The pinned updater returns without a
@@ -8553,7 +8549,7 @@ public:
         }
 #endif
 
-#if (!defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA) && (!defined(BBLITE_HAS_TEXT) || !BBLITE_HAS_TEXT)
+#if !BBLITE_HAS_TAA && !BBLITE_HAS_TEXT
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
         if (!state.node_capture.capture.enabled())
 #endif
@@ -8573,20 +8569,20 @@ public:
         [[maybe_unused]] auto& swapchain_format = data_.swapchain_format;
         [[maybe_unused]] const bool transmission_enabled = data_.transmission_enabled;
         [[maybe_unused]] auto& state = data_.resources.state;
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& sprite_passes = data_.resources.sprite_passes;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& sprite_render_textures = data_.resources.sprite_render_textures;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& scene_sprite_pass = data_.resources.scene_sprite_pass;
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
         [[maybe_unused]] auto& has_scene_sprite_pass = data_.resources.has_scene_sprite_pass;
 #endif
         CameraRecord* const camera = active_camera();
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
         [[maybe_unused]] auto& text_ops = *data_.text_ops;
 #endif
         [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
@@ -8603,7 +8599,7 @@ public:
         [[maybe_unused]] auto& command = current_frame().command;
         [[maybe_unused]] auto& capture_texture = current_frame().capture_texture;
         [[maybe_unused]] auto& visible_color = current_frame().visible_color;
-#if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
+#if BBLITE_COMPUTE_FRAME_GRAPH
         SdlGpuCommand surface_command{nullptr};
         if (compute_frame_prefix_deferred(engine)) {
             surface_command = std::move(command);
@@ -8613,7 +8609,7 @@ public:
         }
 #endif
         current_frame().graph = !scene.tasks.empty();
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         current_frame().ui_frame = &record_ui_rml_frame(*data_.resources.ui_runtime, width, height);
         current_frame().present_swapchain = swapchain;
         swapchain = state.ui_readable_surface.target(
@@ -8622,14 +8618,14 @@ public:
                 !(capture_frame && data_.frame_options.capture_ui));
 #endif
         if (!engine.render_targets.empty()) {
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
             if (!engine.stopped)
 #endif
                 create_frame_graph_textures(state, engine, swapchain_format, width, height);
         }
         if (current_frame().graph) {
             capture_texture = nullptr;
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
             // Queue occurrences, preserving task aliases and cross-scene order.
             // No draw is encoded if a later logical hook throws.
             std::vector<std::variant<PreparedSdlScenePass, PreparedSdlPostProcessPass>>
@@ -9056,7 +9052,7 @@ public:
                                                     shadow_generator = nullptr,
                                                 [[maybe_unused]] bool draw_scene_billboard_stages =
                                                     false
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                                                 ,
                                                 std::vector<PreparedSdlDraw>* deferred = nullptr,
                                                 const std::shared_ptr<PersistentSceneUniforms>&
@@ -9072,7 +9068,7 @@ public:
                         [[maybe_unused]] const auto task_samples =
                             shader_target
                                 ? std::optional<SDL_GPUSampleCount>{shader_target->samples}
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                                 : deferred_samples;
 #else
                             : std::optional<SDL_GPUSampleCount>{};
@@ -9122,7 +9118,7 @@ public:
                         // A pass without a camera pushes the zero block the pin
                         // never writes (see `active_camera`).
                         upstream::SceneUniforms pass_scene_block =
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                             deferred_scene ? temporal_clean_scene_block(*deferred_scene) :
 #endif
                             draw_camera ? pinned_scene_block(draw_context, engine, *draw_camera,
@@ -9174,7 +9170,7 @@ public:
                                     draw_item.material.value < engine.materials.size()
                                         ? &handle_at(engine.materials, draw_item.material)
                                         : nullptr;
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                                 if (deferred && draw_item.material_kind !=
                                                     upstream::RenderMaterialKind::standard) {
                                     throw std::runtime_error(
@@ -9265,7 +9261,7 @@ public:
                                         ,
                                         invalid_handle
 #endif
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                                         ,
                                         deferred, deferred_scene
 #endif
@@ -9451,7 +9447,7 @@ public:
                         draw_list(draw_lists.transparent);
                     };
 
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                     if (graph_layer == 0) {
                         for (const auto& registered : engine.registered_scenes) {
                             for (const TaskHandle recorded_handle : registered->tasks) {
@@ -9493,7 +9489,7 @@ public:
 #if BBLITE_GPU_TASK_TIMING
                         const auto timing_scope = timing_sequence.scoped_task(engine, handle);
 #endif
-#if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
+#if BBLITE_COMPUTE_FRAME_GRAPH
                         if (task.kind == FrameTaskKind::compute) {
                             if (surface_command) {
                                 if (!command.submit())
@@ -9506,7 +9502,7 @@ public:
                             continue;
                         }
 #endif
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                         if (task.kind != FrameTaskKind::render &&
                             task.kind != FrameTaskKind::post_process) {
                             throw std::runtime_error(
@@ -9521,7 +9517,7 @@ public:
                                 handle_at(engine.render_targets, task.render.target);
                             GpuRenderTarget& target =
                                 handle_at(state.render_targets, task.render.target);
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                             if (task.source_scene != graph_scene.state ||
                                 task.render.scene_stages ||
                                 task.render.shadow_generator.value != invalid_handle ||
@@ -9537,7 +9533,7 @@ public:
                                         task.render.camera.value < engine.cameras.size()
                                     ? &handle_at(engine.cameras, task.render.camera)
                                     : graph_camera;
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                             CameraRecord* source_camera =
                                 task.render.has_camera
                                     ? &handle_at(engine.cameras, task.render.camera)
@@ -9829,7 +9825,7 @@ public:
                                 task_depth.stencil_store_op = SDL_GPU_STOREOP_STORE;
                                 task_depth_pointer = &task_depth;
                             }
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                             PreparedSdlScenePass prepared;
                             prepared.target = target_info;
                             if (task_depth_pointer)
@@ -9890,7 +9886,7 @@ public:
                                 state.shader_pipelines, state.shader_a2c_pipelines, task_matrix,
                                 task_camera, task_pass_matrices, handle_at(task_draw_lists, handle),
                                 nullptr, nullptr, nullptr, nullptr, task.render.scene_stages
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                                 ,
                                 nullptr, {}, {}
 #endif
@@ -10087,7 +10083,7 @@ public:
                             continue;
                         }
 
-#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+#if BBLITE_HAS_EFFECT_TASK
                         if (task.kind == FrameTaskKind::effect) {
                             // The same two halves the swapchain renderer draws
                             // through, recorded into the frame graph's command
@@ -10132,9 +10128,9 @@ public:
                             continue;
                         }
 #endif
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
                         if (task.kind == FrameTaskKind::post_process) {
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                             if (task.post_process.taa) {
                                 auto& taa = *task.post_process.taa;
                                 auto& source = engine.frame_tasks.at(
@@ -10198,7 +10194,7 @@ public:
                             continue;
                         }
 #endif
-#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+#if BBLITE_HAS_SCREEN_SPACE
                         if (task.kind == FrameTaskKind::screen_space) {
                             record_screen_space_task(
                                 state, engine, handle, command, swapchain, swapchain_format, width,
@@ -10296,7 +10292,7 @@ public:
                         }
                         const bool partial_present =
                             target_record.swapchain && copy.has_viewport && !force_full_viewport;
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
                         if (partial_present && !state.post_process_present) {
                             state.post_process_present = create_frame_texture(
                                 state.device, swapchain_format, SDL_GPU_SAMPLECOUNT_1, width,
@@ -10311,7 +10307,7 @@ public:
                     }
 #endif
                         SDL_GPUColorTargetInfo blit_target{};
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
                         blit_target.texture = partial_present ? state.post_process_present
                                                               : target_texture(copy.target, false);
 #else
@@ -10327,7 +10323,7 @@ public:
                                                                    ? state.blit_msaa_pipeline
                                                                    : state.blit_pipeline);
                         if (force_full_viewport || copy.has_viewport) {
-#if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
+#if BBLITE_HAS_GEOMETRY_OUTPUT
                             const GpuRenderTarget& target =
                                 handle_at(state.render_targets, copy.target);
                             const NormalizedViewport normalized_viewport =
@@ -10361,7 +10357,7 @@ public:
                         SDL_BindGPUFragmentSamplers(blit_pass, 0, &texture_binding, 1);
                         count_gpu_draw(SDL_DrawGPUPrimitives, blit_pass, 3, 1, 0, 0);
                         blit_pass.end();
-#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+#if BBLITE_HAS_POST_PROCESS
                         if (partial_present) {
                             // Present what the frame composed, and capture the
                             // same texture -- the post-process present pass
@@ -10383,7 +10379,7 @@ public:
                         }
                     }
                 }
-#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#if BBLITE_HAS_TAA
                 for (const auto& prepared : temporal_passes) {
                     if (const auto* source = std::get_if<PreparedSdlScenePass>(&prepared)) {
                         encode_sdl_prepared_scene(command, *source);
@@ -11018,7 +11014,7 @@ public:
                     break;
                 case upstream::RenderStage::opaque:
                     draw_render_list(render_plan.draw_lists.opaque);
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
                     if (has_scene_sprite_pass) {
                         record_scene_sprite_pass(command, pass, engine, scene_sprite_pass,
                                                  Sprite2DDepthMode::test_write, width, height);
@@ -11030,12 +11026,12 @@ public:
                     break;
                 case upstream::RenderStage::transparent:
                     draw_render_list(render_plan.draw_lists.transparent);
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
                     text_ops.command = command;
                     text_ops.pass = pass;
                     state.text->scene.draw(text_ops);
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
                     if (has_scene_sprite_pass) {
                         record_scene_sprite_pass(command, pass, engine, scene_sprite_pass,
                                                  Sprite2DDepthMode::test, width, height);
@@ -11063,7 +11059,7 @@ public:
             draw_billboards(BillboardDepthMode::transparent);
 #endif
             pass.end();
-#if (defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT) || BBLITE_NODE_GEOMETRY_VARIANTS > 0
+#if BBLITE_HAS_TEXT || BBLITE_NODE_GEOMETRY_VARIANTS > 0
             capture_render_state();
 #endif
             // Held across the loop rather than declared inside it, so
@@ -11183,7 +11179,7 @@ public:
                 visible_color = state.processed_color;
             }
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
             // The scene is the first rendering context; registered sprite
             // contexts then load and blend over its final single-sample
             // colour, in registration order. Rendering before the blit keeps
@@ -11218,7 +11214,7 @@ public:
     }
 
     void present_readable_surface() {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         UiSdlReadableSurface::present(current_frame().command, current_frame().swapchain,
                                       current_frame().present_swapchain, current_frame().width,
                                       current_frame().height);
@@ -11236,7 +11232,7 @@ public:
         [[maybe_unused]] auto& screenshot_path = data_.frame_options.screenshot_path;
         [[maybe_unused]] auto& id_buffer_path = data_.frame_options.id_buffer_path;
         [[maybe_unused]] auto& cluster_buffer_path = data_.frame_options.cluster_buffer_path;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
         [[maybe_unused]] auto& capture_ui = data_.frame_options.capture_ui;
 #endif
 #if BBLITE_OFFSCREEN_SURFACES
@@ -11264,7 +11260,7 @@ public:
                 present.filter = SDL_GPU_FILTER_NEAREST;
                 SDL_BlitGPUTexture(command, &present);
             }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
             SDL_GPUTexture* ui_target = capture_frame && capture_ui ? capture_texture : swapchain;
             if (!ui_target) {
                 throw std::runtime_error("Frame graph did not present a native UI target.");
@@ -11303,7 +11299,7 @@ public:
                 gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
             }
         } else {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
             if (capture_frame && capture_ui) {
                 // Render the UI into the readback texture, then present that
                 // exact result below.
@@ -11321,7 +11317,7 @@ public:
                 blit.filter = SDL_GPU_FILTER_NEAREST;
                 SDL_BlitGPUTexture(command, &blit);
             }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+#if BBLITE_HAS_UI && !BBLITE_WORKERS
             if (!(capture_frame && capture_ui)) {
                 // A canvas-only attribution capture omits the UI from
                 // `visible_color` but still draws it over the presented
@@ -11349,7 +11345,7 @@ public:
 #if BBLITE_GPU_TASK_TIMING
         finish_gpu_task_timing_frame(engine);
 #endif
-#if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
+#if BBLITE_COMPUTE_FRAME_GRAPH
         finish_compute_frame_prefix(engine);
 #endif
         if (capture_ids) {
@@ -11362,7 +11358,7 @@ public:
                                         cluster_buffer_path, true);
             captures.cluster_buffer_saved = true;
         }
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
         if (engine.device_recovery) {
             auto& recovery = *engine.device_recovery;
             recovery.environments[scene.state.get()] = {
@@ -11442,7 +11438,7 @@ public:
 #endif
 
 SceneRun run_gpu_engine(Engine& engine) {
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front())
         throw std::runtime_error("GPU renderer requires a registered scene.");
     SdlSceneRun renderer(engine);

@@ -39,10 +39,6 @@
 #include <SDL3_image/SDL_image.h>
 #endif
 
-#ifndef BBLITE_GPU_SHADER_DIR
-#define BBLITE_GPU_SHADER_DIR "shaders"
-#endif
-
 namespace bbl::pal {
 
 [[noreturn]] inline void gpu_error(const char* operation) {
@@ -437,7 +433,7 @@ inline void push_stage_uniform(SDL_GPUCommandBuffer* command, int slot, const vo
 inline void create_sdl_gpu_device(const EngineOptions& engine_options, const DeviceOptions& options,
                                   SdlGpuDevice& state) {
     SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
-#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
+#if BBLITE_HAS_GAMEPAD
     init_flags |= SDL_INIT_GAMEPAD;
 #endif
     if (!initialize_run_sdl(init_flags))

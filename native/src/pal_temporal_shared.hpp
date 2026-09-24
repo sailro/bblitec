@@ -30,7 +30,7 @@ inline void validate_temporal_source(const Engine& engine, const FrameTaskRecord
         throw std::runtime_error(
             "Temporal submission requires preparation for the engine's registered renderer or UI contexts.");
     }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (!engine.ui_root_children.empty()) {
         throw std::runtime_error(
             "Temporal submission requires preparation for the engine's retained UI.");

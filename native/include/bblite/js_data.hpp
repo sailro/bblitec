@@ -3288,7 +3288,7 @@ template <typename T> [[nodiscard]] inline bool array_has_index(const T& values,
 template <typename T> [[nodiscard]] inline T& missing_array_value() {
     // Re-defaulted on every miss so a stray write through one missed index
     // cannot persist into every later miss of the same element type.
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     T& slot = realm_scratch<T>();
 #else
     static T slot{};
@@ -3864,7 +3864,7 @@ template <bool Maximum, std::floating_point Number>
 // reference capture installs the identical generator before module load, so
 // both sides consume the same sequence (recorded as a fidelity adaptation).
 inline std::uint32_t& random_state() {
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     return realm_state.random;
 #else
     static std::uint32_t state = 1u;
@@ -3878,7 +3878,7 @@ inline void seed_random(std::uint32_t seed) { random_state() = seed; }
 // generator's state. Saving this callback preserves an override's closure
 // identity; an empty callback denotes the built-in generator.
 inline Callback<double()>& random_override() {
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     struct RandomOverride {
         Callback<double()> callback;
     };
@@ -3906,7 +3906,7 @@ inline void set_random_override(Callback<double()> callback) {
     const auto& override = random_override();
     if (override)
         return override;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     struct BuiltinRandom {
         Callback<double()> callback{random_builtin};
     };

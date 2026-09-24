@@ -90,7 +90,7 @@ inline WGPUBlendFactor dawn_blend_factor(BlendFactor factor) {
     return WGPUBlendFactor_One;
 }
 
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 inline WGPUBlendFactor dawn_sprite_blend_factor(SpriteBlendFactor factor) {
     switch (factor) {
     case SpriteBlendFactor::zero:

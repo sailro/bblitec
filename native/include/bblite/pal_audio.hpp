@@ -71,7 +71,7 @@
 
 namespace bbl::pal {
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 /** Scheduled-source callbacks run through their owning realm's event queue. */
 void audio_add_ended_listener(AudioNodeHandle node, std::size_t identity,
                               js::Callback<void()> callback, bool capture = false,

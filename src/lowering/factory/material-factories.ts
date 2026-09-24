@@ -529,7 +529,7 @@ void set_shader_storage_buffer(
     record.shader_storage_buffers[slot] = buffer;
 }
 
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 void set_shader_csm_texture(
     Engine& engine,
     MaterialHandle material,
@@ -774,7 +774,7 @@ void update_pixels_texture(
     }
     texture.rgba = pixels.to_vector();
     ++texture.version;
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     for (Sprite2DLayerRecord& layer : engine.sprite_layers) {
         for (PixelsTexture& bound : layer.custom_textures) {
             if (bound.identity != texture.identity) continue;

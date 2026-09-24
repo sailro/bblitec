@@ -1684,8 +1684,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // bundle too -- but every define is a CONJUNCTION of that reach with a
 // composed family, because the receiver fragment is composed per family
 // and a scene composing no variant of a family compiles none of its
-// shadow code even having reached a generator. The reach alone gates
-// nothing, so it has no define of its own.
+// shadow code even having reached a generator. The reach alone gates only
+// the generator records, through CMake's BBLITE_HAS_SHADOWS.
 // The ESM generator's own half: four textures and a separable blur. A
 // CONJUNCTION for the same reason the define below is -- every site that
 // reads it is Standard-family code (the caster's own material view, the
@@ -1714,6 +1714,15 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
     (BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS || BBLITE_NODE_SHADOWS)
 #define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
 #define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
+// The pin's TAA task: a composed post-process composite whose jitter,
+// history and scene-UBO blocks frame_graph_post_process.hpp carries.
+#define BBLITE_HAS_TAA ${
+                options.postProcessComposites.some(
+                    (composite) => composite.taa !== undefined,
+                )
+                    ? 1
+                    : 0
+            }
 
 // A Gaussian cloud whose packaged container carried spherical harmonics.
 // The pin's own fork is on the PARSE result (attachParsedSplat tests
@@ -1735,6 +1744,21 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // scene composes them, which also skips standard_variants.hpp.
 #define BBLITE_STANDARD_VARIANTS ${
                 (options.pinnedStandardVariants?.length ?? 0) > 0 ? 1 : 0
+            }
+// The Standard skeleton hook standard_variants.hpp carries, and the colour
+// alpha feature word renderer_plan.hpp carries: each is emitted exactly when
+// its define is 1.
+#define BBLITE_STANDARD_SKELETON ${
+                features.includes("material:standard-skeleton") &&
+                (options.pinnedStandardVariants?.length ?? 0) > 0
+                    ? 1
+                    : 0
+            }
+#define BBLITE_STANDARD_VERTEX_ALPHA ${
+                features.includes("renderer:scene") &&
+                features.includes("mesh:vertex-alpha")
+                    ? 1
+                    : 0
             }
 
 // The node graphs the pin's own emitter compiled for this scene. Zero

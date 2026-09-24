@@ -158,7 +158,7 @@ struct FileList {
     [[nodiscard]] std::size_t length() const noexcept { return first ? 1u : 0u; }
 };
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 [[nodiscard]] inline UiElementRecord& browser_file_ui_element(Engine& engine,
                                                               UiElementHandle handle) {
     if (handle.value >= engine.ui_elements.size()) {
@@ -364,7 +364,7 @@ inline bool append_mime_extensions(std::vector<std::string>& extensions, std::st
 
 } // namespace detail
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 /** Default action of a retained `<a href=objectUrl download=name>`. */
 inline void click_download_anchor(Engine& engine, UiElementHandle handle) {
     ObjectUrlHandle url{};

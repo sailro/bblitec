@@ -45,43 +45,43 @@ inline std::unique_ptr<lab::AudioBus> decode_audio_bus(const std::vector<std::ui
     (void)extension;
     nqr::AudioData pcm;
     bool decoded = false;
-#if defined(BBLITE_AUDIO_DECODE_WAV) && BBLITE_AUDIO_DECODE_WAV
+#if BBLITE_AUDIO_DECODE_WAV
     if (extension == "wav") {
         nqr::WavDecoder{}.LoadFromBuffer(&pcm, bytes);
         decoded = true;
     }
 #endif
-#if defined(BBLITE_AUDIO_DECODE_WV) && BBLITE_AUDIO_DECODE_WV
+#if BBLITE_AUDIO_DECODE_WV
     if (extension == "wv") {
         nqr::WavPackDecoder{}.LoadFromBuffer(&pcm, bytes);
         decoded = true;
     }
 #endif
-#if defined(BBLITE_AUDIO_DECODE_MPC) && BBLITE_AUDIO_DECODE_MPC
+#if BBLITE_AUDIO_DECODE_MPC
     if (extension == "mpc") {
         nqr::MusepackDecoder{}.LoadFromBuffer(&pcm, bytes);
         decoded = true;
     }
 #endif
-#if defined(BBLITE_AUDIO_DECODE_FLAC) && BBLITE_AUDIO_DECODE_FLAC
+#if BBLITE_AUDIO_DECODE_FLAC
     if (extension == "flac") {
         nqr::FlacDecoder{}.LoadFromBuffer(&pcm, bytes);
         decoded = true;
     }
 #endif
-#if defined(BBLITE_AUDIO_DECODE_MP3) && BBLITE_AUDIO_DECODE_MP3
+#if BBLITE_AUDIO_DECODE_MP3
     if (extension == "mp3") {
         nqr::Mp3Decoder{}.LoadFromBuffer(&pcm, bytes);
         decoded = true;
     }
 #endif
-#if defined(BBLITE_AUDIO_DECODE_OPUS) && BBLITE_AUDIO_DECODE_OPUS
+#if BBLITE_AUDIO_DECODE_OPUS
     if (extension == "opus") {
         nqr::OpusDecoder{}.LoadFromBuffer(&pcm, bytes);
         decoded = true;
     }
 #endif
-#if defined(BBLITE_AUDIO_DECODE_OGG) && BBLITE_AUDIO_DECODE_OGG
+#if BBLITE_AUDIO_DECODE_OGG
     if (extension == "ogg") {
         nqr::VorbisDecoder{}.LoadFromBuffer(&pcm, bytes);
         decoded = true;

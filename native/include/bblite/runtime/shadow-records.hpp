@@ -27,7 +27,7 @@ enum class ShadowFilter {
  * renders through `caster_view_projection` — the PCF family's unbiased /
  * biased split, applied per cascade.
  */
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 struct ShadowCascade {
     /** The cascade's light-space view, from the pinned light basis. */
     std::array<float, 16> view{};
@@ -81,7 +81,7 @@ struct ShadowGeneratorRecord {
      * this counter is that identity change, read by the render gate.
      */
     std::uint64_t caster_list_version = 0;
-#if defined(BBLITE_SHADOW_MORPH_BOUNDS) && BBLITE_SHADOW_MORPH_BOUNDS
+#if BBLITE_SHADOW_MORPH_BOUNDS
     // enableMorphTargetShadows: bound each caster by its morph-expanded
     // AABB rather than its unmorphed geometry box. Off unless the scene
     // asks, exactly as upstream installs no provider unless it is called.
@@ -123,7 +123,7 @@ struct ShadowGeneratorRecord {
      * `csm_shadow_max_z` is the pin's own `?? null`, resolved against the
      * active camera's far plane where the split is computed.
      */
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
     std::uint32_t csm_num_cascades = 0;
     double csm_lambda = 0.0;
     double csm_cascade_blend_percentage = 0.0;

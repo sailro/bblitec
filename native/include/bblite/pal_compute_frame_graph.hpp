@@ -1,7 +1,7 @@
 #pragma once
 #include <bblite/pal_compute_task_execution.hpp>
 #include <span>
-#if defined(BBLITE_GPU_TASK_TIMING) && BBLITE_GPU_TASK_TIMING
+#if BBLITE_GPU_TASK_TIMING
 #include <bblite/pal_gpu_task_timing.hpp>
 #endif
 
@@ -85,7 +85,7 @@ inline ComputeFramePrefix collect_compute_frame_prefix(const Engine& engine) {
     for (const auto& scene : engine.registered_scenes) {
         if (!scene)
             continue;
-#if defined(BBLITE_GPU_TASK_TIMING) && BBLITE_GPU_TASK_TIMING
+#if BBLITE_GPU_TASK_TIMING
         if (prefix.tasks.empty() && !render_started && scene->state->shadow_task_name &&
             pal::active_gpu_task_timer(engine))
             prefix.leading_shadows = true;
@@ -146,7 +146,7 @@ inline void begin_compute_frame_prefix(Engine& engine, bool shadows_submitted = 
         for (const auto& task : prefix.tasks)
             if (!task->pass && !task->execute)
                 record_compute_frame_task(task);
-#if defined(BBLITE_GPU_TASK_TIMING) && BBLITE_GPU_TASK_TIMING
+#if BBLITE_GPU_TASK_TIMING
         if (const auto timer = pal::active_gpu_task_timer(engine)) {
             for (const auto& task : prefix.tasks) {
                 if (!task->execution_enabled)

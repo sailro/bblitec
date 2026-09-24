@@ -4,13 +4,13 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
-#if defined(BBLITE_CHECKED_HANDLES) && BBLITE_CHECKED_HANDLES
+#if BBLITE_CHECKED_HANDLES
 #include <source_location>
 #endif
 
 namespace bbl {
 
-#if defined(BBLITE_CHECKED_HANDLES) && BBLITE_CHECKED_HANDLES
+#if BBLITE_CHECKED_HANDLES
 using HandleSite = std::source_location;
 [[nodiscard]] inline std::string handle_site_suffix(const HandleSite& site) {
     return std::string(" at ") + site.file_name() + ":" + std::to_string(site.line());
@@ -47,12 +47,12 @@ struct HandleSite {};
  */
 template <typename Records, typename Handle>
 decltype(auto) handle_at(Records& records, Handle handle
-#if defined(BBLITE_CHECKED_HANDLES) && BBLITE_CHECKED_HANDLES
+#if BBLITE_CHECKED_HANDLES
                          ,
                          const HandleSite& site = HandleSite::current()
 #endif
 ) {
-#if !defined(BBLITE_CHECKED_HANDLES) || !BBLITE_CHECKED_HANDLES
+#if !BBLITE_CHECKED_HANDLES
     constexpr HandleSite site{};
 #endif
     const auto index = static_cast<std::size_t>(handle.value);

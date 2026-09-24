@@ -766,11 +766,10 @@ function emittedDefines(): Map<string, string> {
 
 /**
  * The emitted names that are constants rather than activation units: the
- * build stamp string, the asset-directory fallback and an include guard.
+ * build stamp string and an include guard.
  */
 const emittedConstants = new Set([
     "BBLITE_BUILD_STAMP",
-    "BBLITE_ASSET_DIR",
     "BBLITE_UPSTREAM_CAMERA_CHANGE_KEY_HPP",
 ]);
 

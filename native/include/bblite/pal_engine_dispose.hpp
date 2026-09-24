@@ -1,10 +1,10 @@
 #pragma once
 
 #include <bblite/runtime.hpp>
-#if defined(BBLITE_GPU_TASK_TIMING) && BBLITE_GPU_TASK_TIMING
+#if BBLITE_GPU_TASK_TIMING
 #include <bblite/pal_gpu_task_timing.hpp>
 #endif
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 #include <bblite/pal_offscreen.hpp>
 #endif
 
@@ -18,7 +18,7 @@ inline void unconfigure_engine_surfaces(Engine& engine) {
     engine.registered_scenes.clear();
     engine.registered_frame_graph_contexts.clear();
     engine.registered_effect_renderers.clear();
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     if (engine.offscreen_run)
         engine.offscreen_run->discard_pending();
 #endif
@@ -32,7 +32,7 @@ inline void dispose_engine_storage_buffers(Engine& engine) {
         engine.dispose_storage_buffers(engine);
 }
 inline void destroy_engine_device(Engine& engine) {
-#if defined(BBLITE_GPU_TASK_TIMING) && BBLITE_GPU_TASK_TIMING
+#if BBLITE_GPU_TASK_TIMING
     if (engine.gpu_task_timing) {
         auto& timing = *engine.gpu_task_timing;
         if (timing.disable)
@@ -51,7 +51,7 @@ inline void destroy_engine_device(Engine& engine) {
         engine.device_recovery->registrations.clear();
         engine.device_recovery->error_listeners.clear();
     }
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     // The Window owns the shared transport. This engine releases its lease;
     // suspended renderer activations retain theirs until the stopped frame exits.
     if (engine.offscreen_run)

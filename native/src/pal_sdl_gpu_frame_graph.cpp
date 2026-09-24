@@ -32,8 +32,7 @@
 
 namespace bbl::pal {
 
-#if defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER &&                 \
-    BBLITE_HAS_SDL_GPU
+#if BBLITE_HAS_FRAME_GRAPH_RENDERER && BBLITE_HAS_SDL_GPU
 
 namespace {
 

@@ -226,7 +226,7 @@ template <typename Signature> class PlatformEventListeners;
 
 template <typename... Args> class PlatformEventListeners<void(Args...)> {
 public:
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     using Callback = js::Callback<void(Args...)>;
 #else
     using Callback = std::function<void(Args...)>;
@@ -264,7 +264,7 @@ public:
 
     [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     void add(Callback callback, bool once = false) {
         const auto identity = callback.identity();
         add(identity, std::move(callback), once);
@@ -375,7 +375,7 @@ private:
     std::shared_ptr<BrowserFileRecord> record_;
 };
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 /** Last computed retained-layout box exposed as DOMRect's reached surface. */
 struct UiClientRect {
     double left = 0.0;
@@ -599,7 +599,7 @@ struct BillboardSpriteHandle {
 };
 
 /** Which sprite family a frame animation drives. */
-#if !defined(BBLITE_HAS_SPRITE_ANIMATION) || BBLITE_HAS_SPRITE_ANIMATION
+#if BBLITE_HAS_SPRITE_ANIMATION
 #include <bblite/runtime/sprite-animation.hpp>
 #endif
 
@@ -710,7 +710,7 @@ struct BoundingBoxGizmoHandle {
  * and the name, which is all the reached slice reads, is resolved once at
  * pick time rather than re-derived at every read.
  */
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 #include <bblite/runtime/picking-records.hpp>
 #endif
 
@@ -728,7 +728,7 @@ struct NodeInputState;
 using NodeInputHandle = std::shared_ptr<NodeInputState>;
 struct NodeMaterialInputsState;
 struct NodeMaterialGroupState;
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 struct GpuPickerRecord {
     std::weak_ptr<SceneState> scene;
     bool disposed = false;
@@ -2409,7 +2409,7 @@ inline void apply_mesh_bound_overrides(const MeshRecord& mesh, Vec3& minimum, Ve
 // ---------------------------------------------------------------------------
 
 /** shared/sprite-atlas.ts `SpriteFrame`: UVs in [0,1], size in pixels. */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-atlas-records.hpp>
 #endif
 
@@ -2425,7 +2425,7 @@ enum class DepthCompare {
 };
 
 /** blend-descriptors.ts / sprite-blend.ts, as the pure data they are. */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-blend.hpp>
 #endif
 
@@ -2478,7 +2478,7 @@ struct SplatMeshRecord {
     std::vector<std::vector<std::uint8_t>> sh_textures;
 };
 
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-records.hpp>
 #endif
 
@@ -2524,7 +2524,7 @@ struct EffectRendererOptions {
     Color4 clear_color{};
 };
 
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
 #include <bblite/runtime/animation-records.hpp>
 #endif
 
@@ -2794,7 +2794,7 @@ struct MaterialRecord {
     std::vector<float> shader_uniform_values;
     /** Storage slots in the shader's declared order. */
     std::vector<StorageBufferHandle> shader_storage_buffers;
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
     /** CSM receiver textures keyed by shader sampler slot. */
     std::vector<ShadowGeneratorHandle> shader_csm_textures;
 #endif
@@ -3407,11 +3407,11 @@ struct HierarchyInstancePoolRecord {
  * their light-space matrix is fitted with, which is why every consumer that
  * asks about a generator's RESOURCES tests for the ESM arm alone.
  */
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
 #include <bblite/runtime/shadow-records.hpp>
 #endif
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 enum class UiStyleSelectorKind : std::uint8_t {
     Sequence,
     Class,
@@ -3597,7 +3597,7 @@ struct UiElementRecord {
     std::vector<std::function<void()>> click_callbacks;
     std::unordered_map<std::string, std::vector<std::function<void(const PlatformMouseEvent&)>>>
         event_callbacks;
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
     /** Browser-file state exists only for retained <a>/<input> elements. */
     ObjectUrlHandle download_url{};
     BrowserFileHandle selected_file{};
@@ -3609,7 +3609,7 @@ struct UiElementRecord {
     UiClientRect client_rect{};
     bool client_rect_requested = false;
     std::optional<CanvasState> canvas;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     bool external_gpu_canvas = false;
 #endif
     bool attached_to_root = false;
@@ -3617,7 +3617,7 @@ struct UiElementRecord {
 
 #endif
 
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
 /** One recyclable object-URL slot. Generation prevents stale-handle reuse. */
 struct ObjectUrlRecord {
     std::shared_ptr<const std::vector<std::uint8_t>> bytes;
@@ -3704,7 +3704,7 @@ private:
 };
 #endif
 
-#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
+#if BBLITE_HAS_GIZMOS
 #include <bblite/runtime/gizmo-records.hpp>
 #endif
 
@@ -3815,7 +3815,7 @@ struct Engine {
     bool device_disposed = false;
     std::uint64_t draw_call_count = 0;
     OwnerLifetime lifetime;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     std::shared_ptr<pal::OffscreenRun> offscreen_run;
 #endif
     /** Generated subsystem state; callbacks hold weak references back to it. */
@@ -3897,7 +3897,7 @@ struct Engine {
     PlatformEventListeners<void(const PlatformMouseEvent&)> mouse_move_callbacks;
     PlatformEventListeners<void(const PlatformMouseEvent&)> mouse_wheel_callbacks;
     PlatformEventListeners<void(const PlatformMouseEvent&)> mouse_cancel_callbacks;
-#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
+#if BBLITE_HAS_GAMEPAD
     /** Cached browser property identities; owns no SDL handles. */
     std::shared_ptr<PlatformGamepadState> platform_gamepad_state;
 #endif
@@ -3912,7 +3912,7 @@ struct Engine {
     /** Programmatic focus requested by the source render canvas. */
     bool canvas_focused = false;
     PlatformEventListeners<void(bool)> visibility_change_callbacks;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     /** Scene-created DOM after compiler lowering, independent of RmlUi. */
     std::vector<UiElementRecord> ui_elements;
     /** The primary 2D canvas, when this engine is only a platform host. */
@@ -3941,7 +3941,7 @@ struct Engine {
                ui_revision - revision == ui_text_revision - text_revision;
     }
 #endif
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
     /** Per-engine Blob URL registry; revoked slots are cleared and recycled. */
     std::vector<ObjectUrlRecord> object_urls;
     std::vector<std::uint32_t> free_object_url_slots;
@@ -3984,7 +3984,7 @@ struct Engine {
      * registering scenes attach one seeker per manager, the way an asset
      * added to a scene contributes its own.
      */
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
     std::vector<PropertyAnimationManager> animation_managers;
 #endif
     std::vector<MeshRecord> meshes;
@@ -4061,14 +4061,14 @@ struct Engine {
     double input_replay_pointer_x = 0.0;
     double input_replay_pointer_y = 0.0;
     std::vector<FrameGraphContext*> registered_frame_graph_contexts;
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
 #endif
-#if !defined(BBLITE_HAS_SPRITE_ANIMATION) || BBLITE_HAS_SPRITE_ANIMATION
+#if BBLITE_HAS_SPRITE_ANIMATION
     std::vector<SpriteAnimationManagerRecord> sprite_animation_managers;
 #endif
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<BillboardSystemRecord> billboard_systems;
     std::vector<SpriteRendererRecord> sprite_renderers;
     std::vector<SpriteRenderTextureRecord> sprite_render_textures;
@@ -4084,10 +4084,10 @@ struct Engine {
     std::vector<ClusteredLightContainer> clustered_light_containers;
     std::vector<EffectWrapperRecord> effect_wrappers;
     std::vector<EffectRendererRecord> effect_renderers;
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorRecord> shadow_generators;
 #endif
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
     std::vector<GpuPickerRecord> gpu_pickers;
 #endif
     /**
@@ -4095,12 +4095,12 @@ struct Engine {
      * `registerScene` publishes the address of the scene inside one, and
      * every gizmo follow callback captures it.
      */
-#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
+#if BBLITE_HAS_GIZMOS
     std::vector<std::unique_ptr<UtilityLayerRecord>> utility_layers;
-#if !defined(BBLITE_HAS_CAMERA_GIZMOS) || BBLITE_HAS_CAMERA_GIZMOS
+#if BBLITE_HAS_CAMERA_GIZMOS
     std::vector<CameraGizmoRecord> camera_gizmos;
 #endif
-#if !defined(BBLITE_HAS_LIGHT_GIZMOS) || BBLITE_HAS_LIGHT_GIZMOS
+#if BBLITE_HAS_LIGHT_GIZMOS
     std::vector<LightGizmoRecord> light_gizmos;
 #endif
     std::vector<EditGizmoRecord> edit_gizmos;
@@ -4123,13 +4123,13 @@ struct Engine {
      * candidate collector asks it per mesh and both backends skip their
      * pick sources under it (`pickAsyncImpl`). Null is an unfiltered pick.
      */
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
     using PickFilter = std::function<bool(MeshHandle)>;
     std::function<PickingInfo(GpuPickerHandle, double, double, const PickFilter*)> pick_hook;
 #endif
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
 #endif
     std::vector<std::shared_ptr<TextRendererState>> registered_text_renderers;
@@ -4143,7 +4143,7 @@ struct Engine {
      * lazily from inside the enabler, so importing (or here, generating)
      * the extension without using it installs nothing.
      */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     Sprite2DYSortHook sprite_y_sort_hook;
 #endif
     std::uint64_t next_file_texture_identity = 1;
@@ -4176,7 +4176,7 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
 }
 
 inline bool has_sprite_renderers(const Engine& engine) {
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     return !engine.registered_sprite_renderers.empty();
 #else
     static_cast<void>(engine);
@@ -4425,7 +4425,7 @@ inline void cancel_animation_frame(Engine& engine, std::size_t id) {
     std::erase_if(engine.post_render_animation_frame_once_callbacks, matches);
 }
 
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 inline void PickingInfo::bind_engine(Engine& engine) {
     state->engine = &engine;
     state->engine_lifetime = engine.lifetime.token();
@@ -4498,7 +4498,7 @@ inline void dispose_storage_buffer(Engine& engine, StorageBufferHandle handle) {
 }
 
 /** Subscribe to the bytes produced by the CSM receiver's own packer. */
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 template <typename Callback>
 [[nodiscard]] inline auto on_csm_receiver_update(Engine& engine, ShadowGeneratorHandle generator,
                                                  Callback callback) {
@@ -4808,22 +4808,22 @@ struct SceneState {
     /** Source shadow scheduler identity, including scenes with no caster passes. */
     std::optional<std::string> shadow_task_name;
     /** Shadow generators retired only after a replacement rebuild succeeds. */
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorHandle> pending_shadow_retirements;
 #endif
     std::vector<AnimationGroupHandle> animation_groups;
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<BillboardSystemHandle> billboard_systems;
 #endif
     // sprite-scene.ts: depth-enabled 2D layers are scene renderables and
     // therefore share this scene's colour, multisample and depth targets.
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<Sprite2DLayerHandle> depth_hosted_sprite_layers;
 #endif
     // `loadSplat` registers the renderable on the scene it is handed, the
     // way `attachGaussianSplattingMesh` pushes into `_renderables`.
     std::vector<SplatMeshHandle> splat_meshes;
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
     /** Retained text is populated only by the reached text attachment adapter. */
     std::vector<std::shared_ptr<TextRenderableState>> text_renderables;
 #endif
@@ -4855,7 +4855,7 @@ struct SceneState {
      * engine's animation managers. Registration is idempotent upstream,
      * so the contribution is too.
      */
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
     bool seeks_animation_managers = false;
 #endif
     /** The same, for the baked meshes this scene's registration reaches. */
@@ -4928,11 +4928,11 @@ struct Scene {
     std::vector<MeshHandle>& meshes;
     std::vector<LightHandle>& lights;
     std::vector<TaskHandle>& tasks;
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorHandle>& pending_shadow_retirements;
 #endif
     std::vector<AnimationGroupHandle>& animation_groups;
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<BillboardSystemHandle>& billboard_systems;
     std::vector<Sprite2DLayerHandle>& depth_hosted_sprite_layers;
 #endif
@@ -4941,7 +4941,7 @@ struct Scene {
     SnapshotList<js::Callback<void(float)>>& before_render;
     std::vector<js::Callback<void()>>& disposables;
     std::vector<js::Callback<void(float)>>& animation_seekers;
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
     bool& seeks_animation_managers;
 #endif
     bool& seeks_vat;
@@ -5001,18 +5001,18 @@ private:
           disposed(state->disposed), mirrored_meshes(state->mirrored_meshes),
           clear_color(state->clear_color), camera(state->camera), meshes(state->meshes),
           lights(state->lights), tasks(state->tasks),
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
           pending_shadow_retirements(state->pending_shadow_retirements),
 #endif
           animation_groups(state->animation_groups),
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
           billboard_systems(state->billboard_systems),
           depth_hosted_sprite_layers(state->depth_hosted_sprite_layers),
 #endif
           splat_meshes(state->splat_meshes), clustered_lights(state->clustered_lights),
           before_render(state->before_render), disposables(state->disposables),
           animation_seekers(state->animation_seekers),
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
           seeks_animation_managers(state->seeks_animation_managers),
 #endif
           seeks_vat(state->seeks_vat), deferred_builders(state->deferred_builders),
@@ -5056,7 +5056,7 @@ inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uin
  * scene beneath them. Held by pointer-stable storage because the scene's
  * address is what `registerScene` publishes.
  */
-#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
+#if BBLITE_HAS_GIZMOS
 #include <bblite/runtime/gizmo-scene.hpp>
 #endif
 
@@ -5515,7 +5515,7 @@ void set_shader_texture(Engine& engine, MaterialHandle material, std::uint32_t s
                         FileTexture texture);
 void set_shader_storage_buffer(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                StorageBufferHandle buffer);
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                             ShadowGeneratorHandle generator);
 #endif
@@ -5894,7 +5894,7 @@ struct PcfDirectionalShadowOptions {
  * block read them. `stabilizeCascades` and `worldSpaceBias` are the two
  * arms this port does not build and refuse by name at generation.
  */
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 struct CsmDirectionalShadowOptions {
     // No factory defaults, for the reason above: every field is written
     // from the factory's own `??`; the scalars only value-initialize.
@@ -5918,13 +5918,13 @@ ShadowGeneratorHandle create_esm_directional_shadow_generator(Engine& engine, Li
                                                               EsmDirectionalShadowOptions options);
 ShadowGeneratorHandle create_pcf_directional_shadow_generator(Engine& engine, LightHandle light,
                                                               PcfDirectionalShadowOptions options);
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, LightHandle light,
                                                               CsmDirectionalShadowOptions options);
 #endif
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
-#if defined(BBLITE_SHADOW_MORPH_BOUNDS) && BBLITE_SHADOW_MORPH_BOUNDS
+#if BBLITE_SHADOW_MORPH_BOUNDS
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);
 #endif
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
@@ -6021,7 +6021,7 @@ void exit_pointer_lock(Engine& engine);
 void on_visibility_change(Engine& engine, std::size_t identity, std::function<void(bool)> callback,
                           bool once = false);
 void off_visibility_change(Engine& engine, std::size_t identity);
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
 #include <bblite/runtime/animation-api.hpp>
 #endif
 void set_animation_weight(Engine& engine, AnimationGroupHandle group, double weight);
@@ -6070,7 +6070,7 @@ struct ConfigurableFreeControlOptions {
 };
 void attach_configurable_free_control(Engine& engine, CameraHandle camera,
                                       ConfigurableFreeControlOptions options);
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-options.hpp>
 #endif
 
@@ -6097,7 +6097,7 @@ SplatMeshHandle load_sog(Scene& scene, const std::string& path);
 // resets its TRS. Defined by the generated splat bake, which a scene reaches
 // through `bakeCurrentTransformIntoVertices`.
 void bake_current_transform_into_vertices(Engine& engine, SplatMeshHandle splat);
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-api.hpp>
 #endif
 
@@ -6128,7 +6128,7 @@ void update_pixels_texture(Engine& engine, PixelsTexture& texture, const js::U8A
 PixelsTexture create_texture_2d_from_pixels(Engine& engine, const js::U8Array& pixels, double width,
                                             double height, PixelsTextureOptions options = {});
 
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 double add_sprite_2d_index(Engine& engine, Sprite2DLayerHandle layer, Sprite2DProps props);
 void update_sprite_2d_index(Engine& engine, Sprite2DLayerHandle layer, double index,
                             Sprite2DProps props);
@@ -6165,7 +6165,7 @@ EffectRendererHandle create_effect_renderer(Engine& engine, EffectWrapperHandle 
                                             EffectRendererOptions options);
 void register_effect_renderer(Engine& engine, EffectRendererHandle renderer);
 TaskHandle create_effect_render_task(Engine& engine, EffectTaskOptions options);
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 SpriteRendererHandle create_sprite_renderer(Engine& engine, SpriteRendererOptions options);
 void add_sprite_renderer_layer(Engine& engine, SpriteRendererHandle renderer,
                                Sprite2DLayerHandle layer);
@@ -6248,7 +6248,7 @@ void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
 [[nodiscard]] js::Array<double> mesh_bound_min_array(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] js::Array<double> mesh_bound_max_array(const Engine& engine, MeshHandle mesh);
 
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 /** `createGpuPicker(scene)`. */
 GpuPickerHandle create_gpu_picker(Scene& scene);
 /** `PickingInfo.pickedMesh.name`, read where the scene asks for it. */
@@ -6293,7 +6293,7 @@ bool gltf_node_visible(const Engine& engine, AssetHandle asset, std::size_t node
 void set_gltf_node_visible(Engine& engine, AssetHandle asset, std::size_t node, bool visible);
 TextureTransform& gltf_base_color_transform(Engine& engine, AssetHandle asset,
                                             std::size_t material);
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 /**
  * `enableDetailedPicking(picker)`. Emitted with the detailed half; every
  * later pick on this picker draws the third attachment.
@@ -6332,7 +6332,7 @@ void run_interval_callbacks(Engine& engine);
 
 } // namespace bbl
 
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 template <> struct std::hash<bbl::PickingInfo> {
     [[nodiscard]] std::size_t operator()(const bbl::PickingInfo& info) const noexcept {
         return std::hash<const void*>{}(info.state.get());

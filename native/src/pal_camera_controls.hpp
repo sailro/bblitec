@@ -10,7 +10,7 @@
 #pragma once
 
 #include <bblite/runtime.hpp>
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 #include <bblite/pal_ui.hpp>
 #endif
 
@@ -159,7 +159,7 @@ inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, con
                                             CameraRecord* primary,
                                             CameraPointerState& primary_state,
                                             SurfaceCameraPointerState& surfaces) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (engine.surface_canvas) {
         if (surfaces.captured.value < engine.cameras.size()) {
             const auto index = surfaces.captured.value;
@@ -249,7 +249,7 @@ inline void update_camera(CameraRecord& camera, double delta_ms) {
 // `primary` is the scene's active camera, null when it has none.
 inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord* primary,
                                    double delta_ms) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (engine.surface_canvas) {
         for (std::size_t i = 0; i < engine.cameras.size(); ++i) {
             const bool attached =

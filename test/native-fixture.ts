@@ -98,16 +98,64 @@ export function optionalNativeFixtureTools(
     }
 }
 
+/**
+ * The configuration a direct fixture compiles against where its own flags
+ * are silent: the full scene runtime with capture and decoding, and the
+ * development asset and shader directories. The product build defines every
+ * macro itself (native/CMakeLists.txt and the generated
+ * render_capabilities.hpp); a fixture is its own build, so its defaults are
+ * stated here rather than in the headers.
+ */
+const nativeFixtureMacroDefaults: ReadonlyMap<string, string> = new Map([
+    ["BBLITE_ASSET_DIR", '"assets"'],
+    ["BBLITE_GPU_SHADER_DIR", '"shaders"'],
+    ["BBLITE_VISUAL_CAPTURE", "1"],
+    ["BBLITE_HAS_IMAGE_DECODER", "1"],
+    ["BBLITE_HAS_ANIMATION", "1"],
+    ["BBLITE_HAS_SPRITES", "1"],
+    ["BBLITE_HAS_SPRITE_ANIMATION", "1"],
+    ["BBLITE_HAS_SHADOWS", "1"],
+    ["BBLITE_HAS_GIZMOS", "1"],
+    ["BBLITE_HAS_CAMERA_GIZMOS", "1"],
+    ["BBLITE_HAS_LIGHT_GIZMOS", "1"],
+]);
+
+/** A compile's flags plus every fixture default its own flags leave unset. */
+function withNativeFixtureMacroDefaults(
+    arguments_: readonly string[],
+): readonly string[] {
+    if (!arguments_.some((argument) => /\.(?:cpp|cc|mm)$/i.test(argument)))
+        return arguments_;
+    const defined = new Set<string>();
+    for (const [index, argument] of arguments_.entries()) {
+        const spelled = /^[/-]D(\w*)/.exec(argument);
+        if (!spelled) continue;
+        const name =
+            spelled[1] || /^\w+/.exec(arguments_[index + 1] ?? "")?.[0];
+        if (name) defined.add(name);
+    }
+    return [
+        ...[...nativeFixtureMacroDefaults]
+            .filter(([name]) => !defined.has(name))
+            .map(([name, value]) => `/D${name}=${value}`),
+        ...arguments_,
+    ];
+}
+
 export function runNativeFixtureCompiler(
     tools: WindowsBuildTools,
     arguments_: readonly string[],
 ): void {
     try {
-        execFileSync(tools.compiler, arguments_, {
-            cwd: resolve("."),
-            env: tools.environment,
-            stdio: "pipe",
-        });
+        execFileSync(
+            tools.compiler,
+            withNativeFixtureMacroDefaults(arguments_),
+            {
+                cwd: resolve("."),
+                env: tools.environment,
+                stdio: "pipe",
+            },
+        );
     } catch (error) {
         const failure = error as Error & { stdout?: Buffer; stderr?: Buffer };
         throw new Error(

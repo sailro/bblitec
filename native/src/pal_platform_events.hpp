@@ -242,7 +242,7 @@ public:
     }
 
     void dispatch(long frame, SDL_Window* window, Engine& engine) {
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
         if (OffscreenRun::current())
             return; // The Window owns the input tape.
 #endif
@@ -264,7 +264,7 @@ public:
             set_canvas_dataset(engine, code.substr(8, equal - 8), code.substr(equal + 1));
             return;
         }
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
         if (code.starts_with("GlobalCall@")) {
             if (!engine.device_recovery)
                 throw std::runtime_error("Global replay callback is not registered.");

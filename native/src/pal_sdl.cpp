@@ -3,10 +3,10 @@
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 #include <bblite/pal_async_engine.hpp>
 #endif
-#if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
+#if BBLITE_HAS_AUDIO
 #include <bblite/pal_audio.hpp>
 #endif
 
@@ -25,7 +25,7 @@
 
 namespace bbl {
 
-#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
+#if BBLITE_HAS_GAMEPAD
 struct PlatformGamepadState {
     struct Gamepad {
         explicit Gamepad(GamepadHandle value) : handle(value), buttons(17), axes(4) {
@@ -231,7 +231,7 @@ RendererKind renderer_kind(const Engine& engine) {
     if (bbl::has_sprite_renderers(engine)) {
         return RendererKind::sprites;
     }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (engine.primary_canvas.value < engine.ui_elements.size()) {
         return RendererKind::canvas;
     }
@@ -262,7 +262,7 @@ const char* renderer_name(RendererKind kind) {
                              std::string(backend.name) + " backend.");
 }
 
-#if !defined(BBLITE_WORKERS) || !BBLITE_WORKERS
+#if !BBLITE_WORKERS
 void run_renderer(Engine& engine, RendererKind kind, const pal::GpuBackend& backend) {
     void (*context)(Engine&) = nullptr;
     switch (kind) {
@@ -326,12 +326,12 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
 
 void pal::run_engine(Engine& engine) {
     require_runtime_execution("renderer or input execution");
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     static_cast<void>(engine);
     throw std::logic_error("A Worker-enabled application must use asynchronous engine startup.");
 #else
     SdlWindowRun window_run;
-#if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
+#if BBLITE_HAS_AUDIO
     // Finish this engine's audio before releasing its window services.
     struct AudioRunEnd {
         Engine& engine;
@@ -348,7 +348,7 @@ void pal::run_engine(Engine& engine) {
                 throw std::runtime_error(
                     "Offscreen presentation currently supports scene renderers only.");
             }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
             throw std::runtime_error(
                 "Offscreen presentation does not yet support a retained UI runtime.");
 #endif
@@ -356,13 +356,13 @@ void pal::run_engine(Engine& engine) {
         engine.renderer_restart_requested = false;
         try {
             run_renderer(engine, kind, pal::selected_gpu_backend());
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
             if (engine.device_recovery && engine.device_recovery->requested)
                 begin_device_recovery(engine);
 #endif
         } catch (const std::exception& error) {
             static_cast<void>(error);
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
             if (dynamic_cast<const GpuTransportError*>(&error))
                 report_gpu_error(engine, error.what());
             if (engine.device_recovery && engine.device_recovery->recovering)
@@ -376,7 +376,7 @@ void pal::run_engine(Engine& engine) {
 #endif
 }
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 js::Promise<js::PromiseVoid> pal::start_realm_engine(std::shared_ptr<Engine> engine) {
     if (engine->device_disposed)
         throw std::runtime_error("Cannot start an engine with a disposed GPU device.");

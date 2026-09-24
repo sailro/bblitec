@@ -89,7 +89,7 @@ public:
         dispatch(event, [](Callback& callback, const Event& value) { callback(value); });
     }
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     void gc_trace(const js::TraceVisitor& visitor) const {
         for (const auto& [identity, listeners] : listeners_) {
             (void)identity;
@@ -104,7 +104,7 @@ private:
             : callback(std::move(callback)), passive(passive) {}
         Callback callback;
         bool passive;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
         void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback); }
 #endif
     };
@@ -146,7 +146,7 @@ struct DomInput {
     bool canvas_background = true;
     bool pending_resize = false;
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     void gc_trace(const js::TraceVisitor& visitor) const {
         pointer.gc_trace(visitor);
         keyboard.gc_trace(visitor);
@@ -170,7 +170,7 @@ inline void on_dom_pointer(Engine& engine, DomEventTarget target, std::string ty
                              input.pointer_elements.insert(target.element).second;
     if (new_type || new_element) {
         ++input.revision;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         ++engine.ui_revision;
 #endif
     }
@@ -330,7 +330,7 @@ inline Engine& dom_target_owner(DomEventTargetValue value) {
     return *value.engine;
 }
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 inline bool dom_target_has_tag(DomEventTargetValue value, std::string_view tag) {
     if (value.target.kind == DomEventTargetKind::Canvas)
         return tag == "canvas";

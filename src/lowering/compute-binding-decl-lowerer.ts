@@ -279,7 +279,7 @@ function factoryScope(
                         "Compute volatile resolver registration changed.",
                     );
                 return [
-                    "#if defined(BBLITE_COMPUTE_BINDINGS) && BBLITE_COMPUTE_BINDINGS",
+                    "#if BBLITE_COMPUTE_BINDINGS",
                     `${indent}install_compute_binding_resolver(${lowerer.expression(args[0])},resolve_compute_${resource}_input,get_compute_${resource}_input${args.length === 4 ? ",validate_compute_texture_binding" : ""});`,
                     "#endif",
                 ];
@@ -392,6 +392,6 @@ export function lowerComputeBindingDecl(
         modulePath: "src/compute/compute-binding.ts",
         symbolName: "_createComputeBindingDecl",
         header: "",
-        source: `#include <bblite/pal_compute_binding.hpp>\n#if defined(BBLITE_COMPUTE_BINDINGS) && BBLITE_COMPUTE_BINDINGS\n#include <bblite/pal_compute_bindings.hpp>\n#endif\nnamespace bbl {\n${output.join("\n")}\n}\n`,
+        source: `#include <bblite/pal_compute_binding.hpp>\n#if BBLITE_COMPUTE_BINDINGS\n#include <bblite/pal_compute_bindings.hpp>\n#endif\nnamespace bbl {\n${output.join("\n")}\n}\n`,
     };
 }

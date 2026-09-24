@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 #include <bblite/js_data.hpp>
 #include <bblite/js_promise.hpp>
 #include <bblite/pal_animation_frame.hpp>

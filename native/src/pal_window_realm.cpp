@@ -252,7 +252,7 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
             names.events.push_back("input");
         native.click_callbacks.clear();
         native.event_callbacks.clear();
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
         if (!native.file_change_callbacks.empty() || native.file_input ||
             native.download_url.slot != invalid_handle) {
             throw std::runtime_error("Window realm file actions are not admitted.");
