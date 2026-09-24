@@ -38,6 +38,7 @@ import {
     importPinnedModuleWithExports,
 } from "./pinned-shader-composer.js";
 import { javascriptModuleUrl } from "./data-url.js";
+import { pinnedLabPublicUrl } from "./pinned-lab-public.js";
 import { readUpstreamPin } from "./upstream-source.js";
 import type { GlbChunks } from "./glb-container.js";
 
@@ -115,9 +116,7 @@ async function pinnedArtifact(name: string): Promise<Buffer> {
     if (existsSync(path)) {
         return readFileSync(path);
     }
-    const url =
-        "https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/" +
-        `${pin}/lab/public/${name}`;
+    const url = `${pinnedLabPublicUrl()}${name}`;
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(

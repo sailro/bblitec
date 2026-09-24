@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { resolveBundledAsset } from "../src/compiler/assets.js";
+import { assetRecord, resolveBundledAsset } from "../src/compiler/assets.js";
 import {
     deploymentPublicAsset,
     deploymentPublicUrl,
@@ -72,6 +72,25 @@ test("a root-relative asset loads from beneath the public URL", () => {
         "https://cdn.example.invalid/public/?token=1",
     ])
         assert.throws(() => deploymentPublicUrl(invalid), /public URL/);
+});
+
+// Generation records one asset the compiler never saw -- a node-particle
+// graph's texture, resolved by the pin against the scene's textureBaseUrl --
+// and a root-relative one names the same public files a scene URL does.
+test("a generation-time texture record resolves through the deployment", () => {
+    assert.throws(
+        () => assetRecord("/textures/flare.png", "texture", new Map()),
+        /Root-relative asset '\/textures\/flare\.png' needs --public-dir or --public-url\./,
+    );
+    const asset = assetRecord("/textures/flare.png", "texture", new Map(), {
+        entryFileName: "entry.ts",
+        deployment: { publicUrl: "https://cdn.example.invalid/public/" },
+    });
+    assert.equal(
+        asset.source,
+        "https://cdn.example.invalid/public/textures/flare.png",
+    );
+    assert.match(asset.output, /^[0-9a-f]{8}-flare\.png$/);
 });
 
 test("the public directory answers before the public URL", (t) => {

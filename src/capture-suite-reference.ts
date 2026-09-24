@@ -44,6 +44,9 @@ const browserHarness = lazyModule<typeof import("./browser-harness.js")>(
 const upstreamSource = lazyModule<typeof import("./upstream-source.js")>(
     "./upstream-source.js",
 );
+const pinnedLabPublic = lazyModule<typeof import("./pinned-lab-public.js")>(
+    "./pinned-lab-public.js",
+);
 const compilerSymbols = lazyModule<typeof import("./compiler/symbols.js")>(
     "./compiler/symbols.js",
 );
@@ -680,12 +683,9 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                 response.end(cached.bytes);
                 return;
             }
-            const pin = upstreamSource().readUpstreamPin();
-            const publicAsset = pinnedLabPublicAssetPath(relative);
             const assetUrl =
-                "https://raw.githubusercontent.com/" +
-                `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-                `/lab/public/${publicAsset}`;
+                pinnedLabPublic().pinnedLabPublicUrl() +
+                pinnedLabPublicAssetPath(relative);
             let fetched: Response;
             try {
                 fetched = await fetch(assetUrl, {
