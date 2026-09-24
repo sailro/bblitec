@@ -4205,6 +4205,19 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-node-local-attributes",
+        name: "Regression - Node Local Attributes",
+        source: "examples/regression-node-local-attributes.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Node Local Attributes",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [18, 23, 33],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene144",
         name: "Scene 144 - Bloom",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene144.ts",
