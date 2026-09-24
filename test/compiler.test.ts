@@ -611,6 +611,47 @@ test("carries a handle annotation on a declaration the intrinsic produced", () =
     assert.match(result.cpp, /-2\.6/);
 });
 
+test("captures an integer loop counter a shared helper body reads", () => {
+    // The helper's material argument chooses between two handles by the
+    // counter, so its shared body reads the caller's counter through the
+    // captured environment: the capture is the native 64-bit counter.
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createSceneContext,
+            createStandardMaterial,
+        } from "@babylonjs/lite";
+        import type { EngineContext, Mesh, StandardMaterialProps } from "@babylonjs/lite";
+
+        function createBar(engine: EngineContext, material: StandardMaterialProps, x: number): Mesh {
+            const bar = createBox(engine, 1);
+            bar.position.x = x;
+            bar.material = material;
+            return bar;
+        }
+
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const cyan = createStandardMaterial();
+            const white = createStandardMaterial();
+            for (let i = 0; i < 24; i++) {
+                addToScene(scene, createBar(engine, i % 3 === 0 ? cyan : white, i));
+            }
+        }
+    `);
+
+    assert.match(result.cpp, /std::int64_t v_\w+_i = 0;/);
+    assert.match(result.cpp, /std::reference_wrapper<std::int64_t>/);
+    assert.match(
+        result.cpp,
+        /auto& (v_\w+_i) = std::get<\d+>\(v_bblite_environment_\d+\)\.get\(\);[^]*std::fmod\(static_cast<double>\(\1\), 3\.0\)/,
+    );
+});
+
 test("keeps a handle annotation on an object literal as a data record", () => {
     // The other half of the same rule, and the one a bare `handle` exemption
     // broke: freeciv and the platformer spell their atlas as an annotated

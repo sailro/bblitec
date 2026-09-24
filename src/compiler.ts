@@ -6867,6 +6867,7 @@ class Compiler implements LoweringServices {
         this.nativeStoredValues.add(value);
         const storage =
             value.sharedStorageCpp ??
+            value.integerCounterCpp ??
             (cppIdentifierPattern.test(value.cpp)
                 ? value.cpp
                 : (value.optionalStorageCpp ?? value.cpp));
@@ -6877,29 +6878,30 @@ class Compiler implements LoweringServices {
             ["true", "false", "nullptr"].includes(storage)
         )
             return;
-        const cppType =
-            value.kind === "engine"
-                ? value.ownedEngineCpp
-                    ? "std::shared_ptr<bbl::Engine>"
-                    : "bbl::Engine"
-                : value.kind === "texture" && value.textureStorage === "solid"
-                  ? "bbl::SolidTexture"
-                  : value.kind === "texture" && value.textureStorage === "file"
-                    ? "bbl::FileTexture"
-                    : value.kind === "texture" &&
-                        value.textureStorage === "pixels"
-                      ? "bbl::PixelsTexture"
-                      : value.dataType
-                        ? this.dataTypes.cppType(value.dataType)
-                        : isHandleKind(value.kind)
-                          ? handleCppType(value.kind)
-                          : value.kind === "number"
-                            ? "double"
-                            : value.kind === "boolean"
-                              ? "bool"
-                              : value.kind === "string"
-                                ? "std::string"
-                                : undefined;
+        const cppType = value.integerCounterCpp
+            ? "std::int64_t"
+            : value.kind === "engine"
+              ? value.ownedEngineCpp
+                  ? "std::shared_ptr<bbl::Engine>"
+                  : "bbl::Engine"
+              : value.kind === "texture" && value.textureStorage === "solid"
+                ? "bbl::SolidTexture"
+                : value.kind === "texture" && value.textureStorage === "file"
+                  ? "bbl::FileTexture"
+                  : value.kind === "texture" &&
+                      value.textureStorage === "pixels"
+                    ? "bbl::PixelsTexture"
+                    : value.dataType
+                      ? this.dataTypes.cppType(value.dataType)
+                      : isHandleKind(value.kind)
+                        ? handleCppType(value.kind)
+                        : value.kind === "number"
+                          ? "double"
+                          : value.kind === "boolean"
+                            ? "bool"
+                            : value.kind === "string"
+                              ? "std::string"
+                              : undefined;
         if (cppType)
             this.registerNativeBindingType(
                 storage,
