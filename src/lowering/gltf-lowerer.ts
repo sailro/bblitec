@@ -1,7 +1,6 @@
 /** Pinned glTF lowering families and their source-derived native segments. */
 
 export { GltfLoaderOptions, GltfLowerer } from "./gltf/loader.js";
-export { lowerAnimationInterpolationCpp } from "./gltf/animation-interpolation.js";
 export { lowerAccessorNormalizationCpp } from "./gltf/accessor-normalization.js";
 export {
     COLOR_CHANNEL_HELPERS_CPP,
