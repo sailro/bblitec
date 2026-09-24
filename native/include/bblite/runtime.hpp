@@ -5002,6 +5002,9 @@ struct SceneState {
         visitor(disposables);
         visitor(animation_seekers);
         visitor(deferred_builders);
+#if BBLITE_HAS_TEXT
+        visitor(text_renderables);
+#endif
     }
 };
 

@@ -1299,11 +1299,16 @@ class GeneratedSourceWriter {
                 "upstream/include/bblite/upstream_text_gpu.hpp",
                 new TextGpuLowerer(context).header(),
             );
-            if (features.includes("text:renderable"))
+            if (features.includes("text:renderable")) {
                 this.tree.write(
                     "upstream/include/bblite/upstream/camera_change_key.hpp",
                     cameraChangeKeyHeader(context),
                 );
+                this.tree.write(
+                    "upstream/include/bblite/upstream_text_renderable.hpp",
+                    new TextLowerer(context).renderableHeader(),
+                );
+            }
             if (features.includes("renderer:text"))
                 this.tree.write(
                     "upstream/include/bblite/upstream_text_renderer.hpp",

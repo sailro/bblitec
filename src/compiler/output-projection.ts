@@ -576,6 +576,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
     const textInclude =
         features.includes("text:data") || features.includes("text:renderable")
             ? "#include <bblite/upstream_text.hpp>\n#include <bblite/upstream/text_data.hpp>\n" +
+              (features.includes("text:renderable")
+                  ? "#include <bblite/upstream_text_renderable.hpp>\n"
+                  : "") +
               (features.includes("text:layout")
                   ? "#include <bblite/upstream_text_update.hpp>\n"
                   : "") +

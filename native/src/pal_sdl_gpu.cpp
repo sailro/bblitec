@@ -8111,7 +8111,7 @@ public:
                          js::TypedArray<float>(matrix.begin(), matrix.end()),
                          upstream::scene_camera_change_key(*camera), aspect}}
                    : std::nullopt;
-        state.text->scene.update(bbl::text_surface(engine), text_camera ? &*text_camera : nullptr,
+        state.text->scene.update(text_camera ? &*text_camera : nullptr,
                                  static_cast<double>(surface_extent.width),
                                  static_cast<double>(surface_extent.height));
 #endif
@@ -10057,7 +10057,8 @@ public:
                 case upstream::RenderStage::transparent:
                     draw_render_list(render_plan.draw_lists.transparent);
 #if BBLITE_HAS_TEXT
-                    state.text->scene.draw(state.text->borrow_pass(command, pass));
+                    state.text->scene.draw(state.text->borrow_pass(command, pass),
+                                           bbl::text_surface(engine));
 #endif
 #if BBLITE_HAS_SPRITE_RENDERER
                     if (has_scene_sprite_pass) {

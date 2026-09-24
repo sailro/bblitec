@@ -17,7 +17,7 @@ export class TextGpuLowerer {
             ["records"],
         );
         return `#pragma once
-#include <bblite/upstream_text.hpp>
+#include <bblite/upstream_text_records.hpp>
 #include <cmath>
 #include <limits>
 namespace bbl {
