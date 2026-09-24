@@ -109,11 +109,8 @@ $build = Join-Path $workspacePath "build"
 $output = Resolve-RepositoryPath $OutputDirectory
 $CMake = Find-CMake $CMake
 
-$patches = Get-MaintainedPatches rmlui
-
 New-Item -ItemType Directory -Path $workspacePath, $output -Force | Out-Null
-Sync-PinnedCheckout $source $pin.repository $pin.commit "RmlUi"
-Install-MaintainedPatches $source $patches "RmlUi"
+$patches = @(Sync-PatchedCheckout $source $pin.repository $pin.commit "RmlUi" rmlui @() $CMake)
 
 $configureArguments = @(
     "-S", $source,
@@ -206,18 +203,16 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $backendsOut = Join-Path $output "Backends"
-New-Item -ItemType Directory -Path $backendsOut -Force | Out-Null
 foreach ($platformFile in @(
     "RmlUi_Platform_SDL.cpp",
     "RmlUi_Platform_SDL.h"
 )) {
-    Copy-Item -Force (Join-Path $source "Backends\$platformFile") $backendsOut
+    Copy-ArtifactItem (Join-Path $source "Backends\$platformFile") (Join-Path $backendsOut $platformFile)
 }
 # Both PALs include the SDL_GPU renderer backend's precompiled shader
 # header from the Backends tree; carry that directory with the pair.
-Copy-Item -Recurse -Force (Join-Path $source "Backends\RmlUi_SDL_GPU") `
-    (Join-Path $backendsOut "RmlUi_SDL_GPU")
-Copy-Item -Force (Join-Path $source "LICENSE.txt") (Join-Path $output "RmlUi-LICENSE.txt")
+Copy-ArtifactItem (Join-Path $source "Backends\RmlUi_SDL_GPU") (Join-Path $backendsOut "RmlUi_SDL_GPU")
+Copy-ArtifactItem (Join-Path $source "LICENSE.txt") (Join-Path $output "RmlUi-LICENSE.txt")
 
 # Native configuration reads this record and refuses the artifact when the
 # pin or a patch moved since it was built (native/patch-identity.cmake).
@@ -226,7 +221,7 @@ $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
 $record = @(
     "set(BBLITE_RMLUI_STATIC_RUNTIME $staticRuntimeSetting)"
     "set(BBLITE_RMLUI_MINSIZE $minSizeSetting)"
-) + @(Get-PatchRecord rmlui $pin.commit $patches)
-$record -join "`n" | Set-Content (Join-Path $output "bblite-rmlui-features.cmake") -Encoding Ascii
+) + @(Get-PatchRecord rmlui @() $CMake)
+Set-ArtifactContent (Join-Path $output "bblite-rmlui-features.cmake") (($record -join "`n") + "`n")
 
 Write-Host "RmlUi installed to $output (commit $($pin.commit), $($patches.Count) patches)."

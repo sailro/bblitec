@@ -1,15 +1,15 @@
+# The series native/patches/manifest.json selects for this port, with each
+# patch's purpose and upstream state (native/patch-identity.cmake).
+include("${CMAKE_CURRENT_LIST_DIR}/../../patch-identity.cmake")
+bblite_patch_series(sdl3-image BBLITE_SDL3_IMAGE_PATCHES vcpkg)
+
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO libsdl-org/SDL_image
     REF "release-${VERSION}"
     SHA512 a20269e064e68dd892084d8d6d6f3d5d44a6a75994808a1579ed7deeedc22c4230ec982d1166a0b85aca0b9a3625ac84e6fe9093dccebb78bf0b7cc01bc6c711
     HEAD_REF main
-    # native/patches/manifest.json lists each patch's purpose and upstream
-    # state; every patch this repository owns opens with its rationale.
-    PATCHES
-        dependencies.diff
-        pkgconfig-libname.diff
-        png-grey-ramp-last-index.patch
+    PATCHES ${BBLITE_SDL3_IMAGE_PATCHES}
 )
 
 file(READ "${CMAKE_CURRENT_LIST_DIR}/vcpkg.json" port_manifest)

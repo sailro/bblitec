@@ -152,6 +152,7 @@ import {
 } from "./build-options.js";
 import { resolveBrowserPath } from "./browser-path.js";
 import {
+    dependencyPatchRecords,
     discoverDevelopmentTools,
     discoverWindowsBuildTools,
     type DependencyPatchRecord,
@@ -991,11 +992,17 @@ interface SharedBuildSetup {
 
 let sharedBuildSetup: SharedBuildSetup | undefined;
 let sharedDevelopmentTools: DevelopmentTools | undefined;
+let sharedPatchRecords: DependencyPatchRecord[] | undefined;
 let sharedWindowsBuildTools: WindowsBuildTools | undefined;
 
 function currentDevelopmentTools(): DevelopmentTools {
     sharedDevelopmentTools ??= discoverDevelopmentTools();
     return sharedDevelopmentTools;
+}
+
+function currentPatchRecords(): DependencyPatchRecord[] {
+    sharedPatchRecords ??= dependencyPatchRecords(currentDevelopmentTools());
+    return sharedPatchRecords;
 }
 
 function currentWindowsBuildTools(): WindowsBuildTools {
@@ -1086,22 +1093,34 @@ interface PreflightScope {
     shaders: boolean;
 }
 
-/** Why a pinned artifact counts as not installed: its stale record, or its absence. */
-function artifactProblem(
-    tools: DevelopmentTools,
+/** The stale record that makes a built pinned artifact count as not installed. */
+function staleRecord(
+    records: readonly DependencyPatchRecord[],
+    library: DependencyPatchRecord["library"],
+): DependencyPatchRecord | undefined {
+    return records.find(
+        (record) =>
+            record.library === library && record.state.state === "stale",
+    );
+}
+
+/** A pinned artifact's check: its path, or why it is not installed. */
+function artifactCheck(
+    label: string,
+    built: boolean,
+    records: readonly DependencyPatchRecord[],
     library: DependencyPatchRecord["library"],
     directory: string,
-): string {
-    return (
-        tools.dependencyPatchRecords.find(
-            (record) =>
-                record.library === library && record.state.state === "stale",
-        )?.message ?? `not built at ${directory}`
-    );
+): DevelopmentCheck {
+    const stale = staleRecord(records, library);
+    return built && !stale
+        ? { label, path: directory }
+        : { label, problem: stale?.message ?? `not built at ${directory}` };
 }
 
 function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
     const tools = currentDevelopmentTools();
+    const records = currentPatchRecords();
     const checks: DevelopmentCheck[] = [
         { label: "Node.js", path: process.execPath },
         {
@@ -1164,18 +1183,15 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
         checks.push({ label: "backend", problem: (error as Error).message });
     }
     if (backend === "DAWN" || backend === "BOTH") {
-        checks.push({
-            label: "Dawn",
-            ...(tools.dawnInstalled
-                ? { path: tools.dawnDirectory }
-                : {
-                      problem: artifactProblem(
-                          tools,
-                          "dawn",
-                          tools.dawnDirectory,
-                      ),
-                  }),
-        });
+        checks.push(
+            artifactCheck(
+                "Dawn",
+                tools.dawnInstalled,
+                records,
+                "dawn",
+                tools.dawnDirectory,
+            ),
+        );
     }
     if (
         scope.shaders &&
@@ -1199,32 +1215,26 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
         });
     }
     if (scope.labSound) {
-        checks.push({
-            label: "LabSound",
-            ...(tools.labSoundInstalled
-                ? { path: tools.labSoundDirectory }
-                : {
-                      problem: artifactProblem(
-                          tools,
-                          "labsound",
-                          tools.labSoundDirectory,
-                      ),
-                  }),
-        });
+        checks.push(
+            artifactCheck(
+                "LabSound",
+                tools.labSoundInstalled,
+                records,
+                "labsound",
+                tools.labSoundDirectory,
+            ),
+        );
     }
     if (scope.rmlUi) {
-        checks.push({
-            label: "RmlUi",
-            ...(tools.rmlUiInstalled
-                ? { path: tools.rmlUiDirectory }
-                : {
-                      problem: artifactProblem(
-                          tools,
-                          "rmlui",
-                          tools.rmlUiDirectory,
-                      ),
-                  }),
-        });
+        checks.push(
+            artifactCheck(
+                "RmlUi",
+                tools.rmlUiInstalled,
+                records,
+                "rmlui",
+                tools.rmlUiDirectory,
+            ),
+        );
     }
     if (scope.browser) {
         try {
@@ -1267,7 +1277,7 @@ function runDoctor(): void {
             problem,
         })),
     ];
-    for (const record of currentDevelopmentTools().dependencyPatchRecords) {
+    for (const record of currentPatchRecords()) {
         if (record.message && record.state.state !== "stale")
             console.log(`WARN    ${record.library}: ${record.message}`);
     }
@@ -1357,7 +1367,8 @@ function runDevelopmentSetup(): void {
     }
     // A stale source/patch record makes its artifact count as not installed,
     // so it is rebuilt below; an unrecorded one is reported and kept.
-    for (const record of tools.dependencyPatchRecords) {
+    const records = dependencyPatchRecords(tools);
+    for (const record of records) {
         if (record.message) console.log(`setup: ${record.message}`);
     }
     const buildPinned = (installed: boolean, script: string): void => {
@@ -1369,10 +1380,19 @@ function runDevelopmentSetup(): void {
             );
         }
     };
-    buildPinned(tools.dawnInstalled, "tools/build-dawn.ps1");
+    buildPinned(
+        tools.dawnInstalled && !staleRecord(records, "dawn"),
+        "tools/build-dawn.ps1",
+    );
     buildPinned(!!tools.tint, "tools/build-tint.ps1");
-    buildPinned(tools.labSoundInstalled, "tools/build-labsound.ps1");
-    buildPinned(tools.rmlUiInstalled, "tools/build-rmlui.ps1");
+    buildPinned(
+        tools.labSoundInstalled && !staleRecord(records, "labsound"),
+        "tools/build-labsound.ps1",
+    );
+    buildPinned(
+        tools.rmlUiInstalled && !staleRecord(records, "rmlui"),
+        "tools/build-rmlui.ps1",
+    );
     if (!tools.ccache && process.platform === "win32") {
         run(
             tools.powershell!,
@@ -1382,6 +1402,7 @@ function runDevelopmentSetup(): void {
     }
     sharedBuildSetup = undefined;
     sharedDevelopmentTools = undefined;
+    sharedPatchRecords = undefined;
     sharedWindowsBuildTools = undefined;
     runDoctor();
 }

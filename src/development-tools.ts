@@ -4,7 +4,6 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { developmentTriplet } from "./build-options.js";
 import {
     artifactPatchState,
-    readPatchManifest,
     type ArtifactPatchState,
 } from "./patch-inventory.js";
 
@@ -41,9 +40,9 @@ export interface DevelopmentTools {
     cc: string | undefined;
     cxx: string | undefined;
     ninja: string | undefined;
-    /** Records of the pinned artifacts present; a stale one counts as not installed. */
-    dependencyPatchRecords: DependencyPatchRecord[];
     dawnDirectory: string;
+    /** The pinned artifacts' files are present (`dependencyPatchRecords`
+     *  says whether each was built from what the manifest selects). */
     dawnInstalled: boolean;
     dxc: string | undefined;
     git: string | undefined;
@@ -417,55 +416,6 @@ export function discoverDevelopmentTools(
         // feature compiles directly.
         rmlUiHasSvg &&
         existsSync(join(rmlUiDirectory, "Backends", "RmlUi_Platform_SDL.cpp"));
-    // The variant tokens each builder selected its patches by: Dawn applies
-    // its Metal patches on macOS, LabSound its core-only patch when the
-    // artifact says it was built that way.
-    const labSoundFeatures = join(
-        labSoundDirectory,
-        "bblite-labsound-features.cmake",
-    );
-    const labSoundCoreOnly =
-        existsSync(labSoundFeatures) &&
-        /\bset\(BBLITE_LABSOUND_CORE_ONLY ON\)/.test(
-            readFileSync(labSoundFeatures, "utf8"),
-        );
-    const manifest = readPatchManifest();
-    const dependencyPatchRecords: DependencyPatchRecord[] = (
-        [
-            [
-                dawnBuilt,
-                "dawn",
-                dawnDirectory,
-                platform === "darwin" ? ["metal"] : [],
-            ],
-            [
-                labSoundBuilt,
-                "labsound",
-                labSoundDirectory,
-                labSoundCoreOnly ? ["core-only"] : [],
-            ],
-            [rmlUiBuilt, "rmlui", rmlUiDirectory, []],
-        ] as const
-    )
-        .filter(([built]) => built)
-        .map(([, library, directory, variants]) => {
-            const state = artifactPatchState(
-                manifest,
-                library,
-                directory,
-                variants,
-            );
-            return {
-                library,
-                state,
-                message: describePatchState(library, directory, state),
-            };
-        });
-    const current = (library: DependencyPatchRecord["library"]): boolean =>
-        dependencyPatchRecords.some(
-            (record) =>
-                record.library === library && record.state.state !== "stale",
-        );
 
     return {
         ccache:
@@ -500,9 +450,8 @@ export function discoverDevelopmentTools(
         vcpkgToolchain: vcpkgRoot
             ? join(vcpkgRoot, "scripts", "buildsystems", "vcpkg.cmake")
             : undefined,
-        dependencyPatchRecords,
         dawnDirectory,
-        dawnInstalled: current("dawn"),
+        dawnInstalled: dawnBuilt,
         tint:
             environment.TINT_PATH !== undefined
                 ? findExecutable(environment.TINT_PATH, options)
@@ -516,23 +465,56 @@ export function discoverDevelopmentTools(
                   ? localDxc
                   : findExecutable("dxc", options),
         labSoundDirectory,
-        labSoundInstalled: current("labsound"),
+        labSoundInstalled: labSoundBuilt,
         rmlUiDirectory,
-        rmlUiInstalled: current("rmlui"),
+        rmlUiInstalled: rmlUiBuilt,
     };
 }
 
-function describePatchState(
-    library: DependencyPatchRecord["library"],
-    directory: string,
-    state: ArtifactPatchState,
-): string | undefined {
-    switch (state.state) {
-        case "current":
-            return undefined;
-        case "unrecorded":
-            return `${library} at ${directory} records no source/patch set (${state.recordPath}); rebuild it to record one.`;
-        case "stale":
-            return `${library} at ${directory} was built from '${state.recorded.source ?? "unrecorded"}' with [${state.recorded.patches ?? ""}], but the pin and native/patches/manifest.json select '${state.expected.source}' with [${state.expected.patches}]; setup rebuilds it.`;
-    }
+/**
+ * The source/patch records of the pinned development artifacts present,
+ * checked by native/patch-identity.cmake: Dawn for the variants this
+ * platform applies, LabSound for the variants it recorded, RmlUi for none.
+ * Empty without CMake, which doctor reports first.
+ */
+export function dependencyPatchRecords(
+    tools: DevelopmentTools,
+    platform: NodeJS.Platform = process.platform,
+): DependencyPatchRecord[] {
+    const cmake = tools.cmake;
+    if (!cmake) return [];
+    return (
+        [
+            [
+                tools.dawnInstalled,
+                "dawn",
+                tools.dawnDirectory,
+                platform === "darwin" ? ["metal"] : [],
+            ],
+            [
+                tools.labSoundInstalled,
+                "labsound",
+                tools.labSoundDirectory,
+                undefined,
+            ],
+            [tools.rmlUiInstalled, "rmlui", tools.rmlUiDirectory, []],
+        ] as const
+    )
+        .filter(([built]) => built)
+        .map(([, library, directory, require]) => {
+            const state = artifactPatchState(
+                cmake,
+                library,
+                directory,
+                require,
+            );
+            return {
+                library,
+                state,
+                message:
+                    state.state === "current"
+                        ? undefined
+                        : `${library} at ${directory} ${state.detail}; ${state.state === "stale" ? "setup rebuilds it" : "rebuild it to record one"}.`,
+            };
+        });
 }

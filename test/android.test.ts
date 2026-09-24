@@ -12,10 +12,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { jsonObject } from "./json.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
-import {
-    expectedPatchRecord,
-    readPatchManifest,
-} from "../src/patch-inventory.js";
+import { runPatchIdentity } from "../src/patch-inventory.js";
 import {
     cppFunction,
     cppRecord,
@@ -134,7 +131,7 @@ endif()
 
 test(
     "Android Dawn cross-build uses the target ABI, static Vulkan and no host DXC or desktop surfaces",
-    { skip: !tools.powershell },
+    { skip: !tools.powershell || !tools.cmake },
     (t) => {
         mkdirSync("artifacts", { recursive: true });
         const directory = mkdtempSync(resolve("artifacts/android-dawn-tools-"));
@@ -148,18 +145,21 @@ test(
         const source = readFileSync("tools/build-dawn.ps1", "utf8").replace(
             'Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force',
             `Import-Module '${quote(resolve("tools/bblite-tools.psm1"))}' -Force
-function Sync-PinnedCheckout([string]$Path, [string]$Repository, [string]$Commit, [string]$Label) {
+function Sync-PatchedCheckout([string]$Path, [string]$Repository, [string]$Commit, [string]$Label, [string]$Library, [string[]]$Variants, [string]$CMake) {
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
     Set-Content (Join-Path $Path 'LICENSE') 'fixture license'
+    Set-Content (Join-Path $Path 'variants.txt') ($Variants -join ',')
 }
 function Get-PosixCompilerArguments { throw 'Android must not select the host compiler.' }
 function git { $global:LASTEXITCODE = 0 }
 `,
         );
         writeFileSync(script, source);
+        // The patch record comes from the real native/patch-identity.cmake.
         writeFileSync(
             cmake,
             `
+if ($args -contains '-P') { & '${quote(tools.cmake!)}' @args; exit $LASTEXITCODE }
 Add-Content (Join-Path $PSScriptRoot 'commands.jsonl') (ConvertTo-Json -InputObject @($args) -Compress)
 $global:LASTEXITCODE = 0
 `,
@@ -235,20 +235,27 @@ $global:LASTEXITCODE = 0
                 ["webgpu_dawn"],
             );
             assert.ok(existsSync(join(output, "LICENSE.txt")));
-            // The artifact records the Android series the manifest selects.
-            const expected = expectedPatchRecord(readPatchManifest(), "dawn", [
+            // The checkout carries, and the artifact records, the Android series.
+            assert.equal(
+                readFileSync(
+                    join(directory, `workspace-${abi}`, "dawn", "variants.txt"),
+                    "utf8",
+                ).trim(),
                 "android",
-            ]);
+            );
+            const expected = runPatchIdentity(tools.cmake!, "record", "dawn", {
+                variants: ["android"],
+            });
             assert.match(
-                expected.patches,
-                /^0001-android-surface-loss\.patch=[0-9a-f]{64}$/,
+                expected,
+                /set\(BBLITE_DAWN_PATCHES "0001-android-surface-loss\.patch=[0-9a-f]{64}"\)\nset\(BBLITE_DAWN_VARIANTS "android"\)/,
             );
             assert.equal(
                 readFileSync(
                     join(output, "bblite-dawn-features.cmake"),
                     "utf8",
-                ).trim(),
-                `set(BBLITE_DAWN_SOURCE "${expected.source}")\nset(BBLITE_DAWN_PATCHES "${expected.patches}")`,
+                ),
+                expected,
             );
             const incompatible = spawnSync(
                 tools.powershell!,

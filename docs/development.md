@@ -20,9 +20,12 @@ $env:CMAKE_COMMAND = 'C:/Program Files/Microsoft Visual Studio/18/Community/Comm
 ```
 
 `scene` discovers CMake through vswhere; dependency scripts accept PATH, CMAKE_COMMAND or `-CMake`.
-Built Dawn, LabSound, RmlUi and trimmed-SDL artifacts record their source and patch set
-([native/patches/manifest.json](../native/patches/manifest.json)); configure refuses a record that
-differs and warns on an unrecorded artifact, and `dev:setup` rebuilds a stale one.
+`native/patch-identity.cmake` alone reads the patch series of
+[native/patches/manifest.json](../native/patches/manifest.json), for the overlay portfiles, the
+dependency scripts, configure and doctor. Built Dawn, LabSound, RmlUi and trimmed-SDL artifacts record
+their source, patch set and variants; configure refuses a record that differs and warns on an
+unrecorded artifact, and `dev:setup` rebuilds a stale one. A dependency script whose checkout already
+carries its series leaves the source untouched, so a repeated run recompiles nothing.
 
 ### Linux prerequisites
 

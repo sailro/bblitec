@@ -349,12 +349,23 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
     // lives outside the overlay port directory that keys the development
     // vcpkg install. Only SDL's own options (BOOL, or INTERNAL when SDL
     // forces a dependent one) are admitted to the trim table.
-    assert.match(script, /Get-MaintainedPatches sdl3 @\("trimmed"\)/);
-    assert.match(script, /Get-PatchRecord sdl3 \$sdlVersion \$patches/);
-    // A warm workspace that already holds the tag with this series staged is
-    // not reset and re-patched, which would recompile the whole library.
-    assert.match(script, /applied-series\.txt/);
-    assert.match(script, /git -C \$source write-tree/);
+    assert.match(
+        script,
+        /Sync-PatchedCheckout \$source \$repository \$tagCommit "SDL \$tag" sdl3 @\("trimmed"\)/,
+    );
+    assert.match(script, /Get-PatchRecord sdl3 @\("trimmed"\)/);
+    // The engine only converts decoded images: the blending, modulating and
+    // scaling blitters, RLE, YUV and SDL's stb_image loader are compiled out,
+    // so the trimmed SDL owes no YUV or stb_image notice.
+    assert.match(
+        script,
+        /\$surfaceDefines = @\("SDL_LEAN_AND_MEAN", "SDL_HAVE_BLIT_0", "SDL_HAVE_BLIT_1", "SDL_HAVE_BLIT_N", "SDL_DISABLE_STB"\)/,
+    );
+    assert.match(
+        script,
+        /CMAKE_C_FLAGS_MINSIZEREL=\/O1 \/Ob1 \/DNDEBUG \/Gw \$defines/,
+    );
+    assert.doesNotMatch(script, /yuv2rgb\/LICENSE|stb_image\.h"/);
     assert.doesNotMatch(script, /SDL_(MISC|LOCALE) =/);
     assert.match(script, /-notin @\("BOOL", "INTERNAL"\)/);
     assert.ok(existsSync("native/patches/sdl3/0009-static-no-dynapi.patch"));
@@ -389,15 +400,40 @@ test("the PowerShell tools share one module for discovery, checkouts and caches"
         "Find-CMake",
         "Get-DevToolchain",
         "Sync-PinnedCheckout",
+        "Sync-PatchedCheckout",
+        "Set-ArtifactContent",
         "Read-CMakeCache",
     ]) {
         assert.match(module, new RegExp(`function ${helper}`));
         assert.match(module, new RegExp(`"${helper}"`));
     }
-    const scripts = readdirSync("tools").filter(
-        (name) => /^build-.*\.ps1$/.test(name) || name === "package-demo.ps1",
+    const scripts = readdirSync("tools").filter((name) =>
+        /^build-.*\.ps1$/.test(name),
     );
-    assert.equal(scripts.length, 7);
+    assert.equal(scripts.length, 6);
+    // Every builder of a patched library brings its checkout to the pin and
+    // series through the one applied-series record, and rewrites its record
+    // file only when it changes (a record is a configure input).
+    for (const name of [
+        "build-sdl-min.ps1",
+        "build-labsound.ps1",
+        "build-rmlui.ps1",
+        "build-dawn.ps1",
+        "build-dawn-min.ps1",
+    ]) {
+        const script = readFileSync(`tools/${name}`, "utf8");
+        assert.match(script, /Sync-PatchedCheckout /, name);
+        assert.doesNotMatch(
+            script,
+            /Install-MaintainedPatches|applied-series/,
+            name,
+        );
+        assert.match(
+            script,
+            /Set-ArtifactContent \(Join-Path \$output "bblite-[a-z]+-features\.cmake"\)/,
+            name,
+        );
+    }
     for (const name of scripts) {
         const script = readFileSync(`tools/${name}`, "utf8");
         assert.match(
@@ -671,12 +707,11 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     const builder = readFileSync("tools/build-rmlui.ps1", "utf8");
     assert.match(builder, /\[switch\]\$StaticRuntime/);
     assert.match(builder, /upstream\\rmlui\.json/);
-    assert.match(builder, /Get-MaintainedPatches rmlui/);
     assert.match(
         builder,
-        /Install-MaintainedPatches \$source \$patches "RmlUi"/,
+        /Sync-PatchedCheckout \$source \$pin\.repository \$pin\.commit "RmlUi" rmlui @\(\)/,
     );
-    assert.match(builder, /Get-PatchRecord rmlui \$pin\.commit \$patches/);
+    assert.match(builder, /Get-PatchRecord rmlui @\(\)/);
     assert.doesNotMatch(builder, /\.patch\b/);
     assert.match(builder, /CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded/);
     assert.match(builder, /bblite-rmlui-features\.cmake/);
@@ -707,18 +742,12 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     );
     assert.match(
         readFileSync("native/patch-identity.cmake", "utf8"),
-        /bblite_verify_patch_record\(rmlui "\$\{BBLITE_RMLUI_DIR\}" "\$\{BBLITE_RMLUI_BUILD_COMMAND\}"\)/,
+        /bblite_verify_patch_record\(\s*rmlui "\$\{BBLITE_RMLUI_DIR\}" "\$\{BBLITE_RMLUI_BUILD_COMMAND\}" REQUIRE\s*\)/,
     );
     assert.match(
         cmake,
         /\$\{BBLITE_RMLUI_DIR\}\/Backends\/RmlUi_Platform_SDL\.cpp/,
     );
-
-    const packager = readFileSync("tools/package-demo.ps1", "utf8");
-    assert.match(packager, /BBLITE_RMLUI_DIR/);
-    assert.match(packager, /RmlUi-LICENSE\.txt/);
-    assert.match(packager, /LunaSVG\.txt.*lunasvg/s);
-    assert.match(packager, /PlutoVG\.txt.*plutovg/s);
 });
 
 test("SDL shader slot loading rejects unbounded generated indices", () => {
