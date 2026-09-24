@@ -185,3 +185,59 @@ test("application errors dispatch before engine creation with native cancellatio
     ]);
     execFileSync(executable, { stdio: "pipe", timeout: 10000 });
 });
+
+test("generated main reports every escaping value through the application reporter", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const result = compileSource(`
+        const values: number[] = [1, 2, 3];
+        let total = 0;
+        for (let i = 0; i < values.length; i++) total += values[i]!;
+        if (total !== 6) throw new Error("total");
+    `);
+    assert.match(
+        result.cpp,
+        /\} catch \(\.\.\.\) \{\s*return bbl::report_uncaught_error\(std::current_exception\(\)\);/,
+    );
+    const directory = resolve("artifacts/uncaught-error-report");
+    mkdirSync(directory, { recursive: true });
+    const cpp = resolve(directory, "check.cpp");
+    const executable = resolve(directory, "check.exe");
+    writeFileSync(
+        cpp,
+        `#define main generated_main
+${result.cpp}
+#undef main
+#include <cassert>
+#include <sstream>
+#include <stdexcept>
+int main() {
+    assert(generated_main() == 0);
+    std::ostringstream reports;
+    auto* original = std::cerr.rdbuf(reports.rdbuf());
+    const int standard = bbl::report_uncaught_error(std::make_exception_ptr(std::runtime_error("failure")));
+    const int other = bbl::report_uncaught_error(std::make_exception_ptr(42));
+    std::cerr.rdbuf(original);
+    assert(standard == 1 && other == 1);
+    assert(reports.str() == "Uncaught application error: failure\\nUncaught application error: Unknown native exception\\n");
+}
+`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${executable}`,
+        cpp,
+    ]);
+    execFileSync(executable, { stdio: "pipe", timeout: 10000 });
+});
