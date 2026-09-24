@@ -1017,7 +1017,7 @@ export interface UserFunctionContext
             | "emitStatement"
             | "statementTerminatesAfterLowering"
             | "bindings"
-            | "bindObjectPattern"
+            | "declarations"
             | "allocateUserFunctionPrefix"
             | "allocateTemporaryCppName"
             | "reachJsData"
@@ -1284,7 +1284,7 @@ export class UserFunctionLowerer {
         if (ts.isObjectBindingPattern(parameter.name)) {
             // `({ a, b = 1 }: Options)`: the pattern binds from the
             // argument exactly as a destructuring declaration would.
-            context.bindObjectPattern(parameter.name, value);
+            context.declarations.bindObjectPattern(parameter.name, value);
             return;
         }
         const elements =

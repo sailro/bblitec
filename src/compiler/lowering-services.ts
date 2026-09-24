@@ -60,6 +60,7 @@ import type { SceneManifestRecorder } from "./scene-manifest.js";
 import type { BindingScopes } from "./binding-scopes.js";
 import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
+import type { DeclarationLowerer } from "./declarations.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -119,6 +120,7 @@ export interface LoweringServices {
     readonly bindings: BindingScopes;
     readonly conditions: ConditionLowerer;
     readonly browserErasure: BrowserErasure;
+    readonly declarations: DeclarationLowerer;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
@@ -167,18 +169,11 @@ export interface LoweringServices {
     recordTextAttachment(node: ts.Node): void;
     assertTextDisposal(node: ts.Node): void;
     emitDiscardedValue(value: Value): void;
-    emitVariableDeclaration(declaration: ts.VariableDeclaration): void;
     emitAssignment(expression: ts.BinaryExpression): void;
     /** `??=`, `||=`, `&&=` over a data-model target; any other target refuses. */
     emitLogicalAssignment(expression: ts.BinaryExpression): void;
     /** `delete object[key]` / `delete object.field` over the data model. */
     emitDelete(expression: ts.DeleteExpression): void;
-    /** Binds an object pattern from a record or struct value. */
-    bindObjectPattern(
-        pattern: ts.ObjectBindingPattern,
-        value: Value,
-        source?: ts.Node,
-    ): void;
     recordDataAssignmentMetadata(
         target: Value,
         source: ts.Expression,

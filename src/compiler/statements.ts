@@ -110,7 +110,7 @@ export interface StatementLoweringContext extends Pick<
     | "probeEmission"
     | "allocateTemporaryCppName"
     | "dataLowerer"
-    | "emitVariableDeclaration"
+    | "declarations"
     | "emitAssignment"
     | "emitLogicalAssignment"
     | "emitDelete"
@@ -476,7 +476,7 @@ export class StatementLowerer {
         }
         if (ts.isVariableStatement(statement)) {
             for (const declaration of statement.declarationList.declarations) {
-                context.emitVariableDeclaration(declaration);
+                context.declarations.emitVariableDeclaration(declaration);
             }
             return;
         }
@@ -1643,7 +1643,9 @@ export class StatementLowerer {
                 if (ts.isVariableDeclarationList(statement.initializer)) {
                     for (const declaration of statement.initializer
                         .declarations) {
-                        context.emitVariableDeclaration(declaration);
+                        context.declarations.emitVariableDeclaration(
+                            declaration,
+                        );
                     }
                 } else {
                     this.emitExpression(context, statement.initializer);
