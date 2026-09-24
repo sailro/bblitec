@@ -205,8 +205,6 @@ request_renderer_restart_if_scene_set_changed(Engine& engine,
  */
 #if BBLITE_HAS_UI
 inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas) {
-    if (canvas.value >= engine.ui_elements.size())
-        throw std::runtime_error("Invalid surface canvas.");
     const auto& rect = handle_at(engine.ui_elements, canvas).client_rect;
     return rect.width > 0.0 && rect.height > 0.0;
 }
@@ -440,9 +438,8 @@ inline const CameraRecord no_camera_record{};
  * unrounded eye and every `large - large = small` runs at full width.
  */
 inline Vec3d floating_origin_offset(const Scene& scene, const Engine& engine) {
-    if (scene.camera.value >= engine.cameras.size())
-        return Vec3d{};
-    return upstream::arc_rotate_eye_position(handle_at(engine.cameras, scene.camera));
+    const CameraRecord* camera = handle_find(engine.cameras, scene.camera);
+    return camera ? upstream::arc_rotate_eye_position(*camera) : Vec3d{};
 }
 
 /**

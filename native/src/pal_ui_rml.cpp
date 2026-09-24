@@ -175,9 +175,6 @@ std::string normalize_html_entities_for_rml(std::string_view markup) {
 }
 
 UiElementRecord& ui_element(Engine& engine, UiElementHandle handle) {
-    if (handle.value >= engine.ui_elements.size()) {
-        throw std::runtime_error("Native UI element handle is out of range.");
-    }
     return handle_at(engine.ui_elements, handle);
 }
 

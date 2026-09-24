@@ -4745,9 +4745,7 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
                                 WGPUBuffer uv_uniforms,
                                 [[maybe_unused]] WGPUBuffer uv_transform_uniforms) {
     const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-    const MaterialRecord* material = draw.item.material.value < engine.materials.size()
-                                         ? &handle_at(engine.materials, draw.item.material)
-                                         : nullptr;
+    const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
     const upstream::StandardVariantEntry& entry = upstream::standard_variants[variant];
     const upstream::MeshUniforms mesh_block = pinned_mesh_block(
         scene, engine, standard_draw_world(record, entry.uses_local_position, scene, engine),
@@ -4805,9 +4803,7 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
                 write_pinned_bone_texture(state, mesh, handle_at(engine.meshes, draw.item.mesh));
             }
 #endif
-            const MaterialRecord* material = draw.item.material.value < engine.materials.size()
-                                                 ? &handle_at(engine.materials, draw.item.material)
-                                                 : nullptr;
+            const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
             DawnDrawState& colour_state =
                 ensure_standard_draw_buffers(state, mesh, draw.item.material.value);
             DawnDrawState& draw_state =
@@ -7208,9 +7204,7 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
 
             const std::uint32_t current_cluster_base = cluster.id_start;
             const upstream::RenderItem& item = render_plan[mesh_index];
-            const MaterialRecord* material = item.material.value < engine.materials.size()
-                                                 ? &handle_at(engine.materials, item.material)
-                                                 : nullptr;
+            const MaterialRecord* material = handle_find(engine.materials, item.material);
             const bool double_sided = item.cull_mode == upstream::RenderCullMode::none;
             if (double_sided != (sided_mode == 1))
                 continue;
@@ -9730,9 +9724,7 @@ class DawnSceneRun {
                                    .c_str());
                 }
                 const MaterialRecord* standard_material =
-                    draw.item.material.value < engine.materials.size()
-                        ? &handle_at(engine.materials, draw.item.material)
-                        : nullptr;
+                    handle_find(engine.materials, draw.item.material);
 #if BBLITE_STANDARD_SKELETON
                 if (upstream::standard_variant_skeleton(upstream::standard_variants[variant])) {
                     write_pinned_bone_texture(state, draw_mesh,
@@ -9847,9 +9839,7 @@ class DawnSceneRun {
 #endif
                     DawnDrawState& pinned_state = ensure_pinned_draw_bindings(
                         state, draw_mesh, draw.item.material.value, variant,
-                        draw.item.material.value < engine.materials.size()
-                            ? &handle_at(engine.materials, draw.item.material)
-                            : nullptr);
+                        handle_find(engine.materials, draw.item.material));
                     pinned_state.mirrored_vertices = conventions.mirrored_vertices;
                     write_pinned_draw_blocks(state, *pass_scene, engine, draw, variant, conventions,
                                              pinned_state.mesh_uniforms,
@@ -11080,9 +11070,6 @@ public:
                     graph_lights = state.overlay_frames[graph_layer - 1].lights_uniforms;
 #endif
                 for (const TaskHandle handle : graph_scene.tasks) {
-                    if (handle.value >= engine.frame_tasks.size()) {
-                        throw std::runtime_error("Scene frame task handle is invalid.");
-                    }
                     const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                     if (task.kind == FrameTaskKind::geometry) {
                         // A geometry task without a camera does not execute
@@ -11141,9 +11128,6 @@ public:
                     if (task.kind != FrameTaskKind::render)
                         continue;
                     DawnRenderTask& render_task = handle_at(state.render_tasks, handle);
-                    if (task.render.target.value >= engine.render_targets.size()) {
-                        throw std::runtime_error("Render task target is invalid.");
-                    }
                     const RenderTargetRecord& target_record =
                         handle_at(engine.render_targets, task.render.target);
                     const DawnRenderTarget& target =
@@ -11490,9 +11474,7 @@ public:
                     const std::size_t variant = standard_state.group_key / 2;
                     if (!standard_state.group) {
                         const MaterialRecord* standard_material =
-                            draw.item.material.value < engine.materials.size()
-                                ? &handle_at(engine.materials, draw.item.material)
-                                : nullptr;
+                            handle_find(engine.materials, draw.item.material);
                         standard_state.group = build_standard_draw_group(
                             state, mesh, standard_material, variant, standard_state.mesh_uniforms,
                             standard_state.material_uniforms, standard_state.uv_uniforms,
@@ -11531,9 +11513,7 @@ public:
                                        .c_str());
                     }
                     const MaterialRecord* node_material =
-                        draw.item.material.value < engine.materials.size()
-                            ? &handle_at(engine.materials, draw.item.material)
-                            : nullptr;
+                        handle_find(engine.materials, draw.item.material);
                     // Which of the graph's two compiled views: an ESM caster
                     // view carries the bit its own factory set.
                     const bool node_caster =
@@ -11706,9 +11686,7 @@ public:
                         continue;
                     }
                     const MaterialRecord* material =
-                        draw.item.material.value < engine.materials.size()
-                            ? &handle_at(engine.materials, draw.item.material)
-                            : nullptr;
+                        handle_find(engine.materials, draw.item.material);
                     if (!transmission_copied && transmissive_draw_material(material)) {
                         // The pinned mid-pass break: grab the scene
                         // color from the preserved multisampled
@@ -12005,9 +11983,6 @@ public:
                     return dawn_render_target_texture(state, engine, reference.target,
                                                       reference.depth_only);
                 }
-                if (reference.task.value >= engine.frame_tasks.size()) {
-                    throw std::runtime_error("Frame graph source task handle is invalid.");
-                }
                 const FrameTaskRecord& source_task = handle_at(engine.frame_tasks, reference.task);
                 if (source_task.kind != FrameTaskKind::geometry) {
                     throw std::runtime_error("Frame graph source task is not geometry.");
@@ -12070,9 +12045,6 @@ public:
                         &graph_scene);
 #endif
                     for (const TaskHandle handle : graph_scene.tasks) {
-                        if (handle.value >= engine.frame_tasks.size()) {
-                            throw std::runtime_error("Scene frame task handle is invalid.");
-                        }
                         FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                         if (task.execution_enabled == false)
                             continue;
@@ -12099,9 +12071,6 @@ public:
                         }
 #endif
                         if (task.kind == FrameTaskKind::render) {
-                            if (task.render.target.value >= engine.render_targets.size()) {
-                                throw std::runtime_error("Render task target is invalid.");
-                            }
                             const RenderTargetRecord& target_record =
                                 handle_at(engine.render_targets, task.render.target);
                             DawnRenderTarget& target =
@@ -12122,9 +12091,7 @@ public:
                             CameraRecord* source_camera =
                                 task.render.has_camera
                                     ? &handle_at(engine.cameras, task.render.camera)
-                                : task.source_scene->camera.value < engine.cameras.size()
-                                    ? &handle_at(engine.cameras, task.source_scene->camera)
-                                    : nullptr;
+                                    : handle_find(engine.cameras, task.source_scene->camera);
                             validate_temporal_source(engine, task, source_camera,
                                                      render_task.draw_lists);
                             if (!source_camera && !camera) {
@@ -12318,11 +12285,6 @@ public:
                                     for (const RenderTaskMesh& entry : task.render_meshes) {
                                         const auto material_handle =
                                             render_task_mesh_material(engine, entry);
-                                        if (material_handle.value >= engine.materials.size()) {
-                                            throw std::runtime_error(
-                                                "Depth task material override is "
-                                                "invalid.");
-                                        }
                                         const MaterialRecord& material =
                                             handle_at(engine.materials, material_handle);
                                         if (!material.no_color) {
@@ -12963,9 +12925,7 @@ public:
                                         "Temporal source has no retained scene.");
                                 restore_temporal_source_buffer(state, source, gpu_source);
                                 CameraRecord* source_camera =
-                                    source.source_scene->camera.value < engine.cameras.size()
-                                        ? &handle_at(engine.cameras, source.source_scene->camera)
-                                        : nullptr;
+                                    handle_find(engine.cameras, source.source_scene->camera);
                                 [[maybe_unused]] const double draws =
                                     upstream::execute_taa_post_process(
                                         taa, task.post_process.passes.at(0).params[0],

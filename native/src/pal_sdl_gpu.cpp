@@ -4610,9 +4610,7 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
             const ClusterRange cluster = advance_cluster_range(mesh.index_count, cluster_id_base);
             const std::uint32_t current_cluster_base = cluster.id_start;
             const upstream::RenderItem& item = render_plan[mesh_index];
-            const MaterialRecord* material = item.material.value < engine.materials.size()
-                                                 ? &handle_at(engine.materials, item.material)
-                                                 : nullptr;
+            const MaterialRecord* material = handle_find(engine.materials, item.material);
             const bool double_sided = item.cull_mode == upstream::RenderCullMode::none;
             if (double_sided != (sided_mode == 1))
                 continue;
@@ -8717,9 +8715,6 @@ public:
                         if (source.source == RenderTextureSource::render_target) {
                             return target_texture(source.target, true, source.depth_only);
                         }
-                        if (source.task.value >= engine.frame_tasks.size()) {
-                            throw std::runtime_error("Frame graph source task handle is invalid.");
-                        }
                         const FrameTaskRecord& task = handle_at(engine.frame_tasks, source.task);
                         if (task.kind != FrameTaskKind::geometry) {
                             throw std::runtime_error("Frame graph source task is not geometry.");
@@ -9167,9 +9162,7 @@ public:
                                 const GpuMesh& mesh = draw_meshes[draw.item_index];
                                 const upstream::RenderItem& draw_item = draw.item;
                                 const MaterialRecord* material =
-                                    draw_item.material.value < engine.materials.size()
-                                        ? &handle_at(engine.materials, draw_item.material)
-                                        : nullptr;
+                                    handle_find(engine.materials, draw_item.material);
 #if BBLITE_HAS_TAA
                                 if (deferred && draw_item.material_kind !=
                                                     upstream::RenderMaterialKind::standard) {
@@ -9479,9 +9472,6 @@ public:
                         &graph_scene);
 #endif
                     for (const TaskHandle handle : graph_scene.tasks) {
-                        if (handle.value >= engine.frame_tasks.size()) {
-                            throw std::runtime_error("Scene frame task handle is invalid.");
-                        }
                         [[maybe_unused]] FrameTaskRecord& task =
                             handle_at(engine.frame_tasks, handle);
                         if (task.execution_enabled == false)
@@ -9510,9 +9500,6 @@ public:
                         }
 #endif
                         if (task.kind == FrameTaskKind::render) {
-                            if (task.render.target.value >= engine.render_targets.size()) {
-                                throw std::runtime_error("Render task target is invalid.");
-                            }
                             const RenderTargetRecord& target_record =
                                 handle_at(engine.render_targets, task.render.target);
                             GpuRenderTarget& target =
@@ -9537,9 +9524,7 @@ public:
                             CameraRecord* source_camera =
                                 task.render.has_camera
                                     ? &handle_at(engine.cameras, task.render.camera)
-                                : task.source_scene->camera.value < engine.cameras.size()
-                                    ? &handle_at(engine.cameras, task.source_scene->camera)
-                                    : nullptr;
+                                    : handle_find(engine.cameras, task.source_scene->camera);
                             validate_temporal_source(engine, task, source_camera,
                                                      handle_at(task_draw_lists, handle));
                             prepare_temporal_scene_uniforms(task, source_camera, target.width,
@@ -9722,10 +9707,6 @@ public:
                                     for (const RenderTaskMesh& entry : task.render_meshes) {
                                         const auto material_handle =
                                             render_task_mesh_material(engine, entry);
-                                        if (material_handle.value >= engine.materials.size()) {
-                                            throw std::runtime_error(
-                                                "Depth task material override is invalid.");
-                                        }
                                         const MaterialRecord& material =
                                             handle_at(engine.materials, material_handle);
                                         if (!material.no_color) {
@@ -10140,9 +10121,7 @@ public:
                                         "Temporal task source has no retained scene UBO.");
                                 }
                                 CameraRecord* camera =
-                                    source.source_scene->camera.value < engine.cameras.size()
-                                        ? &handle_at(engine.cameras, source.source_scene->camera)
-                                        : nullptr;
+                                    handle_find(engine.cameras, source.source_scene->camera);
                                 [[maybe_unused]] const double draws =
                                     upstream::execute_taa_post_process(
                                         taa, task.post_process.passes.at(0).params[0], camera,
@@ -10684,10 +10663,7 @@ public:
                     }
                     const upstream::RenderItem& item = draw.item;
                     const GpuMesh& mesh = (*pass_meshes)[draw.item_index];
-                    const MaterialRecord* material =
-                        item.material.value < engine.materials.size()
-                            ? &handle_at(engine.materials, item.material)
-                            : nullptr;
+                    const MaterialRecord* material = handle_find(engine.materials, item.material);
 #if BBLITE_RENDERER_TRANSMISSION
                     if (transmission_enabled && !transmission_copied &&
                         transmissive_draw_material(material)) {
