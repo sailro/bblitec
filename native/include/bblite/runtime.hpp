@@ -774,9 +774,6 @@ struct ClusteredLightContainer {
     std::uint32_t slice_rows = 1;
     std::uint32_t mask_rows = 1;
 
-    /** Three texels per light once the container holds a spot. */
-    [[nodiscard]] std::uint32_t stride() const { return has_spots ? 3u : 2u; }
-
     /** The extent one payload's upload covers. */
     struct UploadRegion {
         std::uint32_t width;
