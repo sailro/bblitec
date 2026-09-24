@@ -1012,9 +1012,9 @@ bblite_verify_dependency_artifacts()
 # unit spends most of its compile there (docs/development.md carries the
 # measurement). Precompiling that set once per tree removes the parse from
 # every unit; of the generated headers only the activation macros its own
-# headers test enter it. Off for the shipping shape: that build is the one compile of
-# every unit without a precompiled closure, so an include a unit owes and
-# only the PCH supplied fails there instead of in no build at all.
+# headers test enter it. Off for the shipping shape: that build is the one
+# compile of every unit without a precompiled closure, so an include a unit
+# owes and only the PCH supplied fails there instead of in no build at all.
 if(BBLITE_MINSIZE)
     set(BBLITE_PCH_DEFAULT OFF)
 else()
