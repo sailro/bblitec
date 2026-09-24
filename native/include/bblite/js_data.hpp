@@ -3045,6 +3045,18 @@ template <typename T>
     return -1.0;
 }
 
+/** The same search over the owned list a lowered pinned body keeps. */
+template <typename T>
+[[nodiscard]] inline double array_index_of(const std::vector<T>& values,
+                                           const std::type_identity_t<T>& value) {
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (values[index] == value) {
+            return static_cast<double>(index);
+        }
+    }
+    return -1.0;
+}
+
 // Constant arrays materialize as `std::array`, so searching one needs
 // no conversion at the call site.
 template <typename T, std::size_t N>

@@ -3597,6 +3597,15 @@ export class PinnedNumericLowerer {
                     : `!${equal}`;
             }
         }
+        // `(state._flag = true)` as a value: the store, whose value is what
+        // it stored. A typed-array element would read back narrowed, so only
+        // a binding or a member is a target here.
+        if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+            if (ts.isElementAccessExpression(unwrapExpression(node.left))) {
+                this.fail(node, "element store in value position");
+            }
+            return `(${this.assignmentTarget(node.left)} = ${this.storedValue(node.left, node.right)})`;
+        }
         switch (node.operatorToken.kind) {
             case ts.SyntaxKind.QuestionQuestionToken: {
                 // The pin resolves an absent optional read with its own

@@ -4217,7 +4217,11 @@ struct Engine::DeviceRecoveryState {
     GpuTextureIdentity fallback;
     /** The last ordinal `publish_gpu_texture_identity` handed out. */
     std::uint64_t published_textures = 0;
+    /** `_armedDevice`: the generation whose loss the handler recovers, 0 for none. */
+    double armed_device = 0.0;
+    /** `_forceNextLoss`. */
     bool requested = false;
+    /** `_recovering`. */
     bool recovering = false;
     bool resources_ready = false;
     bool disposed = false;

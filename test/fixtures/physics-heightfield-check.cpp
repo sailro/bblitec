@@ -113,6 +113,7 @@ int main() {
     assert((source_world->fo->gravity == std::array<double, 3>{5, 6, 7}));
     for (const auto& region : source_world->fo->regions)
         assert(gravity(region->_world) == btVector3(5, 6, 7));
-    assert(gravity(u::get_or_create_region(*source_world, {100, 0, 0})->_world) == btVector3(5, 6, 7));
+    assert(gravity(u::get_or_create_region(*source_world, {100, 0, 0})->_world) ==
+           btVector3(5, 6, 7));
     std::cout << "physics-heightfield: ok; settled y=" << settled[1] << '\n';
 }

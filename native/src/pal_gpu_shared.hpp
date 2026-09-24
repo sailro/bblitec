@@ -4686,7 +4686,8 @@ inline SpriteDirtyRange resolve_sprite_dirty_range(const Sprite2DLayerRecord& la
  * same offsets and differ only in the write call.
  */
 inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
-                                                           Sprite2DLayerRecord& layer, bool uploaded,
+                                                           Sprite2DLayerRecord& layer,
+                                                           bool uploaded,
                                                            std::uint64_t uploaded_version) {
     // The pin's `uploadedVersion`: this buffer's stamp, or -1 where it holds
     // none of the current rows -- a fresh buffer, or one whose stamp
@@ -4698,7 +4699,8 @@ inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
             return *ordered;
         }
     }
-    const auto [dirty_begin, dirty_end] = resolve_sprite_dirty_range(layer, uploaded, uploaded_version);
+    const auto [dirty_begin, dirty_end] =
+        resolve_sprite_dirty_range(layer, uploaded, uploaded_version);
     if (dirty_end <= dirty_begin)
         return {};
     const std::size_t stride_bytes = layer.instance_floats_per_sprite * sizeof(float);
