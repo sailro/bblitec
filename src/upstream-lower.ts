@@ -87,6 +87,7 @@ import {
 import { characterControllerHeader } from "./lowering/character-controller-runtime.js";
 import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
+import { navigationLibraryHeader } from "./lowering/navigation-library.js";
 import { PickingLowerer } from "./lowering/picking-lowerer.js";
 import { GizmoLowerer } from "./lowering/gizmo-lowerer.js";
 import { TubeLowerer } from "./lowering/factory/tube.js";
@@ -1594,6 +1595,16 @@ class GeneratedSourceWriter {
                 ),
             "upstream/include/bblite/upstream/navigation.hpp",
         );
+        // The wrapper JavaScript that runs over Recast/Detour objects, as
+        // the templates the navigation PAL instantiates.
+        if (this.reaches("upstream/src/navigation.cpp")) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/navigation_library.hpp",
+                navigationLibraryHeader(
+                    features.includes("navigation:tile-cache"),
+                ),
+            );
+        }
         emitReached("upstream/src/gizmo.cpp", () =>
             new GizmoLowerer(context, features).lower(),
         );

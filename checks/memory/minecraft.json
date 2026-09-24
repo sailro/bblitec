@@ -1,5 +1,6 @@
 {
-  "notes": "Walk, turn, jump, break and place blocks, so chunks stream and remesh during the run.",
+  "notes": "Walk, turn, jump, break and place blocks, so chunks stream and remesh during the run. The loaded world reaches its largest chunk set near frame 4,000 (geometry 73 to 86 MB, 385 to 474 mesh records), and the working set holds that peak; 12,000 frames put the whole climb inside the warm-up third.",
+  "frames": 12000,
   "lead": ["-*10"],
   "cycle": ["+KeyW", "-*120", "-KeyW", "MouseMoveRight", "MouseMoveRight", "MouseMoveRight", "Space", "-*20", "MouseLeft", "-*15", "MouseRight", "-*15", "+KeyA", "-*40", "-KeyA", "+KeyS", "-*60", "-KeyS", "+KeyD", "-*40", "-KeyD"]
 }

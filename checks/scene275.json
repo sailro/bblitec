@@ -1,6 +1,6 @@
 {
   "scene": "scene275",
-  "notes": "Text alpha-to-coverage: the native textGpu receipts (allocations, uploads, draw bindings and pipeline state) are joined against the browser's WebGPU receipts recorded by checks/plugins/gpu-receipts.init.js. The pinned camera is unattached, so pointer and key input must change nothing; a window resize re-lays the text at 960x600.",
+  "notes": "Text alpha-to-coverage: the native textGpu receipts (allocations, uploads, draw bindings and pipeline state) are joined against the browser's WebGPU receipts recorded by checks/plugins/webgpu-recorder.init.js. The pinned camera is unattached, so pointer and key input must change nothing; a window resize re-lays the text at 960x600.",
   "base": "adhoc",
   "minFrames": 30,
   "phases": [
@@ -25,8 +25,8 @@
     { "kind": "plugin", "module": "checks/plugins/scene275-receipts.mjs" }
   ],
   "observe": {
-    "initScriptFile": "checks/plugins/gpu-receipts.init.js",
-    "state": "window.__gpuReceipts",
+    "initScriptFile": "checks/plugins/webgpu-recorder.init.js",
+    "state": "window.__webgpuRecorder.receipts()",
     "steps": [
       { "id": "first" },
       { "id": "idle", "settleFrames": 218 },

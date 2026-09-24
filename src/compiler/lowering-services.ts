@@ -93,6 +93,7 @@ export interface LoweringServices {
     ): Value | undefined;
     compileSynchronousPromise(node: ts.NewExpression): Value;
     pendingActivations(): import("./pending-activations.js").PendingActivations;
+    refusePendingActivationUse(node: ts.Node): void;
     emitActivationBoundary(
         statement: ts.ExpressionStatement,
         emit: () => boolean | void,

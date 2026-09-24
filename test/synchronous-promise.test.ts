@@ -224,6 +224,39 @@ test("pending activations refuse uses that need a pending promise value", () => 
     );
 });
 
+test("pending-activation refusals are scoped to reached code", () => {
+    const source = (reached: boolean): string => `
+        function never(): Promise<number> {
+            return new Promise(() => {});
+        }
+        async function wait(): Promise<number> {
+            return await never();
+        }
+        function stores(): number {
+            const pending = wait();
+            return pending === undefined ? 0 : 1;
+        }
+        async function main(): Promise<void> {
+            void wait();
+            ${reached ? "stores();" : ""}
+        }
+        void main();`;
+    const result = compileSource(source(false), {
+        fileName: "examples/pending-unreached.ts",
+    });
+    assert.match(result.cpp, /bbl::js::SynchronousPromise<double>/);
+    assert.doesNotMatch(result.cpp, /stores/);
+    assert.throws(
+        () =>
+            compileSource(source(true), {
+                fileName: "examples/pending-reached.ts",
+            }),
+        (error: unknown) =>
+            error instanceof CompileError &&
+            /awaited, returned or discarded as a statement/.test(error.message),
+    );
+});
+
 test("absent global members fold through aliases and typeof", () => {
     const result = compileSource(
         `

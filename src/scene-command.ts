@@ -3120,7 +3120,13 @@ const SCENE_ARGUMENT = "<id|source.ts>";
 const SCENE_OR_ALL_ARGUMENT = "<id|source.ts|all>";
 
 const COMMANDS: readonly CommandSpec[] = [
-    { name: "help", flags: {}, summary: "print this usage", lock: false },
+    {
+        name: "help",
+        argument: "[command]",
+        flags: {},
+        summary: "print this usage, or one command's (also <command> --help)",
+        lock: false,
+    },
     {
         name: "doctor",
         flags: {},
@@ -3306,21 +3312,23 @@ const COMMANDS: readonly CommandSpec[] = [
     },
 ];
 
+/** One command's usage entry: its invocation, then what it does. */
+function commandUsage(command: CommandSpec): string {
+    const invocation = [
+        command.name,
+        command.argument,
+        usageFromSpec(command.flags),
+    ]
+        .filter((part) => part !== undefined && part !== "")
+        .join(" ");
+    return `  ${invocation}\n      ${command.summary}`;
+}
+
 /** The usage text, generated from the command table so it cannot drift
  *  from what the parser accepts. */
 function usage(): string {
     const lines = ["Usage: scene-command <command> [argument] [options]", ""];
-    for (const command of COMMANDS) {
-        const invocation = [
-            command.name,
-            command.argument,
-            usageFromSpec(command.flags),
-        ]
-            .filter((part) => part !== undefined && part !== "")
-            .join(" ");
-        lines.push(`  ${invocation}`);
-        lines.push(`      ${command.summary}`);
-    }
+    for (const command of COMMANDS) lines.push(commandUsage(command));
     lines.push(
         "",
         "Backends: sdl_gpu|dawn|both in any case (gpu = sdl_gpu); artifact filenames use gpu|dawn.",
@@ -3331,18 +3339,26 @@ function usage(): string {
 
 async function main(): Promise<void> {
     const [command, ...arguments_] = process.argv.slice(2);
+    const find = (name: string): CommandSpec => {
+        const found = COMMANDS.find((entry) => entry.name === name);
+        if (found === undefined)
+            throw new Error(`Unknown command '${name}'.\n\n${usage()}`);
+        return found;
+    };
     if (
         command === undefined ||
         command === "help" ||
         command === "--help" ||
         command === "-h"
     ) {
-        console.log(usage());
+        const topic = command === "help" ? arguments_[0] : undefined;
+        console.log(topic === undefined ? usage() : commandUsage(find(topic)));
         return;
     }
-    const spec = COMMANDS.find((entry) => entry.name === command);
-    if (spec === undefined) {
-        throw new Error(`Unknown command '${command}'.\n\n${usage()}`);
+    const spec = find(command);
+    if (arguments_[0] === "--help" || arguments_[0] === "-h") {
+        console.log(commandUsage(spec));
+        return;
     }
     // Every `npm run scene` runs `npm run build` first, so any build started
     // while this one is working deletes the `dist/` it is executing from.
@@ -3356,7 +3372,7 @@ async function main(): Promise<void> {
         id = arguments_[0];
         if (id === undefined || id.startsWith("--")) {
             throw new Error(
-                `${command} needs ${spec.argument}.\n\n  ${command} ${spec.argument} ${usageFromSpec(spec.flags)}`,
+                `${command} needs ${spec.argument}.\n\n${commandUsage(spec)}`,
             );
         }
         rest = arguments_.slice(1);

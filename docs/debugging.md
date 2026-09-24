@@ -69,8 +69,9 @@ clock, which stops while the console session is locked: a run with a frame budge
 | retainedDataFile | CPU splat bytes, not texture uploads |
 | Palette summary | Two matrices; full dumps needed for wider deformation |
 
-Enable BBLITE_NODE_GPU_CAPTURE with BBLITE_RENDER_CAPTURE for node receipts. Scene149-transport joins
-those receipts to browser buffers and checks stamps, bindings and numeric worlds; signed zero is separate.
+Enable BBLITE_NODE_GPU_CAPTURE with BBLITE_RENDER_CAPTURE for node receipts. The scene149-transport and
+node-local-transport checks join those receipts to the browser buffers checks/plugins/webgpu-recorder.init.js
+records and check stamps, bindings and numeric worlds; signed zero is separate.
 `probe` temporarily changes and restores the deployed Dawn WGSL; SDL_GPU changes need offline compilation.
 Bounds and mesh-handle generations are checked in every build; set BBLITE_CHECKED_HANDLES=1 before building
 (CMake: BBLITE_CHECKED_HANDLES=ON) to name the call site in a handle refusal.
@@ -95,7 +96,8 @@ unchanged-module startup at 960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelU
 packets, WheelUp/Down a browser notch. `<entry>*<n>` repeats entries. Recovery tapes include Dataset,
 GlobalCall and DeviceLoss.
 
-`memory` runs 6,000 frames and judges the samples after the warm-up third. It fails a working-set trend
+`memory` runs 6,000 frames, or the `frames` a demo's tape declares when its content grows for longer than a
+warm-up third (minecraft's streamed world), and judges the samples after the warm-up third. It fails a working-set trend
 above `--max-slope-mb` (MB per 1,000 frames, default 2; Theil–Sen, over the whole window and over its
 later half, so one allocation step or a rise that settles does not fail), occupied mesh records the scene does not draw
 or geometry records without vertices that pile up, and GC nodes that rise steadily; missing samples fail. The report

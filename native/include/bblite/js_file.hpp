@@ -190,10 +190,20 @@ struct FileList {
     return *record;
 }
 
-/** File.text(): immediate in AOT, but still bounded and error-reporting. */
-[[nodiscard]] inline std::string file_text(const Engine& engine, const BrowserFileHandle& handle) {
+/** A selected File's bytes, as the snapshot holds them. */
+[[nodiscard]] inline std::string_view file_bytes(const Engine& engine,
+                                                 const BrowserFileHandle& handle) {
     const BrowserFileRecord& file = browser_file_record(engine, handle);
-    return std::string(file.bytes.begin(), file.bytes.end());
+    return {reinterpret_cast<const char*>(file.bytes.data()), file.bytes.size()};
+}
+
+/**
+ * File.text(): immediate in AOT, but still bounded and error-reporting. The
+ * bytes are UTF-8 decoded as Blob.text() does: a byte order mark is removed
+ * and an invalid sequence reads as U+FFFD.
+ */
+[[nodiscard]] inline std::string file_text(const Engine& engine, const BrowserFileHandle& handle) {
+    return decode_utf8_removing_bom(file_bytes(engine, handle));
 }
 
 /**
@@ -220,9 +230,9 @@ public:
     [[nodiscard]] Nullable<std::string> result() const { return state_->result; }
 
     void read_as_text(const Engine& engine, const BrowserFileHandle& file) const {
-        std::optional<std::string> bytes;
+        std::optional<std::string_view> bytes;
         try {
-            bytes = file_text(engine, file);
+            bytes = file_bytes(engine, file);
         } catch (const std::runtime_error&) {
             bytes.reset();
         }
@@ -230,13 +240,13 @@ public:
     }
     void read_as_text(const Blob& blob) const {
         const auto& bytes = blob.bytes();
-        settle(std::string(bytes.begin(), bytes.end()));
+        settle(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
     }
 
     void gc_trace(const TraceVisitor& visitor) const { visitor(state_); }
 
 private:
-    void settle(const std::optional<std::string>& bytes) const {
+    void settle(std::optional<std::string_view> bytes) const {
         state_->result = bytes ? Nullable<std::string>(decode_text(*bytes))
                                : Nullable<std::string>(std::nullopt);
         // A handler may replace the reader's handlers; run the one this

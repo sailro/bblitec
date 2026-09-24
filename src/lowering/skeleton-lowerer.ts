@@ -88,9 +88,12 @@ void publish_scene_palette(
     Engine& engine,
     const SceneSkeletonRecord& skeleton) {
     for (const MeshHandle mesh : skeleton.meshes) {
-        if (mesh.value >= engine.meshes.size()) continue;
-        ${recordAt("engine.meshes", "mesh")}.bone_matrices = skeleton.bone_matrices;
-        ++${recordAt("engine.meshes", "mesh")}.bone_matrices_version;
+        // A writer: a removed mesh keeps its slot while anything reads it,
+        // so a mesh whose slot a later one took has no reader left.
+        MeshRecord* record = current_mesh_record(engine, mesh);
+        if (!record) continue;
+        record->bone_matrices = skeleton.bone_matrices;
+        ++record->bone_matrices_version;
     }
 }
 

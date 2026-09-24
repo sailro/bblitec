@@ -204,7 +204,7 @@ test("the emitted skeleton unit keeps the palette on the mesh record", () => {
     // the first mesh would silently freeze the others.
     assert.match(
         lowered.source,
-        /bbl::handle_at\(engine\.meshes, mesh\)\.bone_matrices = skeleton\.bone_matrices;/,
+        /for \(const MeshHandle mesh : skeleton\.meshes\) \{[\s\S]{0,300}MeshRecord\* record = current_mesh_record\(engine, mesh\);\s*if \(!record\) continue;\s*record->bone_matrices = skeleton\.bone_matrices;/,
     );
     assert.match(lowered.source, /mesh_record\.pinned_bone_palette = true;/);
     assert.match(lowered.source, /mesh_record\.gpu_deformation = true;/);

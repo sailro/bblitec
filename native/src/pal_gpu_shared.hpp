@@ -2449,12 +2449,10 @@ inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRec
     casters.clear();
     casters.reserve(generator.caster_meshes.size());
     for (const MeshHandle handle : generator.caster_meshes) {
-        // The caster array keeps a removed mesh, as the pin's does; its
-        // record stays in the fit until a later mesh takes its slot.
-        const MeshRecord* found = current_mesh_record(engine, handle);
-        if (!found)
-            continue;
-        const MeshRecord& record = *found;
+        // The caster array keeps a removed mesh, as the pin's does, and
+        // names it (`caster_names`), so the fit reads its last pose and
+        // the bounds retirement left on its record.
+        const MeshRecord& record = handle_at(engine.meshes, handle);
         upstream::ShadowCaster caster;
         caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
         caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;

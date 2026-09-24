@@ -25,9 +25,10 @@
  *   every number the generator computes -- lowered from the installed
  *   packages by `navigation-build-plan.ts`, under the package versions it
  *   came from.
- * - `createDebugNavMeshGeometry` and `raycast` pass through to the PAL
- *   arms that carry their pinned arithmetic; the shapes here assert the
- *   pin still spells them the way those arms do.
+ * - `createDebugNavMeshGeometry` is lowered whole over the PAL's walk
+ *   (`navigation-library.ts`); `raycast` passes through to the PAL arm
+ *   that carries its library calls, and the shapes here assert the pin
+ *   still spells it the way that arm does.
  * - `getClosestPoint`, `createNavCrowd`, `addAgent` and
  *   `getAgentPosition` are the same shape one level up: the wrapper
  *   surface is the PAL's, and what the pinned module adds on top — the
@@ -54,6 +55,7 @@ import {
     wrapperModule,
     wrapperPackageVersion,
 } from "./navigation-build-plan.js";
+import { navigationDebugGeometryDefinition } from "./navigation-library.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { pinnedOptionFallback } from "./pinned-option-defaults.js";
 import { doubleLiteral } from "../cpp-literals.js";
@@ -561,28 +563,6 @@ export class NavigationLowerer {
             "the absent-agent position fallback",
         );
 
-        // createDebugNavMeshGeometry: the PAL arm carries the detached
-        // rebuild; the pinned reversed storage (a, c, b) is the shape a
-        // drift would silently break, so it is pinned here through the
-        // store order.
-        const { declaration: debugGeometry } = this.context.functionDeclaration(
-            modulePath,
-            "createDebugNavMeshGeometry",
-        );
-        if (
-            !this.context.hasNode(
-                debugGeometry,
-                (node) =>
-                    ts.isPropertyAccessExpression(node) &&
-                    node.name.text === "getNavMeshPositionsAndIndices",
-            )
-        ) {
-            this.context.contractError(
-                debugGeometry,
-                "Expected the debug walk to read getNavMeshPositionsAndIndices.",
-            );
-        }
-
         // The obstacle surface belongs to the tile cache: a solo
         // build has no cache for it to act on, so a scene that did
         // not ask for one carries neither the entry points nor the
@@ -665,6 +645,7 @@ void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
                 [
                     "<bblite/js_data.hpp>",
                     "<bblite/pal_navigation.hpp>",
+                    "<bblite/pinned_records.hpp>",
                     "<bblite/runtime.hpp>",
                     "",
                     "<cmath>",
@@ -732,6 +713,7 @@ Vec3d get_agent_position(
 #include <cstddef>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace bbl::upstream {
 
@@ -802,7 +784,7 @@ void create_nav_mesh(
         navigation_query_defaults);`
             : `bbl::pal::navigation_create_solo_nav_mesh(
         plugin, merged, solo_nav_mesh_build(merged, params),
-        params.off_mesh_connections, navigation_query_defaults);`
+        navigation_query_defaults);`
     }
 }
 
@@ -816,10 +798,7 @@ bbl::pal::NavVec3 nav_vec3(Vec3d value) {
 
 ${obstacleDefinitions}
 
-bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
-    bbl::pal::NavigationHandle plugin) {
-    return bbl::pal::navigation_debug_geometry(plugin);
-}
+${navigationDebugGeometryDefinition(this.context)}
 
 // raycast: the PAL answers the pinned hit window; the hit point is
 // the pinned lerp, in doubles as JavaScript computes it from the f32

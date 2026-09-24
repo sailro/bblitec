@@ -1230,6 +1230,18 @@ export class ExpressionLowerer {
                     (text) => this.context.cppString(text),
                 );
             }
+            // An absent value the checker types `T | null`, without
+            // undefined, is null: typeof spells it "object". An unchecked
+            // lookup can still be undefined.
+            const checked = nullability(
+                this.context.checker.getTypeAtLocation(expression),
+            );
+            const absentType =
+                checked.null &&
+                !checked.undefined &&
+                !operand.preserveUncheckedLookup
+                    ? "object"
+                    : "undefined";
             const unionType =
                 operand.dataType?.kind === "optional"
                     ? operand.dataType.inner
@@ -1251,7 +1263,7 @@ export class ExpressionLowerer {
                     kind: "string",
                     cpp:
                         operand.dataType?.kind === "optional"
-                            ? `([](const auto& value) -> std::string { return value.has_value() ? ${table}[(*value).index()] : "undefined"; }(${operand.cpp}))`
+                            ? `([](const auto& value) -> std::string { return value.has_value() ? ${table}[(*value).index()] : ${this.context.cppString(absentType)}; }(${operand.cpp}))`
                             : `std::string(${table}[(${operand.cpp}).index()])`,
                 };
             }
@@ -1277,12 +1289,9 @@ export class ExpressionLowerer {
                           : operand.kind === "void"
                             ? "undefined"
                             : "object";
-            const checkedMayBeUndefined = nullability(
-                this.context.checker.getTypeAtLocation(expression),
-            ).undefined;
             const present =
                 operand.parameterBinding &&
-                !checkedMayBeUndefined &&
+                !checked.undefined &&
                 operand.kind !== "record"
                     ? undefined
                     : presenceCpp(operand);
@@ -1292,7 +1301,7 @@ export class ExpressionLowerer {
                     cpp:
                         `(${present} ? ` +
                         `${this.context.cppString(type)} : ` +
-                        `${this.context.cppString("undefined")})`,
+                        `${this.context.cppString(absentType)})`,
                     dataType: { kind: "string" },
                 };
             }

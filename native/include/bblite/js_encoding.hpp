@@ -55,6 +55,13 @@ namespace bbl::js {
     return result;
 }
 
+/** The Encoding Standard's UTF-8 decode: an initial byte order mark is removed. */
+[[nodiscard]] inline std::string decode_utf8_removing_bom(std::string_view bytes) {
+    if (bytes.starts_with("\xef\xbb\xbf"))
+        bytes.remove_prefix(3);
+    return decode_utf8(bytes);
+}
+
 /** UTF-16 code units to UTF-8, a lone surrogate or odd trailing byte as U+FFFD. */
 [[nodiscard]] inline std::string decode_utf16(std::string_view bytes, bool big_endian) {
     const auto unit = [&](std::size_t index) -> unsigned {
@@ -105,13 +112,11 @@ namespace bbl::js {
  * `FileReader.readAsText` without an encoding decodes this way.
  */
 [[nodiscard]] inline std::string decode_text(std::string_view bytes) {
-    if (bytes.substr(0, 3) == "\xef\xbb\xbf")
-        return decode_utf8(bytes.substr(3));
-    if (bytes.substr(0, 2) == "\xfe\xff")
+    if (bytes.starts_with("\xfe\xff"))
         return decode_utf16(bytes.substr(2), true);
-    if (bytes.substr(0, 2) == "\xff\xfe")
+    if (bytes.starts_with("\xff\xfe"))
         return decode_utf16(bytes.substr(2), false);
-    return decode_utf8(bytes);
+    return decode_utf8_removing_bom(bytes);
 }
 
 } // namespace bbl::js

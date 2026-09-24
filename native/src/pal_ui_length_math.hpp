@@ -1,13 +1,62 @@
 #pragma once
 
 #include <algorithm>
-#include <charconv>
+#include <cerrno>
 #include <cmath>
+#include <cstdlib>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
 namespace bbl::pal {
+namespace detail {
+
+/**
+ * The unsigned CSS decimal at `offset`: digits with an optional fraction, and
+ * an exponent only when digits follow it (`2em` is 2, then `em`). `offset`
+ * moves past it; empty when no digit starts it or it is out of double range.
+ * Converted by strtod, correctly rounded on every target (Android's libc++
+ * provides no floating-point std::from_chars).
+ */
+inline std::optional<double> css_decimal(std::string_view source, std::size_t& offset) {
+    const auto digit = [&](std::size_t at) {
+        return at < source.size() && source[at] >= '0' && source[at] <= '9';
+    };
+    const auto start = offset;
+    auto end = offset;
+    std::size_t digits = 0;
+    for (; digit(end); ++end)
+        ++digits;
+    if (end < source.size() && source[end] == '.')
+        for (++end; digit(end); ++end)
+            ++digits;
+    if (digits == 0)
+        return std::nullopt;
+    if (end < source.size() && (source[end] == 'e' || source[end] == 'E')) {
+        auto exponent = end + 1;
+        if (exponent < source.size() && (source[exponent] == '+' || source[exponent] == '-'))
+            ++exponent;
+        if (digit(exponent)) {
+            while (digit(exponent))
+                ++exponent;
+            end = exponent;
+        }
+    }
+    const std::string text(source.substr(start, end - start));
+    char* parsed_end = nullptr;
+    errno = 0;
+    const double number = std::strtod(text.c_str(), &parsed_end);
+    // Overflow, or underflow to zero, is out of range (a subnormal is not).
+    if (parsed_end != text.c_str() + text.size() || !std::isfinite(number) ||
+        (number == 0 && errno == ERANGE))
+        return std::nullopt;
+    offset = end;
+    return number;
+}
+
+} // namespace detail
+
 // RmlUi has no CSS math parser. Resolve viewport/absolute length expressions
 // before its ordinary cascade; containing-block and font-relative units need
 // a later layout stage and are deliberately rejected here.
@@ -92,12 +141,10 @@ class UiLengthMath {
                 refuse();
             return value;
         }
-        double number = 0;
-        const auto parsed =
-            std::from_chars(source.data() + offset, source.data() + source.size(), number);
-        if (parsed.ec != std::errc{})
+        const auto parsed = detail::css_decimal(source, offset);
+        if (!parsed)
             refuse();
-        offset = static_cast<std::size_t>(parsed.ptr - source.data());
+        const double number = *parsed;
         const auto unit_start = offset;
         while (offset < source.size() && letter(source[offset]))
             ++offset;

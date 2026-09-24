@@ -87,6 +87,26 @@ function isListShape(type: string): boolean {
     return LIST_SHAPES.has(type);
 }
 
+/**
+ * The binding types JavaScript's `typeof` calls `"object"` beside records
+ * and lists: typed arrays and their views, arrays of records or functions,
+ * and a `Set`.
+ */
+const TYPEOF_OBJECT_TYPES: ReadonlySet<PinnedBinding["type"]> = new Set<
+    PinnedBinding["type"]
+>([
+    "f32",
+    "u32",
+    "u16",
+    "u8",
+    "f32-view",
+    "u8-view",
+    "f64-buffer",
+    "record-list",
+    "function-list",
+    "string-set",
+]);
+
 /** The typed arrays a body can own, alias and reseat: sized storage, not views. */
 function isOwnedBufferType(type: PinnedBinding["type"]): boolean {
     return (
@@ -222,10 +242,16 @@ export function recordLiteralCpp(
  * The binding for a value the reached slice never supplies: a pinned
  * optional parameter no caller passes, a hook no graph installs, a record
  * a static test resolved to `null`. Its spelling is never emitted -- every
- * guard on it folds -- so the one spelling lives here.
+ * guard on it folds -- so the one spelling lives here. `value` is which
+ * JavaScript value it is, where the caller knows.
  */
-export function absentBinding(): PinnedBinding {
-    return { cpp: "false", type: "bool", staticallyAbsent: true };
+export function absentBinding(value?: "undefined" | "null"): PinnedBinding {
+    return {
+        cpp: "false",
+        type: "bool",
+        staticallyAbsent: true,
+        ...(value ? { absentValue: value } : {}),
+    };
 }
 
 /**
@@ -291,6 +317,16 @@ export interface PinnedBinding {
      * that has none of it.
      */
     staticallyAbsent?: true;
+    /**
+     * Which JavaScript value a `staticallyAbsent` binding is, or a
+     * run-time-absent one is when absent, where the caller knows it: a
+     * strict `=== undefined` or `=== null` against a statically absent one,
+     * and a `typeof` test for `"undefined"` or `"object"` against either,
+     * then decide as well. A loose `== undefined`, and a `typeof` test for
+     * any other name, decide without it. An `absentCpp` binding's absence
+     * is `undefined` unless this says `"null"`.
+     */
+    absentValue?: "undefined" | "null";
     /**
      * Whether a view aliases storage the body may WRITE through.
      *
@@ -2599,7 +2635,7 @@ export class PinnedNumericLowerer {
             );
         }
         if (initializer.kind === ts.SyntaxKind.NullKeyword) {
-            this.scope.bindings.set(name, absentBinding());
+            this.scope.bindings.set(name, absentBinding("null"));
             return [];
         }
         const source = this.scope.bindings.get(initializer.getText(this.file));
@@ -3567,20 +3603,43 @@ export class PinnedNumericLowerer {
         if (equality === undefined) return undefined;
         const left = unwrapExpression(node.left);
         const right = unwrapExpression(node.right);
-        const typeofSide = ts.isTypeOfExpression(left)
-            ? { test: left, expected: right }
-            : ts.isTypeOfExpression(right)
-              ? { test: right, expected: left }
-              : undefined;
-        if (typeofSide) {
-            const name = this.typeofName(typeofSide.test.expression);
-            if (
-                name === undefined ||
-                !ts.isStringLiteral(typeofSide.expected)
-            ) {
-                return undefined;
+        // `flags !== undefined` over a value the reached slice never
+        // supplies: loosely, null and undefined are equal to both; strictly,
+        // only to the one the binding is.
+        const nullish = (
+            node: ts.Expression,
+        ): "undefined" | "null" | undefined =>
+            ts.isIdentifier(node) && node.text === "undefined"
+                ? "undefined"
+                : node.kind === ts.SyntaxKind.NullKeyword
+                  ? "null"
+                  : undefined;
+        const [absentOperand, literal] = nullish(right)
+            ? [left, nullish(right)]
+            : nullish(left)
+              ? [right, nullish(left)]
+              : [undefined, undefined];
+        const absent = absentOperand
+            ? this.scope.bindings.get(absentOperand.getText(this.file))
+            : undefined;
+        if (absent?.staticallyAbsent && literal) {
+            const loose =
+                kind === ts.SyntaxKind.EqualsEqualsToken ||
+                kind === ts.SyntaxKind.ExclamationEqualsToken;
+            if (loose) return equality;
+            if (absent.absentValue) {
+                return (absent.absentValue === literal) === equality;
             }
-            return (name === typeofSide.expected.text) === equality;
+        }
+        const typeofComparison = this.typeofComparison(node);
+        if (typeofComparison) {
+            const answer = this.typeofAnswer(
+                typeofComparison.value,
+                typeofComparison.name,
+            );
+            return typeof answer === "boolean"
+                ? answer === typeofComparison.equality
+                : undefined;
         }
         const leftNumber = this.staticNumberOf(left);
         const rightNumber = this.staticNumberOf(right);
@@ -3590,17 +3649,83 @@ export class PinnedNumericLowerer {
         return (leftNumber === rightNumber) === equality;
     }
 
-    /** JavaScript's `typeof` of a bound value, where the binding fixes it. */
-    private typeofName(expression: ts.Expression): string | undefined {
+    /** `typeof value === "name"` (or `!==`, `==`, `!=`, either way round). */
+    private typeofComparison(
+        node: ts.BinaryExpression,
+    ): { value: ts.Expression; name: string; equality: boolean } | undefined {
+        const kind = node.operatorToken.kind;
+        const equality =
+            kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+            kind === ts.SyntaxKind.EqualsEqualsToken
+                ? true
+                : kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+                    kind === ts.SyntaxKind.ExclamationEqualsToken
+                  ? false
+                  : undefined;
+        const left = unwrapExpression(node.left);
+        const right = unwrapExpression(node.right);
+        const [test, name] = ts.isTypeOfExpression(left)
+            ? [left, right]
+            : ts.isTypeOfExpression(right)
+              ? [right, left]
+              : [undefined, undefined];
+        if (equality === undefined || !test || !ts.isStringLiteral(name)) {
+            return undefined;
+        }
+        return { value: test.expression, name: name.text, equality };
+    }
+
+    /**
+     * Whether JavaScript's `typeof` of a bound value is `name`. The value is
+     * its present type's name or, where it can be absent, its absence's:
+     * `"undefined"`, or `"object"` for a null. An `absentCpp` binding stands
+     * in for `T | undefined` unless it says its absence is a null; a
+     * `nullish` or statically absent one is either absence unless it says
+     * which. The answer is decided where the binding fixes it; where it is
+     * presence itself, it is the run-time absence test and the answer when
+     * that test holds; and undefined where the binding leaves it open -- a
+     * name an absence of unsaid kind may or may not have, or a type it does
+     * not fix.
+     */
+    private typeofAnswer(
+        expression: ts.Expression,
+        name: string,
+    ): boolean | { absent: string; whenAbsent: boolean } | undefined {
         const bound = this.scope.bindings.get(
             unwrapExpression(expression).getText(this.file),
         );
         if (!bound) return undefined;
-        if (isRecordType(bound.type) || isListShape(bound.type))
-            return "object";
-        if (bound.type === "bool") return "boolean";
-        if (bound.type === "scalar" || bound.type === "index") return "number";
-        return undefined;
+        const absenceIs = (
+            value: "undefined" | "null" | undefined,
+        ): boolean | undefined =>
+            value !== undefined
+                ? (value === "null" ? "object" : "undefined") === name
+                : name === "undefined" || name === "object"
+                  ? undefined
+                  : false;
+        if (bound.staticallyAbsent) return absenceIs(bound.absentValue);
+        const present =
+            isRecordType(bound.type) ||
+            isListShape(bound.type) ||
+            TYPEOF_OBJECT_TYPES.has(bound.type)
+                ? "object"
+                : bound.type === "bool"
+                  ? "boolean"
+                  : bound.type === "scalar" || bound.type === "index"
+                    ? "number"
+                    : bound.type === "string"
+                      ? "string"
+                      : undefined;
+        if (present === undefined) return undefined;
+        const absent = bound.absentCpp ?? bound.nullish;
+        if (absent === undefined) return present === name;
+        const absentIs = absenceIs(
+            bound.absentValue ??
+                (bound.absentCpp !== undefined ? "undefined" : undefined),
+        );
+        if (absentIs === undefined) return undefined;
+        if (absentIs === (present === name)) return absentIs;
+        return { absent, whenAbsent: absentIs };
     }
 
     /**
@@ -4208,6 +4333,19 @@ export class PinnedNumericLowerer {
         // the operator table below.
         const known = this.staticCondition(node);
         if (known !== undefined) return known ? "true" : "false";
+        // A `typeof` test generation cannot answer is the value's presence
+        // at run time, or nothing this translator can spell.
+        const typeofComparison = this.typeofComparison(node);
+        if (typeofComparison) {
+            const answer = this.typeofAnswer(
+                typeofComparison.value,
+                typeofComparison.name,
+            );
+            if (typeof answer !== "object") this.fail(node, "typeof test");
+            return answer.whenAbsent === typeofComparison.equality
+                ? `(${answer.absent})`
+                : `!(${answer.absent})`;
+        }
         // A boolean join with one static side keeps only the side that
         // still decides, by JavaScript's own short-circuit rule.
         if (

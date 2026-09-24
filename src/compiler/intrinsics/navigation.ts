@@ -339,6 +339,10 @@ export function compileNavigationIntrinsic(
                         cpp: `${temporary}.indices`,
                         dataType: { kind: "u32array" },
                     },
+                    positionsHash: {
+                        kind: "number",
+                        cpp: `${temporary}.positions_hash`,
+                    },
                 },
             };
         }
