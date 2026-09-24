@@ -301,17 +301,17 @@ endif()
 
 # The PAL units whose preprocessed text depends on the generated tree only
 # through the activation macros they test (bblite/features/); the two
-# backend families, the window realm and the build stamp include lowered
-# module headers. Under the object cache they compile in their own object
-# library against folders holding only those macros, so their compile lines
-# are the same in every scene whose macros they read agree (a unit reaching
-# any other generated header is refused). An object library rather than an
-# archive: the executable links every object exactly as before, where an
-# archive would drop an unreferenced object and the static registrations it
-# carries.
+# backend families, the window realm, the build stamp and the navigation
+# PAL include lowered module headers. Under the object cache they compile
+# in their own object library against folders holding only those macros,
+# so their compile lines are the same in every scene whose macros they read
+# agree (a unit reaching any other generated header is refused). An object
+# library rather than an archive: the executable links every object exactly
+# as before, where an archive would drop an unreferenced object and the
+# static registrations it carries.
 set(
     BBLITE_PAL_COMMON_PATTERN
-    "/src/(pal|pal_sdl|pal_image|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_navigation_recast|pal_file|pal_storage|pal_text_layout)\\.cpp$"
+    "/src/(pal|pal_sdl|pal_image|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_file|pal_storage|pal_text_layout)\\.cpp$"
 )
 set(BBLITE_PAL_COMMON_SOURCES ${BBLITE_RUNTIME_SOURCES})
 list(FILTER BBLITE_PAL_COMMON_SOURCES INCLUDE REGEX "${BBLITE_PAL_COMMON_PATTERN}")

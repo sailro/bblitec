@@ -3735,6 +3735,20 @@ template <typename T> [[nodiscard]] T numeric_store_value(double value) {
     }
 }
 
+/**
+ * A JavaScript number handed to a native parameter the way an emscripten
+ * binding hands it: converted to whatever arithmetic type the parameter
+ * declares, as a store of the number into that type converts it.
+ */
+struct NumberArgument {
+    double value;
+    template <typename T>
+        requires std::is_arithmetic_v<T>
+    operator T() const {
+        return numeric_store_value<T>(value);
+    }
+};
+
 [[nodiscard]] inline U8Array u8_array_sized(double count) {
     return U8Array(static_cast<std::size_t>(count));
 }

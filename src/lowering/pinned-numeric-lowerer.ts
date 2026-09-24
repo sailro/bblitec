@@ -222,10 +222,16 @@ export function recordLiteralCpp(
  * The binding for a value the reached slice never supplies: a pinned
  * optional parameter no caller passes, a hook no graph installs, a record
  * a static test resolved to `null`. Its spelling is never emitted -- every
- * guard on it folds -- so the one spelling lives here.
+ * guard on it folds -- so the one spelling lives here. `value` is which
+ * JavaScript value it is, where the caller knows.
  */
-export function absentBinding(): PinnedBinding {
-    return { cpp: "false", type: "bool", staticallyAbsent: true };
+export function absentBinding(value?: "undefined" | "null"): PinnedBinding {
+    return {
+        cpp: "false",
+        type: "bool",
+        staticallyAbsent: true,
+        ...(value ? { absentValue: value } : {}),
+    };
 }
 
 /**
@@ -291,6 +297,12 @@ export interface PinnedBinding {
      * that has none of it.
      */
     staticallyAbsent?: true;
+    /**
+     * Which JavaScript value a `staticallyAbsent` binding is, where the
+     * caller knows it: a strict `=== undefined` or `=== null` against it
+     * then folds as well. A loose `== undefined` folds without it.
+     */
+    absentValue?: "undefined" | "null";
     /**
      * Whether a view aliases storage the body may WRITE through.
      *
@@ -2599,7 +2611,7 @@ export class PinnedNumericLowerer {
             );
         }
         if (initializer.kind === ts.SyntaxKind.NullKeyword) {
-            this.scope.bindings.set(name, absentBinding());
+            this.scope.bindings.set(name, absentBinding("null"));
             return [];
         }
         const source = this.scope.bindings.get(initializer.getText(this.file));
@@ -3567,6 +3579,34 @@ export class PinnedNumericLowerer {
         if (equality === undefined) return undefined;
         const left = unwrapExpression(node.left);
         const right = unwrapExpression(node.right);
+        // `flags !== undefined` over a value the reached slice never
+        // supplies: loosely, null and undefined are equal to both; strictly,
+        // only to the one the binding is.
+        const nullish = (
+            node: ts.Expression,
+        ): "undefined" | "null" | undefined =>
+            ts.isIdentifier(node) && node.text === "undefined"
+                ? "undefined"
+                : node.kind === ts.SyntaxKind.NullKeyword
+                  ? "null"
+                  : undefined;
+        const [absentOperand, literal] = nullish(right)
+            ? [left, nullish(right)]
+            : nullish(left)
+              ? [right, nullish(left)]
+              : [undefined, undefined];
+        const absent = absentOperand
+            ? this.scope.bindings.get(absentOperand.getText(this.file))
+            : undefined;
+        if (absent?.staticallyAbsent && literal) {
+            const loose =
+                kind === ts.SyntaxKind.EqualsEqualsToken ||
+                kind === ts.SyntaxKind.ExclamationEqualsToken;
+            if (loose) return equality;
+            if (absent.absentValue) {
+                return (absent.absentValue === literal) === equality;
+            }
+        }
         const typeofSide = ts.isTypeOfExpression(left)
             ? { test: left, expected: right }
             : ts.isTypeOfExpression(right)
