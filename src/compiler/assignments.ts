@@ -1,4 +1,4 @@
-import { EmissionMap } from "./emission-transaction.js";
+import { EmissionMap, writable } from "./emission-transaction.js";
 import {
     compositeScalarAccessors,
     compositeScalarFunction,
@@ -757,7 +757,7 @@ function emitPostProcessOptionAssignment(
             left.name.text,
         ]).find((entry) => entry.property === left.name.text);
         if (accessor) {
-            composite.scalarAccesses = [
+            writable(composite).scalarAccesses = [
                 ...new Set([
                     ...(composite.scalarAccesses ?? []),
                     accessor.property,
@@ -1242,7 +1242,7 @@ export function emitPropertyAssignment(
             );
         }
         context.bindClassField(left.name, expression.right);
-        fields[left.name.text] = context.compileValue(left.name);
+        writable(fields)[left.name.text] = context.compileValue(left.name);
         return;
     }
     if (
@@ -1335,8 +1335,9 @@ export function emitPropertyAssignment(
                         assigned,
                     );
                     if (bound) {
-                        owner.recordProperties ??= {};
-                        owner.recordProperties[left.name.text] = bound;
+                        writable((writable(owner).recordProperties ??= {}))[
+                            left.name.text
+                        ] = bound;
                         return;
                     }
                 }
@@ -1376,8 +1377,9 @@ export function emitPropertyAssignment(
                         left,
                         "Replacing a record callback requires a native function slot on a locally bound record.",
                     );
-                owner.recordProperties ??= {};
-                owner.recordProperties[left.name.text] = assigned;
+                writable((writable(owner).recordProperties ??= {}))[
+                    left.name.text
+                ] = assigned;
                 return;
             }
         }
@@ -1560,7 +1562,7 @@ export function emitPropertyAssignment(
             failClassFieldRebind(context, expression, left.name.text);
         }
         context.bindClassField(left.name, expression.right);
-        fields[left.name.text] = context.compileValue(left.name);
+        writable(fields)[left.name.text] = context.compileValue(left.name);
         return;
     }
     if (
@@ -2496,14 +2498,14 @@ function emitTargetPropertyAssignment(
                         "generation.",
                 );
             }
-            target.textureObjectInvertY = rendered === "true";
+            writable(target).textureObjectInvertY = rendered === "true";
         } else if (property === "uAng") {
             // The value reaches composition as well as the record: the pinned
             // lightmap `detect` compares it against `Math.PI`. A write that
             // does not settle still emits, and the consumer that needs it
             // refuses by name rather than reading a stale zero here.
             const folded = staticNumberValue(context, expression.right);
-            if (folded !== undefined) target.textureUvAng = folded;
+            if (folded !== undefined) writable(target).textureUvAng = folded;
         }
         context.emit(`${owner}.${field.record} = ${rendered};`);
         return true;
@@ -2586,7 +2588,8 @@ function emitTargetPropertyAssignment(
                 if (recordField.kind === "material") {
                     const bindings =
                         target.materialUboArrayFields ??
-                        (target.materialUboArrayFields = new EmissionMap());
+                        (writable(target).materialUboArrayFields =
+                            new EmissionMap());
                     bindings.set(field, value);
                 }
             }
@@ -2682,17 +2685,20 @@ function emitTargetPropertyAssignment(
             if (recordField.property === "alpha") {
                 const alpha = staticNumberValue(context, expression.right);
                 if (alpha === undefined)
-                    delete target.standardMaterialInput.alpha;
-                else target.standardMaterialInput.alpha = alpha;
+                    delete writable(target.standardMaterialInput).alpha;
+                else writable(target.standardMaterialInput).alpha = alpha;
             } else if (
                 recordField.property === "backFaceCulling" ||
                 recordField.property === "disableLighting"
             ) {
                 if (value === "true" || value === "false") {
-                    target.standardMaterialInput[recordField.property] =
-                        value === "true";
+                    writable(target.standardMaterialInput)[
+                        recordField.property
+                    ] = value === "true";
                 } else {
-                    delete target.standardMaterialInput[recordField.property];
+                    delete writable(target.standardMaterialInput)[
+                        recordField.property
+                    ];
                 }
             }
         }
@@ -2700,7 +2706,7 @@ function emitTargetPropertyAssignment(
         if (recordField.kind === "material" && recordField.value === "color3") {
             const bindings =
                 target.materialUboArrayFields ??
-                (target.materialUboArrayFields = new EmissionMap());
+                (writable(target).materialUboArrayFields = new EmissionMap());
             bindings.set(recordField.field, { ...compiled, cpp: stored });
         }
         context.emit(
@@ -2907,7 +2913,7 @@ function emitCameraAssignment(
         // written after the assignment still reaches it, and one
         // executed port -- the node-particle flow-map build -- reads
         // the scene's camera rather than the scene's own records.
-        target.sceneCamera = camera;
+        writable(target).sceneCamera = camera;
         context.emit(`${target.cpp}.camera = ${camera.cpp};`);
         return true;
     }
@@ -3085,7 +3091,7 @@ function emitPluginsAssignment(
             plugins.manifests,
             target.standardMaterialInput ?? {},
         );
-        target.standardMaterialPluginIndex = pluginIndex;
+        writable(target).standardMaterialPluginIndex = pluginIndex;
         emitMaterialPluginResources(
             context,
             target,
@@ -3123,7 +3129,7 @@ function emitShadowGeneratorAssignment(
                     "A light shadow generator assignment is missing its compiler identity.",
                 );
             }
-            target.lightIdentity.shadowGeneratorIndex =
+            writable(target.lightIdentity).shadowGeneratorIndex =
                 generator.shadowGeneratorIndex;
         }
         return true;
@@ -3202,15 +3208,16 @@ function emitMaterialAssignment(
         // the mesh carries which scene material it was given and a
         // later read of `mesh.material` resolves that record.
         if (material.scenePbrMaterialIndex !== undefined) {
-            target.scenePbrMaterialIndex = material.scenePbrMaterialIndex;
+            writable(target).scenePbrMaterialIndex =
+                material.scenePbrMaterialIndex;
         }
         // The family travels the same way, and for the same reason: a
         // write on `box.material` has to resolve which of the pin's two
         // bridges would read it.
         if (material.standardMaterial) {
-            target.standardMaterial = true;
+            writable(target).standardMaterial = true;
             if (material.standardMaterialPluginIndex !== undefined) {
-                target.standardMaterialPluginIndex =
+                writable(target).standardMaterialPluginIndex =
                     material.standardMaterialPluginIndex;
             }
         }
@@ -3406,7 +3413,7 @@ function emitMorphTargetsAssignment(
                 `${morph.morphTarget.vertexCountCpp}, ` +
                 `${morph.morphTarget.weightCpp});`,
         );
-        morph.morphTarget.meshCpp = target.cpp;
+        writable(morph.morphTarget).meshCpp = target.cpp;
         context.reachFeature("mesh:morph-targets", expression);
         return true;
     }
@@ -3497,7 +3504,7 @@ function emitDiffuseTextureAssignment(
         // plugin signature composes the material's actual feature word rather
         // than the bare Standard defaults.
         if (target.standardMaterialInput) {
-            target.standardMaterialInput.diffuseTexture = {};
+            writable(target.standardMaterialInput).diffuseTexture = {};
         }
         if (texture.kind === "texture" && texture.textureStorage === "stored") {
             context.expectSameEngine(target, texture, expression);

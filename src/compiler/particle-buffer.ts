@@ -1,3 +1,4 @@
+import { writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 /**
  * Particle simulation and initialization writes execute in the ordered bake.
@@ -160,7 +161,7 @@ export function readFrozenParticleProperty(
     ) {
         const request = frozenParticleBuffer(context, buffer, node);
         const field = name === "alive" ? "alive" : "capacity";
-        if (field === "alive") request.observed = true;
+        if (field === "alive") writable(request).observed = true;
         return {
             kind: "number",
             cpp: `bbl::upstream::node_particle_frozen_${field}(${buffer.set}, ${buffer.system})`,
@@ -182,8 +183,9 @@ export function readFrozenParticleElement(
     const buffer = identity(owner)!;
     const request = frozenParticleBuffer(context, buffer, node);
     const column = owner.nodeParticleColumn!;
-    if (!request.columns.includes(column)) request.columns.push(column);
-    request.observed = true;
+    if (!request.columns.includes(column))
+        writable(request.columns).push(column);
+    writable(request).observed = true;
     return {
         kind: "data",
         cpp: `bbl::upstream::node_particle_frozen_column(${buffer.set}, ${buffer.system}, "${column}", ${indexCpp})`,

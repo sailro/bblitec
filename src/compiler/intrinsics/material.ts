@@ -1,5 +1,5 @@
 import type { BindingScopes } from "../binding-scopes.js";
-import { EmissionMap } from "../emission-transaction.js";
+import { EmissionMap, writable } from "../emission-transaction.js";
 import {
     compileCreateStorageBuffer,
     type StorageBufferIntrinsicContext,
@@ -1092,7 +1092,7 @@ function compileSetPbrEmissive(
     );
     const bindings =
         material.materialUboArrayFields ??
-        (material.materialUboArrayFields = new EmissionMap());
+        (writable(material).materialUboArrayFields = new EmissionMap());
     bindings.set("emissive_factor", color);
     context.sceneManifest.recordScenePbrEmissive(
         channels,

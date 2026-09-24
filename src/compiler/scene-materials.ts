@@ -1,4 +1,10 @@
-import { emissionArray, EmissionMap } from "./emission-transaction.js";
+import {
+    emissionArray,
+    EmissionMap,
+    journaled,
+    writable,
+    type Mutable,
+} from "./emission-transaction.js";
 import type {
     ScenePbrAnisotropyManifest,
     ScenePbrClearCoatManifest,
@@ -87,7 +93,7 @@ export class SceneMaterialRecorder {
     public readonly standardMaterialPluginInputs: PinnedStandardMaterialInput[][] =
         emissionArray([]);
     private readonly pluginIndexByKey = new EmissionMap<string, number>();
-    private sceneMaterialCount = 0;
+    @journaled private accessor sceneMaterialCount = 0;
 
     /** The final creation count across families, for the manifest. */
     public get count(): number {
@@ -122,14 +128,14 @@ export class SceneMaterialRecorder {
         const key = materialPluginListKey(plugins);
         const existing = this.pluginIndexByKey.get(key);
         if (existing !== undefined) {
-            material.pluginIndex = existing;
+            writable(material).pluginIndex = existing;
             const inputs = this.standardMaterialPluginInputs[existing - 1]!;
-            if (!inputs.includes(material)) inputs.push(material);
+            if (!inputs.includes(material)) writable(inputs).push(material);
             return existing;
         }
         this.standardMaterialPlugins.push([...plugins]);
         const index = this.standardMaterialPlugins.length;
-        material.pluginIndex = index;
+        writable(material).pluginIndex = index;
         this.standardMaterialPluginInputs.push([material]);
         this.pluginIndexByKey.set(key, index);
         return index;
@@ -146,7 +152,7 @@ export class SceneMaterialRecorder {
     private sceneMaterialForSetter(
         setter: string,
         index: number | undefined,
-    ): ScenePbrMaterialManifest {
+    ): Mutable<ScenePbrMaterialManifest> {
         const material =
             index === undefined ? undefined : this.scenePbrMaterials[index];
         if (!material) {
@@ -156,7 +162,7 @@ export class SceneMaterialRecorder {
                     "to, resolves which record to stamp.",
             );
         }
-        return material;
+        return writable(material);
     }
 
     /**

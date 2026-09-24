@@ -1,5 +1,5 @@
 import type { BindingScopes } from "./binding-scopes.js";
-import { EmissionSet } from "./emission-transaction.js";
+import { EmissionSet, writable } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
 // Expression lowering: the value switch and its call dispatch.
@@ -2004,9 +2004,10 @@ export class ExpressionLowerer {
                 recordProperties: selected,
             };
             if (trueClass && trueClass === falseClass) {
-                selectedRecord.classDeclaration = trueClass;
+                writable(selectedRecord).classDeclaration = trueClass;
                 if (whenTrue.recordGetters) {
-                    selectedRecord.recordGetters = whenTrue.recordGetters;
+                    writable(selectedRecord).recordGetters =
+                        whenTrue.recordGetters;
                 }
             }
             return selectedRecord;
@@ -2169,27 +2170,27 @@ export class ExpressionLowerer {
             // The C++ conditional operator preserves lvalue category when
             // both branches are lvalues of the same type. Class selection
             // relies on that to pass the selected field by reference.
-            conditional.nativeLvalue = true;
+            writable(conditional).nativeLvalue = true;
         } else {
-            delete conditional.nativeLvalue;
+            delete writable(conditional).nativeLvalue;
         }
         if (
             whenTrue.optionalFoundCpp !== undefined ||
             whenFalse.optionalFoundCpp !== undefined
         ) {
-            conditional.optionalFoundCpp =
+            writable(conditional).optionalFoundCpp =
                 `(${condition} ? ` +
                 `${whenTrue.optionalFoundCpp ?? "true"} : ` +
                 `${whenFalse.optionalFoundCpp ?? "true"})`;
         }
         if (whenTrue.staticNumber !== whenFalse.staticNumber) {
-            delete conditional.staticNumber;
+            delete writable(conditional).staticNumber;
         }
         if (whenTrue.staticString !== whenFalse.staticString) {
-            delete conditional.staticString;
+            delete writable(conditional).staticString;
         }
         if (whenTrue.spriteDepthMode !== whenFalse.spriteDepthMode) {
-            delete conditional.spriteDepthMode;
+            delete writable(conditional).spriteDepthMode;
         }
         return conditional;
     }
@@ -3723,7 +3724,8 @@ export class ExpressionLowerer {
                         value.kind === "animation-group" &&
                         animationGroupSource
                     ) {
-                        value.animationGroupSource = animationGroupSource;
+                        writable(value).animationGroupSource =
+                            animationGroupSource;
                     }
                     return {
                         ...value,

@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -143,10 +144,10 @@ export function noteCameraRecordWrite(
     if (!camera?.cameraProgram) return;
     const written = value ? staticNumberValue(context, value) : undefined;
     if (!simple || written === undefined) {
-        delete camera.cameraProgram;
+        delete writable(camera).cameraProgram;
         return;
     }
-    camera.cameraProgram.properties.push([property, written]);
+    writable(camera.cameraProgram.properties).push([property, written]);
 }
 
 export function compileCameraIntrinsic(

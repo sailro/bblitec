@@ -7,6 +7,7 @@ import {
     EmissionSet,
     EmissionMap,
     EmissionWeakMap,
+    writable,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { resolvedSymbol } from "./symbols.js";
@@ -487,7 +488,7 @@ export class ClassLowerer {
                         success!.arguments![index]!,
                     );
                     if (value.engineCpp !== undefined) {
-                        target.engineCpp = value.engineCpp;
+                        writable(target).engineCpp = value.engineCpp;
                     }
                 });
                 // The fallback construction above deliberately runs the
@@ -612,8 +613,8 @@ export class ClassLowerer {
                 `${cppType} ${cpp} = ` +
                     `bbl::js::make_ref<bblscene::${structName}Data>();`,
             );
-            instance.cpp = cpp;
-            instance.dataType = structType;
+            writable(instance).cpp = cpp;
+            writable(instance).dataType = structType;
             for (const field of layout) {
                 fields[field.source] = this.storedFieldValue(cpp, field);
             }
@@ -737,7 +738,7 @@ export class ClassLowerer {
                     // both is what lets a later `on(this._handler)`
                     // materialize the body with the same `this` -- and the
                     // same captured locals -- the declaration had.
-                    bound.callbackRecordOwner = {
+                    writable(bound).callbackRecordOwner = {
                         ...instance,
                         ...(bound.callbackRecordOwner?.recordScopes
                             ? {
@@ -880,10 +881,10 @@ export class ClassLowerer {
             `${instanceCpp}->${field.name}`,
             field.type,
         );
-        value.nativeLvalue = true;
-        value.borrowedData = true;
-        value.classStoredField = true;
-        value.nativeCaptures = [
+        writable(value).nativeLvalue = true;
+        writable(value).borrowedData = true;
+        writable(value).classStoredField = true;
+        writable(value).nativeCaptures = [
             this.context.registerNativeBinding(instanceCpp, false, true),
         ];
         return value;
@@ -1731,7 +1732,7 @@ export class ClassLowerer {
                         descriptor.identifier,
                     );
                     if (value.engineCpp !== undefined) {
-                        output.engineCpp = value.engineCpp;
+                        writable(output).engineCpp = value.engineCpp;
                     }
                 }
             } finally {
@@ -1917,7 +1918,7 @@ export class ClassLowerer {
                 `${stored.cpp} = ${this.context.compileForDataSink(name, stored.dataType!)};`,
             );
         } else {
-            properties[name.text] = this.context.compileValue(name);
+            writable(properties)[name.text] = this.context.compileValue(name);
         }
     }
 

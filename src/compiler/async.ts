@@ -1,3 +1,4 @@
+import { journaled } from "./emission-transaction.js";
 import type {
     LoweringServices,
     NativeReturnValueCompiler,
@@ -45,8 +46,9 @@ interface AsyncContext extends Pick<
 
 /** Async activation and reaction lowering share the compiler's managed captures. */
 export class AsyncLowerer {
-    private depth = 0;
-    private terminalThrow: { node: ts.Statement; type: string } | undefined;
+    @journaled private accessor depth = 0;
+    @journaled private accessor terminalThrow:
+        { node: ts.Statement; type: string } | undefined;
     constructor(private readonly context: AsyncContext) {}
 
     withActivation<T>(work: () => T): T {

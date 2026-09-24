@@ -851,7 +851,7 @@ export class NativeFunctionLowerer {
         return this.context.dataLowerer.compileForSink(expression, dataType);
     }
 
-    private readonly directKernelEffects = new Map<
+    private readonly directKernelEffects = new EmissionMap<
         SupportedFunction,
         boolean
     >();

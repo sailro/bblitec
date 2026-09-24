@@ -20,7 +20,7 @@ import {
     type DataType,
 } from "./data-types.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
-import { EmissionSet } from "./emission-transaction.js";
+import { EmissionSet, writable } from "./emission-transaction.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import { emitReachableStatements } from "./loop-control.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -1188,16 +1188,16 @@ export class DeclarationLowerer {
             ...(optionalFoundCpp ? { optionalFoundCpp } : {}),
             nativeBinding: true,
         };
-        if (!sharedClosureStorage) delete stored.sharedStorageCpp;
+        if (!sharedClosureStorage) delete writable(stored).sharedStorageCpp;
         if (stored.kind === "audio-engine" && stored.audioMainBusCpp) {
-            stored.audioMainBusCpp = this.context.takeNativeTemporary(
+            writable(stored).audioMainBusCpp = this.context.takeNativeTemporary(
                 stored.audioMainBusCpp,
                 initializerBoundary,
             );
         }
         if (value.kind === "animation-clip") {
-            stored.animationFrameRate = `${cppName}.frame_rate`;
-            stored.animationDuration = `${cppName}.duration`;
+            writable(stored).animationFrameRate = `${cppName}.frame_rate`;
+            writable(stored).animationDuration = `${cppName}.duration`;
         }
         if (
             declaration.parent !== undefined &&
@@ -1207,9 +1207,9 @@ export class DeclarationLowerer {
             // Mutable locals must never fold to their initial value:
             // later reads reference the native local, not the constant
             // the declaration happened to start from.
-            delete stored.staticNumber;
-            delete stored.staticString;
-            delete stored.staticBoolean;
+            delete writable(stored).staticNumber;
+            delete writable(stored).staticString;
+            delete writable(stored).staticBoolean;
         }
         this.context.bindings.defineVariable(declaration.name, stored);
     }
@@ -1311,14 +1311,13 @@ export class DeclarationLowerer {
                 initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(type)}>()`,
             });
             const capture = this.context.registerNativeBinding(slot);
-            owner.recordProperties ??= {};
-            owner.recordProperties[key] = {
+            writable((writable(owner).recordProperties ??= {}))[key] = {
                 ...this.context.dataLowerer.leafValue(`(*${slot})`, type),
                 nativeLvalue: true,
                 sharedStorageCpp: slot,
                 nativeCaptures: [capture],
             };
-            if (owner.recordMethods) delete owner.recordMethods[key];
+            if (owner.recordMethods) delete writable(owner.recordMethods)[key];
             initializers.push(() =>
                 this.context.emit(
                     `(*${slot}) = ${this.context.dataLowerer.compileKnownValueForSink(callback, type, site)};`,
@@ -1590,7 +1589,8 @@ export class DeclarationLowerer {
                     false,
                     "const std::size_t",
                 );
-                value.callbackRecordOwner.runtimeCallbackIdentityCpp = identity;
+                writable(value.callbackRecordOwner).runtimeCallbackIdentityCpp =
+                    identity;
             }
             this.context.bindings.defineVariable(name, {
                 ...value,
@@ -3220,21 +3220,25 @@ export class DeclarationLowerer {
                 );
                 const staticField = value.recordProperties?.[property];
                 if (staticField?.staticNumber !== undefined) {
-                    fieldValue.staticNumber = staticField.staticNumber;
+                    writable(fieldValue).staticNumber =
+                        staticField.staticNumber;
                 }
                 if (staticField?.staticString !== undefined) {
-                    fieldValue.staticString = staticField.staticString;
+                    writable(fieldValue).staticString =
+                        staticField.staticString;
                 }
                 if (staticField?.staticBoolean !== undefined) {
-                    fieldValue.staticBoolean = staticField.staticBoolean;
+                    writable(fieldValue).staticBoolean =
+                        staticField.staticBoolean;
                 }
                 if (aliases && staticField?.staticElements) {
-                    fieldValue.staticElements = staticField.staticElements;
-                    fieldValue.staticElementsOwner =
+                    writable(fieldValue).staticElements =
+                        staticField.staticElements;
+                    writable(fieldValue).staticElementsOwner =
                         staticField.staticElementsOwner ?? staticField;
                 }
                 if (aliases && staticField?.collectionCardinality) {
-                    fieldValue.collectionCardinality =
+                    writable(fieldValue).collectionCardinality =
                         staticField.collectionCardinality;
                 }
                 this.context.bindings.defineVariable(name, fieldValue);

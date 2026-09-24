@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { BindingScopes } from "../binding-scopes.js";
 import type { LoweringServices } from "../lowering-services.js";
 // The node-particle family records graph builds and source lifecycle calls.
@@ -744,7 +745,7 @@ export function compileParticleIntrinsic(
                         "carries one state.",
                 );
             }
-            frozen.synced = true;
+            writable(frozen).synced = true;
             const engineCpp =
                 billboard.engineCpp ?? context.requireDefaultEngine(call);
             context.emit(
@@ -787,7 +788,7 @@ export function compileParticleIntrinsic(
                     "Native particle blend modes must be enabled before registration and recurring frame callbacks; the enabler affects future billboards.",
                 );
             }
-            request.enableBlendModes = true;
+            writable(request).enableBlendModes = true;
             return set;
         }
 

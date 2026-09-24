@@ -1,7 +1,7 @@
 import { valueForKind, withNativeMetadata } from "./types.js";
 import type { ValueBase } from "./types.js";
 // Handle collections carry engine identity, generation-known members and asset traversal contracts.
-import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
@@ -829,8 +829,8 @@ export class HandleCollections {
         );
         if (index < 0)
             index = this.context.sceneManifest.meshWalks.push(walk) - 1;
-        const demanded = (owner.asset.meshWalks ??= []);
-        if (!demanded.includes(index)) demanded.push(index);
+        const demanded = (writable(owner.asset).meshWalks ??= []);
+        if (!demanded.includes(index)) writable(demanded).push(index);
         return {
             ...target,
             containerCpp: `bbl::asset_mesh_walk(${target.engineCpp}, ${owner.cpp}, ${index})`,
@@ -961,7 +961,7 @@ export class HandleCollections {
         this.requireLoaderFlattenedContainer(owner.asset, entities);
         this.foldedFlattenLoops.add(loop);
         const result = this.assetMeshCollection(owner, declaration.name);
-        result.handleCollection = this.sourceMeshWalk(
+        writable(result).handleCollection = this.sourceMeshWalk(
             owner,
             result.handleCollection!,
             { kind: "preorder" },
@@ -1595,7 +1595,7 @@ export class HandleCollections {
                     `${pushed.kind} would leave two shapes in one list.`,
             );
         }
-        tuple.tupleElements.push(pushed);
+        writable(tuple.tupleElements).push(pushed);
         return { kind: "void", cpp: "" };
     }
 

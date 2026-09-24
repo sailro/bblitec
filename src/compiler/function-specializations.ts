@@ -2,10 +2,23 @@ import ts from "typescript";
 import {
     EmissionMap,
     EmissionWeakMap,
-    isCompilerInput,
+    journaled,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+
+/** AST nodes, checker types and symbols are immutable compiler inputs. */
+function isCompilerInput(value: object): boolean {
+    return (
+        ("kind" in value &&
+            typeof value.kind === "number" &&
+            "pos" in value &&
+            typeof value.pos === "number" &&
+            "end" in value &&
+            typeof value.end === "number") ||
+        ("getFlags" in value && typeof value.getFlags === "function")
+    );
+}
 
 export interface FunctionEmissionScope {
     readonly lexical: object;
@@ -18,7 +31,7 @@ export interface FunctionEmissionScope {
 export class FunctionSpecializations<T> {
     private readonly objects = new EmissionWeakMap<object, number>();
     private readonly symbols = new EmissionMap<symbol, number>();
-    private nextObject = 0;
+    @journaled private accessor nextObject = 0;
     private readonly entries = new EmissionMap<ts.Node, Map<string, T>>();
 
     private identity(value: object): number {

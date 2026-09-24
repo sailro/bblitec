@@ -17,6 +17,7 @@ import {
     EmissionSet,
     EmissionMap,
     EmissionWeakMap,
+    writable,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
@@ -1763,13 +1764,14 @@ export class DataLowerer {
             this.leafValue(`(*${value.cpp})`, inner),
             value,
         );
-        present.nativeLvalue = true;
+        writable(present).nativeLvalue = true;
         if (cppIdentifierPattern.test(value.cpp))
-            present.stableOwnerCpp = value.cpp;
+            writable(present).stableOwnerCpp = value.cpp;
         if (value.ownedCpp !== undefined) {
-            present.ownedCpp = `bbl::js::snapshot_value(*(${value.cpp}))`;
+            writable(present).ownedCpp =
+                `bbl::js::snapshot_value(*(${value.cpp}))`;
         } else {
-            delete present.ownedCpp;
+            delete writable(present).ownedCpp;
         }
         return present;
     }
@@ -2331,21 +2333,22 @@ export class DataLowerer {
                     : `${owner.cpp}.${field.name}`,
                 field.type,
             );
-            value.nativeLvalue = true;
-            if (field.uncheckedProperty) value.preserveUncheckedLookup = true;
+            writable(value).nativeLvalue = true;
+            if (field.uncheckedProperty)
+                writable(value).preserveUncheckedLookup = true;
             const staticField =
                 !this.context.dataTypes.isReferenceStruct(dataType.name) ||
                 field.readOnly
                     ? owner.recordProperties?.[property]
                     : undefined;
             if (staticField?.staticNumber !== undefined) {
-                value.staticNumber = staticField.staticNumber;
+                writable(value).staticNumber = staticField.staticNumber;
             }
             if (staticField?.staticString !== undefined) {
-                value.staticString = staticField.staticString;
+                writable(value).staticString = staticField.staticString;
             }
             if (staticField?.staticBoolean !== undefined) {
-                value.staticBoolean = staticField.staticBoolean;
+                writable(value).staticBoolean = staticField.staticBoolean;
             }
             return value;
         }
@@ -5048,7 +5051,7 @@ export class DataLowerer {
             value.staticElementsOwner?.collectionCardinality;
         if (!cardinality && !value.staticElements && !value.staticElementsOwner)
             return;
-        if (cardinality) cardinality.untrackedAliases = true;
+        if (cardinality) writable(cardinality).untrackedAliases = true;
         this.invalidateStaticElements(value);
     }
 
@@ -7137,7 +7140,10 @@ export class DataLowerer {
                         "A compile-time record cannot be edited from runtime control flow.",
                     );
                 }
-                delete recordOwner.recordProperties?.[key.staticString];
+                if (recordOwner.recordProperties)
+                    delete writable(recordOwner.recordProperties)[
+                        key.staticString
+                    ];
                 return;
             }
             const owner = this.compileDataPath(target.expression, "read");
@@ -7175,7 +7181,10 @@ export class DataLowerer {
                         "A compile-time record cannot be edited from runtime control flow.",
                     );
                 }
-                delete recordOwner.recordProperties?.[target.name.text];
+                if (recordOwner.recordProperties)
+                    delete writable(recordOwner.recordProperties)[
+                        target.name.text
+                    ];
                 return;
             }
             const field = this.compileDataPath(target, "write");
@@ -7841,8 +7850,9 @@ export class DataLowerer {
                         expression,
                         "Module namespace properties are read-only.",
                     );
-                (recordOwner.recordProperties ??= {})[key.staticString] =
-                    assigned;
+                writable((writable(recordOwner).recordProperties ??= {}))[
+                    key.staticString
+                ] = assigned;
                 return true;
             }
             // This first resolution only asks whether the target is a Map.
@@ -7916,16 +7926,17 @@ export class DataLowerer {
                     keyValue.staticString !== undefined &&
                     narrowed.recordProperties !== undefined
                 ) {
-                    narrowed.recordProperties[keyValue.staticString] = {
-                        ...assignedValue,
-                        // Static consumers need the exact value this
-                        // assignment stored, not a second evaluation of its
-                        // source expression. The key snapshot proves the
-                        // entry exists in every reached successful path.
-                        cpp:
-                            `${narrowed.cpp}.at(` +
-                            `${this.context.cppString(keyValue.staticString)})`,
-                    };
+                    writable(narrowed.recordProperties)[keyValue.staticString] =
+                        {
+                            ...assignedValue,
+                            // Static consumers need the exact value this
+                            // assignment stored, not a second evaluation of its
+                            // source expression. The key snapshot proves the
+                            // entry exists in every reached successful path.
+                            cpp:
+                                `${narrowed.cpp}.at(` +
+                                `${this.context.cppString(keyValue.staticString)})`,
+                        };
                 } else if (keyValue.staticString === undefined) {
                     // A dynamic key means no finite property snapshot is
                     // complete enough for a generation-time consumer.
@@ -7985,7 +7996,7 @@ export class DataLowerer {
                 // unrelated fields on the same object. The property snapshot
                 // object is shared by aliases, so deleting in place updates
                 // every view while preserving immutable dimensions/constants.
-                delete root.recordProperties[left.name.text];
+                delete writable(root.recordProperties)[left.name.text];
             }
         };
         if (
@@ -8869,7 +8880,7 @@ export class DataLowerer {
             })`,
             impure: true,
         };
-        delete value.staticNumber;
+        delete writable(value).staticNumber;
         return value;
     }
 
@@ -8897,7 +8908,7 @@ export class DataLowerer {
             cpp: `(${expression.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"}${target.cpp})`,
             impure: true,
         };
-        delete value.staticNumber;
+        delete writable(value).staticNumber;
         return value;
     }
 

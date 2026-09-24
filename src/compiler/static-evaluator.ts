@@ -1323,7 +1323,7 @@ export class StaticEvaluator {
         expression: ts.Expression,
         length: number,
         resolved?: Value,
-    ): Value[] | undefined {
+    ): readonly Value[] | undefined {
         // An identifier binds, or resolves through a module-level
         // initializer; an element or property access reaches an entry of
         // a static table, which is how an indexed color table feeds a
