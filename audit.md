@@ -130,7 +130,7 @@ and performance.
 | GC-11 | low | MSVC suppressed C4702 for generated units. | Fallthrough proof; `/wd4702` removed (10 apps build with MSVC). | fixed |
 | GC-12 | med | A `switch` over a temporary string bound a dangling `string_view`. | Storage bound before the view. | fixed |
 | GC-13 | low | Collection `forEach` copies were `const auto`, rejected by clang-cl `/WX`. | Non-const copies. | fixed |
-| GC-14 | low | `float32Literal` rounds through double first; a midpoint can differ from `Math.fround` (`cpp-literals.ts`). | Round once. | open |
+| GC-14 | low | `float32Literal` rounds through double first; a midpoint can differ from `Math.fround` (`cpp-literals.ts`). | `float32Literal` and `floatLiteral` spell a float32-midpoint double as `Math.fround` stores it; table literals defer to them. | fixed |
 | GC-15 | low | Generated `main` catches only `std::exception`. | Route every escape through the application error reporter. | open |
 
 ## Dead code (DEAD)
@@ -147,9 +147,9 @@ and performance.
 | DEAD-8 | low | Self-described "legacy" compiler paths. | Measured: all reached by scenes or tests. | declined |
 | DEAD-9 | low | 258 exports used only in their own file. | Drop exports; `ts-prune -u`. | open |
 | DEAD-10 | low | Unused parameters, duplicated helpers, silently passing tests. | Fixed; the tooling `isRecord` copy stays (importing it would load TypeScript into `scene show`). | fixed |
-| DEAD-11 | low | Scene PBR manifest `transmission`, `ior` and `thickness` fields are written and never read. | Drop them (moves every PBR manifest). | open |
+| DEAD-11 | low | Scene PBR manifest `transmission`, `ior` and `thickness` fields are written and never read. | Writer and type fields deleted; only the 35 PBR manifests moved. | fixed |
 | DEAD-12 | low | `PrimitiveKind` box/ground/sphere/torus are unused and `MeshRecord::dimensions` is never written (`runtime.hpp`). | Delete. | open |
-| DEAD-13 | low | Object colour inputs (`{r,g,b,a}` baseColorFactor, `{r,g,b}` diffuseColor) are not pinned API; only a test reaches them. | Refuse. | open |
+| DEAD-13 | low | Object colour inputs (`{r,g,b,a}` baseColorFactor, `{r,g,b}` diffuseColor) are not pinned API; only a test reaches them. | `{r,g,b}` and `{r,g,b,a}` refuse wherever the pin types a number tuple (every Color3 site, `baseColorFactor`); Color4 objects stay where pinned (clear colours, lines). | fixed |
 
 ## Documentation (DOC)
 
@@ -178,7 +178,7 @@ and performance.
 | TL-10 | low | Help/parser/doc drift. | Shared flag specs; generated usage. | fixed |
 | TL-11 | low | Dead entry points and aliases. | Deleted. | fixed |
 | TL-12 | low | Duplicated walkers and runners. | Shared in tooling. | partial |
-| TL-13 | low | `parity`/`check` wait forever on a Window host in a locked console session (offscreen 905 s, ocean 8,830 s). | Detect the session or time out. | open |
+| TL-13 | low | `parity`/`check` wait forever on a Window host in a locked console session (offscreen 905 s, ocean 8,830 s). | Window-host runs without their own limit are killed after 120 s + 50 ms per frame; the timeout names the locked session. | fixed |
 | TL-14 | low | `check scene149` fails 1/28 at main (the pin's live resize did not throw #84); scene149 and break-meshes-60 browser observations are stale. | Re-observe. | open |
 | TL-15 | low | Package `.staging/` folders accumulate. | Remove after packaging. | open |
 
@@ -208,4 +208,4 @@ and performance.
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
 | WK-1 | high | Worker messages with Date/Map/Set/typed views compiled then threw `DataCloneError`. | Structured-clone codecs; unsupported types refuse at generation. | fixed |
-| WK-2 | med | Class instances cross workers as classes; the browser delivers plain objects without private fields or prototype. | Refuse, or clone as plain records. | open |
+| WK-2 | med | Class instances cross workers as classes; the browser delivers plain objects without private fields or prototype. | Refused at both message ends, naming the class; no registered program posts one. | fixed |
