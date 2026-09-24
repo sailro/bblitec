@@ -39,7 +39,7 @@ const fn = (
     result: RecordShape,
 ): RecordShape => ({ kind: "function", parameters, result });
 /** A backend GPU object the text path holds; absent while `null`. */
-export const gpuObject: RecordShape = {
+const gpuObject: RecordShape = {
     kind: "native",
     cpp: "bbl::TextGpuHandle",
     nullable: true,

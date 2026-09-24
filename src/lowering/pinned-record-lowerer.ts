@@ -56,12 +56,6 @@ import { isPinnedErrorCall } from "./pinned-error.js";
 import { cppCondition } from "../cpp-expressions.js";
 import type { PinnedTypedProgram } from "./pinned-typed-program.js";
 
-/** A native method of a platform value (`gpu._curveTex.destroy()`). */
-export type NativeMethod = (
-    receiver: string,
-    args: readonly string[],
-) => string;
-
 /** The native form of one pinned type. */
 export type RecordShape =
     | {
@@ -73,7 +67,6 @@ export type RecordShape =
           readonly cpp: string;
           /** The native value is itself nullable (a handle), as `T | null` is. */
           readonly nullable?: boolean;
-          readonly methods?: ReadonlyMap<string, NativeMethod>;
           /** Crosses from generation as the string it holds there. */
           readonly fromString?: boolean;
       }
@@ -2691,11 +2684,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         break;
                 }
                 break;
-            case "native": {
-                const native = shape.methods?.get(name);
-                if (native) return native(receiver(), args());
-                break;
-            }
             default:
                 break;
         }
