@@ -648,7 +648,9 @@ New-Item -ItemType Directory -Path (Join-Path $plan.Staging $name) | Out-Null
 Set-Content -LiteralPath (Join-Path $plan.Staging "$name/new.txt") -Value 'new package'
 Set-Content -LiteralPath (Join-Path $plan.Staging "$name.zip") -Value 'new zip'
 Set-Content -LiteralPath (Join-Path $plan.Staging "$name.json") -Value '{}'
+Set-Content -LiteralPath (Join-Path $plan.Staging 'smoke-output.txt') -Value 'smoke log'
 Publish-PackageOutput $plan
+if (Test-Path -LiteralPath (Join-Path $root '.staging')) { throw 'published staging kept' }
 if ((Get-Content -LiteralPath (Join-Path $plan.Previous "$name/old.txt")) -ne 'old package') { throw 'prior package lost' }
 if ((Get-Content -LiteralPath (Join-Path $plan.Previous "$name.zip")) -ne 'old zip') { throw 'prior zip lost' }
 if ((Get-Content -LiteralPath (Join-Path $root "$name/new.txt")) -ne 'new package') { throw 'new package missing' }

@@ -54,6 +54,13 @@ function Publish-PackageOutput($Plan) {
     foreach ($name in $names) {
         Move-Item -LiteralPath (Join-Path $Plan.Staging $name) -Destination (Join-Path $Plan.Root $name)
     }
+    # A published run leaves only its smoke-test scratch behind; a failed run
+    # never reaches here and keeps its staging for diagnosis.
+    Remove-Item -LiteralPath $Plan.Staging -Recurse -Force
+    $stagingRoot = Split-Path -Parent $Plan.Staging
+    if (-not (Get-ChildItem -LiteralPath $stagingRoot -Force)) {
+        Remove-Item -LiteralPath $stagingRoot -Force
+    }
 }
 
 Export-ModuleMember -Function New-PackageOutput, Publish-PackageOutput, Assert-PackageChild
