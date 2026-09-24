@@ -398,11 +398,10 @@ import {
     physicsEventInfoType,
     physicsEventInfoValue,
 } from "./compiler/intrinsics/physics.js";
-import { reachedGeneratedSources } from "./generated-sources.js";
 import {
     featureOrder,
-    featureSources,
-    renderFeaturesCmake,
+    impliedFeatures,
+    projectFeatures,
     renderMainCpp,
 } from "./compiler/output-projection.js";
 import { SceneMaterialRecorder } from "./compiler/scene-materials.js";
@@ -420,7 +419,6 @@ export type {
     PostProcessTaskManifest,
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
-export { renderFeaturesCmake };
 
 /**
  * A canvas size read, and which of the engine's two dimensions answers it.
@@ -1302,27 +1300,16 @@ class Compiler implements LoweringServices {
                 featureSites[feature] = site;
             }
         }
-        // Two features can name the same PAL translation unit (the sprite
-        // and PBR renderers share one), and CMake must list it once.
-        const runtimeSources = [
-            ...new EmissionSet(
-                features.flatMap((feature) => featureSources[feature]),
-            ),
-        ];
-        // The manifest and CMake projection of the same table the upstream
-        // lowerer emits from, so a feature's sources are declared once.
-        const generatedSources = reachedGeneratedSources(features);
         const application = this.renderCpp(features);
         this.staticExpansionBudget.assertWithinBudget();
+        const { runtimeSources, generatedSources, cmake } = projectFeatures(
+            features,
+            application.sourceUnits.map(({ path }) => path),
+        );
         return {
             cpp: application.cpp,
             cppFiles: application.files,
-            cmake: renderFeaturesCmake(
-                features,
-                runtimeSources,
-                generatedSources,
-                application.sourceUnits.map(({ path }) => path),
-            ),
+            cmake,
             assetPayloads: this.assetPayloads,
             ...(this.reachedNodeParticles.sets.length > 0
                 ? { nodeParticles: this.reachedNodeParticles }
@@ -18566,55 +18553,8 @@ class Compiler implements LoweringServices {
                 "Scene-code matrix intrinsics currently require Float32 Mat4 storage; high-precision matrix allocation is not supported.",
             );
         }
-        // Every raw Web Audio node/asset feature is implemented by the same
-        // engine PAL and can only be reached through one of its contexts.
-        // Record that dependency even when the creating call lives in a
-        // deferred platform callback that is lowered after another audio
-        // callback first reaches a node family.
-        if (feature.startsWith("audio:") && feature !== "audio:engine") {
-            this.reachFeature("audio:engine", site);
-        }
-        if (feature === "compute:task-execution") {
-            for (const dependency of [
-                "compute:task",
-                "compute:dispatch",
-                "compute:shader",
-                "compute:bindings",
-            ] as const)
-                this.reachFeature(dependency, site);
-        }
-        if (feature === "environment:procedural-sky") {
-            for (const dependency of [
-                "environment:sky-atmosphere",
-                "environment:ibl",
-                "compute:texture-mipmaps",
-                "platform:packaged-fetch",
-            ] as const)
-                this.reachFeature(dependency, site);
-        }
-        if (feature === "compute:texture-mipmaps") {
-            for (const dependency of [
-                "compute:storage-texture",
-                "compute:task",
-                "compute:frame-graph",
-            ] as const)
-                this.reachFeature(dependency, site);
-        }
-        if (feature === "compute:frame-graph")
-            this.reachFeature("compute:task-execution", site);
-        if (feature === "compute:storage-readback")
-            this.reachFeature("compute:storage-buffer", site);
-        if (feature === "compute:bindings") {
-            for (const dependency of [
-                "compute:binding-decl",
-                "compute:shader",
-                "compute:storage-texture",
-                "compute:uniform-buffer",
-            ] as const)
-                this.reachFeature(dependency, site);
-        }
-        if (feature === "compute:one-shot")
-            this.reachFeature("compute:task", site);
+        for (const implied of impliedFeatures(feature))
+            this.reachFeature(implied, site);
         this.features.add(feature);
         if (site !== undefined && !this.featureSites.has(feature)) {
             this.featureSites.set(feature, this.featureSite(site));

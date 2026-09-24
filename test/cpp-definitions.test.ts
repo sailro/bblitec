@@ -102,6 +102,7 @@ test("node-only variant data owns its light declarations in an isolated translat
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,
+        transmission: false,
         materialSpecular: false,
         selectedMaterialVariant: "",
         standardLightLists: false,

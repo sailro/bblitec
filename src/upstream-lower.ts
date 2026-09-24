@@ -510,6 +510,12 @@ export interface UpstreamEmitOptions {
     animationPointer: boolean;
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
+    /**
+     * The transmission renderer (`BBLITE_RENDERER_TRANSMISSION`): the scene
+     * reaches scene transmission, or a composed variant carries the pin's
+     * refraction fragment -- `sceneTransmission` in asset-feature-join.ts.
+     */
+    transmission: boolean;
     materialSpecular: boolean;
     /** The `KHR_materials_variants` a scene selected, or "" when unreached. */
     selectedMaterialVariant: string;
@@ -782,6 +788,18 @@ class GeneratedSourceWriter {
     public emit(features: string[], options: UpstreamEmitOptions): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
+        // The generated-source table is the one statement of which units a
+        // feature set reaches; each emitter below states only how its unit
+        // is lowered, and lowers it only when the table reaches it.
+        const reachedSources = new Set(reachedGeneratedSources(features));
+        const emitReached = (
+            source: string,
+            lower: () => LoweredSource,
+            header?: string,
+        ): void => {
+            if (reachedSources.has(source))
+                this.writeSource(source, lower(), generated, header);
+        };
         // Which programs a node-particle system draws is the pin's answer
         // twice over: the blend mode comes from the graph's own SystemBlock
         // (so from the bake), and how many passes that mode draws comes from
@@ -793,15 +811,7 @@ class GeneratedSourceWriter {
             options.nodeParticleSprite2d ?? [],
             options.nodeParticleRegistrations ?? [],
         );
-        // Scene transmission is reached from the scene's own code and from a
-        // loaded asset alike: the pin's `registerPbrTransmission` enables it for
-        // any transmissive surface the asset carries, without the scene naming
-        // it. That makes it an asset capability like the material extensions
-        // beside it, so the compiled define lives here rather than being derived
-        // from the reached-feature list alone.
-        const transmission =
-            features.includes("renderer:transmission") ||
-            options.assetTransmission;
+        const transmission = options.transmission;
         // Every binding-derived material capability -- a composed Standard
         // variant binding the pin's 2D reflection pair (`rT`) or bump pair
         // (`bT`), a PBR variant binding a lightmap or metallic-reflectance
@@ -980,41 +990,27 @@ class GeneratedSourceWriter {
             ),
         );
 
-        this.writeSource(
-            "upstream/src/engine.cpp",
+        emitReached("upstream/src/engine.cpp", () =>
             new EngineLowerer(context).lowerCore(
                 features.includes("platform:workers"),
                 features.includes("backend:sdl"),
             ),
-            generated,
         );
-        if (features.includes("engine:gpu-task-timing"))
-            this.writeSource(
-                "upstream/src/gpu_task_timing.cpp",
-                lowerGpuTaskTiming(context),
-                generated,
-            );
-        if (features.includes("engine:gpu-retirement"))
-            this.writeSource(
-                "upstream/src/gpu_retirement.cpp",
-                lowerGpuRetirement(context),
-                generated,
-            );
-        if (features.includes("compute:storage-texture"))
-            this.writeSource(
-                "upstream/src/compute_texture.cpp",
-                lowerComputeTexture(context),
-                generated,
-            );
-        if (features.includes("compute:task"))
-            this.writeSource(
-                "upstream/src/compute_task.cpp",
-                lowerComputeTask(
-                    context,
-                    features.includes("compute:task-execution"),
-                ),
-                generated,
-            );
+        emitReached("upstream/src/gpu_task_timing.cpp", () =>
+            lowerGpuTaskTiming(context),
+        );
+        emitReached("upstream/src/gpu_retirement.cpp", () =>
+            lowerGpuRetirement(context),
+        );
+        emitReached("upstream/src/compute_texture.cpp", () =>
+            lowerComputeTexture(context),
+        );
+        emitReached("upstream/src/compute_task.cpp", () =>
+            lowerComputeTask(
+                context,
+                features.includes("compute:task-execution"),
+            ),
+        );
         if (features.includes("light:parameters"))
             this.tree.write(
                 "upstream/include/bblite/upstream/light_parameters.hpp",
@@ -1049,63 +1045,33 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
-        if (features.includes("compute:texture-mipmaps"))
-            this.writeSource(
-                "upstream/src/compute_texture_mipmaps.cpp",
-                lowerComputeTextureMipmaps(context),
-                generated,
-            );
-        if (features.includes("compute:task-execution"))
-            this.writeSource(
-                "upstream/src/compute_task_execution.cpp",
-                lowerComputeTaskExecution(context),
-                generated,
-            );
-        if (features.includes("compute:frame-graph"))
-            this.writeSource(
-                "upstream/src/compute_frame_graph.cpp",
-                lowerComputeFrameGraph(context),
-                generated,
-            );
-        if (features.includes("compute:dispatch"))
-            this.writeSource(
-                "upstream/src/compute_dispatch.cpp",
-                lowerComputeDispatch(context),
-                generated,
-            );
-        if (
-            features.includes("compute:storage-texture") ||
-            features.includes("compute:uniform-buffer")
-        )
-            this.writeSource(
-                "upstream/src/managed_resources.cpp",
-                lowerManagedResources(context),
-                generated,
-            );
-        if (features.includes("compute:uniform-arena"))
-            this.writeSource(
-                "upstream/src/compute_uniform_arena.cpp",
-                lowerComputeUniformArena(context),
-                generated,
-            );
-        if (features.includes("compute:uniform-writer"))
-            this.writeSource(
-                "upstream/src/compute_uniform_writer.cpp",
-                lowerComputeUniformWriter(context),
-                generated,
-            );
-        if (features.includes("compute:binding-decl"))
-            this.writeSource(
-                "upstream/src/compute_binding_decl.cpp",
-                lowerComputeBindingDecl(context),
-                generated,
-            );
-        if (features.includes("compute:shader"))
-            this.writeSource(
-                "upstream/src/compute_shader.cpp",
-                lowerComputeShader(context),
-                generated,
-            );
+        emitReached("upstream/src/compute_texture_mipmaps.cpp", () =>
+            lowerComputeTextureMipmaps(context),
+        );
+        emitReached("upstream/src/compute_task_execution.cpp", () =>
+            lowerComputeTaskExecution(context),
+        );
+        emitReached("upstream/src/compute_frame_graph.cpp", () =>
+            lowerComputeFrameGraph(context),
+        );
+        emitReached("upstream/src/compute_dispatch.cpp", () =>
+            lowerComputeDispatch(context),
+        );
+        emitReached("upstream/src/managed_resources.cpp", () =>
+            lowerManagedResources(context),
+        );
+        emitReached("upstream/src/compute_uniform_arena.cpp", () =>
+            lowerComputeUniformArena(context),
+        );
+        emitReached("upstream/src/compute_uniform_writer.cpp", () =>
+            lowerComputeUniformWriter(context),
+        );
+        emitReached("upstream/src/compute_binding_decl.cpp", () =>
+            lowerComputeBindingDecl(context),
+        );
+        emitReached("upstream/src/compute_shader.cpp", () =>
+            lowerComputeShader(context),
+        );
         if (features.includes("compute:bindings")) {
             this.writeSource(
                 "upstream/src/compute_bindings.cpp",
@@ -1123,53 +1089,31 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
-        if (features.includes("compute:one-shot"))
-            this.writeSource(
-                "upstream/src/compute_one_shot.cpp",
-                lowerComputeOneShot(context),
-                generated,
-            );
-        if (features.includes("compute:uniform-buffer"))
-            this.writeSource(
-                "upstream/src/uniform_buffer.cpp",
-                lowerUniformBuffer(context),
-                generated,
-            );
-        if (features.includes("compute:storage-buffer"))
-            this.writeSource(
-                "upstream/src/storage_buffer.cpp",
-                lowerStorageBuffer(
-                    context,
-                    features.includes("compute:storage-readback"),
-                ),
-                generated,
-            );
-        if (features.includes("compute:storage-readback"))
-            this.writeSource(
-                "upstream/src/storage_readback.cpp",
-                lowerStorageReadback(context),
-                generated,
-            );
-        if (features.includes("camera:configurable-free"))
-            this.writeSource(
-                "upstream/src/camera_configurable_free.cpp",
-                lowerConfigurableCameraControls(context),
-                generated,
-            );
-        if (features.includes("engine:device-recovery"))
-            this.writeSource(
-                "upstream/src/device_recovery.cpp",
-                lowerDeviceRecovery(context),
-                generated,
-            );
-        if (features.includes("engine:dispose"))
-            this.writeSource(
-                "upstream/src/engine_dispose.cpp",
-                lowerEngineDisposal(context),
-                generated,
-            );
-        this.writeSource(
-            "upstream/src/scene_core.cpp",
+        emitReached("upstream/src/compute_one_shot.cpp", () =>
+            lowerComputeOneShot(context),
+        );
+        emitReached("upstream/src/uniform_buffer.cpp", () =>
+            lowerUniformBuffer(context),
+        );
+        emitReached("upstream/src/storage_buffer.cpp", () =>
+            lowerStorageBuffer(
+                context,
+                features.includes("compute:storage-readback"),
+            ),
+        );
+        emitReached("upstream/src/storage_readback.cpp", () =>
+            lowerStorageReadback(context),
+        );
+        emitReached("upstream/src/camera_configurable_free.cpp", () =>
+            lowerConfigurableCameraControls(context),
+        );
+        emitReached("upstream/src/device_recovery.cpp", () =>
+            lowerDeviceRecovery(context),
+        );
+        emitReached("upstream/src/engine_dispose.cpp", () =>
+            lowerEngineDisposal(context),
+        );
+        emitReached("upstream/src/scene_core.cpp", () =>
             new SceneLowerer(context).lowerCore({
                 fog: features.includes("renderer:fog"),
                 clipPlane: features.includes("renderer:clip-plane"),
@@ -1187,26 +1131,17 @@ class GeneratedSourceWriter {
                 nodeMaterials: nodeVariantList.length > 0,
                 pbrSceneHooks: features.includes("loader:gltf"),
             }),
-            generated,
         );
         this.emitTextData(features, context, options, generated);
-        if (features.includes("frame-graph:resources")) {
-            this.writeSource(
-                "upstream/src/frame_graph_resources.cpp",
-                new RenderTargetLowerer(
-                    context,
-                    features.includes("frame-graph:surface-target"),
-                ).lower(),
-                generated,
-            );
-        }
-        if (features.includes("renderer:frame-graph")) {
-            this.writeSource(
-                "upstream/src/frame_graph_context.cpp",
-                new FrameGraphContextLowerer(context).lower(),
-                generated,
-            );
-        }
+        emitReached("upstream/src/frame_graph_resources.cpp", () =>
+            new RenderTargetLowerer(
+                context,
+                features.includes("frame-graph:surface-target"),
+            ).lower(),
+        );
+        emitReached("upstream/src/frame_graph_context.cpp", () =>
+            new FrameGraphContextLowerer(context).lower(),
+        );
 
         const reachesCameraFactory =
             features.includes("camera:arc-rotate") ||
@@ -1220,89 +1155,47 @@ class GeneratedSourceWriter {
             options,
             generated,
         );
-        if (features.includes("camera:default")) {
-            this.writeSource(
-                "upstream/src/camera_default.cpp",
-                new CameraLowerer(context).lowerDefaultFactory(
-                    options.nodeVisibility,
-                    options.animatedWorldBounds,
-                ),
-                generated,
-            );
-        }
-        if (features.includes("camera:orthographic")) {
-            this.writeSource(
-                "upstream/src/camera_orthographic.cpp",
-                new CameraLowerer(context).lowerOrthographic(),
-                generated,
-            );
-        }
-        if (features.includes("background:image-skybox")) {
-            this.writeSource(
-                "upstream/src/image_skybox.cpp",
-                new EnvironmentLowerer(context).lowerImageSkyboxAdapter(),
-                generated,
-            );
-        }
+        emitReached("upstream/src/camera_default.cpp", () =>
+            new CameraLowerer(context).lowerDefaultFactory(
+                options.nodeVisibility,
+                options.animatedWorldBounds,
+            ),
+        );
+        emitReached("upstream/src/camera_orthographic.cpp", () =>
+            new CameraLowerer(context).lowerOrthographic(),
+        );
+        emitReached("upstream/src/image_skybox.cpp", () =>
+            new EnvironmentLowerer(context).lowerImageSkyboxAdapter(),
+        );
         this.emitEnvironment(features, context, generated);
         this.emitLights(features, context, generated);
-        if (features.includes("light:hemispheric")) {
-            this.writeSource(
-                "upstream/src/light_hemispheric.cpp",
-                new LightLowerer(context).lowerFactory(),
-                generated,
-            );
-        }
-        if (features.includes("light:directional")) {
-            this.writeSource(
-                "upstream/src/light_directional.cpp",
-                new LightLowerer(context).lowerDirectionalFactory(),
-                generated,
-            );
-        }
-        if (
-            features.includes("light:point") ||
-            features.includes("loader:babylon")
-        ) {
-            this.writeSource(
-                "upstream/src/light_point.cpp",
-                new LightLowerer(context).lowerPointFactory(),
-                generated,
-            );
-        }
-        if (features.includes("light:spot")) {
-            this.writeSource(
-                "upstream/src/light_spot.cpp",
-                new LightLowerer(context).lowerSpotFactory(),
-                generated,
-            );
-        }
-        if (features.includes("light:clustered")) {
-            this.writeSource(
-                "upstream/src/clustered_light.cpp",
-                lowerClusteredLights(context),
-                generated,
-                "upstream/include/bblite/upstream/clustered_light.hpp",
-            );
-        }
+        emitReached("upstream/src/light_hemispheric.cpp", () =>
+            new LightLowerer(context).lowerFactory(),
+        );
+        emitReached("upstream/src/light_directional.cpp", () =>
+            new LightLowerer(context).lowerDirectionalFactory(),
+        );
+        emitReached("upstream/src/light_point.cpp", () =>
+            new LightLowerer(context).lowerPointFactory(),
+        );
+        emitReached("upstream/src/light_spot.cpp", () =>
+            new LightLowerer(context).lowerSpotFactory(),
+        );
+        emitReached(
+            "upstream/src/clustered_light.cpp",
+            () => lowerClusteredLights(context),
+            "upstream/include/bblite/upstream/clustered_light.hpp",
+        );
         this.emitAnimationGroups(features, context, generated);
         this.emitAnimationProperty(features, context, options, generated);
-        if (features.includes("mesh:vat")) {
-            this.writeSource(
-                "upstream/src/vat.cpp",
-                new VatLowerer(context).lower({
-                    instances: features.includes("mesh:vat-instances"),
-                }),
-                generated,
-            );
-        }
-        if (features.includes("mesh:skeleton")) {
-            this.writeSource(
-                "upstream/src/skeleton.cpp",
-                new SkeletonLowerer(context).lower(),
-                generated,
-            );
-        }
+        emitReached("upstream/src/vat.cpp", () =>
+            new VatLowerer(context).lower({
+                instances: features.includes("mesh:vat-instances"),
+            }),
+        );
+        emitReached("upstream/src/skeleton.cpp", () =>
+            new SkeletonLowerer(context).lower(),
+        );
         this.emitLoaderGltf(
             features,
             context,
@@ -1310,16 +1203,12 @@ class GeneratedSourceWriter {
             nodeGeometryViewList,
             options,
         );
-        if (features.includes("loader:babylon")) {
-            this.writeSource(
-                "upstream/src/babylon_loader.cpp",
-                new BabylonLowerer(context).lowerLoaderAdapter(
-                    options.standardLightLists,
-                    features.includes("mesh:clone"),
-                ),
-                generated,
-            );
-        }
+        emitReached("upstream/src/babylon_loader.cpp", () =>
+            new BabylonLowerer(context).lowerLoaderAdapter(
+                options.standardLightLists,
+                features.includes("mesh:clone"),
+            ),
+        );
         // Every WGSL module this run emits, whichever renderer produced it.
         const composedShaders: ComposedShader[] = (
             options.computePrograms ?? []
@@ -1426,16 +1315,14 @@ class GeneratedSourceWriter {
             composedShaders,
         );
         this.emitSpriteAtlasHeader(features, context);
-        if (features.includes("sprite:animation")) {
-            this.writeSource(
-                "upstream/src/sprite_animation.cpp",
+        emitReached(
+            "upstream/src/sprite_animation.cpp",
+            () =>
                 new SpriteAnimationLowerer(context).lowerSpriteAnimation(
                     features.includes("sprite:billboard"),
                 ),
-                generated,
-                "upstream/include/bblite/upstream/sprite_animation.hpp",
-            );
-        }
+            "upstream/include/bblite/upstream/sprite_animation.hpp",
+        );
         this.emitSprite2d(
             features,
             context,
@@ -1486,65 +1373,30 @@ class GeneratedSourceWriter {
             composedShaders,
         );
         const factories = new FactoryLowerer(context);
-        if (features.includes("material:standard")) {
-            this.writeSource(
-                "upstream/src/material_standard.cpp",
-                factories.lowerStandardMaterialFactory(),
-                generated,
-            );
-        }
-        if (features.includes("material:pbr")) {
-            this.writeSource(
-                "upstream/src/material_pbr.cpp",
-                factories.lowerPbrMaterialFactory(),
-                generated,
-            );
-        }
-        if (features.includes("material:local-cubemap")) {
-            this.writeSource(
-                "upstream/src/local_cubemap.cpp",
-                lowerLocalCubemap(context),
-                generated,
-            );
-        }
-        if (features.includes("material:grid")) {
-            this.writeSource(
-                "upstream/src/material_grid.cpp",
-                factories.lowerGridMaterialFactory(),
-                generated,
-            );
-        }
-        if (
-            features.includes("texture:file") ||
-            features.includes("loader:babylon")
-        ) {
-            this.writeSource(
-                "upstream/src/texture_file.cpp",
-                factories.lowerFileTextureFactory(),
-                generated,
-            );
-        }
-        if (features.includes("texture:pixels")) {
-            this.writeSource(
-                "upstream/src/texture_pixels.cpp",
-                factories.lowerPixelsTextureFactory(),
-                generated,
-            );
-        }
-        if (features.includes("material:shader")) {
-            this.writeSource(
-                "upstream/src/material_shader.cpp",
-                factories.lowerShaderMaterialFactory(),
-                generated,
-            );
-        }
-        if (features.includes("material:node")) {
-            this.writeSource(
-                "upstream/src/material_node.cpp",
-                factories.lowerNodeMaterialFactory(),
-                generated,
-            );
-        }
+        emitReached("upstream/src/material_standard.cpp", () =>
+            factories.lowerStandardMaterialFactory(),
+        );
+        emitReached("upstream/src/material_pbr.cpp", () =>
+            factories.lowerPbrMaterialFactory(),
+        );
+        emitReached("upstream/src/local_cubemap.cpp", () =>
+            lowerLocalCubemap(context),
+        );
+        emitReached("upstream/src/material_grid.cpp", () =>
+            factories.lowerGridMaterialFactory(),
+        );
+        emitReached("upstream/src/texture_file.cpp", () =>
+            factories.lowerFileTextureFactory(),
+        );
+        emitReached("upstream/src/texture_pixels.cpp", () =>
+            factories.lowerPixelsTextureFactory(),
+        );
+        emitReached("upstream/src/material_shader.cpp", () =>
+            factories.lowerShaderMaterialFactory(),
+        );
+        emitReached("upstream/src/material_node.cpp", () =>
+            factories.lowerNodeMaterialFactory(),
+        );
         {
             const setters = {
                 diffuse: features.includes(
@@ -1580,33 +1432,22 @@ class GeneratedSourceWriter {
                 );
             }
         }
-        if (features.includes("texture:compressed")) {
-            this.writeSource(
-                "upstream/src/compressed_texture.cpp",
-                new CompressedTextureLowerer(context).lower(),
-                generated,
-                "upstream/include/bblite/upstream/compressed_texture.hpp",
-            );
-        }
-        if (features.includes("material:no-color-view")) {
-            this.writeSource(
-                "upstream/src/material_views.cpp",
-                factories.lowerNoColorMaterialViews(
-                    features.includes("shadow:esm"),
-                    nodeEsmCasters,
-                    nodePcfCasters,
-                ),
-                generated,
-            );
-        }
+        emitReached(
+            "upstream/src/compressed_texture.cpp",
+            () => new CompressedTextureLowerer(context).lower(),
+            "upstream/include/bblite/upstream/compressed_texture.hpp",
+        );
+        emitReached("upstream/src/material_views.cpp", () =>
+            factories.lowerNoColorMaterialViews(
+                features.includes("shadow:esm"),
+                nodeEsmCasters,
+                nodePcfCasters,
+            ),
+        );
         this.emitMeshFactories(features, factories, generated);
-        if (features.includes("mesh:lines")) {
-            this.writeSource(
-                "upstream/src/mesh_lines.cpp",
-                new LineLowerer(context).lowerLineSystem(),
-                generated,
-            );
-        }
+        emitReached("upstream/src/mesh_lines.cpp", () =>
+            new LineLowerer(context).lowerLineSystem(),
+        );
         // The rigid-body family. Everything emitted is `havok.ts`'s own
         // semantics; the solver behind it is the PAL's, which is the seam
         // the pin itself draws by taking `hknp` as a parameter.
@@ -1620,18 +1461,11 @@ class GeneratedSourceWriter {
                 ),
             );
         }
-        if (
-            features.includes("mesh:tube") ||
-            features.includes("mesh:extrude")
-        ) {
-            this.writeSource(
-                "upstream/src/mesh_tube.cpp",
-                new TubeLowerer(context).lowerTube(
-                    features.includes("mesh:extrude"),
-                ),
-                generated,
-            );
-        }
+        emitReached("upstream/src/mesh_tube.cpp", () =>
+            new TubeLowerer(context).lowerTube(
+                features.includes("mesh:extrude"),
+            ),
+        );
         // The audio engine's output graph is FOLDED at the reaching call
         // site rather than emitted here, because the shape is three
         // statements long. This is the other half of that: it emits
@@ -1657,28 +1491,17 @@ class GeneratedSourceWriter {
             composedShaders,
             generated,
         );
-        if (features.includes("navigation:recast")) {
-            this.writeSource(
-                "upstream/src/navigation.cpp",
+        emitReached(
+            "upstream/src/navigation.cpp",
+            () =>
                 new NavigationLowerer(context).lowerNavigation(
                     features.includes("navigation:tile-cache"),
                 ),
-                generated,
-                "upstream/include/bblite/upstream/navigation.hpp",
-            );
-        }
-        if (features.includes("gizmo:utility-layer")) {
-            // One unit for the family: the layer, the two display gizmos
-            // and the pinned quaternion helpers they share. The four
-            // EDITING widgets are 28% of it and are emitted only for a
-            // scene that reaches one, which is why the lowerer is handed
-            // the feature list rather than assuming it.
-            this.writeSource(
-                "upstream/src/gizmo.cpp",
-                new GizmoLowerer(context, features).lower(),
-                generated,
-            );
-        }
+            "upstream/include/bblite/upstream/navigation.hpp",
+        );
+        emitReached("upstream/src/gizmo.cpp", () =>
+            new GizmoLowerer(context, features).lower(),
+        );
         // An interactive asset joins the feature at generation; a scene may
         // also reach it from source (`enableFlowGraphPointerPicking`) with
         // no interactive asset, in which case the bridge finds no receiver.
@@ -1693,14 +1516,12 @@ class GeneratedSourceWriter {
                 "A KHR_interactivity asset was parsed without reaching flow-graph:interactivity.",
             );
         }
-        if (features.includes("flow-graph:interactivity")) {
-            this.writeSource(
-                "upstream/src/flow_graph.cpp",
+        emitReached(
+            "upstream/src/flow_graph.cpp",
+            () =>
                 new FlowGraphLowerer(context, options.flowGraphs ?? []).lower(),
-                generated,
-                "upstream/include/bblite/upstream/flow_graph.hpp",
-            );
-        }
+            "upstream/include/bblite/upstream/flow_graph.hpp",
+        );
         this.emitPickingGpu(
             features,
             context,
@@ -1755,19 +1576,15 @@ class GeneratedSourceWriter {
             composedShaders,
         );
         this.emitComposedShaders(composedShaders);
-        this.writeSource(
-            "upstream/src/variant_data.cpp",
-            {
-                header: "",
-                source:
-                    this.variantHeaders
-                        .map((path) => `#include <${path}>\n`)
-                        .join("") + this.variantDefinitions.join("\n"),
-                modulePath: "src/cpp-definitions.ts",
-                symbolName: "CppDefinitions",
-            },
-            generated,
-        );
+        emitReached("upstream/src/variant_data.cpp", () => ({
+            header: "",
+            source:
+                this.variantHeaders
+                    .map((path) => `#include <${path}>\n`)
+                    .join("") + this.variantDefinitions.join("\n"),
+            modulePath: "src/cpp-definitions.ts",
+            symbolName: "CppDefinitions",
+        }));
 
         // The table in generated-sources.ts decides which sources a feature
         // set reaches, and the manifest and CMake feature list are built
@@ -1775,12 +1592,11 @@ class GeneratedSourceWriter {
         // what keeps them from drifting: a source emitted but not declared
         // never reaches the build, and one declared but not emitted fails
         // the configure with a missing file.
-        const declared = new Set(reachedGeneratedSources(features));
-        const missing = [...declared].filter(
+        const missing = [...reachedSources].filter(
             (source) => !this.emitted.has(source),
         );
         const undeclared = [...this.emitted].filter(
-            (source) => !declared.has(source),
+            (source) => !reachedSources.has(source),
         );
         this.validateDeclaredSources(missing, undeclared);
 
@@ -2940,10 +2756,6 @@ ${wgsl}`,
                 gpuDeformation: options.gpuDeformation,
                 morphStorage: options.morphStorage,
                 gpuInstancing: options.gpuInstancing,
-                clearcoat: options.clearcoat,
-                sheen: options.sheen,
-                iridescence: options.iridescence,
-                dispersion: options.dispersion,
             });
             // Every module `lowerShaders` returns is one this repository
             // authors or specializes -- the PBR vertex stage, the grid, the
@@ -4253,6 +4065,7 @@ export function emitUpstreamGenerated(
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,
+        transmission: false,
         materialSpecular: false,
         selectedMaterialVariant: "",
         standardLightLists: false,

@@ -28,7 +28,6 @@ import { packagedFlowGraphPrograms } from "./pinned-flow-graph.js";
 interface GltfSpecialization {
     asset: string;
     extensionsUsed: string[];
-    staticModules: string[];
     renderItems: RenderItemSpecialization[];
     features: {
         animations: boolean;
@@ -50,7 +49,6 @@ interface GltfSpecialization {
         /** Null until asynchronous material construction has packaged its selection. */
         transmissiveMaterial: boolean | null;
         specularReflectance: boolean;
-        extras: boolean;
         eightInfluenceSkinning: boolean;
         /** The packaged document carries converted Gaussian-splat clouds. */
         gaussianSplats: boolean;
@@ -165,26 +163,6 @@ function renderItemSpecializations(
         });
     });
     return result;
-}
-
-function hasExtras(document: JsonRecord): boolean {
-    const collections: unknown[] = [
-        document.asset,
-        document.nodes,
-        document.materials,
-        document.animations,
-        document.meshes,
-    ];
-    return (
-        collections
-            .flatMap((value): unknown[] =>
-                Array.isArray(value) ? value : [value],
-            )
-            .some((value) => asObject(value)?.extras !== undefined) ||
-        primitiveRecords(document).some(
-            (primitive) => primitive.extras !== undefined,
-        )
-    );
 }
 
 /**
@@ -506,7 +484,8 @@ function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
 }
 
 export function specializeGltf(
-    path: string,
+    /** The packaged document, parsed once by `gltfAssetDocuments`. */
+    document: JsonRecord,
     assetName: string,
     /** The variant a scene's `selectVariant` chose on this asset, by name. */
     selectedVariantName?: string,
@@ -515,19 +494,13 @@ export function specializeGltf(
     // an isolated store (a test pointing at another tree) still passes one.
     store = sharedUpstreamStore(),
 ): GltfSpecialization {
-    const document = parseGlbJson(path);
     const selectedVariant = selectedVariantIndex(
         document,
         selectedVariantName,
         assetName,
     );
     const extensionsUsed = asStrings(document.extensionsUsed);
-    const modules = new Set<string>();
     const extensionModules = extensionModuleMap(store);
-    extensionsUsed.forEach((extension) => {
-        const module = extensionModules.get(extension);
-        if (module) modules.add(module);
-    });
 
     const primitives = primitiveRecords(document);
     const accessors = asRecords(document.accessors);
@@ -646,23 +619,9 @@ export function specializeGltf(
             );
         },
     );
-    const extras = hasExtras(document);
-
-    if (animations) modules.add("./gltf-feature-animations.js");
-    if (morphTargets) modules.add("./gltf-feature-morph.js");
-    if (skins) modules.add("./gltf-feature-skeleton.js");
-    // gltf-feature-sparse.js is resolved away at packaging by running the
-    // pin's own preParse hook (compressed-geometry.ts), which materializes
-    // every sparse accessor into a tightly-packed bufferView and clears
-    // `.sparse` -- so the packaged document the loader ships against carries
-    // none, exactly as it carries no quantized accessor.
-    if (nonTrianglePrimitives) modules.add("./gltf-feature-primitive.js");
-    if (extras) modules.add("./gltf-feature-extras.js");
-
     return {
         asset: assetName,
         extensionsUsed,
-        staticModules: [...modules].sort(),
         renderItems: renderItemSpecializations(document, selectedVariant),
         features: {
             animations,
@@ -675,10 +634,9 @@ export function specializeGltf(
             animationPointerMaterials,
             transmissiveMaterial,
             specularReflectance,
-            extras,
             eightInfluenceSkinning,
-            gaussianSplats: hasGaussianSplats(document),
-            compressedImages: hasCompressedImages(document),
+            gaussianSplats: gltfHasGaussianSplats(document),
+            compressedImages: gltfHasCompressedImages(document),
             interactivity:
                 GLTF_MESH_PLAN in document
                     ? packagedFlowGraphPrograms(document).length > 0
@@ -692,30 +650,16 @@ export function specializeGltf(
  *
  * `KHR_gaussian_splatting`'s conversion happens at generation, so what the
  * loader ships against is the row buffer rather than the extension — which
- * packaging drops. Both readers ask the rows for that reason.
+ * packaging drops. The specializer and the asset feature join both ask the
+ * rows for that reason: `loader:splat` selects the generated splat units,
+ * and only the runtime feature list can do that.
  */
-function hasGaussianSplats(document: JsonRecord): boolean {
+export function gltfHasGaussianSplats(document: JsonRecord): boolean {
     return asRecords(document[GAUSSIAN_SPLAT_DOCUMENT_KEY]).length > 0;
 }
 
-/**
- * The same question off a materialized asset, for the feature join.
- *
- * `loader:splat` selects the generated splat translation units, and only the
- * runtime feature list can do that — so an asset that carries clouds joins it
- * after materialization, exactly as an asset's own punctual lights join
- * `light:*`.
- */
-export function gltfHasGaussianSplats(path: string): boolean {
-    return hasGaussianSplats(parseGlbJson(path));
-}
-
 /** Packaged mip lists reach the compressed-texture reader after materialization. */
-export function gltfHasCompressedImages(path: string): boolean {
-    return hasCompressedImages(parseGlbJson(path));
-}
-
-function hasCompressedImages(document: JsonRecord): boolean {
+export function gltfHasCompressedImages(document: JsonRecord): boolean {
     return asRecords(document.images).some(
         (image) => image.mimeType === compressedTextureFormat.mimeType,
     );
@@ -740,10 +684,8 @@ export interface AssetSpecializationFeatures {
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
     materialSpecular: boolean;
-    imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
-    punctualLights: boolean;
     /** Any asset carries JOINTS_1/WEIGHTS_1 the pin would skin and this port truncates. */
     eightInfluenceSkinning: boolean;
     /** Any asset carries transcoded KHR_texture_basisu images. */
@@ -762,9 +704,39 @@ export interface AssetSpecializationFeatures {
     interactivity: boolean;
 }
 
+/**
+ * Every packaged glTF document, parsed once for everything generation asks
+ * of it: the specializer and the asset feature join both read these.
+ */
+export function gltfAssetDocuments(
+    outputRoot: string,
+    assets: readonly CompileAsset[],
+): ReadonlyMap<string, JsonRecord> {
+    return new Map(
+        assets
+            .filter((asset) => asset.kind === "gltf")
+            .map((asset) => [
+                asset.output,
+                parseGlbJson(resolve(outputRoot, "assets", asset.output)),
+            ]),
+    );
+}
+
+/** The document `gltfAssetDocuments` parsed for a glTF asset. */
+export function gltfAssetDocument(
+    documents: ReadonlyMap<string, JsonRecord>,
+    asset: CompileAsset,
+): JsonRecord {
+    const document = documents.get(asset.output);
+    if (document === undefined)
+        throw new Error(`glTF asset '${asset.output}' was not parsed.`);
+    return document;
+}
+
 export function emitAssetSpecializations(
     outputRoot: string,
     assets: CompileAsset[],
+    documents: ReadonlyMap<string, JsonRecord>,
 ): AssetSpecializationFeatures {
     const gltfAssets = assets.filter((asset) => asset.kind === "gltf");
     if (gltfAssets.length === 0) {
@@ -780,10 +752,8 @@ export function emitAssetSpecializations(
             animationPointerMaterials: false,
             assetTransmission: false,
             materialSpecular: false,
-            imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
-            punctualLights: false,
             eightInfluenceSkinning: false,
             gaussianSplats: false,
             compressedImages: false,
@@ -794,7 +764,7 @@ export function emitAssetSpecializations(
     let nextClusterId = 1;
     const specializations = gltfAssets.map((asset) => {
         const specialization = specializeGltf(
-            resolve(outputRoot, "assets", asset.output),
+            gltfAssetDocument(documents, asset),
             asset.output,
             asset.selectedVariant,
         );
@@ -875,10 +845,8 @@ export function emitAssetSpecializations(
         materialSpecular: specializations.some(
             (specialization) => specialization.features.specularReflectance,
         ),
-        imageBasedLighting: usesExtension("EXT_lights_image_based"),
         textureTransform: usesExtension("KHR_texture_transform"),
         gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
-        punctualLights: usesExtension("KHR_lights_punctual"),
         eightInfluenceSkinning: specializations.some(
             (specialization) => specialization.features.eightInfluenceSkinning,
         ),

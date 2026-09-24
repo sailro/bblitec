@@ -4,7 +4,11 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { compileSource } from "../src/compiler.js";
 import { composeScenePipeline } from "../src/compose-pipeline.js";
-import { emitAssetSpecializations } from "../src/asset-specializer.js";
+import {
+    emitAssetSpecializations,
+    gltfAssetDocuments,
+} from "../src/asset-specializer.js";
+import { joinAssetFeatures } from "../src/asset-feature-join.js";
 import { GeneratedTree } from "../src/generated-tree.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { writeGlbFixture } from "./glb-fixture.js";
@@ -84,16 +88,24 @@ async function composeImportedMesh(outputPath: string, source: string) {
             "imported mesh fixture",
         ),
     );
+    const documents = gltfAssetDocuments(outputPath, result.manifest.assets);
     return {
         result,
         composed: await composeScenePipeline({
             result,
             outputPath,
             tree: new GeneratedTree(outputPath),
-            specializationFeatures: emitAssetSpecializations(
+            assetJoin: await joinAssetFeatures({
+                result,
                 outputPath,
-                result.manifest.assets,
-            ),
+                documents,
+                specialization: emitAssetSpecializations(
+                    outputPath,
+                    result.manifest.assets,
+                    documents,
+                ),
+                splatHarmonics: undefined,
+            }),
         }),
     };
 }

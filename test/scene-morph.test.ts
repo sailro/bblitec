@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { emitAssetSpecializations } from "../src/asset-specializer.js";
+import { joinAssetFeatures } from "../src/asset-feature-join.js";
 import { compileSource } from "../src/compiler.js";
 import { composeScenePipeline } from "../src/compose-pipeline.js";
 import { GeneratedTree } from "../src/generated-tree.js";
@@ -68,7 +69,13 @@ test("scene morph attachment records its exact PBR row and keeps weight updates 
         result,
         outputPath,
         tree: new GeneratedTree(outputPath),
-        specializationFeatures: emitAssetSpecializations(outputPath, []),
+        assetJoin: await joinAssetFeatures({
+            result,
+            outputPath,
+            documents: new Map(),
+            specialization: emitAssetSpecializations(outputPath, [], new Map()),
+            splatHarmonics: undefined,
+        }),
     });
     const pin = await importPinnedModule<{ MSH_HAS_MORPH_TARGETS: number }>(
         "material/mesh-features.js",
