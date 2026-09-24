@@ -1125,6 +1125,7 @@ export interface UserFunctionContext
             | "canReplaySharedCallEffects"
             | "emitReusableNativeBody"
             | "reachesOpaqueCallee"
+            | "reachesOnlyClosedEffects"
             | "requiresStaticDataIteration"
             | "probeEmission"
             | "conditions"
@@ -1243,6 +1244,11 @@ export class UserFunctionLowerer {
         returnMetadata: Value | undefined;
     }>();
     private readonly sharedBodyScope = {};
+    /**
+     * Specializations whose shared body declined. A plain map on purpose:
+     * the decline outlives the rolled-back probe that discovered it.
+     */
+    private readonly declinedSharedBodies = new Map<ts.Node, Set<string>>();
     private readonly readsReceiverCache = new EmissionMap<
         SupportedFunction,
         boolean
@@ -1556,13 +1562,25 @@ export class UserFunctionLowerer {
         });
     }
 
+    /**
+     * A callback an operation invokes already runs in its own native body;
+     * it shares only a body whose effects are closed (`closedEffectsOnly`),
+     * so its invocation never probes open-ended work it cannot keep.
+     */
     private trySharedCall(
         context: UserFunctionContext,
         ir: UserFunctionIr,
         call: ts.Node,
         argumentValues: readonly Value[],
         pinArguments = true,
+        closedEffectsOnly = false,
     ): Value | undefined {
+        if (
+            closedEffectsOnly &&
+            ir.declaration.body &&
+            !context.reachesOnlyClosedEffects(ir.declaration.body)
+        )
+            return undefined;
         try {
             return context.probeEmission(() =>
                 this.compileSharedCall(
@@ -2909,148 +2927,183 @@ export class UserFunctionLowerer {
                 call,
             );
         }
-        context.reachJsData();
-        const localGroup =
-            escapes && recursive
-                ? undefined
-                : {
-                      cpp: `bbl_recursive_${context.allocateUserFunctionPrefix()}group`,
-                      self: `bbl_recursive_${context.allocateUserFunctionPrefix()}self`,
-                      bodies: new Map<SupportedFunction, string>(),
-                  };
-        for (const [index, entry] of entries.entries()) {
-            if (localGroup) {
-                entry.value.cpp = recursive
-                    ? `${localGroup.self}.template call<${index}>`
-                    : localGroup.cpp;
-                continue;
+        // A specialization that could not be shared is not probed again.
+        const declineKey =
+            sharedBody && specialization !== undefined
+                ? specialization
+                : undefined;
+        if (
+            declineKey !== undefined &&
+            this.declinedSharedBodies.get(root.declaration)?.has(declineKey)
+        )
+            throw new SharedCallRequiresInline();
+        try {
+            context.reachJsData();
+            const localGroup =
+                escapes && recursive
+                    ? undefined
+                    : {
+                          cpp: `bbl_recursive_${context.allocateUserFunctionPrefix()}group`,
+                          self: `bbl_recursive_${context.allocateUserFunctionPrefix()}self`,
+                          bodies: new Map<SupportedFunction, string>(),
+                      };
+            for (const [index, entry] of entries.entries()) {
+                if (localGroup) {
+                    entry.value.cpp = recursive
+                        ? `${localGroup.self}.template call<${index}>`
+                        : localGroup.cpp;
+                    continue;
+                }
+                const returnCpp = entry.returnType
+                    ? context.dataTypes.cppType(entry.returnType)
+                    : "void";
+                const parametersCpp = entry.parameterTypes
+                    .map((type, index) =>
+                        type
+                            ? this.recursiveParameterCpp(
+                                  context.dataTypes,
+                                  type,
+                                  entry.parameterReadOnly[index]!,
+                                  type.kind === "struct" &&
+                                      context.dataTypes.isReferenceStruct(
+                                          type.name,
+                                      ) &&
+                                      borrowsReferenceParameter(
+                                          context,
+                                          entry.ir.parameters[index]!.name,
+                                          type,
+                                      ),
+                              )
+                            : undefined,
+                    )
+                    .filter((type): type is string => type !== undefined);
+                const storage = context.emitNativeCallbackStorage(
+                    entry.cppName,
+                    `${returnCpp}(${parametersCpp.join(", ")})`,
+                    escapes,
+                );
+                Object.assign(entry.value, storage);
+                entry.cppName = storage.cpp;
             }
-            const returnCpp = entry.returnType
-                ? context.dataTypes.cppType(entry.returnType)
-                : "void";
-            const parametersCpp = entry.parameterTypes
-                .map((type, index) =>
-                    type
-                        ? this.recursiveParameterCpp(
-                              context.dataTypes,
-                              type,
-                              entry.parameterReadOnly[index]!,
-                              type.kind === "struct" &&
-                                  context.dataTypes.isReferenceStruct(
-                                      type.name,
-                                  ) &&
-                                  borrowsReferenceParameter(
-                                      context,
-                                      entry.ir.parameters[index]!.name,
-                                      type,
-                                  ),
-                          )
-                        : undefined,
-                )
-                .filter((type): type is string => type !== undefined);
-            const storage = context.emitNativeCallbackStorage(
-                entry.cppName,
-                `${returnCpp}(${parametersCpp.join(", ")})`,
-                escapes,
-            );
-            Object.assign(entry.value, storage);
-            entry.cppName = storage.cpp;
-        }
 
-        // These symbol bindings exist only while the specialized bodies are
-        // generated. A later source call may observe different compile-time
-        // class/resource arguments and receives its own local specialization.
-        const emitBodies = (): void => {
-            for (const entry of recursive ? entries : []) {
-                const identifier = this.declarationIdentifier(
-                    entry.declaration,
-                );
-                context.bindings.bindLocalValue(identifier, entry.value);
-            }
-            const pending = new EmissionSet(entries);
-            while (pending.size > 0) {
-                const entry = [...pending].find((candidate) =>
-                    candidate.parameterTypes.every(
-                        (type, index) =>
-                            type !== undefined ||
-                            candidate.captured[index] !== undefined,
-                    ),
-                );
-                if (!entry) {
-                    context.fail(
-                        call,
-                        "Recursive function group has a compile-time parameter that no reached call supplies.",
+            // These symbol bindings exist only while the specialized bodies are
+            // generated. A later source call may observe different compile-time
+            // class/resource arguments and receives its own local specialization.
+            const emitBodies = (): void => {
+                for (const entry of recursive ? entries : []) {
+                    const identifier = this.declarationIdentifier(
+                        entry.declaration,
+                    );
+                    context.bindings.bindLocalValue(identifier, entry.value);
+                }
+                const pending = new EmissionSet(entries);
+                while (pending.size > 0) {
+                    const entry = [...pending].find((candidate) =>
+                        candidate.parameterTypes.every(
+                            (type, index) =>
+                                type !== undefined ||
+                                candidate.captured[index] !== undefined,
+                        ),
+                    );
+                    if (!entry) {
+                        context.fail(
+                            call,
+                            "Recursive function group has a compile-time parameter that no reached call supplies.",
+                        );
+                    }
+                    pending.delete(entry);
+                    entry.returnMetadata = this.emitRecursiveFunctionBody(
+                        context,
+                        entry,
+                        escapes,
+                        localGroup && {
+                            ...(recursive ? { self: localGroup.self } : {}),
+                            ...(sharedBody
+                                ? { sharedName: localGroup.cpp }
+                                : {}),
+                            accept: (body) =>
+                                localGroup.bodies.set(entry.declaration, body),
+                        },
                     );
                 }
-                pending.delete(entry);
-                entry.returnMetadata = this.emitRecursiveFunctionBody(
-                    context,
-                    entry,
-                    escapes,
-                    localGroup && {
-                        ...(recursive ? { self: localGroup.self } : {}),
-                        ...(sharedBody ? { sharedName: localGroup.cpp } : {}),
-                        accept: (body) =>
-                            localGroup.bodies.set(entry.declaration, body),
+            };
+            context.bindings.pushScope(context.allocateUserFunctionPrefix());
+            try {
+                if (sharedBody && !callSiteEffects)
+                    context.emitReusableNativeBody(
+                        root.declaration,
+                        emitBodies,
+                    );
+                else emitBodies();
+            } finally {
+                context.bindings.popScope();
+            }
+            if (localGroup) {
+                const bodies = entries
+                    .map((entry) => localGroup.bodies.get(entry.declaration)!)
+                    .join(",\n");
+                if (sharedBody) rootEntry.value.cpp = bodies;
+                else {
+                    context.emit({
+                        kind: "declaration",
+                        type: "auto",
+                        name: localGroup.cpp,
+                        initializer: recursive
+                            ? `bbl::js::make_recursive_group(\n${bodies}\n)`
+                            : bodies,
+                    });
+                    const binding = context.registerNativeBinding(
+                        localGroup.cpp,
+                        false,
+                        true,
+                    );
+                    for (const [index, entry] of entries.entries()) {
+                        entry.value.cpp = recursive
+                            ? `${localGroup.cpp}.template call<${index}>`
+                            : localGroup.cpp;
+                        entry.value.nativeCaptures = [binding];
+                    }
+                }
+            }
+            if (specialization !== undefined) {
+                this.emittedRecursiveGroups.set(
+                    root.declaration,
+                    specialization,
+                    {
+                        value: rootEntry.value,
+                        returnMetadata: rootEntry.returnMetadata,
                     },
                 );
             }
-        };
-        context.bindings.pushScope(context.allocateUserFunctionPrefix());
-        try {
-            if (sharedBody && !callSiteEffects)
-                context.emitReusableNativeBody(root.declaration, emitBodies);
-            else emitBodies();
-        } finally {
-            context.bindings.popScope();
-        }
-        if (localGroup) {
-            const bodies = entries
-                .map((entry) => localGroup.bodies.get(entry.declaration)!)
-                .join(",\n");
-            if (sharedBody) rootEntry.value.cpp = bodies;
-            else {
-                context.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: localGroup.cpp,
-                    initializer: recursive
-                        ? `bbl::js::make_recursive_group(\n${bodies}\n)`
-                        : bodies,
-                });
-                const binding = context.registerNativeBinding(
-                    localGroup.cpp,
-                    false,
-                    true,
-                );
-                for (const [index, entry] of entries.entries()) {
-                    entry.value.cpp = recursive
-                        ? `${localGroup.cpp}.template call<${index}>`
-                        : localGroup.cpp;
-                    entry.value.nativeCaptures = [binding];
+            const result = this.compileSpecializedCallbackCall(
+                context,
+                call,
+                rootEntry.value,
+                rootArguments,
+                argumentExpressions,
+                !recursive,
+            );
+            return this.sharedReturnValue(
+                context,
+                result,
+                rootEntry.returnMetadata,
+                call,
+            );
+        } catch (error) {
+            if (
+                declineKey !== undefined &&
+                (error instanceof SharedCallRequiresInline ||
+                    error instanceof CompileError)
+            ) {
+                let declined = this.declinedSharedBodies.get(root.declaration);
+                if (!declined) {
+                    declined = new Set();
+                    this.declinedSharedBodies.set(root.declaration, declined);
                 }
+                declined.add(declineKey);
             }
+            throw error;
         }
-        if (specialization !== undefined) {
-            this.emittedRecursiveGroups.set(root.declaration, specialization, {
-                value: rootEntry.value,
-                returnMetadata: rootEntry.returnMetadata,
-            });
-        }
-        const result = this.compileSpecializedCallbackCall(
-            context,
-            call,
-            rootEntry.value,
-            rootArguments,
-            argumentExpressions,
-            !recursive,
-        );
-        return this.sharedReturnValue(
-            context,
-            result,
-            rootEntry.returnMetadata,
-            call,
-        );
     }
 
     /**
@@ -3775,7 +3828,14 @@ export class UserFunctionLowerer {
                     )
                   : body?.coroutine || body?.frameDriven
                     ? undefined
-                    : this.trySharedCall(context, ir, callNode, values, false);
+                    : this.trySharedCall(
+                          context,
+                          ir,
+                          callNode,
+                          values,
+                          false,
+                          true,
+                      );
         if (shared) {
             if (!discardReturn) return shared;
             context.emitDiscardedValue(shared);

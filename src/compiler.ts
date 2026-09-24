@@ -282,7 +282,7 @@ import {
     parameterizedResourceLoop,
     requiresStaticDataIteration,
     canShareFunctionBody,
-    canIterateHandleTableNatively,
+    reachesOnlyClosedEffects,
     reachesOpaqueCallee,
     sharedFunctionHasCallEffects,
     requiresStaticLoopIteration,
@@ -7825,8 +7825,8 @@ class Compiler implements LoweringServices {
         return reachesOpaqueCallee(this, body);
     }
 
-    public canIterateHandleTableNatively(body: ts.Node): boolean {
-        return canIterateHandleTableNatively(
+    public reachesOnlyClosedEffects(body: ts.Node): boolean {
+        return reachesOnlyClosedEffects(
             this,
             body,
             this.definiteCollectionMutation(),

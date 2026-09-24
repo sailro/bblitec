@@ -551,8 +551,12 @@ export function canShareFunctionBody(
     return !reachesSpecializingEffect(context, body, callEffects, false);
 }
 
-/** A closed handle table runs its body natively only without opaque callees. */
-export function canIterateHandleTableNatively(
+/**
+ * Whether every reached effect is closed: nothing needs static iteration and
+ * every callee is reachable. A closed handle table and a callback invoked by
+ * an operation run such a body natively.
+ */
+export function reachesOnlyClosedEffects(
     context: ResourceLoopContext,
     body: ts.Node,
     callEffects = false,
