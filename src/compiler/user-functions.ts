@@ -21,7 +21,10 @@ import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import { nullability, typeCanCarryReference } from "./type-facts.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
-import { sanitizeCppIdentifier } from "../cpp-literals.js";
+import {
+    cppIdentifierPattern,
+    sanitizeCppIdentifier,
+} from "../cpp-literals.js";
 import {
     passesByReference,
     dataTypesEqual,
@@ -979,6 +982,118 @@ interface UserFunctionIr {
 /** A value record cannot represent an alias into a retained native object. */
 class SharedCallRequiresInline extends Error {}
 
+const reflectingObjectMethods = new EmissionSet([
+    "assign",
+    "defineProperty",
+    "defineProperties",
+    "setPrototypeOf",
+]);
+
+/**
+ * The record fields a shared callee's reached code may reassign, by
+ * property name, or undefined when it reaches a callee whose writes this
+ * walk cannot see. Calls through the argument's own callback fields
+ * (`fieldCallbacks`) reach those callbacks, walked as `roots`.
+ */
+function reassignedRecordFields(
+    checker: ts.TypeChecker,
+    roots: readonly SupportedFunction[],
+    fieldCallbacks: ReadonlySet<string>,
+): ReadonlySet<string> | undefined {
+    const fields = new EmissionSet<string>();
+    const walked = new EmissionSet<ts.Node>();
+    const pending: ts.FunctionLikeDeclaration[] = [...roots];
+    let opaque = false;
+    const reassigns = (target: ts.Expression): void => {
+        const node = unwrapExpression(target);
+        if (ts.isPropertyAccessExpression(node)) {
+            fields.add(node.name.text);
+            return;
+        }
+        if (!ts.isElementAccessExpression(node)) return;
+        const key = unwrapExpression(node.argumentExpression);
+        if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key)) {
+            fields.add(key.text);
+            return;
+        }
+        // An indexed collection write changes contents, not a field.
+        const owner = checker.getNonNullableType(
+            checker.getTypeAtLocation(node.expression),
+        );
+        if (
+            checker.getIndexInfoOfType(owner, ts.IndexKind.String) ||
+            !checker.getIndexInfoOfType(owner, ts.IndexKind.Number)
+        )
+            opaque = true;
+    };
+    const follow = (declaration: ts.Declaration | undefined): void => {
+        if (
+            declaration &&
+            ts.isFunctionLike(declaration) &&
+            "body" in declaration &&
+            declaration.body
+        )
+            pending.push(declaration);
+    };
+    while (pending.length > 0 && !opaque) {
+        const declaration = pending.pop()!;
+        if (walked.has(declaration) || !declaration.body) continue;
+        walked.add(declaration);
+        forEachAnalysisNode(
+            declaration.body,
+            (node) => {
+                if (isAssignmentExpression(node)) {
+                    for (const target of assignmentTargets(node.left))
+                        reassigns(target);
+                } else if (isUpdateExpression(node)) {
+                    reassigns(node.operand);
+                } else if (ts.isDeleteExpression(node)) {
+                    reassigns(node.expression);
+                } else if (ts.isPropertyAccessExpression(node)) {
+                    for (const accessor of checker.getSymbolAtLocation(
+                        node.name,
+                    )?.declarations ?? []) {
+                        if (
+                            ts.isGetAccessorDeclaration(accessor) ||
+                            ts.isSetAccessorDeclaration(accessor)
+                        )
+                            follow(accessor);
+                    }
+                }
+                if (!ts.isCallExpression(node) && !ts.isNewExpression(node))
+                    return;
+                const callee = unwrapExpression(node.expression);
+                const called = checker.getResolvedSignature(node)?.declaration;
+                if (called && called.getSourceFile().isDeclarationFile) {
+                    if (
+                        ts.isPropertyAccessExpression(callee) &&
+                        reflectingObjectMethods.has(callee.name.text) &&
+                        libraryGlobal(checker, callee.expression) === "Object"
+                    )
+                        opaque = true;
+                    return;
+                }
+                if (
+                    called &&
+                    ts.isFunctionLike(called) &&
+                    "body" in called &&
+                    called.body
+                ) {
+                    follow(called);
+                    return;
+                }
+                if (
+                    !ts.isPropertyAccessExpression(callee) ||
+                    !fieldCallbacks.has(callee.name.text)
+                )
+                    opaque = true;
+            },
+            { types: "skip" },
+        );
+    }
+    return opaque ? undefined : fields;
+}
+
 /** A represented dynamic result must keep its storage across every return path. */
 class DynamicReturnRequiresStorage extends Error {}
 
@@ -1005,6 +1120,7 @@ export interface UserFunctionContext
             | "activeThis"
             | "canShareFunctionBody"
             | "canReplaySharedCallEffects"
+            | "emitReusableNativeBody"
             | "requiresStaticDataIteration"
             | "probeEmission"
             | "conditions"
@@ -1266,7 +1382,13 @@ export class UserFunctionLowerer {
                 ),
             );
         } catch (error) {
-            if (!(error instanceof SharedCallRequiresInline)) throw error;
+            // A body that needs this call's generation facts specializes
+            // inline, where the same lowering owns its diagnostics.
+            if (
+                !(error instanceof SharedCallRequiresInline) &&
+                !(error instanceof CompileError)
+            )
+                throw error;
             return undefined;
         }
     }
@@ -1931,6 +2053,7 @@ export class UserFunctionLowerer {
         bound: Value,
         evaluatedArguments?: readonly Value[],
         expressions: readonly ts.Expression[] = [],
+        keepsArgumentFacts = false,
     ): Value {
         context.useNativeValue(bound);
         const declaration = bound.callbackDeclaration;
@@ -1987,7 +2110,14 @@ export class UserFunctionLowerer {
                         parameter.name,
                     )
                 )
-                    context.bindings.invalidateRecordProperties(evaluated);
+                    this.invalidateArgumentFacts(
+                        context,
+                        declaration,
+                        evaluated,
+                        type,
+                        call,
+                        keepsArgumentFacts,
+                    );
                 const borrowedReference = borrowsReferenceParameter(
                     context,
                     parameter.name,
@@ -2097,6 +2227,95 @@ export class UserFunctionLowerer {
         return bound.nativeCallbackReturnType
             ? context.dataValue(cpp, bound.nativeCallbackReturnType)
             : { kind: "void", cpp };
+    }
+
+    /**
+     * A shared callee may write through a record argument, so the caller's
+     * generation facts about it no longer hold. A primitive or callback
+     * field that no reached code reassigns keeps its binding; any other
+     * field reads the native struct again, since its contents may change.
+     * A shared call that would lose a static fact specializes inline
+     * instead (`keepsFacts`), where the lowering keeps it.
+     */
+    private invalidateArgumentFacts(
+        context: UserFunctionContext,
+        callee: SupportedFunction,
+        argument: Value,
+        type: DataType & { kind: "struct" },
+        call: ts.Node,
+        keepsFacts: boolean,
+    ): void {
+        const properties = argument.recordProperties;
+        if (!properties) return;
+        const callbacks: SupportedFunction[] = [callee];
+        const fieldCallbacks = new EmissionSet<string>();
+        for (const [key, value] of Object.entries(properties)) {
+            const declaration =
+                value.kind === "callback" &&
+                value.callbackDeclaration &&
+                ts.isIdentifier(value.callbackDeclaration)
+                    ? tryResolveFunctionDeclaration(
+                          this.checker,
+                          value.callbackDeclaration,
+                      )
+                    : value.callbackDeclaration;
+            if (value.kind === "callback" && isSupportedFunction(declaration)) {
+                callbacks.push(declaration);
+                fieldCallbacks.add(key);
+            }
+        }
+        const reassigned = cppIdentifierPattern.test(argument.cpp)
+            ? reassignedRecordFields(this.checker, callbacks, fieldCallbacks)
+            : undefined;
+        const struct =
+            argument.dataType?.kind === "struct" ? argument.dataType : type;
+        const fields = context.dataTypes.structFields(struct.name, call);
+        const member = context.dataTypes.isReferenceStruct(struct.name)
+            ? "->"
+            : ".";
+        const refreshed: Array<[string, Value]> = [];
+        for (const [key, value] of Object.entries(properties)) {
+            const stable =
+                reassigned !== undefined &&
+                !reassigned.has(key) &&
+                (value.kind === "number" ||
+                    value.kind === "string" ||
+                    value.kind === "boolean" ||
+                    (value.kind === "callback" && fieldCallbacks.has(key)) ||
+                    (value.kind === "data" &&
+                        (value.dataType?.kind === "number" ||
+                            value.dataType?.kind === "string" ||
+                            value.dataType?.kind === "boolean" ||
+                            value.dataType?.kind === "enum")));
+            if (stable) continue;
+            if (
+                keepsFacts &&
+                (value.staticNumber !== undefined ||
+                    value.staticString !== undefined ||
+                    value.staticBoolean !== undefined)
+            )
+                throw new SharedCallRequiresInline();
+            const field = fields.find((field) => field.sourceName === key);
+            if (!reassigned || !field) {
+                context.bindings.invalidateRecordProperties(argument);
+                return;
+            }
+            refreshed.push([
+                key,
+                {
+                    ...context.dataValue(
+                        `${argument.cpp}${member}${field.name}`,
+                        field.type,
+                    ),
+                    nativeLvalue: true,
+                    ...(argument.nativeCaptures
+                        ? { nativeCaptures: argument.nativeCaptures }
+                        : {}),
+                },
+            ]);
+        }
+        // Aliases share this properties object, so each sees the refresh.
+        for (const [key, value] of refreshed) properties[key] = value;
     }
 
     private sameCapturedValue(left: Value, right: Value): boolean {
@@ -2643,6 +2862,7 @@ export class UserFunctionLowerer {
                 previous.value,
                 rootArguments,
                 argumentExpressions,
+                !recursive,
             );
             return this.sharedReturnValue(
                 context,
@@ -2702,8 +2922,7 @@ export class UserFunctionLowerer {
         // These symbol bindings exist only while the specialized bodies are
         // generated. A later source call may observe different compile-time
         // class/resource arguments and receives its own local specialization.
-        context.bindings.pushScope(context.allocateUserFunctionPrefix());
-        try {
+        const emitBodies = (): void => {
             for (const entry of recursive ? entries : []) {
                 const identifier = this.declarationIdentifier(
                     entry.declaration,
@@ -2738,6 +2957,12 @@ export class UserFunctionLowerer {
                     },
                 );
             }
+        };
+        context.bindings.pushScope(context.allocateUserFunctionPrefix());
+        try {
+            if (sharedBody && !callSiteEffects)
+                context.emitReusableNativeBody(root.declaration, emitBodies);
+            else emitBodies();
         } finally {
             context.bindings.popScope();
         }
@@ -2780,6 +3005,7 @@ export class UserFunctionLowerer {
             rootEntry.value,
             rootArguments,
             argumentExpressions,
+            !recursive,
         );
         return this.sharedReturnValue(
             context,
@@ -3450,7 +3676,7 @@ export class UserFunctionLowerer {
                         true,
                         false,
                     )
-                  : body?.coroutine
+                  : body?.coroutine || body?.frameDriven
                     ? undefined
                     : this.trySharedCall(context, ir, callNode, values, false);
         if (shared) {

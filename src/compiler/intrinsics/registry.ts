@@ -191,6 +191,20 @@ export const nativeDataIterationIntrinsics: ReadonlySet<string> =
         "setShaderTexture",
     ]);
 
+/**
+ * Operations on runtime handles a shared body lowers natively for every
+ * caller. A closed loop still expands these statically to keep its facts.
+ */
+export const sharedBodyIntrinsics: ReadonlySet<string> = new EmissionSet([
+    ...nativeDataIterationIntrinsics,
+    "createTexture2DFromPixels",
+    "getViewProjectionMatrix",
+    "markMaterialUboDirty",
+    "unlockAudioEngineAsync",
+    "updateAnimationManager",
+    "updateMeshPositions",
+]);
+
 type IntrinsicCompiler = (
     context: IntrinsicContext,
     importedName: string,

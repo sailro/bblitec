@@ -282,6 +282,7 @@ import {
     parameterizedResourceLoop,
     requiresStaticDataIteration,
     canShareFunctionBody,
+    canIterateHandleTableNatively,
     sharedFunctionHasCallEffects,
     requiresStaticLoopIteration,
     runtimeProfileConstructionIntrinsics,
@@ -7778,6 +7779,50 @@ class Compiler implements LoweringServices {
             body,
             this.definiteCollectionMutation(),
         );
+    }
+
+    public canIterateHandleTableNatively(body: ts.Node): boolean {
+        return canIterateHandleTableNatively(
+            this,
+            body,
+            this.definiteCollectionMutation(),
+        );
+    }
+
+    /**
+     * A body emitted once for every caller runs from any control flow, any
+     * number of times: its lowering sees runtime control flow and iteration,
+     * and it may not record a generation-owned construction.
+     */
+    public emitReusableNativeBody<T>(
+        declaration: ts.Node,
+        emitBody: () => T,
+    ): T {
+        this.enterRuntimeControlFlow();
+        this.enterRuntimeIteration();
+        try {
+            const checkpoint = this.checkpointResourceConstruction();
+            try {
+                const emitted = emitBody();
+                if (
+                    !resourceConstructionStatesEqual(
+                        checkpoint.state,
+                        this.sceneManifest.constructionState(),
+                    )
+                ) {
+                    this.fail(
+                        declaration,
+                        "A shared native body cannot record a generation-owned construction for every caller.",
+                    );
+                }
+                return emitted;
+            } finally {
+                this.resourceConstructionCheckpoints.delete(checkpoint);
+            }
+        } finally {
+            this.leaveRuntimeIteration();
+            this.leaveRuntimeControlFlow();
+        }
     }
 
     public canReplaySharedCallEffects(body: ts.Node): boolean {

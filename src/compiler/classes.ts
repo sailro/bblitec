@@ -1140,18 +1140,14 @@ export class ClassLowerer {
         const returnsVoid =
             !effectiveReturn ||
             (effectiveReturn.flags & ts.TypeFlags.Void) !== 0;
+        // A function argument is bound at generation, so the shared body is
+        // specialized per callback like any other captured argument.
         const sharedBody =
-            method.parameters.every((parameter) => {
-                const type = this.context.dataTypes.fromTsType(
-                    this.context.checker.getTypeAtLocation(parameter),
-                    parameter,
-                );
-                return (
+            method.parameters.every(
+                (parameter) =>
                     ts.isIdentifier(parameter.name) &&
-                    !parameter.dotDotDotToken &&
-                    (!type || !this.context.dataTypes.carriesFunction(type))
-                );
-            }) && this.context.canShareFunctionBody(method.body);
+                    !parameter.dotDotDotToken,
+            ) && this.context.canShareFunctionBody(method.body);
         const mappedReturnType = returnsVoid
             ? undefined
             : sharedBody

@@ -37,6 +37,7 @@ import {
 import {
     nativeDataIterationIntrinsics,
     runtimeOnlyIntrinsics,
+    sharedBodyIntrinsics,
 } from "./intrinsics/registry.js";
 import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
 import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
@@ -360,8 +361,23 @@ export function requiresStaticDataIteration(
     statement: ts.Node,
     callEffects = false,
 ): boolean {
+    return reachesSpecializingEffect(context, statement, callEffects, true);
+}
+
+/**
+ * Whether a reached effect needs generation-time specialization. Retained
+ * DOM/canvas operations and scene-node transform or parent writes lower to
+ * native calls on runtime handles; a closed data loop still expands them
+ * statically to keep their generation facts (`keepsRetainedFacts`).
+ */
+function reachesSpecializingEffect(
+    context: ResourceLoopContext,
+    root: ts.Node,
+    callEffects: boolean,
+    keepsRetainedFacts: boolean,
+): boolean {
     let required = false;
-    walkReachedLoopNodes(context, statement, (node) => {
+    walkReachedLoopNodes(context, root, (node) => {
         if (required) return false;
         // Handle and finite record properties dispatch by their source key.
         if (
@@ -393,6 +409,7 @@ export function requiresStaticDataIteration(
         // Canvas extents have native reads; writes still belong to their
         // normal DOM/retained-canvas lowering and cannot use this exemption.
         if (
+            keepsRetainedFacts &&
             writesThroughTrackedRoot(node, (target) => {
                 const member = unwrapExpression(target);
                 const symbol = ts.isPropertyAccessExpression(member)
@@ -410,6 +427,7 @@ export function requiresStaticDataIteration(
               ? context.checker.getSymbolAtLocation(node.expression)
               : undefined;
         if (
+            keepsRetainedFacts &&
             symbol &&
             declaredInDomLibrary(symbol) &&
             !(
@@ -469,7 +487,11 @@ export function requiresStaticDataIteration(
                 : undefined;
             if (
                 imported &&
-                !nativeDataIterationIntrinsics.has(imported) &&
+                !(
+                    keepsRetainedFacts
+                        ? nativeDataIterationIntrinsics
+                        : sharedBodyIntrinsics
+                ).has(imported) &&
                 !(
                     callEffects &&
                     (isMaterialCallEffectIntrinsic(imported) ||
@@ -494,10 +516,13 @@ export function requiresStaticDataIteration(
             if (kind) {
                 const property = member.name.text;
                 required =
-                    kind === "mesh" || kind === "transform-node"
+                    kind === "mesh" ||
+                    kind === "transform-node" ||
+                    (!keepsRetainedFacts && kind === "scene-node")
                         ? !runtimeMeshProperties.has(property) &&
                           property !== "material" &&
-                          property !== "receiveShadows"
+                          property !== "receiveShadows" &&
+                          (keepsRetainedFacts || property !== "parent")
                         : kind === "node-input"
                           ? property !== "texture"
                           : kind === "material"
@@ -512,14 +537,28 @@ export function requiresStaticDataIteration(
     return required;
 }
 
-/** Share function bodies whose reached effects have native representations. */
+/**
+ * Share function bodies whose reached effects have native representations.
+ * A call through a function value runs its own native body; a callback
+ * known at generation is lowered inside the shared body, where effects
+ * that need one definite invocation refuse (`emitReusableNativeBody`).
+ */
 export function canShareFunctionBody(
     context: ResourceLoopContext,
     body: ts.Node,
     callEffects = false,
 ): boolean {
+    return !reachesSpecializingEffect(context, body, callEffects, false);
+}
+
+/** A closed handle table runs its body natively only without opaque callees. */
+export function canIterateHandleTableNatively(
+    context: ResourceLoopContext,
+    body: ts.Node,
+    callEffects = false,
+): boolean {
     if (requiresStaticDataIteration(context, body, callEffects)) return false;
-    let specializes = false;
+    let opaque = false;
     walkReachedLoopNodes(context, body, (node, resolved) => {
         if (!ts.isCallExpression(node)) return;
         if (
@@ -527,9 +566,9 @@ export function canShareFunctionBody(
             !resolved.getSourceFile().isDeclarationFile &&
             !(isSupportedFunction(resolved) && resolved.body)
         )
-            specializes = true;
+            opaque = true;
     });
-    return !specializes;
+    return !opaque;
 }
 
 /** Construction and generation-dependent operations replay their ordinary recorder effects. */
@@ -538,7 +577,7 @@ export function sharedFunctionHasCallEffects(
     body: ts.Node,
 ): boolean {
     if (!canShareFunctionBody(context, body, true)) return false;
-    if (requiresStaticDataIteration(context, body)) return true;
+    if (!canShareFunctionBody(context, body)) return true;
     let constructs = false;
     walkReachedLoopNodes(context, body, (node) => {
         if (!ts.isCallExpression(node)) return;

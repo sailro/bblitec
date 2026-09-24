@@ -682,6 +682,8 @@ export interface LoweringServices {
         | undefined;
     requiresStaticDataIteration(statement: ts.Node): boolean;
     canShareFunctionBody(body: ts.Node): boolean;
+    canIterateHandleTableNatively(body: ts.Node): boolean;
+    emitReusableNativeBody<T>(declaration: ts.Node, emitBody: () => T): T;
     compileSharedMethod(
         declaration: ts.MethodDeclaration,
         call: ts.CallExpression,
