@@ -44,12 +44,11 @@ using DawnMesh = GpuMesh;
 struct State {
     std::vector<GpuMesh> meshes;
     std::vector<int> shader_pipelines{1}, shared_shader_geometries, shared_shader_material_textures;
-    int grid_pipeline = 1;
     void prune_shared_shader_geometries() { ++prunes; }
     void prune_shared_shader_material_textures() { ++prunes; }
     void prune_shared_composed_material_textures() { ++prunes; }
 };
-constexpr unsigned material_family_shader = 1, material_family_grid = 2;
+constexpr unsigned material_family_shader = 1;
 void reject_uncomposed_family_growth(unsigned added) { assert(added == 0); }
 void validate_render_plan_items(const upstream::RenderPlan&) {}
 void release_gpu_mesh(State&, GpuMesh& mesh) { mesh.reset(); }

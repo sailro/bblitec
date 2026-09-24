@@ -520,7 +520,11 @@ public:
     [[nodiscard]] T& operator*() const { return require_value(); }
     [[nodiscard]] T* operator->() const { return std::addressof(require_value()); }
     explicit operator bool() const { return block_ != nullptr; }
-    void gc_trace(const TraceVisitor& visitor) const { visitor.edge(block_); }
+    /** Only a registered block is an edge; `make_ref` registers traceable payloads. */
+    void gc_trace(const TraceVisitor& visitor) const {
+        if (block_ && block_->linked)
+            visitor.edge(block_);
+    }
     [[nodiscard]] std::weak_ptr<const void> weak_identity() const {
         if (!block_)
             return {};
@@ -594,13 +598,21 @@ private:
 };
 
 namespace gc {
-/** Every reference block is registered, so a reference is always an edge. */
+/**
+ * A reference's payload may be incomplete where a container asks, so any
+ * reference counts as a possible edge; an unregistered block reports none.
+ */
 template <typename T> struct Traceable<Ref<T>> : std::true_type {};
 } // namespace gc
 
+/**
+ * A payload that can own a traced edge joins cycle collection; any other
+ * payload cannot close a cycle, and reference counting alone releases it.
+ */
 template <typename T, typename... Args> [[nodiscard]] Ref<T> make_ref(Args&&... args) {
     auto block = std::make_unique<typename Ref<T>::Block>(std::forward<Args>(args)...);
-    block->attach();
+    if constexpr (gc_traceable<T>)
+        block->attach();
     auto* value = block.get();
     value->lifetime = std::move(block);
     return Ref<T>(value);
@@ -3931,18 +3943,6 @@ struct MathOperand {
 template <bool Maximum>
 [[nodiscard]] inline double math_extreme(std::initializer_list<MathOperand> operands) {
     return math_extreme_in<Maximum, double>(operands);
-}
-
-/**
- * Over a call's own argument list whose operands share one floating type,
- * computed and returned at that type. A pinned float writer lane computes
- * the arithmetic around the call in `float`; the extreme is one of its
- * operands either way, so keeping the type keeps that arithmetic, and what
- * it stores, while NaN and signed zero follow JavaScript.
- */
-template <bool Maximum, std::floating_point Number>
-[[nodiscard]] inline Number math_extreme_lane(std::initializer_list<Number> operands) {
-    return math_extreme_in<Maximum, Number>(operands);
 }
 
 /**

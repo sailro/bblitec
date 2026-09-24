@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+    copyFileSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
     readFileSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -13,10 +15,7 @@ import test from "node:test";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
 import {
     checkPatchInventory,
-    expectedPatchRecord,
-    portfilePatches,
-    readPatchManifest,
-    selectPatches,
+    runPatchIdentity,
 } from "../src/patch-inventory.js";
 
 const tools = discoverDevelopmentTools();
@@ -37,67 +36,65 @@ test("the repository's patch inventory is consistent", () => {
     assert.deepEqual(checkPatchInventory(), []);
 });
 
-test("variants select each builder's series in application order", () => {
-    const manifest = readPatchManifest();
-    const names = (library: string, variants: string[]): string[] =>
-        selectPatches(manifest, library, variants).map((patch) =>
-            patch.file.slice(patch.file.lastIndexOf("/") + 1),
+test(
+    "variants select each builder's and port's series in application order",
+    { skip: !tools.cmake },
+    () => {
+        const names = (library: string, variants: string[]): string[] =>
+            runPatchIdentity(tools.cmake!, "series", library, { variants })
+                .split("\n")
+                .filter(Boolean)
+                .map((path) => path.slice(path.lastIndexOf("/") + 1));
+        assert.deepEqual(names("dawn", []), []);
+        assert.deepEqual(names("dawn", ["android"]), [
+            "0001-android-surface-loss.patch",
+        ]);
+        assert.deepEqual(names("dawn", ["metal", "ios"]), [
+            "0002-metal-sdk-compat.patch",
+            "0003-metal-primitive-index.patch",
+            "0004-metal-simulator-capabilities.patch",
+        ]);
+        assert.deepEqual(names("labsound", []), ["0001-lazy-decoders.patch"]);
+        assert.deepEqual(names("labsound", ["core-only"]), [
+            "0001-lazy-decoders.patch",
+            "0002-core-only.patch",
+        ]);
+        // The trimmed SDL carries the overlay port's own patches except
+        // vcpkg's FreeBSD packaging fix, then its dynamic-API switch.
+        const trimmed = names("sdl3", ["trimmed"]);
+        assert.equal(trimmed.includes("fix-freebsd.patch"), false);
+        assert.equal(trimmed.at(-1), "0009-static-no-dynapi.patch");
+        assert.equal(trimmed.length, 8);
+        assert.equal(names("sdl3", ["vcpkg"])[0], "fix-freebsd.patch");
+        // A port feature selects its own patch.
+        assert.equal(
+            names("freetype", ["vcpkg"]).includes("subpixel-rendering.patch"),
+            false,
         );
-    assert.deepEqual(names("dawn", []), []);
-    assert.deepEqual(names("dawn", ["android"]), [
-        "0001-android-surface-loss.patch",
-    ]);
-    assert.deepEqual(names("dawn", ["metal", "ios"]), [
-        "0002-metal-sdk-compat.patch",
-        "0003-metal-primitive-index.patch",
-        "0004-metal-simulator-capabilities.patch",
-    ]);
-    assert.deepEqual(names("labsound", []), ["0001-lazy-decoders.patch"]);
-    assert.deepEqual(names("labsound", ["core-only"]), [
-        "0001-lazy-decoders.patch",
-        "0002-core-only.patch",
-    ]);
-    // The trimmed SDL carries the overlay port's own patches except vcpkg's
-    // FreeBSD packaging fix, then its dynamic-API switch.
-    const trimmed = names("sdl3", ["trimmed"]);
-    assert.equal(trimmed.includes("fix-freebsd.patch"), false);
-    assert.equal(trimmed.at(-1), "0009-static-no-dynapi.patch");
-    assert.equal(trimmed.length, 8);
-    const rmlui = names("rmlui", []);
-    assert.equal(rmlui.length, 23);
-    assert.deepEqual(
-        rmlui.map((name) => Number(name.slice(0, 4))),
-        rmlui.map((_, index) => index + 1),
-    );
-    assert.throws(
-        () => names("dawn", ["windows"]),
-        /no dawn variant 'windows'/,
-    );
-    assert.throws(() => names("zlib", []), /no library 'zlib'/);
-});
-
-test("portfile PATCHES lists resolve variables and ignore comments", () => {
-    assert.deepEqual(
-        portfilePatches(
-            [
-                'set(OPTIONAL_PATCH "optional.patch")',
-                "vcpkg_from_github(",
-                "    REF x",
-                "    # a comment naming ignored.patch",
-                "    PATCHES",
-                "        first.patch # trailing",
-                "        ${OPTIONAL_PATCH}",
-                ")",
-                "vcpkg_cmake_configure(SOURCE_PATH x)",
-            ].join("\n"),
-        ),
-        ["first.patch", "optional.patch"],
-    );
-    assert.throws(
-        () => portfilePatches("vcpkg_from_github(\n PATCHES\n ${UNSET}\n)"),
-        /never set/,
-    );
-});
+        assert.equal(
+            names("freetype", ["vcpkg", "subpixel-rendering"]).at(-1),
+            "subpixel-rendering.patch",
+        );
+        const rmlui = names("rmlui", []);
+        assert.equal(rmlui.length, 23);
+        assert.deepEqual(
+            rmlui.map((name) => Number(name.slice(0, 4))),
+            rmlui.map((_, index) => index + 1),
+        );
+        assert.throws(
+            () => names("dawn", ["windows"]),
+            /no dawn variant 'windows'/,
+        );
+        assert.throws(() => names("zlib", []), /no library 'zlib'/);
+        // The record names the pin, each patch's digest and the variants.
+        assert.match(
+            runPatchIdentity(tools.cmake!, "record", "labsound", {
+                variants: ["core-only"],
+            }),
+            /^set\(BBLITE_LABSOUND_SOURCE "[0-9a-f]{40}"\)\nset\(BBLITE_LABSOUND_PATCHES "0001-lazy-decoders\.patch=[0-9a-f]{64};0002-core-only\.patch=[0-9a-f]{64}"\)\nset\(BBLITE_LABSOUND_VARIANTS "core-only"\)\n$/,
+        );
+    },
+);
 
 function fixture(root: string): void {
     write(join(root, "upstream/demo.json"), '{ "commit": "abc" }');
@@ -115,7 +112,11 @@ function fixture(root: string): void {
     );
     write(
         join(root, "native/vcpkg-overlay-ports/port/portfile.cmake"),
-        "vcpkg_from_github(\n    PATCHES\n        keep.patch\n        extra.patch\n)\n",
+        'include("${CMAKE_CURRENT_LIST_DIR}/../../patch-identity.cmake")\nbblite_patch_series(port PORT_PATCHES vcpkg)\nvcpkg_from_github(\n    PATCHES ${PORT_PATCHES}\n)\n',
+    );
+    write(
+        join(root, "native/vcpkg-overlay-ports/port/vcpkg.json"),
+        '{ "name": "port", "version": "1", "features": { "extra-feature": { "description": "x" } } }',
     );
     const patch = (
         library: string,
@@ -148,7 +149,7 @@ function fixture(root: string): void {
                 port: {
                     pin: { file: "upstream/demo.json", field: "commit" },
                     port: "native/vcpkg-overlay-ports/port",
-                    variants: ["vcpkg"],
+                    variants: ["vcpkg", "extra-feature", "other"],
                 },
             },
             patches: [
@@ -171,14 +172,14 @@ function fixture(root: string): void {
                     2,
                     "native/vcpkg-overlay-ports/port/extra.patch",
                     false,
-                    ["vcpkg"],
+                    ["extra-feature"],
                 ),
             ],
         }),
     );
 }
 
-test("patches:check reports orphans, missing files, headers, numbering and list drift", (t) => {
+test("patches:check reports orphans, missing files, headers, numbering and port coverage", (t) => {
     const cases: [string, (root: string) => void, RegExp][] = [
         [
             "missing header",
@@ -213,16 +214,41 @@ test("patches:check reports orphans, missing files, headers, numbering and list 
             /tools\/build-demo\.ps1 names 0001-first\.patch/,
         ],
         [
-            "portfile drift",
+            "portfile list",
             (root) =>
                 write(
                     join(
                         root,
                         "native/vcpkg-overlay-ports/port/portfile.cmake",
                     ),
-                    "vcpkg_from_github(\n    PATCHES\n        extra.patch\n        keep.patch\n)\n",
+                    "vcpkg_from_github(\n    PATCHES\n        keep.patch\n        extra.patch\n)\n",
                 ),
-            /portfile\.cmake applies \[extra\.patch, keep\.patch\]/,
+            /portfile\.cmake does not take its series from bblite_patch_series\(port/,
+        ],
+        [
+            "portfile names a patch",
+            (root) => {
+                const path = join(
+                    root,
+                    "native/vcpkg-overlay-ports/port/portfile.cmake",
+                );
+                write(path, `${readFileSync(path, "utf8")}# see keep.patch\n`);
+            },
+            /portfile\.cmake names keep\.patch/,
+        ],
+        [
+            "port patch the port never applies",
+            (root) => {
+                const path = join(root, "native/patches/manifest.json");
+                write(
+                    path,
+                    readFileSync(path, "utf8").replace(
+                        '"variants":["extra-feature"]',
+                        '"variants":["other"]',
+                    ),
+                );
+            },
+            /extra\.patch: a patch in the port directory must apply to the port/,
         ],
         [
             "numbering",
@@ -246,11 +272,11 @@ test("patches:check reports orphans, missing files, headers, numbering and list 
                     path,
                     readFileSync(path, "utf8").replace(
                         '"variants":["all"]',
-                        '"variants":["other"]',
+                        '"variants":["unknown"]',
                     ),
                 );
             },
-            /unknown demo variant 'other'/,
+            /unknown demo variant 'unknown'/,
         ],
     ];
     const clean = scratch(t, "patch-inventory-");
@@ -269,39 +295,45 @@ test("patches:check reports orphans, missing files, headers, numbering and list 
 });
 
 test(
-    "PowerShell and TypeScript select and record the same series",
-    { skip: !tools.powershell },
+    "the PowerShell builders take their series and record from the CMake owner",
+    { skip: !tools.powershell || !tools.cmake },
     () => {
-        const manifest = readPatchManifest();
         for (const [library, variants] of [
             ["rmlui", []],
-            ["dawn", []],
             ["dawn", ["android"]],
-            ["dawn", ["metal", "ios"]],
             ["labsound", ["core-only"]],
             ["sdl3", ["trimmed"]],
         ] as const) {
-            const expected = expectedPatchRecord(manifest, library, variants);
-            const prefix = manifest.libraries.get(library)?.record?.prefix;
+            const quoted = `@(${variants.map((variant) => `'${variant}'`).join(",")})`;
             const lines = execFileSync(
                 tools.powershell!,
                 [
                     "-NoProfile",
                     "-Command",
                     `Import-Module '${resolve("tools/bblite-tools.psm1")}' -Force; ` +
-                        `Get-PatchRecord ${library} '${expected.source}' (Get-MaintainedPatches ${library} @(${variants.map((variant) => `'${variant}'`).join(",")}))`,
+                        `@(Get-MaintainedPatches ${library} ${quoted} '${tools.cmake!}' | ForEach-Object Path) + @('--') + ` +
+                        `@(Get-PatchRecord ${library} ${quoted} '${tools.cmake!}')`,
                 ],
                 { encoding: "utf8" },
             )
                 .trim()
                 .split(/\r?\n/);
+            const separator = lines.indexOf("--");
             assert.deepEqual(
-                lines,
-                [
-                    `set(${prefix}_SOURCE "${expected.source}")`,
-                    `set(${prefix}_PATCHES "${expected.patches}")`,
-                ],
-                `${library} ${variants.join(",")}`,
+                lines.slice(0, separator),
+                runPatchIdentity(tools.cmake!, "series", library, {
+                    variants,
+                })
+                    .split("\n")
+                    .filter(Boolean),
+                `${library} series`,
+            );
+            assert.equal(
+                `${lines.slice(separator + 1).join("\n")}\n`,
+                runPatchIdentity(tools.cmake!, "record", library, {
+                    variants,
+                }),
+                `${library} record`,
             );
         }
     },
@@ -312,11 +344,12 @@ test(
     { skip: !tools.cmake },
     (t) => {
         const root = scratch(t, "patch-identity-");
-        const manifest = readPatchManifest();
         const dawn = join(root, "dawn");
         const sdl = join(root, "sdl");
         const rmlui = join(root, "rmlui");
-        for (const directory of [dawn, sdl, rmlui]) mkdirSync(directory);
+        const labsound = join(root, "labsound");
+        for (const directory of [dawn, sdl, rmlui, labsound])
+            mkdirSync(directory);
         const project = join(root, "project");
         write(
             join(project, "CMakeLists.txt"),
@@ -327,25 +360,28 @@ test(
                 `set(BBLITE_DAWN_DIR "${dawn.replaceAll("\\", "/")}")`,
                 `set(BBLITE_SDL_DIR "${sdl.replaceAll("\\", "/")}")`,
                 `set(BBLITE_RMLUI_DIR "${rmlui.replaceAll("\\", "/")}")`,
+                `set(BBLITE_LABSOUND_DIR "${labsound.replaceAll("\\", "/")}")`,
                 'set(BBLITE_RMLUI_BUILD_COMMAND "tools/build-rmlui.ps1")',
-                'set(BBLITE_RUNTIME_FEATURES "ui:rml")',
+                'set(BBLITE_RUNTIME_FEATURES "ui:rml;audio:engine")',
                 `include("${resolve("native/patch-identity.cmake").replaceAll("\\", "/")}")`,
                 "bblite_verify_dependency_artifacts()",
                 "",
             ].join("\n"),
         );
-        // CMake derives these variants from the platform the test runs on.
+        // CMake derives Dawn's variants from the platform the test runs on.
         const dawnVariants = process.platform === "darwin" ? ["metal"] : [];
         const record = (
             directory: string,
             file: string,
-            prefix: string,
-            value: { source: string; patches: string },
-        ): void =>
-            write(
-                join(directory, file),
-                `set(${prefix}_SOURCE "${value.source}")\nset(${prefix}_PATCHES "${value.patches}")\n`,
-            );
+            library: string,
+            variants: readonly string[],
+        ): string => {
+            const text = runPatchIdentity(tools.cmake!, "record", library, {
+                variants,
+            });
+            write(join(directory, file), text);
+            return text;
+        };
         const configure = (): { status: number | null; output: string } => {
             const result = spawnSync(
                 tools.cmake!,
@@ -370,40 +406,55 @@ test(
             /sdl3 install at\s[\s\S]*?records\s+no\s+patch\s+set/,
         );
 
-        // The records the TypeScript side computes are the ones CMake accepts.
-        record(
+        // The records the builders write are the ones configure accepts;
+        // LabSound's recorded variant set stands.
+        const dawnRecord = record(
             dawn,
             "bblite-dawn-features.cmake",
-            "BBLITE_DAWN",
-            expectedPatchRecord(manifest, "dawn", dawnVariants),
+            "dawn",
+            dawnVariants,
         );
-        record(
-            sdl,
-            "bblite-sdl-features.cmake",
-            "BBLITE_SDL",
-            expectedPatchRecord(manifest, "sdl3", ["trimmed"]),
-        );
-        record(
+        record(sdl, "bblite-sdl-features.cmake", "sdl3", ["trimmed"]);
+        const rmluiRecord = record(
             rmlui,
             "bblite-rmlui-features.cmake",
-            "BBLITE_RMLUI",
-            expectedPatchRecord(manifest, "rmlui", []),
+            "rmlui",
+            [],
         );
+        record(labsound, "bblite-labsound-features.cmake", "labsound", [
+            "core-only",
+        ]);
         result = configure();
         assert.equal(result.status, 0, result.output);
         assert.doesNotMatch(result.output, /records\s+no\s+patch\s+set/);
 
-        const current = expectedPatchRecord(manifest, "rmlui", []);
-        record(rmlui, "bblite-rmlui-features.cmake", "BBLITE_RMLUI", {
-            source: current.source,
-            patches: current.patches.replace(/=[0-9a-f]{64}/, "=0"),
-        });
+        write(
+            join(rmlui, "bblite-rmlui-features.cmake"),
+            rmluiRecord.replace(/=[0-9a-f]{64}/, "=0"),
+        );
         result = configure();
         assert.notEqual(result.status, 0, result.output);
         assert.match(
             result.output,
             /rmlui install at\s[\s\S]*?Rebuild\s+it\s+with\s+tools\/build-rmlui\.ps1/,
         );
+        record(rmlui, "bblite-rmlui-features.cmake", "rmlui", []);
+
+        // An artifact built for other variants than this platform needs is stale.
+        write(
+            join(dawn, "bblite-dawn-features.cmake"),
+            runPatchIdentity(tools.cmake!, "record", "dawn", {
+                variants: ["android"],
+            }),
+        );
+        result = configure();
+        assert.notEqual(result.status, 0, result.output);
+        assert.match(
+            result.output,
+            /was\s+built\s+for\s+the\s+variants\s+\[android\]/,
+        );
+        write(join(dawn, "bblite-dawn-features.cmake"), dawnRecord);
+        assert.equal(configure().status, 0);
     },
 );
 
@@ -489,5 +540,129 @@ test(
             readFileSync(join(checkout, "base.txt"), "utf8"),
             "unrelated edit\n",
         );
+    },
+);
+
+test(
+    "a patched checkout already carrying its series is left untouched; a changed series or edit resets it",
+    { skip: !tools.powershell || !tools.git || !tools.cmake },
+    (t) => {
+        const root = scratch(t, "patch-sync-");
+        const env = {
+            ...process.env,
+            GIT_CONFIG_COUNT: "2",
+            GIT_CONFIG_KEY_0: "safe.directory",
+            GIT_CONFIG_VALUE_0: "*",
+            GIT_CONFIG_KEY_1: "core.autocrlf",
+            GIT_CONFIG_VALUE_1: "false",
+        };
+        const git = (directory: string, ...args: string[]): string =>
+            execFileSync(tools.git!, ["-C", directory, ...args], {
+                env,
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"],
+            }).trim();
+        // An upstream repository, and a checkout of this module's layout
+        // whose manifest names one patch against it.
+        const upstream = join(root, "upstream-repository");
+        mkdirSync(upstream);
+        git(upstream, "init");
+        git(upstream, "config", "core.autocrlf", "false");
+        writeFileSync(join(upstream, "base.txt"), "original\n");
+        git(upstream, "add", "base.txt");
+        git(
+            upstream,
+            "-c",
+            "user.name=Patch Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            "Fixture base",
+        );
+        const pin = git(upstream, "rev-parse", "HEAD");
+        const repository = join(root, "repository");
+        for (const file of [
+            "tools/bblite-tools.psm1",
+            "native/patch-identity.cmake",
+        ]) {
+            mkdirSync(dirname(join(repository, file)), { recursive: true });
+            copyFileSync(file, join(repository, file));
+        }
+        write(join(repository, "upstream/demo.json"), `{ "commit": "${pin}" }`);
+        const patchPath = join(
+            repository,
+            "native/patches/demo/0001-fixture.patch",
+        );
+        const writePatch = (content: string): void =>
+            write(
+                patchPath,
+                `Fixture header.\n\n--- a/base.txt\n+++ b/base.txt\n@@ -1 +1 @@\n-original\n+${content}\n`,
+            );
+        writePatch("patched");
+        write(
+            join(repository, "native/patches/manifest.json"),
+            JSON.stringify({
+                libraries: {
+                    demo: {
+                        pin: { file: "upstream/demo.json", field: "commit" },
+                        builder: "tools/build-demo.ps1",
+                        record: {
+                            prefix: "BBLITE_DEMO",
+                            file: "bblite-demo-features.cmake",
+                        },
+                        variants: [],
+                    },
+                },
+                patches: [
+                    {
+                        library: "demo",
+                        order: 1,
+                        file: "native/patches/demo/0001-fixture.patch",
+                        purpose: "fixture",
+                        upstream: { state: "unsubmitted" },
+                        variants: ["all"],
+                        inheritedFromVcpkg: false,
+                    },
+                ],
+            }),
+        );
+        const checkout = join(root, "checkout");
+        const sync = (): string => {
+            const result = spawnSync(
+                tools.powershell!,
+                [
+                    "-NoProfile",
+                    "-Command",
+                    `Import-Module '${join(repository, "tools/bblite-tools.psm1")}' -Force; ` +
+                        `$series = Sync-PatchedCheckout '${checkout}' '${upstream}' '${pin}' 'Demo' demo @() '${tools.cmake!}'; ` +
+                        `"series=$(@($series).Count)"`,
+                ],
+                { env, encoding: "utf8" },
+            );
+            assert.equal(result.status, 0, result.stdout + result.stderr);
+            return result.stdout;
+        };
+        const base = join(checkout, "base.txt");
+        assert.match(sync(), /series=1/);
+        assert.equal(readFileSync(base, "utf8"), "patched\n");
+        const applied = statSync(base).mtimeMs;
+
+        // Warm: the same series on the same commit is not reset or re-applied.
+        const warm = sync();
+        assert.match(warm, /Demo \S+ already carries its maintained series/);
+        assert.match(warm, /series=1/);
+        assert.equal(statSync(base).mtimeMs, applied);
+
+        // A changed patch resets the checkout and applies the new series.
+        writePatch("patched again");
+        assert.doesNotMatch(sync(), /already carries/);
+        assert.equal(readFileSync(base, "utf8"), "patched again\n");
+
+        // An edit over the staged series is not a state the builder wrote.
+        writeFileSync(base, "local edit\n");
+        assert.doesNotMatch(sync(), /already carries/);
+        assert.equal(readFileSync(base, "utf8"), "patched again\n");
+        assert.ok(existsSync(join(checkout, ".git/bblite-applied-series.txt")));
     },
 );

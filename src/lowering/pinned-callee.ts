@@ -10,6 +10,7 @@
  * or import it names.
  */
 import ts from "typescript";
+import { declaredSymbol } from "../compiler/symbols.js";
 import type { LoweringContext } from "./context.js";
 
 const checkers = new WeakMap<ts.SourceFile, ts.TypeChecker>();
@@ -41,12 +42,7 @@ export function pinnedDeclaration(
     identifier: ts.Identifier,
 ): ts.Declaration | undefined {
     const checker = moduleChecker(file);
-    const symbol =
-        ts.isShorthandPropertyAssignment(identifier.parent) &&
-        identifier.parent.name === identifier
-            ? checker.getShorthandAssignmentValueSymbol(identifier.parent)
-            : checker.getSymbolAtLocation(identifier);
-    return symbol?.declarations?.[0];
+    return declaredSymbol(checker, identifier)?.declarations?.[0];
 }
 
 /** A pinned function, by the module that declares it and its name. */

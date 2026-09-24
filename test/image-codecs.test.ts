@@ -68,6 +68,7 @@ test("codec metadata admits a new format without a second codec table", () => {
                     mimeType: "image/future",
                     extensions: ["future"],
                     signatures: [{ offset: 4, hex: "1234" }],
+                    licenses: { "libfuture.txt": "libfuture" },
                 },
             },
             unrelated: { description: "No decoder" },
@@ -79,6 +80,7 @@ test("codec metadata admits a new format without a second codec table", () => {
             mimeType: "image/future",
             extensions: ["future"],
             signatures: [{ offset: 4, bytes: Buffer.from([0x12, 0x34]) }],
+            licenses: { "libfuture.txt": "libfuture" },
         },
     ]);
     assert.deepEqual(
@@ -92,6 +94,7 @@ test("codec metadata refuses malformed signatures and extensions", () => {
         mimeType: "image/future",
         extensions: ["future"],
         signatures: [{ offset: 0, hex: "1234" }],
+        licenses: { "libfuture.txt": "libfuture" },
     };
     for (const metadata of [
         null,
@@ -102,6 +105,9 @@ test("codec metadata refuses malformed signatures and extensions", () => {
         { ...valid, signatures: [] },
         { ...valid, signatures: [{ offset: -1, hex: "1234" }] },
         { ...valid, signatures: [{ offset: 0, hex: "123" }] },
+        { ...valid, licenses: {} },
+        { ...valid, licenses: { "../escape.txt": "libfuture" } },
+        { ...valid, licenses: { "libfuture.txt": 1 } },
     ]) {
         assert.throws(
             () =>

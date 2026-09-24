@@ -23,12 +23,12 @@ test("the additive group writers carry the pinned conversion and guard", () => {
     // `|| 60` and the group factory's DEFAULT_FRAME_RATE, asserted equal.
     assert.match(
         lowered.source,
-        /set_animation_additive\(\s*engine,\s*group,\s*reference_frame \/ 60\.0f\);/,
+        /set_animation_additive\(\s*engine,\s*group,\s*reference_frame \/ 60\.0\);/,
     );
     // The pinned finite/non-negative reference guard.
     assert.match(
         lowered.source,
-        /!std::isfinite\(reference_time\) \|\|\s*reference_time < 0\.0f/,
+        /!std::isfinite\(reference_time\) \|\|\s*reference_time < 0\.0\)/,
     );
     // The additive mark takes the same writer route as every other group
     // field, and the owner enable installs the glTF mixer handler.

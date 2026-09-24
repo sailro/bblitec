@@ -137,61 +137,23 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
     pass.vertex_module = load_wgsl_module(device, plan.vertex_stem);
     pass.fragment_module = load_wgsl_module(device, plan.fragment_stem);
 
-    // Group 0 is unused by the specialized WGSL (the scene block is
-    // re-homed into the vertex group) and is declared empty so the layout's
-    // group indexes line up.
-    {
-        WGPUBindGroupLayoutDescriptor empty = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        pass.group_layouts[0] = wgpuDeviceCreateBindGroupLayout(device, &empty);
-
-        WGPUBindGroupLayoutEntry vertex_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        vertex_entry.binding = 0;
-        vertex_entry.visibility = WGPUShaderStage_Vertex;
-        vertex_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        vertex_entry.buffer.minBindingSize = sizeof(DawnBillboardSceneUniforms);
-        WGPUBindGroupLayoutEntry vertex_system_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        vertex_system_entry.binding = 1;
-        vertex_system_entry.visibility = WGPUShaderStage_Vertex;
-        vertex_system_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        vertex_system_entry.buffer.minBindingSize = upstream::billboard_system_ubo_bytes;
-        const std::array<WGPUBindGroupLayoutEntry, 2> vertex_entries{vertex_entry,
-                                                                     vertex_system_entry};
-        WGPUBindGroupLayoutDescriptor vertex_layout = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        // The axis-locked basis reads the system block for its lock axis.
-        vertex_layout.entryCount = axis_locked ? 2u : 1u;
-        vertex_layout.entries = vertex_entries.data();
-        pass.group_layouts[1] = wgpuDeviceCreateBindGroupLayout(device, &vertex_layout);
-
-        // The atlas pair, then one pair per extra texture a custom shader
-        // named -- the order the composed program declares them in.
-        const std::vector<WGPUBindGroupLayoutEntry> texture_entries =
-            dawn_texture_pair_layout_entries(1u + system.custom_textures.size());
-        WGPUBindGroupLayoutDescriptor texture_layout = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        texture_layout.entryCount = static_cast<std::uint32_t>(texture_entries.size());
-        texture_layout.entries = texture_entries.data();
-        pass.group_layouts[2] = wgpuDeviceCreateBindGroupLayout(device, &texture_layout);
-
-        // A custom-shader system declares the fx block beside the system
-        // block, whether or not its body reads either. WebGPU takes a group
-        // entry the shader ignores, so unlike SDL_GPU this side needs no
-        // dense slots.
-        std::array<WGPUBindGroupLayoutEntry, 2> fragment_entries{};
-        fragment_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        fragment_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        fragment_entries[0].binding = 0;
-        fragment_entries[0].visibility = WGPUShaderStage_Fragment;
-        fragment_entries[0].buffer.type = WGPUBufferBindingType_Uniform;
-        fragment_entries[0].buffer.minBindingSize = upstream::billboard_system_ubo_bytes;
-        fragment_entries[1].binding = 1;
-        fragment_entries[1].visibility = WGPUShaderStage_Fragment;
-        fragment_entries[1].buffer.type = WGPUBufferBindingType_Uniform;
-        fragment_entries[1].buffer.minBindingSize = upstream::sprite_fx_ubo_bytes;
-        WGPUBindGroupLayoutDescriptor fragment_layout = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-        fragment_layout.entryCount = system.custom_shader ? 2u : 1u;
-        fragment_layout.entries = fragment_entries.data();
-        pass.group_layouts[3] = wgpuDeviceCreateBindGroupLayout(device, &fragment_layout);
+    // Every group is laid out from what the pass's modules declare in it
+    // (their `.slots` layout lines). Group 0 is declared by neither -- the
+    // scene block is re-homed into the vertex group -- and lays out empty so
+    // the layout's group indexes line up; then the vertex block (and, for
+    // the axis-locked basis, the system block) at 1, the atlas pair and a
+    // custom program's extra pairs at 2, and the system block beside a
+    // custom program's fx block at 3. The mode-4 add pass draws the stock
+    // program under the same layout, so its modules are laid out with the
+    // pass's own.
+    std::vector<DawnLayoutStage> stages{{plan.vertex_stem, WGPUShaderStage_Vertex},
+                                        {plan.fragment_stem, WGPUShaderStage_Fragment}};
+    if (plan.particle_passes == 2) {
+        stages.push_back({"billboard.vert", WGPUShaderStage_Vertex});
+        stages.push_back({"billboard.frag", WGPUShaderStage_Fragment});
     }
-
+    for (std::uint32_t group = 0; group < pass.group_layouts.size(); ++group)
+        pass.group_layouts[group] = create_dawn_reflected_layout(device, stages, group);
     auto attributes = vertex_attribute_array<upstream::billboard_instance_attributes.size()>();
     for (std::size_t index = 0; index < upstream::billboard_instance_attributes.size(); ++index) {
         const upstream::BillboardInstanceAttribute& row =

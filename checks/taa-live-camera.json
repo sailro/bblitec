@@ -1,7 +1,6 @@
 {
-  "scene": "scene261",
-  "twin": true,
-  "notes": "TAA, live: the no-query twin keeps rendering, so camera movement must reset the accumulation (blend factor 1 while moving, 0.05 once settled), the source task's camera key must advance, the image must follow the camera, and a window resize must rebuild the source's clean data at the new aspect without disturbing the blend.",
+  "scene": "examples/taa-live-camera.ts",
+  "notes": "TAA, live: scene261 freezes and attaches no camera controls, so this repository fixture keeps its source-task + TAA chain rendering with an attached camera; camera movement must reset the accumulation (blend factor 1 while moving, 0.05 once settled), the source task's camera key must advance, the image must follow the camera, and a window resize must rebuild the source's clean data at the new aspect without disturbing the blend.",
   "base": "adhoc",
   "minFrames": 30,
   "phases": [

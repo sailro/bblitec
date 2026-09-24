@@ -10,16 +10,7 @@ import {
     depthOnlyFragmentWgsl,
     diagnosticClusterFragmentWgsl,
     diagnosticIdFragmentWgsl,
-    imageProcessingFragmentWgsl,
 } from "../src/shader-builtins-utility.js";
-import {
-    backgroundGroundFragmentWgsl,
-    backgroundSkyboxFragmentWgsl,
-    readPinnedBackgroundGroundSource,
-    readPinnedBackgroundSkyboxSource,
-} from "../src/shader-builtins-background.js";
-import { findRepositoryRoot, readUpstreamPin } from "../src/upstream-source.js";
-import { resolve } from "node:path";
 import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
 
 test("lowers reached alpha-card WGSL through typed reflection", () => {
@@ -158,14 +149,6 @@ test("generates Tint utility WGSL entry points and bindings", () => {
         /@group\(2\) @binding\(1\) var s: sampler/,
     );
     assert.match(blitFragmentWgsl(), /textureSampleLevel\(t, s, v\.u, 0\.0\)/);
-    // The lifted pinned `ip()`: the pin's own parameter block and exposure
-    // multiply, under the native fragment uniform space.
-    assert.match(imageProcessingFragmentWgsl(), /var c=r\.rgb\*p\.e;/);
-    assert.match(
-        imageProcessingFragmentWgsl(),
-        /@group\(3\)@binding\(0\)var<uniform> p:P;/,
-    );
-    assert.match(imageProcessingFragmentWgsl(), /1\.590579/);
     assert.match(depthOnlyFragmentWgsl(), /@fragment\s+fn mainFragment\(\)/);
     assert.match(diagnosticIdFragmentWgsl(), /@group\(3\) @binding\(0\)/);
     assert.match(diagnosticIdFragmentWgsl(), /textureSample/);
@@ -174,35 +157,6 @@ test("generates Tint utility WGSL entry points and bindings", () => {
         /@builtin\(primitive_index\)/,
     );
     assert.match(diagnosticClusterFragmentWgsl(), /clusterId >> 16u/);
-});
-
-function pinnedPackageRoot(): string {
-    const repositoryRoot = findRepositoryRoot();
-    const pin = readUpstreamPin(repositoryRoot);
-    return resolve(repositoryRoot, "node_modules", ...pin.package.split("/"));
-}
-
-test("generates Tint background WGSL for 2D and cube textures", () => {
-    const packageRoot = pinnedPackageRoot();
-    const ground = backgroundGroundFragmentWgsl(
-        "ground provenance",
-        readPinnedBackgroundGroundSource(packageRoot),
-    );
-    const skybox = backgroundSkyboxFragmentWgsl(
-        "skybox provenance",
-        readPinnedBackgroundSkyboxSource(packageRoot),
-    );
-    assert.match(ground, /texture_2d<f32>/);
-    // The pin's own premultiply, from groundFragSrc.
-    assert.match(ground, /a=vec4<f32>\(a\.rgb\*a\.a,a\.a\);/);
-    assert.match(ground, /1\.590579/);
-    assert.match(skybox, /texture_cube<f32>/);
-    assert.match(skybox, /textureSampleLevel/);
-    assert.match(skybox, /primaryColorExposure/);
-    // The undithered file is the pinned environment-cubemap arm: gamma and
-    // contrast only, no tone mapping and no noise.
-    assert.doesNotMatch(skybox, /1\.590579/);
-    assert.doesNotMatch(skybox, /dither\(/);
 });
 
 test("generates the shared Tint material vertex interface", () => {

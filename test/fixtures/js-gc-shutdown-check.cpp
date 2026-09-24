@@ -7,15 +7,21 @@
 
 using namespace bbl::js;
 
+/** A registered payload that owns no edge. */
+struct Traced {
+    int value = 0;
+    void gc_trace(const TraceVisitor&) const {}
+};
+
 struct RealmPayload {
     static inline std::atomic<int> live = 0;
     Ref<RealmPayload> self;
     RealmPayload() { ++live; }
     ~RealmPayload() {
-        std::vector<Ref<int>> transient;
+        std::vector<Ref<Traced>> transient;
         for (int index = 0; index < 32; ++index)
-            transient.push_back(make_ref<int>(index));
-        assert(*transient.back() == 31);
+            transient.push_back(make_ref<Traced>(index));
+        assert(transient.back()->value == 31);
         --live;
     }
     void gc_trace(const TraceVisitor& visitor) const { visitor(self); }

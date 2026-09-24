@@ -15,6 +15,11 @@ struct Point {
     double x, y, z;
 };
 
+/** A payload that describes its edges joins the collector's registry. */
+struct TracedPoint : Point {
+    void gc_trace(const js::TraceVisitor&) const {}
+};
+
 struct CountedValue {
     inline static int copies = 0;
     std::string value;
@@ -38,7 +43,7 @@ int main() {
         assert(transferred.value == "transferred" && CountedValue::copies == 0);
         double scalar = 7;
         assert(js::take_temporary(scalar) == 7 && scalar == 7);
-        auto reference = js::make_ref<Point>(Point{1, 2, 3});
+        auto reference = js::make_ref<TracedPoint>(TracedPoint{{1, 2, 3}});
         const auto* node = js::gc::registry.nodes.back();
         assert(node->owners() == 1);
         auto owner = js::take_temporary(reference);

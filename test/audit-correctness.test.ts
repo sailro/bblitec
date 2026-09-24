@@ -663,7 +663,7 @@ test(
                 }
                 assert(false);
             };
-            for (auto kind : {Kind::pbr, Kind::grid, Kind::shader, Kind::node}) {
+            for (auto kind : {Kind::pbr, Kind::shader, Kind::node}) {
                 draws.transparent.commands.push_back({{kind}});
                 refuses("material draw adapter"); draws.transparent.commands.clear();
             }
@@ -727,7 +727,8 @@ test(
         }
         int main() {
             assert(generated_record_main() == 0);
-            assert(retained_nodes == 2);
+            // The records hold a handle and scalars: no traced edge, no node.
+            assert(retained_nodes == 0);
             assert(bbl::js::managed_node_count() == 0);
         }
     `,
@@ -1092,15 +1093,18 @@ test(
             source.ui_elements[0].tag = "div";
             source.ui_style_revision = 7;
             auto inbox = std::make_shared<pal::EventLoop::Inbox>();
-            pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+            const auto post = [inbox](std::unique_ptr<pal::ExternalEvent> event) {
+                inbox->post(std::move(event));
+            };
+            pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
             assert(target.ui_style_revision == 7);
             for (int i = 0; i < 100; ++i) {
                 source.ui_elements[0].text = std::to_string(i);
-                pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+                pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
                 assert(target.ui_style_revision == 7);
             }
             source.ui_style_revision = 8;
-            pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+            pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
             assert(target.ui_style_revision == 8);
             assert(target.ui_elements[0].text == "99");
             const auto text_since = source.ui_text_revision;
@@ -1109,7 +1113,7 @@ test(
             auto text_snapshot = pal::snapshot_document(source, text_since);
             assert(text_snapshot->text_updates && text_snapshot->text_updates->size() == 1);
             assert(text_snapshot->elements.empty() && text_snapshot->styles.empty());
-            pal::apply_document(target, std::move(*text_snapshot), inbox);
+            pal::apply_document(target, std::move(*text_snapshot), post);
             assert(target.ui_elements[0].text == "text-only update");
             assert(target.ui_style_revision == 8);
             assert(target.ui_text_revision == target_text_revision + 1);
@@ -1129,7 +1133,7 @@ test(
             }
             source.ui_elements[5].tag = "details";
             source.ui_elements[5].attributes["open"] = "";
-            pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+            pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
             js::RealmScope realm;
             pal::EventLoop loop(inbox);
             unsigned delivered = 0;
@@ -1252,13 +1256,19 @@ test(
             `
         #include <bblite/js_gc.hpp>
         #include <cassert>
+        struct Traced {
+            int value = 0;
+            void gc_trace(const bbl::js::TraceVisitor&) const {}
+        };
         int main() {
             using namespace bbl::js;
             const auto initial_nodes = managed_node_count();
             const auto initial_allocations = gc::registry.total_allocations;
             {
-                auto first = make_gc_shared<int>(1);
-                auto second = make_gc_shared<int>(2);
+                auto untraced = make_gc_shared<int>(0);
+                assert(*untraced == 0 && managed_node_count() == initial_nodes);
+                auto first = make_gc_shared<Traced>(Traced{1});
+                auto second = make_gc_shared<Traced>(Traced{2});
                 assert(managed_node_count() == initial_nodes + 2);
                 first.reset();
                 collect_cycles();

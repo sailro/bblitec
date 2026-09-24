@@ -27,6 +27,12 @@ import {
     walkReachedLoopNodes,
 } from "./resource-loops.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
+import {
+    integerCounterRead,
+    integerLoopConditionCpp,
+    integerLoopCounter,
+    integerLoopStepCpp,
+} from "./integer-loops.js";
 import { staticNumberValue } from "./option-helpers.js";
 import {
     argumentAt,
@@ -1323,24 +1329,30 @@ export class StatementLowerer {
                 )
                     ? context.allocateTemporaryCppName("pending_exception")
                     : undefined;
+            const protectedLines = context.captureEmittedLines(() => {
+                context.bindings.pushScope(context.allocateBlockPrefix());
+                try {
+                    for (const child of statement.tryBlock.statements) {
+                        this.emit(context, child);
+                        if (
+                            this.terminatesAfterLowering(child) ||
+                            this.staticIterationCompleted()
+                        )
+                            break;
+                    }
+                } finally {
+                    context.bindings.popScope();
+                }
+            });
+            // A protected block that lowers to nothing cannot throw, so its
+            // handler is unreachable.
+            if (protectedLines.length === 0) return;
             if (suspendedCatch)
                 context.emit(`std::exception_ptr ${suspendedCatch};`);
             context.emit("try {");
             context.increaseIndent();
-            context.bindings.pushScope(context.allocateBlockPrefix());
-            try {
-                for (const child of statement.tryBlock.statements) {
-                    this.emit(context, child);
-                    if (
-                        this.terminatesAfterLowering(child) ||
-                        this.staticIterationCompleted()
-                    )
-                        break;
-                }
-            } finally {
-                context.bindings.popScope();
-                context.decreaseIndent();
-            }
+            for (const line of protectedLines) context.emit(line);
+            context.decreaseIndent();
             const catchCpp =
                 catchDeclaration && !erasedCatchBinding
                     ? context.allocateTemporaryCppName("caught_error")
@@ -1388,14 +1400,21 @@ export class StatementLowerer {
                             : caughtErrorValue(context, catchCpp),
                     );
                 }
-                for (const child of statement.catchClause.block.statements) {
-                    this.emit(context, child);
-                    if (
-                        this.terminatesAfterLowering(child) ||
-                        this.staticIterationCompleted()
-                    )
-                        break;
-                }
+                const handlerLines = context.captureEmittedLines(() => {
+                    for (const child of statement.catchClause!.block
+                        .statements) {
+                        this.emit(context, child);
+                        if (
+                            this.terminatesAfterLowering(child) ||
+                            this.staticIterationCompleted()
+                        )
+                            break;
+                    }
+                });
+                for (const line of handlerLines) context.emit(line);
+                // A source handler that ignores its exception says so.
+                if (handlerLines.length === 0 && !suspendedCatch)
+                    context.emit("bbl::discard_exception();");
             } finally {
                 context.bindings.popScope();
                 context.decreaseIndent();
@@ -1652,7 +1671,24 @@ export class StatementLowerer {
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            if (statement.initializer) {
+            const counter = integerLoopCounter(context, statement);
+            const counterCpp =
+                counter && context.bindings.cppIdentifier(counter.binding.text);
+            if (counter && counterCpp) {
+                context.emit({
+                    kind: "declaration",
+                    type: "std::int64_t",
+                    name: counterCpp,
+                    initializer: String(counter.start),
+                    attributes: "[[maybe_unused]] ",
+                });
+                context.bindings.defineVariable(counter.binding, {
+                    kind: "number",
+                    cpp: integerCounterRead(counterCpp),
+                    nativeBinding: true,
+                    integerCounterCpp: counterCpp,
+                });
+            } else if (statement.initializer) {
                 if (ts.isVariableDeclarationList(statement.initializer)) {
                     for (const declaration of statement.initializer
                         .declarations) {
@@ -1667,18 +1703,30 @@ export class StatementLowerer {
             this.inRuntimeIteration(
                 context,
                 () => {
-                    const condition = statement.condition
-                        ? this.compileRepeatedCondition(
-                              context,
-                              statement.condition,
-                          )
-                        : context.workerCheckpointCpp()
-                          ? `(${context.workerCheckpointCpp()}, true)`
-                          : "";
+                    const nativeCondition =
+                        counter &&
+                        counterCpp &&
+                        integerLoopConditionCpp(counter, counterCpp);
+                    const checkpoint = context.workerCheckpointCpp();
+                    const condition = nativeCondition
+                        ? checkpoint
+                            ? `(${checkpoint}, ${nativeCondition})`
+                            : nativeCondition
+                        : statement.condition
+                          ? this.compileRepeatedCondition(
+                                context,
+                                statement.condition,
+                            )
+                          : checkpoint
+                            ? `(${checkpoint}, true)`
+                            : "";
                     // The incrementor belongs in the for-header so `continue`
                     // reaches it, matching JavaScript loop semantics.
-                    let header = "";
-                    if (statement.incrementor) {
+                    let header =
+                        counter && counterCpp
+                            ? integerLoopStepCpp(counter, counterCpp)
+                            : "";
+                    if (statement.incrementor && !counter) {
                         const lines = this.inRuntimeControlFlow(context, () =>
                             context.captureEmittedLines(() => {
                                 this.emitExpression(

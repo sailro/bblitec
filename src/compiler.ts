@@ -135,7 +135,6 @@ import {
 import {
     compileAnisotropyOptions,
     compileClearCoatOptions,
-    compileGridMaterialOptions,
     compileIridescenceOptions,
     compileMetallicReflectanceOptions,
     compilePbrMaterialOptions,
@@ -183,6 +182,10 @@ import {
     type ReachedLineMaterial,
 } from "./compiler/line-material.js";
 import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
+import {
+    reachGridMaterial,
+    type ReachedGridMaterial,
+} from "./compiler/grid-material.js";
 import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
 import {
     executeApplicationFunction,
@@ -3356,8 +3359,7 @@ class Compiler implements LoweringServices {
             this.sceneManifest.recordRuntimeMeshProfile(index);
             writable(value).sceneMeshProfileIndex = index;
             delete writable(value).sceneMeshIndex;
-            writable(value).cpp =
-                `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
+            writable(value).cpp = `(bbl::upstream::begin_scene_mesh_profile(${this.requireEngine(value, call)}, ${index}u), ${value.cpp})`;
         }
         return value;
     }
@@ -3665,8 +3667,11 @@ class Compiler implements LoweringServices {
         return compileMetallicReflectanceOptions(this, expression);
     }
 
-    public compileGridMaterialOptions(expression: ts.Expression): string[] {
-        return compileGridMaterialOptions(this, expression);
+    public reachGridMaterial(
+        call: ts.CallExpression,
+        options: ts.Expression | undefined,
+    ): ReachedGridMaterial {
+        return reachGridMaterial(this, call, options);
     }
 
     public compileClearCoatOptions(
@@ -5723,12 +5728,18 @@ class Compiler implements LoweringServices {
             return undefined;
         }
         const accessor = owner.recordGetters?.[expression.name.text];
-        if (accessor) {
-            return this.compileRecordGetter(owner, accessor);
-        }
-        const property = owner.recordProperties?.[expression.name.text];
-        if (property) {
-            return property;
+        const member = accessor
+            ? this.compileRecordGetter(owner, accessor)
+            : owner.recordProperties?.[expression.name.text];
+        if (member) {
+            // A link of an optional chain carries the chain's presence.
+            return ts.isOptionalChain(expression)
+                ? this.propertyAccess.propertyWithOwnerPresence(
+                      owner,
+                      member,
+                      expression,
+                  )
+                : member;
         }
         // A property the record was built without reads as `undefined`
         // when its type declares it optional: `{ b: 2 } as { a?: number }`
@@ -6706,6 +6717,7 @@ class Compiler implements LoweringServices {
         this.nativeStoredValues.add(value);
         const storage =
             value.sharedStorageCpp ??
+            value.integerCounterCpp ??
             (cppIdentifierPattern.test(value.cpp)
                 ? value.cpp
                 : (value.optionalStorageCpp ?? value.cpp));
@@ -6716,29 +6728,30 @@ class Compiler implements LoweringServices {
             ["true", "false", "nullptr"].includes(storage)
         )
             return;
-        const cppType =
-            value.kind === "engine"
-                ? value.ownedEngineCpp
-                    ? "std::shared_ptr<bbl::Engine>"
-                    : "bbl::Engine"
-                : value.kind === "texture" && value.textureStorage === "solid"
-                  ? "bbl::SolidTexture"
-                  : value.kind === "texture" && value.textureStorage === "file"
-                    ? "bbl::FileTexture"
-                    : value.kind === "texture" &&
-                        value.textureStorage === "pixels"
-                      ? "bbl::PixelsTexture"
-                      : value.dataType
-                        ? this.dataTypes.cppType(value.dataType)
-                        : isHandleKind(value.kind)
-                          ? handleCppType(value.kind)
-                          : value.kind === "number"
-                            ? "double"
-                            : value.kind === "boolean"
-                              ? "bool"
-                              : value.kind === "string"
-                                ? "std::string"
-                                : undefined;
+        const cppType = value.integerCounterCpp
+            ? "std::int64_t"
+            : value.kind === "engine"
+              ? value.ownedEngineCpp
+                  ? "std::shared_ptr<bbl::Engine>"
+                  : "bbl::Engine"
+              : value.kind === "texture" && value.textureStorage === "solid"
+                ? "bbl::SolidTexture"
+                : value.kind === "texture" && value.textureStorage === "file"
+                  ? "bbl::FileTexture"
+                  : value.kind === "texture" &&
+                      value.textureStorage === "pixels"
+                    ? "bbl::PixelsTexture"
+                    : value.dataType
+                      ? this.dataTypes.cppType(value.dataType)
+                      : isHandleKind(value.kind)
+                        ? handleCppType(value.kind)
+                        : value.kind === "number"
+                          ? "double"
+                          : value.kind === "boolean"
+                            ? "bool"
+                            : value.kind === "string"
+                              ? "std::string"
+                              : undefined;
         if (cppType)
             this.registerNativeBindingType(
                 storage,
@@ -8909,8 +8922,12 @@ class Compiler implements LoweringServices {
             );
         }
         const cppName = this.bindings.cppIdentifier(identifier.text);
-        this.staticNativeDeclarations.push(`auto ${cppName} = ${value.cpp};`);
-        const stored = { ...value, cpp: cppName };
+        // A function-local static: its construction can throw, which a
+        // namespace-scope initializer would turn into termination.
+        this.staticNativeDeclarations.push(
+            `auto& ${cppName}() {\n    static auto value = ${value.cpp};\n    return value;\n}`,
+        );
+        const stored = { ...value, cpp: `${cppName}()` };
         this.bindings.variableScopes[0]!.set(symbol, {
             name: identifier.text,
             value: stored,

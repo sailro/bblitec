@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import { resolvedSymbol } from "./symbols.js";
 
 /** Instance fields include the properties declared by constructor parameters. */
 export function classInstanceProperties(
@@ -367,7 +367,7 @@ export function staticClassMember(
     name: ts.MemberName,
 ): { table: ClassMemberTable; name: string } | undefined {
     if (!ts.isIdentifier(owner)) return undefined;
-    const member = declaredSymbol(checker, name)?.declarations?.find(
+    const member = resolvedSymbol(checker, name)?.declarations?.find(
         (candidate): candidate is ts.ClassElement =>
             ts.isClassElement(candidate) &&
             ts.isClassDeclaration(candidate.parent) &&

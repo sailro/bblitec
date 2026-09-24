@@ -9,6 +9,7 @@ import { assertAsyncSceneBuilder } from "../scene-deferred.js";
 import { lowerPbrGammaAlbedo } from "../pbr-scene-hooks.js";
 import { materialGroupIdentity } from "../material-group-identity.js";
 import { recordAt } from "../../compiler/record-access.js";
+import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
 
 /**
  * The `SolidTexture` to `TextureData` normalization, emitted once per
@@ -1213,14 +1214,11 @@ void set_pbr_occlusion_solid_texture(
     ++record.occlusion_texture_generation;
 }
 
-// src/material/pbr/fragments/clearcoat-fragment.ts#writeClearcoatUBO leaves
-// the whole clearcoat slice at zero unless isEnabled is set, so a disabled
-// coat keeps the record's zero intensity and shades as no coat at all.
-// The pinned defaults live in the same writer: intensity 1, roughness 0,
-// index of refraction 1.5, normal scale 1.
-// src/material/pbr/fragments/sheen-fragment.ts#writeSheenUBO: a disabled
-// sheen writes no slice, and the record's zero sheen color shades as none.
-// The pinned defaults are colour [1,1,1], roughness 0, intensity 1.
+// src/material/pbr/set-sheen.ts, set-clearcoat.ts and set-iridescence.ts
+// store the layer's props whole, and each fragment's writer skips a layer
+// that is not \`isEnabled\` (\`has_sheen\`, \`has_clearcoat\`,
+// \`has_iridescence\`). The compiler resolved the writers' own defaults at
+// the call site, so the values arrive already defaulted.
 void set_pbr_sheen(
     Engine& engine,
     MaterialHandle material,
@@ -1228,10 +1226,8 @@ void set_pbr_sheen(
     Color3 color,
     float roughness,
     float intensity) {
-    if (!enabled) {
-        return;
-    }
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    record.has_sheen = enabled;
     record.sheen_color = color;
     record.sheen_roughness = roughness;
     record.sheen_intensity = intensity;
@@ -1256,21 +1252,14 @@ void set_pbr_clearcoat(
     float roughness,
     float index_of_refraction,
     float normal_scale) {
-    if (!enabled) {
-        return;
-    }
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    record.has_clearcoat = enabled;
     record.clearcoat_intensity = intensity;
     record.clearcoat_roughness = roughness;
     record.clearcoat_index_of_refraction = index_of_refraction;
     record.clearcoat_normal_scale = normal_scale;
 }
 
-// src/material/pbr/fragments/iridescence-fragment.ts#writeIridescenceUBO:
-// a disabled layer writes no slice, and the record's zero intensity shades
-// as none. The pinned defaults are in the same writer -- intensity 1, index
-// of refraction 1.3, thickness 100..400 nm -- and the compiler resolved
-// them at the call site, so the values arrive already defaulted.
 void set_pbr_iridescence(
     Engine& engine,
     MaterialHandle material,
@@ -1279,10 +1268,8 @@ void set_pbr_iridescence(
     float index_of_refraction,
     float minimum_thickness,
     float maximum_thickness) {
-    if (!enabled) {
-        return;
-    }
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    record.has_iridescence = enabled;
     record.iridescence_intensity = intensity;
     record.iridescence_index_of_refraction = index_of_refraction;
     record.iridescence_minimum_thickness = minimum_thickness;
@@ -1307,21 +1294,17 @@ void set_pbr_lightmap(
 }
 
 // src/material/pbr/fragments/anisotropy-fragment.ts#pbrExt.writeUbo: the
-// isEnabled guard is the writer's own, so a disabled layer writes no slice
-// and the record keeps the pin's defaults. Those defaults -- an intensity
-// of one and a [1, 0] direction -- are that same writer's own nullish
-// arms, resolved at the call site.
+// isEnabled guard is the writer's own, so a disabled layer writes no slice.
+// The defaults -- an intensity of one and a [1, 0] direction -- are that
+// same writer's own nullish arms, resolved at the call site.
 void set_pbr_anisotropy(
     Engine& engine,
     MaterialHandle material,
     bool enabled,
     float intensity,
     Vec2 direction) {
-    if (!enabled) {
-        return;
-    }
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
-    record.has_anisotropy = true;
+    record.has_anisotropy = enabled;
     record.anisotropy_intensity = intensity;
     record.anisotropy_direction = direction;
 }
@@ -1330,6 +1313,7 @@ MaterialHandle create_pbr_material(
     Engine& engine,
     PbrMaterialOptions options) {
     MaterialRecord material;
+${pbrMaterialRecordSeedCpp("material", "    ")}
     material.source_pbr_group_builder = true;
     // The pin's createPbrMaterial is {...props}: a solid texture IS the
     // texture -- createSolidTexture2D writes the rounded texel into a 1x1
@@ -1377,142 +1361,6 @@ MaterialHandle create_pbr_material(
     material.has_occlusion_texture = true;
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
-}
-
-} // namespace bbl
-`,
-        };
-    }
-
-    public lowerGridMaterialFactory(): LoweredSource {
-        const modulePath = "src/material/grid/grid-material.ts";
-        const { file, declaration } = this.context.functionDeclaration(
-            modulePath,
-            "createGridMaterial",
-        );
-        for (const [name, path, expected] of [
-            ["mainColor", "options.mainColor", [0, 0, 0]],
-            ["lineColor", "options.lineColor", [0, 0.5, 0.5]],
-        ] as const) {
-            const initializer = this.context.unwrapExpression(
-                this.context.variableInitializer(declaration, name),
-            );
-            if (
-                !ts.isBinaryExpression(initializer) ||
-                initializer.operatorToken.kind !==
-                    ts.SyntaxKind.QuestionQuestionToken ||
-                this.context.propertyPath(initializer.left)?.join(".") !== path
-            ) {
-                this.context.contractError(
-                    initializer,
-                    `Unexpected '${name}' default expression.`,
-                );
-            }
-            const values = this.context.numericTuple(initializer.right, file);
-            if (values.some((value, index) => value !== expected[index])) {
-                this.context.contractError(
-                    initializer.right,
-                    `Unexpected '${name}' default value.`,
-                );
-            }
-        }
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "gridControl"),
-            "[gridRatio, Math.round(majorUnitFrequency), minorUnitVisibility, opacity]",
-            "GridMaterial control vector",
-        );
-        const transparent = this.context.unwrapExpression(
-            this.context.variableInitializer(declaration, "transparent"),
-        );
-        if (
-            !ts.isBinaryExpression(transparent) ||
-            transparent.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
-            !ts.isIdentifier(transparent.left) ||
-            transparent.left.text !== "opacity" ||
-            !ts.isNumericLiteral(transparent.right) ||
-            Number(transparent.right.text) !== 1
-        ) {
-            this.context.contractError(
-                transparent,
-                "Expected opacity below one to select transparency.",
-            );
-        }
-        const shaderOptions = this.context.callObjectArgument(
-            declaration,
-            "createShaderMaterial",
-        );
-        const alphaBlending = this.context.propertyInitializer(
-            shaderOptions,
-            "needAlphaBlending",
-        );
-        if (
-            !ts.isBinaryExpression(alphaBlending) ||
-            alphaBlending.operatorToken.kind !== ts.SyntaxKind.BarBarToken ||
-            !ts.isIdentifier(alphaBlending.left) ||
-            alphaBlending.left.text !== "transparent" ||
-            !ts.isIdentifier(alphaBlending.right) ||
-            alphaBlending.right.text !== "hasOpacity"
-        ) {
-            this.context.contractError(
-                alphaBlending,
-                "Expected opacity state to control alpha blending.",
-            );
-        }
-        const backFaceCulling = this.context.propertyInitializer(
-            shaderOptions,
-            "backFaceCulling",
-        );
-        if (
-            !ts.isIdentifier(backFaceCulling) ||
-            backFaceCulling.text !== "backFaceCulling"
-        ) {
-            this.context.contractError(
-                backFaceCulling,
-                "Expected GridMaterial culling passthrough.",
-            );
-        }
-        return {
-            modulePath,
-            symbolName: "createGridMaterial",
-            header: "",
-            source: `// ${this.context.provenance(
-                modulePath,
-                "createGridMaterial",
-            )}
-#include <bblite/runtime.hpp>
-
-#include <cmath>
-
-namespace bbl {
-
-MaterialHandle create_grid_material(
-    Engine& engine,
-    GridMaterialOptions options) {
-    MaterialRecord material;
-    material.grid_material = true;
-    material.source_group_builder = ${materialGroupIdentity(this.context, "shader")};
-    material.grid_main_color = options.main_color;
-    material.grid_line_color = options.line_color;
-    material.grid_control = Vec4{
-        options.grid_ratio,
-        std::round(options.major_unit_frequency),
-        options.minor_unit_visibility,
-        options.opacity,
-    };
-    material.grid_offset = options.grid_offset;
-    material.grid_visibility = options.visibility;
-    material.grid_antialias = options.antialias;
-    material.grid_pre_multiply_alpha =
-        options.pre_multiply_alpha;
-    material.grid_use_max_line = options.use_max_line;
-    material.alpha_mode =
-        options.opacity < 1.0f
-            ? MaterialAlphaMode::blend
-            : MaterialAlphaMode::opaque;
-    material.double_sided = !options.back_face_culling;
-    engine.materials.push_back(material);
-    return MaterialHandle{
-        static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }
 
 } // namespace bbl

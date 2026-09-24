@@ -20,9 +20,12 @@ $env:CMAKE_COMMAND = 'C:/Program Files/Microsoft Visual Studio/18/Community/Comm
 ```
 
 `scene` discovers CMake through vswhere; dependency scripts accept PATH, CMAKE_COMMAND or `-CMake`.
-Built Dawn, LabSound, RmlUi and trimmed-SDL artifacts record their source and patch set
-([native/patches/manifest.json](../native/patches/manifest.json)); configure refuses a record that
-differs and warns on an unrecorded artifact, and `dev:setup` rebuilds a stale one.
+`native/patch-identity.cmake` alone reads the patch series of
+[native/patches/manifest.json](../native/patches/manifest.json), for the overlay portfiles, the
+dependency scripts, configure and doctor. Built Dawn, LabSound, RmlUi and trimmed-SDL artifacts record
+their source, patch set and variants; configure refuses a record that differs and warns on an
+unrecorded artifact, and `dev:setup` rebuilds a stale one. A dependency script whose checkout already
+carries its series leaves the source untouched, so a repeated run recompiles nothing.
 
 ### Linux prerequisites
 
@@ -84,7 +87,7 @@ sdkmanager --sdk_root=$env:ANDROID_HOME "platform-tools" "platforms;android-35" 
 npm run android -- -Scene torus-states -Sdk C:/Dev/android-sdk -Device <serial> -Install
 npm run android -- -Scene torus-states -Backend DAWN -Sdk C:/Dev/android-sdk -Device <serial> -Smoke
 npm run android:sweep -- --sdk C:/Dev/android-sdk --device emulator-5554
-npm run package:demo -- -Platform android -Scene torus-states -ExpectBackend DAWN -Sdk C:/Dev/android-sdk -Device <serial>
+npm run package:demo -- --platform android --scene torus-states --backend dawn --sdk C:/Dev/android-sdk --device <serial>
 npm run demos:release -- --platform android --scene torus-states --backend dawn --sdk C:/Dev/android-sdk --device <serial>
 ```
 
@@ -211,7 +214,9 @@ npm run lint -- scene1
 ESLint checks maintained compiler, tooling and test code with type-aware TypeScript rules.
 `npm run lint:ts -- --fix` applies safe fixes. `lint:tools` type-checks the JavaScript tools and check
 plugins (`tsconfig.tools.json`, strict `checkJs`) against the declarations the build emits for
-`dist/src`. Prettier leaves embedded source strings unchanged.
+`dist/src`, and the browser init scripts (`tsconfig.browser.json`) against the DOM and WebGPU
+declarations with the page globals of `checks/plugins/browser-globals.d.ts`. Prettier leaves embedded
+source strings unchanged.
 `patches:check` verifies the patch manifest against the patch files, their headers and every consumer.
 clang-format formats maintained native sources and C++ test fixtures without sorting includes.
 Corpus, example scenes, references, source pins, vendored code and generated output are excluded.
@@ -222,10 +227,9 @@ bound the work. CMake exports `compile_commands.json`; clang-tidy uses its flags
 on diagnostics. Missing builds or matching sources are errors; lint never generates or builds scenes.
 Each run writes logs, clang-tidy YAML diagnostics and a JSON result index to `artifacts/code-quality/`.
 
-`.clang-tidy` enables only checks that pass on maintained and generated code; its header names the checks
-still off and the generated output that reports them. By default, native lint checks handwritten
-translation units and headers. `--generated` includes the
-build's emitted C++ and cached generated headers without changing their bytes:
+`.clang-tidy` enables only checks that pass on maintained and generated code. By default, native lint
+checks handwritten translation units and headers. `--generated` includes the build's emitted C++ and
+cached generated headers without changing their bytes:
 
 ```powershell
 npm run lint:cpp -- all --generated --backend both
@@ -277,6 +281,8 @@ means `sdl_gpu`) or an ambient `BBLITE_GPU_BACKEND` selects one. `BBLITE_NATIVE_
 
 Generation writes reached features and image codecs to `generated/<id>/features.cmake`;
 `native/dependency-features.cmake` maps them to `native/vcpkg.json` manifest features and native units.
+vcpkg's SDL is the `sdl` feature, requested unless a trimmed SDL artifact (`BBLITE_SDL_DIR`, every shipping
+build) replaces it.
 Each native macro has one owner and is defined, 0 or 1, wherever it is tested: CMake defines build options,
 generation writes each feature-keyed macro to its own `bblite/features/<name>.hpp` (`src/feature-macros.ts`),
 which every file testing it includes, and its composition decisions to `render_capabilities.hpp`. Guards are
@@ -284,12 +290,13 @@ plain `#if X`; an undefined name in a project unit's `#if` is a compile error (`
 SDK and dependency headers external). Native test fixtures (`test/native-fixture.ts`) build the same way:
 their `/D` feature macros become those headers, and `/we4668` applies.
 
-Development shares `artifacts/vcpkg-installed/development-full`; `BBLITE_VCPKG_INSTALLED_ROOT` relocates
-it. Each `scene build` reconciles it once, before any configure (configures never run vcpkg), when the
-manifest, overlay ports, features, triplet or vcpkg changed. `tools/setup-worktree.ps1 -Path <path>
--Branch <branch>` isolates outputs/shares caches; `-SharedVcpkg` junctions the install, so share it only
-between checkouts of the same `native/vcpkg.json` and overlay ports. Use `-Remove` to unlink junctions
-before removing a worktree.
+Development shares `artifacts/vcpkg-installed/development-full-<key>`, keyed by `native/vcpkg.json`,
+its configuration and the overlay ports; `BBLITE_VCPKG_INSTALLED_ROOT` relocates the root. Each
+`scene build` reconciles it once, before any configure (configures never run vcpkg), when the features,
+triplet or vcpkg changed; shipping installs are keyed the same way, and the three most recently used
+installs per name are kept. `tools/setup-worktree.ps1 -Path <path> -Branch <branch>` isolates
+outputs/shares caches; `-SharedVcpkg` junctions the install root, so checkouts of different manifests
+share it without reinstalling. Use `-Remove` to unlink junctions before removing a worktree.
 
 ### Concurrency
 
@@ -338,7 +345,8 @@ npm run demos:release -- --output artifacts/releases
 Options: `--scene <id,id>`, `--workers N`, `--jobs N`, `--plan` (generates, then prints the plan). The workflow owns dependency installation,
 prepares reached static dependencies, and builds and packages application demos. Plans/logs live in
 `artifacts/shipping/`; receipts include bytes, hashes and startup results. Replaced packages go to
-`.replaced/`; `@previous/` is preserved.
+`.replaced/`; `@previous/` is preserved. Every platform stages, archives, publishes and credits its
+dependencies' notices through `src/package-output.ts` and `src/package-notices.ts`.
 
 | Platform | Shipping configuration |
 | --- | --- |
@@ -359,15 +367,15 @@ as do artifacts whose recorded source or patch set differs.
 `BBLITE_PCH` is off; capture options are explicit and disabled capture requests fail.
 
 ```powershell
-npm run package:demo -- -Scene <id> -BuildDirectory <dir>
+npm run package:demo -- --scene <id> --build-directory <dir>
 ```
 
-macOS packaging requires both slices via `-BuildDirectory <intel>` and `-Arm64BuildDirectory <arm>`;
+macOS packaging requires both slices via `--build-directory <intel>` and `--arm64-build-directory <arm>`;
 defaults are `native/build-<id>-min-sdl-x86_64` and `native/build-<id>-min-sdl-arm64`.
 Dependency builds accept `-MacArchitecture`; use matching vcpkg and CMAKE_OSX_ARCHITECTURES.
 
 ```sh
-npm run package:demo -- -Platform ios -Scene tetris -Jobs 3
+npm run package:demo -- --platform ios --scene tetris --jobs 3
 npm run demos:release -- --platform ios --scene tetris,platformer --jobs 3
 ```
 

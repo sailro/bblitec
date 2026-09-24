@@ -40,6 +40,13 @@ enum class PropertyAnimationTargetKind {
 
 struct PropertyAnimationTarget {
     PropertyAnimationTargetKind kind = PropertyAnimationTargetKind::mesh;
+    /**
+     * A `mesh` target's mesh. The pin keeps animating a mesh
+     * `removeFromScene` disposed; the handle's generation leaves a later
+     * mesh in its slot unwritten (`current_mesh_record`).
+     */
+    MeshHandle mesh{};
+    /** A `camera` target's camera, or a `callback` target's setter identity. */
     std::uint32_t index = 0;
     // The pinned writer stores one Float32Array sample lane
     // (`target[property] = output[offset]`, property-animation.ts).

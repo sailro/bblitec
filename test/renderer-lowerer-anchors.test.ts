@@ -9,7 +9,6 @@ import {
     lowerOpaqueOrderStamp,
 } from "../src/lowering/renderer-lowerer.js";
 import {
-    readPinnedRawShader,
     extractPackagedTemplateLiteral,
     readPinnedLibraryModule,
 } from "../src/pinned-shader-composer.js";
@@ -108,12 +107,11 @@ test("anchors the fogInfos packing order to the pinned WGSL_FOG reads", () => {
             `pinned WGSL_FOG no longer reads ${name} from .${component}`,
         );
     }
-    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({
-        imageSkybox: true,
-    });
-    assert.match(
-        plan.source,
-        /result\.fog_infos = \{\s*\r?\n\s*scene\.fog_mode,\s*\r?\n\s*scene\.fog_start,\s*\r?\n\s*scene\.fog_end,\s*\r?\n\s*scene\.fog_density,\s*\r?\n\s*\};/,
+    // The fog lowering asserts the same order before it emits.
+    assert.doesNotThrow(() =>
+        new RendererLowerer(new LoweringContext()).lowerRenderPlan({
+            fog: true,
+        }),
     );
 });
 
@@ -255,77 +253,6 @@ test("translates the pinned multiply writer whole", () => {
     assert.match(
         matrixHeader,
         /\(\(\(\(a0 \* b0\) \+ \(a4 \* b1\)\) \+ \(a8 \* b2\)\) \+ \(a12 \* b3\)\)/,
-    );
-});
-
-test("lifts the cubemap-skybox stages from the packaged pin", () => {
-    // The packaged literals the lift reads.
-    const fragmentLiteral = readPinnedRawShader(
-        "material/standard/skybox-cubemap.js",
-        "shaders/skybox-cubemap.fragment.wgsl",
-    );
-    assert.ok(fragmentLiteral.includes("let e=normalize(b.vPositionLocal);"));
-    const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
-        ground: false,
-        skybox: false,
-        imageSkybox: true,
-        fog: true,
-        transmission: false,
-        shaderPrograms: [],
-        gridMaterial: false,
-        idDiagnostics: false,
-        geometryOutputTasks: [],
-    });
-    const vertex = String(
-        shaders.find((shader) =>
-            shader.output.endsWith("skybox-cubemap.vert.native.wgsl"),
-        )?.data,
-    );
-    const fragment = String(
-        shaders.find((shader) =>
-            shader.output.endsWith("skybox-cubemap.frag.native.wgsl"),
-        )?.data,
-    );
-    assert.match(vertex, /let b = vec4<f32>\(c, 1\.0\);/);
-    assert.match(vertex, /a\.vPositionW = b\.xyz;/);
-    assert.match(vertex, /a\.clipPos = \(uniforms\.viewProjection \* b\);/);
-    assert.match(fragment, /let e = normalize\(b\.vPositionLocal\);/);
-    assert.match(fragment, /var a = textureSample\(c, d, e\);/);
-    assert.match(
-        fragment,
-        /bblCalcFogFactor\(\(\(uniforms\.view \* vec4<f32>\(b\.vPositionW, 1\.0\)\)\)\.xyz\)/,
-    );
-    assert.match(fragment, /mix\(uniforms\.fogColor\.rgb, a\.rgb, f\)/);
-    // No pinned browser-frame reference survives the re-homing.
-    assert.ok(!vertex.includes("scene.") && !vertex.includes("mesh."));
-    assert.ok(!fragment.includes("scene."));
-    // The native binding contract and entry points are preserved.
-    assert.match(
-        vertex,
-        /@group\(1\) @binding\(0\) var<uniform> uniforms: BblSkyboxUniforms;/,
-    );
-    assert.match(vertex, /fn mainVertex\(@location\(0\) c: vec3<f32>\)/);
-    assert.match(
-        fragment,
-        /@group\(2\) @binding\(0\) var c: texture_cube<f32>;/,
-    );
-    assert.match(fragment, /@group\(2\) @binding\(1\) var d: sampler;/);
-    assert.match(
-        fragment,
-        /@group\(3\) @binding\(0\) var<uniform> uniforms: BblSkyboxUniforms;/,
-    );
-    assert.match(fragment, /fn mainFragment\(b: g\)/);
-    // The generated block matches the lifted fragment's uniform struct.
-    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({
-        imageSkybox: true,
-    });
-    assert.match(
-        plan.header,
-        /struct ImageSkyboxUniforms \{\s*\r?\n\s*std::array<float, 16> view\{\};\s*\r?\n\s*std::array<float, 4> fog_infos\{\};\s*\r?\n\s*std::array<float, 4> fog_color\{\};\s*\r?\n\};/,
-    );
-    assert.match(
-        plan.source,
-        /result\.view = build_view_matrix\(camera_world_matrix\(camera\)\);/,
     );
 });
 
@@ -582,56 +509,17 @@ test("anchors the light-slot packing to the pinned lights-ubo module", () => {
     // non-empty, exclusion filters otherwise.
     assert.match(
         plan.source,
-        /if \(light\.included_meshes\.empty\(\)\) \{\s*\r?\n\s*return std::find\(\s*\r?\n\s*light\.excluded_meshes\.begin\(\),\s*\r?\n\s*light\.excluded_meshes\.end\(\),\s*\r?\n\s*mesh_index\) == light\.excluded_meshes\.end\(\);/,
+        /if \(light\.included_meshes\.empty\(\)\) \{\s*\r?\n\s*return std::find\(\s*\r?\n\s*light\.excluded_meshes\.begin\(\),\s*\r?\n\s*light\.excluded_meshes\.end\(\),\s*\r?\n\s*mesh\) == light\.excluded_meshes\.end\(\);/,
     );
     assert.match(
         plan.source,
-        /return std::find\(\s*\r?\n\s*light\.included_meshes\.begin\(\),\s*\r?\n\s*light\.included_meshes\.end\(\),\s*\r?\n\s*mesh_index\) != light\.included_meshes\.end\(\);/,
-    );
-});
-
-test("derives the background geometry from the pinned builders", () => {
-    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({
-        imageSkybox: true,
-        solidSkybox: true,
-    });
-    // The ground quad: pinned XY corners composed with the pinned
-    // XY-to-XZ world, BACKSIDE winding and UVs flowing unchanged.
-    assert.ok(
-        plan.source.includes(
-            "ModelVertex{Vec3{center.x - half, center.y, center.z + half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{0.0f, 0.0f}},",
-        ),
-    );
-    assert.ok(
-        plan.source.includes(
-            "ModelVertex{Vec3{center.x + half, center.y, center.z - half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{1.0f, 1.0f}},",
-        ),
-    );
-    assert.ok(plan.source.includes("result.indices = {0, 2, 1, 0, 3, 2};"));
-    // The pinned ground alpha rides the uniforms block.
-    assert.match(plan.source, /0\.9f,/);
-    // The skybox cube: the shared pinned corner order and winding, in the
-    // DDS/HDR plan, the solid plan and the borrowed image-skybox table.
-    const cornerRow = "        {-half, -half, -half},";
-    const windingRow = "        6, 4, 5, 7, 6, 5,";
-    assert.ok(plan.source.includes("vertex(-half, -half, -half),"));
-    assert.equal(
-        plan.source.split(cornerRow).length,
-        3,
-        "solid and image skybox plans share the pinned corner table",
-    );
-    assert.equal(
-        plan.source.split(windingRow).length,
-        4,
-        "all three cube plans share the pinned winding",
+        /return std::find\(\s*\r?\n\s*light\.included_meshes\.begin\(\),\s*\r?\n\s*light\.included_meshes\.end\(\),\s*\r?\n\s*mesh\) != light\.included_meshes\.end\(\);/,
     );
 });
 
 test("re-lowering emits byte-identical renderer text", () => {
     const options = {
         fog: true,
-        imageSkybox: true,
-        solidSkybox: true,
         environmentRotation: true,
         gpuInstancing: true,
         punctualLights: true,
@@ -646,9 +534,6 @@ test("re-lowering emits byte-identical renderer text", () => {
     assert.equal(first.header, second.header);
     assert.equal(first.source, second.source);
     const shaderOptions = {
-        ground: false,
-        skybox: false,
-        imageSkybox: true,
         fog: true,
         transmission: false,
         shaderPrograms: [],
@@ -662,29 +547,15 @@ test("re-lowering emits byte-identical renderer text", () => {
     );
 });
 
-test("closes the background image-processing gate for the linear pass", () => {
-    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({
-        background: true,
-    });
-    // Both background fragments wrap their processing in the pin's
-    // `scene.vImageInfos.w >= 0.0`, and that lane is
-    // `+scene.imageProcessing.toneMappingEnabled` — which
-    // executeRenderTaskLinear sets negative for the retargeted linear pass.
-    // The ground reads it from imageParameters.y and the skybox from .z, so
-    // both carry the packed value rather than a constant.
-    // The NEGATIVE is not spelled here: `pinnedLinearToneMappingFlag`
-    // reads it off `executeRenderTaskLinear`, so a pin that changed the
-    // value still lowers and a test pinning it would fail where the
-    // lowerer would not. What is asserted is the shape -- a negative for
-    // the linear pass, the packed flag otherwise -- and that both
-    // fragments carry the same one.
-    const gate =
-        /linear_image_processing\s*\r?\n\s*\? (-[0-9.]+f)\s*\r?\n\s*: \(environment\.tone_mapping_enabled \? 1\.0f : 0\.0f\)/g;
-    const gates = [...plan.source.matchAll(gate)];
-    assert.equal(gates.length, 2);
-    assert.equal(gates[0]![1], gates[1]![1]);
+test("reads the linear pass's tone-mapping flag off the pin", () => {
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({});
+    // Every image-processing tail upstream is gated on the scene block's
+    // `vImageInfos.w >= 0.0`, and executeRenderTaskLinear writes a
+    // negative there for the retargeted linear pass. The value is read
+    // off the pin rather than spelled here: what is asserted is its
+    // shape, one negative constant the PALs' scene block writes.
     assert.match(
-        plan.source,
-        /BackgroundUniforms build_background_uniforms\([\s\S]*?bool linear_image_processing\)/,
+        plan.header,
+        /inline constexpr float pinned_linear_tone_mapping = -[0-9.]+f;/,
     );
 });

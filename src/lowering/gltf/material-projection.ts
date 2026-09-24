@@ -1,5 +1,6 @@
 import { floatLiteral } from "../../cpp-literals.js";
 import {
+    pbrMaterialRecordSeedCpp,
     pinnedDefaultColor3Cpp,
     pinnedDefaultNumber,
     pinnedDefaultVec2Cpp,
@@ -506,7 +507,7 @@ void gltf_pbr_color(const GltfPbrValue& object, const char* key, Color3& field) 
 }
 // A key the material's layer omits reads the pin's own absent arm. A layer
 // the material does not have is never read upstream, so its fields keep
-// the record's no-layer state.
+// the pinned defaults the record was seeded with.
 void gltf_pbr_number(const GltfPbrValue& object, const char* key, float& field, float absent) {
     if (object.nullish()) return;
     field = absent;
@@ -548,6 +549,7 @@ MaterialHandle load_material(
     bool base_color_module = false) {
     static_cast<void>(material_json);
     MaterialRecord material;
+${pbrMaterialRecordSeedCpp("material", "    ")}
     if (core._baseColorFactor.size() != 4 || core._emissiveFactor.size() != 3)
         throw std::runtime_error("Invalid glTF material color width.");
     const auto core_value = gltf_pbr_core_value(core);
@@ -725,6 +727,7 @@ ${
     ${materialTexture("translucency_color_transform")}
     ${materialTexture("translucency_intensity_transform")}
     const auto coat = props.get("_clearCoat");
+    material.has_clearcoat = coat.get("isEnabled", true).truthy();
     ${materialProperty("clearcoat_intensity")}
     ${materialProperty("clearcoat_roughness")}
     ${materialProperty("clearcoat_index_of_refraction")}
@@ -733,6 +736,7 @@ ${
     ${materialTexture("clearcoat_roughness_transform")}
     ${materialTexture("clearcoat_normal_transform")}
     const auto sheen = props.get("_sheen");
+    material.has_sheen = sheen.get("isEnabled", true).truthy();
     ${materialProperty("sheen_intensity")}
     ${materialProperty("sheen_roughness")}
     ${materialProperty("sheen_color")}
@@ -743,6 +747,7 @@ ${
         material.sheen_roughness_transform = material.sheen_transform;
     }
     const auto iri = props.get("_iridescence");
+    material.has_iridescence = iri.get("isEnabled", true).truthy();
     ${materialProperty("iridescence_intensity")}
     ${materialProperty("iridescence_index_of_refraction")}
     ${materialProperty("iridescence_minimum_thickness")}

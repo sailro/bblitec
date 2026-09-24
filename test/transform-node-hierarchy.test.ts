@@ -169,7 +169,7 @@ test("propagates nested dirty state through deduplicated parent links", () => {
 
     assert.match(
         source,
-        /void mark_transform_node_dirty[\s\S]{0,500}for \(const MeshHandle child : record\.parented_meshes\)[\s\S]{0,180}for \(const TransformNodeHandle child : record\.parented_nodes\)[\s\S]{0,100}mark_transform_node_dirty\(engine, child\);/,
+        /void mark_transform_node_dirty[\s\S]{0,500}for \(const MeshHandle child : record\.parented_meshes\)[\s\S]{0,180}for \(const TransformNodeHandle& child : record\.parented_nodes\)[\s\S]{0,100}mark_transform_node_dirty\(engine, child\);/,
     );
     assert.match(
         source,

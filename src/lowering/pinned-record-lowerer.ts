@@ -27,9 +27,12 @@
  * generation with the pinned source location.
  */
 import ts from "typescript";
+import { declaredSymbol, resolvedSymbol } from "../compiler/symbols.js";
+import { posix } from "node:path";
 import {
     cppIdentifier,
     doubleLiteral,
+    pinnedSnakeCase,
     stringLiteral,
 } from "../cpp-literals.js";
 import type {
@@ -183,18 +186,9 @@ interface ModuleVariable {
 const nullishFlags =
     ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
 
-/** `_slotStart` -> `slot_start`, `instancesU32` -> `instances_u32`. */
-export function pinnedSnakeCase(name: string): string {
-    return name
-        .replace(/^_+/, "")
-        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-        .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-        .toLowerCase();
-}
-
 /** The native namespace of a module's internal functions. */
 function detailNamespace(module: string): string {
-    const stem = module.replace(/^.*\//, "").replace(/\.ts$/, "");
+    const stem = posix.basename(module, ".ts");
     return `bbl::${stem.replaceAll("-", "_")}_detail`;
 }
 
@@ -594,7 +588,8 @@ export class PinnedRecordModel {
                         ts.isTypeAliasDeclaration(statement)) &&
                     statement.name.text === name
                 ) {
-                    const symbol = this.checker.getSymbolAtLocation(
+                    const symbol = declaredSymbol(
+                        this.checker,
                         statement.name,
                     )!;
                     return {
@@ -975,9 +970,7 @@ export class PinnedRecordModel {
 
     /** The declaration a reference names, through import aliases. */
     public declarationOf(node: ts.Node): ts.Declaration | undefined {
-        let symbol = this.checker.getSymbolAtLocation(node);
-        if (symbol && symbol.flags & ts.SymbolFlags.Alias)
-            symbol = this.checker.getAliasedSymbol(symbol);
+        const symbol = resolvedSymbol(this.checker, node);
         return symbol?.valueDeclaration ?? symbol?.declarations?.[0];
     }
 
@@ -1275,7 +1268,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         storage: RecordShape,
         cpp?: string,
     ): string {
-        const symbol = this.checker.getSymbolAtLocation(name);
+        const symbol = declaredSymbol(this.checker, name);
         if (!symbol) return this.refuse(name, "Pinned local has no symbol.");
         let chosen = cpp ?? cppIdentifier(name.text);
         const visible = (candidate: string) =>
@@ -1396,7 +1389,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (ts.isParenthesizedExpression(node))
             return this.structuralShape(node.expression);
         if (ts.isIdentifier(node)) {
-            const symbol = this.checker.getSymbolAtLocation(node);
+            const symbol = declaredSymbol(this.checker, node);
             const local = symbol ? this.locals.get(symbol) : undefined;
             if (local) return local.storage;
             const declaration =
@@ -1647,11 +1640,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private identifier(node: ts.Identifier): string | undefined {
         if (node.text === "undefined") return undefined;
         // `{ data }` names the property; its value is the local `data`.
-        const symbol =
-            ts.isShorthandPropertyAssignment(node.parent) &&
-            node.parent.name === node
-                ? this.checker.getShorthandAssignmentValueSymbol(node.parent)
-                : this.checker.getSymbolAtLocation(node);
+        const symbol = declaredSymbol(this.checker, node);
         const local = symbol ? this.locals.get(symbol) : undefined;
         if (local) return this.narrowed(local.cpp, local.storage, node);
         const declaration = this.model.declarationOf(node);
@@ -2179,7 +2168,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return `${this.model.qualified(entry)}(${this.arguments(node, declaration)})`;
         }
         if (ts.isIdentifier(callee)) {
-            const symbol = this.checker.getSymbolAtLocation(callee);
+            const symbol = declaredSymbol(this.checker, callee);
             const local = symbol ? this.locals.get(symbol) : undefined;
             if (local && local.storage.kind === "function")
                 return `${local.cpp}(${node.arguments.map((argument, index) => this.convert(argument, (local.storage as { parameters: readonly RecordShape[] }).parameters[index]!)).join(", ")})`;
@@ -2590,7 +2579,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private place(target: ts.Expression): Place {
         const node = this.skipParentheses(target);
         if (ts.isIdentifier(node)) {
-            const symbol = this.checker.getSymbolAtLocation(node);
+            const symbol = declaredSymbol(this.checker, node);
             const local = symbol ? this.locals.get(symbol) : undefined;
             if (local)
                 return {
@@ -2714,7 +2703,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const thrown = this.skipParentheses(statement.expression);
             if (
                 ts.isIdentifier(thrown) &&
-                this.checker.getSymbolAtLocation(thrown) === this.catchVariable
+                declaredSymbol(this.checker, thrown) === this.catchVariable
             )
                 return [`${indent}throw;`];
         }
@@ -3103,7 +3092,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const previous = this.catchVariable;
         this.catchVariable =
             variable && ts.isIdentifier(variable.name)
-                ? this.checker.getSymbolAtLocation(variable.name)
+                ? declaredSymbol(this.checker, variable.name)
                 : undefined;
         try {
             if (variable && ts.isIdentifier(variable.name)) {
@@ -3112,7 +3101,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     clause.block,
                     (node): node is ts.Identifier =>
                         ts.isIdentifier(node) &&
-                        this.checker.getSymbolAtLocation(node) === symbol,
+                        declaredSymbol(this.checker, node) === symbol,
                 );
                 if (reads.some((read) => !ts.isThrowStatement(read.parent)))
                     return this.refuse(

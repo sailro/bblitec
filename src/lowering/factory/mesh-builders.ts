@@ -2484,6 +2484,9 @@ MeshHandle create_mesh_from_data(Engine& engine, const std::string& name,
     MeshRecord mesh;
     mesh.name = name;
     mesh.geometry = upload_mesh_geometry_data(engine,positions,normals,indices,uvs,uvs2,tangents,colors);
+    // \`boundMin: isFinite(min[0]) ? min : undefined\`: the fold
+    // upload_mesh_geometry_data stored its box from.
+    mesh.has_bounds = positions.size() >= 3;
     return store_mesh_record(engine, std::move(mesh));
 }
 

@@ -4370,7 +4370,9 @@ BoundingBoxBounds bbox_compute_bounds(
             continue;
         }
         const MeshHandle node = std::get<MeshHandle>(child);
-        if (node.value >= engine.meshes.size() || seen(node.value)) {
+        // A disposed mesh folds nothing: removeFromScene released its
+        // geometry, and a later mesh may hold its slot.
+        if (!current_mesh_record(engine, node) || seen(node.value)) {
             continue;
         }
         visited.push_back(node.value);

@@ -1771,6 +1771,29 @@ const DOM_EVENT_FLAGS = new EmissionMap<string, string>([
     ["isTrusted", "trusted"],
 ]);
 
+/**
+ * A number, boolean, string or enum read from storage: the reads an
+ * optional chain selects against a default. A value generation already
+ * knows reads no storage, so it needs no guard.
+ */
+function isStoredPrimitiveRead(value: Value): boolean {
+    const primitive =
+        value.kind === "number" ||
+        value.kind === "boolean" ||
+        value.kind === "string" ||
+        (value.kind === "data" &&
+            (value.dataType?.kind === "number" ||
+                value.dataType?.kind === "boolean" ||
+                value.dataType?.kind === "string" ||
+                value.dataType?.kind === "enum"));
+    return (
+        primitive &&
+        value.staticNumber === undefined &&
+        value.staticString === undefined &&
+        value.staticBoolean === undefined
+    );
+}
+
 /** Property access on every owner the compiler represents. */
 export class PropertyAccessLowerer {
     constructor(private readonly context: PropertyAccessContext) {}
@@ -2622,7 +2645,7 @@ export class PropertyAccessLowerer {
         }
         const resolved = this.readOwnerProperty(owner, expression);
         if (resolved) {
-            return expression.questionDotToken
+            return ts.isOptionalChain(expression)
                 ? this.propertyWithOwnerPresence(owner, resolved, expression)
                 : resolved;
         }
@@ -2640,9 +2663,7 @@ export class PropertyAccessLowerer {
             // non-throwing lookup: an owner nobody here can name is
             // still the data lowerer's to try, not an error.
             const nested = this.lookupRecordProperty(expression.expression);
-            return nested
-                ? this.readOwnerProperty(nested, expression)
-                : undefined;
+            return nested ? this.readChainLink(nested, expression) : undefined;
         }
         if (!ts.isIdentifier(expression.expression)) {
             return undefined;
@@ -2657,7 +2678,18 @@ export class PropertyAccessLowerer {
                     ? this.context.compileValue(resolved)
                     : undefined;
             })();
-        return owner ? this.readOwnerProperty(owner, expression) : undefined;
+        return owner ? this.readChainLink(owner, expression) : undefined;
+    }
+
+    /** One link of a non-throwing lookup, with its chain's presence. */
+    private readChainLink(
+        owner: Value,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const value = this.readOwnerProperty(owner, expression);
+        return value && ts.isOptionalChain(expression)
+            ? this.propertyWithOwnerPresence(owner, value, expression)
+            : value;
     }
 
     /**
@@ -2698,18 +2730,29 @@ export class PropertyAccessLowerer {
             owner;
         const value = this.readOwnerProperty(hydrated, expression);
         return value &&
-            (hydrated.kind === "record" || expression.questionDotToken)
+            (hydrated.kind === "record" || ts.isOptionalChain(expression))
             ? this.propertyWithOwnerPresence(hydrated, value, expression)
             : value;
     }
 
-    private propertyWithOwnerPresence(
+    /**
+     * A link read through an owner that may be absent, carrying the
+     * owner's presence. An optional chain short-circuits as a whole
+     * (`found?.position.y` is `undefined` when `found` is), so every link
+     * of one carries it, not only the link spelled `?.`. A primitive read
+     * in a chain is also selected against its type's default: its storage
+     * read then never runs through an absent owner, whether a condition,
+     * a `??`, a binding or a sink consumes it, while the presence flag
+     * keeps saying it is absent.
+     */
+    public propertyWithOwnerPresence(
         owner: Value,
         value: Value,
         expression: ts.PropertyAccessExpression,
     ): Value {
+        const ownerFlag = presenceFlagCpp(owner);
         const ownerPresent =
-            presenceFlagCpp(owner) ??
+            ownerFlag ??
             (expression.questionDotToken &&
             owner.dataType?.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(owner.dataType.name)
@@ -2721,7 +2764,22 @@ export class PropertyAccessLowerer {
             valuePresent === undefined
                 ? ownerPresent
                 : `(${ownerPresent} && ${valuePresent})`;
-        return { ...value, optionalFoundCpp: present };
+        // Only a flag the owner CARRIES can be absent under the read: an
+        // owner the data lowerer's own optional access hands in is the
+        // present one, already tested, and carries none.
+        if (
+            ownerFlag === undefined ||
+            ownerFlag === "true" ||
+            !ts.isOptionalChain(expression) ||
+            !isStoredPrimitiveRead(value)
+        )
+            return { ...value, optionalFoundCpp: present };
+        const { nativeLvalue, ...read } = value;
+        return {
+            ...read,
+            cpp: `(${ownerFlag} ? ${value.cpp} : std::remove_cvref_t<decltype(${value.cpp})>{})`,
+            optionalFoundCpp: present,
+        };
     }
 
     /**

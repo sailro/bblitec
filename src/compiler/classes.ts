@@ -255,9 +255,9 @@ export class ClassLowerer {
         const owner = this.context.unwrap(access.expression);
         if (owner.kind === ts.SyntaxKind.ThisKeyword) {
             if (!this.context.activeThis()?.classStatics) return undefined;
-            const member = declaredSymbol(
+            const member = resolvedSymbol(
                 this.context.checker,
-                access.name,
+                access,
             )?.declarations?.find(
                 (candidate): candidate is ts.ClassElement =>
                     ts.isClassElement(candidate) &&
@@ -2869,9 +2869,9 @@ export class ClassLowerer {
     public storedSetterOwner(
         target: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const setter = declaredSymbol(
+        const setter = resolvedSymbol(
             this.context.checker,
-            target.name,
+            target,
         )?.declarations?.some(
             (declaration) =>
                 ts.isSetAccessorDeclaration(declaration) &&
@@ -2982,7 +2982,7 @@ export class ClassLowerer {
      */
     public compileBrandCheck(expression: ts.BinaryExpression): string {
         const name = expression.left as ts.PrivateIdentifier;
-        const member = declaredSymbol(
+        const member = resolvedSymbol(
             this.context.checker,
             name,
         )?.declarations?.find(ts.isClassElement);

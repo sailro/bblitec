@@ -7,6 +7,7 @@ import { compileSource } from "../src/compiler.js";
 import { renderSourceUnits } from "../src/compiler/source-units.js";
 import {
     buildNativeFixture,
+    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
 } from "./native-fixture.js";
 
@@ -231,7 +232,7 @@ test("repeated factories share callback bodies while native loops retain indepen
             "/W4",
             "/WX",
             `/I${resolve("native/include")}`,
-            `/I${resolve("artifacts/vcpkg-installed/development-full/x64-windows/include")}`,
+            `/I${resolve(nativeFixtureVcpkgRoot, "include")}`,
         ],
     );
     assert.equal(

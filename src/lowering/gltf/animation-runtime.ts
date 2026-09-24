@@ -239,9 +239,13 @@ ${cameraRefresh}
         };
         const auto publish_mesh=[animation_runtime=animation_runtime.get(),&engine](std::size_t index) {
             const auto& binding=animation_runtime->meshes.at(index);
-            auto& mesh=engine.meshes.at(binding.mesh);
+            // The pin keeps posing a mesh removeFromScene disposed; nothing
+            // draws it, and its geometry went with the removal.
+            MeshRecord* found=current_mesh_record(engine,binding.mesh);
+            if(!found||found->retired)return;
+            auto& mesh=*found;
 ${options.vat ? `            if(mesh.has_vat)return;` : ""}
-            auto& geometry=engine.geometries.at(binding.geometry);
+            auto& geometry=engine.geometries.at(mesh.geometry);
             const auto& world=animation_runtime->nodes.at(binding.node).world;
             publish_gltf_deformation(mesh,geometry,world,binding.initial_joint_matrices,
                 binding.skin<animation_runtime->skins.size(),binding.morph_default_weights);
@@ -400,16 +404,16 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
         asset.animation_tick_group=[animation_runtime](std::size_t index,double delta_ms,bool with_engine){animation_runtime->tick_group(index,delta_ms,with_engine);};
         asset.set_clip_playing=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).playing=value;};
         asset.set_clip_stopped=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).stopped=value;};
-        asset.set_clip_time=[animation_runtime](std::size_t index,float value){animation_runtime->clips.at(index).time=value;};
+        asset.set_clip_time=[animation_runtime](std::size_t index,double value){animation_runtime->clips.at(index).time=value;};
         asset.set_clip_loop=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).loop=value;};
-        asset.set_clip_speed_ratio=[animation_runtime](std::size_t index,float value){animation_runtime->clips.at(index).speed_ratio=value;};
+        asset.set_clip_speed_ratio=[animation_runtime](std::size_t index,double value){animation_runtime->clips.at(index).speed_ratio=value;};
         asset.apply_clip_pose=[animation_runtime](std::size_t index,bool with_engine) {
             auto& clip=animation_runtime->clips.at(index);
             gltf_animation_go_to_frame(clip,clip.time*clip.frame_rate,clip.frame_rate,clip.speed_ratio,with_engine,
                 clip.pose->requires_engine,true,[&](){${syncMask}},
                 [&](double time,bool active_engine){animation_runtime->evaluate_pose(index,time,active_engine);});
         };
-        asset.animation_seek=[animation_runtime](float time) {
+        asset.animation_seek=[animation_runtime](double time) {
             animation_runtime->paused=true;
             for(std::size_t index=0;index<animation_runtime->clips.size();++index) {
                 auto& clip=animation_runtime->clips[index];
@@ -433,11 +437,11 @@ ${
     options.vat
         ? `        asset.clip_duration=[animation_runtime](std::size_t index){return static_cast<float>(animation_runtime->clips.at(index).duration);};
         const auto skeleton_binding=[animation_runtime,&engine](MeshHandle mesh)->std::pair<GltfAnimationPoseSkeleton*,AnimatedMeshBinding*> {
-            if(mesh.value>=engine.meshes.size()||${recordAt("engine.meshes", "mesh")}.has_vat)return {};
+            if(${recordAt("engine.meshes", "mesh")}.has_vat)return {};
             for(const auto& skeleton:animation_runtime->source_skeletons.entries)
                 for(const auto index:skeleton->meshes) {
                     auto& binding=animation_runtime->meshes.at(index);
-                    if(binding.mesh==mesh.value)return {skeleton.get(),&binding};
+                    if(binding.mesh==mesh)return {skeleton.get(),&binding};
                 }
             return {};
         };
@@ -469,22 +473,22 @@ ${
 }
 ${
     options.animationAdditive
-        ? `        asset.set_clip_additive=[animation_runtime](std::size_t index,float reference_time) {
+        ? `        asset.set_clip_additive=[animation_runtime](std::size_t index,double reference_time) {
             auto& clip=animation_runtime->clips.at(index);clip.additive=true;clip.additive_reference_time=reference_time;
         };`
         : ""
 }
         asset.clone_mesh_animation=[animation_runtime,&engine](MeshHandle source,MeshHandle clone) {
             const auto found=std::find_if(animation_runtime->meshes.begin(),animation_runtime->meshes.end(),
-                [&](const auto& binding){return binding.mesh==source.value;});
+                [&](const auto& binding){return binding.mesh==source;});
             if(found==animation_runtime->meshes.end())return;
             if(found->skin==std::numeric_limits<std::size_t>::max()) {
-                if(!engine.geometries.at(found->geometry).morph_positions.empty())
+                if(!engine.geometries.at(${recordAt("engine.meshes", "source")}.geometry).morph_positions.empty())
                     throw std::runtime_error("Cloning an animated morph hierarchy requires shared morph weights with an independent node world.");
                 return;
             }
             const auto source_index=static_cast<std::size_t>(found-animation_runtime->meshes.begin());
-            auto binding=*found;binding.mesh=clone.value;
+            auto binding=*found;binding.mesh=clone;
             const auto index=animation_runtime->meshes.size();
             animation_runtime->meshes.push_back(binding);
             if(binding.skeleton_binding<animation_runtime->source_skeletons.size())

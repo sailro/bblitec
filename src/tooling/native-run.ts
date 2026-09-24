@@ -17,7 +17,6 @@ import {
     computeBuildStamp,
     deployedPayloads,
 } from "../build-stamp.js";
-import { readCompiledSceneManifest } from "./generated-readers.js";
 
 /**
  * Runs `body` with one environment variable set (or, for `undefined`,
@@ -163,8 +162,6 @@ export interface NativeSpawnOptions {
     /** Take stderr back as the result instead of streaming it. */
     captureStderr?: boolean;
     timeoutMs?: number;
-    /** The likely reason a timeout fired, named in its error. */
-    timeoutCause?: string;
     arguments?: readonly string[];
 }
 
@@ -208,12 +205,7 @@ export function spawnNativeMeasured(
             (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
         throw new Error(
             `Native renderer did not complete: ${result.error.message}` +
-                (timedOut
-                    ? ` (killed after ${timeoutMs} ms` +
-                      (options.timeoutCause !== undefined
-                          ? `: ${options.timeoutCause})`
-                          : ")")
-                    : "") +
+                (timedOut ? ` (killed after ${timeoutMs} ms)` : "") +
                 tail,
         );
     }
@@ -223,42 +215,6 @@ export function spawnNativeMeasured(
         );
     }
     return captureStderr ? result.stderr : "";
-}
-
-/**
- * The Window host paces presentation on the desktop compositor's clock,
- * which does not tick while the Windows console session is locked or where
- * no compositor runs; a run then waits forever instead of failing.
- */
-const WINDOW_HOST_TIMEOUT_CAUSE =
-    "a Window-host scene (platform:window) presents on the desktop compositor's clock, " +
-    "which does not tick while the console session is locked or where no compositor runs";
-
-/**
- * The spawn bound of a native run of `generatedDirectory` over `frames`
- * frames: the caller's own `timeoutMs`, else none -- except for a
- * Window-host scene, which gets two minutes of startup plus the frames
- * paced at 20 Hz (a third of a 60 Hz display), and whose timeout names the
- * locked-session cause.
- */
-export function nativeRunBound(
-    generatedDirectory: string | undefined,
-    frames: number,
-    timeoutMs: number | undefined,
-): Pick<NativeSpawnOptions, "timeoutMs" | "timeoutCause"> {
-    // The Window host presents a scene whose manifest carries `platform:window`.
-    if (
-        generatedDirectory === undefined ||
-        !readCompiledSceneManifest(generatedDirectory).features.includes(
-            "platform:window",
-        )
-    ) {
-        return timeoutMs === undefined ? {} : { timeoutMs };
-    }
-    return {
-        timeoutMs: timeoutMs ?? 120_000 + frames * 50,
-        timeoutCause: WINDOW_HOST_TIMEOUT_CAUSE,
-    };
 }
 
 /**
@@ -329,7 +285,7 @@ export interface MeasuredRunOptions {
     arguments?: readonly string[];
     /** Take stderr back as the returned log instead of streaming it. */
     captureLog?: boolean;
-    /** Absent, only a Window-host scene's run is bounded (`nativeRunBound`). */
+    /** A spawn bound; absent, the run is unbounded (a Window-host run fails through its frame clock). */
     timeoutMs?: number;
 }
 
@@ -443,11 +399,9 @@ export function runMeasured(
             ...(options.dropVariables ?? []),
         ],
         captureStderr: options.captureLog ?? false,
-        ...nativeRunBound(
-            options.generatedDirectory,
-            Number(environment.BBLITE_MAX_FRAMES),
-            options.timeoutMs,
-        ),
+        ...(options.timeoutMs !== undefined
+            ? { timeoutMs: options.timeoutMs }
+            : {}),
         ...(options.arguments !== undefined
             ? { arguments: options.arguments }
             : {}),

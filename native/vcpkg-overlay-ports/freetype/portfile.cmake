@@ -1,8 +1,14 @@
+set(BBLITE_FREETYPE_VARIANTS vcpkg)
 if("subpixel-rendering" IN_LIST FEATURES)
-    set(SUBPIXEL_RENDERING_PATCH "subpixel-rendering.patch")
+    list(APPEND BBLITE_FREETYPE_VARIANTS subpixel-rendering)
 endif()
 
 string(REPLACE "." "-" VERSION_HYPHEN "${VERSION}")
+
+# The series native/patches/manifest.json selects for this port, with each
+# patch's purpose and upstream state (native/patch-identity.cmake).
+include("${CMAKE_CURRENT_LIST_DIR}/../../patch-identity.cmake")
+bblite_patch_series(freetype BBLITE_FREETYPE_PATCHES ${BBLITE_FREETYPE_VARIANTS})
 
 vcpkg_from_gitlab(
     GITLAB_URL https://gitlab.freedesktop.org/
@@ -11,13 +17,7 @@ vcpkg_from_gitlab(
     REF "VER-${VERSION_HYPHEN}"
     SHA512  c3b6b0cc4b428c9c647ab2148386901dfd315273b68051940e8fea6010d46fdd2913467c3ef58be0d499b8e2ef5a0f1a4cc5e739756155587f4f7dff08ef9695
     HEAD_REF master
-    PATCHES
-        0003-Fix-UWP.patch
-        brotli-static.patch
-        bzip2.patch
-        fix-exports.patch
-        configurable-modules.patch
-        ${SUBPIXEL_RENDERING_PATCH}
+    PATCHES ${BBLITE_FREETYPE_PATCHES}
 )
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS

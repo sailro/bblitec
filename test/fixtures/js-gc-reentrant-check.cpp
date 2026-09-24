@@ -3,31 +3,39 @@
 #include <functional>
 #include <iostream>
 
+/** A registered payload that owns no edge. */
+struct Traced {
+    int value = 0;
+    void gc_trace(const bbl::js::TraceVisitor&) const {}
+};
+
 struct CollectingPayload {
     static inline int created = 0;
     static inline int destroyed = 0;
 
     CollectingPayload() {
-        auto child = bbl::js::make_ref<int>(41);
+        auto child = bbl::js::make_ref<Traced>(41);
         assert(bbl::js::collect_cycles() == 0);
-        assert(*child == 41);
+        assert(child->value == 41);
         ++created;
     }
 
     ~CollectingPayload() {
         ++destroyed;
-        auto child = bbl::js::make_ref<int>(43);
+        auto child = bbl::js::make_ref<Traced>(43);
         assert(bbl::js::collect_cycles() == 0);
-        assert(*child == 43);
+        assert(child->value == 43);
     }
+    void gc_trace(const bbl::js::TraceVisitor&) const {}
 };
 
 struct FailingPayload {
     FailingPayload() {
-        auto child = bbl::js::make_ref<int>(47);
+        auto child = bbl::js::make_ref<Traced>(47);
         assert(bbl::js::collect_cycles() == 0);
         throw 47;
     }
+    void gc_trace(const bbl::js::TraceVisitor&) const {}
 };
 
 struct ReceiverPayload {
@@ -40,6 +48,7 @@ struct ReceiverPayload {
         if (on_destroy)
             on_destroy();
     }
+    void gc_trace(const bbl::js::TraceVisitor&) const {}
 };
 
 int main() {
@@ -68,19 +77,19 @@ int main() {
         assert(caught && managed_node_count() == baseline);
     }
     {
-        auto value = make_ref<int>(53);
+        auto value = make_ref<Traced>(53);
         auto lifetime = value.lifetime_owner();
         const auto* selected = value.get();
         value.reset();
         assert(collect_cycles() == 0);
-        assert(*selected == 53);
+        assert(selected->value == 53);
     }
     {
         struct Scope {
-            Ref<int>::LifetimeOwner owner;
-            explicit Scope(const Ref<int>& value) : owner(value.lifetime_owner()) {}
+            Ref<Traced>::LifetimeOwner owner;
+            explicit Scope(const Ref<Traced>& value) : owner(value.lifetime_owner()) {}
         };
-        auto value = make_ref<int>(57);
+        auto value = make_ref<Traced>(57);
         const auto* selected = value.get();
         std::optional<Scope> first(std::in_place, value);
         std::optional<Scope> middle(std::in_place, value);
@@ -89,7 +98,7 @@ int main() {
         middle.reset();
         first.reset();
         assert(collect_cycles() == 0);
-        assert(*selected == 57);
+        assert(selected->value == 57);
         last.reset();
         assert(managed_node_count() == baseline);
     }

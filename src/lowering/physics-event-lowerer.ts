@@ -38,12 +38,12 @@ export function lowerPhysicsEvents(
             );
         const body = lowerPinnedBody(file, method.body.statements, {
             bindings: new Map([
-                ["draining", binding("world.events->draining", "bool")],
+                ["draining", binding("events.draining", "bool")],
                 [
                     "removed",
                     {
-                        ...binding("world.events->removed"),
-                        absentCpp: "!world.events->removed",
+                        ...binding("events.removed"),
+                        absentCpp: "!events.removed",
                     },
                 ],
                 [
@@ -66,7 +66,7 @@ export function lowerPhysicsEvents(
                     (args) =>
                         `physics_release_native_body(world, ${args.join(", ")})`,
                 ],
-                ["context.end", () => "physics_events_end(world)"],
+                ["context.end", () => "physics_events_end(world, events)"],
             ]),
             statement(statement, _lowerer, indent) {
                 if (ts.isVariableStatement(statement)) {
@@ -78,7 +78,7 @@ export function lowerPhysicsEvents(
                             "Deferred event body snapshot",
                         );
                         return [
-                            `${indent}const auto deferred = std::move(world.events->removed);`,
+                            `${indent}const auto deferred = std::move(events.removed);`,
                         ];
                     }
                     if (local?.name.getText(file) === "thinBody") {
@@ -99,7 +99,7 @@ export function lowerPhysicsEvents(
                             "removed = undefined",
                         )
                     ) {
-                        return [`${indent}world.events->removed.reset();`];
+                        return [`${indent}events.removed.reset();`];
                     }
                     if (
                         context.expressionMatchesShape(
@@ -108,7 +108,7 @@ export function lowerPhysicsEvents(
                         )
                     ) {
                         return [
-                            `${indent}(world.events->removed ? *world.events->removed : world.events->removed.emplace()).push_back(body);`,
+                            `${indent}(events.removed ? *events.removed : events.removed.emplace()).push_back(body);`,
                         ];
                     }
                 }
@@ -119,7 +119,7 @@ export function lowerPhysicsEvents(
                     iterated === "world._bodies"
                         ? "world.bodies"
                         : iterated === "removed"
-                          ? "*world.events->removed"
+                          ? "*events.removed"
                           : iterated === "deferred"
                             ? "*deferred"
                             : undefined;
@@ -145,7 +145,8 @@ export function lowerPhysicsEvents(
                 return lowerer.expression(expression);
             },
         });
-        return `${returns} physics_events_${name}(PhysicsWorld& world${parameters}) {\n${body}\n}`;
+        // Each method receives the engaged context; callers test the world's.
+        return `${returns} physics_events_${name}([[maybe_unused]] PhysicsWorld& world, PhysicsEventState& events${parameters}) {\n${body}\n}`;
     };
     return [
         lower("begin", "void"),
@@ -216,7 +217,7 @@ export function lowerPhysicsAfterStep(context: LoweringContext): string {
                         "After-step event context snapshot",
                     );
                     return [
-                        `${indent}const bool events = world.events.has_value();`,
+                        `${indent}auto* const events = world.events ? &*world.events : nullptr;`,
                     ];
                 }
             }
@@ -229,7 +230,7 @@ export function lowerPhysicsAfterStep(context: LoweringContext): string {
                         )
                     ) {
                         return [
-                            `${indent}if (events) physics_events_${operation}(world);`,
+                            `${indent}if (events) physics_events_${operation}(world, *events);`,
                         ];
                     }
                 }
