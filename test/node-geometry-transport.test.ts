@@ -303,12 +303,12 @@ ${[
     "std::vector<GpuVertex> mesh_gpu_vertices(",
     "PinnedVertexInput pinned_vertex_input(",
 ]
-    .map((name) => cppFunction(pal, `inline ${name}`))
+    .map((name) => cppFunction(pal, name))
     .join("\n")}
 template <typename Block>
 ${cppFunction(pal, "inline void pinned_mesh_light_selection(")}
-${cppFunction(pal, "inline upstream::NodeMeshUniforms node_mesh_block(")}
-${cppFunction(pal, "inline std::span<const std::uint32_t> node_source_indices(")}
+${cppFunction(pal, "upstream::NodeMeshUniforms node_mesh_block(")}
+${cppFunction(pal, "std::span<const std::uint32_t> node_source_indices(")}
 ${cppFunction(dawn, "struct NodeMeshBlockCache")} ;
 ${cppFunction(dawn, "const upstream::NodeMeshUniforms& node_mesh_block_for(")}
 }

@@ -9,12 +9,7 @@
 namespace bbl::pal {
 
 #if BBLITE_HAS_SPRITES
-inline bool sprite_blend_equal(const SpriteBlendDescriptor& left,
-                               const SpriteBlendDescriptor& right) {
-    return left.enabled == right.enabled && left.color.src == right.color.src &&
-           left.color.dst == right.color.dst && left.alpha.src == right.alpha.src &&
-           left.alpha.dst == right.alpha.dst;
-}
+bool sprite_blend_equal(const SpriteBlendDescriptor& left, const SpriteBlendDescriptor& right);
 
 /** Backend-neutral fixed/layout choices for one Sprite2D pipeline. */
 struct SpriteLayerPipelinePlan {
@@ -25,13 +20,7 @@ struct SpriteLayerPipelinePlan {
     std::uint32_t instance_stride_bytes = 0;
 };
 
-inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(const Sprite2DLayerRecord& layer) {
-    const bool has_depth = layer.depth_mode != Sprite2DDepthMode::none;
-    return SpriteLayerPipelinePlan{
-        layer.uv_scroll, has_depth, layer.depth_mode == Sprite2DDepthMode::test_write,
-        layer.alpha_to_coverage,
-        layer.instance_floats_per_sprite * static_cast<std::uint32_t>(sizeof(float))};
-}
+SpriteLayerPipelinePlan sprite_layer_pipeline_plan(const Sprite2DLayerRecord& layer);
 
 /**
  * A layer's program: the pin's module for its permutation, deployed whole
@@ -39,30 +28,11 @@ inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(const Sprite2DLayerRec
  * index) -- with `<stem>.vert` and `<stem>.frag` both compiled from it.
  * `spriteProgramStem` (upstream-lower.ts) deploys the same names.
  */
-inline std::string sprite_program_stem(std::uint32_t program, const SpriteLayerPipelinePlan& plan) {
-    std::string stem = program == 0u   ? std::string("sprite")
-                       : program == 1u ? std::string("sprite_custom")
-                                       : "sprite_custom_" + std::to_string(program);
-    if (plan.has_depth)
-        stem += "_depth";
-    if (plan.scroll)
-        stem += "_uvscroll";
-    return stem;
-}
+std::string sprite_program_stem(std::uint32_t program, const SpriteLayerPipelinePlan& plan);
 
 /** Fixed pipeline identity for layers targeting the same scene pass. */
-inline bool sprite_scene_pipeline_compatible(const Sprite2DLayerRecord& left,
-                                             const Sprite2DLayerRecord& right) {
-    const SpriteLayerPipelinePlan left_plan = sprite_layer_pipeline_plan(left);
-    const SpriteLayerPipelinePlan right_plan = sprite_layer_pipeline_plan(right);
-    return sprite_blend_equal(left.blend, right.blend) && left_plan.scroll == right_plan.scroll &&
-           left_plan.has_depth == right_plan.has_depth &&
-           left_plan.depth_write == right_plan.depth_write &&
-           left_plan.alpha_to_coverage == right_plan.alpha_to_coverage &&
-           left.custom_shader == right.custom_shader &&
-           left.custom_textures.size() == right.custom_textures.size() &&
-           left_plan.instance_stride_bytes == right_plan.instance_stride_bytes;
-}
+bool sprite_scene_pipeline_compatible(const Sprite2DLayerRecord& left,
+                                      const Sprite2DLayerRecord& right);
 #endif
 
 #if BBLITE_HAS_SPRITES
@@ -83,21 +53,7 @@ inline bool sprite_scene_pipeline_compatible(const Sprite2DLayerRecord& left,
  * sync, exactly as when the walk ran per record; a frame with nothing
  * disposed never walks at all.
  */
-inline void refuse_disposed_sprite_render_texture_in_use(const Engine& engine) {
-    for (const SpriteRendererHandle& renderer_handle : engine.registered_sprite_renderers) {
-        const SpriteRendererRecord& renderer = handle_at(engine.sprite_renderers, renderer_handle);
-        for (const Sprite2DLayerHandle& layer_handle : renderer.layers) {
-            const SpriteAtlasRecord& atlas = handle_at(
-                engine.sprite_atlases, handle_at(engine.sprite_layers, layer_handle).atlas);
-            if (atlas.has_render_texture &&
-                handle_at(engine.sprite_render_textures, atlas.render_texture).disposed) {
-                throw std::runtime_error("A disposed sprite render texture is "
-                                         "still sampled by a registered "
-                                         "SpriteRenderer layer's atlas.");
-            }
-        }
-    }
-}
+void refuse_disposed_sprite_render_texture_in_use(const Engine& engine);
 
 template <class Pass, class Create, class ReleaseLayer, class AtlasHandle, class ReleaseAtlas>
 void reconcile_sprite_membership(const Engine& engine, Pass& pass, Create&& create,
@@ -137,12 +93,8 @@ struct SpriteDirtyRange {
     std::uint32_t end = 0;
 };
 
-inline SpriteDirtyRange resolve_sprite_dirty_range(const Sprite2DLayerRecord& layer, bool uploaded,
-                                                   std::uint64_t uploaded_version) {
-    const bool needs_full_upload = !uploaded || uploaded_version < layer.dirty_sprite_reset_version;
-    return {needs_full_upload ? 0u : std::min(layer.dirty_sprite_begin, layer.count),
-            needs_full_upload ? layer.count : std::min(layer.dirty_sprite_end, layer.count)};
-}
+SpriteDirtyRange resolve_sprite_dirty_range(const Sprite2DLayerRecord& layer, bool uploaded,
+                                            std::uint64_t uploaded_version);
 
 /**
  * The rows an instance copy transfers, once the optional Y-sort extension
@@ -154,29 +106,8 @@ inline SpriteDirtyRange resolve_sprite_dirty_range(const Sprite2DLayerRecord& la
  * the same reason the derivation is: both backends copy the same bytes to the
  * same offsets and differ only in the write call.
  */
-inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
-                                                           Sprite2DLayerRecord& layer,
-                                                           bool uploaded,
-                                                           std::uint64_t uploaded_version) {
-    // The pin's `uploadedVersion`: this buffer's stamp, or -1 where it holds
-    // none of the current rows -- a fresh buffer, or one whose stamp
-    // predates the last consumption of the shared range.
-    const bool stale = !uploaded || uploaded_version < layer.dirty_sprite_reset_version;
-    if (engine.sprite_y_sort_hook.upload) {
-        if (auto ordered = engine.sprite_y_sort_hook.upload(
-                layer, stale ? -1.0 : static_cast<double>(uploaded_version))) {
-            return *ordered;
-        }
-    }
-    const auto [dirty_begin, dirty_end] =
-        resolve_sprite_dirty_range(layer, uploaded, uploaded_version);
-    if (dirty_end <= dirty_begin)
-        return {};
-    const std::size_t stride_bytes = layer.instance_floats_per_sprite * sizeof(float);
-    const std::size_t offset = static_cast<std::size_t>(dirty_begin) * stride_bytes;
-    return {reinterpret_cast<const std::uint8_t*>(layer.instance_data.data()), offset, offset,
-            static_cast<std::size_t>(dirty_end - dirty_begin) * stride_bytes};
-}
+SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine, Sprite2DLayerRecord& layer,
+                                                    bool uploaded, std::uint64_t uploaded_version);
 
 #if BBLITE_HAS_SPRITE_RENDERER
 /**
@@ -188,27 +119,7 @@ inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
  * hook list is copied because a hook may push another one, and upstream's
  * `for (const hook of rr._beforeUpdate)` iterates the array it entered with.
  */
-inline void begin_sprite_renderer_update(Engine& engine, SpriteRendererHandle renderer,
-                                         double delta_ms) {
-    if (renderer.value >= engine.sprite_renderers.size())
-        return;
-    SpriteRendererRecord& record = handle_at(engine.sprite_renderers, renderer);
-    if (record.disposed)
-        return;
-    if (!record.before_update.empty()) {
-        // Copied into the record's own scratch rather than a fresh vector:
-        // the copy is what makes this iterate the list it entered with, the
-        // way upstream's `for (const hook of rr._beforeUpdate)` does, and
-        // assigning into a retained buffer keeps that guarantee while paying
-        // the allocation once instead of once per renderer per frame.
-        record.before_update_running.assign(record.before_update.begin(),
-                                            record.before_update.end());
-        for (const auto& hook : record.before_update_running) {
-            hook(delta_ms);
-        }
-    }
-    sort_sprite_renderer_layers(engine, handle_at(engine.sprite_renderers, renderer));
-}
+void begin_sprite_renderer_update(Engine& engine, SpriteRendererHandle renderer, double delta_ms);
 #endif
 
 /**
@@ -278,43 +189,7 @@ struct BillboardDrawPlan {
     std::uint32_t particle_passes;
 };
 
-inline BillboardDrawPlan billboard_draw_plan(const BillboardSystemRecord& system) {
-    const bool axis_locked = system.orientation == BillboardOrientation::axis_locked;
-    // The particle family's Multiply program is a module of the pin's own,
-    // outside both sprite composers: it declares no fx block, and its
-    // vertex stage travels with its fragment because the pin writes them
-    // together.
-    const bool particle_multiply = system.blend.particle_passes >= 1;
-    // That pairing is exactly why it is exclusive: the program carries the
-    // FACING basis and the pin's own body, so an axis-locked or custom
-    // system reaching it would silently draw neither. The registrar
-    // upstream only ever builds facing particle systems with no custom
-    // shader, so this says so rather than picking a program that would be
-    // wrong.
-    if (particle_multiply && (axis_locked || system.custom_shader)) {
-        throw std::runtime_error("A node-particle Multiply blend draws the pin's own facing "
-                                 "program; it has no axis-locked or custom-shader arm.");
-    }
-    const bool cutout = system.depth_mode == BillboardDepthMode::cutout;
-    BillboardDrawPlan plan{};
-    // Each program is the module the pin composes for the system, deployed
-    // whole under these stems (`emitSpriteBillboard`, upstream-lower.ts).
-    // The custom composer takes the orientation and has no depth arm; the
-    // stock cutout arm discards below the cutoff, and with alpha-to-coverage
-    // the pin drops the discard and lets sample coverage carry the edge, so
-    // that permutation shares the transparent program.
-    const bool discards = cutout && !system.alpha_to_coverage;
-    plan.program_stem =
-        particle_multiply      ? "billboard_particle_multiply"
-        : system.custom_shader ? (axis_locked ? "billboard_custom_axis_locked" : "billboard_custom")
-        : discards             ? (axis_locked ? "billboard_axis_locked_cutout" : "billboard_cutout")
-        : axis_locked          ? "billboard_axis_locked"
-                               : "billboard";
-    plan.axis_locked = axis_locked;
-    plan.cutout_writes_depth = cutout;
-    plan.particle_passes = system.blend.particle_passes;
-    return plan;
-}
+BillboardDrawPlan billboard_draw_plan(const BillboardSystemRecord& system);
 
 /**
  * What a billboard pass last uploaded, so an unchanged frame re-uploads
@@ -341,42 +216,11 @@ struct BillboardUploadStamp {
  * resolves overlap and the pin uploads in logical insertion order), so
  * its buffer never depends on the view and uploads once per count.
  */
-inline bool billboard_needs_upload(const BillboardSystemRecord& system,
-                                   const BillboardUploadStamp& stamp,
-                                   const std::array<float, 16>& view,
-                                   [[maybe_unused]] Vec3d fo_offset) {
-    if (system.count == 0)
-        return false;
-    if (!stamp.uploaded || stamp.count != system.count ||
-        stamp.instance_version != system.instance_version) {
-        return true;
-    }
-#if BBLITE_FLOATING_ORIGIN
-    // The anchors are uploaded eye-relative, so the offset is an input to
-    // the bytes -- a cutout system, which otherwise uploads once per count
-    // and never again, would hold the offset it first saw. The pin folds
-    // the camera's own version into the same stamp for the same reason
-    // (`lightFoVersion`, `wrapRenderableForFO`).
-    if (stamp.fo_offset.x != fo_offset.x || stamp.fo_offset.y != fo_offset.y ||
-        stamp.fo_offset.z != fo_offset.z) {
-        return true;
-    }
-#endif
-    const bool cutout = system.depth_mode == BillboardDepthMode::cutout;
-    return !(cutout || stamp.view == view);
-}
+bool billboard_needs_upload(const BillboardSystemRecord& system, const BillboardUploadStamp& stamp,
+                            const std::array<float, 16>& view, [[maybe_unused]] Vec3d fo_offset);
 
-inline void stamp_billboard_upload(BillboardUploadStamp& stamp, const BillboardSystemRecord& system,
-                                   const std::array<float, 16>& view,
-                                   [[maybe_unused]] Vec3d fo_offset) {
-    stamp.view = view;
-    stamp.count = system.count;
-    stamp.instance_version = system.instance_version;
-    stamp.uploaded = true;
-#if BBLITE_FLOATING_ORIGIN
-    stamp.fo_offset = fo_offset;
-#endif
-}
+void stamp_billboard_upload(BillboardUploadStamp& stamp, const BillboardSystemRecord& system,
+                            const std::array<float, 16>& view, [[maybe_unused]] Vec3d fo_offset);
 #endif
 
 } // namespace bbl::pal

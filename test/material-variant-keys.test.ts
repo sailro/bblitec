@@ -76,8 +76,8 @@ ${["PinnedVariantKey", "StandardVariantKey"].map((name) => cppRecord(source, `st
 ${[
     "inline bool pinned_record_instanced(",
     "inline bool pinned_record_instance_colored(",
-    "inline PinnedVariantKey pinned_variant_key(",
-    "inline StandardVariantKey standard_variant_key(",
+    "PinnedVariantKey pinned_variant_key(",
+    "StandardVariantKey standard_variant_key(",
 ]
     .map((signature) => cppFunction(source, signature))
     .join("\n")}

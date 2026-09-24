@@ -16,6 +16,7 @@
 #include <memory>
 #include <numbers>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,6 +31,12 @@ const bool* SDL_GetKeyboardState(int* count) {
 
 // The harness runs with no runtime trace requested.
 std::string bbl::pal::environment_variable(const char*) { return {}; }
+
+// The shared unit's environment decode reaches the image PAL; the harness
+// loads no texture.
+bbl::pal::DecodedImage bbl::pal::decode_image(const bbl::js::ArrayBuffer&) {
+    throw std::logic_error("Unexpected fixture image decode");
+}
 
 // The row sync's vertex write is compiled in, as a position-updating scene's.
 static_assert(BBLITE_MESH_POSITION_UPDATE);

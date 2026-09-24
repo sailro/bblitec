@@ -254,7 +254,7 @@ namespace bbl::upstream {
 ${upstream}
 }
 namespace bbl::pal {
-${cppFunction(shared, "inline std::array<float, 16> mesh_block_world(")}
+${cppFunction(shared, "std::array<float, 16> mesh_block_world(")}
 }
 void check(const std::array<float, 16>& actual, const std::array<float, 16>& expected) {
     for (std::size_t lane = 0; lane < 16; ++lane)
@@ -302,7 +302,7 @@ test(
         const helpers = [
             "inline bool thin_instance_pool_grew(",
             "inline std::size_t thin_instance_active_count(\n",
-            "inline std::vector<float> instance_colors_for_upload(",
+            "std::vector<float> instance_colors_for_upload(",
         ]
             .map((signature) => cppFunction(shared, signature))
             .join("\n");

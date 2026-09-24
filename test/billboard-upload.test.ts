@@ -74,8 +74,8 @@ test(
         namespace bbl {
             ${definitions}
             ${cppRecord(shared, "struct BillboardUploadStamp {")}
-            ${cppFunction(shared, "inline bool billboard_needs_upload(")}
-            ${cppFunction(shared, "inline void stamp_billboard_upload(")}
+            ${cppFunction(shared, "bool billboard_needs_upload(")}
+            ${cppFunction(shared, "void stamp_billboard_upload(")}
         }
         int main() {
             bbl::Engine engine;

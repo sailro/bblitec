@@ -139,33 +139,7 @@ struct DeformationUniforms {
     float options[4]{};
 };
 
-inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh) {
-    DeformationUniforms result;
-    for (std::array<float, 16>& matrix : result.bone_matrices) {
-        matrix[0] = 1.0f;
-        matrix[5] = 1.0f;
-        matrix[10] = 1.0f;
-        matrix[15] = 1.0f;
-    }
-    if (!mesh.gpu_deformation)
-        return result;
-    // A palette on the pin's own texture is read by the composed skeleton
-    // stage, not from this block, so the bone lanes stay the identity:
-    // filling them would be dead bytes, and this 64-matrix array could
-    // not hold a larger palette anyway. The morph half still travels,
-    // since the two transports are independent.
-    if (!mesh.pinned_bone_palette) {
-        // Sized by the loader from the skin's joint count, which
-        // generation refuses above this array's length and the loader
-        // refuses again for a BBLITE_ASSET_DIR override -- so the copy
-        // cannot overrun and needs no third check here.
-        std::copy(mesh.bone_matrices.begin(), mesh.bone_matrices.end(),
-                  result.bone_matrices.begin());
-    }
-    std::copy(mesh.morph_weights.begin(), mesh.morph_weights.end(), result.morph_weights);
-    result.options[0] = 1.0f;
-    return result;
-}
+DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh);
 #endif
 
 /**
@@ -177,78 +151,8 @@ inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh) {
  * The morph lanes carry the geometry's first two targets for the
  * vertex-attribute morph transport.
  */
-inline std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
-                                                [[maybe_unused]] const MeshRecord& mesh) {
-    std::vector<GpuVertex> result;
-    result.reserve(geometry.vertices.size());
-#if BBLITE_GPU_DEFORMATION
-    const auto morph_lane = [&](const std::vector<std::vector<Vec3>>& targets, std::size_t target,
-                                std::size_t vertex_index) {
-        if (targets.size() <= target)
-            return std::array<float, 3>{};
-        const Vec3& delta = targets[target][vertex_index];
-        return std::array<float, 3>{delta.x, delta.y, delta.z};
-    };
-#endif
-    for (std::size_t vertex_index = 0; vertex_index < geometry.vertices.size(); ++vertex_index) {
-        const ModelVertex& vertex = geometry.vertices[vertex_index];
-        GpuVertex packed{
-            {vertex.position.x, vertex.position.y, vertex.position.z},
-            {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-            {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
-            {vertex.uv.x, vertex.uv.y},
-            {vertex.uv2.x, vertex.uv2.y},
-            {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
-#if BBLITE_GPU_DEFORMATION
-            {
-                static_cast<float>(vertex.joints[0]),
-                static_cast<float>(vertex.joints[1]),
-                static_cast<float>(vertex.joints[2]),
-                static_cast<float>(vertex.joints[3]),
-            },
-            {
-                // A deformed mesh with no skin weights reads the identity
-                // palette entry, so the influence sum is the identity.
-                mesh.gpu_deformation &&
-                        vertex.weights.x + vertex.weights.y + vertex.weights.z + vertex.weights.w <=
-                            0.0f
-                    ? 1.0f
-                    : vertex.weights.x,
-                vertex.weights.y,
-                vertex.weights.z,
-                vertex.weights.w,
-            },
-            {},
-            {},
-            {},
-            {},
-            {},
-            {},
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
-            {
-                static_cast<std::uint32_t>(vertex.joints[0]),
-                static_cast<std::uint32_t>(vertex.joints[1]),
-                static_cast<std::uint32_t>(vertex.joints[2]),
-                static_cast<std::uint32_t>(vertex.joints[3]),
-            },
-#endif
-#endif
-        };
-#if BBLITE_GPU_DEFORMATION
-        const auto store = [](float (&lane)[3], const std::array<float, 3>& value) {
-            std::copy(value.begin(), value.end(), lane);
-        };
-        store(packed.morph_position_0, morph_lane(geometry.morph_positions, 0, vertex_index));
-        store(packed.morph_position_1, morph_lane(geometry.morph_positions, 1, vertex_index));
-        store(packed.morph_normal_0, morph_lane(geometry.morph_normals, 0, vertex_index));
-        store(packed.morph_normal_1, morph_lane(geometry.morph_normals, 1, vertex_index));
-        store(packed.morph_tangent_0, morph_lane(geometry.morph_tangents, 0, vertex_index));
-        store(packed.morph_tangent_1, morph_lane(geometry.morph_tangents, 1, vertex_index));
-#endif
-        result.push_back(packed);
-    }
-    return result;
-}
+std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
+                                         [[maybe_unused]] const MeshRecord& mesh);
 
 /**
  * What identifies one immutable shader-geometry upload in a backend cache.
@@ -271,22 +175,10 @@ struct SharedGeometryIdentity {
 /** Below this many vertices a cached geometry also keeps its bytes. */
 inline constexpr std::size_t shared_geometry_bytes_kept_below = 4096;
 
-inline std::uint64_t fnv1a_append(std::uint64_t hash, const void* data, std::size_t size) {
-    const auto* bytes = static_cast<const std::uint8_t*>(data);
-    for (std::size_t index = 0; index < size; ++index) {
-        hash ^= bytes[index];
-        hash *= 1099511628211ull;
-    }
-    return hash;
-}
+std::uint64_t fnv1a_append(std::uint64_t hash, const void* data, std::size_t size);
 
-inline SharedGeometryIdentity shared_geometry_identity(const std::vector<GpuVertex>& vertices,
-                                                       const std::vector<std::uint32_t>& indices) {
-    std::uint64_t hash = 14695981039346656037ull;
-    hash = fnv1a_append(hash, vertices.data(), vertices.size() * sizeof(GpuVertex));
-    hash = fnv1a_append(hash, indices.data(), indices.size() * sizeof(std::uint32_t));
-    return {vertices.size(), indices.size(), hash};
-}
+SharedGeometryIdentity shared_geometry_identity(const std::vector<GpuVertex>& vertices,
+                                                const std::vector<std::uint32_t>& indices);
 
 inline bool shared_geometry_keeps_bytes(const std::vector<GpuVertex>& vertices) {
     return vertices.size() < shared_geometry_bytes_kept_below;
@@ -423,64 +315,7 @@ struct PinnedVertexInput {
  * Resolve one declared input onto the vertex's own lanes, which hold the
  * geometry's local values for every family and view.
  */
-inline PinnedVertexInput pinned_vertex_input(std::string_view name) {
-    const auto at = [](VertexInputLane lane, std::size_t offset) {
-        return PinnedVertexInput{
-            lane,
-            static_cast<std::uint64_t>(offset),
-            VertexInputStream::vertex,
-            true,
-        };
-    };
-    if (name == "position") {
-        return at(VertexInputLane::float3, offsetof(GpuVertex, position));
-    }
-    if (name == "normal") {
-        return at(VertexInputLane::float3, offsetof(GpuVertex, normal));
-    }
-    if (name == "tangent") {
-        return at(VertexInputLane::float4, offsetof(GpuVertex, tangent));
-    }
-    if (name == "uv") {
-        return at(VertexInputLane::float2, offsetof(GpuVertex, uv));
-    }
-    if (name == "uv2") {
-        return at(VertexInputLane::float2, offsetof(GpuVertex, uv2));
-    }
-    if (name == "color") {
-        return at(VertexInputLane::float4, offsetof(GpuVertex, color));
-    }
-#if BBLITE_GPU_INSTANCING
-    // The pin's own thin-instance attributes -- the four `ti-matrix` world
-    // columns and the `ti-color` RGBA lane -- resolved from the declaration
-    // that states their group and their offset within it, rather than from
-    // names and arithmetic written here. Every one of them is a float4.
-    if (const upstream::PinnedInstanceAttribute* declared =
-            upstream::pinned_instance_attribute(name)) {
-        return PinnedVertexInput{
-            VertexInputLane::float4,
-            declared->offset,
-            declared->buffer_group == vertex_stream_group(VertexInputStream::instance_color)
-                ? VertexInputStream::instance_color
-                : VertexInputStream::instance_matrix,
-            true,
-        };
-    }
-#endif
-#if BBLITE_GPU_DEFORMATION
-    if (name == "weights") {
-        return at(VertexInputLane::float4, offsetof(GpuVertex, weights));
-    }
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
-    // The pin takes joint indices as integers; the transcribed stage takes
-    // them as floats, so the vertex carries both while the two coexist.
-    if (name == "joints") {
-        return at(VertexInputLane::uint4, offsetof(GpuVertex, joint_indices));
-    }
-#endif
-#endif
-    return PinnedVertexInput{};
-}
+PinnedVertexInput pinned_vertex_input(std::string_view name);
 #endif
 
 #if BBLITE_PINNED_MATERIAL_VARIANTS
@@ -507,15 +342,7 @@ inline bool pinned_record_instance_colored(const MeshRecord& record) {
 
 #if BBLITE_GPU_INSTANCE_COLORS
 // Snapshot a retained caller view at the versioned GPU upload boundary.
-inline std::vector<float> instance_colors_for_upload(const MeshRecord& mesh) {
-    if (!mesh.instance_color_source)
-        return mesh.instance_colors;
-    const auto& source = *mesh.instance_color_source;
-    std::vector<float> colors(source.size());
-    for (std::size_t lane = 0; lane < colors.size(); ++lane)
-        colors[lane] = source.load(lane);
-    return colors;
-}
+std::vector<float> instance_colors_for_upload(const MeshRecord& mesh);
 #endif
 
 #if BBLITE_GPU_MORPH_STORAGE
@@ -532,34 +359,11 @@ inline constexpr std::array<std::uint32_t, 5> empty_morph_weight_data{};
  * version-gated re-upload may rewrite just this span (the header is
  * constant after creation), and both backends must fill it identically.
  */
-inline std::vector<float> morph_weight_values(const ModelGeometry& geometry,
-                                              const MeshRecord& mesh_record) {
-    const std::size_t target_count = geometry.morph_positions.size();
-    std::vector<float> weights(target_count, 0.0f);
-    for (std::size_t target = 0; target < target_count; ++target) {
-        weights[target] = target < mesh_record.morph_storage_weights.size()
-                              ? mesh_record.morph_storage_weights[target]
-                              : 0.0f;
-    }
-    return weights;
-}
+std::vector<float> morph_weight_values(const ModelGeometry& geometry,
+                                       const MeshRecord& mesh_record);
 
-inline std::vector<std::uint8_t> pack_morph_weights(const ModelGeometry& geometry,
-                                                    const MeshRecord& mesh_record) {
-    const std::size_t target_count = geometry.morph_positions.size();
-    const std::size_t vertex_count = geometry.vertices.size();
-    std::vector<std::uint8_t> weights_blob(16 + target_count * sizeof(float), 0);
-    const std::uint32_t header[2] = {
-        static_cast<std::uint32_t>(target_count),
-        static_cast<std::uint32_t>(vertex_count),
-    };
-    std::memcpy(weights_blob.data(), header, sizeof(header));
-    const std::vector<float> weights = morph_weight_values(geometry, mesh_record);
-    if (target_count > 0) {
-        std::memcpy(weights_blob.data() + 16, weights.data(), target_count * sizeof(float));
-    }
-    return weights_blob;
-}
+std::vector<std::uint8_t> pack_morph_weights(const ModelGeometry& geometry,
+                                             const MeshRecord& mesh_record);
 #endif
 
 } // namespace bbl::pal

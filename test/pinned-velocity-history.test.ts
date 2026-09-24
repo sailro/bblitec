@@ -26,12 +26,12 @@ test("a geometry task's Standard renderables keep the pin's previous world and s
         join(output, "velocity.hpp"),
         [
             cppRecord(source, "struct PinnedVelocityHistory {"),
-            cppFunction(source, "inline void begin_pinned_velocity_frame("),
+            cppFunction(source, "void begin_pinned_velocity_frame("),
             cppFunction(
                 source,
-                "inline const PinnedVelocityHistory::Renderable& update_pinned_velocity(",
+                "const PinnedVelocityHistory::Renderable& update_pinned_velocity(",
             ),
-            cppFunction(source, "inline void write_pinned_velocity_tail("),
+            cppFunction(source, "void write_pinned_velocity_tail("),
         ].join("\n\n"),
     );
     const executable = join(output, "check.exe");
@@ -60,7 +60,7 @@ test("only the geometry task's Standard draws write the velocity tail", () => {
     // alone; the tail is the task's renderable state.
     const block = cppFunction(
         source,
-        "inline upstream::MeshUniforms pinned_mesh_block(",
+        "upstream::MeshUniforms pinned_mesh_block(",
     );
     assert.doesNotMatch(block, /previousWorld|velocityEnabled/);
     const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");

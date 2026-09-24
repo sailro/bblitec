@@ -32,7 +32,7 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
             cppRecord(shared, "class CaptureGate {"),
             cppFunction(
                 shared,
-                "inline void refuse_disposed_sprite_render_texture_in_use(",
+                "void refuse_disposed_sprite_render_texture_in_use(",
             ),
             ...[
                 "inline bool sprite_passes_match_registered(",

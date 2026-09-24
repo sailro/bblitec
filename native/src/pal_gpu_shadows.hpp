@@ -1,7 +1,6 @@
 // The shadow family's shared half: the depth state a pass takes, the
 // casters a directional fit folds, and the generators' refresh.
 #pragma once
-#include <bblite/features/shadow_morph_bounds.hpp>
 #include <bblite/features/shadows_csm.hpp>
 #include "pal_gpu_materials.hpp"
 
@@ -15,25 +14,9 @@ namespace bbl::pal {
  * compare and another clear, and generation emits both from that descriptor
  * — so a pass asks here rather than either backend typing standard-Z out.
  */
-inline DepthCompare pass_depth_compare(bool shadow_pass) {
-#if BBLITE_SHADOW_RECEIVERS
-    if (shadow_pass)
-        return upstream::shadow_map_depth_compare;
-#else
-    (void)shadow_pass;
-#endif
-    return upstream::pinned_depth_compare;
-}
+DepthCompare pass_depth_compare(bool shadow_pass);
 
-inline float pass_depth_clear(bool shadow_pass) {
-#if BBLITE_SHADOW_RECEIVERS
-    if (shadow_pass)
-        return upstream::shadow_map_depth_clear;
-#else
-    (void)shadow_pass;
-#endif
-    return upstream::pinned_depth_clear;
-}
+float pass_depth_clear(bool shadow_pass);
 
 /**
  * How many samples a pass rasterizes at.
@@ -44,15 +27,7 @@ inline float pass_depth_clear(bool shadow_pass) {
  * descriptor beside the compare and the clear, so all three answer from one
  * reading of the pin rather than two read and one typed.
  */
-inline std::uint32_t pass_depth_samples(bool shadow_pass, std::uint32_t scene_samples) {
-#if BBLITE_SHADOW_RECEIVERS
-    if (shadow_pass)
-        return upstream::shadow_map_samples;
-#else
-    (void)shadow_pass;
-#endif
-    return scene_samples;
-}
+std::uint32_t pass_depth_samples(bool shadow_pass, std::uint32_t scene_samples);
 
 #if BBLITE_SHADOW_RECEIVERS
 /**
@@ -69,94 +44,8 @@ inline std::uint32_t pass_depth_samples(bool shadow_pass, std::uint32_t scene_sa
  * light, which is why this is gated on the receiver half rather than on
  * either filter.
  */
-inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRecord& generator,
-                                  std::vector<upstream::ShadowCaster>& casters) {
-    casters.clear();
-    casters.reserve(generator.caster_meshes.size());
-    for (const MeshHandle handle : generator.caster_meshes) {
-        // The caster array keeps a removed mesh, as the pin's does, and
-        // names it (`caster_names`), so the fit reads its last pose and
-        // the bounds retirement left on its record.
-        const MeshRecord& record = handle_at(engine.meshes, handle);
-        upstream::ShadowCaster caster;
-        caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
-        caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;
-        if (record.geometry < engine.geometries.size()) {
-            const ModelGeometry& geometry = engine.geometries[record.geometry];
-            caster.bounds_min = {
-                geometry.bounds_min.x,
-                geometry.bounds_min.y,
-                geometry.bounds_min.z,
-            };
-            caster.bounds_max = {
-                geometry.bounds_max.x,
-                geometry.bounds_max.y,
-                geometry.bounds_max.z,
-            };
-#if BBLITE_SHADOW_MORPH_BOUNDS
-            // enableMorphTargetShadows' provider, read LIVE: the weights
-            // are what the scene animates, and the fit has to follow them
-            // or it bounds a scrambled mesh by its unmorphed box.
-            if (generator.morph_shadow_bounds && !geometry.morph_positions.empty()) {
-                upstream::ensure_morph_target_ranges(geometry);
-                // The two weight lanes handed over as a pointer and a
-                // count rather than selected with a ternary. There is no
-                // common type between a vector and an array, so the arm
-                // this replaced had to build a vector from the array
-                // explicitly -- which made the conditional's result a
-                // vector PRVALUE and copied the storage lane whole, for
-                // every caster of every refreshed generator, on a path
-                // that runs each frame. Pointers have a common type and
-                // copy nothing.
-                const std::vector<float>& storage_weights = record.morph_storage_weights;
-                const bool uncapped = !storage_weights.empty();
-                upstream::expand_morph_caster_bounds(
-                    geometry.morph_bounds,
-                    uncapped ? storage_weights.data() : record.morph_weights.data(),
-                    uncapped ? storage_weights.size() : record.morph_weights.size(),
-                    caster.bounds_min, caster.bounds_max);
-            }
-#endif
-        }
-        // `computeDirectionalLightMatrix` reads the mesh's live boundMin and
-        // boundMax properties, not the geometry record. Sandblox maintains
-        // those properties as the aggregate AABB of each thin-instance pool;
-        // ignoring them collapses the fit around the unit prototype and puts
-        // almost every receiver outside the shadow map.
-        Vec3 minimum{caster.bounds_min[0], caster.bounds_min[1], caster.bounds_min[2]};
-        Vec3 maximum{caster.bounds_max[0], caster.bounds_max[1], caster.bounds_max[2]};
-        apply_mesh_bound_overrides(record, minimum, maximum);
-        caster.bounds_min = {minimum.x, minimum.y, minimum.z};
-        caster.bounds_max = {maximum.x, maximum.y, maximum.z};
-
-        // `_castersWorldAabb` gives a live CSM caster with an active
-        // ThinInstanceData pool to `_thinInstanceWorldAabb`: every active,
-        // non-degenerate matrix transforms the mesh bounds, and mesh.world
-        // transforms that result. One carrier per instance lets the pinned
-        // cascade fold perform those same two transforms without reducing
-        // rotated boxes to an intermediate AABB. The refresh gate already
-        // keys on `instance_version`, so this work runs only when the pin's
-        // own cache would be invalidated.
-#if BBLITE_GPU_INSTANCING && BBLITE_SHADOWS_CSM
-        const std::size_t active_instances = thin_instance_active_count(record);
-        if (generator.filter == ShadowFilter::csm_directional && record.thin_instanced &&
-            active_instances > 0) {
-            caster.world = upstream::mesh_world_matrix_f64(engine, record);
-            for (std::size_t index = 0; index < active_instances; ++index) {
-                const std::array<float, 16>& instance = record.instance_matrices[index];
-                if (!upstream::csm_instance_contributes(instance))
-                    continue;
-                caster.instance = instance;
-                caster.has_instance = true;
-                casters.push_back(caster);
-            }
-            continue;
-        }
-#endif
-        caster.world = upstream::mesh_world_matrix_f64(engine, record);
-        casters.push_back(caster);
-    }
-}
+void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRecord& generator,
+                           std::vector<upstream::ShadowCaster>& casters);
 #endif
 
 #if BBLITE_SHADOW_RECEIVERS
@@ -203,27 +92,7 @@ struct ShadowCasterMatrices {
     const std::array<float, 16>& view;
 };
 
-inline ShadowCasterMatrices shadow_caster_matrices(const Engine& engine,
-                                                   const FrameTaskRecord& task) {
-    const ShadowGeneratorRecord& generator =
-        handle_at(engine.shadow_generators, task.render.shadow_generator);
-#if BBLITE_SHADOWS_CSM
-    if (generator.filter == ShadowFilter::csm_directional) {
-        // A cascade the fit has not filled yet cannot be drawn: the pinned
-        // render gate refits before any caster pass runs, and a pass whose
-        // layer the fit does not carry would otherwise render through a
-        // pair a cascaded generator never writes.
-        if (task.render.depth_layer >= generator.csm_cascades.size()) {
-            throw std::runtime_error("A cascaded shadow pass names cascade " +
-                                     std::to_string(task.render.depth_layer) +
-                                     ", which its generator has not fitted.");
-        }
-        const ShadowCascade& cascade = generator.csm_cascades[task.render.depth_layer];
-        return {cascade.caster_view_projection, cascade.view};
-    }
-#endif
-    return {generator.caster_view_projection, generator.caster_view};
-}
+ShadowCasterMatrices shadow_caster_matrices(const Engine& engine, const FrameTaskRecord& task);
 
 /** The refresh's own carriers, kept by each backend across frames. */
 struct ShadowRefreshState {

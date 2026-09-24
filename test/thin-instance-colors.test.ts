@@ -89,7 +89,7 @@ struct MeshRecord {
     double thin_instance_cull_bounds_pad = 0;
 };
 struct Engine { std::array<MeshRecord, 1> meshes; };
-${cppFunction(sharedGpuSource(), "inline std::vector<float> instance_colors_for_upload(")}
+${cppFunction(sharedGpuSource(), "std::vector<float> instance_colors_for_upload(")}
 ${functions}
 }
 int main() {

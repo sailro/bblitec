@@ -162,7 +162,7 @@ test("native material getters retain producer variants, replacement aliases and 
 #include <cmath>
 namespace bbl {
 namespace upstream { enum class MaterialTextureSrgb { linear, srgb, srgb_unless_standard, base_color, lightmap }; }
-${cppFunction(sharedGpuSource(), "inline bool material_slot_srgb(")}
+${cppFunction(sharedGpuSource(), "bool material_slot_srgb(")}
 Engine create_engine(EngineOptions) {return {};}
 ${functions}
 PixelsTexture create_texture_2d_from_pixels(Engine& engine,const js::U8Array& pixels,double width,double height,PixelsTextureOptions options) {

@@ -25,18 +25,8 @@ inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas
     return rect.width > 0.0 && rect.height > 0.0;
 }
 
-inline PixelViewport laid_out_canvas_pane(const Engine& engine, UiElementHandle canvas,
-                                          std::uint32_t target_width, std::uint32_t target_height) {
-    const auto& rect = handle_at(engine.ui_elements, canvas).client_rect;
-    const double scale_x = static_cast<double>(target_width) / engine.options.width;
-    const double scale_y = static_cast<double>(target_height) / engine.options.height;
-    return PixelViewport{
-        static_cast<std::int32_t>(rect.left * scale_x),
-        static_cast<std::int32_t>(rect.top * scale_y),
-        std::max<std::int32_t>(1, static_cast<std::int32_t>(rect.width * scale_x)),
-        std::max<std::int32_t>(1, static_cast<std::int32_t>(rect.height * scale_y)),
-    };
-}
+PixelViewport laid_out_canvas_pane(const Engine& engine, UiElementHandle canvas,
+                                   std::uint32_t target_width, std::uint32_t target_height);
 
 /** An auxiliary registered scene whose surface canvas retained layout never placed. */
 inline bool unplaced_surface_scene(const Engine& engine, const Scene& scene) {
@@ -50,94 +40,23 @@ inline bool unplaced_surface_scene(const Engine& engine, const Scene& scene) {
  * auxiliary surface scenes, or nullopt when there is no such split (one
  * pane only) or `scene` is not one of them (a utility-layer overlay).
  */
-inline std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scene& scene,
-                                                       std::uint32_t target_width,
-                                                       std::uint32_t target_height) {
-#if BBLITE_HAS_UI
-    if (engine.registered_scenes.empty())
-        return std::nullopt;
-    std::size_t pane_count = 1;
-    std::size_t pane_index = npos;
-    const std::shared_ptr<Scene>& primary = engine.registered_scenes.front();
-    if (primary && primary->shares_identity(scene))
-        pane_index = 0;
-    for (std::size_t i = 1; i < engine.registered_scenes.size(); ++i) {
-        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
-        if (!registered || !unplaced_surface_scene(engine, *registered))
-            continue;
-        if (registered->shares_identity(scene))
-            pane_index = pane_count;
-        ++pane_count;
-    }
-    if (pane_count == 1 || pane_index == npos)
-        return std::nullopt;
-    const std::uint64_t width = target_width;
-    const auto x0 = static_cast<std::int32_t>(width * pane_index / pane_count);
-    const auto x1 = static_cast<std::int32_t>(width * (pane_index + 1) / pane_count);
-    return PixelViewport{
-        x0,
-        0,
-        std::max<std::int32_t>(1, x1 - x0),
-        std::max<std::int32_t>(1, static_cast<std::int32_t>(target_height)),
-    };
-#else
-    (void)engine;
-    (void)scene;
-    (void)target_width;
-    (void)target_height;
-    return std::nullopt;
-#endif
-}
+std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scene& scene,
+                                                std::uint32_t target_width,
+                                                std::uint32_t target_height);
 
-inline std::optional<PixelViewport> scene_surface_pane(const Engine& engine, const Scene& scene,
-                                                       std::uint32_t width, std::uint32_t height) {
-#if BBLITE_HAS_UI
-    if (scene.surface_canvas && surface_canvas_laid_out(engine, *scene.surface_canvas)) {
-        return laid_out_canvas_pane(engine, *scene.surface_canvas, width, height);
-    }
-#endif
-    return equal_surface_pane(engine, scene, width, height);
-}
+std::optional<PixelViewport> scene_surface_pane(const Engine& engine, const Scene& scene,
+                                                std::uint32_t width, std::uint32_t height);
 
 /** The pane of the registered scene presenting through `surface_canvas`. */
-inline std::optional<PixelViewport>
-surface_canvas_pane(const Engine& engine, std::optional<UiElementHandle> surface_canvas,
-                    std::uint32_t target_width, std::uint32_t target_height) {
-#if BBLITE_HAS_UI
-    if (!surface_canvas)
-        return std::nullopt;
-    if (surface_canvas_laid_out(engine, *surface_canvas)) {
-        return laid_out_canvas_pane(engine, *surface_canvas, target_width, target_height);
-    }
-    for (std::size_t i = 0; i < engine.registered_scenes.size(); ++i) {
-        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
-        if (!registered || !registered->surface_canvas)
-            continue;
-        if (registered->surface_canvas->value != surface_canvas->value)
-            continue;
-        return equal_surface_pane(engine, *registered, target_width, target_height);
-    }
-    return std::nullopt;
-#else
-    (void)engine;
-    (void)surface_canvas;
-    (void)target_width;
-    (void)target_height;
-    return std::nullopt;
-#endif
-}
+std::optional<PixelViewport> surface_canvas_pane(const Engine& engine,
+                                                 std::optional<UiElementHandle> surface_canvas,
+                                                 std::uint32_t target_width,
+                                                 std::uint32_t target_height);
 
-inline std::pair<std::uint32_t, std::uint32_t>
-surface_target_extent(const Engine& engine, const RenderTargetRecord& target, std::uint32_t width,
-                      std::uint32_t height) {
-    const auto pane = surface_canvas_pane(engine, target.surface_canvas, width, height);
-    return {target.width > 0 ? target.width
-            : pane           ? static_cast<std::uint32_t>(pane->width)
-                             : width,
-            target.height > 0 ? target.height
-            : pane            ? static_cast<std::uint32_t>(pane->height)
-                              : height};
-}
+std::pair<std::uint32_t, std::uint32_t> surface_target_extent(const Engine& engine,
+                                                              const RenderTargetRecord& target,
+                                                              std::uint32_t width,
+                                                              std::uint32_t height);
 
 template <typename Targets>
 inline bool surface_targets_changed(const Engine& engine, const Targets& targets,
@@ -155,16 +74,8 @@ inline bool surface_targets_changed(const Engine& engine, const Targets& targets
 }
 
 /** Target extent used when building one surface scene's projection. */
-inline PixelViewport scene_surface_extent(const Engine& engine, const Scene& scene,
-                                          std::uint32_t target_width, std::uint32_t target_height) {
-    return scene_surface_pane(engine, scene, target_width, target_height)
-        .value_or(PixelViewport{
-            0,
-            0,
-            static_cast<std::int32_t>(target_width),
-            static_cast<std::int32_t>(target_height),
-        });
-}
+PixelViewport scene_surface_extent(const Engine& engine, const Scene& scene,
+                                   std::uint32_t target_width, std::uint32_t target_height);
 
 /**
  * Final viewport/scissor of a scene's own pass: the pass camera's
@@ -173,24 +84,10 @@ inline PixelViewport scene_surface_extent(const Engine& engine, const Scene& sce
  * camera has no viewport, keeps the whole pane.
  */
 #if BBLITE_HAS_PBR_RENDERER
-inline std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, const Scene& scene,
-                                                          const CameraRecord* camera,
-                                                          std::uint32_t target_width,
-                                                          std::uint32_t target_height) {
-    const std::optional<PixelViewport> pane =
-        scene_surface_pane(engine, scene, target_width, target_height);
-    if (!pane.has_value()) {
-        return upstream::pass_camera_viewport(camera, static_cast<double>(target_width),
-                                              static_cast<double>(target_height));
-    }
-    std::optional<PixelViewport> viewport = upstream::pass_camera_viewport(
-        camera, static_cast<double>(pane->width), static_cast<double>(pane->height));
-    if (!viewport.has_value())
-        return pane;
-    viewport->x += pane->x;
-    viewport->y += pane->y;
-    return viewport;
-}
+std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, const Scene& scene,
+                                                   const CameraRecord* camera,
+                                                   std::uint32_t target_width,
+                                                   std::uint32_t target_height);
 #endif
 
 /**
@@ -254,38 +151,8 @@ inline Vec3d floating_origin_offset(const Scene& scene, const Engine& engine) {
  * against an eye-relative `worldPos`. Direction-only entries (directional,
  * hemispheric) are left alone.
  */
-inline void apply_light_floating_origin(std::span<upstream::LightEntry> entries,
-                                        std::uint32_t count, const Scene& scene,
-                                        const Engine& engine) {
-    const Vec3d offset = floating_origin_offset(scene, engine);
-    std::uint32_t written = 0;
-    for (const LightHandle handle : scene.lights) {
-        if (written >= count)
-            break;
-        if (handle.value >= engine.lights.size())
-            continue;
-        const LightRecord& light = handle_at(engine.lights, handle);
-        // The pin's own test: the type tag in `vLightData.w`, 0 for a point
-        // light and 2 for a spot. A direction-only entry is left alone.
-        const float type = entries[written].vLightData[3];
-        if (type == 0.0f || type == 2.0f) {
-            // From the light's WORLD translation, which is what
-            // `applyLightFoOffset` rewrites the slot from -- and what the
-            // writer beside it already reads. `light.position` agrees for
-            // an unparented light and would drift the moment one is not.
-            // From `light.position`, which is the field the entry writer
-            // composes its own local matrix from and the one every path
-            // fills -- the glTF punctual-light emission writes the
-            // flattened world there and leaves `local_matrix` alone, so
-            // reading that instead would put an imported light at the
-            // origin.
-            entries[written].vLightData[0] = static_cast<float>(light.position.x - offset.x);
-            entries[written].vLightData[1] = static_cast<float>(light.position.y - offset.y);
-            entries[written].vLightData[2] = static_cast<float>(light.position.z - offset.z);
-        }
-        ++written;
-    }
-}
+void apply_light_floating_origin(std::span<upstream::LightEntry> entries, std::uint32_t count,
+                                 const Scene& scene, const Engine& engine);
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER
@@ -295,14 +162,8 @@ inline void apply_light_floating_origin(std::span<upstream::LightEntry> entries,
  * The `#if` lives here rather than at each call site: a consumer asks what
  * the offset is and gets one answer, whichever build it is in.
  */
-inline Vec3d frame_floating_origin_offset([[maybe_unused]] const Scene& scene,
-                                          [[maybe_unused]] const Engine& engine) {
-#if BBLITE_FLOATING_ORIGIN
-    return floating_origin_offset(scene, engine);
-#else
-    return Vec3d{};
-#endif
-}
+Vec3d frame_floating_origin_offset([[maybe_unused]] const Scene& scene,
+                                   [[maybe_unused]] const Engine& engine);
 
 /**
  * The world one mesh draw's block carries: the pin's `mesh.worldMatrix`,
@@ -312,14 +173,8 @@ inline Vec3d frame_floating_origin_offset([[maybe_unused]] const Scene& scene,
  * matrix, a bone palette and a morph compose on top of it inside the vertex
  * stage, as the pin's `finalWorld` does, so every family and pass asks here.
  */
-inline std::array<float, 16> mesh_block_world([[maybe_unused]] const Scene& scene,
-                                              const Engine& engine, const MeshRecord& record) {
-#if BBLITE_FLOATING_ORIGIN
-    return upstream::mesh_world_eye_relative(engine, record, floating_origin_offset(scene, engine));
-#else
-    return upstream::mesh_world_matrix(engine, record);
-#endif
-}
+std::array<float, 16> mesh_block_world([[maybe_unused]] const Scene& scene, const Engine& engine,
+                                       const MeshRecord& record);
 #endif
 
 } // namespace bbl::pal

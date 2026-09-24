@@ -308,6 +308,7 @@ if(BBLITE_SDL_GPU_SOURCES OR "platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
         APPEND BBLITE_RUNTIME_SOURCES
         "${BBLITE_NATIVE_ROOT}/src/pal_gpu_frame.cpp"
         "${BBLITE_NATIVE_ROOT}/src/pal_gpu_images.cpp"
+        "${BBLITE_NATIVE_ROOT}/src/pal_gpu_shared.cpp"
     )
 endif()
 

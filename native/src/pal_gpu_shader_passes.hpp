@@ -24,23 +24,7 @@ inline std::optional<std::array<float, 16>> shader_world_view(const std::array<f
  * depend on the draw; the two individual factors are pass values but do not
  * have the same layout as the shared product buffer.
  */
-inline bool block_is_shared_scene_matrix(const upstream::ShaderVariantStageBlock& block) {
-    if (block.system_matrices.size() != 1 || !block.gather.empty()) {
-        return false;
-    }
-    switch (block.system_matrices.front()) {
-    case upstream::ShaderSystemMatrix::view_projection:
-        return true;
-    case upstream::ShaderSystemMatrix::world:
-    case upstream::ShaderSystemMatrix::world_view:
-    case upstream::ShaderSystemMatrix::world_view_projection:
-    case upstream::ShaderSystemMatrix::view:
-    case upstream::ShaderSystemMatrix::projection:
-    case upstream::ShaderSystemMatrix::camera_position:
-        return false;
-    }
-    return false;
-}
+bool block_is_shared_scene_matrix(const upstream::ShaderVariantStageBlock& block);
 
 /**
  * The matrices one pass renders with, carried together because a variant
@@ -99,19 +83,8 @@ struct ShaderDrawMatrices {
 };
 
 /** Camera position in the same absolute/eye-relative frame as shader world. */
-inline std::array<float, 4> shader_camera_position(const Scene& scene, const Engine& engine,
-                                                   const CameraRecord& camera) {
-    const Vec3d eye = upstream::arc_rotate_eye_position(camera);
-#if BBLITE_FLOATING_ORIGIN
-    const Vec3d origin = floating_origin_offset(scene, engine);
-    return {static_cast<float>(eye.x - origin.x), static_cast<float>(eye.y - origin.y),
-            static_cast<float>(eye.z - origin.z), 0.0f};
-#else
-    (void)scene;
-    (void)engine;
-    return {static_cast<float>(eye.x), static_cast<float>(eye.y), static_cast<float>(eye.z), 0.0f};
-#endif
-}
+std::array<float, 4> shader_camera_position(const Scene& scene, const Engine& engine,
+                                            const CameraRecord& camera);
 
 /**
  * One camera pass's matrices -- the effective aspect, the view-projection,
@@ -142,19 +115,8 @@ struct CameraPassMatrices {
  * is the pin's `getProjectionMatrix`, the arm that branches on the camera,
  * rather than the perspective writer the skybox takes.
  */
-inline CameraPassMatrices camera_pass_matrices(const Scene& scene, const Engine& engine,
-                                               const CameraRecord* camera, double width,
-                                               double height) {
-    CameraPassMatrices matrices;
-    if (!camera)
-        return matrices;
-    matrices.aspect = upstream::effective_aspect_ratio(*camera, width, height);
-    matrices.view_projection = upstream::build_view_projection(*camera, matrices.aspect);
-    matrices.view = upstream::build_view_matrix(upstream::camera_world_matrix(*camera));
-    matrices.projection = upstream::build_scene_projection(*camera, matrices.aspect);
-    matrices.camera_position = shader_camera_position(scene, engine, *camera);
-    return matrices;
-}
+CameraPassMatrices camera_pass_matrices(const Scene& scene, const Engine& engine,
+                                        const CameraRecord* camera, double width, double height);
 
 /**
  * One custom-shader stage block: declared system matrices followed by the
@@ -165,68 +127,9 @@ inline CameraPassMatrices camera_pass_matrices(const Scene& scene, const Engine&
  * per-draw walks in all three consumers reuse one allocation; `assign`
  * zero-fills every element, so the bytes match a freshly sized vector's.
  */
-inline void shader_stage_block_floats(const upstream::ShaderVariantStageBlock& block,
-                                      const ShaderPassMatrices& pass,
-                                      const MaterialRecord& material, std::vector<float>& floats) {
-    // The world a pass without a mesh (a full-screen shader) reads.
-    static constexpr std::array<float, 16> identity{
-        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-    };
-    floats.assign(block.float_size, 0.0f);
-    std::size_t head = 0;
-    const auto copy_from = [&](const float* source, std::size_t count, const char* name) {
-        if (!source) {
-            throw std::runtime_error(std::string("A shader material declares the '") + name +
-                                     "' system uniform in a pass that renders with no such "
-                                     "matrix.");
-        }
-        std::copy_n(source, count, floats.begin() + head);
-    };
-    for (const upstream::ShaderSystemMatrix matrix : block.system_matrices) {
-        // No default arm: a new enumerator has to be given a source here
-        // rather than silently inheriting one.
-        switch (matrix) {
-        case upstream::ShaderSystemMatrix::world:
-            copy_from(pass.world ? pass.world->data() : identity.data(), 16, "world");
-            head += 16;
-            break;
-        case upstream::ShaderSystemMatrix::world_view:
-            copy_from(pass.world_view ? pass.world_view->data() : nullptr, 16, "worldView");
-            head += 16;
-            break;
-        case upstream::ShaderSystemMatrix::view:
-            copy_from(pass.view ? pass.view->data() : nullptr, 16, "view");
-            head += 16;
-            break;
-        case upstream::ShaderSystemMatrix::projection:
-            copy_from(pass.projection ? pass.projection->data() : nullptr, 16, "projection");
-            head += 16;
-            break;
-        case upstream::ShaderSystemMatrix::view_projection:
-            copy_from(pass.view_projection, 16, "viewProjection");
-            head += 16;
-            break;
-        case upstream::ShaderSystemMatrix::world_view_projection:
-            copy_from(pass.world_view_projection ? pass.world_view_projection->data()
-                                                 : pass.view_projection,
-                      16, "worldViewProjection");
-            head += 16;
-            break;
-        case upstream::ShaderSystemMatrix::camera_position:
-            copy_from(pass.camera_position ? pass.camera_position->data() : nullptr, 3,
-                      "cameraPosition");
-            // vec3 uniform members consume one 16-byte slot.
-            head += 4;
-            break;
-        }
-    }
-    for (const std::array<std::uint32_t, 3>& gather : block.gather) {
-        for (std::uint32_t index = 0; index < gather[2]; ++index) {
-            floats[gather[0] + index] = material.shader_uniform_values[gather[1] + index];
-        }
-    }
-}
+void shader_stage_block_floats(const upstream::ShaderVariantStageBlock& block,
+                               const ShaderPassMatrices& pass, const MaterialRecord& material,
+                               std::vector<float>& floats);
 #endif
 
 } // namespace bbl::pal

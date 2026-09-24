@@ -19,14 +19,8 @@ namespace bbl::pal {
  * of them left five spare kinds, and nothing would have failed at the
  * sixth.
  */
-inline std::size_t variant_pipeline_key(std::size_t variant, upstream::RenderPipelineKind kind,
-                                        std::initializer_list<bool> flags) {
-    std::size_t key =
-        variant * upstream::render_pipeline_kind_count + static_cast<std::size_t>(kind);
-    for (const bool flag : flags)
-        key = key * 2 + (flag ? 1 : 0);
-    return key;
-}
+std::size_t variant_pipeline_key(std::size_t variant, upstream::RenderPipelineKind kind,
+                                 std::initializer_list<bool> flags);
 
 /**
  * The variant an ESM caster pipeline is keyed by.
@@ -52,138 +46,18 @@ inline std::size_t esm_keyed_variant(std::size_t variant, std::size_t variant_co
 
 /** The record field one slot reads, or nullptr when the family has none. */
 #if BBLITE_HAS_PBR_RENDERER
-inline const TextureData* material_slot_texture(const MaterialRecord& material,
-                                                upstream::MaterialTextureSource source,
-                                                bool standard_material) {
-    using Source = upstream::MaterialTextureSource;
-    switch (source) {
-    case Source::base_color:
-        return &material.base_color_texture;
-    case Source::specular_or_metallic_roughness:
-        return standard_material ? &material.specular_texture
-                                 : &material.metallic_roughness_texture;
-    case Source::opacity_or_normal:
-        return standard_material ? &material.opacity_texture : &material.normal_texture;
-    case Source::ambient_or_emissive:
-        return standard_material ? &material.ambient_texture : &material.emissive_texture;
-    case Source::standard_emissive:
-        return standard_material ? &material.emissive_texture : nullptr;
-    case Source::spec_gloss:
-        return standard_material ? nullptr : &material.spec_gloss_texture;
-    case Source::transmission:
-        return standard_material ? nullptr : &material.transmission_texture;
-    case Source::thickness:
-        return standard_material ? nullptr : &material.thickness_texture;
-    case Source::clearcoat:
-        return standard_material ? nullptr : &material.clearcoat_texture;
-    case Source::clearcoat_roughness:
-        return standard_material ? nullptr : &material.clearcoat_roughness_texture;
-    case Source::clearcoat_normal:
-        return standard_material ? nullptr : &material.clearcoat_normal_texture;
-    case Source::sheen_color:
-        return standard_material ? nullptr : &material.sheen_color_texture;
-    case Source::sheen_roughness:
-        return standard_material ? nullptr : &material.sheen_roughness_texture;
-    case Source::iridescence:
-        return standard_material ? nullptr : &material.iridescence_texture;
-    case Source::iridescence_thickness:
-        return standard_material ? nullptr : &material.iridescence_thickness_texture;
-    case Source::lightmap:
-        return &material.lightmap_texture;
-    case Source::metallic_reflectance:
-        return standard_material ? nullptr : &material.metallic_reflectance_texture;
-    case Source::reflectance:
-        return standard_material ? nullptr : &material.reflectance_texture;
-    case Source::anisotropy:
-        return standard_material ? nullptr : &material.anisotropy_texture;
-    case Source::translucency_color:
-        return standard_material ? nullptr : &material.translucency_color_texture;
-    case Source::translucency_intensity:
-        return standard_material ? nullptr : &material.translucency_intensity_texture;
-    case Source::occlusion_uv2:
-        return !standard_material && material.occlusion_texture_uv2 ? &material.occlusion_texture
-                                                                    : nullptr;
-    case Source::standard_bump:
-        return standard_material ? &material.bump_texture : nullptr;
-    case Source::standard_reflection:
-        return standard_material ? &material.reflection_texture : nullptr;
-    // Scene-owned resources carry no record field. The two VAT rows
-    // are the mesh's own, like the bone palette beside them.
-    case Source::environment_cube:
-    case Source::local_probe_cube:
-    case Source::brdf_lut:
-    case Source::scene_color:
-    case Source::bone_palette:
-    case Source::vat_palette:
-    case Source::vat_instance_params:
-    case Source::clustered_lights:
-    case Source::clustered_cells:
-    case Source::clustered_indices:
-        return nullptr;
-    }
-    return nullptr;
-}
+const TextureData* material_slot_texture(const MaterialRecord& material,
+                                         upstream::MaterialTextureSource source,
+                                         bool standard_material);
 
 /** Whether one slot uploads through an sRGB view, per the table's rule. */
-inline bool material_slot_srgb(upstream::MaterialTextureSrgb rule, const MaterialRecord* material,
-                               bool standard_material) {
-    switch (rule) {
-    case upstream::MaterialTextureSrgb::linear:
-        return false;
-    case upstream::MaterialTextureSrgb::srgb:
-        return true;
-    case upstream::MaterialTextureSrgb::srgb_unless_standard:
-        return !standard_material;
-    case upstream::MaterialTextureSrgb::lightmap:
-        return material != nullptr && material->lightmap_texture_srgb;
-    case upstream::MaterialTextureSrgb::base_color:
-        // The slot's encoding is its TEXTURE's, which upstream stores as
-        // the `Texture2D`'s own format: the record carries it for the
-        // image and the fallback texel alike, so an image is not assumed
-        // to be sRGB because it is an image. A transferred texture keeps
-        // the same encoding when a Standard diffuse slot takes it.
-        return standard_material ? material != nullptr && material->diffuse_texture_srgb
-                                 : material == nullptr || material->base_color_srgb;
-    }
-    return false;
-}
+bool material_slot_srgb(upstream::MaterialTextureSrgb rule, const MaterialRecord* material,
+                        bool standard_material);
 
 /** The 1x1 texel an image-less slot uploads, per the table's rule. */
-inline std::array<std::uint8_t, 4> material_slot_fallback(upstream::MaterialTextureFallback rule,
-                                                          const MaterialRecord* material,
-                                                          bool standard_material) {
-    constexpr std::array<std::uint8_t, 4> white_texel{255, 255, 255, 255};
-    constexpr std::array<std::uint8_t, 4> black_texel{0, 0, 0, 255};
-    // A flat tangent-space normal, so a material with no map reads
-    // (0, 0, 1) out of the sample and keeps its interpolated normal.
-    constexpr std::array<std::uint8_t, 4> flat_normal_texel{128, 128, 255, 255};
-    switch (rule) {
-    case upstream::MaterialTextureFallback::white:
-        return white_texel;
-    case upstream::MaterialTextureFallback::black:
-        return black_texel;
-    case upstream::MaterialTextureFallback::flat_normal:
-        return flat_normal_texel;
-    case upstream::MaterialTextureFallback::white_or_flat_normal:
-        return standard_material ? white_texel : flat_normal_texel;
-    case upstream::MaterialTextureFallback::base_color_record:
-        return !standard_material && material ? material->base_color_fallback : white_texel;
-    case upstream::MaterialTextureFallback::orm_record:
-        // The pinned ORM factor texel, so an animated metallic or
-        // roughness factor multiplies the authored value rather than
-        // white. Standard materials never carry one.
-        return !standard_material && material ? material->orm_fallback : white_texel;
-    case upstream::MaterialTextureFallback::white_or_emissive_factor: {
-        if (standard_material)
-            return white_texel;
-        const bool has_emissive_factor = material && (material->emissive_factor.r != 0.0f ||
-                                                      material->emissive_factor.g != 0.0f ||
-                                                      material->emissive_factor.b != 0.0f);
-        return has_emissive_factor ? white_texel : black_texel;
-    }
-    }
-    return white_texel;
-}
+std::array<std::uint8_t, 4> material_slot_fallback(upstream::MaterialTextureFallback rule,
+                                                   const MaterialRecord* material,
+                                                   bool standard_material);
 
 /**
  * The table row serving one of the pin's own binding names, or nullptr.
@@ -193,16 +67,7 @@ inline std::array<std::uint8_t, 4> material_slot_fallback(upstream::MaterialText
  * resource the table does not know fails by name rather than sampling
  * whatever sat at that index.
  */
-inline const upstream::MaterialTextureSlot* material_slot_for_binding(std::string_view name) {
-    for (const upstream::MaterialTextureSlot& slot : upstream::material_texture_slots) {
-        if (slot.texture_name.empty())
-            continue;
-        if (name == slot.texture_name || name == slot.sampler_name) {
-            return &slot;
-        }
-    }
-    return nullptr;
-}
+const upstream::MaterialTextureSlot* material_slot_for_binding(std::string_view name);
 
 /**
  * The table row serving one slot source, or nullptr.
@@ -214,15 +79,8 @@ inline const upstream::MaterialTextureSlot* material_slot_for_binding(std::strin
  * comment in pinned-standard-variants.ts says exactly that: a
  * "material_texture_slots row source").
  */
-inline const upstream::MaterialTextureSlot*
-material_slot_for_source(upstream::MaterialTextureSource source) {
-    for (const upstream::MaterialTextureSlot& slot : upstream::material_texture_slots) {
-        if (slot.source == source) {
-            return &slot;
-        }
-    }
-    return nullptr;
-}
+const upstream::MaterialTextureSlot*
+material_slot_for_source(upstream::MaterialTextureSource source);
 
 #endif
 
@@ -242,20 +100,7 @@ material_slot_for_source(upstream::MaterialTextureSource source) {
  * outside the two material families' guard rather than inside it.
  */
 #if BBLITE_PINNED_MATERIALS
-inline bool pinned_lists_have_pinned_draws(const upstream::RenderDrawLists& lists) {
-    for (const upstream::RenderDrawList* list : {&lists.opaque, &lists.transparent}) {
-        for (const upstream::RenderDrawCommand& draw : list->commands) {
-            if (draw.item.material_kind == upstream::RenderMaterialKind::pbr ||
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                draw.item.material_kind == upstream::RenderMaterialKind::node ||
-#endif
-                draw.item.material_kind == upstream::RenderMaterialKind::standard) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
+bool pinned_lists_have_pinned_draws(const upstream::RenderDrawLists& lists);
 
 #endif
 
@@ -269,13 +114,7 @@ inline bool pinned_lists_have_pinned_draws(const upstream::RenderDrawLists& list
  * lookup. Both material families wrap that one core, so their rows are one
  * shape and a backend builds either family's group 2 from one walk.
  */
-inline std::span<const upstream::PinnedShadowBinding> standard_shadow_rows(std::size_t variant) {
-    const upstream::StandardVariantEntry& entry = upstream::standard_variants[variant];
-    return {
-        upstream::standard_shadow_bindings.data() + entry.first_shadow_binding,
-        entry.shadow_binding_count,
-    };
-}
+std::span<const upstream::PinnedShadowBinding> standard_shadow_rows(std::size_t variant);
 
 /** Whether a composed Standard variant carries the pin's shadow fragment. */
 inline bool standard_variant_receives_shadows(std::size_t variant) {
@@ -287,13 +126,7 @@ inline bool standard_variant_receives_shadows(std::size_t) { return false; }
 
 #if BBLITE_PBR_SHADOWS
 /** The same slice over the PBR family's own composed rows. */
-inline std::span<const upstream::PinnedShadowBinding> pbr_shadow_rows(std::size_t variant) {
-    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
-    return {
-        upstream::pbr_shadow_bindings.data() + entry.first_shadow_binding,
-        entry.shadow_binding_count,
-    };
-}
+std::span<const upstream::PinnedShadowBinding> pbr_shadow_rows(std::size_t variant);
 
 /** Whether a composed PBR variant carries the pin's shadow fragment. */
 inline bool pbr_variant_receives_shadows(std::size_t variant) {
@@ -312,26 +145,13 @@ inline bool pbr_variant_receives_shadows(std::size_t) { return false; }
  * than as their own group -- but each row is the same reflected shape the
  * two composed families' are, and resolves through the same builders.
  */
-inline std::span<const upstream::PinnedShadowBinding>
-node_shadow_rows(const upstream::NodeVariantEntry& entry) {
-    return {
-        upstream::node_shadow_bindings.data() + entry.first_shadow_binding,
-        entry.shadow_binding_count,
-    };
-}
+std::span<const upstream::PinnedShadowBinding>
+node_shadow_rows(const upstream::NodeVariantEntry& entry);
 #endif
 
 /** Restore source winding after a loader baked a reflected node transform. */
-inline std::span<const std::uint32_t> node_source_indices(const ModelGeometry& geometry,
-                                                          std::vector<std::uint32_t>& scratch) {
-    if (!geometry.source_indices_reversed)
-        return geometry.indices;
-    scratch = geometry.indices;
-    for (std::size_t index = 0; index < scratch.size(); index += 3) {
-        std::swap(scratch.at(index + 1), scratch.at(index + 2));
-    }
-    return scratch;
-}
+std::span<const std::uint32_t> node_source_indices(const ModelGeometry& geometry,
+                                                   std::vector<std::uint32_t>& scratch);
 
 #if BBLITE_NODE_VARIANTS > 0
 /**
@@ -400,15 +220,7 @@ inline std::size_t node_geometry_slot(std::size_t geometry_variant) {
  * the same gap on either backend, so the message is stated once here beside
  * `require_geometry_target_count`.
  */
-inline std::size_t require_node_geometry_variant(std::size_t variant, std::size_t geometry_task) {
-    const std::size_t geometry_variant =
-        upstream::node_geometry_variant_for(variant, geometry_task);
-    if (geometry_variant != no_node_geometry_variant) {
-        return geometry_variant;
-    }
-    throw std::runtime_error("node graph " + std::to_string(variant) + " draws in geometry task " +
-                             std::to_string(geometry_task) + " with no composed geometry view.");
-}
+std::size_t require_node_geometry_variant(std::size_t variant, std::size_t geometry_task);
 #endif
 
 /**
@@ -419,13 +231,7 @@ inline std::size_t require_node_geometry_variant(std::size_t variant, std::size_
  * against: the geometry views a scene composed continue the same table
  * after every graph.
  */
-inline std::size_t node_graph_count() {
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-    return upstream::node_graph_count;
-#else
-    return upstream::node_variants.size();
-#endif
-}
+std::size_t node_graph_count();
 
 /**
  * The slot one node draw's resources live in.
@@ -434,15 +240,8 @@ inline std::size_t node_graph_count() {
  * one graph drawn in two tasks composed two modules -- so the callers that
  * know which view a draw is agree here rather than each spelling it out.
  */
-inline std::size_t node_draw_slot(std::size_t variant, bool caster,
-                                  [[maybe_unused]] std::size_t geometry_variant) {
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-    if (geometry_variant != no_node_geometry_variant) {
-        return node_geometry_slot(geometry_variant);
-    }
-#endif
-    return node_variant_slot(variant, caster);
-}
+std::size_t node_draw_slot(std::size_t variant, bool caster,
+                           [[maybe_unused]] std::size_t geometry_variant);
 
 /** Every per-slot table both backends size: the colour and caster views of
  *  every row `node_variants` carries, graphs and geometry views alike. */
@@ -467,15 +266,7 @@ inline const upstream::NodeVariantEntry& node_slot_view(std::size_t slot) {
  * Which of a graph's compiled views a slot names decides both, so the pair
  * travels together rather than as a ternary per load site.
  */
-inline upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
-    const upstream::NodeVariantEntry& entry = node_slot_view(slot);
-#if BBLITE_NODE_SHADOWS
-    if (node_slot_is_caster(slot)) {
-        return {entry.caster.vertex_stem, entry.caster.fragment_stem};
-    }
-#endif
-    return {entry.vertex_stem, entry.fragment_stem};
-}
+upstream::NodeVariantStems node_variant_stems(std::size_t slot);
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0
@@ -531,111 +322,8 @@ struct PinnedVariantKey {
     bool resolved = false;
 };
 
-inline PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
-                                           const upstream::RenderDrawCommand& draw) {
-    PinnedVariantKey key;
-    if (draw.item.material_kind != upstream::RenderMaterialKind::pbr) {
-        key.refusal = "the draw names no PBR material";
-        return key;
-    }
-    // The table names the FIRST `pbr_variant_material_count` handles: the
-    // assets' materials in document order, then every scene-code creation in
-    // creation order. What has to hold is that a handle the table names is
-    // still the material generation composed for -- so what is checked is
-    // the handle, not the count. Records appended past the table are the
-    // shadow caster VIEWS `registerSceneWithShadowSupport` builds, and one
-    // of those draws through its own no-colour variant rather than a row
-    // here; a miss is then reported by the selector rather than guessed at.
-    if (draw.item.material.value >= engine.materials.size()) {
-        key.refusal = "the draw material handle is invalid";
-        return key;
-    }
-    const MaterialRecord& draw_material = handle_at(engine.materials, draw.item.material);
-    key.material_view = draw_material.esm_shadow ? 2u : draw_material.no_color ? 1u : 0u;
-    key.material_index = draw_material.source_material.value == invalid_handle
-                             ? draw.item.material.value
-                             : draw_material.source_material.value;
-    if (key.material_index >= upstream::pbr_variant_material_count) {
-        key.refusal = "material " + std::to_string(key.material_index) + " is past the " +
-                      std::to_string(upstream::pbr_variant_material_count) +
-                      " the composed table names";
-        return key;
-    }
-    // The mesh half of the key comes per original renderable. Renderer
-    // startup assigns its stable generated-table row and gives every clone
-    // the same row, even when clone handles precede later imported meshes.
-    const std::uint32_t feature_mesh = composition_feature_mesh(engine, draw.item.mesh);
-    key.mesh_features = feature_mesh < upstream::pbr_renderable_mesh_features.size()
-                            ? upstream::pbr_renderable_mesh_features[feature_mesh]
-                            // Scene code can keep creating meshes after registration, all
-                            // from the fixed-set builders; a scene whose builders disagree
-                            // publishes npos here and such a draw refuses.
-                            : upstream::pbr_runtime_mesh_features;
-    if (key.mesh_features == npos) {
-        key.refusal = "the scene's runtime meshes carry no single attribute set";
-        return key;
-    }
-    // Scene-code pools attach after generation recorded the mesh's static
-    // attribute word. Match the pin's _computeMeshFeatures result at draw
-    // time; EXT_mesh_gpu_instancing already carries the bit in the table, so
-    // this idempotent OR covers both origins with one rule.
-    if (draw.item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-        // `_computeMeshFeatures` writes MSH_VAT INSTEAD of
-        // MSH_HAS_SKELETON for a baked mesh -- attachVat dropped the live
-        // skeleton -- so this is a swap on the static row rather than an
-        // OR beside it. Generation composed the swapped row.
-        if (record.has_vat) {
-            key.mesh_features &= ~static_cast<std::size_t>(upstream::pinned_msh_has_skeleton);
-            key.mesh_features |= static_cast<std::size_t>(upstream::pinned_msh_vat);
-        }
-        if (pinned_record_instanced(record)) {
-            key.mesh_features |= upstream::pinned_msh_has_thin_instances;
-            // `_computeMeshFeatures` nests this under the pool and reads the
-            // mesh's colour stream. Use the binding predicate too, so the
-            // selected PBR stage and the stream each backend binds cannot
-            // disagree about `instanceColor`.
-            if (pinned_record_instance_colored(record)) {
-                key.mesh_features |= upstream::pinned_msh_has_instance_color;
-            }
-        }
-        const std::size_t receive_shadows =
-            static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
-        if (upstream::pinned_material_receives_shadows(
-                key.material_view != 0u, record.receives_shadows,
-                upstream::pinned_scene_has_shadows(engine, scene))) {
-            key.mesh_features |= receive_shadows;
-        } else {
-            key.mesh_features &= ~receive_shadows;
-        }
-    }
-    // The light mode, walked the way `writeMeshLightSelection` walks it: how
-    // many of the scene's lights affect this mesh decides which arm the pin
-    // composed.
-    std::uint32_t light_count = 0;
-    for (const LightHandle handle : scene.lights) {
-        if (handle.value >= engine.lights.size())
-            continue;
-        const LightRecord& light = handle_at(engine.lights, handle);
-        if (!upstream::light_affects_mesh(light, draw.item.mesh)) {
-            continue;
-        }
-        ++light_count;
-        key.single_light_type = upstream::pinned_single_light_type(light);
-    }
-    // The receive bit rides the mesh row rather than the material, which is
-    // why it is read back from the mesh half of the key; the arm it selects
-    // comes from the generated lookup generation composed against, so the
-    // two cannot disagree about which variants exist.
-    key.light_mode = upstream::pinned_pbr_light_mode(
-        light_count,
-        (key.mesh_features & static_cast<std::size_t>(upstream::pinned_msh_receive_shadows)) != 0);
-    if (key.light_mode != 1)
-        key.single_light_type = "";
-    key.tone_mapping = scene.environment.tone_mapping_enabled;
-    key.resolved = true;
-    return key;
-}
+PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
+                                    const upstream::RenderDrawCommand& draw);
 
 /**
  * What a failed PBR variant lookup was asked for.
@@ -645,19 +333,9 @@ inline PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& eng
  * the runtime derivation and the composed selector table disagree, and a key
  * that differed from the one that missed would name the wrong half.
  */
-inline std::string pinned_variant_request(const PinnedVariantKey& key,
-                                          std::size_t geometry_task = npos) {
-    if (!key.resolved)
-        return "no key: " + key.refusal;
-    return "material " + std::to_string(key.material_index) + ", view " +
-           std::to_string(key.material_view) + ", mesh features " +
-           std::to_string(key.mesh_features) + ", light mode " + std::to_string(key.light_mode) +
-           ", single light '" + std::string(key.single_light_type) + "'" + ", tone mapping " +
-           (key.tone_mapping ? "on" : "off") + ", geometry task " +
-           (geometry_task == npos ? std::string("none") : std::to_string(geometry_task));
-}
+std::string pinned_variant_request(const PinnedVariantKey& key, std::size_t geometry_task = npos);
 
-inline std::size_t
+std::size_t
 pinned_variant_for_draw(const Scene& scene, const Engine& engine,
                         const upstream::RenderDrawCommand& draw,
                         // The geometry-output task the draw belongs to, npos for the colour
@@ -666,46 +344,7 @@ pinned_variant_for_draw(const Scene& scene, const Engine& engine,
                         std::size_t geometry_task = npos,
                         // Filled with the key the lookup used, so a miss reports that key
                         // rather than a second derivation of it.
-                        PinnedVariantKey* key_out = nullptr) {
-    if (upstream::pbr_variants.empty()) {
-        return npos;
-    }
-    // An animated node moves through its world, which every variant's mesh
-    // block carries; an instanced mesh resolves the pin's own thin-instance
-    // arm -- its renderable features carry MSH_HAS_THIN_INSTANCES -- and the
-    // draw binds the per-instance matrix buffer as the arm's second stream.
-    const bool has_bones = draw.item.mesh.value < engine.meshes.size() &&
-                           !handle_at(engine.meshes, draw.item.mesh).bone_matrices.empty();
-    const PinnedVariantKey key = pinned_variant_key(scene, engine, draw);
-    if (!key.resolved)
-        return npos;
-    if (key_out)
-        *key_out = key;
-    // Every light mode. All three read the same lights block, whose writers index
-    // the pin's own light world matrix; the block itself was diffed against the
-    // browser's (`artifacts/capture/scene7/buffers.json`, 1040 bytes beside the
-    // 368-byte scene block).
-    // A transmission scene resolves the same table: its materials compose
-    // with `_linearImageProcessing` (the pin's markPbrMaterialsLinear), so
-    // every fragment guards its processing tail on `vImageInfos.w >= 0` and
-    // the linear main pass runs with the lane at -1; the refraction arms
-    // bind the existing 1024x1024 scene-colour grab through the variant's
-    // own `refractionTexture` slot. The earlier 17.8-MAD refusal here was
-    // the guard missing from the composed fragments, not pass structure.
-    const std::size_t variant = upstream::pbr_variant_for(
-        key.material_index, key.material_view, static_cast<std::uint32_t>(key.mesh_features),
-        key.light_mode, key.single_light_type, key.tone_mapping, geometry_task);
-    if (variant == npos) {
-        return npos;
-    }
-    // A skeleton variant needs the palette to exist or the deformation is
-    // lost.
-    const bool skeleton_variant = pinned_variant_skeleton(variant);
-    if (skeleton_variant && !has_bones) {
-        return npos;
-    }
-    return variant;
-}
+                        PinnedVariantKey* key_out = nullptr);
 
 /**
  * The baked texture's shape: the bone palette's own row, `frame_count`
@@ -816,12 +455,7 @@ inline void sync_pinned_bone_palette(GpuMesh& mesh, const MeshRecord& record, Re
  * describes a generation bug -- the record is filled by the compiled
  * `setShaderTexture` calls -- rather than a draw to skip.
  */
-inline std::string shader_sampler_shortfall(const upstream::ShaderVariantInfo& info,
-                                            std::size_t carried) {
-    return "shader variant '" + std::string(info.name) + "' declares " +
-           std::to_string(info.samplers.size()) + " sampler(s); the material carries " +
-           std::to_string(carried) + " texture(s).";
-}
+std::string shader_sampler_shortfall(const upstream::ShaderVariantInfo& info, std::size_t carried);
 
 /** A compiled stage keeping a register the material never declared. */
 inline std::string shader_sampler_unmapped(const upstream::ShaderVariantInfo& info,
@@ -848,92 +482,8 @@ struct StandardVariantKey {
  * would print something subtly different -- the no-color pass bit and the
  * thin-instance and morph mesh bits are ORed on here, after the raw reads.
  */
-inline StandardVariantKey standard_variant_key(const Scene& scene, const Engine& engine,
-                                               const upstream::RenderDrawCommand& draw) {
-    StandardVariantKey key;
-    if (draw.item.material_kind != upstream::RenderMaterialKind::standard ||
-        draw.item.material.value >= engine.materials.size()) {
-        return key;
-    }
-    const MaterialRecord& material = handle_at(engine.materials, draw.item.material);
-    key.features = upstream::standard_material_features(material);
-    key.plugin_index = material.plugin_signature_index;
-    if (material.no_color) {
-        key.features |= upstream::standard_no_color_output_flag;
-    }
-#if BBLITE_SHADOWS_ESM
-    if (material.esm_shadow) {
-        // `createStandardEsmShadowMaterialView` clears the blend bit before
-        // setting its own, so the key says both.
-        key.features = (key.features & ~upstream::standard_alpha_blend_flag) |
-                       upstream::standard_esm_shadow_output_flag;
-    }
-#endif
-    const std::uint32_t feature_mesh = composition_feature_mesh(engine, draw.item.mesh);
-    key.mesh_features = feature_mesh < upstream::standard_renderable_mesh_features.size()
-                            ? upstream::standard_renderable_mesh_features[feature_mesh]
-                            : upstream::standard_runtime_mesh_features;
-    if (key.mesh_features == npos) {
-        return key;
-    }
-    if (draw.item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-        if (pinned_record_instanced(record)) {
-            key.mesh_features |= upstream::std_msh_has_thin_instances;
-            // `_computeMeshFeatures` reads `mesh.thinInstances.colors`, so
-            // the colour bit arrives with the pool rather than with the
-            // material: a coloured pool composes the Standard family's own
-            // final-colour slot, an uncoloured one the plain fragment.
-            if (pinned_record_instance_colored(record)) {
-                key.mesh_features |= upstream::std_msh_has_instance_color;
-            }
-        }
-        const std::size_t receive_shadows =
-            static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
-        if (upstream::pinned_material_receives_shadows(
-                material.no_color
-#if BBLITE_SHADOWS_ESM
-                    || material.esm_shadow
-#endif
-                ,
-                record.receives_shadows, upstream::pinned_scene_has_shadows(engine, scene))) {
-            key.mesh_features |= receive_shadows;
-        } else {
-            key.mesh_features &= ~receive_shadows;
-        }
-    }
-    // `rebuildSingle` computes `receiveShadows` as `!shadowOutput && ...`,
-    // so a depth-only view of a mesh that also receives is composed without
-    // the shadow fragment and its key carries no receive bit.
-    if (material.no_color
-#if BBLITE_SHADOWS_ESM
-        || material.esm_shadow
-#endif
-    ) {
-        key.mesh_features &= ~static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
-    }
-    if (draw.item.geometry < engine.geometries.size() &&
-        !engine.geometries[draw.item.geometry].morph_positions.empty()) {
-        key.mesh_features |= upstream::std_msh_has_morph_targets;
-    }
-#if BBLITE_STANDARD_SKELETON
-    key.features |=
-        upstream::standard_skeleton_features(static_cast<std::uint32_t>(key.mesh_features));
-#endif
-#if BBLITE_STANDARD_VERTEX_ALPHA
-    if (draw.item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-        key.features |= upstream::standard_color_alpha_features(
-            material.no_color || material.esm_shadow, record.has_vertex_alpha,
-            upstream::standard_vertex_colors_enabled &&
-                draw.item.geometry < engine.geometries.size() &&
-                engine.geometries[draw.item.geometry].has_vertex_colors,
-            has_instance_colors(record));
-    }
-#endif
-    key.resolved = true;
-    return key;
-}
+StandardVariantKey standard_variant_key(const Scene& scene, const Engine& engine,
+                                        const upstream::RenderDrawCommand& draw);
 
 /**
  * What a failed Standard variant lookup was asked for.
@@ -942,23 +492,8 @@ inline StandardVariantKey standard_variant_key(const Scene& scene, const Engine&
  * disagree, which is what an upstream feature-derivation change looks like
  * from here.
  */
-inline std::string standard_variant_request(const Scene& scene, const Engine& engine,
-                                            const upstream::RenderDrawCommand& draw) {
-    const StandardVariantKey key = standard_variant_key(scene, engine, draw);
-    if (!key.resolved) {
-        if (draw.item.material.value >= engine.materials.size()) {
-            return "no key: material handle " + std::to_string(draw.item.material.value) +
-                   " exceeds " + std::to_string(engine.materials.size()) + " runtime materials";
-        }
-        return "no key: runtime material flags standard=" +
-               std::to_string(handle_at(engine.materials, draw.item.material).standard_material) +
-               ", shader=" +
-               std::to_string(handle_at(engine.materials, draw.item.material).shader_material) +
-               ", draw kind=" + std::to_string(static_cast<std::uint32_t>(draw.item.material_kind));
-    }
-    return "features " + std::to_string(key.features) + ", mesh features " +
-           std::to_string(key.mesh_features);
-}
+std::string standard_variant_request(const Scene& scene, const Engine& engine,
+                                     const upstream::RenderDrawCommand& draw);
 
 /**
  * The Standard variant a draw composes, or `npos` when none was emitted.
@@ -971,47 +506,24 @@ inline std::string standard_variant_request(const Scene& scene, const Engine& en
  * weights arrive after mesh creation. A no-color view's record ORs the
  * pass bit the composition keyed its depth-only rows on.
  */
-inline std::size_t
+std::size_t
 standard_variant_for_draw(const Scene& scene, const Engine& engine,
                           const upstream::RenderDrawCommand& draw, std::size_t geometry_task = npos,
                           // Filled with the derived key when the caller passes one, so the draw
                           // can consume `key.features` instead of re-deriving it.
-                          StandardVariantKey* key_out = nullptr) {
-    const StandardVariantKey key = standard_variant_key(scene, engine, draw);
-    if (key_out)
-        *key_out = key;
-    if (!key.resolved) {
-        return npos;
-    }
-    return upstream::standard_variant_for(key.features,
-                                          static_cast<std::uint32_t>(key.mesh_features),
-                                          geometry_task, key.plugin_index);
-}
+                          StandardVariantKey* key_out = nullptr);
 
 /**
  * The Standard material block for one draw: the pin's own writer over the
  * record-filled props. A material-less item keeps the pin's defaults, the
  * way `createStandardMaterial` seeds them.
  */
-inline upstream::StandardMaterialUniforms standard_material_block(const MaterialRecord* material,
-                                                                  std::uint32_t features) {
-    const upstream::StandardMaterialProps props =
-        material ? upstream::standard_material_props(*material) : upstream::StandardMaterialProps{};
-    upstream::StandardMaterialUniforms block{};
-    upstream::write_standard_material(props, upstream::standard_texture_level(features), block);
-    return block;
-}
+upstream::StandardMaterialUniforms standard_material_block(const MaterialRecord* material,
+                                                           std::uint32_t features);
 
 /** The vertex-stage UV block for one draw, by the pin's own writer. */
-inline upstream::StandardUvTransformUniforms standard_uv_block(const MaterialRecord* material,
-                                                               std::uint32_t features) {
-    const upstream::StandardMaterialProps props =
-        material ? upstream::standard_material_props(*material) : upstream::StandardMaterialProps{};
-    upstream::StandardUvTransformUniforms block{};
-    upstream::write_standard_uv_transform(
-        props, material != nullptr && upstream::standard_uv_inverted(features, *material), block);
-    return block;
-}
+upstream::StandardUvTransformUniforms standard_uv_block(const MaterialRecord* material,
+                                                        std::uint32_t features);
 
 #if BBLITE_HAS_STANDARD_UV_TRANSFORM
 /**
@@ -1021,14 +533,7 @@ inline upstream::StandardUvTransformUniforms standard_uv_block(const MaterialRec
  * stage rather than removing it, so both blocks bind on a marked material
  * and this one is what the varyings actually read.
  */
-inline upstream::StandardUvTxUniforms standard_uv_transform_block(const MaterialRecord* material) {
-    upstream::StandardUvTxUniforms block{};
-    if (!material)
-        return block;
-    upstream::write_std_uv_transform_data(*material, upstream::standard_material_props(*material),
-                                          block);
-    return block;
-}
+upstream::StandardUvTxUniforms standard_uv_transform_block(const MaterialRecord* material);
 #endif
 #endif
 

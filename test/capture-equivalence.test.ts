@@ -106,7 +106,7 @@ test("PBR capture uses the resolved draw world including late root transforms", 
     assert.match(blocks, /pinned_variant_for_draw\(scene, engine, draw\)/);
     assert.match(blocks, /if \(variant == npos\)\s+continue;/);
     const builder = shared().slice(
-        shared().indexOf("inline upstream::MeshUniforms pinned_mesh_block("),
+        shared().indexOf("upstream::MeshUniforms pinned_mesh_block("),
     );
     // One world for every variant: the mesh's worldMatrix. A palette or a
     // VAT row composes on top of it inside the vertex stage.

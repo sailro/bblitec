@@ -65,24 +65,7 @@ struct PickRange {
  * agree, and saying so is cheaper than debugging a silent miss if they
  * ever stop agreeing.
  */
-inline PickingInfo resolve_pick_result(const std::vector<PickRange>& ranges,
-                                       std::uint32_t pick_id) {
-    if (pick_id == 0)
-        return PickingInfo{};
-    for (const PickRange& range : ranges) {
-        if (pick_id < range.id || pick_id - range.id >= range.count) {
-            continue;
-        }
-        PickingInfo info;
-        info.hit = true;
-        info.picked_kind = range.kind;
-        info.picked_index = range.index;
-        info.state->picked_generation = range.generation;
-        info.picked_range_offset = pick_id - range.id;
-        return info;
-    }
-    throw std::runtime_error("GPU pick read an id no candidate was drawn under.");
-}
+PickingInfo resolve_pick_result(const std::vector<PickRange>& ranges, std::uint32_t pick_id);
 
 /**
  * The pin's `BB` block for one billboard system's pick draw, 48 bytes.
@@ -108,14 +91,8 @@ static_assert(sizeof(BillboardPickUniforms) == 48, "the pin's billboard pick UBO
 
 #if BBLITE_HAS_BILLBOARDS
 /** One system's block, packed by the pin's `packBillboardPickUbo`. */
-inline BillboardPickUniforms build_billboard_pick_uniforms(const std::array<float, 16>& view,
-                                                           std::uint32_t base_id, float cutoff,
-                                                           Vec3 axis) {
-    BillboardPickUniforms out;
-    upstream::pack_billboard_pick_ubo(view, static_cast<double>(base_id),
-                                      static_cast<double>(cutoff), axis, out);
-    return out;
-}
+BillboardPickUniforms build_billboard_pick_uniforms(const std::array<float, 16>& view,
+                                                    std::uint32_t base_id, float cutoff, Vec3 axis);
 #endif
 
 /** The pin's contributor gate: a hidden or empty system draws nothing. */
@@ -184,80 +161,23 @@ struct PickBillboardCandidate {
  * consumes its ids"). Both halves live here; each backend keeps only its
  * pipeline and bind mechanics.
  */
-inline void collect_pick_billboard_candidates(
+void collect_pick_billboard_candidates(
     const Engine& engine, const Scene& scene, std::vector<PickRange>& ranges,
     std::uint32_t& next_id,
     // The caller's scratch, cleared here and refilled: a pick runs per
     // pointer event, so the list keeps its capacity across picks.
-    std::vector<PickBillboardCandidate>& candidates) {
-    candidates.clear();
-    for (std::size_t index = 0; index < scene.billboard_systems.size(); ++index) {
-        const BillboardSystemHandle handle = scene.billboard_systems[index];
-        const BillboardSystemRecord& system = handle_at(engine.billboard_systems, handle);
-        const std::uint32_t base_id = next_id;
-        next_id += system.count;
-        if (system.count == 0)
-            continue;
-        // Recorded even for a hidden system: its ids are consumed either
-        // way, and nothing else can answer for them.
-        ranges.push_back({base_id, PickedNodeKind::billboard_sprite, handle.value, system.count});
-        if (!billboard_pick_draws(system))
-            continue;
-        candidates.push_back({index, base_id, system.count, system.orientation, system.axis});
-    }
-}
+    std::vector<PickBillboardCandidate>& candidates);
 
 #endif
 
 /** Refuse unsupported contributors only when this scene's pick pass draws them. */
-inline void validate_pick_contributors([[maybe_unused]] const Engine& engine,
-                                       [[maybe_unused]] const Scene& scene,
-                                       [[maybe_unused]] bool detailed, bool pick_sources) {
-    if (!pick_sources)
-        return;
-    bool has_splats = false;
-#if BBLITE_HAS_SPLATS
-    for (const auto handle : scene.splat_meshes) {
-        has_splats = has_splats || handle_at(engine.splat_meshes, handle).vertex_count != 0;
-    }
-#endif
-    if (detailed && has_splats) {
-        throw std::runtime_error(
-            "Detailed picking requires the splat contributor's third attachment.");
-    }
-#if BBLITE_HAS_BILLBOARDS
-    for (const auto handle : scene.billboard_systems) {
-        const auto& system = handle_at(engine.billboard_systems, handle);
-        if (!billboard_pick_draws(system))
-            continue;
-        if (system.depth_mode == BillboardDepthMode::cutout) {
-            throw std::runtime_error(
-                "Cutout billboard picking requires the atlas alpha-cutoff binding.");
-        }
-#if BBLITE_FLOATING_ORIGIN
-        throw std::runtime_error(
-            "Billboard picking requires instance positions in the scene's eye-relative frame.");
-#else
-        if (has_splats) {
-            throw std::runtime_error(
-                "Billboard and splat picking requires contributor registration order within the scene.");
-        }
-        if (detailed) {
-            throw std::runtime_error(
-                "Detailed picking requires the billboard contributor's third attachment.");
-        }
-#endif
-    }
-#endif
-}
+void validate_pick_contributors([[maybe_unused]] const Engine& engine,
+                                [[maybe_unused]] const Scene& scene, [[maybe_unused]] bool detailed,
+                                bool pick_sources);
 
 #if BBLITE_HAS_SPLATS
 /** `encodeIdToColor`, stored through the cloud's F32 picking block. */
-inline std::array<float, 3> encode_pick_id_to_color(std::uint32_t id) {
-    const std::array<double, 3> color = upstream::encode_id_to_color(static_cast<double>(id));
-    return {static_cast<float>(color[0]), static_cast<float>(color[1]),
-            static_cast<float>(color[2])};
-}
+std::array<float, 3> encode_pick_id_to_color(std::uint32_t id);
 #endif
 
 /**
@@ -301,19 +221,7 @@ inline constexpr std::uint64_t pick_staging_bytes =
 inline constexpr std::uint32_t pick_detail_no_primitive = 0xFFFFFFFFu;
 inline constexpr double pick_detail_clear_red = static_cast<double>(pick_detail_no_primitive);
 
-inline PickDetailReadback decode_pick_detail(const std::uint8_t* texel) {
-    std::array<std::uint32_t, 4> lanes{};
-    std::memcpy(lanes.data(), texel, sizeof(lanes));
-    PickDetailReadback out;
-    out.primitive_index =
-        lanes[0] == pick_detail_no_primitive ? -1.0 : static_cast<double>(lanes[0]);
-    for (std::size_t lane = 0; lane < 3; ++lane) {
-        float value = 0.0f;
-        std::memcpy(&value, &lanes[lane + 1], sizeof(value));
-        out.point[lane] = static_cast<double>(value);
-    }
-    return out;
-}
+PickDetailReadback decode_pick_detail(const std::uint8_t* texel);
 
 /**
  * `picker._detailedPicking`, which `enableDetailedPicking` arms.
@@ -356,17 +264,7 @@ struct PickReadback {
  * lowered decode, `depth` as the row's first float, and the detail texel
  * only when the pick was detailed. Both backends map the same layout.
  */
-inline PickReadback decode_pick_readback(const std::uint8_t* staging,
-                                         [[maybe_unused]] bool detailed) {
-    PickReadback readback;
-    readback.pick_id = upstream::decode_pick_id(staging);
-    std::memcpy(&readback.depth, staging + pick_depth_offset, sizeof(readback.depth));
-#if BBLITE_HAS_DETAILED_PICKING
-    if (detailed)
-        readback.detail = decode_pick_detail(staging + pick_detail_offset);
-#endif
-    return readback;
-}
+PickReadback decode_pick_readback(const std::uint8_t* staging, [[maybe_unused]] bool detailed);
 
 /**
  * Clears `engine.pick_hook` when the frame loop's scope ends, however it
@@ -392,31 +290,7 @@ private:
 #if BBLITE_HAS_PICKING
 #if BBLITE_DEFORM_PICKING
 /** Match the pin's skeleton/morph projection key for this live candidate. */
-inline int pick_mesh_projection(const Engine& engine, const MeshRecord& mesh) {
-#if BBLITE_VAT
-    // The pin deliberately declines VAT before inspecting skeleton or morph.
-    if (mesh.has_vat)
-        return -1;
-#endif
-    const bool skeleton = mesh.skinned;
-    // Attachment is geometry identity, independent of missing defaults or
-    // all-zero animated weights. The visible storage path uses this same
-    // transported target set when it allocates the projection's buffers.
-    const bool morph =
-        mesh.scene_morph_targets ||
-        (mesh.gpu_deformation && !engine.geometries.at(mesh.geometry).morph_positions.empty());
-    if (!skeleton && !morph)
-        return -1;
-    if (skeleton && !mesh.pinned_bone_palette) {
-        throw std::runtime_error("deformation picking requires the pinned bone palette transport");
-    }
-    for (std::size_t index = 0; index < upstream::pick_deform_variants.size(); ++index) {
-        const auto& variant = upstream::pick_deform_variants[index];
-        if (variant.skeleton == skeleton && variant.morph == morph)
-            return static_cast<int>(index);
-    }
-    throw std::runtime_error("pick candidate reached an uncomposed deformation projection");
-}
+int pick_mesh_projection(const Engine& engine, const MeshRecord& mesh);
 
 #endif
 
@@ -449,20 +323,8 @@ struct PickMeshCandidate {
  * selection and the id/range assignment are decided here, once, so the two
  * backends cannot drift on which mesh answers a pick.
  */
-inline std::optional<std::size_t>
-picker_scene_index(const Engine& engine, GpuPickerHandle picker,
-                   const std::vector<std::shared_ptr<Scene>>& scenes) {
-    if (picker.value >= engine.gpu_pickers.size())
-        return std::nullopt;
-    const auto picked_state = handle_at(engine.gpu_pickers, picker).scene.lock();
-    if (!picked_state || picked_state->disposed)
-        return std::nullopt;
-    for (std::size_t index = 0; index < scenes.size(); ++index) {
-        if (scenes[index] && scenes[index]->state == picked_state)
-            return index;
-    }
-    return std::nullopt;
-}
+std::optional<std::size_t> picker_scene_index(const Engine& engine, GpuPickerHandle picker,
+                                              const std::vector<std::shared_ptr<Scene>>& scenes);
 
 template <typename HasGeometry>
 inline std::vector<PickMeshCandidate>
@@ -544,17 +406,10 @@ collect_pick_mesh_candidates(const Engine& engine, [[maybe_unused]] const Scene&
  * `copyDetailedWorldMatrix`'s reason -- an animation tick between them --
  * cannot arise.
  */
-inline void finish_detailed_pick(const Engine& engine, PickingInfo& info,
-                                 const PickDetailReadback& readback,
-                                 const std::array<float, 16>& view_projection, double sample_x,
-                                 double sample_y, double width, double height) {
-    populate_pick_ray(info, view_projection, sample_x, sample_y, width, height);
-    if (info.picked_kind != PickedNodeKind::mesh)
-        return;
-    PickDetailReadback detail = readback;
-    detail.world = upstream::mesh_world_matrix(engine, engine.meshes[info.picked_index]);
-    info.detail = detail;
-}
+void finish_detailed_pick(const Engine& engine, PickingInfo& info,
+                          const PickDetailReadback& readback,
+                          const std::array<float, 16>& view_projection, double sample_x,
+                          double sample_y, double width, double height);
 #endif
 
 /**
@@ -572,60 +427,17 @@ struct PickRequest {
 };
 
 /** Empty where the pin answers the empty info: no camera, or a miss. */
-inline std::optional<PickRequest> prepare_gpu_pick(const Engine& engine,
-                                                   [[maybe_unused]] GpuPickerHandle picker,
-                                                   const Scene& scene, double x, double y) {
-    PickRequest request;
-#if BBLITE_HAS_DETAILED_PICKING
-    // `picker._detailedPicking`, which `enableDetailedPicking` armed: it
-    // selects the pin's second pipeline module and the third attachment,
-    // so it is read per pick rather than per picker resource.
-    request.detailed = detailed_pick_armed(engine, picker);
-#endif
-    if (scene.camera.value >= engine.cameras.size())
-        return std::nullopt;
-    const CameraRecord& camera = handle_at(engine.cameras, scene.camera);
-    request.camera = &camera;
-    if (camera.viewport.has_value()) {
-        // The mapping below is the pin's, viewport included, but no reached
-        // scene both picks and splits, so the pass is unmeasured through one.
-        throw std::runtime_error("A GPU pick through a camera viewport is unmeasured: no "
-                                 "reached scene both picks and splits.");
-    }
-    if (!upstream::map_pick_pointer(
-            [&](double width, double height) {
-                return upstream::resolve_camera_viewport(camera, width, height);
-            },
-            [&](double aspect) { return upstream::build_view_projection(camera, aspect); },
-            request.scene_uniforms, request.pointer, x, y,
-            static_cast<double>(engine.options.width), static_cast<double>(engine.options.height),
-            engine.canvas_client_width, engine.canvas_client_height)) {
-        return std::nullopt;
-    }
-    return request;
-}
+std::optional<PickRequest> prepare_gpu_pick(const Engine& engine,
+                                            [[maybe_unused]] GpuPickerHandle picker,
+                                            const Scene& scene, double x, double y);
 
 /**
  * The tail of `pickAsyncImpl` once the staging rows are read: the id
  * against what was drawn, the picked point reconstructed from the depth at
  * the pick's own sample, and a detailed pick's ray and solve inputs.
  */
-inline PickingInfo resolve_gpu_pick([[maybe_unused]] const Engine& engine,
-                                    const PickRequest& request,
-                                    const std::vector<PickRange>& ranges,
-                                    const PickReadback& readback) {
-    PickingInfo info = resolve_pick_result(ranges, readback.pick_id);
-    const upstream::PickPointer& pointer = request.pointer;
-    populate_picked_point(info, pointer.view_projection, pointer.sample_x, pointer.sample_y,
-                          pointer.w, pointer.h, readback.depth);
-#if BBLITE_HAS_DETAILED_PICKING
-    if (request.detailed) {
-        finish_detailed_pick(engine, info, readback.detail, pointer.view_projection,
-                             pointer.sample_x, pointer.sample_y, pointer.w, pointer.h);
-    }
-#endif
-    return info;
-}
+PickingInfo resolve_gpu_pick([[maybe_unused]] const Engine& engine, const PickRequest& request,
+                             const std::vector<PickRange>& ranges, const PickReadback& readback);
 #endif
 #endif
 

@@ -27,10 +27,7 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
     const shared = sharedGpuSource();
     const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"),
         dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
-    const key = cppFunction(
-        shared,
-        "inline PinnedVariantKey pinned_variant_key(",
-    );
+    const key = cppFunction(shared, "PinnedVariantKey pinned_variant_key(");
     const start = key.indexOf(
         "if (draw.item.mesh.value < engine.meshes.size())",
     );

@@ -59,17 +59,19 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
     namespace bbl::pal {
         ${cppRecord(shared, "struct GpuVertex {")}
         ${[
-            "inline std::array<float, 16> mesh_block_world(",
-            "inline std::vector<GpuVertex> mesh_gpu_vertices(",
+            "std::array<float, 16> mesh_block_world(",
+            "std::vector<GpuVertex> mesh_gpu_vertices(",
             "inline std::optional<std::array<float, 16>> shader_world_view(",
         ]
             .map((signature) => cppFunction(shared, signature))
             .join("\n")}
         ${cppRecord(shared, "struct ShaderPassMatrices {")}
         ${cppRecord(shared, "struct ShaderDrawMatrices {")}
-        ${cppFunction(shared, "inline bool block_is_shared_scene_matrix(")}
-        ${cppFunction(shared, "inline void shader_stage_block_floats(")}
+        ${cppFunction(shared, "bool block_is_shared_scene_matrix(")}
+        ${cppFunction(shared, "void shader_stage_block_floats(")}
         ${shared.slice(shared.indexOf("struct SharedGeometryIdentity {"), shared.lastIndexOf("/**", shared.indexOf("inline void release_shared_user(")))}
+        ${cppFunction(shared, "std::uint64_t fnv1a_append(")}
+        ${cppFunction(shared, "SharedGeometryIdentity shared_geometry_identity(")}
     }`,
     );
     const consumers: string[] = [];

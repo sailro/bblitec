@@ -27,9 +27,10 @@ shares the standalone hosts' input, clock, capture and benchmark phases.
 `pal_gpu_shared.hpp` includes what the GPU backends share, one header per concern: the scene-invariant
 `pal_gpu_frame.hpp` (run options, clocks, frame boundaries, capture gates, profiles) and `pal_gpu_images.hpp`
 (texel packing, decoded uploads, readback rows), then the scene-shaped surface, texture, sprite, vertex,
-material, shadow, scene-block, picking, target, pipeline and shader-pass headers. The scene-invariant
-bodies compile once in `pal_gpu_frame.cpp` and `pal_gpu_images.cpp`, beside the other activation-macro-only
-PAL units, whenever a renderer unit or the window realm is built.
+material, shadow, scene-block, picking, target, pipeline and shader-pass headers. Their non-template
+bodies compile once per build, whenever a renderer unit or the window realm is built: the scene-invariant
+ones in `pal_gpu_frame.cpp` and `pal_gpu_images.cpp`, beside the other activation-macro-only PAL units, and
+the scene-shaped ones in `pal_gpu_shared.cpp`.
 `pal_scene_synchronize.hpp` owns a scene frame's synchronization order, which both scene backends
 instantiate with their own GPU operations. `pal_pass_camera.hpp` resolves every pass's camera and clear
 colour through the lowered `cfg.cam ?? scene.camera` and `cfg.clrColor ?? sc.clearColor`: a layer renders

@@ -440,11 +440,11 @@ ${[
     "std::vector<float> morph_weight_values(",
     "std::vector<std::uint8_t> pack_morph_weights(",
 ]
-    .map((name) => cppDefinition(pal, `inline ${name}`))
+    .map((name) => cppDefinition(pal, name))
     .join("\n")}
 template <typename Block>
 ${cppDefinition(pal, "inline void pinned_mesh_light_selection(")}
-${cppDefinition(pal, "inline upstream::NodeMeshUniforms node_mesh_block(")}
+${cppDefinition(pal, "upstream::NodeMeshUniforms node_mesh_block(")}
 }
 void same(const std::vector<float>& actual, const std::vector<std::uint32_t>& expected) {
     assert(actual.size() == expected.size());

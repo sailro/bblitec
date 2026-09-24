@@ -16,16 +16,7 @@ namespace bbl::pal {
  * answer belongs to the frame graph, so it is settled once with the task's
  * textures rather than re-scanned per frame.
  */
-inline bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task) {
-    for (const FrameTaskRecord& record : engine.frame_tasks) {
-        if (record.kind == FrameTaskKind::render &&
-            record.render.depth.source == RenderTextureSource::geometry_depth &&
-            record.render.depth.task.value == task) {
-            return true;
-        }
-    }
-    return false;
-}
+bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task);
 
 /**
  * Whether a render target hands samplers its depth attachment.
@@ -67,33 +58,15 @@ inline bool render_target_samples_depth(const RenderTargetRecord& record) {
  * than binding a neighbour. Both backends resolve through this.
  */
 
-inline const SolidTexture& effect_texture_for_binding(const EffectWrapperRecord& wrapper,
-                                                      std::string_view name) {
-    for (const EffectTextureSlot& candidate : wrapper.textures) {
-        if (candidate.name != name)
-            continue;
-        if (!candidate.set)
-            break;
-        return candidate.texture;
-    }
-    throw std::runtime_error("Effect texture binding '" + std::string(name) +
-                             "' was not set before the first render.");
-}
+const SolidTexture& effect_texture_for_binding(const EffectWrapperRecord& wrapper,
+                                               std::string_view name);
 
 /**
  * The uniform floats a scene set must fill the block the descriptor
  * declared exactly: a short write leaves a stale or zero tail behind the
  * declared size, silently and differently per backend.
  */
-inline void require_effect_uniform_size(const EffectWrapperRecord& wrapper,
-                                        std::uint32_t uniform_bytes) {
-    const std::size_t bytes = wrapper.uniform_values.size() * sizeof(float);
-    if (bytes == uniform_bytes)
-        return;
-    throw std::runtime_error("Effect uniforms carry " + std::to_string(bytes) +
-                             " bytes where the declared block takes " +
-                             std::to_string(uniform_bytes) + ".");
-}
+void require_effect_uniform_size(const EffectWrapperRecord& wrapper, std::uint32_t uniform_bytes);
 
 using upstream::transmission_grab_size;
 using upstream::transmission_sampler_max_anisotropy;
@@ -138,42 +111,15 @@ struct ScaledExtents {
  * build that reached no screen-space effect names a generation defect, so
  * it fails rather than rounding the other way.
  */
-inline ScaledExtents scaled_target_extents(const RenderTargetRecord& record,
-                                           std::uint32_t source_width,
-                                           std::uint32_t source_height) {
-    if (record.resolve_surface_size) {
-        const auto size =
-            record.resolve_surface_size(source_width, source_height, record.width_ratio);
-        return {static_cast<std::uint32_t>(size[0]), static_cast<std::uint32_t>(size[1])};
-    }
-    if (record.scale_rounding == ScaleRounding::round) {
-#if BBLITE_HAS_SCREEN_SPACE
-        const upstream::ScreenSpaceScaledSize scaled = upstream::screen_space_scaled_size(
-            static_cast<double>(source_width), static_cast<double>(source_height),
-            record.width_ratio);
-        return ScaledExtents{scaled.width, scaled.height};
-#else
-        throw std::runtime_error("A render target asks for screen-space rounding in a build "
-                                 "that reached no screen-space effect.");
-#endif
-    }
-    return ScaledExtents{scaled_target_extent(source_width, record.width_ratio),
-                         scaled_target_extent(source_height, record.height_ratio)};
-}
+ScaledExtents scaled_target_extents(const RenderTargetRecord& record, std::uint32_t source_width,
+                                    std::uint32_t source_height);
 
 template <class Format> struct RenderTargetPlan {
     std::uint32_t width, height;
     Format color_format;
 };
 
-inline void synchronize_render_target_lifecycles(const Engine& engine) {
-    const auto count = engine.render_targets.size();
-    for (std::size_t index = 0; index < count; ++index) {
-        const auto lifecycle = engine.render_targets[index].lifecycle;
-        if (lifecycle)
-            lifecycle->synchronize();
-    }
-}
+void synchronize_render_target_lifecycles(const Engine& engine);
 
 /** Resolve source-relative sizes and inherited formats before allocating GPU resources. */
 template <class Format, class Convert>
@@ -289,29 +235,7 @@ resolve_post_process_extent(const RenderTargetRecord& output_record,
 }
 #endif
 
-inline TextureFormatClass geometry_format_class(const GeometryTextureDescription& description) {
-    if (description.format == GeometryTextureFormat::r16_float) {
-        return TextureFormatClass::r16_float;
-    }
-    switch (description.type) {
-    case GeometryTextureType::reflectivity:
-    case GeometryTextureType::albedo:
-        return TextureFormatClass::rgba8_unorm;
-    case GeometryTextureType::view_depth:
-        return TextureFormatClass::r32_float;
-    case GeometryTextureType::normalized_view_depth:
-    case GeometryTextureType::screenspace_depth:
-        return TextureFormatClass::r16_float;
-    case GeometryTextureType::irradiance:
-    case GeometryTextureType::world_position:
-    case GeometryTextureType::local_position:
-    case GeometryTextureType::view_normal:
-    case GeometryTextureType::world_normal:
-    case GeometryTextureType::linear_velocity:
-        return TextureFormatClass::rgba16_float;
-    }
-    return TextureFormatClass::rgba16_float;
-}
+TextureFormatClass geometry_format_class(const GeometryTextureDescription& description);
 
 /**
  * All four channels of a geometry attachment clear to this value: the

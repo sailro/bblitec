@@ -72,7 +72,7 @@ test(
             `
         #include <bblite/runtime.hpp>
         #include <cassert>
-        namespace bbl::pal { ${cppFunction(source, "inline PixelViewport laid_out_canvas_pane(")} }
+        namespace bbl::pal { ${cppFunction(source, "PixelViewport laid_out_canvas_pane(")} }
         int main() {
             bbl::Engine engine;
             engine.options.width = 1200; engine.options.height = 800;
@@ -285,10 +285,10 @@ test(
             std::optional<Pane> surface_canvas_pane(const Engine&, std::optional<UiElementHandle> canvas, unsigned, unsigned) {
                 return canvas ? std::optional<Pane>{{301,201}} : std::nullopt;
             }
-            ${cppFunction(source, "inline std::pair<std::uint32_t, std::uint32_t> surface_target_extent(")}
+            ${cppFunction(source, "std::pair<std::uint32_t, std::uint32_t> surface_target_extent(")}
             ${cppFunction(source, "inline std::uint32_t scaled_target_extent(")}
             ${cppFunction(source, "struct ScaledExtents {")};
-            ${cppFunction(source, "inline ScaledExtents scaled_target_extents(")}
+            ${cppFunction(source, "ScaledExtents scaled_target_extents(")}
             template<class Format> ${cppFunction(source, "struct RenderTargetPlan {")};
             template<class Format, class Convert> ${cppFunction(source, "std::vector<RenderTargetPlan<Format>> plan_render_targets(")}
         }
@@ -465,7 +465,7 @@ test(
             #include <cassert>
             namespace bbl::pal {
                 ${cppFunction(source, "inline bool billboard_pick_draws(")}
-                ${cppFunction(source, "inline void validate_pick_contributors(")}
+                ${cppFunction(source, "void validate_pick_contributors(")}
             }
             int main() {
                 bbl::Engine engine;

@@ -122,6 +122,7 @@ export function sharedGpuSource(): string {
 export const sharedGpuUnits = [
     "native/src/pal_gpu_frame.cpp",
     "native/src/pal_gpu_images.cpp",
+    "native/src/pal_gpu_shared.cpp",
 ] as const;
 
 /** Header-only fixtures can opt out of the installed-library prerequisite. */
