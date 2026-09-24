@@ -643,6 +643,8 @@ function lowerRefresh(context: LoweringContext): string {
         // construction; the payload flag is the pin's own local.
         ["topologyDirty", { cpp: "true", type: "bool", staticBoolean: true }],
         ["lightDataDirty", { cpp: "lightDataDirty", type: "bool" }],
+        // The frame's two matrices are this function's parameters, so the
+        // pin's `getViewMatrix`/`getProjectionMatrix` locals resolve to them.
         ["view", { cpp: "view", type: "f32" }],
         ["proj", { cpp: "proj", type: "f32" }],
         ["activeCamera.nearPlane", scalar("near_plane")],
@@ -680,9 +682,6 @@ function lowerRefresh(context: LoweringContext): string {
         ) {
             return [];
         }
-        // The frame's two matrices are this function's parameters.
-        const name = declaredName(node);
-        if (name === "view" || name === "proj") return [];
         if (ts.isExpressionStatement(node)) {
             const expression = node.expression;
             // `activeLights.length = 0`: the native list starts each
