@@ -16,7 +16,7 @@ import {
     type TextBlob,
 } from "../src/pinned-text-data.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
-import { resolveBundledAsset } from "../src/compiler/assets.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { stringLiteral } from "../src/cpp-literals.js";
 import {
     cppFunction,
@@ -658,7 +658,7 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
     const directory = resolve("artifacts/test-text-storage");
     mkdirSync(directory, { recursive: true });
     const fontBytes = readAssetBytesSync(
-        resolveBundledAsset("/fonts/Roboto-Regular.ttf"),
+        `${pinnedLabPublicUrl()}fonts/Roboto-Regular.ttf`,
         resolve(directory, "source.ts"),
     );
     const layout = { fontSizePx: 180, text: "A2C" };

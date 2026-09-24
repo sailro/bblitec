@@ -10,11 +10,15 @@ import test from "node:test";
 
 import { compileSource } from "../src/compiler.js";
 import { composeNodeMaterial } from "../src/pinned-node-material.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
+
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
 const scene66 = resolve("corpus/babylon-lite/lab/lite/src/lite/scene66.ts");
 
 test("compiles the exact Scene 66 compressed NME and its PCF caster", async () => {
     const result = compileSource(readFileSync(scene66, "utf8"), {
+        ...labDeployment,
         fileName: scene66,
     });
     assert.equal(result.manifest.assets.length, 8);

@@ -129,6 +129,7 @@ interface CliOptions {
     search?: string;
     initialSearch?: string;
     publicDir?: string;
+    publicUrl?: string;
     siteUrl?: string;
     environment: Record<string, string>;
     hostUi?: string;
@@ -151,6 +152,7 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--search", value: "<query>" },
     { flag: "--initial-search", value: "<query>" },
     { flag: "--public-dir", value: "<directory>" },
+    { flag: "--public-url", value: "<url>" },
     { flag: "--site-url", value: "<url>" },
     { flag: "--env", value: "<NAME=value>" },
     { flag: "--host-ui", value: "<json>" },
@@ -191,6 +193,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     let search: string | undefined;
     let initialSearch: string | undefined;
     let publicDir: string | undefined;
+    let publicUrl: string | undefined;
     let siteUrl: string | undefined;
     const environment = new Map<string, string>();
     let hostUi: string | undefined;
@@ -243,6 +246,11 @@ function parseArguments(arguments_: string[]): CliOptions {
                 publicDir = value;
                 index += 1;
                 break;
+            case "--public-url":
+                if (!value) usage();
+                publicUrl = value;
+                index += 1;
+                break;
             case "--site-url":
                 if (!value) usage();
                 siteUrl = value;
@@ -284,6 +292,7 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(search ? { search } : {}),
         ...(initialSearch !== undefined ? { initialSearch } : {}),
         ...(publicDir ? { publicDir } : {}),
+        ...(publicUrl ? { publicUrl } : {}),
         ...(siteUrl ? { siteUrl } : {}),
         ...(hostUi ? { hostUi } : {}),
     };
@@ -781,6 +790,7 @@ async function main(): Promise<void> {
             ? { initialSearch: options.initialSearch }
             : {}),
         ...(options.publicDir ? { publicDir: options.publicDir } : {}),
+        ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
         ...(options.siteUrl ? { siteUrl: options.siteUrl } : {}),
         ...(options.hostUi
             ? { nativeHostUi: readNativeHostUi(options.hostUi) }

@@ -136,7 +136,11 @@ import {
     browserEnvironmentValue,
     isPrimitiveBrowserValue,
 } from "./compiler/browser-erasure.js";
-import { deploymentUrl, deploymentEnvironment } from "./compiler/deployment.js";
+import {
+    deploymentEnvironment,
+    deploymentPublicUrl,
+    deploymentUrl,
+} from "./compiler/deployment.js";
 import { httpResponseProperty } from "./compiler/http.js";
 import { numberConstantValue } from "./compiler/number-intrinsics.js";
 import {
@@ -661,6 +665,9 @@ function compileSourceApplication(
             environment,
             ...(options.publicDir
                 ? { publicDir: resolve(options.publicDir) }
+                : {}),
+            ...(options.publicUrl
+                ? { publicUrl: deploymentPublicUrl(options.publicUrl) }
                 : {}),
             ...(workers ? { workers } : {}),
             ...(options.nativeHostUi && !workers?.namespace
