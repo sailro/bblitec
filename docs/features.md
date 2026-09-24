@@ -430,7 +430,8 @@ Generator enable changes retain resources and update receiver darkness; CSM call
 ## Navigation
 
 Recast/Detour supports solo and obstacle tile-cache builds, debug geometry, bounded queries, crowds,
-agents and obstacles. Tiled builds without obstacles and unimplemented query/disposal APIs refuse.
+agents and obstacles. Tiled builds without obstacles, tile-cache builds with off-mesh connections and
+unimplemented query/disposal APIs refuse.
 
 ## Frame graph
 
