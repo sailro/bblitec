@@ -16,6 +16,14 @@
  * they happen rather than restated here.
  */
 
+#include <bblite/features/has_physics_character.hpp>
+#include <bblite/features/has_physics_constraints.hpp>
+#include <bblite/features/has_physics_floating_origin.hpp>
+#include <bblite/features/has_physics_heightfield.hpp>
+#include <bblite/features/has_physics_queries.hpp>
+#include <bblite/features/has_physics_trigger.hpp>
+#include <bblite/features/physics_viewer.hpp>
+
 #include "bblite/pal_physics.hpp"
 #include "pal_handle_identity.hpp"
 #include "pal_physics_profile.hpp"

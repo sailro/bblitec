@@ -1,9 +1,3 @@
-#define BBLITE_WORKERS 1
-#define BBLITE_OFFSCREEN_SURFACES 1
-#define BBLITE_HAS_DOM_INPUT 1
-#define BBLITE_HAS_SDL_GPU 1
-#define BBLITE_HAS_DAWN 0
-#define BBLITE_HAS_PBR_RENDERER 0
 #include "pal_ui_rml.cpp"
 #include "window-frame-clock-fixture.hpp"
 #include <cassert>

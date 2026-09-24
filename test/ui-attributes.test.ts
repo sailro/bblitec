@@ -43,5 +43,8 @@ test("attribute removal preserves absence, style reset and rendered image update
     const texture = new PNG({ width: 4, height: 4 });
     texture.data.fill(255);
     writeFileSync(join(directory, "tile.png"), PNG.sync.write(texture));
-    runRmlUiFixture(t, "ui-attributes", { imageDecoder: true });
+    runRmlUiFixture(t, "ui-attributes", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+        imageDecoder: true,
+    });
 });

@@ -1,5 +1,11 @@
 // SDL implementation of the platform abstraction layer: image decode, and
 // the engine entry point that dispatches to a GPU backend.
+#include <bblite/features/device_recovery.hpp>
+#include <bblite/features/has_audio.hpp>
+#include <bblite/features/has_gamepad.hpp>
+#include <bblite/features/has_ui.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>

@@ -118,10 +118,6 @@ test(
         writeFileSync(
             source,
             `
-        #define BBLITE_HAS_AUDIO_BUFFER_SOURCE 1
-        #define BBLITE_HAS_AUDIO_DECODE_FILE 1
-        #define BBLITE_AUDIO_DECODE_WAV 1
-        #define BBLITE_AUDIO_DECODE_OGG 1
         #include <bblite/pal_audio.hpp>
         #include "pal_audio_decode.hpp"
         #include <LabSound/extended/AudioFileReader.h>
@@ -170,6 +166,10 @@ test(
         runNativeFixtureCompiler(tools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
+            "/DBBLITE_HAS_AUDIO_DECODE_FILE=1",
+            "/DBBLITE_AUDIO_DECODE_WAV=1",
+            "/DBBLITE_AUDIO_DECODE_OGG=1",
             "/MD",
             "/EHsc",
             "/W4",
@@ -216,7 +216,6 @@ test(
         writeFileSync(
             source,
             `
-        #define BBLITE_AUDIO_DECODE_WAV 1
         #include "pal_audio_decode.hpp"
         #include <cassert>
         #include <fstream>
@@ -233,6 +232,7 @@ test(
         runNativeFixtureCompiler(tools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_AUDIO_DECODE_WAV=1",
             "/MD",
             "/EHsc",
             "/O2",

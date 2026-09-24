@@ -42,6 +42,7 @@ import {
     featureActivationPath,
     featureActivationRows,
 } from "./feature-activation.js";
+import { featureMacroHeaders } from "./feature-macros.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { packageGltfLoadPlan } from "./gltf-load-plan.js";
@@ -1542,6 +1543,11 @@ ${imageCodecLines || '    ""'}
 )
 `,
     );
+    for (const [include, text] of featureMacroHeaders({
+        features: result.manifest.features,
+        imageCodecs,
+    }))
+        tree.write(`upstream/include/${include}`, text);
     // The reached-file list: the program's files (recorded by the
     // compiler) plus what this run read beside them -- the host-UI
     // companion and every asset materialized from a repository path. A

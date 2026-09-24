@@ -1,6 +1,9 @@
 // DOM-compatible application events shared by every SDL-backed frame loop.
 #pragma once
 
+#include <bblite/features/device_recovery.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/runtime.hpp>
 #include <bblite/pal_offscreen.hpp>
 #include <bblite/pal_dom_events.hpp>

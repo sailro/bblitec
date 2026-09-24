@@ -1,5 +1,8 @@
 #pragma once
 
+#include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/runtime.hpp>
 #if BBLITE_WORKERS
 #include <bblite/js_promise.hpp>

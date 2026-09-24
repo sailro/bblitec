@@ -1,4 +1,13 @@
 #pragma once
+#include <bblite/features/compute_buffers.hpp>
+#include <bblite/features/compute_mipmaps.hpp>
+#include <bblite/features/compute_shaders.hpp>
+#include <bblite/features/compute_textures.hpp>
+#include <bblite/features/gpu_task_timing.hpp>
+#include <bblite/features/has_gamepad.hpp>
+#include <bblite/features/offscreen_surfaces.hpp>
+#include <bblite/features/storage_readback.hpp>
+
 #include "pal_dawn_device.hpp"
 #include "pal_dawn_resources.hpp"
 #include "pal_owned_gpu_record.hpp"

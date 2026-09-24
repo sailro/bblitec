@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/offscreen_surfaces.hpp>
+
 #include <bblite/pal_compute_texture.hpp>
 #include <bblite/pal_compute_mipmaps.hpp>
 #include <bblite/pal_compute_pipeline.hpp>

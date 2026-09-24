@@ -69,7 +69,6 @@ test(
         runCpp(
             "canvas-pane-density",
             `
-        #define BBLITE_HAS_UI 1
         #include <bblite/runtime.hpp>
         #include <cassert>
         namespace bbl::pal { ${cppFunction(source, "inline PixelViewport laid_out_canvas_pane(")} }
@@ -85,6 +84,7 @@ test(
             }
         }
     `,
+            ["/DBBLITE_HAS_UI=1"],
         );
     },
 );
@@ -386,7 +386,6 @@ test(
         runCpp(
             "effect-pass-plans",
             `
-        #define BBLITE_HAS_UI 1
         #include <bblite/runtime.hpp>
         #include "${resolve("native/src/pal_ui_backdrop.hpp").replaceAll("\\", "/")}"
         #include <cassert>
@@ -429,6 +428,7 @@ test(
             record(true); assert(events == "ihptsc");
         }
     `,
+            ["/DBBLITE_HAS_UI=1"],
         );
     },
 );
@@ -442,8 +442,6 @@ test(
             runCpp(
                 `pick-contributor-admission-${floating}`,
                 `
-            #define BBLITE_HAS_BILLBOARDS 1
-            #define BBLITE_HAS_SPLATS 1
             #define BBLITE_FLOATING_ORIGIN ${floating}
             #include <bblite/runtime.hpp>
             #include <cassert>
@@ -495,6 +493,7 @@ test(
                 }
             }
         `,
+                ["/DBBLITE_HAS_BILLBOARDS=1", "/DBBLITE_HAS_SPLATS=1"],
             );
         }
     },
@@ -515,7 +514,6 @@ test(
             `
         #define BBLITE_GPU_INSTANCING 1
         #define BBLITE_DEFORM_PICKING 0
-        #define BBLITE_HAS_PICKING 1
         #include <bblite/runtime.hpp>
         #include <cassert>
         namespace bbl::upstream {
@@ -560,6 +558,7 @@ test(
             assert(refused);
         }
     `,
+            ["/DBBLITE_HAS_PICKING=1"],
         );
     },
 );
@@ -572,7 +571,6 @@ test(
         runCpp(
             "text-scene-admission",
             `
-        #define BBLITE_HAS_TEXT 1
         #define BBLITE_FLOATING_ORIGIN 0
         #include <bblite/runtime.hpp>
         #include <cassert>
@@ -606,6 +604,7 @@ test(
             bbl::pal::validate_text_scene(scene);
         }
     `,
+            ["/DBBLITE_HAS_TEXT=1"],
         );
     },
 );
@@ -763,7 +762,11 @@ test(
     },
 );
 
-function runCpp(name: string, cpp: string): void {
+function runCpp(
+    name: string,
+    cpp: string,
+    definitions: readonly string[] = [],
+): void {
     assert.ok(nativeTools);
     const output = resolve("artifacts/audit-correctness", name);
     mkdirSync(output, { recursive: true });
@@ -777,6 +780,7 @@ function runCpp(name: string, cpp: string): void {
         "/WX",
         "/permissive-",
         "/EHsc",
+        ...definitions,
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
         "/I",
@@ -793,7 +797,6 @@ test(
         runCpp(
             "checked-handles",
             `
-        #define BBLITE_CHECKED_HANDLES 1
         #include <bblite/runtime.hpp>
         #include <cassert>
         int main() {
@@ -816,6 +819,7 @@ test(
             }
         }
     `,
+            ["/DBBLITE_CHECKED_HANDLES=1"],
         );
     },
 );
@@ -980,7 +984,6 @@ test(
         runCpp(
             "style-revision",
             `
-        #define BBLITE_HAS_UI 1
         #include <bblite/pal_ui.hpp>
         #include <cassert>
         ${uiTextMutationFixture(source)}
@@ -1026,6 +1029,7 @@ test(
             assert(engine.ui_style_revision == after_remove + 1);
         }
     `,
+            ["/DBBLITE_HAS_UI=1"],
         );
     },
 );
@@ -1057,8 +1061,6 @@ test(
         runCpp(
             "window-style-revision",
             `
-        #define BBLITE_HAS_UI 1
-        #define BBLITE_WORKERS 1
         #include <bblite/runtime.hpp>
         #include <bblite/pal_event_loop.hpp>
         #include <bblite/pal_dom_events.hpp>
@@ -1149,6 +1151,7 @@ test(
             assert(delivered == 4);
         }
     `,
+            ["/DBBLITE_HAS_UI=1", "/DBBLITE_WORKERS=1"],
         );
     },
 );

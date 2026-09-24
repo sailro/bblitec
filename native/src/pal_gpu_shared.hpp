@@ -2,6 +2,23 @@
 // Moved verbatim from pal_sdl_gpu.cpp so both backends upload
 // byte-identical vertex data.
 #pragma once
+#include <bblite/features/compute_frame_graph.hpp>
+#include <bblite/features/device_recovery.hpp>
+#include <bblite/features/has_audio.hpp>
+#include <bblite/features/has_billboards.hpp>
+#include <bblite/features/has_detailed_picking.hpp>
+#include <bblite/features/has_pbr_renderer.hpp>
+#include <bblite/features/has_picking.hpp>
+#include <bblite/features/has_post_process.hpp>
+#include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/has_splats.hpp>
+#include <bblite/features/has_sprites.hpp>
+#include <bblite/features/has_standard_uv_transform.hpp>
+#include <bblite/features/has_ui.hpp>
+#include <bblite/features/shadow_morph_bounds.hpp>
+#include <bblite/features/shadows_csm.hpp>
+#include <bblite/features/workers.hpp>
+
 #include "pal_compressed_formats.hpp"
 #include "pal_record_sync.hpp"
 #if BBLITE_HAS_AUDIO

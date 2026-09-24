@@ -42,6 +42,13 @@
  * a tree that never reaches a family neither declares nor calls it.
  */
 
+#include <bblite/features/has_physics_character.hpp>
+#include <bblite/features/has_physics_constraints.hpp>
+#include <bblite/features/has_physics_floating_origin.hpp>
+#include <bblite/features/has_physics_heightfield.hpp>
+#include <bblite/features/has_physics_queries.hpp>
+#include <bblite/features/has_physics_trigger.hpp>
+
 #include <array>
 #include <cstddef>
 #include <cstdint>

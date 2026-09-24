@@ -9,6 +9,8 @@
 // flags.
 #pragma once
 
+#include <bblite/features/has_ui.hpp>
+
 #include <bblite/runtime.hpp>
 #if BBLITE_HAS_UI
 #include <bblite/pal_ui.hpp>

@@ -84,5 +84,7 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
     );
     assert.equal(result.cpp.match(/bbl::ui_query_element\(/g)?.length, 1);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "ui-optional-calls");
+    runRmlUiFixture(t, "ui-optional-calls", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
 });

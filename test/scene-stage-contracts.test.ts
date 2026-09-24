@@ -106,6 +106,8 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
     runNativeFixtureCompiler(tools, [
         "/nologo",
         "/std:c++20",
+        "/DBBLITE_HAS_SPRITE_RENDERER=1",
+        "/DBBLITE_HAS_BILLBOARDS=1",
         "/W4",
         "/WX",
         "/EHsc",

@@ -1,3 +1,8 @@
+#include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/has_dom_input.hpp>
+#include <bblite/features/has_image_decoder.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/pal_ui.hpp>
 #include <bblite/ui_selector.hpp>
 #include <bblite/pal_dom_events.hpp>

@@ -96,6 +96,7 @@ test(
         runNativeFixtureCompiler(nativeTools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_SHADOWS_CSM=1",
             "/W4",
             "/WX",
             "/permissive-",

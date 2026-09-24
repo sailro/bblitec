@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/has_ui.hpp>
+
 #include <bblite/runtime.hpp>
 #include <cstring>
 #include <stdexcept>

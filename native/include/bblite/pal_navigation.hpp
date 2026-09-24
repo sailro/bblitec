@@ -24,6 +24,8 @@
  * dropping in a different translation unit.
  */
 
+#include <bblite/features/has_nav_tile_cache.hpp>
+
 #include <cstdint>
 #include <memory>
 #include <optional>

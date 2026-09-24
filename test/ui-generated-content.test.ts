@@ -117,5 +117,7 @@ test("generated before and after boxes preserve content, cascade and authored ch
     assert.match(result.cpp, /UiGeneratedPart::Before/);
     assert.match(result.cpp, /UiContentPartKind::Attribute/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "ui-generated-content");
+    runRmlUiFixture(t, "ui-generated-content", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
 });

@@ -1,6 +1,11 @@
 // SDL_GPU driver for a standalone FrameGraphContext. The context owns only
 // ordered render-target tasks, so this translation unit deliberately has no
 // scene renderer, camera, mesh, material, or image-loader dependency.
+#include <bblite/features/gpu_task_timing.hpp>
+#include <bblite/features/has_effect_task.hpp>
+#include <bblite/features/has_frame_graph_renderer.hpp>
+#include <bblite/features/has_post_process.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
