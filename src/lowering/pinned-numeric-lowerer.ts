@@ -1705,6 +1705,14 @@ export class PinnedNumericLowerer {
                         this.expression(expression.right),
                     );
                 }
+                // JavaScript narrows the RESULT of `a[i] += x` to the
+                // element width; the C++ compound form would narrow `x`.
+                if (operator !== "=" && this.elementType(target)) {
+                    this.fail(
+                        expression,
+                        "compound assignment into a typed-array element",
+                    );
+                }
                 return (
                     `${this.assignmentTarget(expression.left)} ${operator} ` +
                     `${this.storedValue(expression.left, expression.right)}`
@@ -1892,13 +1900,13 @@ export class PinnedNumericLowerer {
         }
         const element = this.elementType(target);
         if (element === "float") return `static_cast<float>(${text})`;
-        if (element === "std::uint32_t") {
-            return `static_cast<std::uint32_t>(${text})`;
-        }
-        // A `Uint8Array` store is ECMAScript ToUint8, which truncates toward
-        // zero and then wraps modulo 256. A `static_cast` agrees inside the
-        // range and is undefined outside it, so the conversion is the spec's
-        // rather than the language's.
+        // A `Uint32Array`/`Uint8Array` store is ECMAScript ToUint32/ToUint8:
+        // it truncates toward zero and wraps modulo 2^32/256, and NaN and the
+        // infinities store 0. A `static_cast` agrees inside the range and is
+        // undefined outside it -- a cluster mask's bit 31 arrives as a
+        // negative int32 -- so the conversion is the spec's rather than the
+        // language's. A bitwise lane converts from its own 32 bits.
+        if (element === "std::uint32_t") return `bbl::js::to_uint32(${text})`;
         if (element === "std::uint8_t") return `bbl::js::to_uint8(${text})`;
         return text;
     }
@@ -2153,17 +2161,6 @@ export class PinnedNumericLowerer {
                 ) &&
                 ts.isNumericLiteral(value.operand)
             )
-        )
-            return undefined;
-        const number = ts.isNumericLiteral(value)
-            ? Number(value.text)
-            : (value.operator === ts.SyntaxKind.MinusToken ? -1 : 1) *
-              Number((value.operand as ts.NumericLiteral).text);
-        if (
-            targets.some(
-                (target) => this.elementType(target) === "std::uint32_t",
-            ) &&
-            !(Math.trunc(number) >= 0 && Math.trunc(number) <= 0xffff_ffff)
         )
             return undefined;
         const effectFree = (node: ts.Node): boolean => {

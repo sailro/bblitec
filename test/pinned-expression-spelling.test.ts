@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
-import { PinnedNumericLowerer } from "../src/lowering/pinned-numeric-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "../src/lowering/pinned-numeric-lowerer.js";
 import type { PinnedExpressionSpelling } from "../src/lowering/pinned-numeric-expression.js";
 import { pinnedNumericMathCalls } from "../src/lowering/pinned-operators.js";
 import { renderCppExpression } from "../src/lowering/gltf/animation-interpolation.js";
@@ -137,3 +140,38 @@ test(
         execFileSync(executable, { stdio: "pipe" });
     },
 );
+
+/**
+ * Statements lowered in a JavaScript-width scope over three scalars and a
+ * `Uint32Array` named `mask`, one C++ statement per line.
+ */
+function lowerStatements(source: string): string {
+    const file = ts.createSourceFile(
+        "statements.ts",
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+    );
+    return new PinnedNumericLowerer(file, {
+        bindings: new Map<string, PinnedBinding>([
+            ...["a", "b", "c"].map((name): [string, PinnedBinding] => [
+                name,
+                { cpp: name, type: "scalar" },
+            ]),
+            ["mask", { cpp: "mask", type: "u32" }],
+        ]),
+        calls: pinnedNumericMathCalls(),
+    })
+        .statements(file.statements, "        ")
+        .join("\n");
+}
+
+test("a Uint32Array store converts with ToUint32", () => {
+    const store = lowerStatements("mask[0] = -1;");
+    assert.match(store, /= bbl::js::to_uint32\(/);
+    assert.doesNotMatch(store, /static_cast<std::uint32_t>/);
+    assert.throws(
+        () => lowerStatements("mask[0] += a;"),
+        /compound assignment into a typed-array element/,
+    );
+});

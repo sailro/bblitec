@@ -193,7 +193,7 @@ test("mesh factory tables flow from the pinned builders", () => {
     // PinnedNumericLowerer translated rather than an interpolated list.
     assert.match(
         lowered.source,
-        /static_cast<std::uint32_t>\(bottomRight\)[\s\S]*static_cast<std::uint32_t>\(topRight\)[\s\S]*static_cast<std::uint32_t>\(topLeft\)[\s\S]*static_cast<std::uint32_t>\(bottomLeft\)[\s\S]*static_cast<std::uint32_t>\(bottomRight\)[\s\S]*static_cast<std::uint32_t>\(topLeft\)/,
+        /bbl::js::to_uint32\(bottomRight\)[\s\S]*bbl::js::to_uint32\(topRight\)[\s\S]*bbl::js::to_uint32\(topLeft\)[\s\S]*bbl::js::to_uint32\(bottomLeft\)[\s\S]*bbl::js::to_uint32\(bottomRight\)[\s\S]*bbl::js::to_uint32\(topLeft\)/,
     );
     // Plane: the pinned tables, each element the pin's own expression.
     assert.match(
@@ -216,7 +216,7 @@ test("mesh factory tables flow from the pinned builders", () => {
     assert.match(lowered.source, /std::max<double>\(3\.0, options\.segments\)/);
     assert.match(
         lowered.source,
-        /static_cast<std::uint32_t>\(a\)[\s\S]*static_cast<std::uint32_t>\(\(a \+ 1\.0\)\)[\s\S]*static_cast<std::uint32_t>\(b\)/,
+        /bbl::js::to_uint32\(a\)[\s\S]*bbl::js::to_uint32\(\(a \+ 1\.0\)\)[\s\S]*bbl::js::to_uint32\(b\)/,
     );
     // Torus: TWO_PI's factor, the reciprocal of the pinned Math.PI / 2
     // phase, and the pinned triangulation order. The whole chain is the
@@ -225,7 +225,7 @@ test("mesh factory tables flow from the pinned builders", () => {
     assert.match(lowered.source, /\(pi_double \/ 2\.0\)/);
     assert.match(
         lowered.source,
-        /static_cast<std::uint32_t>\(\(\(i \* stride\) \+ j\)\)[\s\S]*static_cast<std::uint32_t>\(\(\(i \* stride\) \+ nextJ\)\)[\s\S]*static_cast<std::uint32_t>\(\(\(nextI \* stride\) \+ j\)\)/,
+        /bbl::js::to_uint32\(\(\(i \* stride\) \+ j\)\)[\s\S]*bbl::js::to_uint32\(\(\(i \* stride\) \+ nextJ\)\)[\s\S]*bbl::js::to_uint32\(\(\(nextI \* stride\) \+ j\)\)/,
     );
 
     // Store-width gate: each helper's float narrowing must be an indexed

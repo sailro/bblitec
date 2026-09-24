@@ -1224,7 +1224,7 @@ test("generates mesh and standard-material factories from upstream defaults", ()
         /const double subdivisions = options\.subdivisions/,
     );
     assert.match(mesh.source, /pinned_create_flat_ground_data/);
-    assert.match(mesh.source, /static_cast<std::uint32_t>\(bottomRight\)/);
+    assert.match(mesh.source, /bbl::js::to_uint32\(bottomRight\)/);
     // The translated pin builds the position from the unrounded normal, not
     // from the float it just stored, so the product names the double local.
     assert.match(mesh.source, /static_cast<float>\(\(rx \* nx\)\)/);
