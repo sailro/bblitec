@@ -70,7 +70,8 @@ killed after two minutes plus 50 ms per frame.
 Enable BBLITE_NODE_GPU_CAPTURE with BBLITE_RENDER_CAPTURE for node receipts. Scene149-transport joins
 those receipts to browser buffers and checks stamps, bindings and numeric worlds; signed zero is separate.
 `probe` temporarily changes and restores the deployed Dawn WGSL; SDL_GPU changes need offline compilation.
-Set BBLITE_CHECKED_HANDLES=1 before building (CMake: BBLITE_CHECKED_HANDLES=ON) for checked indices and mesh-handle generations.
+Bounds and mesh-handle generations are checked in every build; set BBLITE_CHECKED_HANDLES=1 before building
+(CMake: BBLITE_CHECKED_HANDLES=ON) to name the call site in a handle refusal.
 
 ## Before calling a scene done
 

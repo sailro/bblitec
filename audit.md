@@ -120,7 +120,7 @@ and performance.
 | GC-1 | high | Mesh/geometry records append-only (doom tape: 178 → 4,924). | Retired slots are reused under mesh-handle generations (doom 179 records for 178 entries; minecraft 474 for a 474 peak); the memory gate judges records against the scene's peak. Remaining: loader, hierarchy-listed and transform-node records keep their slots. | partial |
 | GC-2 | high | The memory gate ran idle and watched only working set. | Gameplay tapes, record-growth and slope gates (doom and minecraft fail until GC-1). | fixed |
 | GC-3 | med | `.clang-tidy` enabled 17 checks. | Analyzer groups, exception-escape and enum-init enabled and clean; maintained hits fixed. Remaining generated hits keep optional-access, throwing-static-init, member-init and empty-catch off. | partial |
-| GC-4 | med | Generated code indexes records directly (850 sites), so a handle kept past its mesh's retirement reaches the slot's next mesh. | Emit `bbl::handle_at` through one helper, generation-checked. | open |
+| GC-4 | med | Generated code indexes records directly (850 sites), so a handle kept past its mesh's retirement reaches the slot's next mesh. | Every generated access goes through `recordAt` → `bbl::handle_at` (registry: 24,699 direct sites → 0); bounds and the mesh generation are checked in every build (≤0.6% of a cold frame), so a retired mesh's handle throws. The check found an SDL_GPU sync of the previous plan after mesh retirement, now fixed. | fixed |
 | GC-5 | med | Every `Array<T>` registered a GC node. | Only traceable element types register. Remaining: records without traced edges still declare `gc_trace_edges`. | partial |
 | GC-6 | low | 623 loops count with `double`. | Integer counters for canonical loops. | open |
 | GC-7 | low | Constant tables wrapped every element. | Typed literals and element-typed tables. | fixed |
@@ -132,6 +132,8 @@ and performance.
 | GC-13 | low | Collection `forEach` copies were `const auto`, rejected by clang-cl `/WX`. | Non-const copies. | fixed |
 | GC-14 | low | `float32Literal` rounds through double first; a midpoint can differ from `Math.fround` (`cpp-literals.ts`). | `float32Literal` and `floatLiteral` spell a float32-midpoint double as `Math.fround` stores it; table literals defer to them. | fixed |
 | GC-15 | low | Generated `main` catches only `std::exception`. | Route every escape through the application error reporter. | open |
+| GC-16 | med | Physics node refs, property-animation targets, animated-mesh bindings and light include/exclude lists name a mesh by slot without its generation (`mesh_slot_handle` stopgap), so the retired-mesh check cannot see them. | Store `MeshHandle`s. | open |
+| GC-17 | low | `runtime.hpp` still indexes records by `.value` in render-task, material and animation helpers. | Route them through `handle_at`; keep the slot allocator raw. | open |
 
 ## Dead code (DEAD)
 
@@ -181,6 +183,7 @@ and performance.
 | TL-13 | low | `parity`/`check` wait forever on a Window host in a locked console session (offscreen 905 s, ocean 8,830 s). | Window-host runs without their own limit are killed after 120 s + 50 ms per frame; the timeout names the locked session. | fixed |
 | TL-14 | low | `check scene149` fails 1/28 at main (the pin's live resize did not throw #84); scene149 and break-meshes-60 browser observations are stale. | Re-observe. | open |
 | TL-15 | low | Package `.staging/` folders accumulate. | Remove after packaging. | open |
+| TL-16 | low | The memory gate's slope test trips on a single allocation step (quake SDL_GPU once; minecraft while its records stay flat). | Judge a sustained trend. | open |
 
 ## Building (BD)
 
