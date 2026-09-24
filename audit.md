@@ -58,6 +58,7 @@ and performance.
 | RDN-14 | low | Billboard sorting under a floating origin and Sprite2D pivots use float where the pin uses numbers (205/206 identical today). | Double lanes. | open |
 | RDN-15 | low | `update_surface_cameras` gives every scene the primary frame delta, wrong for a scene with its own `fixedDeltaMs`. | Per-scene delta. | open |
 | RDN-16 | low | Property-animation records store float lanes (`animation-records.hpp`). | Double lanes. | open |
+| RDN-17 | med | Mesh removal leaves physics node poses, property-animation targets, light include/exclude lists, shadow casters, render-task mesh lists and node-material groups naming the mesh; the pin prunes render tasks and material groups and clears `parent`. | Lower the pin's removal pruning. | open |
 
 ## Compiler core (CC)
 
@@ -116,10 +117,10 @@ and performance.
 
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
-| GC-1 | high | Mesh/geometry records append-only (doom tape: 178 → 4,924). | Recycle retired slots with generation-checked handles. | open |
+| GC-1 | high | Mesh/geometry records append-only (doom tape: 178 → 4,924). | Retired slots are reused under mesh-handle generations (doom 179 records for 178 entries; minecraft 474 for a 474 peak); the memory gate judges records against the scene's peak. Remaining: loader, hierarchy-listed and transform-node records keep their slots. | partial |
 | GC-2 | high | The memory gate ran idle and watched only working set. | Gameplay tapes, record-growth and slope gates (doom and minecraft fail until GC-1). | fixed |
 | GC-3 | med | `.clang-tidy` enabled 17 checks. | Analyzer groups, exception-escape and enum-init enabled and clean; maintained hits fixed. Remaining generated hits keep optional-access, throwing-static-init, member-init and empty-catch off. | partial |
-| GC-4 | med | Generated code indexes records directly (850 sites). | Emit `bbl::handle_at` through one helper. | open |
+| GC-4 | med | Generated code indexes records directly (850 sites), so a handle kept past its mesh's retirement reaches the slot's next mesh. | Emit `bbl::handle_at` through one helper, generation-checked. | open |
 | GC-5 | med | Every `Array<T>` registered a GC node. | Only traceable element types register. Remaining: records without traced edges still declare `gc_trace_edges`. | partial |
 | GC-6 | low | 623 loops count with `double`. | Integer counters for canonical loops. | open |
 | GC-7 | low | Constant tables wrapped every element. | Typed literals and element-typed tables. | fixed |

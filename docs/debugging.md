@@ -68,7 +68,7 @@ they must not appear on the user's desktop.
 Enable BBLITE_NODE_GPU_CAPTURE with BBLITE_RENDER_CAPTURE for node receipts. Scene149-transport joins
 those receipts to browser buffers and checks stamps, bindings and numeric worlds; signed zero is separate.
 `probe` temporarily changes and restores the deployed Dawn WGSL; SDL_GPU changes need offline compilation.
-Set BBLITE_CHECKED_HANDLES=1 before building (CMake: BBLITE_CHECKED_HANDLES=ON) for checked indices.
+Set BBLITE_CHECKED_HANDLES=1 before building (CMake: BBLITE_CHECKED_HANDLES=ON) for checked indices and mesh-handle generations.
 
 ## Before calling a scene done
 
@@ -90,8 +90,8 @@ Scene149 browser live resize throws error #84; its resized reference uses unchan
 `<entry>*<n>` repeats entries. Recovery tapes include Dataset, GlobalCall and DeviceLoss.
 
 `memory` runs 6,000 frames and judges the samples after the warm-up third. It fails a working-set trend
-above `--max-slope-mb` (MB per 1,000 frames, default 2), engine mesh or geometry records that pile up
-while the scene's own count holds, and GC nodes that rise steadily; missing samples fail. `all` selects
+above `--max-slope-mb` (MB per 1,000 frames, default 2), engine mesh or geometry records that grow past the
+most the scene has held at once, and GC nodes that rise steadily; missing samples fail. `all` selects
 the application demos. A demo with `checks/memory/<id>.json` plays that gameplay tape by default;
 `--replay`/`--replay-file` supply another and `--replay -` idles.
 

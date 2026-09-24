@@ -20,7 +20,7 @@ else()
     set(BBLITE_VISUAL_CAPTURE_DEFAULT ON)
 endif()
 option(BBLITE_VISUAL_CAPTURE "Build screenshot and render-state capture" ${BBLITE_VISUAL_CAPTURE_DEFAULT})
-option(BBLITE_CHECKED_HANDLES "Check native record handle bounds" OFF)
+option(BBLITE_CHECKED_HANDLES "Check native record handle bounds and generations" OFF)
 
 include("${CMAKE_CURRENT_LIST_DIR}/dependency-features.cmake")
 
