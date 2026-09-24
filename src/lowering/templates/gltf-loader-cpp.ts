@@ -1334,11 +1334,12 @@ ${
             const std::uint32_t geometry_slot =
                 store_geometry_record(engine, std::move(geometry));
             MeshRecord record;
-            record.scene_node_name = string_or(node, "name");
-            if (record.scene_node_name.empty()) {
-                record.scene_node_name = "gltf_node_" +
-                    std::to_string(node_index);
-            }
+            // buildNodeHierarchy's \`node.name ?? node_<index>\`: an empty
+            // authored name stays empty.
+            const ts::JsonValue* node_name = optional(node, "name");
+            record.scene_node_name = node_name && !node_name->is_null()
+                ? node_name->as_string()
+                : "node_" + std::to_string(node_index);
             record.name = required(planned, "name").as_string();
             record.geometry = geometry_slot;
             // load-gltf.ts sets boundMin/boundMax on every primitive.
