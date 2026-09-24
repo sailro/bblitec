@@ -722,7 +722,7 @@ function compileLoadEnvironment(
         : {
               groundTextureUrl: "",
               skyboxUrl: "",
-              skyboxSize: "0.0f",
+              skyboxSize: "0.0",
               brdfUrl: "",
               skipSkybox: false,
               skipGround: false,
@@ -887,8 +887,8 @@ function compileLoadHdrEnvironment(
               faceSize: 256,
               useCubemapSkybox: false,
               skipGround: false,
-              skyboxSize: "0.0f",
-              skyboxPosition: "bbl::Vec3{}",
+              skyboxSize: "0.0",
+              skyboxPosition: "bbl::Vec3d{}",
           };
     if (!options.skipGround) {
         context.fail(

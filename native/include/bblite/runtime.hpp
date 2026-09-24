@@ -5300,7 +5300,7 @@ struct EnvironmentOptions {
     std::string environment_url;
     std::string ground_texture_url;
     std::string skybox_url;
-    float skybox_size = 1000.0f;
+    double skybox_size = 1000.0;
     std::string brdf_url;
     // A skybox URL naming the .env itself asks for the environment's own
     // cubemap rather than a separate DDS, which is the pinned loader's
@@ -5319,8 +5319,8 @@ struct HdrEnvironmentOptions {
     std::string environment_url;
     std::string brdf_url;
     bool use_cubemap_skybox = false;
-    float skybox_size = 0.0f;
-    Vec3 skybox_position{};
+    double skybox_size = 0.0;
+    Vec3d skybox_position{};
 };
 
 // src/material/pbr/background-dds-environment.ts: the DDS skybox and the
@@ -5330,7 +5330,7 @@ struct HdrEnvironmentOptions {
 struct DdsEnvironmentBackgroundOptions {
     std::string ground_texture_url;
     std::string skybox_url;
-    float skybox_size = 0.0f;
+    double skybox_size = 0.0;
     bool enable_noise = true;
 };
 

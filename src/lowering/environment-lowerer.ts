@@ -598,12 +598,10 @@ void add_dds_environment_background(
     scene.environment.has_ground = true;
     read_dds_skybox(scene.environment, options.skybox_url);
     scene.environment.enable_noise = options.enable_noise;
-    const float requested_skybox_size = options.skybox_size;
+    const double requested_skybox_size = options.skybox_size;
     scene.deferred_builders.emplace_back(
         [&scene, requested_skybox_size]() {
-            apply_scene_size(
-                scene,
-                static_cast<double>(requested_skybox_size));
+            apply_scene_size(scene, requested_skybox_size);
         }, SceneDeferredFailure::promise_rejection);
 }
 `
@@ -652,13 +650,11 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
     } else if (!options.skybox_url.empty()) {
         read_dds_skybox(scene.environment, options.skybox_url);
     }
-    const float requested_skybox_size =
-        options.skybox_size > 0.0f ? options.skybox_size : ${this.context.floatLiteral(sceneSize.skyboxDefault)};
+    const double requested_skybox_size =
+        options.skybox_size > 0.0 ? options.skybox_size : ${this.context.doubleLiteral(sceneSize.skyboxDefault)};
     scene.deferred_builders.emplace_back(
         [&scene, requested_skybox_size]() {
-            apply_scene_size(
-                scene,
-                static_cast<double>(requested_skybox_size));
+            apply_scene_size(scene, requested_skybox_size);
         }, SceneDeferredFailure::promise_rejection);
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
@@ -919,11 +915,7 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
     scene.environment.skybox_uses_environment =
         options.use_cubemap_skybox;
     scene.environment.skybox_size = options.skybox_size;
-    scene.environment.skybox_position = Vec3d{
-        options.skybox_position.x,
-        options.skybox_position.y,
-        options.skybox_position.z,
-    };
+    scene.environment.skybox_position = options.skybox_position;
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
     scene.environment.lod_generation_scale =
