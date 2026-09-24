@@ -587,11 +587,9 @@ export class BrowserErasure {
         // is the input syntax for the retained UI IR. Keep this deliberately
         // narrower than general DOM support. Host-page lookups and arbitrary
         // document calls continue down the browser-erasure path.
-        if (
-            ts.isCallExpression(unwrapped) &&
-            (this.isNativeUiCall(unwrapped) ||
-                this.context.isNativeUiHelperCall(unwrapped))
-        ) {
+        // Helper calls returning retained UI were answered by
+        // isNativeUiValueExpression above.
+        if (ts.isCallExpression(unwrapped) && this.isNativeUiCall(unwrapped)) {
             return false;
         }
         if (this.context.isNativeBrowserFileExpression(unwrapped)) {
