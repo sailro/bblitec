@@ -207,9 +207,13 @@ int main() {
     bbl::add_to_scene(scene, empty);
     bbl::remove_from_scene(scene, empty);
     assert(scene.meshes.empty());
-    // Once the renderer has fixed its composition rows, a new record takes
-    // the last retired slot under the next generation; the retired handle
-    // then names nothing and the geometry slot waits for its last link.
+    // Retired records dropped their geometry link, and the unowned
+    // geometry's slot is offered at once. Once the renderer has fixed its
+    // composition rows, a new record takes the last retired slot under the
+    // next generation; the retired handle then names nothing.
+    assert(engine.meshes[third.value].geometry == bbl::invalid_handle);
+    assert(engine.free_geometry_slots.size() == 1 && engine.free_geometry_slots[0] == 0);
+    assert(engine.free_mesh_slots.size() == 3);
     engine.composition_feature_rows_initialized = true;
     const auto reused = bbl::clone_mesh_node(engine, empty);
     assert(reused.value == third.value && reused.generation == 1 && engine.meshes.size() == 4);
@@ -219,11 +223,9 @@ int main() {
     try { bbl::add_to_scene(scene, third); } catch (const std::runtime_error&) { stale_refused = true; }
     assert(stale_refused && scene.meshes.empty());
     bbl::remove_from_scene(scene, third);
-    assert(geometry.released && geometry.retired_links == 2 && engine.free_geometry_slots.empty());
     std::ignore = bbl::clone_mesh_node(engine, empty);
     std::ignore = bbl::clone_mesh_node(engine, empty);
     assert(engine.meshes.size() == 4 && engine.free_mesh_slots.empty());
-    assert(engine.free_geometry_slots.size() == 1 && engine.free_geometry_slots[0] == 0);
     assert(bbl::store_geometry_record(engine, bbl::ModelGeometry{}) == 0 && engine.geometries.size() == 1);
 }
 `,

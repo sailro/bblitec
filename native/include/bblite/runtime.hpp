@@ -2010,16 +2010,9 @@ struct ModelGeometry {
      */
     std::uint32_t owners = 1;
     /**
-     * Whether its last owner released it: the arrays are gone, and the slot
-     * is reusable once no retired record names it any more.
-     */
-    bool released = false;
-    /** Retired mesh records whose slots are not reused yet that name this one. */
-    std::uint32_t retired_links = 0;
-    /**
      * Whether a table outside the mesh records (a loader's animation
-     * bindings) or a record that keeps its slot after retirement may name
-     * this geometry, so its slot is never reused.
+     * bindings) or a retired record that keeps its slot may name this
+     * geometry, so its slot is never reused.
      */
     bool slot_reserved = false;
 };
@@ -4273,19 +4266,13 @@ inline std::uint32_t store_geometry_record(Engine& engine, ModelGeometry geometr
     return static_cast<std::uint32_t>(engine.geometries.size() - 1);
 }
 
-/** Offers a released geometry's slot once no retired record names it. */
-inline void offer_released_geometry(Engine& engine, std::uint32_t geometry) {
-    const ModelGeometry& record = engine.geometries[geometry];
-    if (record.released && record.retired_links == 0 && !record.slot_reserved) {
-        engine.free_geometry_slots.push_back(geometry);
-    }
-}
-
 /** Frees the arrays of a geometry its last owner let go, and offers its slot. */
 inline void release_unowned_geometry(Engine& engine, std::uint32_t geometry) {
-    release_geometry_storage(engine.geometries.at(geometry));
-    engine.geometries[geometry].released = true;
-    offer_released_geometry(engine, geometry);
+    ModelGeometry& record = engine.geometries.at(geometry);
+    release_geometry_storage(record);
+    if (!record.slot_reserved) {
+        engine.free_geometry_slots.push_back(geometry);
+    }
 }
 
 /**
@@ -4294,10 +4281,10 @@ inline void release_unowned_geometry(Engine& engine, std::uint32_t geometry) {
  * The pin's JavaScript collector frees a disposed mesh once nothing
  * references it. Here `retire_mesh_record` offers a retired record's slot
  * and the next record takes it under the next generation, so a program
- * that keeps building and retiring meshes holds a bounded table. The
- * retired record leaves with the reuse: its parent's registration and its
- * claim on its geometry slot. Reuse waits until the renderer has assigned
- * the composition rows of the meshes created before it started, which it
+ * that keeps building and retiring meshes holds a table no larger than the
+ * most meshes it held at once. The retired record's parent registration
+ * leaves with the reuse. Reuse waits until the renderer has assigned the
+ * composition rows of the meshes created before it started, which it
  * assigns in slot order.
  */
 inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
@@ -4314,14 +4301,9 @@ inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
         if (retired.parent.value < engine.meshes.size()) {
             std::erase(engine.meshes[retired.parent.value].parented_meshes, stale);
         }
-        const std::uint32_t geometry = retired.geometry;
         record.generation = retired.generation + 1;
         retired = std::move(record);
         engine.mesh_material_scenes.erase(slot);
-        if (geometry < engine.geometries.size()) {
-            --engine.geometries[geometry].retired_links;
-            offer_released_geometry(engine, geometry);
-        }
         return MeshHandle{slot, retired.generation};
     }
     record.generation = 0;
@@ -4332,11 +4314,13 @@ inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
 /**
  * `removeFromScene` taking a mesh out of its last scene: the record is
  * retired and gives up its claim on its geometry, whose arrays go with the
- * last claim. The slot is offered for reuse unless some table can still
- * name the record: a loader's asset tables index it, or another record's
- * hierarchy lists it (as a parent, or as a traversal `children` entry,
- * which the pin's removal leaves in place). Such a record, and its
- * geometry, keep their slots.
+ * last claim. The record's slot, and its geometry's once unowned, are
+ * offered for reuse unless some table can still name the record: a
+ * loader's asset tables index it, or another record's hierarchy lists it
+ * (as a parent, or as a traversal `children` entry, which the pin's
+ * removal leaves in place). Such a record keeps its slot and its geometry
+ * link, and that geometry keeps its slot too. Any other retired record
+ * drops its geometry link at once.
  */
 inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
     MeshRecord& record = engine.meshes[mesh.value];
@@ -4361,7 +4345,7 @@ inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
     if (reserved) {
         shared.slot_reserved = true;
     } else {
-        ++shared.retired_links;
+        record.geometry = invalid_handle;
         engine.free_mesh_slots.push_back(mesh.value);
     }
     if (shared.owners > 1) {
