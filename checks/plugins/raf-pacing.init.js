@@ -6,6 +6,7 @@
 (() => {
     const raf = globalThis.requestAnimationFrame.bind(globalThis);
     globalThis.__bblRafPacing = (rate) => {
+        /** @type {number | undefined} */
         let previous;
         let timestamp = 1;
         globalThis.requestAnimationFrame = (callback) =>

@@ -322,7 +322,7 @@ export interface PinnedBinding {
     pointer?: string;
     reseatable?: true;
     /**
-     * `f32`/`u32`/`u8` are owned buffers whose stores round to that width;
+     * `f32`/`u32`/`u16`/`u8` are owned buffers whose stores round to that width;
      * `f32-view`/`u8-view` are read-only aliases over a byte buffer;
      * `f64-list` is a GROWABLE `number[]` the pin pushes onto, which holds
      * its elements at the pin's own double width until a `new F32(list)`
@@ -338,6 +338,7 @@ export interface PinnedBinding {
     type:
         | "f32"
         | "u32"
+        | "u16"
         | "u8"
         | "f32-view"
         | "u8-view"
@@ -372,13 +373,34 @@ export interface PinnedBinding {
          * pushed onto and sorted as JavaScript's own array, with `record`
          * naming the native struct each element is.
          */
-        | "record-list";
+        | "record-list"
+        /** A `std::string` the body reads, compares and concatenates. */
+        | "string"
+        /**
+         * The pin's `new Set<string>()`: `bbl::js::Set<std::string>`, which
+         * keeps JavaScript's insertion order for `add`, `size` and
+         * `Array.from`.
+         */
+        | "string-set";
     /**
      * The native struct a `record-list`'s elements are, or the one an
      * `opaque` binding is: its members read through it, and a literal
      * pushed onto the list is built member by member from it.
      */
     record?: PinnedRecordShape;
+    /**
+     * The C++ test for this value being `null`/`undefined`, where the
+     * caller holds a nullable one (an optional option): `x ?? d` takes
+     * `d` exactly when it holds, and `cpp` is read only when it does not.
+     * Any other read refuses.
+     */
+    nullish?: string;
+    /**
+     * For an object binding, the C++ value JavaScript's `===` compares --
+     * the object's identity -- where `cpp` spells the object itself. A
+     * store from one identity-bound name into another stores the identity.
+     */
+    identity?: string;
     /**
      * A value generation already knows. A `===` against a literal or a
      * module constant, a `typeof` test, a `switch` or a guard over one
@@ -450,6 +472,12 @@ export interface PinnedNumericScope {
     ) => readonly string[] | undefined;
     /** Identifiers already bound when the body starts (parameters, locals). */
     bindings: Map<string, PinnedBinding>;
+    /**
+     * The native struct an object literal declared under one of the pin's
+     * own type annotations is (`const light: ClusteredPointLight = {...}`),
+     * by the annotation's type name.
+     */
+    recordTypes?: ReadonlyMap<string, PinnedRecordShape>;
     /** Calls this body may make, as a C++ spelling per pinned callee. */
     calls: ReadonlyMap<string, PinnedCallSpelling>;
     /**
@@ -1063,16 +1091,17 @@ export class PinnedNumericLowerer {
                 !ts.isNewExpression(thrown) ||
                 !ts.isIdentifier(thrown.expression) ||
                 thrown.expression.text !== "Error" ||
-                thrown.arguments?.length !== 1 ||
-                !ts.isStringLiteral(thrown.arguments[0]!)
+                thrown.arguments?.length !== 1
             ) {
                 this.fail(statement, "throw statement");
             }
-            const message = thrown.arguments[0].text;
-            return [
-                `${indent}throw std::runtime_error(` +
-                    `${JSON.stringify(message)});`,
-            ];
+            const argument = thrown.arguments[0]!;
+            // A literal message is the literal; a composed one (a template
+            // naming what failed) is the string the pin builds.
+            const message = ts.isStringLiteral(argument)
+                ? JSON.stringify(argument.text)
+                : this.stringExpression(argument);
+            return [`${indent}throw std::runtime_error(${message});`];
         }
         if (ts.isReturnStatement(statement)) {
             if (!this.scope.returnValue) {
@@ -1713,6 +1742,21 @@ export class PinnedNumericLowerer {
                     continue;
                 }
             }
+            // `new Set<string>()`: an insertion-ordered set of strings, the
+            // pin's own collection of distinct names.
+            const set = unwrapExpression(source);
+            if (
+                ts.isNewExpression(set) &&
+                ts.isIdentifier(set.expression) &&
+                set.expression.text === "Set" &&
+                (set.arguments?.length ?? 0) === 0 &&
+                set.typeArguments?.length === 1 &&
+                set.typeArguments[0]!.kind === ts.SyntaxKind.StringKeyword
+            ) {
+                this.scope.bindings.set(name, { cpp, type: "string-set" });
+                lines.push(`${indent}bbl::js::Set<std::string> ${cpp};`);
+                continue;
+            }
             const allocation = this.allocation(source);
             if (allocation) {
                 this.scope.bindings.set(name, {
@@ -1730,6 +1774,25 @@ export class PinnedNumericLowerer {
                 continue;
             }
             const initializer = unwrapExpression(source);
+            // `const light: ClusteredPointLight = { ... }` -- one of the
+            // pin's object records, built as the native struct the caller
+            // named for its annotation and read through it afterwards.
+            const recordType =
+                declaration.type &&
+                ts.isTypeReferenceNode(declaration.type) &&
+                ts.isIdentifier(declaration.type.typeName)
+                    ? this.scope.recordTypes?.get(
+                          declaration.type.typeName.text,
+                      )
+                    : undefined;
+            if (recordType && ts.isObjectLiteralExpression(initializer)) {
+                lines.push(
+                    `${indent}${isConst ? "const " : ""}${recordType.cpp} ${cpp} = ` +
+                        `${this.recordValueOf(initializer, recordType)};`,
+                );
+                this.bindRecord(name, cpp, recordType);
+                continue;
+            }
             if (
                 this.scope.vec3Literal &&
                 ts.isObjectLiteralExpression(initializer)
@@ -1910,6 +1973,34 @@ export class PinnedNumericLowerer {
                 type: "f32",
                 declare: (name) =>
                     `std::array<float, ${values.length}> ${name}{${values.join(", ")}};`,
+            };
+        }
+        // An index table the pin states inline (`new U16([0, 2, 1, ...])`):
+        // each element is an integer constant, stored at the array's width.
+        const indexWidth =
+            constructor === "U16"
+                ? ({ type: "u16", element: "std::uint16_t" } as const)
+                : constructor === "U32"
+                  ? ({ type: "u32", element: "std::uint32_t" } as const)
+                  : undefined;
+        if (indexWidth && ts.isArrayLiteralExpression(argument)) {
+            const values = argument.elements.map((element) => {
+                const literal = unwrapExpression(element);
+                if (
+                    !ts.isNumericLiteral(literal) ||
+                    !Number.isInteger(Number(literal.text))
+                ) {
+                    this.fail(
+                        element,
+                        `a non-integer ${sourceConstructor} element`,
+                    );
+                }
+                return `${Number(literal.text)}u`;
+            });
+            return {
+                type: indexWidth.type,
+                declare: (name) =>
+                    `const std::array<${indexWidth.element}, ${values.length}> ${name}{${values.join(", ")}};`,
             };
         }
         // `new U8(buffer)` / `new F32(buffer)` re-view an existing byte
@@ -2315,6 +2406,15 @@ export class PinnedNumericLowerer {
             : undefined;
     }
 
+    /** What `===` compares for an operand: its identity, or its value. */
+    private identityOf(expression: ts.Expression): string {
+        const node = unwrapExpression(expression);
+        return (
+            this.scope.bindings.get(node.getText(this.file))?.identity ??
+            this.expression(node)
+        );
+    }
+
     /** Bind `name` as one record of `shape`, with every member path. */
     private bindRecord(
         name: string,
@@ -2410,7 +2510,7 @@ export class PinnedNumericLowerer {
         const node = unwrapExpression(argument);
         if (!ts.isObjectLiteralExpression(node)) {
             const record = this.recordElement(node);
-            return record?.shape === shape
+            return record?.shape.cpp === shape.cpp
                 ? record.cpp
                 : this.fail(node, `${shape.cpp} value`);
         }
@@ -2559,6 +2659,17 @@ export class PinnedNumericLowerer {
             return `{${literal.elements
                 .map((element) => this.expression(element))
                 .join(", ")}}`;
+        }
+        // An object's identity is what a store between identity-bound
+        // names carries, as JavaScript's reference assignment does.
+        if (binding?.identity !== undefined) {
+            const source = ts.isIdentifier(literal)
+                ? this.scope.bindings.get(literal.text)
+                : undefined;
+            if (source?.identity === undefined) {
+                this.fail(value, "store of a value without an identity");
+            }
+            return source.identity;
         }
         // A boolean local takes truths only: a number stored into one would
         // convert silently where JavaScript would retype the variable.
@@ -2718,6 +2829,86 @@ export class PinnedNumericLowerer {
      * what `-Wparentheses-equality` refuses, so the one enclosing pair is
      * dropped where the statement supplies its own.
      */
+    /**
+     * A string the pin composes: a literal, a bound string, a template or a
+     * `+` over strings, or `join` over a string array. A number inside a
+     * template would need JavaScript's own number formatting, so it refuses
+     * rather than printing C++'s.
+     */
+    private stringExpression(expression: ts.Expression): string {
+        const node = unwrapExpression(expression);
+        if (
+            ts.isStringLiteral(node) ||
+            ts.isNoSubstitutionTemplateLiteral(node)
+        ) {
+            return `std::string(${JSON.stringify(node.text)})`;
+        }
+        const bound = this.scope.bindings.get(node.getText(this.file));
+        if (bound?.type === "string") return bound.cpp;
+        if (ts.isTemplateExpression(node)) {
+            const parts = [`std::string(${JSON.stringify(node.head.text)})`];
+            for (const span of node.templateSpans) {
+                parts.push(this.stringExpression(span.expression));
+                if (span.literal.text)
+                    parts.push(JSON.stringify(span.literal.text));
+            }
+            return `(${parts.join(" + ")})`;
+        }
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.PlusToken
+        ) {
+            return `(${this.stringExpression(node.left)} + ${this.stringExpression(node.right)})`;
+        }
+        if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "join" &&
+            node.arguments.length === 1
+        ) {
+            return (
+                `bbl::js::array_join(` +
+                `${this.stringArray(node.expression.expression)}, ` +
+                `${this.stringExpression(node.arguments[0]!)})`
+            );
+        }
+        return this.fail(node, "string expression");
+    }
+
+    /**
+     * An array of strings: `Array.from` over a string set, in its insertion
+     * order, and `sort()` with no comparator, JavaScript's ascending UTF-16
+     * code-unit order.
+     */
+    private stringArray(expression: ts.Expression): string {
+        const node = unwrapExpression(expression);
+        if (ts.isCallExpression(node)) {
+            const callee = node.expression;
+            if (
+                ts.isPropertyAccessExpression(callee) &&
+                ts.isIdentifier(callee.expression) &&
+                callee.expression.text === "Array" &&
+                callee.name.text === "from" &&
+                node.arguments.length === 1
+            ) {
+                const set = this.scope.bindings.get(
+                    unwrapExpression(node.arguments[0]!).getText(this.file),
+                );
+                if (set?.type === "string-set") {
+                    return `bbl::js::array_from_iterable<std::string>(${set.cpp})`;
+                }
+            }
+            if (
+                ts.isPropertyAccessExpression(callee) &&
+                callee.name.text === "sort" &&
+                node.arguments.length === 0
+            ) {
+                return `bbl::js::string_array_sort(${this.stringArray(callee.expression)})`;
+            }
+        }
+        return this.fail(node, "string array");
+    }
+
     private condition(expression: ts.Expression): string {
         const known = this.staticCondition(expression);
         if (known !== undefined) return known ? "true" : "false";
@@ -2844,9 +3035,12 @@ export class PinnedNumericLowerer {
             targets.push(target);
             value = unwrapExpression(value.right);
         }
-        // Literal fills cannot resize storage or rebind an owner during RHS evaluation.
+        // Literal and local fills cannot resize storage or rebind an owner
+        // during RHS evaluation; the assignment's value is the RHS itself,
+        // so every target stores the same local, not the previous store.
         if (
             !ts.isNumericLiteral(value) &&
+            !ts.isIdentifier(value) &&
             !(
                 ts.isPrefixUnaryExpression(value) &&
                 [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(
@@ -3096,6 +3290,9 @@ export class PinnedNumericLowerer {
             const binding =
                 this.scope.bindings.get(node.text) ?? this.moduleConstant(node);
             if (!binding) this.fail(node, "identifier");
+            if (binding.nullish !== undefined) {
+                this.fail(node, "read of a nullable value outside '??'");
+            }
             // A view is a pointer; naming it bare would be an address.
             return binding.cpp;
         }
@@ -3712,6 +3909,10 @@ export class PinnedNumericLowerer {
         absentOverride?: string,
     ): string {
         const named = this.scope.bindings.get(node.getText(this.file));
+        // A nullable value is read only by the `??` that resolves it.
+        if (named?.nullish !== undefined) {
+            this.fail(node, "read of a nullable value outside '??'");
+        }
         if (named) return named.cpp;
         // `hi?.r ?? 0` where generation resolved `hi` to null: the pin's
         // own `??` default is the value, and a read with no default is a
@@ -3768,6 +3969,9 @@ export class PinnedNumericLowerer {
             ) {
                 return `static_cast<double>(${binding.cpp}.size())`;
             }
+        }
+        if (binding?.type === "string-set" && node.name.text === "size") {
+            return `static_cast<double>(${binding.cpp}.size())`;
         }
         // The global `Number.NaN`, the one quiet NaN JavaScript has.
         if (
@@ -3885,6 +4089,19 @@ export class PinnedNumericLowerer {
                     this.expression(node.arguments[1]!),
                 );
             }
+        }
+        // `names.add(name)` on a string set: kept once, in first-add order.
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "add" &&
+            node.arguments.length === 1 &&
+            this.scope.bindings.get(callee.expression.getText(this.file))
+                ?.type === "string-set"
+        ) {
+            const set = this.scope.bindings.get(
+                callee.expression.getText(this.file),
+            )!;
+            return `${set.cpp}.add(${this.stringExpression(node.arguments[0]!)})`;
         }
         // `positions.push(x, y, z)` onto a grown list. The pin appends in
         // argument order and the comma expression keeps that order while
@@ -4070,11 +4287,24 @@ export class PinnedNumericLowerer {
                     rhs = rightAbsent ?? "false";
                 const equal =
                     `(((${lhs}) && (${rhs})) || (!(${lhs}) && !(${rhs}) && ` +
-                    `(${this.expression(left)} == ${this.expression(right)})))`;
+                    `(${this.identityOf(left)} == ${this.identityOf(right)})))`;
                 return node.operatorToken.kind ===
                     ts.SyntaxKind.EqualsEqualsEqualsToken
                     ? equal
                     : `!${equal}`;
+            }
+            if (
+                this.scope.bindings.get(left.getText(this.file))?.identity !==
+                    undefined ||
+                this.scope.bindings.get(right.getText(this.file))?.identity !==
+                    undefined
+            ) {
+                return `(${this.identityOf(left)} ${
+                    node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken
+                        ? "=="
+                        : "!="
+                } ${this.identityOf(right)})`;
             }
         }
         // `(state._flag = true)` as a value: the store, whose value is what
@@ -4105,6 +4335,7 @@ export class PinnedNumericLowerer {
                     const head = this.scope.bindings.get(
                         unwrapExpression(spine.left).getText(this.file),
                     );
+                    if (head?.nullish !== undefined) break;
                     if (head) return head.cpp;
                     spine = unwrapExpression(spine.left);
                 }
@@ -4117,6 +4348,14 @@ export class PinnedNumericLowerer {
                 const resolved = this.scope.bindings.get(
                     left.getText(this.file),
                 );
+                // A nullable value the caller holds takes the pin's own
+                // default where it is absent, and is read only where not.
+                if (resolved?.nullish !== undefined) {
+                    return (
+                        `(${resolved.nullish} ? ${this.expression(node.right)} : ` +
+                        `${resolved.cpp})`
+                    );
+                }
                 if (resolved) return resolved.cpp;
                 if (!ts.isPropertyAccessExpression(left)) {
                     return this.fail(node, "'??' over a non-optional read");

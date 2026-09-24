@@ -25,6 +25,7 @@ export const containerKinds: DataKindOperations<
                 : left.result === right.result,
         children: (type) => (type.result ? [type.result] : []),
         byReference: false,
+        tracedEdges: "always",
         opaqueReference: true,
     },
     product: {
@@ -38,6 +39,7 @@ export const containerKinds: DataKindOperations<
             ),
         children: (type) => type.elements,
         byReference: true,
+        tracedEdges: "children",
     },
     union: {
         cpp: (type, context) =>
@@ -50,6 +52,7 @@ export const containerKinds: DataKindOperations<
             ),
         children: (type) => type.members,
         byReference: false,
+        tracedEdges: "children",
     },
     optional: {
         cpp: (type, context) =>
@@ -64,6 +67,7 @@ export const containerKinds: DataKindOperations<
             equal(left.inner, right.inner),
         children: (type) => [type.inner],
         byReference: false,
+        tracedEdges: "children",
     },
     vector: {
         cpp: (type, context) =>
@@ -72,6 +76,7 @@ export const containerKinds: DataKindOperations<
         equal: (left, right, equal) => equal(left.element, right.element),
         children: (type) => [type.element],
         byReference: true,
+        tracedEdges: "children",
     },
     map: {
         cpp: (type, context) =>
@@ -84,6 +89,7 @@ export const containerKinds: DataKindOperations<
             equal(left.value, right.value),
         children: (type) => [type.key, type.value],
         byReference: true,
+        tracedEdges: "children",
     },
     set: {
         cpp: (type, context) =>
@@ -92,6 +98,7 @@ export const containerKinds: DataKindOperations<
         equal: (left, right, equal) => equal(left.element, right.element),
         children: (type) => [type.element],
         byReference: true,
+        tracedEdges: "children",
     },
     iterator: {
         cpp: (type, context) =>
@@ -100,6 +107,7 @@ export const containerKinds: DataKindOperations<
         equal: (left, right, equal) => equal(left.element, right.element),
         children: (type) => [type.element],
         byReference: true,
+        tracedEdges: "always",
     },
     span: {
         cpp: (type, context) =>
@@ -108,6 +116,7 @@ export const containerKinds: DataKindOperations<
         equal: (left, right, equal) => equal(left.element, right.element),
         children: (type) => [type.element],
         byReference: false,
+        tracedEdges: "never",
     },
     tuple: {
         cpp: (type) => `bbl::js::Tuple<${type.arity}>`,
@@ -115,6 +124,7 @@ export const containerKinds: DataKindOperations<
         equal: (left, right) => left.arity === right.arity,
         children: () => [],
         byReference: true,
+        tracedEdges: "never",
     },
     enummap: {
         cpp: (type, context) => {
@@ -127,6 +137,7 @@ export const containerKinds: DataKindOperations<
             equal(left.element, right.element),
         children: (type) => [type.element],
         byReference: true,
+        tracedEdges: "children",
     },
     table: {
         cpp: (type, context) =>
@@ -136,5 +147,6 @@ export const containerKinds: DataKindOperations<
             left.dimensions.join(",") === right.dimensions.join(","),
         children: () => [],
         byReference: false,
+        tracedEdges: "never",
     },
 };

@@ -1,6 +1,6 @@
 {
   "scene": "scene149",
-  "notes": "Node-geometry GPU transport: the native nodeGpu receipts of one canonical frame (BBLITE_NODE_GPU_CAPTURE=1) joined against the browser identity observation and instrumented buffer capture under artifacts/scene149-reference (identities.json, instrumented/buffers.json, instrumented/capture-meta.json) and the generated asset: raw attribute bytes, index sequences, texture/sampler sharing per material, per-view bindings, and world uploads exact to the word except signed zeros. The browser reference's producer is a node-material identity observer the repository does not carry; the directory is an input.",
+  "notes": "Node-geometry GPU transport: the native nodeGpu receipts of one canonical frame (BBLITE_NODE_GPU_CAPTURE=1) joined against the browser observation and the generated asset: raw attribute bytes, index sequences, texture/sampler sharing per material, per-view bindings, and world uploads exact to the word except signed zeros. The observation's init script (checks/plugins/scene149-identity.init.js) gives every WebGPU object an identity and records every buffer's bytes, bind group and pipeline and two submissions' draws; the source hook hands it the scene's material map, which it resolves to each node material's albedo texture, view, sampler and meshes.",
   "base": "adhoc",
   "timeoutMs": 120000,
   "env": { "BBLITE_NODE_GPU_CAPTURE": "1" },
@@ -9,6 +9,24 @@
   ],
   "expect": [
     { "kind": "capture-path", "phase": "canonical", "path": "nodeGpu.draws.length", "equals": 855 },
-    { "kind": "plugin", "module": "checks/plugins/node-transport.mjs", "options": { "control": "scene149", "referenceDirectory": "artifacts/scene149-reference" } }
-  ]
+    { "kind": "plugin", "module": "checks/plugins/node-transport.mjs", "options": { "control": "scene149" } }
+  ],
+  "observe": {
+    "initScriptFile": "checks/plugins/scene149-identity.init.js",
+    "hooks": [
+      { "marker": "await registerScene(scene);", "position": "before", "inject": "window.__scene149Identity.source = { byMaterial };" }
+    ],
+    "steps": [
+      {
+        "id": "identity",
+        "screenshot": "none",
+        "state": false,
+        "actions": [
+          { "evaluate": "window.__scene149Identity.record(2)" },
+          { "waitFor": "window.__scene149Identity.submissions.length >= 2" },
+          { "evaluate": "({ materials: window.__scene149Identity.materials(), observation: window.__scene149Identity.observation() })", "as": "identity" }
+        ]
+      }
+    ]
+  }
 }

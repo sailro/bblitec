@@ -10,7 +10,7 @@ import { pinnedQuaternionMath } from "./pinned-euler-proxy.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
 import { assertAsyncSceneBuilder } from "./scene-deferred.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { lowerMat4MultiplyWriterCpp } from "./pinned-function-lowerer.js";
+import { lowerTextFunctions } from "./text-records.js";
 
 const module = "src/text/text-renderable.ts";
 const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
@@ -28,133 +28,23 @@ export class TextLowerer {
 namespace bbl {
 namespace text_detail {
 ${this.quaternionMath()}
-${lowerMat4MultiplyWriterCpp(this.context)}
 } // namespace text_detail
 ${this.factory()}
 ${this.alphaToCoverage()}
 ${this.transforms()}
-${this.uniforms()}
 ${this.attachment()}
 } // namespace bbl
 `;
     }
 
+    /** The pin's alpha-to-coverage membership, lowered whole. */
     private alphaToCoverage(): string {
-        const c: LoweringContext = this.context;
-        const path = "src/render/alpha-to-coverage.ts";
-        const { file, declaration } = c.functionDeclaration(
-            path,
-            "setAlphaToCoverage",
+        const { declarations, definitions } = lowerTextFunctions(
+            this.context,
+            "coverage",
+            ["records"],
         );
-        c.assertStatementInventory(
-            declaration,
-            declaration.body!.statements,
-            "setAlphaToCoverage",
-            "text membership",
-            ["expression statement", "if statement"],
-        );
-        c.assertExpressionShape(
-            (declaration.body!.statements[0] as ts.ExpressionStatement)
-                .expression,
-            "assertSupportedTarget(target)",
-            "Text alpha-to-coverage validation",
-        );
-        const branch = declaration.body!.statements[1] as ts.IfStatement;
-        if (
-            !ts.isBlock(branch.thenStatement) ||
-            !branch.elseStatement ||
-            !ts.isBlock(branch.elseStatement)
-        )
-            c.contractError(
-                branch,
-                "Text alpha-to-coverage membership branches changed.",
-            );
-        c.assertStatementInventory(
-            branch,
-            branch.thenStatement.statements,
-            "enabled membership",
-            "text membership",
-            ["if statement", "expression statement"],
-        );
-        const lazy = branch.thenStatement.statements[0] as ts.IfStatement;
-        c.assertExpressionShape(
-            lazy.expression,
-            "!_enabledTargets",
-            "Lazy alpha-to-coverage resolver",
-        );
-        if (!ts.isBlock(lazy.thenStatement) || lazy.elseStatement)
-            c.contractError(
-                lazy,
-                "Alpha-to-coverage resolver installation changed.",
-            );
-        c.assertStatementInventory(
-            lazy,
-            lazy.thenStatement.statements,
-            "resolver installation",
-            "text pipeline resolver",
-            ["expression statement", "expression statement"],
-        );
-        c.assertExpressionShape(
-            (lazy.thenStatement.statements[0] as ts.ExpressionStatement)
-                .expression,
-            "_enabledTargets = new WeakSet()",
-            "Alpha-to-coverage weak membership",
-        );
-        c.assertExpressionShape(
-            (lazy.thenStatement.statements[1] as ts.ExpressionStatement)
-                .expression,
-            "_registerAlphaToCoverageResolver(_isAlphaToCoverageEnabled)",
-            "Alpha-to-coverage pipeline resolver",
-        );
-        c.assertExpressionShape(
-            (branch.thenStatement.statements[1] as ts.ExpressionStatement)
-                .expression,
-            "_enabledTargets.add(target)",
-            "Text enabled membership",
-        );
-        c.assertStatementInventory(
-            branch,
-            branch.elseStatement.statements,
-            "disabled membership",
-            "text membership",
-            ["expression statement"],
-        );
-        c.assertExpressionShape(
-            (branch.elseStatement.statements[0] as ts.ExpressionStatement)
-                .expression,
-            "_enabledTargets?.delete(target)",
-            "Text disabled membership",
-        );
-        const getter = c.functionDeclaration(
-            path,
-            "getAlphaToCoverage",
-        ).declaration;
-        c.assertStatementInventory(
-            getter,
-            getter.body!.statements,
-            "getAlphaToCoverage",
-            "text membership read",
-            ["expression statement", "return statement"],
-        );
-        c.assertExpressionShape(
-            (getter.body!.statements[0] as ts.ExpressionStatement).expression,
-            "assertSupportedTarget(target)",
-            "Text alpha-to-coverage validation",
-        );
-        c.assertExpressionShape(
-            (getter.body!.statements[1] as ts.ReturnStatement).expression!,
-            "_enabledTargets?.has(target) ?? false",
-            "Text alpha-to-coverage membership read",
-        );
-        const lowerer = new PinnedNumericLowerer(file, {
-            bindings: new Map([["enabled", { cpp: "enabled", type: "bool" }]]),
-            calls: new Map(),
-        });
-        return `// ${this.context.provenance("src/render/alpha-to-coverage.ts", "setAlphaToCoverage", "membership of the admitted text owner")}
-// The composed pipeline consumes this membership; its resolver needs no native WeakSet.
-inline void set_text_alpha_to_coverage(TextRenderableState& r, bool enabled) { r.alpha_to_coverage = ${lowerer.expression(branch.expression)}; }
-inline bool get_text_alpha_to_coverage(const TextRenderableState& r) { return r.alpha_to_coverage; }
-`;
+        return `${declarations}\n${definitions}`;
     }
 
     private quaternionMath(): string {
@@ -559,7 +449,7 @@ inline TextRenderable create_text_renderable(TextData data, const TextRenderable
             ],
         );
         const identityStores = new PinnedNumericLowerer(identity.file, {
-            bindings: new Map([["m", { cpp: "r.world", type: "f32" }]]),
+            bindings: new Map([["m", { cpp: "matrix", type: "f32" }]]),
             calls: new Map(),
         })
             .statements(
@@ -567,150 +457,24 @@ inline TextRenderable create_text_renderable(TextData data, const TextRenderable
                 "            ",
             )
             .join("\n");
-        out += `inline const std::array<float, 16>& text_world_matrix(TextRenderableState& r) {
+        out += `inline const js::TypedArray<float>& text_world_matrix(TextRenderableState& r) {
     if (!r.world_cached) {
+        std::array<float, 16> matrix{};
         if (${isIdentity}) {
-            r.world = {};
 ${identityStores}
         } else {
         struct { Vec3d position; TextQuaternion rotation_quaternion; Vec3d scaling; Vec3d rotation{}; bool has_rotation_quaternion = true; }
             transform{r.position, r.rotation_quaternion, r.scaling};
 ${composition}
-        r.world = world;
+        matrix = world;
         }
+        for (std::size_t index = 0; index < matrix.size(); ++index) r.world.store(index, matrix[index]);
         r.world_cached = true;
     }
     return r.world;
 }
 `;
         return out;
-    }
-
-    private uniforms(): string {
-        const c: LoweringContext = this.context;
-        const ensure = c.functionDeclaration(module, "ensureGpu");
-        const records = c.findNodes(
-            ensure.declaration,
-            (node): node is ts.ObjectLiteralExpression =>
-                ts.isObjectLiteralExpression(node) &&
-                node.properties.some(
-                    (property) =>
-                        property.name?.getText(ensure.file) ===
-                        "_uploadedCameraVersion",
-                ),
-        );
-        if (records.length !== 1)
-            c.contractError(
-                ensure.declaration,
-                "Expected one text GPU cache initializer.",
-            );
-        for (const [name, value] of [
-            ["_uploadedCameraVersion", "-1"],
-            ["_uploadedAspect", "-1"],
-            ["_uploadedViewportW", "0"],
-            ["_uploadedViewportH", "0"],
-            ["_uploadedOpacity", "NaN"],
-        ])
-            c.assertExpressionShape(
-                c.propertyInitializer(records[0]!, name!),
-                value!,
-                "Text uniform cache initialization",
-            );
-        const { file, declaration } = c.functionDeclaration(
-            module,
-            "updateTextRenderable",
-        );
-        const statements = declaration.body!.statements;
-        const start = statements.findIndex(
-            (statement) =>
-                ts.isVariableStatement(statement) &&
-                statement.declarationList.declarations.some(
-                    (item) => item.name.getText(file) === "camera",
-                ),
-        );
-        if (start < 0)
-            c.contractError(declaration, "Text uniform camera slice missing.");
-        c.assertExpressionShape(
-            c.variableInitializer(declaration, "camera"),
-            "context._camera ?? null",
-            "Text active camera",
-        );
-        const tail = statements.slice(start + 1);
-        c.assertStatementInventory(
-            declaration,
-            tail,
-            "updateTextRenderable",
-            "three text uniform update arms",
-            ["if statement", "if statement", "if statement"],
-        );
-        const bindings = new Map<string, PinnedBinding>([
-            ["camera", { cpp: "camera != nullptr", type: "bool" }],
-            ["r._wmDirty", { cpp: "r.wm_dirty", type: "bool" }],
-            ["r.opacity", scalar("r.opacity")],
-            ["context.targetWidth", scalar("width")],
-            ["context.targetHeight", scalar("height")],
-            ["gpu._textU", scalar("0")],
-            ["_mvpScratch", { cpp: "mvp", type: "f32" }],
-            ...[
-                ["_uploadedCameraVersion", "uploaded_camera_version"],
-                ["_uploadedAspect", "uploaded_aspect"],
-                ["_uploadedViewportW", "uploaded_viewport_w"],
-                ["_uploadedViewportH", "uploaded_viewport_h"],
-                ["_uploadedOpacity", "uploaded_opacity"],
-            ].map(([source, target]): [string, PinnedBinding] => [
-                `gpu.${source}`,
-                scalar(`gpu.${target}`),
-            ]),
-            ...[
-                ["_mvpScratch", "mvp"],
-                ["vp", "vp"],
-                ["col", "col"],
-            ].flatMap(([source, target]): [string, PinnedBinding][] => [
-                [
-                    `${source}.buffer`,
-                    scalar(`std::span<const float>(${target})`),
-                ],
-                [`${source}.byteOffset`, scalar("0")],
-            ]),
-        ]);
-        const calls = new Map<string, (args: readonly string[]) => string>([
-            ["getEffectiveAspectRatio", () => "camera->effective_aspect"],
-            ["_cameraChangeKey", () => "camera->change_key"],
-            ["getViewProjectionMatrix", () => "camera->view_projection"],
-            ["r._worldMatrix", () => "text_world_matrix(r)"],
-            [
-                "multiplyMat4IntoBuffer",
-                (args) =>
-                    `text_detail::mat4_multiply_into(${args.map((arg, index) => (index % 2 === 1 ? `static_cast<std::int64_t>(${arg})` : arg)).join(", ")})`,
-            ],
-            [
-                "device.queue.writeBuffer",
-                (args) =>
-                    `text_write_uniform(write, ${args.slice(1).join(", ")})`,
-            ],
-        ]);
-        const lowerer = new PinnedNumericLowerer(file, {
-            bindings,
-            calls,
-            booleanOr: true,
-            matrixCalls: new Set(["getViewProjectionMatrix", "r._worldMatrix"]),
-        });
-        const bytes = new PinnedNumericLowerer(file, {
-            bindings: new Map(),
-            calls: new Map(),
-        }).expression(c.variableInitializer(file, "TEXT_UBO_BYTES"));
-        return `inline constexpr std::size_t text_uniform_bytes = static_cast<std::size_t>(${bytes});
-inline void text_write_uniform(const TextUniformWrite& write, double offset, std::span<const float> values, double source_offset, double count) {
-    const auto bytes = std::as_bytes(values).subspan(static_cast<std::size_t>(source_offset), static_cast<std::size_t>(count));
-    write(static_cast<std::size_t>(offset), {reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()});
-}
-// ${c.provenance(module, "updateTextRenderable", "uniform update tail")}
-inline void update_text_uniforms(TextRenderableState& r, TextGpuState& gpu, const TextCameraInput* camera,
-    double width, double height, const TextUniformWrite& write) {
-    std::array<float, 16> mvp{};
-${tail.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}
-}
-`;
     }
 
     private attachment(): string {

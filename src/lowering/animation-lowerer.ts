@@ -121,7 +121,7 @@ export class AnimationLowerer {
             currentTime: (value) =>
                 `    if (asset.set_clip_time) {
 ` +
-                `        asset.set_clip_time(record.clip, ${value}f);
+                `        asset.set_clip_time(record.clip, ${value});
 ` +
                 `    }`,
         };
@@ -332,7 +332,7 @@ export class AnimationLowerer {
         const seekWriter = `void go_to_frame(
     Engine& engine,
     AnimationGroupHandle group,
-    float frame,
+    double frame,
     bool with_engine) {
     const AnimationGroupRecord& record =
         group_record(engine, group);
@@ -340,7 +340,7 @@ export class AnimationLowerer {
     if (asset.set_clip_time) {
         asset.set_clip_time(
             record.clip,
-            frame / ${this.context.floatLiteral(defaultFrameRate)});
+            frame / ${this.context.doubleLiteral(defaultFrameRate)});
     }
     if (asset.set_clip_playing) {
         asset.set_clip_playing(record.clip, false);
@@ -356,7 +356,7 @@ export class AnimationLowerer {
         const timeWriter = `void set_animation_current_time(
     Engine& engine,
     AnimationGroupHandle group,
-    float time) {
+    double time) {
     const AnimationGroupRecord& record =
         group_record(engine, group);
     AssetRecord& asset = group_asset(engine, record);
@@ -403,7 +403,7 @@ export class AnimationLowerer {
         const speedWriter = `void set_animation_speed_ratio(
     Engine& engine,
     AnimationGroupHandle group,
-    float speed_ratio) {
+    double speed_ratio) {
     const AnimationGroupRecord& record =
         group_record(engine, group);
     AssetRecord& asset = group_asset(engine, record);
@@ -614,12 +614,12 @@ ${operations}
 void set_animation_additive(
     Engine& engine,
     AnimationGroupHandle group,
-    float reference_time) {
+    double reference_time) {
     // The pinned guard; the entry compiler has already refused a
     // non-static or negative reference, so this is the runtime mirror.
     if (
         !std::isfinite(reference_time) ||
-        reference_time < 0.0f) {
+        reference_time < 0.0) {
         throw std::runtime_error(
             "Additive animation reference time must be a finite "
             "non-negative number.");
@@ -644,13 +644,13 @@ void set_animation_additive(
 void set_animation_additive_from_frame(
     Engine& engine,
     AnimationGroupHandle group,
-    float reference_frame) {
+    double reference_frame) {
     // (options?.referenceFrame ?? 0) / (group.frameRate || 60): a glTF
     // clip carries no frame rate, so the divisor is the pinned default.
     set_animation_additive(
         engine,
         group,
-        reference_frame / ${this.context.floatLiteral(defaultFrameRate)});
+        reference_frame / ${this.context.doubleLiteral(defaultFrameRate)});
 }`;
     }
 
@@ -1012,6 +1012,7 @@ PropertyAnimationBucket& track_bucket(
     for (PropertyAnimationBucket& candidate : buckets) {
         if (
             candidate.target.kind == target.kind &&
+            candidate.target.mesh == target.mesh &&
             candidate.target.index == target.index &&
             candidate.target.object_identity == target.object_identity &&
             candidate.target.property == target.property &&
@@ -1865,18 +1866,16 @@ ${this.propertyWriterArms("camera", "            ", cameraVersions)}
         }
         return;
     }
-    if (target.index >= engine.meshes.size()) {
-        throw std::runtime_error(
-            "Property animation group has an invalid mesh target.");
-    }
-    MeshRecord& mesh = engine.meshes[target.index];
+    MeshRecord* found = current_mesh_record(engine, target.mesh);
+    if (!found) return;
+    MeshRecord& mesh = *found;
     switch (path) {
 ${this.propertyWriterArms("mesh", "        ")}
         default:
             throw std::runtime_error(
                 "Property animation path does not belong to a mesh.");
     }
-    mark_mesh_dirty(engine, mesh_slot_handle(engine, target.index));
+    mark_mesh_dirty(engine, target.mesh);
 }
 
 void apply_group_at(

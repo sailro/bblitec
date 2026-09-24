@@ -67,6 +67,26 @@ export function readCompiledSceneManifest(
     return { features: value.features, adaptations };
 }
 
+/** Where each asset of the generated tree came from (a URL or a corpus path), as packages credit them. */
+export function readCompiledAssetSources(
+    outputDirectory: string,
+    sceneId?: string,
+): string[] {
+    const path = resolve(outputDirectory, "manifest.json");
+    const value = readJsonFile(path, "The generated manifest", sceneId);
+    const sources =
+        isRecord(value) && Array.isArray(value.assets)
+            ? value.assets.map((entry: unknown) =>
+                  isRecord(entry) ? entry.source : undefined,
+              )
+            : undefined;
+    if (!sources?.every(isString))
+        throw new Error(
+            `${path} lacks its assets and their sources; run 'scene -- compile' again.`,
+        );
+    return sources;
+}
+
 const text = (value: unknown): string =>
     typeof value === "string"
         ? value

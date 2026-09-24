@@ -1,6 +1,6 @@
 #include <bblite/runtime.hpp>
 namespace bbl::upstream {
-MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle, std::uint32_t);
+void begin_scene_mesh_profile(Engine&, std::uint32_t);
 }
 #include "pal_physics_bullet.cpp"
 #include "physics.cpp"
@@ -33,10 +33,7 @@ namespace bbl::upstream {
 std::array<float, 16> mesh_local_matrix(const MeshRecord&) { std::abort(); }
 std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { std::abort(); }
 std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) { std::abort(); }
-MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_t profile) {
-    assert(profile == 3);
-    return mesh;
-}
+void begin_scene_mesh_profile(Engine&, std::uint32_t profile) { assert(profile == 3); }
 } // namespace bbl::upstream
 namespace bbl::pal {
 PhysicsDebugGeometry materialized_physics_debug_geometry(const PhysicsDebugShapeDescriptor&) {

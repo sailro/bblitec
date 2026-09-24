@@ -132,7 +132,8 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
             ],
             [
                 "retainMeshGeometry",
-                () => "retain_replacement_geometry_bounds(engine,mesh)",
+                (args) =>
+                    `retain_replacement_geometry_bounds(engine,mesh,${args[2]}.size()>=3)`,
             ],
             [
                 "_markWorldMatrixDirty",
@@ -262,8 +263,11 @@ ${lower("invalidateRenderBundles")}
 }
 // CPU attributes/bounds are retained by upload_mesh_geometry_data. Native GPU
 // generations own submitted buffers until topology rematching releases them.
-static void retain_replacement_geometry_bounds(Engine& engine, MeshHandle mesh) {
+// retainMeshGeometry rewrites boundMin/boundMax from the new positions,
+// present when they fold a finite box.
+static void retain_replacement_geometry_bounds(Engine& engine, MeshHandle mesh, bool has_bounds) {
     auto& record=${recordAt("engine.meshes", "mesh")};
+    record.has_bounds=has_bounds;
     record.has_bounds_min_override=false;
     record.has_bounds_max_override=false;
 }

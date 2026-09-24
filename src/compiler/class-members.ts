@@ -367,14 +367,12 @@ export function staticClassMember(
     name: ts.MemberName,
 ): { table: ClassMemberTable; name: string } | undefined {
     if (!ts.isIdentifier(owner)) return undefined;
-    const member = checker
-        .getSymbolAtLocation(name)
-        ?.declarations?.find(
-            (candidate): candidate is ts.ClassElement =>
-                ts.isClassElement(candidate) &&
-                ts.isClassDeclaration(candidate.parent) &&
-                isStaticMember(candidate),
-        );
+    const member = resolvedSymbol(checker, name)?.declarations?.find(
+        (candidate): candidate is ts.ClassElement =>
+            ts.isClassElement(candidate) &&
+            ts.isClassDeclaration(candidate.parent) &&
+            isStaticMember(candidate),
+    );
     if (!member || !ts.isClassDeclaration(member.parent)) return undefined;
     return {
         table: classMemberTable(checker, member.parent),
@@ -468,6 +466,32 @@ export class ClassHierarchy {
         return this.hierarchyClasses(declaration).filter(
             (candidate) => !isAbstractClass(candidate),
         );
+    }
+
+    /**
+     * The methods a call of `method` can run: the one each concrete class
+     * under its class resolves the name to, once each. Undefined for a
+     * method outside a local class body.
+     */
+    public implementations(
+        method: ts.MethodDeclaration,
+    ): readonly (ts.MethodDeclaration | undefined)[] | undefined {
+        const owner = method.parent;
+        if (
+            !ts.isClassDeclaration(owner) ||
+            owner.getSourceFile().isDeclarationFile ||
+            isStaticMember(method) ||
+            !ts.isMemberName(method.name)
+        )
+            return undefined;
+        const name = method.name.text;
+        return [
+            ...new Set(
+                this.concreteClasses(owner).map((candidate) =>
+                    classMethod(this.table(candidate), name),
+                ),
+            ),
+        ];
     }
 
     /** The run-time tag of a concrete class within its hierarchy. */

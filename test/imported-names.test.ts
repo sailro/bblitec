@@ -17,12 +17,16 @@ test("an imported module table is defined once, in its declaring module", () => 
     );
     const result = compileSource(readFileSync(fileName, "utf8"), { fileName });
     const definitions = [...result.cppFiles]
-        .filter(([, text]) => /SCENE96_BAND_OFFSETS(\{| =)/.test(text))
+        .filter(
+            ([file, text]) =>
+                file.endsWith(".cpp") &&
+                /^const [^\n]*\bSCENE96_BAND_OFFSETS\b/m.test(text),
+        )
         .map(([file]) => file);
     assert.deepEqual(definitions, ["sources/_shared/scroll-tile-image.cpp"]);
     // Each row is read in place from that one constant table.
     assert.match(
         result.cppFiles.get("main.cpp") ?? "",
-        /const bbl::js::Tuple<2>& v_block\d+_offset = bbl::js::array_index_checked\(bblscene::SCENE96_BAND_OFFSETS,/,
+        /const bbl::js::Tuple<2>& v_block\d+_offset = bbl::js::array_index_checked\(bblscene::SCENE96_BAND_OFFSETS(\(\))?,/,
     );
 });

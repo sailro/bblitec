@@ -62,7 +62,6 @@ import {
 } from "./tooling/generated-readers.js";
 import { readReport, writeReport } from "./tooling/reports.js";
 import {
-    nativeRunBound,
     resolveNativeExecutable,
     runMeasured,
     spawnNativeMeasured,
@@ -380,12 +379,18 @@ export function memoryArgumentsFrom(parsed: ParsedFlags): MemoryArguments {
 
 /** One `[mem][frame]` sample used by the memory report. */
 export interface MemorySample {
+    /** The frame loop that printed it, numbered in start order: a process
+     *  running several engines (a Window host's canvases) prints one
+     *  ordered stream per engine. */
+    engine: number;
     frame: number;
     workingSetMb: number;
     /** Occupied engine mesh records (the table less its free slots),
      *  against the meshes the scene still draws. */
     meshRecords: number;
     sceneMeshes: number;
+    /** Occupied engine transform-node records. */
+    transformNodeRecords: number;
     /** Occupied engine geometry records, against the ones still holding
      *  vertices. */
     geometryRecords: number;
@@ -419,21 +424,26 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
                 ? value
                 : undefined;
         };
+        const engine = count("engine");
         const frame = count("frame");
         const workingSetMb = read("working_set_mb");
         const meshRecords = count("mesh_records");
         const sceneMeshes = count("scene_meshes");
+        const transformNodeRecords = count("transform_node_records");
         const geometryRecords = count("geometry_records");
         const liveGeometries = count("live_geometries");
         const geometryMb = read("geometry_mb");
         const gcNodes = count("gc_nodes");
         const gcAllocations = count("gc_allocations");
         if (
+            engine === undefined ||
+            engine === 0 ||
             frame === undefined ||
             workingSetMb === undefined ||
             workingSetMb === 0 ||
             meshRecords === undefined ||
             sceneMeshes === undefined ||
+            transformNodeRecords === undefined ||
             geometryRecords === undefined ||
             liveGeometries === undefined ||
             geometryMb === undefined ||
@@ -443,10 +453,12 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
             continue;
         }
         samples.push({
+            engine,
             frame,
             workingSetMb,
             meshRecords,
             sceneMeshes,
+            transformNodeRecords,
             geometryRecords,
             liveGeometries,
             geometryMb,
@@ -455,6 +467,27 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
         });
     }
     return samples;
+}
+
+/** One engine's samples, in the order it printed them. */
+export interface MemoryStream {
+    engine: number;
+    samples: MemorySample[];
+}
+
+/** A run's samples as one stream per engine, in engine order. */
+export function memoryStreams(
+    samples: readonly MemorySample[],
+): MemoryStream[] {
+    const streams = new Map<number, MemorySample[]>();
+    for (const sample of samples) {
+        const stream = streams.get(sample.engine);
+        if (stream) stream.push(sample);
+        else streams.set(sample.engine, [sample]);
+    }
+    return [...streams.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([engine, stream]) => ({ engine, samples: stream }));
 }
 
 /**
@@ -475,8 +508,10 @@ export interface MemorySummary {
     last: MemorySample;
     /** `last.workingSetMb - settled.workingSetMb`. */
     growthMb: number;
-    /** Least-squares working-set slope after warm-up, MB per 1,000 frames. */
+    /** Theil–Sen working-set slope after warm-up, MB per 1,000 frames. */
     slopeMbPer1000Frames: number;
+    /** The same slope over the later half of the post-warm-up samples. */
+    recentSlopeMbPer1000Frames: number;
     maxSlopeMb: number;
     /** Mesh records the scene does not draw (`mesh_records` minus `scene_meshes`). */
     orphanMeshRecords: MemoryCounterTrend;
@@ -511,26 +546,40 @@ function counterTrend(
     };
 }
 
-function slopePer1000Frames(window: readonly MemorySample[]): number {
-    const frames = window.map((sample) => sample.frame);
-    const values = window.map((sample) => sample.workingSetMb);
-    const meanFrame = frames.reduce((sum, x) => sum + x, 0) / frames.length;
-    const meanValue = values.reduce((sum, y) => sum + y, 0) / values.length;
-    let covariance = 0;
-    let variance = 0;
-    for (let index = 0; index < frames.length; index += 1) {
-        covariance +=
-            (frames[index]! - meanFrame) * (values[index]! - meanValue);
-        variance += (frames[index]! - meanFrame) ** 2;
+/**
+ * The Theil–Sen working-set slope of frame-ordered samples, MB per 1,000
+ * frames: the median of every sample pair's slope. A single allocation step
+ * leaves the pairs on either side of it at zero, so only a rise most of the
+ * samples share moves the median.
+ */
+function slopePer1000Frames(samples: readonly MemorySample[]): number {
+    const slopes: number[] = [];
+    for (let later = 1; later < samples.length; later += 1) {
+        for (let earlier = 0; earlier < later; earlier += 1) {
+            slopes.push(
+                (samples[later]!.workingSetMb -
+                    samples[earlier]!.workingSetMb) /
+                    (samples[later]!.frame - samples[earlier]!.frame),
+            );
+        }
     }
-    return variance === 0 ? 0 : (covariance / variance) * 1000;
+    slopes.sort((left, right) => left - right);
+    const middle = Math.floor(slopes.length / 2);
+    const median =
+        slopes.length % 2 === 1
+            ? slopes[middle]!
+            : (slopes[middle - 1]! + slopes[middle]!) / 2;
+    return median * 1000;
 }
 
 /**
  * The memory gate over the samples after the warm-up third. A run fails
  * when any of these holds:
  *   - the working set trends upward faster than `maxSlopeMb` per 1,000
- *     frames (least squares, so one late spike does not decide);
+ *     frames both over the whole window and over its later half (Theil–Sen
+ *     slopes, so one allocation step does not decide, and a rise that
+ *     settles before the run ends -- content streaming in -- is not a
+ *     sustained trend);
  *   - engine mesh records the scene does not draw (geometry records
  *     without vertices) pile up: the last third's floor is above the
  *     first third's. The line counts occupied records, so a record a
@@ -563,6 +612,9 @@ export function summarizeMemoryProfile(
         return undefined;
     const growthMb = last.workingSetMb - settled.workingSetMb;
     const slope = slopePer1000Frames(window);
+    const recentSlope = slopePer1000Frames(
+        window.slice(Math.floor(window.length / 2)),
+    );
     const orphanMeshRecords = counterTrend(
         window,
         (sample) => sample.meshRecords - sample.sceneMeshes,
@@ -573,9 +625,9 @@ export function summarizeMemoryProfile(
     );
     const gcNodes = counterTrend(window, (sample) => sample.gcNodes);
     const failures: string[] = [];
-    if (slope > maxSlopeMb) {
+    if (slope > maxSlopeMb && recentSlope > maxSlopeMb) {
         failures.push(
-            `working set trends +${slope.toFixed(2)} MB per 1,000 frames (> ${maxSlopeMb})`,
+            `working set trends +${slope.toFixed(2)} MB per 1,000 frames after warm-up and +${recentSlope.toFixed(2)} over its later half (> ${maxSlopeMb})`,
         );
     }
     for (const [label, trend] of [
@@ -603,6 +655,7 @@ export function summarizeMemoryProfile(
         last,
         growthMb,
         slopeMbPer1000Frames: slope,
+        recentSlopeMbPer1000Frames: recentSlope,
         maxSlopeMb,
         orphanMeshRecords,
         orphanGeometryRecords,
@@ -619,15 +672,23 @@ export function formatMemorySummary(
     if (!summary) {
         return `${id}: unmeasured (missing, unordered or incomplete [mem][frame] samples)`;
     }
-    const { settled, last, growthMb, slopeMbPer1000Frames } = summary;
+    const {
+        settled,
+        last,
+        growthMb,
+        slopeMbPer1000Frames,
+        recentSlopeMbPer1000Frames,
+    } = summary;
     const signed = (value: number, digits: number): string =>
         `${value >= 0 ? "+" : ""}${value.toFixed(digits)}`;
     return [
         `${id}: ${summary.passed ? "ok" : "FAILED"} -- working set ${signed(growthMb, 1)} MB after warm-up ` +
             `(${settled.workingSetMb.toFixed(1)} -> ${last.workingSetMb.toFixed(1)} MB, ` +
-            `frames ${settled.frame}..${last.frame}; trend ${signed(slopeMbPer1000Frames, 2)} MB per 1,000 frames), ` +
+            `frames ${settled.frame}..${last.frame}; trend ${signed(slopeMbPer1000Frames, 2)} MB per 1,000 frames, ` +
+            `${signed(recentSlopeMbPer1000Frames, 2)} over the later half), ` +
             `geometry ${last.geometryMb.toFixed(1)} MB, ` +
             `${last.meshRecords} mesh records for ${last.sceneMeshes} scene mesh entries, ` +
+            `${last.transformNodeRecords} transform-node records, ` +
             `${last.geometryRecords} geometry records for ${last.liveGeometries} live, ` +
             `GC nodes ${settled.gcNodes} -> ${last.gcNodes}, ` +
             `${last.gcAllocations - settled.gcAllocations} GC allocations after warm-up`,
@@ -685,23 +746,27 @@ export function runMemoryReport(
                     ? { BBLITE_INPUT_REPLAY: replay }
                     : {}),
             },
-            {
-                dropVariables: ["BBLITE_GPU_BACKEND"],
-                captureStderr: true,
-                ...nativeRunBound(
-                    generatedDirectory,
-                    memoryArguments.frames,
-                    undefined,
-                ),
-            },
+            { dropVariables: ["BBLITE_GPU_BACKEND"], captureStderr: true },
         );
         verifyBuildIdentity(executable, generatedDirectory, stampPath);
         const samples = parseMemoryProfile(stderr);
-        const summary = summarizeMemoryProfile(
-            samples,
-            memoryArguments.maxSlopeMb,
-            memoryArguments.frames,
-        );
+        // Each engine is judged on its own stream; a run is measured when
+        // it printed a stream and every stream is complete.
+        const engines = memoryStreams(samples).map((stream) => ({
+            engine: stream.engine,
+            summary: summarizeMemoryProfile(
+                stream.samples,
+                memoryArguments.maxSlopeMb,
+                memoryArguments.frames,
+            ),
+        }));
+        const status =
+            engines.length === 0 ||
+            engines.some(({ summary }) => summary === undefined)
+                ? "unmeasured"
+                : engines.every(({ summary }) => summary?.passed)
+                  ? "passed"
+                  : "failed";
         const reportStem = stampPath.slice(0, -".build-stamp".length);
         writeFileSync(`${reportStem}.log`, stderr);
         writeReport(
@@ -721,20 +786,29 @@ export function runMemoryReport(
                 ...(defaultTape !== undefined
                     ? { tape: defaultTape.path }
                     : {}),
-                status:
-                    summary === undefined
-                        ? "unmeasured"
-                        : summary.passed
-                          ? "passed"
-                          : "failed",
+                status,
                 samples,
-                ...(summary !== undefined ? { summary } : {}),
+                engines: engines.map(({ engine, summary }) => ({
+                    engine,
+                    ...(summary !== undefined ? { summary } : {}),
+                })),
             },
         );
-        if (!summary) unmeasured += 1;
-        if (summary && !summary.passed) failures += 1;
+        if (status === "unmeasured") unmeasured += 1;
+        if (status === "failed") failures += 1;
+        const verdicts =
+            engines.length === 0
+                ? [formatMemorySummary(scene.id, undefined)]
+                : engines.map(({ engine, summary }) =>
+                      formatMemorySummary(
+                          engines.length > 1
+                              ? `${scene.id} engine ${engine}`
+                              : scene.id,
+                          summary,
+                      ),
+                  );
         console.log(
-            `${formatMemorySummary(scene.id, summary)}${
+            `${verdicts.join("\n")}${
                 defaultTape !== undefined
                     ? `\n  tape: ${defaultTape.path}`
                     : replay === undefined

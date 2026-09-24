@@ -166,18 +166,20 @@ test(
         };
         featureFile(scenes[0]!, "physics:world");
         featureFile(scenes[1]!, "physics:world text:layout");
-        assert.deepEqual(profile(), ["physics", "png", "text-layout"]);
+        // Android links vcpkg's SDL: every profile requests it.
+        assert.deepEqual(profile(), ["physics", "png", "sdl", "text-layout"]);
         featureFile(scenes[0]!, "data:locale platform:http");
         assert.deepEqual(profile(), [
             "http",
             "locale",
             "physics",
             "png",
+            "sdl",
             "text-layout",
         ]);
         featureFile(scenes[0]!, "ui:rml audio:engine");
         featureFile(scenes[1]!, "ui:rml platform:window");
-        assert.deepEqual(profile(), ["png", "ui", "ui-svg"]);
+        assert.deepEqual(profile(), ["png", "sdl", "ui", "ui-svg"]);
     },
 );
 
@@ -191,14 +193,17 @@ test("Android packaging passes the requested target and keeps shared work serial
         ["--backend", "dawn"],
     ]);
     const args = mobilePackageArguments("android", "torus-states", values);
+    assert.equal(
+        args[args.indexOf("-File") + 1],
+        resolve("tools/package-android.ps1"),
+    );
     for (const [flag, expected] of [
-        ["-Platform", "android"],
         ["-Scene", "torus-states"],
         ["-Abi", "x86_64"],
         ["-Sdk", "C:/SDK with spaces"],
         ["-Device", "emulator-5554"],
         ["-Jobs", "3"],
-        ["-ExpectBackend", "DAWN"],
+        ["-Backend", "DAWN"],
     ]) {
         assert.equal(args[args.indexOf(flag!) + 1], expected);
     }
@@ -234,7 +239,7 @@ test("Android packaging passes the requested target and keeps shared work serial
         "torus-states",
         new Map(),
     );
-    assert.equal(defaults[defaults.indexOf("-ExpectBackend") + 1], "SDL_GPU");
+    assert.equal(defaults[defaults.indexOf("-Backend") + 1], "SDL_GPU");
     for (const backend of ["both", "vulkan", ""]) {
         assert.throws(
             () =>

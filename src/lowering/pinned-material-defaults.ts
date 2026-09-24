@@ -60,6 +60,7 @@ const refractionModule =
 const baseWriterModule = "src/material/pbr/pbr-renderable.ts";
 const alphaTestModule = "src/material/pbr/fragments/alpha-test-fragment.ts";
 const unlitModule = "src/material/pbr/fragments/unlit-fragment.ts";
+const shadowOnlyModule = "src/material/pbr/fragments/shadow-only-fragment.ts";
 const sprite2dBridgeModule = "src/particle/particle-sprite-2d.ts";
 const particleSceneModule = "src/particle/particle-scene.ts";
 
@@ -90,6 +91,16 @@ const PINNED_MATERIAL_DEFAULTS = {
     alphaCutOff: { pinned: `${alphaTestModule}#pbrExt.writeUbo#_alphaCutOff` },
     /** `writeUnlitUBO`'s tint, absent unless the unlit setter was given one. */
     unlitColor: { pinned: `${unlitModule}#writeUnlitUBO#_unlitColor` },
+    // `writeShadowOnlyUBO` — seeded whole by the shadow-only factory.
+    shadowOnlyColor: {
+        pinned: `${shadowOnlyModule}#writeShadowOnlyUBO#_shadowOnlyColor`,
+    },
+    shadowOnlyOpacity: {
+        pinned: `${shadowOnlyModule}#writeShadowOnlyUBO#_shadowOnlyOpacity`,
+    },
+    shadowOnlyFalloff: {
+        pinned: `${shadowOnlyModule}#writeShadowOnlyUBO#_shadowOnlyFalloff`,
+    },
     // `writeClearcoatUBO` — seeded by `compileClearCoatOptions`.
     clearcoatIntensity: {
         pinned: `${clearcoatModule}#writeClearcoatUBO#intensity`,
@@ -400,4 +411,156 @@ export function pinnedDefaultColor3Cpp(
 /** A two-lane default as the `bbl::Vec2{...}` the intrinsics emit. */
 export function pinnedDefaultVec2Cpp(name: PinnedMaterialDefaultName): string {
     return `bbl::Vec2{${pinnedDefaultVec2(name).map(floatLiteral).join(", ")}}`;
+}
+
+/**
+ * `writeReflectanceUBO`'s absent metallic reflectance colour: the pin
+ * reads `mrc ? mrc[i] : <lane>` rather than a `??`, so the three lanes are
+ * the conditionals' own false arms.
+ */
+export function pinnedMetallicReflectanceColorAbsent(): readonly [
+    number,
+    number,
+    number,
+] {
+    const reader = sharedPinnedContext();
+    const { file, declaration } = reader.functionDeclaration(
+        reflectanceModule,
+        "writeReflectanceUBO",
+    );
+    const lanes: number[] = [];
+    for (const conditional of reader.findNodes(
+        declaration,
+        (node): node is ts.ConditionalExpression =>
+            ts.isConditionalExpression(node),
+    )) {
+        const condition = unwrapExpression(conditional.condition);
+        const read = unwrapExpression(conditional.whenTrue);
+        if (
+            !ts.isIdentifier(condition) ||
+            condition.text !== "mrc" ||
+            !ts.isElementAccessExpression(read) ||
+            !ts.isIdentifier(read.expression) ||
+            read.expression.text !== "mrc"
+        ) {
+            continue;
+        }
+        const lane = reader.numericValue(read.argumentExpression, file);
+        lanes[lane] = reader.numericValue(conditional.whenFalse, file);
+    }
+    const [r, g, b] = lanes;
+    if (
+        lanes.length !== 3 ||
+        r === undefined ||
+        g === undefined ||
+        b === undefined
+    ) {
+        return reader.contractError(
+            declaration,
+            "Expected writeReflectanceUBO to read three `mrc ? mrc[i] : <lane>` lanes.",
+        );
+    }
+    return [r, g, b];
+}
+
+/**
+ * `_writeMaterialData`'s absent `usePhysicalLightFalloff`: the lane is
+ * `material.usePhysicalLightFalloff === false ? 0 : 1`, so an absent option
+ * writes what the record's `true` writes.
+ */
+export function pinnedPhysicalLightFalloffAbsent(): boolean {
+    const reader = sharedPinnedContext();
+    const { declaration } = reader.functionDeclaration(
+        baseWriterModule,
+        "_writeMaterialData",
+    );
+    const lane = reader
+        .findNodes(
+            declaration,
+            (node): node is ts.ConditionalExpression =>
+                ts.isConditionalExpression(node) &&
+                reader.expressionMatchesShape(
+                    node.condition,
+                    "material.usePhysicalLightFalloff === false",
+                ),
+        )
+        .at(0);
+    if (!lane) {
+        return reader.contractError(
+            declaration,
+            "Expected _writeMaterialData to write `material.usePhysicalLightFalloff === false ? 0 : 1`.",
+        );
+    }
+    reader.assertExpressionShape(
+        lane,
+        "material.usePhysicalLightFalloff === false ? 0 : 1",
+        "PBR light falloff lane",
+    );
+    return true;
+}
+
+/**
+ * The statements that write every key of a PBR material record that the
+ * pin's writers read through `?? <default>` or a conditional's absent arm:
+ * the pinned value a material carries until its creation options or a
+ * setter says otherwise. `createPbrMaterial` is `{...props}` and the glTF
+ * builder assembles its own props, so a key neither names reads its
+ * default in every writer; the record starts there rather than at an
+ * initializer. A clear coat, sheen or iridescence layer is absent until a
+ * setter or the loader enables it (`has_clearcoat`, `has_sheen`,
+ * `has_iridescence`), and its lanes hold the writer's defaults meanwhile.
+ */
+export function pbrMaterialRecordSeedCpp(
+    record: string,
+    indent: string,
+): string {
+    const number = (field: string, name: PinnedMaterialDefaultName) =>
+        `${indent}${record}.${field} = ${pinnedDefaultFloatCpp(name)};`;
+    const color = (field: string, name: PinnedMaterialDefaultName) =>
+        `${indent}${record}.${field} = ${pinnedDefaultColor3Cpp(name)};`;
+    const mrc = pinnedMetallicReflectanceColorAbsent();
+    return [
+        number("metallic_factor", "pbrMetallicFactor"),
+        number("roughness_factor", "pbrRoughnessFactor"),
+        number("direct_intensity", "pbrDirectIntensity"),
+        number("environment_intensity", "pbrEnvironmentIntensity"),
+        number("reflectance", "pbrReflectance"),
+        number("normal_texture_scale", "pbrNormalTextureScale"),
+        `${indent}${record}.use_physical_light_falloff = ${pinnedPhysicalLightFalloffAbsent() ? "true" : "false"};`,
+        number("occlusion_strength", "occlusionStrength"),
+        number("metallic_f0_factor", "metallicF0Factor"),
+        // `_specularWeight ?? _metallicF0Factor ?? 1.0` with both absent.
+        number("specular_weight", "specularWeight"),
+        `${indent}${record}.metallic_reflectance_color = bbl::Color3{${mrc.map(floatLiteral).join(", ")}};`,
+        color("unlit_color", "unlitColor"),
+        number("transmission_factor", "transmissionIntensity"),
+        number("index_of_refraction", "transmissionIndexOfRefraction"),
+        color("attenuation_color", "attenuationColor"),
+        number("attenuation_distance", "attenuationDistance"),
+        number("dispersion", "dispersion"),
+        number("subsurface_intensity", "subsurfaceIntensity"),
+        color("subsurface_color", "subsurfaceColor"),
+        color("subsurface_diffusion_distance", "subsurfaceDiffusionDistance"),
+        number("subsurface_minimum_thickness", "subsurfaceMinimumThickness"),
+        number("subsurface_maximum_thickness", "subsurfaceMaximumThickness"),
+        number("clearcoat_intensity", "clearcoatIntensity"),
+        number("clearcoat_roughness", "clearcoatRoughness"),
+        number("clearcoat_index_of_refraction", "clearcoatIndexOfRefraction"),
+        number("clearcoat_normal_scale", "clearcoatBumpTextureScale"),
+        color("sheen_color", "sheenColor"),
+        number("sheen_roughness", "sheenRoughness"),
+        number("sheen_intensity", "sheenIntensity"),
+        number("iridescence_intensity", "iridescenceIntensity"),
+        number(
+            "iridescence_index_of_refraction",
+            "iridescenceIndexOfRefraction",
+        ),
+        number("iridescence_minimum_thickness", "iridescenceMinimumThickness"),
+        number("iridescence_maximum_thickness", "iridescenceMaximumThickness"),
+        number("anisotropy_intensity", "anisotropyIntensity"),
+        `${indent}${record}.anisotropy_direction = ${pinnedDefaultVec2Cpp("anisotropyDirection")};`,
+        color("shadow_only_color", "shadowOnlyColor"),
+        number("shadow_only_opacity", "shadowOnlyOpacity"),
+        number("shadow_only_falloff", "shadowOnlyFalloff"),
+    ].join("\n");
 }

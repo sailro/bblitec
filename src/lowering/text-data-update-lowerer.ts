@@ -17,6 +17,7 @@ export function textRecordsHeader(context: LoweringContext): string {
     return `#pragma once
 #include <bblite/text.hpp>
 #include <bblite/text_layout.hpp>
+#include <bblite/text_renderer.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/pinned_records.hpp>
 #include <array>

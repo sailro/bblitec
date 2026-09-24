@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type { ReachedGridMaterial } from "./grid-material.js";
 import type { AssetDecoderConfiguration } from "../asset-decoders.js";
 import type { CompiledRenderTargetOptions } from "./intrinsics/engine-options.js";
 import type {
@@ -56,6 +57,7 @@ import type {
     ResourceLoop,
 } from "./resource-loops.js";
 import type { ClassLowerer } from "./classes.js";
+import type { EvaluationOrder } from "./evaluation-order.js";
 import type { SceneManifestRecorder } from "./scene-manifest.js";
 import type { BindingScopes } from "./binding-scopes.js";
 import type { ConditionLowerer } from "./conditions.js";
@@ -135,6 +137,7 @@ export interface LoweringServices {
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
     readonly classLowerer: ClassLowerer;
+    readonly evaluationOrder: EvaluationOrder;
     readonly nativeFunctions: NativeFunctionLowerer;
     jsDataReached: boolean;
     fileReaderReached: boolean;
@@ -263,7 +266,6 @@ export interface LoweringServices {
     compileMetallicReflectanceOptions(
         expression: ts.Expression,
     ): CompiledMetallicReflectanceOptions;
-    compileGridMaterialOptions(expression: ts.Expression): string[];
     compileClearCoatOptions(
         expression: ts.Expression,
     ): CompiledClearCoatOptions;
@@ -285,6 +287,10 @@ export interface LoweringServices {
             components: string[];
         }>;
     };
+    reachGridMaterial(
+        call: ts.CallExpression,
+        options: ts.Expression | undefined,
+    ): ReachedGridMaterial;
     reachLineMaterial(
         node: ts.Node,
         options: ReachedLineMaterial,
@@ -685,6 +691,9 @@ export interface LoweringServices {
         | undefined;
     requiresStaticDataIteration(statement: ts.Node): boolean;
     canShareFunctionBody(body: ts.Node): boolean;
+    reachesOnlyClosedEffects(body: ts.Node): boolean;
+    reachesOpaqueCallee(body: ts.Node): boolean;
+    emitReusableNativeBody<T>(declaration: ts.Node, emitBody: () => T): T;
     compileSharedMethod(
         declaration: ts.MethodDeclaration,
         call: ts.CallExpression,

@@ -119,11 +119,22 @@ void prepared_invocation_retains_once() {
     bbl::js::gc::Node* node = nullptr;
     const auto baseline = bbl::js::managed_node_count();
     {
-        Function callback{[&](int value) {
-            assert(node->owners() == 1);
+        // A body whose captures cannot own a traced edge stays unregistered.
+        Function plain{[](int value) { return value; }};
+        assert(bbl::js::managed_node_count() == baseline && plain(3) == 3);
+    }
+    // A described body joins the registry, whose owner count the snapshot changes.
+    struct Body {
+        bbl::js::gc::Node** node;
+        int operator()(int value) const {
+            assert((*node)->owners() == 1);
             bbl::js::collect_cycles();
             return value + 1;
-        }};
+        }
+        void gc_trace(const bbl::js::TraceVisitor&) const {}
+    };
+    {
+        Function callback{Body{&node}};
         node = bbl::js::gc::registry.nodes.back();
         assert(node->owners() == 1);
         const auto allocations = allocation_count;

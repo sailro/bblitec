@@ -44,14 +44,12 @@ $metal = if ($IsMacOS -and -not $AndroidAbi) { "ON" } else { "OFF" }
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force |
     Out-Null
-Sync-PinnedCheckout $source $pin.repository $pin.commit "Dawn"
 $variants = @(
     if ($AndroidAbi) { "android" }
     if ($metal -eq 'ON') { "metal" }
     if ($IosSdk) { "ios" }
 )
-$patches = Get-MaintainedPatches dawn $variants
-Install-MaintainedPatches $source $patches "Dawn"
+Sync-PatchedCheckout $source $pin.repository $pin.commit "Dawn" dawn $variants $CMake | Out-Null
 
 # We consume the C API. The pin's module probe accepts GCC 13 even though
 # CMake cannot scan that compiler's module dependencies.
@@ -120,14 +118,14 @@ if ($d3d12 -eq 'ON') {
     if (-not $builtDxc) {
         throw "Dawn's built dxcompiler.dll was not found in the build tree."
     }
-    Copy-Item $builtDxc.FullName (Join-Path $output "bin") -Force
+    Copy-ArtifactItem $builtDxc.FullName (Join-Path $output "bin/dxcompiler.dll")
     $builtDxil = Get-ChildItem (Join-Path $build "Release") `
         -Filter "dxil.dll" -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $builtDxil) {
         throw "Dawn's selected dxil.dll was not found in the build tree."
     }
-    Copy-Item $builtDxil.FullName (Join-Path $output "bin") -Force
+    Copy-ArtifactItem $builtDxil.FullName (Join-Path $output "bin/dxil.dll")
 }
 
 # FXC (d3dcompiler_47.dll) is intentionally not installed: it is only
@@ -137,12 +135,12 @@ if ($d3d12 -eq 'ON') {
 
 # Install the Dawn license beside the binaries so release packaging
 # can redistribute it without the source checkout.
-Copy-Item (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt") -Force
+Copy-ArtifactItem (Join-Path $source "LICENSE") (Join-Path $output "LICENSE.txt")
 
 # Native configuration and development setup compare this record with the
 # pin and the manifest (native/patch-identity.cmake).
-@(Get-PatchRecord dawn $pin.commit $patches) -join "`n" |
-    Set-Content (Join-Path $output "bblite-dawn-features.cmake") -Encoding Ascii
+Set-ArtifactContent (Join-Path $output "bblite-dawn-features.cmake") `
+    ((@(Get-PatchRecord dawn $variants $CMake) -join "`n") + "`n")
 @{
     repository = $pin.repository
     commit = $pin.commit

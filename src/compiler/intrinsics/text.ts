@@ -19,8 +19,10 @@ import {
 import { isStringValue, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { pinnedHandleKind } from "../data-types.js";
-import { stringLiteral as cppStringLiteral } from "../../cpp-literals.js";
-import { pinnedSnakeCase } from "../../lowering/pinned-record-lowerer.js";
+import {
+    pinnedSnakeCase,
+    stringLiteral as cppStringLiteral,
+} from "../../cpp-literals.js";
 import type { TransportSchema } from "../../pinned-record-transport.js";
 import { LoweringContext } from "../../lowering/context.js";
 import { textRecordModel } from "../../lowering/text-records.js";
@@ -239,7 +241,7 @@ export function compileTextIntrinsic(
         )) {
             if (field === "layers") {
                 context.emit(
-                    `${options}.layers = bbl::js::array_to_vector(${context.compileForDataSink(value, { kind: "vector", element: { kind: "handle", handle: "text-layer" } })});`,
+                    `${options}.layers = ${context.compileForDataSink(value, { kind: "vector", element: { kind: "handle", handle: "text-layer" } })};`,
                 );
                 hasLayers = true;
             } else if (field === "clear")
@@ -248,7 +250,7 @@ export function compileTextIntrinsic(
                 );
             else if (field === "clearValue")
                 context.emit(
-                    `${options}.clear_value = ${context.compileColor4(value)};`,
+                    `${options}.clear_value = bbl::text_color(${context.compileColor4(value)});`,
                 );
             else
                 context.fail(
@@ -261,7 +263,7 @@ export function compileTextIntrinsic(
         context.reachFeature("renderer:text", call);
         return {
             kind: "text-renderer",
-            cpp: `bbl::create_text_renderer(${engine.cpp}, ${options})`,
+            cpp: `bbl::create_text_renderer(bbl::text_surface(${engine.cpp}), ${options})`,
             engineCpp: engine.cpp,
             dataType: { kind: "handle", handle: "text-renderer" },
         };
@@ -343,13 +345,13 @@ export function compileTextIntrinsic(
         if (name === "getAlphaToCoverage")
             return {
                 kind: "boolean",
-                cpp: `bbl::get_text_alpha_to_coverage(*${owner.cpp})`,
+                cpp: `bbl::get_alpha_to_coverage(${owner.cpp})`,
                 dataType: { kind: "boolean" },
             };
         context.assertTextPipelineMutable(call);
         return {
             kind: "void",
-            cpp: `bbl::set_text_alpha_to_coverage(*${owner.cpp}, ${context.compileBoolean(argumentAt(call, 1))})`,
+            cpp: `bbl::set_alpha_to_coverage(${owner.cpp}, ${context.compileBoolean(argumentAt(call, 1))})`,
         };
     }
     if (name === "createTextRenderable") {

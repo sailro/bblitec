@@ -1687,8 +1687,22 @@ export function sameCompiledValue(left: Value, right: Value): boolean {
     return left.cpp === right.cpp;
 }
 
+/**
+ * What a native callback entry passes its callback. `delta` is the frame
+ * delta as the native frame hooks pass it, a `float`; `double-delta` is a
+ * delta a native entry passes at the pin's own double precision (a
+ * SpriteRenderer's `_beforeUpdate` hooks); `timestamp` is a double time;
+ * `interval` and `void` pass nothing.
+ */
 export type FrameCallbackSignature =
-    "delta" | "timestamp" | "interval" | "void";
+    "delta" | "double-delta" | "timestamp" | "interval" | "void";
+
+/** The native type of a frame callback's number parameter. */
+export function frameCallbackParameterType(
+    signature: FrameCallbackSignature,
+): "float" | "double" {
+    return signature === "delta" ? "float" : "double";
+}
 
 /** One symbol binding in the compiler's lexical scope stack. */
 export interface VariableBinding {
@@ -2453,6 +2467,8 @@ export interface ValueFields {
     parameterBinding?: boolean;
     /** A local the emitter materialized as a native variable; reads go through it. */
     nativeBinding?: true;
+    /** The native 64-bit counter a counted loop reads as this number. */
+    integerCounterCpp?: string;
     /** A value bound by a native runtime iteration, not a static unroll. */
     runtimeIteration?: true;
     staticString?: string;
@@ -2673,7 +2689,6 @@ export type Feature =
     | "material:tracking"
     | "material:emissive"
     | "material:no-color-view"
-    | "material:grid"
     | "material:node"
     | "material:node-inputs"
     | "material:shader"

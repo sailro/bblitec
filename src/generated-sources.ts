@@ -333,10 +333,6 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["texture:compressed"],
     },
     {
-        source: "upstream/src/material_grid.cpp",
-        features: ["material:grid"],
-    },
-    {
         source: "upstream/src/texture_file.cpp",
         features: ["texture:file", "loader:babylon"],
     },
@@ -363,6 +359,8 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     {
         source: "upstream/src/mesh_factories.cpp",
         features: [
+            // loadSkybox builds its cube with createBoxData.
+            "background:image-skybox",
             "mesh:box",
             "mesh:capsule",
             "mesh:cylinder",

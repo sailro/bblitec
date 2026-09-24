@@ -25,7 +25,9 @@ Commands follow `npm run scene --`. `diagnose <id>` runs parity, `diff` and `dif
 
 Browser evidence is reused only at its pose, pin and scene module; stale evidence is recaptured and
 --recapture forces it. Only a plain parity run at the registry pose gates or recaptures a golden
-(--recapture-reference). --no-fail, suppressed features, seeked poses and single-sample comparisons
+(--recapture-reference); `npm run corpus:manifest -- --adopt-reference <id> --write` then records the new
+golden's digest and capture time as its provenance, refusing when its source, module, query or host
+page moved. --no-fail, suppressed features, seeked poses and single-sample comparisons
 against MSAA goldens are diagnostic. Shared residuals point to common inputs/behavior; backend-specific
 residuals to translation or transport.
 
@@ -51,8 +53,8 @@ the browser compositor, never offline PNG resizing.
 
 `BBLITE_TEST_PASS` windows stay visible; run Windows regression captures on an inactive desktop when
 they must not appear on the user's desktop. A `platform:window` scene paces on the desktop compositor
-clock, which stops while the console session is locked: its measured runs without their own bound are
-killed after two minutes plus 50 ms per frame.
+clock, which stops while the console session is locked: a run with a frame budget or capture fails after
+30 s without a heartbeat, naming the clock's last status; an unbounded run waits for the display.
 
 ## Captured state and its limits
 
@@ -60,7 +62,7 @@ killed after two minutes plus 50 ms per frame.
 | --- | --- |
 | Ordinary native captures | Reconstructed CPU blocks, not intercepted GPU uploads |
 | Browser capture | Shaders, buffers, textures, bundles and draws |
-| SDL .slots | Compiled bindings after dead declarations disappear |
+| .slots | SDL's compiled bindings after dead declarations disappear; the module's declared layout for Dawn |
 | diff --compose | Asset materials; excludes scene-created materials/later writes |
 | textGpu | Writes joined to draws; pushedUniformBytes are actual SDL inputs |
 | nodeGpu | Opt-in upload/attribute/per-view/uniform receipts; bytes outside writtenRanges lack evidence |
@@ -94,8 +96,11 @@ packets, WheelUp/Down a browser notch. `<entry>*<n>` repeats entries. Recovery t
 GlobalCall and DeviceLoss.
 
 `memory` runs 6,000 frames and judges the samples after the warm-up third. It fails a working-set trend
-above `--max-slope-mb` (MB per 1,000 frames, default 2), occupied mesh records the scene does not draw
-or geometry records without vertices that pile up, and GC nodes that rise steadily; missing samples fail. `all` selects
+above `--max-slope-mb` (MB per 1,000 frames, default 2; Theil–Sen, over the whole window and over its
+later half, so one allocation step or a rise that settles does not fail), occupied mesh records the scene does not draw
+or geometry records without vertices that pile up, and GC nodes that rise steadily; missing samples fail. The report
+also states the occupied transform-node records. Each engine prints its own numbered stream (a Window host runs one
+per canvas) and every stream is judged. `all` selects
 the application demos. A demo with `checks/memory/<id>.json` plays that gameplay tape by default;
 `--replay`/`--replay-file` supply another and `--replay -` idles.
 

@@ -314,8 +314,8 @@ test("environment sizing constants flow slot by slot", () => {
     // Each literal is tied to its parameter position in the pinned
     // computeSceneSize, then interpolated here: defaults, the diagonal
     // override, the two final scales, and the root composition.
-    assert.match(adapter.source, /ground_size = 15\.0f;/);
-    assert.match(adapter.source, /options\.skybox_size : 20\.0f;/);
+    assert.match(adapter.source, /environment\.ground_size = 15\.0;/);
+    assert.match(adapter.source, /options\.skybox_size : 20\.0;/);
     assert.match(adapter.source, /double ground_size = 15\.0;/);
     assert.match(adapter.source, /\*camera\.upper_radius_limit \*\s*2\.0/);
     assert.match(adapter.source, /diagonal \* 2\.0;/);
@@ -348,7 +348,7 @@ test("harmonic pre-scale terms stay paired with the pinned structure", () => {
     assert.match(parser.source, /\(xx \+ yy\) \* c00xy \+ zz \* c00z/);
     assert.match(parser.source, /zz \* c20zz - \(xx \+ yy\) \* c20xy/);
     assert.match(parser.source, /\(xx - yy\) \* c22/);
-    assert.match(parser.source, /constexpr float c1 = 1\.4999984284682104f/);
+    assert.match(parser.source, /constexpr double c1 = 1\.4999984284682104;/);
 });
 
 test("the copy-blit Y-flip is anchored to the pinned viewport composition", () => {

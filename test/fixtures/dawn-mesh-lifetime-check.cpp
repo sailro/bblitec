@@ -1,8 +1,28 @@
+#define BBLITE_GPU_INSTANCE_COLORS 0
+#define BBLITE_SHADOW_RECEIVERS 0
+#define BBLITE_SOLID_SKYBOX 0
+#define BBLITE_IMAGE_SKYBOX 0
+#define BBLITE_LOCAL_CUBEMAP 0
+#define BBLITE_GPU_DEFORMATION 0
+#define BBLITE_GPU_MORPH_STORAGE 0
+#define BBLITE_GPU_INSTANCING 0
+#define BBLITE_VAT 0
 #define BBLITE_PBR_VARIANTS 1
 #define BBLITE_STANDARD_VARIANTS 1
 #define BBLITE_NODE_VARIANTS 1
 #define BBLITE_NODE_GEOMETRY_VARIANTS 1
 #define BBLITE_PINNED_MATERIALS 1
+// The render capabilities the extracted records and teardown test. The
+// state below carries the background arms and none of the optional
+// deformation, instancing, shadow-receiver or local-cubemap members.
+#define BBLITE_PINNED_BACKGROUNDS 1
+#define BBLITE_GPU_MORPH_STORAGE 0
+#define BBLITE_VAT 0
+#define BBLITE_GPU_DEFORMATION 0
+#define BBLITE_GPU_INSTANCING 0
+#define BBLITE_GPU_INSTANCE_COLORS 0
+#define BBLITE_SHADOW_RECEIVERS 0
+#define BBLITE_LOCAL_CUBEMAP 0
 #include "pal_dawn_resources.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_record_sync.hpp"
@@ -121,39 +141,28 @@ struct DawnState {
     std::map<int, WGPURenderPipeline> blit_pipelines;
     std::map<int, Pipeline> pipelines;
     WGPURenderPipeline depth_copy_pipeline = nullptr, image_processing_pipeline = nullptr,
-                       transmission_grab_pipeline = nullptr, skybox_pipeline = nullptr,
-                       ground_pipeline = nullptr;
+                       transmission_grab_pipeline = nullptr;
     WGPUShaderModule depth_copy_module = nullptr, depth_only_module = nullptr,
                      blit_fragment_module = nullptr, blit_vertex_module = nullptr,
-                     image_processing_fragment_module = nullptr,
-                     image_processing_vertex_module = nullptr,
-                     transmission_grab_fragment_module = nullptr,
-                     transmission_grab_vertex_module = nullptr, skybox_module = nullptr,
-                     skybox_vertex_module = nullptr, ground_module = nullptr,
-                     grid_fragment_module = nullptr, grid_vertex_module = nullptr,
+                     image_processing_module = nullptr, transmission_grab_module = nullptr,
                      pbr_module = nullptr, vertex_module = nullptr;
     WGPUBindGroup image_processing_group = nullptr, pinned_geometry_frame_group = nullptr,
-                  pinned_frame_group = nullptr, skybox_material_group = nullptr,
-                  skybox_texture_group = nullptr, skybox_scene_group = nullptr,
-                  ground_material_group = nullptr, ground_texture_group = nullptr,
-                  ground_scene_group = nullptr;
+                  pinned_frame_group = nullptr;
     WGPUBuffer image_processing_params = nullptr, pinned_geometry_scene_uniforms = nullptr,
                pinned_lights_uniforms = nullptr, pinned_scene_uniforms = nullptr,
-               skybox_uniforms = nullptr, skybox_matrix = nullptr, skybox_indices = nullptr,
-               skybox_vertices = nullptr, ground_uniforms = nullptr, ground_indices = nullptr,
-               ground_vertices = nullptr, view_projection = nullptr,
-               background_mesh_world_uniform = nullptr;
-    WGPUTextureView transmission_color_view = nullptr, skybox_texture_view = nullptr,
-                    ground_texture_view = nullptr, brdf_view = nullptr,
+               view_projection = nullptr;
+    WGPUTextureView transmission_color_view = nullptr, brdf_view = nullptr,
                     environment_cube_view = nullptr, normal_flat_view = nullptr,
                     black_cube_view = nullptr, black_view = nullptr, white_view = nullptr,
                     depth_view = nullptr, msaa_color_view = nullptr;
-    WGPUTexture transmission_color = nullptr, skybox_texture = nullptr, ground_texture = nullptr,
-                brdf_texture = nullptr, environment_cube = nullptr, normal_flat_texture = nullptr,
-                black_cube = nullptr, black_texture = nullptr, white_texture = nullptr,
-                depth = nullptr, msaa_color = nullptr;
-    WGPUSampler transmission_sampler = nullptr, nearest_sampler = nullptr, ground_sampler = nullptr,
-                clamp_sampler = nullptr, default_sampler = nullptr;
+    WGPUTexture transmission_color = nullptr, brdf_texture = nullptr, environment_cube = nullptr,
+                normal_flat_texture = nullptr, black_cube = nullptr, black_texture = nullptr,
+                white_texture = nullptr, depth = nullptr, msaa_color = nullptr;
+    WGPUSampler transmission_sampler = nullptr, transmission_grab_sampler = nullptr,
+                nearest_sampler = nullptr, ground_sampler = nullptr, clamp_sampler = nullptr,
+                default_sampler = nullptr;
+    // The background arms own their resources; teardown clears them first.
+    std::vector<int> background_arms;
     struct OverlayFrame {
         WGPUBindGroup frame_group = nullptr;
         WGPUBuffer lights_uniforms = nullptr, scene_uniforms = nullptr;

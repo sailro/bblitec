@@ -117,18 +117,18 @@ test(
             );
             checks.push(`{
             record.parent_world = Matrix{${floats(expected)}};
-            const auto block = node_mesh_block(scene, engine, 0);
+            const auto block = node_mesh_block(scene, engine, MeshHandle{0});
             same_matrix(block.world, Matrix{${floats(expected)}});
             NodeMeshBlockCache cache;
-            same_matrix(node_mesh_block_for(cache, scene, engine, 0).world, block.world);
+            same_matrix(node_mesh_block_for(cache, scene, engine, MeshHandle{0}).world, block.world);
             Scene next_scene;
             (*record.parent_world)[12] += 3.0f;
-            const auto changed = node_mesh_block(scene, engine, 0).world;
+            const auto changed = node_mesh_block(scene, engine, MeshHandle{0}).world;
             assert(changed != block.world);
             // The cache is per scene pass: the same scene keeps its block,
             // the next one composes the moved world.
-            same_matrix(node_mesh_block_for(cache, scene, engine, 0).world, block.world);
-            same_matrix(node_mesh_block_for(cache, next_scene, engine, 0).world, changed);
+            same_matrix(node_mesh_block_for(cache, scene, engine, MeshHandle{0}).world, block.world);
+            same_matrix(node_mesh_block_for(cache, next_scene, engine, MeshHandle{0}).world, changed);
         }`);
         }
         const parentTrs = [1.2, -2.3, 0.4, 0.15, -0.25, 0.35, 2, 0.5, 1.7].map(
@@ -352,9 +352,9 @@ int main() {
     record.parent = MeshHandle{1};
     ${setTrs("engine.meshes[1]", parentTrs)}
     ${setTrs("record", childTrs)}
-    same_matrix(node_mesh_block(scene, engine, 0).world, Matrix{${floats(localExpected)}});
+    same_matrix(node_mesh_block(scene, engine, MeshHandle{0}).world, Matrix{${floats(localExpected)}});
     record.scene_morph_targets = true;
-    same_matrix(node_mesh_block(scene, engine, 0).world, Matrix{${floats(localExpected)}});
+    same_matrix(node_mesh_block(scene, engine, MeshHandle{0}).world, Matrix{${floats(localExpected)}});
     std::cout << "node geometry transport: ok\\n";
 }
 `,

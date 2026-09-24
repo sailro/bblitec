@@ -121,6 +121,7 @@ import {
     staticStringValue,
 } from "./types.js";
 import { recordAt } from "./record-access.js";
+import { pinOperand } from "./evaluation-order.js";
 
 /**
  * Number formatters the language owns rather than the scene.
@@ -176,6 +177,7 @@ export interface ExpressionContext
             | "compileWorkerValue"
             | "audioSessionCpp"
             | "checker"
+            | "evaluationOrder"
             | "options"
             | "referenceSearch"
             | "evaluator"
@@ -1069,9 +1071,13 @@ export class ExpressionLowerer {
         ) {
             const operands: ts.Expression[] = [];
             this.collectStringPlusOperands(unwrapped, operands);
-            const values = operands.map((operand) =>
-                this.compileValue(operand),
-            );
+            const pins = this.context.evaluationOrder.operandsToPin(operands);
+            const values = operands.map((operand, index) => {
+                const value = this.compileValue(operand);
+                return pins[index]
+                    ? pinOperand(this.context, value, operand, "concat_operand")
+                    : value;
+            });
             const parts = values.map((value, index) =>
                 stringConcatPart(this.context, value, operands[index]!),
             );
@@ -4227,7 +4233,25 @@ export class ExpressionLowerer {
         > = {};
         const getters: Record<string, ts.GetAccessorDeclaration> = {};
         const setters: Record<string, ts.SetAccessorDeclaration> = {};
-        for (const property of unwrapped.properties) {
+        // A property value a later one touches the storage of, either
+        // one writing it, is evaluated where JavaScript evaluates it (see
+        // `evaluation-order.ts`).
+        const ordered = this.context.evaluationOrder.operandsToPin(
+            unwrapped.properties.map((property) =>
+                ts.isPropertyAssignment(property)
+                    ? property.initializer
+                    : ts.isShorthandPropertyAssignment(property)
+                      ? property.name
+                      : ts.isSpreadAssignment(property)
+                        ? property.expression
+                        : property,
+            ),
+        );
+        const inOrder = (value: Value, index: number, node: ts.Expression) =>
+            ordered[index]
+                ? pinOperand(this.context, value, node, "record_member")
+                : value;
+        for (const [index, property] of unwrapped.properties.entries()) {
             if (ts.isSpreadAssignment(property)) {
                 const spread = this.compileValue(property.expression);
                 if (
@@ -4314,7 +4338,11 @@ export class ExpressionLowerer {
                     methods[name] = initializer;
                     continue;
                 }
-                const value = this.laneValue(property.initializer);
+                const value = inOrder(
+                    this.laneValue(property.initializer),
+                    index,
+                    property.initializer,
+                );
                 properties[name] =
                     value.staticString !== undefined &&
                     this.context.checker
@@ -4327,7 +4355,11 @@ export class ExpressionLowerer {
                     methods[property.name.text] = property.name;
                     continue;
                 }
-                properties[property.name.text] = this.laneValue(property.name);
+                properties[property.name.text] = inOrder(
+                    this.laneValue(property.name),
+                    index,
+                    property.name,
+                );
             } else {
                 this.context.fail(
                     property,
@@ -4475,7 +4507,7 @@ export class ExpressionLowerer {
                 cpp:
                     "bbl::sprite_renderer_before_update(" +
                     `${engineCpp}, ${renderer.cpp}, ` +
-                    `${this.context.compileFrameCallback(argumentAt(call, 0))})`,
+                    `${this.context.compileFrameCallback(argumentAt(call, 0), "double-delta")})`,
                 engineCpp,
             };
         }

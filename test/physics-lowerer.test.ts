@@ -406,21 +406,18 @@ test("a body's integrated pose writes the two fields the pin writes", () => {
     const writer = emittedBody("void write_node_pose(");
     assert.match(writer, /mesh\.position = position;/);
     assert.match(writer, /mesh\.rotation_quaternion = rotation;/);
-    assert.match(
-        writer,
-        /mark_mesh_dirty\(engine, mesh_slot_handle\(engine, node\.value\)\);/,
-    );
+    assert.match(writer, /mark_mesh_dirty\(engine, handle\);/);
     assert.doesNotMatch(lowered.source, /mark_physics_mesh_dirty/);
 });
 
 test("a body follows either kind of pinned scene node", () => {
     // `createPhysicsBody` takes a `SceneNode` upstream, which is a mesh or
     // a bare transform node; this port keeps the two in separate arenas, so
-    // the body records which one its handle addresses and both syncs read
-    // the same two properties off either.
+    // the body holds whichever handle it follows and both syncs read the
+    // same two properties off either.
     assert.match(
         lowered.header,
-        /enum class PhysicsNodeKind : std::int32_t \{\n {4}mesh,\n {4}transform_node,\n\};/,
+        /using PhysicsNodeRef = std::variant<MeshHandle, TransformNodeHandle>;/,
     );
     assert.match(lowered.header, /PhysicsNodeRef node\{\};/);
     for (const record of ["TransformNodeRecord", "MeshRecord"]) {

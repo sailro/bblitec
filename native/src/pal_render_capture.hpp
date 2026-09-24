@@ -419,16 +419,6 @@ inline void write_float_block(JsonWriter& json, const char* stage, std::uint32_t
 // that registers one).
 #if BBLITE_HAS_PBR_RENDERER
 
-inline const char* primitive_name(PrimitiveKind kind) {
-    switch (kind) {
-    case PrimitiveKind::babylon:
-        return "babylon";
-    case PrimitiveKind::gltf:
-        return "gltf";
-    }
-    return "unknown";
-}
-
 inline const char* camera_kind_name(CameraKind kind) {
     switch (kind) {
     case CameraKind::arc_rotate:
@@ -473,8 +463,6 @@ inline const char* material_kind_name(upstream::RenderMaterialKind kind) {
         return "pbr";
     case upstream::RenderMaterialKind::standard:
         return "standard";
-    case upstream::RenderMaterialKind::grid:
-        return "grid";
     case upstream::RenderMaterialKind::shader:
         return "shader";
     case upstream::RenderMaterialKind::node:
@@ -542,14 +530,6 @@ inline const char* pipeline_name(upstream::RenderPipelineKind kind) {
     case upstream::RenderPipelineKind::standard_transparent_none_clockwise:
         return "standard_transparent_none_clockwise";
 
-    case upstream::RenderPipelineKind::grid_opaque_back:
-        return "grid_opaque_back";
-    case upstream::RenderPipelineKind::grid_opaque_none:
-        return "grid_opaque_none";
-    case upstream::RenderPipelineKind::grid_transparent_back:
-        return "grid_transparent_back";
-    case upstream::RenderPipelineKind::grid_transparent_none:
-        return "grid_transparent_none";
     case upstream::RenderPipelineKind::shader:
         return "shader";
     case upstream::RenderPipelineKind::shader_a2c:
@@ -674,7 +654,6 @@ inline void write_material(JsonWriter& json, std::size_t index, const MaterialRe
     json.field("doubleSided", material.double_sided);
     json.field("standardMaterial", material.standard_material);
     json.field("shaderMaterial", material.shader_material);
-    json.field("gridMaterial", material.grid_material);
     json.field("shaderVariant", material.shader_variant);
     json.field("alphaToCoverage", material.alpha_to_coverage);
     json.field("shaderAlphaTesting", material.shader_alpha_testing);
@@ -743,14 +722,6 @@ inline void write_material(JsonWriter& json, std::size_t index, const MaterialRe
     json.field("bumpScale", material.bump_scale);
     json.field("reflectionLevel", material.reflection_level);
 
-    json.field("gridMainColor", material.grid_main_color);
-    json.field("gridLineColor", material.grid_line_color);
-    json.field("gridControl", material.grid_control);
-    json.field("gridOffset", material.grid_offset);
-    json.field("gridVisibility", material.grid_visibility);
-    json.field("gridAntialias", material.grid_antialias);
-    json.field("gridPreMultiplyAlpha", material.grid_pre_multiply_alpha);
-    json.field("gridUseMaxLine", material.grid_use_max_line);
     json.handle("reflectionCubeIndex", material.reflection_cube);
 
     json.key("baseColorFallback");
@@ -818,7 +789,7 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
                        const Engine& engine) {
     json.begin_object();
     json.field("index", index);
-    json.field("primitive", primitive_name(mesh.primitive));
+    json.field("hasBounds", mesh.has_bounds);
     json.field("position", mesh.position);
     json.field("rotation", mesh.rotation);
     json.field("rotationQuaternion", mesh.rotation_quaternion);
@@ -950,11 +921,6 @@ inline void write_draw_uniforms(JsonWriter& json, const Scene& scene, const Engi
             standard_material_block(material, features);
         write_uniform_block(json, "fragment", 0, "StandardMaterialUniforms", fragment);
 #endif
-        break;
-    }
-    case upstream::RenderMaterialKind::grid: {
-        const upstream::GridUniforms fragment = upstream::build_grid_uniforms(engine, draw.item);
-        write_uniform_block(json, "fragment", 0, "GridUniforms", fragment);
         break;
     }
     case upstream::RenderMaterialKind::shader: {
@@ -1982,25 +1948,23 @@ inline void write_render_capture(const std::string& path, const char* backend, c
 
     json.key("backgroundUniforms");
     json.begin_array();
-    if (scene.environment.has_skybox) {
-        const upstream::SkyboxUniforms skybox =
-            upstream::build_skybox_uniforms(scene.environment, scene.transmission_enabled);
-        write_uniform_block(json, "fragment", 0, "SkyboxUniforms", skybox);
-    }
-#if BBLITE_SOLID_SKYBOX
-    if (scene.environment.has_solid_skybox) {
-        // The pinned 96-byte mesh block, so a capture pairs against the
-        // browser's own skybox buffer by size.
-        const upstream::SolidSkyboxUniforms solid_skybox =
-            upstream::build_solid_skybox_uniforms(scene);
-        write_uniform_block(json, "fragment", 0, "SolidSkyboxUniforms", solid_skybox);
-    }
+#if BBLITE_PINNED_BACKGROUNDS
+    // Every arm the environment carries, whatever the run's background
+    // flag: each arm's own mesh block, the buffer its factory built, so a
+    // capture pairs against the browser's by size.
+    FrameOptions every_background;
+    every_background.background_flag = "1";
+    select_pinned_backgrounds(every_background, scene.environment)
+        .for_each([&](upstream::PinnedBackgroundArmKind kind) {
+            const upstream::PinnedBackgroundArm& arm = upstream::pinned_background_arm(kind);
+            const std::vector<std::uint8_t> block =
+                upstream::pinned_background_buffers(arm, scene).mesh_block;
+            std::vector<float> floats(block.size() / sizeof(float));
+            std::memcpy(floats.data(), block.data(), floats.size() * sizeof(float));
+            write_float_block(json, "fragment", 0, std::string(arm.fragment_stem).c_str(),
+                              floats.data(), floats.size());
+        });
 #endif
-    if (scene.environment.has_ground) {
-        const upstream::BackgroundUniforms background = upstream::build_background_uniforms(
-            scene.environment, camera, scene.transmission_enabled);
-        write_uniform_block(json, "fragment", 0, "BackgroundUniforms", background);
-    }
     json.end_array();
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -2071,7 +2035,7 @@ inline void write_render_capture(const std::string& path, const char* backend, c
                     continue;
                 const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
                 const upstream::MeshUniforms block =
-                    pinned_mesh_block(scene, engine, draw.item.mesh.value);
+                    pinned_mesh_block(scene, engine, draw.item.mesh);
                 json.begin_object();
                 json.field("meshIndex", draw.item.mesh.value);
                 json.field("stage", stage);

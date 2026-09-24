@@ -1,22 +1,31 @@
 /**
  * The maintained upstream patches: one inventory (native/patches/manifest.json)
- * read by the PowerShell builders, native/patch-identity.cmake and
- * this module.
+ * whose series and artifact records native/patch-identity.cmake alone
+ * computes, for the builders, the portfiles, configure and this module.
  *
  * `checkPatchInventory` is `npm run patches:check`: every listed file exists,
  * every patch file under native/patches and the overlay ports is listed, each
  * patch this repository owns opens with its rationale, script patches are
- * numbered in application order, each overlay portfile applies exactly its
- * listed series, and no builder names a patch file itself.
- * `artifactPatchState` compares an installed artifact's record with the
- * series the manifest selects, as the CMake check does.
+ * numbered in application order, each overlay portfile takes its series from
+ * the manifest and every patch in its directory applies to it, and no builder
+ * or portfile names a patch file itself. `artifactPatchState` asks the CMake
+ * owner whether an installed artifact's record is current.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+    existsSync,
+    mkdtempSync,
+    readFileSync,
+    readdirSync,
+    rmSync,
+    statSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findRepositoryRoot } from "./repository-root.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
-import { contentDigest, listFiles } from "./tooling/records.js";
+import { listFiles } from "./tooling/records.js";
 
 const upstreamStates = [
     "unsubmitted",
@@ -187,48 +196,6 @@ export function readPatchManifest(
     );
 }
 
-function libraryDefinition(
-    manifest: PatchManifest,
-    library: string,
-): PatchLibrary {
-    const definition = manifest.libraries.get(library);
-    if (!definition)
-        throw new Error(
-            `native/patches/manifest.json lists no library '${library}'.`,
-        );
-    return definition;
-}
-
-/** The patches of one library a build with these variant tokens applies, in order. */
-export function selectPatches(
-    manifest: PatchManifest,
-    library: string,
-    variants: readonly string[],
-): MaintainedPatch[] {
-    const definition = libraryDefinition(manifest, library);
-    for (const variant of variants) {
-        if (!definition.variants.includes(variant))
-            throw new Error(
-                `native/patches/manifest.json defines no ${library} variant '${variant}'.`,
-            );
-    }
-    return manifest.patches
-        .filter(
-            (patch) =>
-                patch.library === library &&
-                patch.variants.some(
-                    (variant) =>
-                        variant === "all" || variants.includes(variant),
-                ),
-        )
-        .sort((left, right) => left.order - right.order);
-}
-
-export interface PatchRecord {
-    source: string;
-    patches: string;
-}
-
 function pinnedSource(root: string, library: PatchLibrary): string {
     const pin = object(
         JSON.parse(readFileSync(join(root, library.pin.file), "utf8")),
@@ -237,75 +204,77 @@ function pinnedSource(root: string, library: PatchLibrary): string {
     return requiredText(pin, library.pin.field, library.pin.file);
 }
 
-/** The record an artifact of `library` built for `variants` must carry. */
-export function expectedPatchRecord(
-    manifest: PatchManifest,
+/**
+ * Runs native/patch-identity.cmake, the one owner of the maintained patch
+ * series and of the record an artifact carries (the builders and configure
+ * run the same script), and returns what it wrote.
+ */
+export function runPatchIdentity(
+    cmake: string,
+    action: "series" | "record" | "state",
     library: string,
-    variants: readonly string[],
+    options: {
+        variants?: readonly string[];
+        artifact?: string;
+        /** The variants a consumer needs; absent, the recorded ones stand. */
+        require?: readonly string[];
+    } = {},
     root = moduleRepositoryRoot(),
-): PatchRecord {
-    return {
-        source: pinnedSource(root, libraryDefinition(manifest, library)),
-        patches: selectPatches(manifest, library, variants)
-            .map(
-                (patch) =>
-                    `${basename(patch.file)}=${contentDigest(join(root, patch.file))}`,
-            )
-            .join(";"),
-    };
+): string {
+    const directory = mkdtempSync(join(tmpdir(), "bblite-patch-identity-"));
+    const output = join(directory, "output.txt");
+    try {
+        const result = spawnSync(
+            cmake,
+            [
+                `-DBBLITE_PATCH_ACTION=${action}`,
+                `-DBBLITE_PATCH_LIBRARY=${library}`,
+                `-DBBLITE_PATCH_VARIANTS=${(options.variants ?? []).join(";")}`,
+                ...(options.artifact !== undefined
+                    ? [`-DBBLITE_PATCH_ARTIFACT=${options.artifact}`]
+                    : []),
+                ...(options.require !== undefined
+                    ? [`-DBBLITE_PATCH_REQUIRE=${options.require.join(";")}`]
+                    : []),
+                `-DBBLITE_PATCH_OUTPUT=${output}`,
+                "-P",
+                join(root, "native", "patch-identity.cmake"),
+            ],
+            { encoding: "utf8", windowsHide: true },
+        );
+        if (result.error) throw result.error;
+        if (result.status !== 0)
+            throw new Error(
+                `native/patch-identity.cmake ${action} ${library} failed: ${result.stderr.trim()}`,
+            );
+        // CMake writes text-mode line endings on Windows.
+        return readFileSync(output, "utf8").replaceAll("\r\n", "\n");
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
 }
 
 export type ArtifactPatchState =
-    | { state: "current" }
-    | { state: "unrecorded"; recordPath: string }
-    | {
-          state: "stale";
-          recordPath: string;
-          recorded: Partial<PatchRecord>;
-          expected: PatchRecord;
-      };
+    { state: "current" } | { state: "unrecorded" | "stale"; detail: string };
 
-/** The CMake `set(NAME "value")` assignments of an artifact's record file. */
-function recordAssignment(record: string, name: string): string | undefined {
-    for (const line of record.split(/\r?\n/)) {
-        const match = /^set\(([A-Z0-9_]+) "([^"]*)"\)$/.exec(line.trim());
-        if (match?.[1] === name) return match[2];
-    }
-    return undefined;
-}
-
-/** Whether the artifact at `directory` records the source and patches the manifest selects. */
+/** Whether the artifact at `directory` records what the pin and the manifest select. */
 export function artifactPatchState(
-    manifest: PatchManifest,
+    cmake: string,
     library: string,
     directory: string,
-    variants: readonly string[],
-    root = moduleRepositoryRoot(),
+    require?: readonly string[],
 ): ArtifactPatchState {
-    const record = manifest.libraries.get(library)?.record;
-    if (!record)
-        throw new Error(
-            `native/patches/manifest.json names no record for '${library}'.`,
-        );
-    const recordPath = join(directory, record.file);
-    const content = existsSync(recordPath)
-        ? readFileSync(recordPath, "utf8")
-        : "";
-    const patches = recordAssignment(content, `${record.prefix}_PATCHES`);
-    if (patches === undefined) return { state: "unrecorded", recordPath };
-    const source = recordAssignment(content, `${record.prefix}_SOURCE`);
-    const expected = expectedPatchRecord(manifest, library, variants, root);
-    return source === expected.source && patches === expected.patches
-        ? { state: "current" }
-        : {
-              state: "stale",
-              recordPath,
-              recorded: {
-                  patches,
-                  ...(source === undefined ? {} : { source }),
-              },
-              expected,
-          };
+    const [state = "", detail = ""] = runPatchIdentity(
+        cmake,
+        "state",
+        library,
+        { artifact: directory, ...(require !== undefined ? { require } : {}) },
+    ).split(/\r?\n/);
+    if (state === "current") return { state };
+    if (state === "unrecorded" || state === "stale") return { state, detail };
+    throw new Error(
+        `native/patch-identity.cmake reported an unknown state '${state}'.`,
+    );
 }
 
 const diffStart = /^(diff --git |--- |Index: )/;
@@ -314,37 +283,6 @@ const reason = (error: unknown): string =>
     error instanceof Error ? error.message : String(error);
 
 const posix = (path: string): string => path.split(sep).join("/");
-
-/** The patch file names a vcpkg portfile passes to PATCHES, with `${VAR}` resolved. */
-export function portfilePatches(portfile: string): string[] {
-    const code = portfile
-        .split(/\r?\n/)
-        .map((line) => line.replace(/#.*$/, ""))
-        .join("\n");
-    const start = /\bPATCHES\b/.exec(code);
-    if (!start) return [];
-    const variables = new Map(
-        [
-            ...code.matchAll(
-                /\bset\(\s*([A-Za-z0-9_]+)\s+"?([^")\s]+)"?\s*\)/g,
-            ),
-        ].map((match) => [match[1] ?? "", match[2] ?? ""]),
-    );
-    const rest = code.slice(start.index + "PATCHES".length);
-    const end = rest.indexOf(")");
-    return rest
-        .slice(0, end < 0 ? undefined : end)
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((token) =>
-            token.replace(/^\$\{([A-Za-z0-9_]+)\}$/, (_, name: string) => {
-                const value = variables.get(name);
-                if (value === undefined)
-                    throw new Error(`PATCHES entry ${token} is never set.`);
-                return value;
-            }),
-        );
-}
 
 /** Everything wrong with the inventory; empty when it is consistent. */
 export function checkPatchInventory(root = moduleRepositoryRoot()): string[] {
@@ -397,22 +335,55 @@ export function checkPatchInventory(root = moduleRepositoryRoot()): string[] {
         if (new Set(names).size !== names.length)
             problems.push(`${where}: two patches share a file name.`);
         if (library.port !== undefined) {
-            const portfilePath = join(root, library.port, "portfile.cmake");
-            const expected = patches
-                .filter((patch) => patch.variants.includes("vcpkg"))
-                .map((patch) => basename(patch.file));
-            try {
-                const actual = portfilePatches(
-                    readFileSync(portfilePath, "utf8"),
-                );
-                if (actual.join(";") !== expected.join(";"))
-                    problems.push(
-                        `${library.port}/portfile.cmake applies [${actual.join(", ")}] but the manifest lists [${expected.join(", ")}].`,
-                    );
-            } catch (error) {
+            // The portfile reads its series from the manifest, but vcpkg keys
+            // the port by its directory alone: every patch there must apply
+            // under one of the port's selections (`vcpkg`, or a port feature
+            // it passes), so dropping one from the port means removing its
+            // file, which vcpkg sees.
+            const portfile = join(root, library.port, "portfile.cmake");
+            if (
+                !existsSync(portfile) ||
+                !readFileSync(portfile, "utf8").includes(
+                    `bblite_patch_series(${library.name} `,
+                )
+            )
                 problems.push(
-                    `${library.port}/portfile.cmake: ${reason(error)}`,
+                    `${library.port}/portfile.cmake does not take its series from bblite_patch_series(${library.name} ...).`,
                 );
+            let features: string[] = [];
+            try {
+                features = Object.keys(
+                    object(
+                        field(
+                            object(
+                                JSON.parse(
+                                    readFileSync(
+                                        join(root, library.port, "vcpkg.json"),
+                                        "utf8",
+                                    ),
+                                ),
+                                `${library.port}/vcpkg.json`,
+                            ),
+                            "features",
+                            `${library.port}/vcpkg.json`,
+                        ),
+                        `${library.port}/vcpkg.json features`,
+                    ),
+                );
+            } catch (error) {
+                problems.push(`${library.port}/vcpkg.json: ${reason(error)}`);
+            }
+            for (const patch of patches) {
+                if (
+                    posix(patch.file).startsWith(`${library.port}/`) &&
+                    !patch.variants.some(
+                        (variant) =>
+                            variant === "vcpkg" || features.includes(variant),
+                    )
+                )
+                    problems.push(
+                        `${patch.file}: a patch in the port directory must apply to the port (\`vcpkg\` or a port feature).`,
+                    );
             }
         }
     }
@@ -508,7 +479,12 @@ export function checkPatchInventory(root = moduleRepositoryRoot()): string[] {
         ...topLevel("tools", /\.(ps1|psm1|mjs|cmake)$/),
         ...topLevel("native", /(\.cmake|^CMakeLists\.txt)$/),
         ...topLevel(join("native", "patches"), /\.cmake$/),
-    ];
+        ...[...manifest.libraries.values()].flatMap((library) =>
+            library.port === undefined
+                ? []
+                : [join(root, library.port, "portfile.cmake")],
+        ),
+    ].filter((path) => existsSync(path));
     for (const path of consumers) {
         const names = readFileSync(path, "utf8").match(
             /[A-Za-z0-9_.-]+\.(?:patch|diff)\b/g,

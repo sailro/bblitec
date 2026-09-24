@@ -89,7 +89,7 @@ export function renderTaskMeshRefreshCpp(context: LoweringContext): string {
         [
             "tracked.includes",
             (args) =>
-                `std::any_of(record.render_meshes.begin(), record.render_meshes.end(), [&](const RenderTaskMesh& entry) { return entry.follows_material && entry.mesh.value == ${args[0]}.value; })`,
+                `std::any_of(record.render_meshes.begin(), record.render_meshes.end(), [&](const RenderTaskMesh& entry) { return entry.follows_material && entry.mesh == ${args[0]}; })`,
         ],
         [
             "tracked.push",

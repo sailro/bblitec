@@ -232,7 +232,7 @@ void check(const nlohmann::json& test_case) {
     record.has_clear_color = input.at("color").get<bool>(); record.clear_color.r = 4;
     for (const auto& group : input.at("groups")) record.animation_groups.push_back(AnimationGroupHandle{group.get<std::uint32_t>()});
     record.animation_tick = [](float) {};
-    record.animation_seek = [](float) {};
+    record.animation_seek = [](double) {};
     nlohmann::json events = nlohmann::json::array();
     record.scene_setup = [&](Scene& target) {
         assert(&target == &scene); events.push_back(snapshot(target)); target.clear_color.r = 9;

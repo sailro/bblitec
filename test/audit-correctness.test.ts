@@ -331,11 +331,15 @@ test(
             `
         #include <bblite/runtime.hpp>
         #include <cassert>
+        namespace bbl { struct ClusteredRefreshState { int runs = 0; }; }
         namespace bbl::upstream {
             int refreshes = 0;
-            void refresh_clustered_lights(ClusteredLightContainer&, CameraRecord* camera,
+            void refresh_clustered_lights(Engine&, ClusteredLightContainer& container,
+                ClusteredRefreshState& captured, CameraHandle camera,
                 double target_width, double target_height) {
-                assert(camera == nullptr && target_width == 640 && target_height == 480); ++refreshes;
+                assert(&captured == container.refresh.get() && camera.value == 7 &&
+                    target_width == 640 && target_height == 480);
+                ++captured.runs; ++refreshes;
             }
         }
         namespace bbl::pal {
@@ -344,6 +348,7 @@ test(
             template<class Params, class Texture> ${cppFunction(source, "void sync_clustered_payloads(")}
         }
         int main() {
+            bbl::Engine engine;
             bbl::ClusteredLightContainer container;
             container.light_data.resize(12);
             container.slice_data.resize(32);
@@ -358,7 +363,7 @@ test(
             std::string events;
             bool fail = true;
             const auto sync = [&] {
-                bbl::pal::sync_clustered_payloads(container, uploaded, nullptr, 640, 480,
+                bbl::pal::sync_clustered_payloads(engine, container, uploaded, bbl::CameraHandle{7}, 640, 480,
                     [&](const void* bytes, std::size_t size) { assert(bytes == container.params.data() && size == 32); events += 'p'; },
                     [&](bbl::pal::ClusteredTexture slot, const void* bytes, std::size_t size,
                         const bbl::ClusteredTextureWrite& write) {
@@ -373,11 +378,14 @@ test(
                         }
                     });
             };
+            // No updater until the build returned its refresh state.
             try { sync(); assert(false); } catch (const std::runtime_error&) {}
+            assert(bbl::upstream::refreshes == 0);
+            container.refresh = std::make_shared<bbl::ClusteredRefreshState>();
             // What uploaded is published; the failed one retries alone.
             assert(uploaded.params == 1 && uploaded.lights == 1 && uploaded.cells == 1 && uploaded.indices == 0 && events == "plci");
             fail = false; events.clear(); sync(); assert(uploaded.indices == 1 && events == "i");
-            events.clear(); sync(); assert(events.empty() && bbl::upstream::refreshes == 3);
+            events.clear(); sync(); assert(events.empty() && bbl::upstream::refreshes == 2);
             // A later write re-uploads only its own texture.
             container.light_write.version = 2;
             sync(); assert(events == "l");
@@ -662,7 +670,7 @@ test(
                 }
                 assert(false);
             };
-            for (auto kind : {Kind::pbr, Kind::grid, Kind::shader, Kind::node}) {
+            for (auto kind : {Kind::pbr, Kind::shader, Kind::node}) {
                 draws.transparent.commands.push_back({{kind}});
                 refuses("material draw adapter"); draws.transparent.commands.clear();
             }
@@ -726,7 +734,8 @@ test(
         }
         int main() {
             assert(generated_record_main() == 0);
-            assert(retained_nodes == 2);
+            // The records hold a handle and scalars: no traced edge, no node.
+            assert(retained_nodes == 0);
             assert(bbl::js::managed_node_count() == 0);
         }
     `,
@@ -1091,15 +1100,18 @@ test(
             source.ui_elements[0].tag = "div";
             source.ui_style_revision = 7;
             auto inbox = std::make_shared<pal::EventLoop::Inbox>();
-            pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+            const auto post = [inbox](std::unique_ptr<pal::ExternalEvent> event) {
+                inbox->post(std::move(event));
+            };
+            pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
             assert(target.ui_style_revision == 7);
             for (int i = 0; i < 100; ++i) {
                 source.ui_elements[0].text = std::to_string(i);
-                pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+                pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
                 assert(target.ui_style_revision == 7);
             }
             source.ui_style_revision = 8;
-            pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+            pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
             assert(target.ui_style_revision == 8);
             assert(target.ui_elements[0].text == "99");
             const auto text_since = source.ui_text_revision;
@@ -1108,7 +1120,7 @@ test(
             auto text_snapshot = pal::snapshot_document(source, text_since);
             assert(text_snapshot->text_updates && text_snapshot->text_updates->size() == 1);
             assert(text_snapshot->elements.empty() && text_snapshot->styles.empty());
-            pal::apply_document(target, std::move(*text_snapshot), inbox);
+            pal::apply_document(target, std::move(*text_snapshot), post);
             assert(target.ui_elements[0].text == "text-only update");
             assert(target.ui_style_revision == 8);
             assert(target.ui_text_revision == target_text_revision + 1);
@@ -1128,7 +1140,7 @@ test(
             }
             source.ui_elements[5].tag = "details";
             source.ui_elements[5].attributes["open"] = "";
-            pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+            pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
             js::RealmScope realm;
             pal::EventLoop loop(inbox);
             unsigned delivered = 0;
@@ -1251,13 +1263,19 @@ test(
             `
         #include <bblite/js_gc.hpp>
         #include <cassert>
+        struct Traced {
+            int value = 0;
+            void gc_trace(const bbl::js::TraceVisitor&) const {}
+        };
         int main() {
             using namespace bbl::js;
             const auto initial_nodes = managed_node_count();
             const auto initial_allocations = gc::registry.total_allocations;
             {
-                auto first = make_gc_shared<int>(1);
-                auto second = make_gc_shared<int>(2);
+                auto untraced = make_gc_shared<int>(0);
+                assert(*untraced == 0 && managed_node_count() == initial_nodes);
+                auto first = make_gc_shared<Traced>(Traced{1});
+                auto second = make_gc_shared<Traced>(Traced{2});
                 assert(managed_node_count() == initial_nodes + 2);
                 first.reset();
                 collect_cycles();

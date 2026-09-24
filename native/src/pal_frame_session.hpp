@@ -114,8 +114,8 @@ public:
     }
     void complete() {
         FrameSession::complete([&] {
-            if (memory_profile_ && frame % memory_profile_frames == 0)
-                print_memory_frame_profile(frame, engine, 0, 0, 0, 0);
+            if (memory_profile_.due(frame))
+                memory_profile_.print(frame, engine, 0, 0, 0, 0);
         });
         derived().discard_frame();
     }
@@ -128,7 +128,7 @@ public:
 
 private:
     Derived& derived() { return static_cast<Derived&>(*this); }
-    const bool memory_profile_ = environment_variable("BBLITE_MEM_PROFILE") == "1";
+    const MemoryProfile memory_profile_;
 };
 
 } // namespace bbl::pal

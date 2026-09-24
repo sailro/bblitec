@@ -349,6 +349,8 @@ namespace ts = bbl::ts;
 namespace js = bbl::js;
 using Matrix = std::array<float, 16>;
 using JsonObject = ts::JsonValue::Object;
+// The binding's mesh identity, as bblite/runtime.hpp declares it.
+struct MeshHandle { std::uint32_t value = 0; std::uint32_t generation = 0; };
 ${["const ts::JsonValue& required(", "std::size_t unsigned_value("].map((signature) => cppFunction(loader, signature)).join("\n")}
 ${gltfAnimationBindingsCpp()}
 ${gltfAnimationPoseStorageCpp().split("template<class ReadFloats,class BindPointer>")[0]}
@@ -376,7 +378,7 @@ void check(const nlohmann::json& input) {
     std::vector<std::size_t> animation_mesh_indices;
     for (std::size_t i = 0; i < mesh_count; ++i) {
         animation_mesh_indices.push_back(i);
-        AnimatedMeshBinding binding; binding.mesh = static_cast<std::uint32_t>(i); binding.skin = 0;
+        AnimatedMeshBinding binding; binding.mesh = MeshHandle{static_cast<std::uint32_t>(i)}; binding.skin = 0;
         if (i == 1) binding.morph_default_weights = {.375f};
         binding.initial_joint_matrices.emplace_back(); animation_runtime->meshes.push_back(binding);
     }

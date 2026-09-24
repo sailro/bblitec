@@ -32,6 +32,34 @@ check(
 );
 
 check(
+    "integer-loop-counters",
+    `
+    const values: number[] = [5, 7, 11, 13];
+    let text = "";
+    let total = 0;
+    for (let i = 0; i < values.length; i++) total += values[i]! * i;
+    for (let i = -3; i <= 3; i += 3) text += i + ",";
+    for (let i = 10; i > 0; i -= 4) text += (i / 4) + ";";
+    for (let i = 3; i >= 0; i--) {
+        if (i === 2) continue;
+        text += (i % 2) + (1 / (i - 1)) + "|";
+    }
+    for (let i = 1; i < 4; i++) for (let j = 1; j < 3; j++) total += i / j;
+    let captured = 0;
+    for (let i = 0; i < 3; i++) {
+        const read = () => i;
+        captured += read();
+    }
+    for (let i = 0; i < 5; i++) {
+        if (i === 1) i += 1;
+        total += i;
+    }
+    if (text !== "-3,0,3,2.5;1.5;0.5;1.5|Infinity|-1|") throw new Error("counted text " + text);
+    if (total !== 86 || captured !== 3) throw new Error("counted totals " + total + " " + captured);
+`,
+);
+
+check(
     "string-collection-foreach",
     `
     const names = new Set<string>(["alpha", "beta"]);
@@ -2536,6 +2564,263 @@ check(
 `,
 );
 
+check(
+    "array-removal-yields-absent-on-empty-arrays",
+    `
+    const items: number[] = [];
+    if ((items.pop() ?? -1) !== -1) throw new Error("pop empty");
+    items.shift();
+    items.pop();
+    items.push(3, 4);
+    const last = items.pop();
+    if (last === undefined || last !== 4) throw new Error("pop value");
+    const first = items.shift();
+    if (first !== 3 || items.shift() !== undefined) throw new Error("shift value");
+    const words: string[] = ["a"];
+    const word = words.pop();
+    if (word !== "a" || words.pop() !== undefined) throw new Error("string pop");
+    const maybe: (number | null)[] = [null];
+    if (maybe.pop() !== null || maybe.pop() !== undefined) throw new Error("nullable pop");
+    class Node { constructor(readonly id: number) {} }
+    const nodes: Node[] = [new Node(1)];
+    const node = nodes.pop();
+    if (!node || node.id !== 1 || nodes.pop()) throw new Error("reference pop");
+    const stack = [5, 6];
+    let sum = 0;
+    let next = stack.pop();
+    while (next !== undefined) { sum += next; next = stack.pop(); }
+    if (sum !== 11) throw new Error("drain " + sum);
+    const seven = [7];
+    if (stack.length !== 0 || seven.pop()! !== 7) throw new Error("asserted pop");
+`,
+);
+
+check(
+    "evaluation-order-around-calls-that-write",
+    `
+    let count = 1;
+    function reg(): number {
+        count += 1;
+        return count;
+    }
+    function regInline(extra: number[]): number {
+        count += 1;
+        extra.push(count);
+        return count;
+    }
+    const s = "x" + count + reg();
+    if (s !== "x12") throw new Error("concatenation order " + s);
+    const t = count + regInline([]);
+    if (t !== 5) throw new Error("arithmetic order " + t);
+    const values = [count, reg()];
+    if (values[0] !== 3 || values[1] !== 4) throw new Error("array order " + values.join(","));
+    function pair(a: number, b: number): number {
+        return a * 10 + b;
+    }
+    if (pair(count, reg()) !== 45) throw new Error("argument order");
+    if (count === reg()) throw new Error("comparison order");
+    function build(): void {
+        const record = { before: count, after: reg() };
+        if (record.before !== 6 || record.after !== 7) throw new Error("record order " + record.before);
+    }
+    build();
+    class Box {
+        constructor(readonly first: number, readonly second: number) {}
+    }
+    const box = new Box(count, reg());
+    if (box.first !== 7 || box.second !== 8) throw new Error("constructor argument order");
+    const scaled = count * 2 - reg();
+    if (scaled !== 7) throw new Error("nested arithmetic order " + scaled);
+`,
+);
+
+check(
+    "evaluation-order-around-writes-before-reads",
+    `
+    let count = 1;
+    function reg(): number {
+        count += 1;
+        return count;
+    }
+    function show(a: number, b: number): string {
+        return a + ":" + b;
+    }
+    const first = show(reg(), count);
+    if (first !== "2:2") throw new Error("writer first " + first);
+    const joined = "x" + reg() + count;
+    if (joined !== "x33") throw new Error("concatenation writer first " + joined);
+    let n = 1;
+    const sum = n + (n = 5);
+    if (sum !== 6) throw new Error("assignment in the same expression " + sum);
+    class Counter {
+        value = 0;
+        bump(): number {
+            this.value += 1;
+            return this.value;
+        }
+    }
+    const counter = new Counter();
+    const before = show(counter.value, counter.bump());
+    if (before !== "0:1") throw new Error("reader before a method " + before);
+    const after = show(counter.bump(), counter.value);
+    if (after !== "2:2") throw new Error("method before a reader " + after);
+    function fill(): number {
+        const fresh: number[] = [];
+        fresh.push(count);
+        return fresh.length;
+    }
+    const values: number[] = [];
+    const both = show(values.length, fill());
+    if (both !== "0:1") throw new Error("a function writing only its own array " + both);
+`,
+);
+
+check(
+    "recursion-through-stored-instances",
+    `
+    class TreeNode {
+        children: TreeNode[] = [];
+        constructor(readonly value: number) {}
+        add(child: TreeNode): TreeNode {
+            this.children.push(child);
+            return this;
+        }
+        sum(): number {
+            let total = this.value;
+            for (const child of this.children) total += child.sum();
+            return total;
+        }
+    }
+    const root = new TreeNode(1);
+    const mid = new TreeNode(2);
+    mid.add(new TreeNode(3));
+    root.add(mid).add(new TreeNode(4));
+    if (root.sum() !== 10) throw new Error("sum " + root.sum());
+`,
+);
+
+check(
+    "recursion-through-a-stored-hierarchy",
+    `
+    abstract class Shape {
+        abstract area(): number;
+        describe(depth: number): string {
+            return "shape@" + depth;
+        }
+    }
+    class Square extends Shape {
+        constructor(readonly side: number) {
+            super();
+        }
+        area(): number {
+            return this.side * this.side;
+        }
+    }
+    class Group extends Shape {
+        readonly children: Shape[] = [];
+        add(shape: Shape): Group {
+            this.children.push(shape);
+            return this;
+        }
+        area(): number {
+            let total = 0;
+            for (const child of this.children) total += child.area();
+            return total;
+        }
+        override describe(depth: number): string {
+            const parts: string[] = [];
+            for (const child of this.children) parts.push(child.describe(depth + 1));
+            return "group@" + depth + "[" + parts.join(",") + "]";
+        }
+        count(): number {
+            return this.children.reduce((sum, child) => sum + (child instanceof Group ? child.count() : 1), 0);
+        }
+    }
+    const inner = new Group().add(new Square(1)).add(new Square(2));
+    const root = new Group().add(inner).add(new Square(3));
+    if (root.area() !== 14) throw new Error("composite area " + root.area());
+    if (root.describe(0) !== "group@0[group@1[shape@2,shape@2],shape@1]") throw new Error("describe " + root.describe(0));
+    if (root.count() !== 3) throw new Error("count " + root.count());
+    const shapes: Shape[] = [root, new Square(4)];
+    let total = 0;
+    for (const shape of shapes) total += shape.area();
+    if (total !== 30) throw new Error("total " + total);
+`,
+);
+
+check(
+    "mutual-recursion-through-stored-instances",
+    `
+    class Ping {
+        next: Pong | null = null;
+        constructor(readonly weight: number) {}
+        total(): number {
+            return this.weight + (this.next ? this.next.total() : 0);
+        }
+    }
+    class Pong {
+        next: Ping | null = null;
+        constructor(readonly weight: number) {}
+        total(): number {
+            return this.weight * 10 + (this.next ? this.next.total() : 0);
+        }
+    }
+    const pongs: Pong[] = [];
+    const chain: Ping[] = [];
+    const a = new Ping(1);
+    const b = new Pong(2);
+    const c = new Ping(3);
+    a.next = b;
+    b.next = c;
+    pongs.push(b);
+    chain.push(a, c);
+    if (a.total() !== 24) throw new Error("mutual " + a.total());
+    let sum = 0;
+    for (const ping of chain) sum += ping.total();
+    if (sum !== 27) throw new Error("sum " + sum);
+`,
+);
+
+check(
+    "callbacks-calling-abstract-methods",
+    `
+    abstract class Animal {
+        constructor(readonly name: string) {}
+        abstract speak(): string;
+    }
+    class Dog extends Animal { speak(): string { return this.name + " barks"; } }
+    class Cat extends Animal { speak(): string { return this.name + " meows"; } }
+    const zoo: Animal[] = [new Dog("rex"), new Cat("po")];
+    let total = 0;
+    for (const animal of zoo) total += animal.speak().length;
+    const sorted = [...zoo].sort((left, right) => left.speak().length - right.speak().length).map((animal) => animal.name);
+    if (sorted.join(",") !== "po,rex" || total !== 17) throw new Error("sorted " + sorted.join(",") + total);
+`,
+);
+
+check(
+    "map-foreach-invokes-stored-instance-callbacks",
+    `
+    class Animal {
+        readonly listeners: Array<(animal: Animal) => void> = [];
+        constructor(readonly name: string) {}
+        speak(): string { return this.name + " speaks"; }
+    }
+    const zoo = new Map<string, Animal>();
+    const heard: string[] = [];
+    function adopt(animal: Animal): void {
+        zoo.set(animal.name, animal);
+        animal.listeners.push((who) => {
+            heard.push(who.speak());
+        });
+    }
+    adopt(new Animal("rex"));
+    adopt(new Animal("tom"));
+    zoo.forEach((animal) => { for (const listener of animal.listeners) listener(animal); });
+    if (heard.join("|") !== "rex speaks|tom speaks") throw new Error("heard " + heard.join("|"));
+`,
+);
+
 test("imported class static fields and blocks run when their module evaluates", async (t) => {
     const directory = resolve("artifacts/class-static-state-module");
     mkdirSync(directory, { recursive: true });
@@ -2610,14 +2895,18 @@ test("class inheritance and static state refuse what one record or struct cannot
             /Private name '#x' is declared by both 'A' and 'B'/,
         ],
         [
-            `class TreeNode {
-                children: TreeNode[] = [];
-                constructor(readonly value: number) {}
-                sum(): number { let total = this.value; for (const child of this.children) total += child.sum(); return total; }
+            `class Leaf { constructor(readonly weight: number) {} }
+            class Holder {
+                other: Leaf | null = null;
+                read(): number { return this.other ? this.other.weight : -1; }
             }
-            const root = new TreeNode(1); root.children.push(new TreeNode(2));
-            const unused = root.sum();`,
-            /calls itself on another stored instance/,
+            const holders: Holder[] = [];
+            const holder = new Holder();
+            holders.push(holder);
+            const leaf = new Leaf(5);
+            holder.other = leaf;
+            const unused = holder.read();`,
+            /Field 'other' of a shared class instance is not stored per instance/,
         ],
         [
             `class A { value = 1; }

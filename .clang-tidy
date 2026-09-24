@@ -1,9 +1,4 @@
-# Every enabled check passes on maintained and generated code. Still off
-# because generated output reports them: bugprone-unchecked-optional-access
-# (lowered upstream optional dereferences), bugprone-throwing-static-initialization
-# (namespace-scope source constants), cppcoreguidelines-pro-type-member-init
-# (record scalars without initializers) and bugprone-empty-catch (empty
-# source catch blocks).
+# Every enabled check passes on maintained and generated code.
 Checks: >
   -*,
   clang-analyzer-core.*,
@@ -14,6 +9,7 @@ Checks: >
   bugprone-assert-side-effect,
   bugprone-assignment-in-if-condition,
   bugprone-dangling-handle,
+  bugprone-empty-catch,
   bugprone-exception-escape,
   bugprone-integer-division,
   bugprone-invalid-enum-default-initialization,
@@ -27,7 +23,10 @@ Checks: >
   bugprone-suspicious-missing-comma,
   bugprone-suspicious-semicolon,
   bugprone-swapped-arguments,
+  bugprone-throwing-static-initialization,
+  bugprone-unchecked-optional-access,
   bugprone-use-after-move,
+  cppcoreguidelines-pro-type-member-init,
   performance-avoid-endl,
   performance-for-range-copy,
   performance-implicit-conversion-in-loop,
@@ -41,11 +40,12 @@ Checks: >
   performance-type-promotion-in-math-fn,
   performance-unnecessary-copy-initialization
 CheckOptions:
+  # Realm termination is a control-flow abort, not an error: a handler that
+  # lets the realm end does nothing else.
+  bugprone-empty-catch.AllowEmptyCatchForExceptions: '::bbl::pal::WorkerTerminated'
   # The check already ignores std::bad_alloc; MSVC's allocators throw its
   # subclass when a container default-constructs its sentinel node.
   bugprone-exception-escape.IgnoredExceptions: 'bad_array_new_length'
-  # Generated `main` reports a caught error through std::cerr.
-  bugprone-exception-escape.CheckMain: false
 WarningsAsErrors: '*'
 HeaderFilterRegex: '(^|[/\\])native[/\\](include|src)[/\\]'
 SystemHeaders: false

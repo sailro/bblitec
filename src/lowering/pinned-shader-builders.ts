@@ -265,6 +265,26 @@ export function pinnedModuleBinding(
 }
 
 /**
+ * A module-scope function of a pinned source module, callable: a builder,
+ * or a factory a producer runs against the recording device.
+ */
+export function pinnedModuleFunction(
+    modulePath: string,
+    name: string,
+): (...parameters: unknown[]) => unknown {
+    const value = pinnedModuleBinding(modulePath, name);
+    if (typeof value !== "function") {
+        throw new Error(
+            `Pinned ${modulePath} does not define a function '${name}'.`,
+        );
+    }
+    return (...parameters: unknown[]): unknown => {
+        const result: unknown = Reflect.apply(value, undefined, parameters);
+        return result;
+    };
+}
+
+/**
  * One module-scope binding of a packaged pinned module. The module is
  * loaded once, with every top-level declaration exported, so two builders
  * of one module share its instance.

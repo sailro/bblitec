@@ -776,7 +776,9 @@ function compileCreateSpriteAtlasFromFrames(
             `bbl::js::to_uint32(${access("height")}), ` +
             `${optionalUnsigned("srcX", unsigned(packDefaults.srcX))}, ` +
             `${optionalUnsigned("srcY", unsigned(packDefaults.srcY))}, ` +
-            `${optionalUnsigned("srcStrideBytes", "0u")}, ` +
+            // An absent stride stays absent: the packer's own
+            // `srcStrideBytes ?? width * 4` resolves it per frame.
+            `${optionalUnsigned("srcStrideBytes", "std::optional<std::uint32_t>{}")}, ` +
             `(${pivot} ? bbl::Vec2{static_cast<float>((*${pivot})[0]), ` +
             `static_cast<float>((*${pivot})[1])} : bbl::Vec2{${packDefaults.pivot.map(floatLiteral).join(", ")}})}); } ` +
             `return bbl::create_sprite_atlas_from_frames(${engine.cpp}, ${normalized}, ` +

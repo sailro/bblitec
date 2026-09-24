@@ -95,12 +95,13 @@ inline void create_clustered_textures(SDL_GPUDevice* device,
  * holds, so a still frame uploads nothing. The params block needs no upload
  * here: the draw pushes the container's own lanes as its uniform block.
  */
-inline void upload_clustered_lights(SDL_GPUDevice* device, ClusteredLightContainer& container,
-                                    CameraRecord* camera, double target_width, double target_height,
+inline void upload_clustered_lights(SDL_GPUDevice* device, Engine& engine,
+                                    ClusteredLightContainer& container, CameraHandle camera,
+                                    double target_width, double target_height,
                                     ClusteredLightGpu& gpu) {
     create_clustered_textures(device, container, gpu);
     sync_clustered_payloads(
-        container, gpu.uploaded, camera, target_width, target_height,
+        engine, container, gpu.uploaded, camera, target_width, target_height,
         [](const void*, std::size_t) {},
         [&](ClusteredTexture slot, const void* bytes, std::size_t size,
             const ClusteredTextureWrite& write) {

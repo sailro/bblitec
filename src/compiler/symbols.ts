@@ -202,17 +202,26 @@ export function isAbsentTypeofIdentifier(
  * The symbol a node names where it is written, an import alias NOT
  * followed: a declaration's own symbol (a variable, parameter, function or
  * class name), a module's symbol (its source file or a module specifier),
- * or for a use, the binding its scope resolves. It is the identity names
- * are compared by: a use agrees with its declaration, an imported name
- * with its import specifier, and two distinct locals never do. A reader
- * after the declaration a use stands for, or a member's own declaration,
- * reads {@link resolvedSymbol}.
+ * or for a use, the binding its scope resolves -- for a shorthand property
+ * (`{ canvas }`), the value it names rather than the property it declares.
+ * It is the identity names are compared by: a use agrees with its
+ * declaration, an imported name with its import specifier, and two
+ * distinct locals never do. A reader after the declaration a use stands
+ * for, or a member's own declaration, reads {@link resolvedSymbol}.
+ *
+ * With {@link resolvedSymbol} and {@link aliasTarget}, the only symbol
+ * readers in the repository: `test/compiler-architecture.test.ts` refuses
+ * a raw checker symbol read anywhere else.
  */
 export function declaredSymbol(
     checker: ts.TypeChecker,
     node: ts.Node,
 ): ts.Symbol | undefined {
-    return checker.getSymbolAtLocation(node);
+    return node.parent &&
+        ts.isShorthandPropertyAssignment(node.parent) &&
+        node.parent.name === node
+        ? checker.getShorthandAssignmentValueSymbol(node.parent)
+        : checker.getSymbolAtLocation(node);
 }
 
 /** The binding an import alias stands for; any other symbol is itself. */
@@ -226,22 +235,19 @@ export function aliasTarget(
 }
 
 /**
- * The symbol a name resolves to: an import alias to the binding it imports,
- * a shorthand property (`{ canvas }`) to the value it names rather than the
- * property it declares, and a property access to its member. The one
- * resolver for a checker-only reader; `CompilerSymbols.valueSymbol` builds
- * on it.
+ * The symbol a name resolves to: {@link declaredSymbol} with an import
+ * alias followed to the binding it imports, and a property access read as
+ * its member. The one resolver for a checker-only reader;
+ * `CompilerSymbols.valueSymbol` builds on it.
  */
 export function resolvedSymbol(
     checker: ts.TypeChecker,
     node: ts.Node,
 ): ts.Symbol | undefined {
-    const name = ts.isPropertyAccessExpression(node) ? node.name : node;
-    const symbol =
-        ts.isShorthandPropertyAssignment(name.parent) &&
-        name.parent.name === name
-            ? checker.getShorthandAssignmentValueSymbol(name.parent)
-            : checker.getSymbolAtLocation(name);
+    const symbol = declaredSymbol(
+        checker,
+        ts.isPropertyAccessExpression(node) ? node.name : node,
+    );
     return symbol && aliasTarget(checker, symbol);
 }
 

@@ -227,7 +227,8 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
         for(std::size_t cell=0;cell<16;++cell)
             assert(std::abs(double(world[cell])-wanted.at("world")[cell].get<double>())<2e-6);
         const auto& geometry=engine.geometries.at(mesh.geometry);
-        assert(mesh.primitive==PrimitiveKind::babylon);
+        // load-babylon.ts builds a mesh without boundMin/boundMax.
+        assert(!mesh.has_bounds);
         assert(engine.materials.at(mesh.material.value).standard_material);
         assert(!mesh.receives_shadows);
         assert(geometry.vertices.size()*3==wanted.at("positions").size());

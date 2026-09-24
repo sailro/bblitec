@@ -57,6 +57,7 @@ import {
 } from "./compiler/native-record-storage.js";
 import { resolve } from "node:path";
 import { framePollExecutor } from "./compiler/frame-poll.js";
+import { integerCounterOf } from "./compiler/integer-loops.js";
 import { PendingActivations } from "./compiler/pending-activations.js";
 import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
 import {
@@ -135,7 +136,6 @@ import {
 import {
     compileAnisotropyOptions,
     compileClearCoatOptions,
-    compileGridMaterialOptions,
     compileIridescenceOptions,
     compileMetallicReflectanceOptions,
     compilePbrMaterialOptions,
@@ -183,6 +183,10 @@ import {
     type ReachedLineMaterial,
 } from "./compiler/line-material.js";
 import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
+import {
+    reachGridMaterial,
+    type ReachedGridMaterial,
+} from "./compiler/grid-material.js";
 import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
 import {
     executeApplicationFunction,
@@ -286,6 +290,8 @@ import {
     parameterizedResourceLoop,
     requiresStaticDataIteration,
     canShareFunctionBody,
+    reachesOnlyClosedEffects,
+    reachesOpaqueCallee,
     sharedFunctionHasCallEffects,
     requiresStaticLoopIteration,
     runtimeProfileConstructionIntrinsics,
@@ -307,9 +313,13 @@ import type {
     ValueKind,
     VariableBinding,
 } from "./compiler/types.js";
-import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import {
+    frameCallbackParameterType,
+    isCompileTimeOnlyValue,
+} from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import { ClassHierarchy } from "./compiler/class-members.js";
+import { EvaluationOrder } from "./compiler/evaluation-order.js";
 import {
     assertDeterministicRandomUnreached,
     isDeterministicRandomRead,
@@ -692,6 +702,7 @@ class Compiler implements LoweringServices {
     public readonly dataTypes: DataTypeRegistry;
     public readonly dataLowerer: DataLowerer;
     public readonly classLowerer: ClassLowerer;
+    public readonly evaluationOrder: EvaluationOrder;
     public readonly nativeFunctions: NativeFunctionLowerer;
     public readonly browserErasure: BrowserErasure;
     /** One rebound-name walk per file, shared by every `identifierIsRebound`. */
@@ -904,6 +915,10 @@ class Compiler implements LoweringServices {
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
+        this.evaluationOrder = new EvaluationOrder(
+            checker,
+            this.dataTypes.classHierarchy,
+        );
         this.nativeFunctions = new NativeFunctionLowerer(this);
         this.browserErasure = new BrowserErasure(this);
         this.expressions = new ExpressionLowerer(this);
@@ -941,6 +956,12 @@ class Compiler implements LoweringServices {
             (value, arity) => this.bindings.bindDataTuple(value, arity),
             (expression) => this.symbols.pinnedWgslTemplate(expression),
             (value) => this.dataLowerer.truthinessCondition(value),
+            (cpp) =>
+                this.bindings.pinValueToTemporary(
+                    { kind: "number", cpp },
+                    "number_operand",
+                ).cpp,
+            this.evaluationOrder,
         );
     }
 
@@ -3345,7 +3366,7 @@ class Compiler implements LoweringServices {
             writable(value).sceneMeshProfileIndex = index;
             delete writable(value).sceneMeshIndex;
             writable(value).cpp =
-                `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
+                `(bbl::upstream::begin_scene_mesh_profile(${this.requireEngine(value, call)}, ${index}u), ${value.cpp})`;
         }
         return value;
     }
@@ -3653,8 +3674,11 @@ class Compiler implements LoweringServices {
         return compileMetallicReflectanceOptions(this, expression);
     }
 
-    public compileGridMaterialOptions(expression: ts.Expression): string[] {
-        return compileGridMaterialOptions(this, expression);
+    public reachGridMaterial(
+        call: ts.CallExpression,
+        options: ts.Expression | undefined,
+    ): ReachedGridMaterial {
+        return reachGridMaterial(this, call, options);
     }
 
     public compileClearCoatOptions(
@@ -4046,9 +4070,7 @@ class Compiler implements LoweringServices {
                                       parameter,
                                       false,
                                       false,
-                                      signature === "timestamp"
-                                          ? "double"
-                                          : "float",
+                                      frameCallbackParameterType(signature),
                                   ),
                               ],
                           },
@@ -4067,7 +4089,7 @@ class Compiler implements LoweringServices {
                 "void",
                 unwrapped,
                 parameter
-                    ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
+                    ? `[[maybe_unused]] ${frameCallbackParameterType(signature)} ${parameter}`
                     : "",
                 parameter ? [parameter] : [],
             );
@@ -4203,7 +4225,7 @@ class Compiler implements LoweringServices {
                 if (parameter && ts.isIdentifier(parameter.name)) {
                     this.registerNativeBindingType(
                         parameterCppName!,
-                        signature === "timestamp" ? "double" : "float",
+                        frameCallbackParameterType(signature),
                     );
                     this.bindings.defineVariable(parameter.name, {
                         kind: "number",
@@ -4249,11 +4271,9 @@ class Compiler implements LoweringServices {
         // would be a second answer to it.
         const cppParameter = parameterName
             ? `[[maybe_unused]] ` +
-              `${signature === "timestamp" ? "double" : "float"} ` +
+              `${frameCallbackParameterType(signature)} ` +
               `${parameterCppName}`
-            : signature === "timestamp"
-              ? "double"
-              : "float";
+            : frameCallbackParameterType(signature);
         const lambdaParameter =
             signature === "void" || signature === "interval"
                 ? ""
@@ -4376,7 +4396,7 @@ class Compiler implements LoweringServices {
                         parameter,
                         false,
                         false,
-                        signature === "timestamp" ? "double" : "float",
+                        frameCallbackParameterType(signature),
                     );
                 const stored = this.bindings.lookupOptional(identifier);
                 const parameters = stored?.nativeCallbackParameterTypes;
@@ -4416,7 +4436,7 @@ class Compiler implements LoweringServices {
                 previousPlatformEventCaptureFloor;
         }
         const lambdaParameter = parameter
-            ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
+            ? `[[maybe_unused]] ${frameCallbackParameterType(signature)} ${parameter}`
             : "";
         return this.renderSharedClosure(
             compiled,
@@ -5704,12 +5724,18 @@ class Compiler implements LoweringServices {
             return undefined;
         }
         const accessor = owner.recordGetters?.[expression.name.text];
-        if (accessor) {
-            return this.compileRecordGetter(owner, accessor);
-        }
-        const property = owner.recordProperties?.[expression.name.text];
-        if (property) {
-            return property;
+        const member = accessor
+            ? this.compileRecordGetter(owner, accessor)
+            : owner.recordProperties?.[expression.name.text];
+        if (member) {
+            // A link of an optional chain carries the chain's presence.
+            return ts.isOptionalChain(expression)
+                ? this.propertyAccess.propertyWithOwnerPresence(
+                      owner,
+                      member,
+                      expression,
+                  )
+                : member;
         }
         // A property the record was built without reads as `undefined`
         // when its type declares it optional: `{ b: 2 } as { a?: number }`
@@ -6379,6 +6405,9 @@ class Compiler implements LoweringServices {
      */
     private readonly staticRecordAccessors = new EmissionMap<string, string>();
 
+    /** Closure environment structs already registered, by name. */
+    private readonly environmentStructs = new EmissionSet<string>();
+
     /**
      * Identity of the C++ lexical scope currently receiving emitted lines.
      * Captured callback/IIFE bodies get their own identity so a lazily
@@ -6685,8 +6714,10 @@ class Compiler implements LoweringServices {
 
     public describeNativeValue(value: Value): void {
         this.nativeStoredValues.add(value);
+        const counter = integerCounterOf(value);
         const storage =
             value.sharedStorageCpp ??
+            counter ??
             (cppIdentifierPattern.test(value.cpp)
                 ? value.cpp
                 : (value.optionalStorageCpp ?? value.cpp));
@@ -6698,28 +6729,31 @@ class Compiler implements LoweringServices {
         )
             return;
         const cppType =
-            value.kind === "engine"
-                ? value.ownedEngineCpp
-                    ? "std::shared_ptr<bbl::Engine>"
-                    : "bbl::Engine"
-                : value.kind === "texture" && value.textureStorage === "solid"
-                  ? "bbl::SolidTexture"
-                  : value.kind === "texture" && value.textureStorage === "file"
-                    ? "bbl::FileTexture"
+            counter !== undefined && storage === counter
+                ? "std::int64_t"
+                : value.kind === "engine"
+                  ? value.ownedEngineCpp
+                      ? "std::shared_ptr<bbl::Engine>"
+                      : "bbl::Engine"
+                  : value.kind === "texture" && value.textureStorage === "solid"
+                    ? "bbl::SolidTexture"
                     : value.kind === "texture" &&
-                        value.textureStorage === "pixels"
-                      ? "bbl::PixelsTexture"
-                      : value.dataType
-                        ? this.dataTypes.cppType(value.dataType)
-                        : isHandleKind(value.kind)
-                          ? handleCppType(value.kind)
-                          : value.kind === "number"
-                            ? "double"
-                            : value.kind === "boolean"
-                              ? "bool"
-                              : value.kind === "string"
-                                ? "std::string"
-                                : undefined;
+                        value.textureStorage === "file"
+                      ? "bbl::FileTexture"
+                      : value.kind === "texture" &&
+                          value.textureStorage === "pixels"
+                        ? "bbl::PixelsTexture"
+                        : value.dataType
+                          ? this.dataTypes.cppType(value.dataType)
+                          : isHandleKind(value.kind)
+                            ? handleCppType(value.kind)
+                            : value.kind === "number"
+                              ? "double"
+                              : value.kind === "boolean"
+                                ? "bool"
+                                : value.kind === "string"
+                                  ? "std::string"
+                                  : undefined;
         if (cppType)
             this.registerNativeBindingType(
                 storage,
@@ -6880,11 +6914,40 @@ class Compiler implements LoweringServices {
                 (this.allocatedCppNames.get(name) ?? 0) > allocationBoundary,
         );
         const environmentType = capture.environmentType;
+        const struct = capture.environmentStruct;
+        if (!this.environmentStructs.has(struct.name)) {
+            this.environmentStructs.add(struct.name);
+            this.registerNativeTemplate(
+                struct.name,
+                [...struct.lines],
+                struct.declaration,
+            );
+        }
+        // Enclosing names the body reads without its environment: bindings
+        // it did not capture, and other enclosing locals (a platform event
+        // parameter) it names unqualified.
+        const captured = new EmissionSet(capture.nativeCaptures);
+        const text = lines.join("\n");
+        const uncaptured = [...identifiers].filter((name) => {
+            const binding = this.nativeBindings.get(name);
+            if (binding)
+                return (
+                    binding.sequence <= capture.boundary &&
+                    !captured.has(binding)
+                );
+            const allocated = this.allocatedCppNames.get(name);
+            return (
+                allocated !== undefined &&
+                allocated <= allocationBoundary &&
+                new RegExp(`(?:^|[^:\\w])${name}\\b`).test(text)
+            );
+        });
         return {
             lines: [...capture.declarations, ...lines],
             environment: capture.environment,
             initializer: capture.initializer,
             ...(environmentType ? { environmentType } : {}),
+            ...(uncaptured.length > 0 ? { uncaptured } : {}),
             nativeCaptures: capture.nativeCaptures,
             localBindings: [
                 capture.environment,
@@ -7364,7 +7427,14 @@ class Compiler implements LoweringServices {
         );
         writable(value).audioMainBusCpp = shared ? `(*${name})` : name;
         writable(value).audioMainBusOwnerCpp = owner;
-        const binding = this.registerNativeBinding(name, false, !shared);
+        const binding = this.registerNativeBinding(
+            name,
+            false,
+            !shared,
+            shared
+                ? "std::shared_ptr<bbl::pal::AudioNodeHandle>"
+                : "bbl::pal::AudioNodeHandle",
+        );
         if (borrows) this.nativeConstBindings.add(binding);
         writable(value).nativeCompanionCaptures = {
             ...value.nativeCompanionCaptures,
@@ -7600,6 +7670,54 @@ class Compiler implements LoweringServices {
             body,
             this.definiteCollectionMutation(),
         );
+    }
+
+    public reachesOpaqueCallee(body: ts.Node): boolean {
+        return reachesOpaqueCallee(this, body);
+    }
+
+    public reachesOnlyClosedEffects(body: ts.Node): boolean {
+        return reachesOnlyClosedEffects(
+            this,
+            body,
+            this.definiteCollectionMutation(),
+        );
+    }
+
+    /**
+     * A body emitted once for every caller runs from any control flow, any
+     * number of times: its lowering sees runtime control flow and iteration,
+     * and it may not record a generation-owned construction.
+     */
+    public emitReusableNativeBody<T>(
+        declaration: ts.Node,
+        emitBody: () => T,
+    ): T {
+        this.enterRuntimeControlFlow();
+        this.enterRuntimeIteration();
+        try {
+            const checkpoint = this.checkpointResourceConstruction();
+            try {
+                const emitted = emitBody();
+                if (
+                    !resourceConstructionStatesEqual(
+                        checkpoint.state,
+                        this.sceneManifest.constructionState(),
+                    )
+                ) {
+                    this.fail(
+                        declaration,
+                        "A shared native body cannot record a generation-owned construction for every caller.",
+                    );
+                }
+                return emitted;
+            } finally {
+                this.resourceConstructionCheckpoints.delete(checkpoint);
+            }
+        } finally {
+            this.leaveRuntimeIteration();
+            this.leaveRuntimeControlFlow();
+        }
     }
 
     public canReplaySharedCallEffects(body: ts.Node): boolean {
@@ -8890,8 +9008,12 @@ class Compiler implements LoweringServices {
             );
         }
         const cppName = this.bindings.cppIdentifier(identifier.text);
-        this.staticNativeDeclarations.push(`auto ${cppName} = ${value.cpp};`);
-        const stored = { ...value, cpp: cppName };
+        // A function-local static: its construction can throw, which a
+        // namespace-scope initializer would turn into termination.
+        this.staticNativeDeclarations.push(
+            `auto& ${cppName}() {\n    static auto value = ${value.cpp};\n    return value;\n}`,
+        );
+        const stored = { ...value, cpp: `${cppName}()` };
         this.bindings.variableScopes[0]!.set(symbol, {
             name: identifier.text,
             value: stored,

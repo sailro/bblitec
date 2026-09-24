@@ -111,7 +111,7 @@ namespace bbl {
 void load_image_skybox(
     Scene& scene,
     std::array<std::string, 6> face_paths,
-    float size) {
+    double size) {
     for (std::size_t face = 0; face < face_paths.size(); ++face) {
         scene.environment.image_skybox_faces[face].bytes =
             pal::read_binary_file(face_paths[face]);
@@ -538,11 +538,10 @@ void apply_scene_size(Scene& scene, double requested_skybox_size) {
             world,
             mesh);
     }
-    scene.environment.ground_size = ${this.context.floatLiteral(sceneSize.groundDefault)};
-    scene.environment.skybox_size =
-        static_cast<float>(requested_skybox_size);
-    scene.environment.ground_position = Vec3{};
-    scene.environment.skybox_position = Vec3{};
+    scene.environment.ground_size = ${this.context.doubleLiteral(sceneSize.groundDefault)};
+    scene.environment.skybox_size = requested_skybox_size;
+    scene.environment.ground_position = Vec3d{};
+    scene.environment.skybox_position = Vec3d{};
     if (!std::isfinite(bounds_min[0])) return;
     const double dx = bounds_max[0] - bounds_min[0];
     const double dy = bounds_max[1] - bounds_min[1];
@@ -571,14 +570,12 @@ void apply_scene_size(Scene& scene, double requested_skybox_size) {
     }
     ground_size *= ${this.context.doubleLiteral(sceneSize.groundScale)};
     skybox_size *= ${this.context.doubleLiteral(sceneSize.skyboxScale)};
-    scene.environment.ground_size =
-        static_cast<float>(ground_size);
-    scene.environment.skybox_size =
-        static_cast<float>(skybox_size);
-    scene.environment.ground_position = Vec3{
-        static_cast<float>(bounds_min[0] + dx * ${this.context.doubleLiteral(sceneSize.rootHalf)}),
-        static_cast<float>(bounds_min[1] - ${this.context.doubleLiteral(sceneSize.rootDrop)}),
-        static_cast<float>(bounds_min[2] + dz * ${this.context.doubleLiteral(sceneSize.rootHalf)}),
+    scene.environment.ground_size = ground_size;
+    scene.environment.skybox_size = skybox_size;
+    scene.environment.ground_position = Vec3d{
+        bounds_min[0] + dx * ${this.context.doubleLiteral(sceneSize.rootHalf)},
+        bounds_min[1] - ${this.context.doubleLiteral(sceneSize.rootDrop)},
+        bounds_min[2] + dz * ${this.context.doubleLiteral(sceneSize.rootHalf)},
     };
     scene.environment.skybox_position =
         scene.environment.ground_position;
@@ -607,12 +604,10 @@ void add_dds_environment_background(
     scene.environment.has_ground = true;
     read_dds_skybox(scene.environment, options.skybox_url);
     scene.environment.enable_noise = options.enable_noise;
-    const float requested_skybox_size = options.skybox_size;
+    const double requested_skybox_size = options.skybox_size;
     scene.deferred_builders.emplace_back(
         [&scene, requested_skybox_size]() {
-            apply_scene_size(
-                scene,
-                static_cast<double>(requested_skybox_size));
+            apply_scene_size(scene, requested_skybox_size);
         }, SceneDeferredFailure::promise_rejection);
 }
 `
@@ -661,13 +656,11 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
     } else if (!options.skybox_url.empty()) {
         read_dds_skybox(scene.environment, options.skybox_url);
     }
-    const float requested_skybox_size =
-        options.skybox_size > 0.0f ? options.skybox_size : ${this.context.floatLiteral(sceneSize.skyboxDefault)};
+    const double requested_skybox_size =
+        options.skybox_size > 0.0 ? options.skybox_size : ${this.context.doubleLiteral(sceneSize.skyboxDefault)};
     scene.deferred_builders.emplace_back(
         [&scene, requested_skybox_size]() {
-            apply_scene_size(
-                scene,
-                static_cast<double>(requested_skybox_size));
+            apply_scene_size(scene, requested_skybox_size);
         }, SceneDeferredFailure::promise_rejection);
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};

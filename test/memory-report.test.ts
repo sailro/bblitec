@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
     formatMemorySummary,
+    memoryStreams,
     parseMemoryArguments,
     parseMemoryProfile,
     summarizeMemoryProfile,
@@ -13,10 +14,12 @@ import { readMemoryTape } from "../src/tooling/check-spec.js";
 import { applicationScenes } from "../src/scene-registry.js";
 
 interface Line {
+    engine?: number;
     frame: number;
     workingSet?: number;
     meshRecords?: number;
     sceneMeshes?: number;
+    transformNodeRecords?: number;
     geometryRecords?: number;
     liveGeometries?: number;
     gcNodes?: number;
@@ -24,17 +27,25 @@ interface Line {
 }
 
 const line = (sample: Line): string =>
-    `[mem][frame] frame=${sample.frame} working_set_mb=${(sample.workingSet ?? 100).toFixed(1)} ` +
+    `[mem][frame] engine=${sample.engine ?? 1} frame=${sample.frame} working_set_mb=${(sample.workingSet ?? 100).toFixed(1)} ` +
     `mesh_records=${sample.meshRecords ?? 40} scene_meshes=${sample.sceneMeshes ?? 40} ` +
+    `transform_node_records=${sample.transformNodeRecords ?? 3} ` +
     `gc_nodes=${sample.gcNodes ?? 500} gc_allocations=${sample.gcAllocations ?? 1000} ` +
     `geometry_records=${sample.geometryRecords ?? 40} live_geometries=${sample.liveGeometries ?? 40} ` +
     "geometry_mb=8.0 gpu_meshes=40 shared_geometries=12 shared_geometry_mb=6.5";
 
-/** Twelve samples every 30 frames: warm-up ends at frame 120. */
-const run = (sample: (index: number) => Omit<Line, "frame">): string =>
-    Array.from({ length: 12 }, (_, index) =>
+/** `length` samples every 30 frames. */
+const runOf = (
+    length: number,
+    sample: (index: number) => Omit<Line, "frame">,
+): string =>
+    Array.from({ length }, (_, index) =>
         line({ frame: index * 30, ...sample(index) }),
     ).join("\n");
+
+/** Twelve samples every 30 frames: warm-up ends at frame 120. */
+const run = (sample: (index: number) => Omit<Line, "frame">): string =>
+    runOf(12, sample);
 
 test("parses only complete memory frame lines out of a run's stderr", () => {
     const samples = parseMemoryProfile(
@@ -53,6 +64,8 @@ test("parses only complete memory frame lines out of a run's stderr", () => {
                 "gc_allocations=-1",
             ),
             line({ frame: 22, meshRecords: 1.5 }),
+            line({ frame: 23 }).replace(/ engine=\d+/, ""),
+            line({ frame: 24, engine: 0 }),
             line({
                 frame: 30,
                 workingSet: 104.5,
@@ -70,10 +83,12 @@ test("parses only complete memory frame lines out of a run's stderr", () => {
         [0, 30],
     );
     assert.deepEqual(samples[1], {
+        engine: 1,
         frame: 30,
         workingSetMb: 104.5,
         meshRecords: 41,
         sceneMeshes: 40,
+        transformNodeRecords: 3,
         geometryRecords: 43,
         liveGeometries: 39,
         geometryMb: 8,
@@ -103,7 +118,10 @@ test("passes a settled run and reports its trend after warm-up", () => {
     assert.ok(Math.abs(summary.slopeMbPer1000Frames) < 2);
     const text = formatMemorySummary("demo", summary);
     assert.match(text, /^demo: ok -- working set/);
-    assert.match(text, /trend [+-]\d+\.\d{2} MB per 1,000 frames/);
+    assert.match(
+        text,
+        /trend [+-]\d+\.\d{2} MB per 1,000 frames, [+-]\d+\.\d{2} over the later half/,
+    );
     assert.match(text, /41 mesh records for 40 scene mesh entries/);
     assert.match(text, /40 geometry records for 40 live/);
     assert.match(text, /700 GC allocations after warm-up/);
@@ -119,9 +137,40 @@ test("fails a working set that trends upward past the slope", () => {
     assert.equal(summary.passed, false);
     assert.match(
         formatMemorySummary("demo", summary),
-        /FAILED: working set trends \+33\.33 MB per 1,000 frames \(> 2\)/,
+        /FAILED: working set trends \+33\.33 MB per 1,000 frames after warm-up and \+33\.33 over its later half \(> 2\)/,
     );
     assert.equal(summarizeMemoryProfile(samples, 40)?.passed, true);
+    // A leak that starts late still rises through the later half.
+    const late = parseMemoryProfile(
+        runOf(60, (index) => ({ workingSet: 100 + Math.max(0, index - 40) })),
+    );
+    assert.equal(summarizeMemoryProfile(late, 2)?.passed, false);
+});
+
+test("a single allocation step or a rise that settles is not a sustained trend", () => {
+    // 60 samples: warm-up ends at sample 20; one 12 MB step later on (the
+    // pairs on either side of it agree on zero).
+    for (const stepAt of [26, 32, 44, 52]) {
+        const step = parseMemoryProfile(
+            runOf(60, (index) => ({
+                workingSet: index < stepAt ? 400 : 412,
+            })),
+        );
+        const summary = summarizeMemoryProfile(step, 2);
+        assert.ok(summary);
+        assert.equal(summary.passed, true, `step at sample ${stepAt}`);
+        assert.equal(summary.slopeMbPer1000Frames, 0);
+    }
+    // Content streaming in over the first half of the window, then level:
+    // the whole window trends, the later half does not.
+    const settling = parseMemoryProfile(
+        runOf(60, (index) => ({ workingSet: 400 + Math.min(index, 40) / 3 })),
+    );
+    const summary = summarizeMemoryProfile(settling, 2);
+    assert.ok(summary);
+    assert.ok(summary.slopeMbPer1000Frames > 2);
+    assert.equal(summary.recentSlopeMbPer1000Frames, 0);
+    assert.equal(summary.passed, true);
 });
 
 test("fails retired mesh and geometry records that pile up while the working set holds", () => {
@@ -208,6 +257,38 @@ test("names an unmeasured loop instead of passing it", () => {
         undefined,
     );
     assert.match(formatMemorySummary("sprite", undefined), /unmeasured/);
+});
+
+test("judges each engine of a multi-engine run on its own stream", () => {
+    // A Window host's canvases print interleaved lines with repeated frame
+    // numbers; each engine's stream is ordered and complete on its own.
+    const interleaved = Array.from({ length: 12 }, (_, index) =>
+        [2, 1].map((engine) =>
+            line({
+                engine,
+                frame: index * 30,
+                gcNodes: engine === 1 ? 26 : 11 + index * 200,
+            }),
+        ),
+    ).flat();
+    const samples = parseMemoryProfile(interleaved.join("\n"));
+    assert.equal(summarizeMemoryProfile(samples, 2), undefined);
+    const streams = memoryStreams(samples);
+    assert.deepEqual(
+        streams.map(({ engine, samples }) => [engine, samples.length]),
+        [
+            [1, 12],
+            [2, 12],
+        ],
+    );
+    assert.equal(summarizeMemoryProfile(streams[0]!.samples, 2)?.passed, true);
+    assert.match(
+        formatMemorySummary(
+            "offscreen engine 2",
+            summarizeMemoryProfile(streams[1]!.samples, 2),
+        ),
+        /^offscreen engine 2: FAILED[^]*GC nodes rise steadily/,
+    );
 });
 
 test("parses the memory command's flags, defaults and a tape file", (t) => {

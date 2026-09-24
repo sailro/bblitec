@@ -978,7 +978,12 @@ for (const [variant, context] of [
                 numeric(wanted, "reflectance", record.reflectance, .04f);
                 numeric(wanted, "_metallicF0Factor", record.metallic_f0_factor, 1);
                 numeric(wanted, "_specularWeight", record.specular_weight, 1);
-                numeric(wanted.get("_clearCoat", true), "intensity", record.clearcoat_intensity, 0);
+                // A layer is present as the pin's own isEnabled; an absent one
+                // keeps the writer defaults the record was seeded with.
+                assert(record.has_clearcoat == wanted.get("_clearCoat", true).get("isEnabled", true).truthy());
+                assert(record.has_sheen == wanted.get("_sheen", true).get("isEnabled", true).truthy());
+                assert(record.has_iridescence == wanted.get("_iridescence", true).get("isEnabled", true).truthy());
+                numeric(wanted.get("_clearCoat", true), "intensity", record.clearcoat_intensity, 1);
                 numeric(wanted.get("_sheen", true), "intensity", record.sheen_intensity, 1);
                 numeric(wanted.get("_iridescence", true), "indexOfRefraction", record.iridescence_index_of_refraction, 1.3f);
                 numeric(wanted.get("_anisotropy", true), "intensity", record.anisotropy_intensity, 1);

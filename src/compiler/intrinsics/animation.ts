@@ -265,7 +265,9 @@ export function compileAnimationIntrinsic(
                         () =>
                             `bbl::PropertyAnimationTarget{` +
                             `bbl::PropertyAnimationTargetKind::${targetKind}, ` +
-                            `${target.cpp}.value, {}}`,
+                            (targetKind === "mesh"
+                                ? `${target.cpp}, 0u, {}}`
+                                : `{}, ${target.cpp}.value, {}}`),
                     )
                     .join(", ")}}`;
                 context.expectSameEngine(manager, target, call);
@@ -432,7 +434,7 @@ export function compileAnimationIntrinsic(
                     kind: "void",
                     cpp:
                         `bbl::set_animation_additive_from_frame(` +
-                        `${engine}, ${group.cpp}, 0.0f)`,
+                        `${engine}, ${group.cpp}, 0.0)`,
                 };
             }
             const options = context.expectObjectLiteral(optionsExpression);
@@ -481,7 +483,7 @@ export function compileAnimationIntrinsic(
                     cpp:
                         `bbl::set_animation_additive(` +
                         `${engine}, ${group.cpp}, ` +
-                        `${context.compileNumber(timeExpression)})`,
+                        `${context.compileNumber(timeExpression, "double")})`,
                 };
             }
             return {
@@ -491,8 +493,8 @@ export function compileAnimationIntrinsic(
                     `${engine}, ${group.cpp}, ` +
                     `${
                         frameExpression
-                            ? context.compileNumber(frameExpression)
-                            : "0.0f"
+                            ? context.compileNumber(frameExpression, "double")
+                            : "0.0"
                     })`,
             };
         }
@@ -662,13 +664,9 @@ export function compileAnimationIntrinsic(
             context.expectArgumentCount(call, 2, 3);
             const group = context.compileValue(argumentAt(call, 0));
             context.expectKind(group, "animation-group", argumentAt(call, 0));
-            // A property group's seek divides the frame by its clip's rate
-            // in JavaScript numbers; the glTF seeker takes the asset
-            // runtime's own width.
-            const frame = context.compileNumber(
-                argumentAt(call, 1),
-                group.animationGroupSource === "property" ? "double" : "float",
-            );
+            // Both seekers divide the frame by the clip's rate in
+            // JavaScript numbers.
+            const frame = context.compileNumber(argumentAt(call, 1), "double");
             const engineArgument = call.arguments[2];
             if (engineArgument !== undefined) {
                 context.expectKind(

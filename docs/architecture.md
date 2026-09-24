@@ -50,10 +50,11 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 Dynamic storage demands replay emission against the same parsed program. Earlier aliases and
 initializers use the selected representation. Equivalent definitions share code; invocations retain
 distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
-use `lowerPinnedBody`. Pinned modules over plain records (text data) use `PinnedRecordModel`: a checked
-program over the pinned sources types every value, structs are emitted from the pinned declarations, and
-`pinned-record-transport.ts` rebuilds records the pin built at generation. WGSL uses typed IR or explicit
-reflected-source contracts.
+use `lowerPinnedBody`. Pinned modules over plain records (text data, the text GPU writers, renderer and
+alpha-to-coverage membership) use `PinnedRecordModel`: a checked program over the pinned sources types
+every value, structs are emitted from the pinned declarations, and `pinned-record-transport.ts` rebuilds
+records the pin built at generation. The pin's WebGPU calls lower one to one onto the device interface in
+`text_gpu.hpp`, which each backend implements. WGSL uses typed IR or explicit reflected-source contracts.
 
 Namespace-scope application functions and constant tables compile in one C++ translation unit per owning source,
 listed in `manifest.json` as `sourceUnits`. `main.cpp` owns entry execution; worker entries have
@@ -65,9 +66,14 @@ and shared bindings retain their ordered entry execution.
 
 Ordinary loops remain native loops, including small constant ranges. Static expansion is reserved for
 composition that needs distinct generation-time values or frame-yield continuations. Shared functions,
-callbacks and coroutines retain separate invocation state. A body is emitted once when every effect it
-reaches has a native representation (`canShareFunctionBody`); otherwise each call specializes it. Concrete
-capture types place those bodies in their owning source unit; unresolved capture types use templates.
+callbacks and coroutines retain separate invocation state. A body is emitted once per distinct
+generation-time argument (callback, record or closed scalar) when every effect it reaches has a native
+representation (`canShareFunctionBody`), including retained DOM/canvas calls, calls through function values
+and scene-node writes; a callback an operation invokes shares only closed effects (`reachesOnlyClosedEffects`).
+A shared body lowers as runtime control flow and records no generation-owned
+construction; a call its separate body cannot represent, or that would lose a static fact of an argument,
+specializes inline. Closure environments are named structs of numbered captures, one per shape. Concrete
+capture types place shared bodies in their owning source unit; unresolved capture types use templates.
 
 Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
 Rebound parameters own their binding while object and container mutations preserve shared identity.
@@ -89,15 +95,16 @@ belong to scene identity. Property and glTF animation retain separate playback c
 - RAII owns locals. Shared containers and `bbl::js::Ref<T>` preserve JS identity.
 - Computed method receivers retain their selected owner through callbacks and cycle collection.
 - Closures retain referenced cells; suspended calls own their live locals.
-- Records, callbacks and containers whose elements can own a traced edge participate in cycle collection at
-  frame boundaries and teardown; other container storage is released by reference counting alone. Only
-  complete payloads enter the registry; they detach before destruction.
+- References, shared cells, records, callbacks and containers that can own a traced edge participate in
+  cycle collection at frame boundaries and teardown; other payloads are released by reference counting
+  alone. Only complete payloads enter the registry; they detach before destruction.
 - Managed statics and GC registries are realm-local; teardown clears payloads before releasing registry storage.
 - Non-atomic JS references stay on their owning realm. Borrowed events last one dispatch.
 - Physics, navigation and audio owners are independent of renderer lifetime.
 - GPU resources remain alive through their in-flight submissions.
 - Destructors and noexcept release paths report a broken invariant through `bblite/teardown.hpp`, then
-  terminate.
+  terminate. An exception escaping an application entry (generated `main`, the Window application, a
+  platform entry) is reported through `bblite/uncaught_error.hpp` with the realm reporter's wording.
 
 ## Renderer
 

@@ -41,6 +41,7 @@ import {
 import {
     nativeDataIterationIntrinsics,
     runtimeOnlyIntrinsics,
+    sharedBodyIntrinsics,
 } from "./intrinsics/registry.js";
 import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
 import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
@@ -54,6 +55,7 @@ interface ResourceLoopContext
             LoweringServices,
             | "checker"
             | "symbols"
+            | "dataTypes"
             | "canvasSizeProperty"
             | "constArrayLiteral"
             | "knownCollectionCardinality"
@@ -171,7 +173,8 @@ function nativeTransformSet(
 
 /** Follow reached calls with readonly callback parameters bound to their source bodies. */
 export function walkReachedLoopNodes(
-    context: Pick<ResourceLoopContext, "checker" | "symbols">,
+    context: Pick<ResourceLoopContext, "checker" | "symbols"> &
+        Partial<Pick<ResourceLoopContext, "dataTypes">>,
     root: ts.Node,
     visit: (
         node: ts.Node,
@@ -259,44 +262,61 @@ export function walkReachedLoopNodes(
                         ? context.symbols.importedName(callee)
                         : undefined;
                     if (!imported && called) {
-                        let bound:
-                            | Map<ts.Symbol, SupportedFunction | undefined>
-                            | undefined;
-                        for (const [
-                            index,
-                            parameter,
-                        ] of called.parameters.entries()) {
-                            if (
-                                !ts.isParameter(parameter) ||
-                                !ts.isIdentifier(parameter.name) ||
-                                context.checker
-                                    .getTypeAtLocation(parameter)
-                                    .getCallSignatures().length === 0
-                            )
-                                continue;
-                            const symbol = declaredSymbol(
-                                context.checker,
-                                parameter.name,
-                            );
-                            if (!symbol) continue;
-                            const argument =
-                                node.arguments?.[index] ??
-                                parameter.initializer;
-                            bound ??= new Map(callbacks);
-                            bound.set(
-                                symbol,
-                                argument &&
-                                    isSupportedFunction(called) &&
-                                    parameterIsReadOnly(
-                                        context.checker,
-                                        called,
-                                        parameter.name,
-                                    )
-                                    ? callback(argument, callbacks)
-                                    : undefined,
-                            );
+                        // A method call runs whichever override the
+                        // receiver's class resolves; each binds the call's
+                        // callbacks to its own parameters.
+                        const targets = [
+                            called,
+                            ...((ts.isMethodDeclaration(called)
+                                ? context.dataTypes?.classHierarchy.implementations(
+                                      called,
+                                  )
+                                : undefined) ?? []),
+                        ].filter(
+                            (target, index, all): target is typeof called =>
+                                target !== undefined &&
+                                all.indexOf(target) === index,
+                        );
+                        for (const target of targets) {
+                            let bound:
+                                | Map<ts.Symbol, SupportedFunction | undefined>
+                                | undefined;
+                            for (const [
+                                index,
+                                parameter,
+                            ] of target.parameters.entries()) {
+                                if (
+                                    !ts.isParameter(parameter) ||
+                                    !ts.isIdentifier(parameter.name) ||
+                                    context.checker
+                                        .getTypeAtLocation(parameter)
+                                        .getCallSignatures().length === 0
+                                )
+                                    continue;
+                                const symbol = declaredSymbol(
+                                    context.checker,
+                                    parameter.name,
+                                );
+                                if (!symbol) continue;
+                                const argument =
+                                    node.arguments?.[index] ??
+                                    parameter.initializer;
+                                bound ??= new Map(callbacks);
+                                bound.set(
+                                    symbol,
+                                    argument &&
+                                        isSupportedFunction(target) &&
+                                        parameterIsReadOnly(
+                                            context.checker,
+                                            target,
+                                            parameter.name,
+                                        )
+                                        ? callback(argument, callbacks)
+                                        : undefined,
+                                );
+                            }
+                            walkFunction(target, bound ?? callbacks);
                         }
-                        walkFunction(called, bound ?? callbacks);
                     }
                     if (ts.isNewExpression(node)) {
                         const declaration =
@@ -377,8 +397,23 @@ export function requiresStaticDataIteration(
     statement: ts.Node,
     callEffects = false,
 ): boolean {
+    return reachesSpecializingEffect(context, statement, callEffects, true);
+}
+
+/**
+ * Whether a reached effect needs generation-time specialization. Retained
+ * DOM/canvas operations and scene-node transform or parent writes lower to
+ * native calls on runtime handles; a closed data loop still expands them
+ * statically to keep their generation facts (`keepsRetainedFacts`).
+ */
+function reachesSpecializingEffect(
+    context: ResourceLoopContext,
+    root: ts.Node,
+    callEffects: boolean,
+    keepsRetainedFacts: boolean,
+): boolean {
     let required = false;
-    walkReachedLoopNodes(context, statement, (node) => {
+    walkReachedLoopNodes(context, root, (node) => {
         if (required) return false;
         // Handle and finite record properties dispatch by their source key.
         if (
@@ -410,6 +445,7 @@ export function requiresStaticDataIteration(
         // Canvas extents have native reads; writes still belong to their
         // normal DOM/retained-canvas lowering and cannot use this exemption.
         if (
+            keepsRetainedFacts &&
             writesThroughTrackedRoot(node, (target) => {
                 const member = unwrapExpression(target);
                 const symbol = ts.isPropertyAccessExpression(member)
@@ -427,6 +463,7 @@ export function requiresStaticDataIteration(
               ? resolvedSymbol(context.checker, node.expression)
               : undefined;
         if (
+            keepsRetainedFacts &&
             symbol &&
             declaredInDomLibrary(symbol) &&
             !(
@@ -486,7 +523,11 @@ export function requiresStaticDataIteration(
                 : undefined;
             if (
                 imported &&
-                !nativeDataIterationIntrinsics.has(imported) &&
+                !(
+                    keepsRetainedFacts
+                        ? nativeDataIterationIntrinsics
+                        : sharedBodyIntrinsics
+                ).has(imported) &&
                 !(
                     callEffects &&
                     (isMaterialCallEffectIntrinsic(imported) ||
@@ -511,10 +552,13 @@ export function requiresStaticDataIteration(
             if (kind) {
                 const property = member.name.text;
                 required =
-                    kind === "mesh" || kind === "transform-node"
+                    kind === "mesh" ||
+                    kind === "transform-node" ||
+                    (!keepsRetainedFacts && kind === "scene-node")
                         ? !runtimeMeshProperties.has(property) &&
                           property !== "material" &&
-                          property !== "receiveShadows"
+                          property !== "receiveShadows" &&
+                          (keepsRetainedFacts || property !== "parent")
                         : kind === "node-input"
                           ? property !== "texture"
                           : kind === "material"
@@ -529,33 +573,83 @@ export function requiresStaticDataIteration(
     return required;
 }
 
-/** Share function bodies whose reached effects have native representations. */
+/**
+ * An abstract method a call dispatches through: every concrete class under
+ * its class runs a body of its own, which the walk reaches too.
+ */
+function dispatchesToBodies(
+    context: Pick<ResourceLoopContext, "dataTypes">,
+    method: NonNullable<ts.Signature["declaration"]>,
+): boolean {
+    const implementations = ts.isMethodDeclaration(method)
+        ? context.dataTypes.classHierarchy.implementations(method)
+        : undefined;
+    return (
+        implementations !== undefined &&
+        implementations.length > 0 &&
+        implementations.every((implementation) => implementation?.body)
+    );
+}
+
+/**
+ * Share function bodies whose reached effects have native representations.
+ * A call through a function value runs its own native body; a callback
+ * known at generation is lowered inside the shared body, where effects
+ * that need one definite invocation refuse (`emitReusableNativeBody`).
+ */
 export function canShareFunctionBody(
     context: ResourceLoopContext,
     body: ts.Node,
     callEffects = false,
 ): boolean {
-    if (requiresStaticDataIteration(context, body, callEffects)) return false;
-    let specializes = false;
+    return !reachesSpecializingEffect(context, body, callEffects, false);
+}
+
+/**
+ * Whether every reached effect is closed: nothing needs static iteration and
+ * every callee is reachable. A closed handle table and a callback invoked by
+ * an operation run such a body natively.
+ */
+export function reachesOnlyClosedEffects(
+    context: ResourceLoopContext,
+    body: ts.Node,
+    callEffects = false,
+): boolean {
+    return (
+        !requiresStaticDataIteration(context, body, callEffects) &&
+        !reachesOpaqueCallee(context, body)
+    );
+}
+
+/** Whether the body calls a function value whose body this walk cannot reach. */
+export function reachesOpaqueCallee(
+    context: ResourceLoopContext,
+    body: ts.Node,
+): boolean {
+    let opaque = false;
     walkReachedLoopNodes(context, body, (node, resolved) => {
         if (!ts.isCallExpression(node)) return;
         if (
             resolved &&
             !resolved.getSourceFile().isDeclarationFile &&
-            !(isSupportedFunction(resolved) && resolved.body)
+            !(isSupportedFunction(resolved) && resolved.body) &&
+            !dispatchesToBodies(context, resolved)
         )
-            specializes = true;
+            opaque = true;
     });
-    return !specializes;
+    return opaque;
 }
 
-/** Construction and generation-dependent operations replay their ordinary recorder effects. */
+/**
+ * Construction and generation-dependent operations replay their ordinary
+ * recorder effects; a function value the walk cannot reach may construct.
+ */
 export function sharedFunctionHasCallEffects(
     context: ResourceLoopContext,
     body: ts.Node,
 ): boolean {
     if (!canShareFunctionBody(context, body, true)) return false;
-    if (requiresStaticDataIteration(context, body)) return true;
+    if (!canShareFunctionBody(context, body)) return true;
     let constructs = false;
     walkReachedLoopNodes(context, body, (node) => {
         if (!ts.isCallExpression(node)) return;
@@ -566,7 +660,7 @@ export function sharedFunctionHasCallEffects(
         if (imported && runtimeProfileConstructionIntrinsics.has(imported))
             constructs = true;
     });
-    return constructs;
+    return constructs || reachesOpaqueCallee(context, body);
 }
 
 /** A folded bound must not be invalidated by the loop or its called helpers. */

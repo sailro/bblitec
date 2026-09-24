@@ -31,41 +31,40 @@ inline const char* sdl_text_format_name(SDL_GPUTextureFormat format) {
     }
 }
 
-struct SdlTextRenderer {
-    std::shared_ptr<SdlTextDevice> owner = std::make_shared<SdlTextDevice>();
-    std::shared_ptr<SdlTextBuffer> quad;
+/**
+ * The pin's `GPUDevice` for text on SDL_GPU: WebGPU objects over SDL
+ * resources, and the per-device pipeline cache `getOrCreateTextPipeline`
+ * reads. A uniform buffer is the bytes SDL pushes per draw; a bind group is
+ * the resources SDL binds by the composed shader's own names.
+ */
+struct SdlTextGpuDevice final : SdlTextGpuResources {
     std::shared_ptr<SdlTextSamplerLease> sampler;
-    std::shared_ptr<SdlTextLayout> layout = std::make_shared<SdlTextLayout>();
-#if BBLITE_HAS_TEXT_RENDERABLE
-    TextScenePass scene;
-#endif
+    /** The target formats this device's passes draw into. */
+    SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+    SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+    TextPipelineDeviceCacheHandle cache;
     std::map<
         std::tuple<const upstream::TextPipelineInfo*, SDL_GPUTextureFormat, SDL_GPUTextureFormat>,
-        std::shared_ptr<SdlTextPipeline>>
+        std::shared_ptr<SdlTextGpuPipeline>>
         pipelines;
 
-    explicit SdlTextRenderer(SDL_GPUDevice* device, bool capture) {
-        owner->device = device;
-        owner->capture = TextGpuCapture(capture);
+    using SdlTextGpuResources::SdlTextGpuResources;
+
+    TextPipelineDeviceCacheHandle text_pipeline_cache() override {
+        if (cache)
+            return cache;
+        auto layout = std::make_shared<SdlTextGpuLayout>();
         for (const auto& row : upstream::text_binding_layout)
             layout->bindings.emplace_back(row.binding, text_binding_role(row.name));
-    }
-    ~SdlTextRenderer() { owner->retire(); }
-    SdlTextRenderer(const SdlTextRenderer&) = delete;
-    SdlTextRenderer& operator=(const SdlTextRenderer&) = delete;
-
-    void ensure_quad() {
-        if (quad)
-            return;
-        auto created = std::make_shared<SdlTextBuffer>();
-        created->bytes = sizeof(upstream::text_quad_corners);
-        created->lease = retain_sdl_text_resource<SdlTextBufferLease>(
+        auto quad = std::make_shared<SdlTextGpuBuffer>();
+        quad->size = sizeof(upstream::text_quad_corners);
+        quad->lease = retain_sdl_text_resource<SdlTextBufferLease>(
             owner,
             upload_buffer(owner->device, SDL_GPU_BUFFERUSAGE_VERTEX,
-                          upstream::text_quad_corners.data(), created->bytes),
-            "quad", created->bytes);
+                          upstream::text_quad_corners.data(), sizeof(upstream::text_quad_corners)),
+            "quad", sizeof(upstream::text_quad_corners));
         owner->capture.write(
-            created->lease->capture_id, 0u,
+            quad->lease->capture_id, 0u,
             {reinterpret_cast<const std::uint8_t*>(upstream::text_quad_corners.data()),
              sizeof(upstream::text_quad_corners)});
         // SDL binds a sampler beside every sampled texture. Slug only uses
@@ -75,20 +74,44 @@ struct SdlTextRenderer {
         descriptor.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
         descriptor.address_mode_u = descriptor.address_mode_v = descriptor.address_mode_w =
             SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        auto created_sampler = retain_sdl_text_resource<SdlTextSamplerLease>(
+        sampler = retain_sdl_text_resource<SdlTextSamplerLease>(
             owner, SDL_CreateGPUSampler(owner->device, &descriptor));
-        quad = std::move(created);
-        sampler = std::move(created_sampler);
+        cache = std::make_shared<TextPipelineDeviceCache>();
+        cache->bind_group_layout = std::move(layout);
+        cache->quad_vertex_buffer = std::move(quad);
+        return cache;
     }
 
-    TextPipelineBinding pipeline(const upstream::TextPipelineInfo& info,
-                                 SDL_GPUTextureFormat color_format,
-                                 SDL_GPUTextureFormat depth_format) {
-        ensure_quad();
-        const auto key = std::tuple{&info, color_format, depth_format};
+    TextPipelineSet text_pipeline(const std::string& format, double sample_count,
+                                  const std::optional<std::string>& depth_stencil_format,
+                                  bool depth_write, const std::shared_ptr<const void>& owner_object,
+                                  const std::string& depth_compare) override {
+        if (format != sdl_text_format_name(color_format))
+            throw std::runtime_error("Text pipeline format differs from the SDL target: " + format);
+        const auto samples = text_gpu_u32(text_gpu_size(sample_count));
+        const bool has_depth = depth_stencil_format.has_value();
+        const bool alpha_to_coverage =
+            text_pipeline_alpha_to_coverage(sample_count, depth_write, owner_object);
+        const auto& base_info =
+            text_pipeline_info(samples, has_depth, depth_write, alpha_to_coverage);
+        if (has_depth && depth_compare != "greater-equal")
+            throw std::runtime_error("Unmapped text depth compare: " + depth_compare);
+        TextPipelineSet result;
+        result.cache = text_pipeline_cache();
+        result.pipeline = pipeline(base_info);
+        result.variant_pipeline = text_weight_installed
+                                      ? pipeline(text_pipeline_info(samples, has_depth, depth_write,
+                                                                    alpha_to_coverage, true))
+                                      : result.pipeline;
+        return result;
+    }
+
+    std::shared_ptr<SdlTextGpuPipeline> pipeline(const upstream::TextPipelineInfo& info) {
+        const auto depth = info.has_depth ? depth_format : SDL_GPU_TEXTUREFORMAT_INVALID;
+        const auto key = std::tuple{&info, color_format, depth};
         if (const auto found = pipelines.find(key); found != pipelines.end())
-            return {found->second, found->second, layout, quad};
-        auto created = std::make_shared<SdlTextPipeline>();
+            return found->second;
+        auto created = std::make_shared<SdlTextGpuPipeline>();
         created->vertex_slots = read_pinned_stage_slots(info.vertex_shader);
         created->fragment_slots = read_pinned_stage_slots(info.fragment_shader);
         const auto load = [&](const char* name, SDL_GPUShaderStage stage,
@@ -157,16 +180,52 @@ struct SdlTextRenderer {
         descriptor.multisample_state.enable_alpha_to_coverage = info.alpha_to_coverage;
         descriptor.target_info.color_target_descriptions = &target;
         descriptor.target_info.num_color_targets = 1;
-        descriptor.target_info.depth_stencil_format = depth_format;
+        descriptor.target_info.depth_stencil_format = depth;
         descriptor.target_info.has_depth_stencil_target = info.has_depth;
         created->pipeline = retain_sdl_text_resource<SdlTextPipelineLease>(
             owner, create_sdl_graphics_pipeline(owner->device, &descriptor), "pipeline");
         if (owner->capture.enabled())
             created->capture =
                 text_pipeline_capture(info, sdl_text_format_name(color_format),
-                                      info.has_depth ? sdl_text_format_name(depth_format) : "");
+                                      info.has_depth ? sdl_text_format_name(depth) : "");
         pipelines.emplace(key, created);
-        return {created, created, layout, quad};
+        return created;
+    }
+};
+
+/** The SDL text device, and the scene pass that draws the scene's text through it. */
+struct SdlTextRenderer {
+    std::shared_ptr<SdlTextGpuDevice> device;
+#if BBLITE_HAS_TEXT_RENDERABLE
+    TextScenePass scene;
+#endif
+    SdlTextRenderer(SDL_GPUDevice* gpu, bool capture)
+        : device(std::make_shared<SdlTextGpuDevice>(gpu, capture)) {}
+    // Its resources retire with the SDL device they belong to, even while
+    // the engine surface or a text record still names the device.
+    ~SdlTextRenderer() { device->owner->retire(); }
+    SdlTextRenderer(const SdlTextRenderer&) = delete;
+    SdlTextRenderer& operator=(const SdlTextRenderer&) = delete;
+    /** A pass encoder over a render pass the frame opened. */
+    std::shared_ptr<SdlTextPassEncoder> borrow_pass(SDL_GPUCommandBuffer* command,
+                                                    SDL_GPURenderPass* pass) {
+        static_cast<void>(device->text_pipeline_cache());
+        auto encoder = std::make_shared<SdlTextPassEncoder>();
+        encoder->owner = device->owner;
+        encoder->sampler = device->sampler;
+        encoder->command = command;
+        encoder->pass = pass;
+        return encoder;
+    }
+    /** The frame's command encoder for passes the pin begins itself. */
+    std::shared_ptr<SdlTextCommandEncoder> command_encoder(SDL_GPUCommandBuffer* command) {
+        static_cast<void>(device->text_pipeline_cache());
+        auto encoder = std::make_shared<SdlTextCommandEncoder>();
+        encoder->owner = device->owner;
+        encoder->sampler = device->sampler;
+        encoder->command = command;
+        encoder->format = device->color_format;
+        return encoder;
     }
 };
 

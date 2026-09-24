@@ -111,11 +111,11 @@ test("PBR capture uses the resolved draw world including late root transforms", 
     // VAT row composes on top of it inside the vertex stage.
     assert.match(
         builder,
-        /block\.world = mesh_block_world\(scene, engine, engine\.meshes\[mesh_index\]\);/,
+        /block\.world = mesh_block_world\(scene, engine, handle_at\(engine\.meshes, mesh\)\);/,
     );
     assert.match(
         blocks,
-        /pinned_mesh_block\(scene, engine, draw\.item\.mesh\.value\)/,
+        /pinned_mesh_block\(scene, engine, draw\.item\.mesh\)/,
     );
     for (const [name, source] of Object.entries(consumers())) {
         assert.ok(

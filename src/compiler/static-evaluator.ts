@@ -52,6 +52,7 @@ import {
 import { isJsonValue } from "./json-bridge.js";
 import { excludesObjectColour } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
+import type { EvaluationOrder } from "./evaluation-order.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
@@ -148,7 +149,29 @@ export class StaticEvaluator {
         private readonly truthinessCondition: (
             value: Value,
         ) => string | undefined,
+        /** Reads a compiled number into a temporary where it stands. */
+        private readonly pinNumber: (cpp: string) => string,
+        private readonly evaluationOrder: EvaluationOrder,
     ) {}
+
+    /**
+     * The two operands of a numeric binary operator, compiled in order. The
+     * left one is read into a temporary first when the right one touches
+     * its storage, either one writing it (see `evaluation-order.ts`).
+     */
+    private numericOperands(
+        expression: ts.BinaryExpression,
+    ): readonly [string, string] {
+        const [pinLeft] = this.evaluationOrder.operandsToPin([
+            expression.left,
+            expression.right,
+        ]);
+        const left = this.compileNumber(expression.left, "double");
+        return [
+            pinLeft ? this.pinNumber(left) : left,
+            this.compileNumber(expression.right, "double"),
+        ];
+    }
 
     /** See `libraryGlobal` (symbols.ts). */
     private readonly libraryGlobal: LibraryGlobal = (expression) =>
@@ -649,10 +672,8 @@ export class StaticEvaluator {
             }
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.PercentToken) {
                 // JavaScript % keeps the dividend sign, exactly like fmod.
-                const compiled = `std::fmod(${this.compileNumber(
-                    unwrapped.left,
-                    "double",
-                )}, ${this.compileNumber(unwrapped.right, "double")})`;
+                const [left, right] = this.numericOperands(unwrapped);
+                const compiled = `std::fmod(${left}, ${right})`;
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
                     : compiled;
@@ -661,19 +682,18 @@ export class StaticEvaluator {
                 unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.AsteriskAsteriskToken
             ) {
-                const compiled = `std::pow(${this.compileNumber(
-                    unwrapped.left,
-                    "double",
-                )}, ${this.compileNumber(unwrapped.right, "double")})`;
+                const [left, right] = this.numericOperands(unwrapped);
+                const compiled = `std::pow(${left}, ${right})`;
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
                     : compiled;
             }
             if (JS_BITWISE_FUNCTIONS.has(unwrapped.operatorToken.kind)) {
+                const [left, right] = this.numericOperands(unwrapped);
                 const compiled = jsBitwiseCall(
                     unwrapped.operatorToken.kind,
-                    this.compileNumber(unwrapped.left, "double"),
-                    this.compileNumber(unwrapped.right, "double"),
+                    left,
+                    right,
                 )!;
                 this.onJsData();
                 return precision === "float"
@@ -689,10 +709,8 @@ export class StaticEvaluator {
                     "Unsupported operator in numeric expression.",
                 );
             }
-            const compiled = `(${this.compileNumber(
-                unwrapped.left,
-                "double",
-            )} ${operator} ${this.compileNumber(unwrapped.right, "double")})`;
+            const [left, right] = this.numericOperands(unwrapped);
+            const compiled = `(${left} ${operator} ${right})`;
             return precision === "float"
                 ? `static_cast<float>(${compiled})`
                 : compiled;

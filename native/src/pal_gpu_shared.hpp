@@ -97,6 +97,11 @@
 #if BBLITE_STANDARD_VARIANTS > 0
 #include <bblite/upstream/standard_variants.hpp>
 #endif
+// The pin's background arms as its factories built them, with the lowered
+// builders that fill their buffers. Both backends build and draw from it.
+#if BBLITE_PINNED_BACKGROUNDS
+#include <bblite/upstream/pinned_backgrounds.hpp>
+#endif
 // The pinned shadow family: the light-space matrices, the receiver block,
 // the generator's defaults and the standard-Z depth state its map takes.
 // None of that is a material family's, so the header and the depth state
@@ -117,6 +122,7 @@
 #if BBLITE_GPU_MORPH_STORAGE
 #include <bblite/upstream/morph_targets.hpp>
 #endif
+#include <atomic>
 #include <cstdio>
 
 namespace bbl::pal {
@@ -400,27 +406,6 @@ inline std::string sprite_fragment_shader_name(std::uint32_t program) {
     if (program == 1u)
         return "sprite_custom.frag";
     return "sprite_custom_" + std::to_string(program) + ".frag";
-}
-
-/**
- * Which background fragment a scene's environment selects.
- *
- * The pin keys its own background pipeline cache on
- * `enableNoise ? WGSL_DITHER : WGSL_NO_DITHER`, and the skybox adds a third
- * arm for the environment-sampled body. Stated here rather than at each
- * backend's pipeline build, because both backends must land on the same
- * fragment for the same environment and, since these names stopped being
- * constants, nothing else stops them drifting apart.
- */
-inline const char* background_ground_fragment(const EnvironmentState& environment) {
-    return environment.enable_noise ? "background-ground-dither.frag" : "background-ground.frag";
-}
-
-inline const char* background_skybox_fragment(const EnvironmentState& environment) {
-    if (environment.skybox_uses_environment)
-        return "background-skybox.frag";
-    return environment.enable_noise ? "background-skybox-dither.frag"
-                                    : "background-skybox-dds.frag";
 }
 
 /**
@@ -2455,9 +2440,12 @@ inline void fitted_shadow_casters(const Engine& engine, const ShadowGeneratorRec
     casters.clear();
     casters.reserve(generator.caster_meshes.size());
     for (const MeshHandle handle : generator.caster_meshes) {
-        if (handle.value >= engine.meshes.size())
+        // The caster array keeps a removed mesh, as the pin's does; its
+        // record stays in the fit until a later mesh takes its slot.
+        const MeshRecord* found = current_mesh_record(engine, handle);
+        if (!found)
             continue;
-        const MeshRecord& record = handle_at(engine.meshes, handle);
+        const MeshRecord& record = *found;
         upstream::ShadowCaster caster;
         caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
         caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;
@@ -2896,13 +2884,13 @@ inline upstream::SceneUniforms pinned_scene_block(const Scene& scene, const Engi
         scene.environment.exposure,
         scene.environment.contrast,
         scene.environment.lod_generation_scale,
-        // The pin's executeRenderTaskLinear stamps toneMappingEnabled = -1
-        // while a transmission scene's retargeted linear passes run; every
-        // composed fragment then skips its processing tail
-        // (`if(scene.vImageInfos.w>=0.0)`) and the trailing
-        // image-processing pass applies it once. The captured browser block
-        // carries the same -1 (scene30 buffer#1).
-        scene.transmission_enabled               ? -1.0f
+        // The pin's executeRenderTaskLinear stamps its negative flag over
+        // toneMappingEnabled while a transmission scene's retargeted linear
+        // passes run; every composed fragment and background arm then skips
+        // its processing tail (`if(scene.vImageInfos.w>=0.0)`) and the
+        // trailing image-processing pass applies it once. The captured
+        // browser block carries the same -1 (scene30 buffer#1).
+        scene.transmission_enabled               ? upstream::pinned_linear_tone_mapping
         : scene.environment.tone_mapping_enabled ? 1.0f
                                                  : 0.0f,
     };
@@ -2993,8 +2981,8 @@ inline std::vector<std::uint8_t> pinned_lights_block(const Scene& scene, const E
  * this walk, so it is written once over whichever block's lanes.
  */
 template <typename Block>
-inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine,
-                                        std::uint32_t mesh_index, Block& block) {
+inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine, MeshHandle mesh,
+                                        Block& block) {
     if constexpr (requires {
                       block.li;
                       block.lc;
@@ -3006,7 +2994,7 @@ inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine
                 break;
             if (handle.value >= engine.lights.size())
                 continue;
-            if (upstream::light_affects_mesh(handle_at(engine.lights, handle), mesh_index)) {
+            if (upstream::light_affects_mesh(handle_at(engine.lights, handle), mesh)) {
                 block.li[count / 4][count % 4] = light_index;
                 ++count;
             }
@@ -3019,10 +3007,10 @@ inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine
 #if BBLITE_PINNED_MATERIAL_VARIANTS
 /** The pin's `MeshUniforms` for one mesh: its world and its light selection. */
 inline upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engine,
-                                                std::uint32_t mesh_index) {
+                                                MeshHandle mesh) {
     upstream::MeshUniforms block{};
-    block.world = mesh_block_world(scene, engine, engine.meshes[mesh_index]);
-    pinned_mesh_light_selection(scene, engine, mesh_index, block);
+    block.world = mesh_block_world(scene, engine, handle_at(engine.meshes, mesh));
+    pinned_mesh_light_selection(scene, engine, mesh, block);
     // The velocity geometry arm's tail. No previous world is tracked, so
     // the previous world is the world itself and the flag stays on: the
     // composed vertex then measures camera motion alone, which is what the
@@ -3056,9 +3044,9 @@ inline upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine
  * draws a receiving mesh and a non-receiving one alike.
  */
 inline upstream::NodeMeshUniforms node_mesh_block(const Scene& scene, const Engine& engine,
-                                                  std::uint32_t mesh_index) {
+                                                  MeshHandle mesh) {
     upstream::NodeMeshUniforms block{};
-    const MeshRecord& record = engine.meshes[mesh_index];
+    const MeshRecord& record = handle_at(engine.meshes, mesh);
     block.world = mesh_block_world(scene, engine, record);
     if (record.receives_shadows) {
         block.receivesShadow[0] = 1.0f;
@@ -3076,7 +3064,7 @@ inline upstream::NodeMeshUniforms node_mesh_block(const Scene& scene, const Engi
         block.receivesShadow[2] = geometry.has_tangents ? 1.0f : 0.0f;
         block.receivesShadow[3] = geometry.has_vertex_colors ? 1.0f : 0.0f;
     }
-    pinned_mesh_light_selection(scene, engine, mesh_index, block);
+    pinned_mesh_light_selection(scene, engine, mesh, block);
     return block;
 }
 #endif
@@ -3221,7 +3209,7 @@ inline PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& eng
         if (handle.value >= engine.lights.size())
             continue;
         const LightRecord& light = handle_at(engine.lights, handle);
-        if (!upstream::light_affects_mesh(light, draw.item.mesh.value)) {
+        if (!upstream::light_affects_mesh(light, draw.item.mesh)) {
             continue;
         }
         ++light_count;
@@ -3953,9 +3941,8 @@ inline FrameOptions read_frame_options() {
 inline void apply_animation_seek(const FrameOptions& options, const Scene& scene) {
     if (options.animation_seek_seconds == 0.0)
         return;
-    const float time = static_cast<float>(options.animation_seek_seconds);
     for (const auto& seek : scene.animation_seekers) {
-        seek(time);
+        seek(options.animation_seek_seconds);
     }
 }
 
@@ -4820,14 +4807,6 @@ inline RenderPipelineKindTraits pipeline_kind_traits(upstream::RenderPipelineKin
         return {Family::standard, true, Cull::back, true};
     case Kind::standard_transparent_none_clockwise:
         return {Family::standard, true, Cull::none, true};
-    case Kind::grid_opaque_back:
-        return {Family::grid, false, Cull::back, false};
-    case Kind::grid_opaque_none:
-        return {Family::grid, false, Cull::none, false};
-    case Kind::grid_transparent_back:
-        return {Family::grid, true, Cull::back, false};
-    case Kind::grid_transparent_none:
-        return {Family::grid, true, Cull::none, false};
     // A shader kind's concrete fixed-function state comes from the
     // emitted variant table (cull, blend, depth write, topology); the
     // kind itself carries only the family and the a2c request.
@@ -4868,11 +4847,6 @@ inline void validate_render_plan_items(const upstream::RenderPlan& plan) {
 #else
             throw std::runtime_error("a node material in a build with no composed graphs.");
 #endif
-        } else if (item.material_kind != upstream::RenderMaterialKind::standard &&
-                   item.material_kind != upstream::RenderMaterialKind::pbr &&
-                   item.material_kind != upstream::RenderMaterialKind::grid) {
-            throw std::runtime_error("only Standard, PBR, Grid, node and shader-variant "
-                                     "materials are implemented yet.");
         }
     }
 }
@@ -5065,18 +5039,62 @@ inline constexpr std::array<SkyboxLayer, 3> skybox_stage_order{
     SkyboxLayer::image,
 };
 
+#if BBLITE_PINNED_BACKGROUNDS
 /**
- * The pinned background skyboxes (DDS, HDR and solid) build their
- * pipeline through createDefaultPipelineDescriptor without a `_cullMode`,
- * so they take its "back" default; only the image skybox asks for "none"
- * explicitly. Drawing the cube unculled leaves both the entry and the
- * exit face rasterized once the camera is outside it, and depth writes
- * are off, so the later face in index order wins instead of the nearer
- * one.
+ * The background arms a run draws, by the stage slot each one fills.
+ *
+ * The entry points push one renderable per arm, and the pin keys each
+ * arm's pipeline on its own flags: the ground and the DDS skybox compose
+ * WGSL_DITHER or WGSL_NO_DITHER on `enableNoise`, and the environment
+ * skybox is the .env arm when it samples the environment's own cube.
+ * Stated once, so both backends build and draw the same arms.
  */
-inline constexpr bool skybox_layer_culls_back(SkyboxLayer layer) {
-    return layer != SkyboxLayer::image;
+struct PinnedBackgroundDraws {
+    std::optional<upstream::PinnedBackgroundArmKind> solid;
+    std::optional<upstream::PinnedBackgroundArmKind> environment;
+    std::optional<upstream::PinnedBackgroundArmKind> image;
+    std::optional<upstream::PinnedBackgroundArmKind> ground;
+
+    [[nodiscard]] std::optional<upstream::PinnedBackgroundArmKind> skybox(SkyboxLayer layer) const {
+        switch (layer) {
+        case SkyboxLayer::solid:
+            return solid;
+        case SkyboxLayer::environment:
+            return environment;
+        case SkyboxLayer::image:
+            return image;
+        }
+        return std::nullopt;
+    }
+
+    template <typename Visit> void for_each(Visit visit) const {
+        for (const std::optional<upstream::PinnedBackgroundArmKind>& kind :
+             {solid, environment, image, ground}) {
+            if (kind)
+                visit(*kind);
+        }
+    }
+};
+
+inline PinnedBackgroundDraws select_pinned_backgrounds(const FrameOptions& options,
+                                                       const EnvironmentState& environment) {
+    using Kind = upstream::PinnedBackgroundArmKind;
+    PinnedBackgroundDraws draws;
+    const bool background = options.background_enabled(environment);
+    if (background && environment.has_solid_skybox)
+        draws.solid = Kind::solid_skybox;
+    if (options.skybox_enabled(environment)) {
+        draws.environment = environment.skybox_uses_environment ? Kind::hdr_skybox
+                            : environment.enable_noise          ? Kind::dds_skybox
+                                                                : Kind::dds_skybox_no_dither;
+    }
+    if (background && environment.has_image_skybox)
+        draws.image = Kind::image_skybox;
+    if (options.ground_enabled(environment))
+        draws.ground = environment.enable_noise ? Kind::ground_dither : Kind::ground;
+    return draws;
 }
+#endif
 
 /**
  * Cluster ids advance in fixed 128-triangle groups, and the id and
@@ -5748,13 +5766,46 @@ inline void print_cpu_frame_profile(long frame, double total_ms, double acquire_
  * allocated (a retired mesh's are released by removeFromScene), and the
  * backend's live GPU meshes and shared-geometry cache. A loop without a
  * scene or a geometry cache (the sprite renderers) prints zeros there.
+ *
+ * A process can run several engines at once (a Window host's canvases,
+ * each on its realm's thread). Every loop counts its own frames and reads
+ * its own thread's GC registry, so each prints one ordered stream under
+ * its own `engine=` number, assigned in start order.
  */
 inline constexpr long memory_profile_frames = 30;
 
-inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
-                                       std::size_t scene_meshes, std::size_t gpu_meshes,
-                                       std::size_t shared_geometries,
-                                       std::size_t shared_geometry_bytes) {
+class MemoryProfile {
+public:
+    [[nodiscard]] bool due(long frame) const {
+        return stream_ != 0 && frame % memory_profile_frames == 0;
+    }
+    void print(long frame, const bbl::Engine& engine, std::size_t scene_meshes,
+               std::size_t gpu_meshes, std::size_t shared_geometries,
+               std::size_t shared_geometry_bytes) const;
+    /** The scene-loop form: the backend's mesh list and shared-geometry cache. */
+    template <typename GpuMesh, typename SharedGeometry>
+    void print(long frame, const bbl::Engine& engine, const bbl::Scene& scene,
+               const std::vector<GpuMesh>& gpu_meshes,
+               const std::vector<std::unique_ptr<SharedGeometry>>& cache) const {
+        std::size_t bytes = 0;
+        for (const auto& geometry : cache) {
+            bytes += geometry->identity.vertex_count * sizeof(GpuVertex) +
+                     geometry->identity.index_count * sizeof(std::uint32_t);
+        }
+        print(frame, engine, scene.meshes.size(), gpu_meshes.size(), cache.size(), bytes);
+    }
+
+private:
+    static std::uint32_t start() {
+        static std::atomic<std::uint32_t> started = 0;
+        return environment_variable("BBLITE_MEM_PROFILE") == "1" ? ++started : 0;
+    }
+    const std::uint32_t stream_ = start();
+};
+
+inline void MemoryProfile::print(long frame, const bbl::Engine& engine, std::size_t scene_meshes,
+                                 std::size_t gpu_meshes, std::size_t shared_geometries,
+                                 std::size_t shared_geometry_bytes) const {
     std::size_t live_geometries = 0;
     std::size_t geometry_bytes = 0;
     for (const bbl::ModelGeometry& geometry : engine.geometries) {
@@ -5772,31 +5823,18 @@ inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
     }
     constexpr double mb = 1024.0 * 1024.0;
     std::ostringstream line;
-    line << std::fixed << std::setprecision(1) << "[mem][frame] frame=" << frame
-         << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
+    line << std::fixed << std::setprecision(1) << "[mem][frame] engine=" << stream_
+         << " frame=" << frame << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
          << " mesh_records=" << engine.meshes.size() - engine.free_mesh_slots.size()
-         << " scene_meshes=" << scene_meshes << " gc_nodes=" << bbl::js::managed_node_count()
+         << " scene_meshes=" << scene_meshes << " transform_node_records="
+         << engine.transform_nodes.size() - engine.free_transform_node_slots.size()
+         << " gc_nodes=" << bbl::js::managed_node_count()
          << " gc_allocations=" << bbl::js::gc::registry.total_allocations
          << " geometry_records=" << engine.geometries.size() - engine.free_geometry_slots.size()
          << " live_geometries=" << live_geometries << " geometry_mb=" << geometry_bytes / mb
          << " gpu_meshes=" << gpu_meshes << " shared_geometries=" << shared_geometries
          << " shared_geometry_mb=" << shared_geometry_bytes / mb << '\n';
     std::fputs(line.str().c_str(), stderr);
-}
-
-/** The scene-loop form: the backend's mesh list and shared-geometry cache. */
-template <typename GpuMesh, typename SharedGeometry>
-inline void print_memory_frame_profile(long frame, const bbl::Engine& engine,
-                                       const bbl::Scene& scene,
-                                       const std::vector<GpuMesh>& gpu_meshes,
-                                       const std::vector<std::unique_ptr<SharedGeometry>>& cache) {
-    std::size_t bytes = 0;
-    for (const auto& geometry : cache) {
-        bytes += geometry->identity.vertex_count * sizeof(GpuVertex) +
-                 geometry->identity.index_count * sizeof(std::uint32_t);
-    }
-    print_memory_frame_profile(frame, engine, scene.meshes.size(), gpu_meshes.size(), cache.size(),
-                               bytes);
 }
 
 /**

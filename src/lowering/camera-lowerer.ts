@@ -833,11 +833,11 @@ namespace {
 
 ${lowerWorldAabbHelpers(this.context, { emptyAccumulator: true })}
 
-// The Mesh members the framing reads, off the native record: a loaded glTF
-// primitive's object-local box, and \`mesh.worldMatrix\`. A .babylon mesh has
-// neither bound upstream (load-babylon.ts builds it without them), so it
-// frames nothing unless the scene assigns them. A scene may replace either
-// public bound.
+// The Mesh members the framing reads, off the native record: the object-local
+// box its producer set (\`has_bounds\`), and \`mesh.worldMatrix\`. A .babylon
+// mesh has neither bound upstream (load-babylon.ts builds it without them),
+// so it frames nothing unless the scene assigns them. A scene may replace
+// either public bound.
 WorldAabbMesh default_camera_world_aabb_mesh(const Engine& engine, MeshHandle handle) {
     WorldAabbMesh result{};
     if (handle.value >= engine.meshes.size()) return result;
@@ -845,7 +845,7 @@ WorldAabbMesh default_camera_world_aabb_mesh(const Engine& engine, MeshHandle ha
     const auto lanes = [](const Vec3& value) {
         return std::array<float, 3>{value.x, value.y, value.z};
     };
-    if (mesh.primitive == PrimitiveKind::gltf && mesh.geometry < engine.geometries.size()) {
+    if (mesh.has_bounds && mesh.geometry < engine.geometries.size()) {
         result.bound_min = lanes(engine.geometries[mesh.geometry].bounds_min);
         result.bound_max = lanes(engine.geometries[mesh.geometry].bounds_max);
     }

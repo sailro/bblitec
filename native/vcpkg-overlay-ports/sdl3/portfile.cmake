@@ -1,20 +1,15 @@
+# The series native/patches/manifest.json selects for this port, with each
+# patch's purpose and upstream state (native/patch-identity.cmake).
+include("${CMAKE_CURRENT_LIST_DIR}/../../patch-identity.cmake")
+bblite_patch_series(sdl3 BBLITE_SDL3_PATCHES vcpkg)
+
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO libsdl-org/SDL
     REF "release-${VERSION}"
     SHA512 6e6f91cde7dffec527af8a9b0162e9fb7997ec2b6770d3002c662cd75e5cd01afd2fb5f5cadfa2496c86e67ed22e876d99ebdf60b9ea7431a3a3caf5686d0f8f
     HEAD_REF main
-    # native/patches/manifest.json lists each patch's purpose and upstream
-    # state; every patch this repository owns opens with its rationale.
-    PATCHES
-        fix-freebsd.patch
-        sdl-multisample-read.patch
-        d3d12-multisample-lines.patch
-        d3d12-descriptor-heaps.patch
-        d3d12-storage-array.patch
-        metal-storage-buffer-sizes.patch
-        metal-fence-query.patch
-        gpu-timestamp-queries.patch
+    PATCHES ${BBLITE_SDL3_PATCHES}
 )
 
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "static" SDL_STATIC)

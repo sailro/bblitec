@@ -1,5 +1,5 @@
 {
-  "$comment": "Every upstream patch this repository applies. Script-built libraries keep their patches here as <library>/NNNN-slug.patch, NNNN being the application order; vcpkg overlay ports keep theirs in the port directory, whose bytes key each vcpkg install. `variants` selects the builds that apply a patch: `all`, or one of the library's variant tokens (`vcpkg`: the overlay portfile; `trimmed`: tools/build-sdl-min.ps1; Dawn `android`, `metal` (macOS and iOS), `ios`; LabSound `core-only`). Builders read this file, record `<prefix>_SOURCE` and `<prefix>_PATCHES` (name=sha256 in order) in the artifact's record file, and native/patch-identity.cmake refuses an artifact whose record differs. `npm run patches:check` verifies files, headers, order and the portfile lists. Each owned patch file opens with its rationale; `upstream.state` is unsubmitted, open, merged, closed or vcpkg (the port's own patch, copied verbatim).",
+  "$comment": "Every upstream patch this repository applies. Script-built libraries keep their patches here as <library>/NNNN-slug.patch, NNNN being the application order; vcpkg overlay ports keep theirs in the port directory, whose bytes key each vcpkg install. `variants` selects the builds that apply a patch: `all`, or one of the library's variant tokens (`vcpkg`: the overlay portfile; a port feature's name: the portfile with that feature; `trimmed`: tools/build-sdl-min.ps1; Dawn `android`, `metal` (macOS and iOS), `ios`; LabSound `core-only`). native/patch-identity.cmake is the one reader: portfiles and builders take their series from it, builders record `<prefix>_SOURCE`, `<prefix>_PATCHES` (name=sha256 in order) and `<prefix>_VARIANTS` in the artifact's record file, and configure and doctor refuse an artifact whose record differs. `npm run patches:check` verifies files, headers, order and portfile coverage. Each owned patch file opens with its rationale; `upstream.state` is unsubmitted, open, merged, closed or vcpkg (the port's own patch, copied verbatim).",
   "libraries": {
     "rmlui": {
       "pin": { "file": "upstream/rmlui.json", "field": "commit" },
@@ -34,7 +34,7 @@
     "freetype": {
       "pin": { "file": "native/vcpkg-overlay-ports/freetype/vcpkg.json", "field": "version" },
       "port": "native/vcpkg-overlay-ports/freetype",
-      "variants": ["vcpkg"]
+      "variants": ["vcpkg", "subpixel-rendering"]
     },
     "recastnavigation": {
       "pin": { "file": "native/vcpkg-overlay-ports/recastnavigation/vcpkg.json", "field": "version" },
@@ -467,7 +467,7 @@
       "file": "native/vcpkg-overlay-ports/freetype/subpixel-rendering.patch",
       "purpose": "vcpkg's subpixel-rendering feature, applied only when that port feature is selected",
       "upstream": { "state": "vcpkg" },
-      "variants": ["vcpkg"],
+      "variants": ["subpixel-rendering"],
       "inheritedFromVcpkg": true
     },
     {

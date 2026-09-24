@@ -474,7 +474,7 @@ ${checks.join("\n")}
     }
     // NME colour and caster views bind this same block.
     record.skinned = false;
-    assert(bbl::pal::node_mesh_block(scene, engine, 0).world ==
+    assert(bbl::pal::node_mesh_block(scene, engine, bbl::MeshHandle{0}).world ==
            bbl::upstream::mesh_world_matrix(engine, record));
     record.scene_morph_targets = false;
     record.gpu_deformation = false; record.morph_storage_weights.clear();

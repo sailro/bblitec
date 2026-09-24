@@ -8,6 +8,7 @@
 
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
+#include <bblite/text_gpu.hpp>
 #include <bblite/pal.hpp>
 #if BBLITE_WORKERS
 #include <bblite/pal_async_engine.hpp>
@@ -224,7 +225,7 @@ namespace {
 enum class RendererKind { scene, sprites, canvas, effects, frame_graph, text };
 
 RendererKind renderer_kind(const Engine& engine) {
-    if (!engine.registered_text_renderers.empty())
+    if (bbl::has_text_renderers(engine))
         return RendererKind::text;
     if (!engine.registered_scenes.empty())
         return RendererKind::scene;

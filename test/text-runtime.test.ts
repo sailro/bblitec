@@ -7,6 +7,7 @@ import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
+import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
 import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
 import { textRecordModel } from "../src/lowering/text-records.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
@@ -83,10 +84,16 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
         resolve(directory, "bblite/upstream_text_records.hpp"),
         textRecordsHeader(context),
     );
-    writeFileSync(
-        resolve(directory, "upstream_text.hpp"),
-        new TextLowerer(context).header(),
-    );
+    for (const [name, header] of [
+        ["upstream_text", new TextLowerer(context).header()],
+        ["upstream_text_gpu", new TextGpuLowerer(context).header()],
+    ] as const) {
+        writeFileSync(resolve(directory, "bblite", `${name}.hpp`), header);
+        writeFileSync(
+            resolve(directory, `${name}.hpp`),
+            `#include <bblite/${name}.hpp>\n`,
+        );
+    }
     const { createTextRenderable, disposeTextRenderable } =
         await importPinnedModule<{
             createTextRenderable(
@@ -265,35 +272,16 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
                 },
             ),
         );
-    uniform("update_text_uniforms(*r, gpu, &camera, 800, 640, write);");
-    uniform("update_text_uniforms(*r, gpu, &camera, 800, 640, write);");
+    uniform("update(&camera, 800, 640);");
+    uniform("update(&camera, 800, 640);");
     camera.key = 7;
-    uniform(
-        "camera.change_key = 7; update_text_uniforms(*r, gpu, &camera, 800, 640, write);",
-    );
+    uniform("camera.change_key = 7; update(&camera, 800, 640);");
     camera.aspect = 0.75;
-    uniform(
-        "camera.effective_aspect = .75; update_text_uniforms(*r, gpu, &camera, 800, 640, write);",
-    );
-    uniform(
-        "update_text_uniforms(*r, gpu, nullptr, 400, 0, write);",
-        false,
-        400,
-        0,
-    );
+    uniform("camera.effective_aspect = .75; update(&camera, 800, 640);");
+    uniform("update(nullptr, 400, 0);", false, 400, 0);
     act("text_write_position(*r, 2, -3);", () => (renderable.position.z = -3));
-    uniform(
-        "update_text_uniforms(*r, gpu, nullptr, 400, 0, write);",
-        false,
-        400,
-        0,
-    );
-    uniform(
-        "update_text_uniforms(*r, gpu, &camera, 400, 0, write);",
-        true,
-        400,
-        0,
-    );
+    uniform("update(nullptr, 400, 0);", false, 400, 0);
+    uniform("update(&camera, 400, 0);", true, 400, 0);
     let destroyed = "";
     renderable._gpu = {
         _textU: { destroy: () => (destroyed += "u") },
@@ -314,11 +302,38 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
         resolve(directory, "expected-writes.bin"),
         Buffer.concat(writes),
     );
-    const cpp = `#include "upstream_text.hpp"
+    const cpp = `#include "upstream_text_gpu.hpp"
 #include <fstream>
 #include <stdexcept>
+using namespace bbl;
+/** A GPU object whose destroy() leaves its mark. */
+struct Marked final : TextGpuObject {
+    std::string* log = nullptr;
+    char mark = 0;
+    void destroy() override { *log += mark; }
+};
+/** The device the uniform tail writes through: each write's range and bytes. */
+struct UniformWrites final : TextGpuDevice {
+    std::ofstream& out;
+    TextGpuHandle target;
+    explicit UniformWrites(std::ofstream& output) : out(output) {}
+    void write_buffer(const TextGpuHandle& buffer, double offset, const js::ArrayBuffer& data,
+                      double data_offset, double size) override {
+        if (buffer != target) throw std::runtime_error("uniform target");
+        const std::uint32_t prefix[] = {static_cast<std::uint32_t>(offset),static_cast<std::uint32_t>(size)};
+        out.write(reinterpret_cast<const char*>(prefix),sizeof(prefix));
+        out.write(reinterpret_cast<const char*>(data.data()) + static_cast<std::size_t>(data_offset),
+                  static_cast<std::streamsize>(size));
+    }
+    TextGpuHandle create_buffer(const TextBufferDescriptor&) override { throw std::runtime_error("buffer"); }
+    TextGpuHandle create_texture(const TextTextureDescriptor&) override { throw std::runtime_error("texture"); }
+    TextGpuHandle create_bind_group(const TextBindGroupDescriptor&) override { throw std::runtime_error("group"); }
+    TextGpuEncoderHandle create_render_bundle_encoder(const TextRenderBundleEncoderDescriptor&) override { throw std::runtime_error("bundle"); }
+    void write_texture(const TextTexelCopyTextureInfo&, const js::ArrayBuffer&, const TextTexelCopyBufferLayout&, const TextExtent3D&) override { throw std::runtime_error("texture write"); }
+    TextPipelineSet text_pipeline(const std::string&, double, const std::optional<std::string>&, bool, const std::shared_ptr<const void>&, const std::string&) override { throw std::runtime_error("pipeline"); }
+    TextPipelineDeviceCacheHandle text_pipeline_cache() override { throw std::runtime_error("cache"); }
+};
 int main() {
-    using namespace bbl;
     auto data = std::make_shared<TextDataState>();
     auto r = create_text_renderable(data);
     auto alias = r;
@@ -333,22 +348,38 @@ int main() {
             r->quaternion_version,ex,ey,ez,r->scaling.x,r->scaling.y,r->scaling.z,r->opacity,r->order,
             double(r->ignore_depth),double(r->is_transparent),double(r->wm_dirty),r->version};
         state.write(reinterpret_cast<const char*>(values),sizeof(values));
-        for (float value: world) { const double wide=value; state.write(reinterpret_cast<const char*>(&wide),sizeof(wide)); }
+        for (std::size_t index = 0; index < world.size(); ++index) { const double wide=world.load(index); state.write(reinterpret_cast<const char*>(&wide),sizeof(wide)); }
     };
-    const std::array<float,16> vp{${Array.from(vp, (value) => `${Number.isInteger(value) ? value.toFixed(1) : value}f`).join(",")}};
-    TextCameraInput camera{vp,4,1.25};
-    TextGpuState gpu;
-    TextUniformWrite write = [&](std::size_t offset, std::span<const std::uint8_t> bytes) {
-        const std::uint32_t prefix[] = {static_cast<std::uint32_t>(offset),static_cast<std::uint32_t>(bytes.size())};
-        writes.write(reinterpret_cast<const char*>(prefix),sizeof(prefix));
-        writes.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
+    TextCameraInput camera{js::TypedArray<float>{${Array.from(vp, (value) => `${Number.isInteger(value) ? value.toFixed(1) : value}f`).join(",")}},4,1.25};
+    auto device = std::make_shared<UniformWrites>(writes);
+    auto surface = std::make_shared<TextSurface>();
+    surface->device = device;
+    // The renderable's GPU record as \`ensureGpu\` creates it.
+    auto gpu = std::make_shared<TextRenderableGpu>();
+    gpu->device = device;
+    gpu->text_u = std::make_shared<TextGpuObject>();
+    device->target = gpu->text_u;
+    gpu->style_buf = std::make_shared<TextGpuObject>();
+    gpu->style_buf->size = 32;
+    gpu->instance_cap = 8;
+    gpu->uploaded_data_version = gpu->uploaded_camera_version = gpu->uploaded_aspect = -1;
+    gpu->uploaded_opacity = std::numeric_limits<double>::quiet_NaN();
+    const auto update = [&](TextCameraInputPointer input, double width, double height) {
+        text_renderable_detail::update_text_renderable(r, surface, gpu, nullptr,
+                                                       TextDrawUpdateContext{input, width, height});
     };
     ${actions.join("\n    ")}
     std::string destroyed;
-    auto lease = std::make_shared<TextGpuState>();
-    lease->destroy_uniform = [&] { destroyed += "u"; };
-    lease->destroy_instances = [&] { destroyed += "i"; };
-    lease->destroy_styles = [&] { destroyed += "s"; };
+    const auto marked = [&](char mark) {
+        auto object = std::make_shared<Marked>();
+        object->log = &destroyed;
+        object->mark = mark;
+        return object;
+    };
+    auto lease = std::make_shared<TextRenderableGpu>();
+    lease->text_u = marked('u');
+    lease->instance_buf = marked('i');
+    lease->style_buf = marked('s');
     r->gpu = lease;
     dispose_text_renderable(r); dispose_text_renderable(r);
     if (destroyed != "uis" || r->gpu || r->data != data || other->data != data) return 2;
@@ -575,6 +606,18 @@ namespace bbl {
 ${lowerMeshMaterialSetter(context)}
 ${bodies}
 }
+/** A GPU object whose destroy() leaves its mark. */
+struct Marked final : bbl::TextGpuObject {
+    std::string* log = nullptr;
+    char mark = 0;
+    void destroy() override { *log += mark; }
+};
+std::shared_ptr<Marked> marked(std::string& log, char mark) {
+    auto object = std::make_shared<Marked>();
+    object->log = &log;
+    object->mark = mark;
+    return object;
+}
 int main(){
     using namespace bbl;
     Engine engine; Scene scene; scene.engine=&engine;
@@ -625,10 +668,10 @@ int main(){
     unregister_scene(scene);register_scene(scene);
     if(scene.state->text_renderables!=std::vector<TextRenderable>{other,r,r}) return 8;
     std::string destroyed;
-    r->gpu=std::make_shared<TextGpuState>();
-    r->gpu->destroy_uniform=[&]{destroyed+="u";};
-    r->gpu->destroy_instances=[&]{destroyed+="i";};
-    r->gpu->destroy_styles=[&]{destroyed+="s";};
+    r->gpu=std::make_shared<TextRenderableGpu>();
+    r->gpu->text_u=marked(destroyed,'u');
+    r->gpu->instance_buf=marked(destroyed,'i');
+    r->gpu->style_buf=marked(destroyed,'s');
     dispose_scene(scene);dispose_scene(alias);
     if(destroyed!="uis" || !scene.state->text_renderables.empty() || !engine.registered_scenes.empty()) return 9;
     try { add_text_renderable(scene,r); return 11; } catch(const std::runtime_error&) {}
@@ -796,6 +839,18 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
 #include <fstream>
 #include <iterator>
 std::vector<std::uint8_t> read(const std::string& path){std::ifstream input(path,std::ios::binary);return {std::istreambuf_iterator<char>(input),{}};}
+/** A GPU object whose destroy() leaves its mark. */
+struct Marked final : bbl::TextGpuObject {
+    std::string* log = nullptr;
+    char mark = 0;
+    void destroy() override { *log += mark; }
+};
+std::shared_ptr<Marked> marked(std::string& log, char mark) {
+    auto object = std::make_shared<Marked>();
+    object->log = &log;
+    object->mark = mark;
+    return object;
+}
 int main(){
     using namespace bbl;
     auto first=${expression};auto second=${expression};auto alias=first;
@@ -808,8 +863,8 @@ int main(){
     dump(first->instances,static_cast<std::size_t>(first->instance_count)*12);dump(first->styles,first->styles.byte_length());
     ${pinned.groups.map(([start, count, live], index) => `if(first->groups[${index}]->slot_start!=${start} || first->groups[${index}]->slot_count!=${count} || first->groups[${index}]->live_count!=${live}) return 5;`).join("\n")}
     std::string destroyed;
-    for(auto& entry:first->storage->curve_sets){auto gpu=std::make_shared<TextAtlasGpuState>();gpu->destroy_curves=[&]{destroyed+="c";};gpu->destroy_bands=[&]{destroyed+="b";};gpu->destroy_metadata=[&]{destroyed+="m";};entry.second->atlas->gpu=gpu;}
-    for(auto& group:first->groups)group->bind_group=std::make_shared<int>(1);
+    for(auto& entry:first->storage->curve_sets){auto gpu=std::make_shared<SharedAtlasGpu>();gpu->curve_tex=marked(destroyed,'c');gpu->band_tex=marked(destroyed,'b');gpu->meta_buf=marked(destroyed,'m');entry.second->atlas->gpu=gpu;}
+    for(auto& group:first->groups)group->bind_group=std::make_shared<TextGpuObject>();
     auto rendered=create_text_renderable(first);first.reset();
     dispose_text_data(alias);
     if(!alias->groups.empty() || alias->instance_count!=0 || alias->style_count!=0 || !destroyed.empty() || alias->storage->curve_sets.size()!=${pinned.atlases})return 6;
