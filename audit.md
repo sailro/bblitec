@@ -155,7 +155,7 @@ and performance.
 | NT-13 | med | `synchronize()`'s internal order (overlay refresh, rematch, draw lists, plan-mesh sync, storage publication, submit, camera update) is written per backend and still differs (storage publication). | A shared `synchronize_scene<Backend>` in the frame conductor owning the order, with backend hooks (with NT-4). | open |
 | NT-14 | med | The patch record is computed three times (TypeScript, CMake, PowerShell); vcpkg portfiles restate PATCHES lists a regex parser reconciles; builders' variant choice is re-derived by verifiers. | `patch-identity.cmake` is the one reader of the patch series (configure, portfiles, builders, doctor); artifacts record `_VARIANTS`; `portfilePatches` and the TypeScript/PowerShell copies are deleted. | fixed |
 | NT-15 | low | Three Dawn invalid-handle checks raise `GpuTransportError` (reaching the device-recovery listeners) where the SDL_GPU equivalents raise `std::runtime_error`. | One classification for an invalid handle on both backends. | open |
-| NT-16 | med | Android builds of RmlUi scenes fail: `pal_ui_length_math.hpp` calls a floating-point `std::from_chars` that NDK 28's libc++ deletes (scene4 x86_64). | Parse with a routine every target provides. | open |
+| NT-16 | med | Android builds of RmlUi scenes fail: `pal_ui_length_math.hpp` calls a floating-point `std::from_chars` that NDK 28's libc++ deletes (scene4 x86_64). | The CSS decimal is scanned by grammar and converted by `strtod`, bit-identical to MSVC's `std::from_chars` over 200,000 decimals (`test/ui-length-math.test.ts`); a vcpkg port that installs only `share/` files owes no notice. scene4 x86_64 builds and packages. | fixed |
 
 ## Generated C++ (GC)
 
@@ -246,8 +246,9 @@ and performance.
 | TL-25 | low | Window-host applications (offscreen, ocean) print no `[mem][frame]` samples, so `memory all` reports them unmeasured; `lint:cpp` does not refuse a build whose PCH is older than its headers. | `lint:cpp` refuses a build whose PCH predates one of its recorded inputs; frame loops print numbered `engine=` streams and `memory` judges each (offscreen's two engines interleaved their frame numbers); offscreen measured on both backends, ocean on Dawn. | fixed |
 | TL-26 | low | node-transport's `node-local` control is used by no check (its browser side needs an instrumented capture of `node-local-attributes.ts`); the two WebGPU recorder init scripts are built the same way twice and the receipts shape is declared twice. | A check for node-local; one recorder and one declaration. | open |
 | TL-27 | low | `memory minecraft` fails its 2 MB per 1,000 frames slope gate (+2.8), also before this audit's changes. | Find the growth or measure the settle. | open |
-| TL-28 | low | `patch-inventory`'s regex breaks when CMake wraps a warning line in a long worktree path. | Match the unwrapped record. | open |
-| TL-29 | low | `scene-command process` help says it runs parity and the published-status check; it compiles, builds shaders and builds. | Correct the help. | open |
+| TL-28 | low | `patch-inventory`'s regex breaks when CMake wraps a warning line in a long worktree path. | The configure test collapses CMake's output whitespace and matches each refusal whole, with its directory and record path; it passes from 48 checkout path lengths (15–62). | fixed |
+| TL-29 | low | `scene-command process` help says it runs parity and the published-status check; it compiles, builds shaders and builds. | The `process` entry always said compile, compile shaders and build (a line filter paired it with `validate`'s summary); `help <command>` and `<command> --help` print one entry, and a test pins what `process` and `validate` say. | fixed |
+| TL-30 | low | Android packages of Dawn builds lost `Dawn-provenance.json` when the notices moved to `package-notices.ts`. | The Android notice set carries it again for Dawn builds. | fixed |
 
 ## Building (BD)
 
@@ -271,7 +272,7 @@ and performance.
 | BD-16 | med | Checkouts of different manifests sharing one vcpkg install reinstall it on every build. | Shared installs are keyed by the manifest digest, three kept per name. | fixed |
 | BD-17 | low | Journaled writes to shared records are found by inventory, not enforced by types; `EmissionSet.add` is 21 s of antigravity's 59 s journal cost. | Readonly types inside the compiler (or a test failing on unjournaled writes); cheaper dependency-set adds. | open |
 | BD-18 | low | `runtime.hpp` sits in the PCH and tests 15 feature macros, so every PAL unit's cache key carries them; generated units never hit the cache across scenes. | Split the feature-gated record blocks out of `runtime.hpp`; content-addressed generated sources. | open |
-| BD-19 | low | `controller_type` (11.5 KiB) is linked into the trimmed SDL with joystick support off. | Trim it with the joystick subsystem. | open |
+| BD-19 | low | `controller_type` (11.5 KiB) is linked into the trimmed SDL with joystick support off. | Trimmed-SDL patch `0010-no-joystick-device-names.patch` names an unnamed keyboard or mouse by vendor/product IDs without the gamepad table; no joystick or controller-type object is linked in the torus-states or calculator release. | fixed |
 | BD-20 | med | Emission-transaction capture dominates application compiles: antigravity-racer spends 126 of 365 s in garbage collection and peaks at 3.25 GB of the ~4 GB default heap; nested shared-body probes add captures. | Bound what a probe journals. | open |
 
 ## Workers (WK)
