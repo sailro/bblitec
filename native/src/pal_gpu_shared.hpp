@@ -410,7 +410,8 @@ inline const char* background_skybox_fragment(const EnvironmentState& environmen
  * whole target for a camera with no viewport, so a scene that has no camera
  * at all goes through the same pinned bodies over this rather than having
  * the whole-target answer restated at each call -- the restatement being the
- * copy that drifts when the pin's own arm moves.
+ * copy that drifts when the pin's own arm moves. Only its absent viewport is
+ * read; it carries no pose.
  *
  * File scope, so no call pays a function-local static's initialization
  * guard, and OUTSIDE the floating-origin block below: the shadow refresh
@@ -421,31 +422,25 @@ inline const CameraRecord no_camera_record{};
 
 #if BBLITE_FLOATING_ORIGIN
 /**
- * The scene's active camera, whose world translation IS the floating-origin
- * offset.
+ * The active camera's world translation, which every consumer subtracts.
  *
  * The pin derives the offset from `scene.camera.worldMatrix` at the moment
- * of use rather than mirroring it into scene state, so this port reads it
- * the same way -- one accessor, so the mesh world, the view transpose and
- * the lights block cannot disagree about which camera the frame is
- * relative to. A scene with no camera yields the record default, whose
- * world is the identity, which is the pin's own zero offset.
- */
-inline const CameraRecord& floating_origin_camera(const Scene& scene, const Engine& engine) {
-    static const CameraRecord none{};
-    return scene.camera.value < engine.cameras.size() ? handle_at(engine.cameras, scene.camera)
-                                                      : none;
-}
-
-/**
- * That camera's world translation, which every consumer subtracts.
+ * of use rather than mirroring it into scene state
+ * (large-world/floating-origin.ts `getFloatingOriginOffset`), so this port
+ * reads it the same way -- one accessor, so the mesh world, the view
+ * transpose and the lights block cannot disagree about which camera the
+ * frame is relative to. With no camera the pin returns the zero vector, so
+ * that arm is explicit here rather than the eye of a record no factory
+ * built.
  *
  * In the camera's own width, not the float world matrix's: under the pin's
  * high-precision matrix the camera's storage is F64, so the offset is the
  * unrounded eye and every `large - large = small` runs at full width.
  */
 inline Vec3d floating_origin_offset(const Scene& scene, const Engine& engine) {
-    return upstream::arc_rotate_eye_position(floating_origin_camera(scene, engine));
+    if (scene.camera.value >= engine.cameras.size())
+        return Vec3d{};
+    return upstream::arc_rotate_eye_position(handle_at(engine.cameras, scene.camera));
 }
 
 /**
@@ -4341,13 +4336,6 @@ inline std::vector<std::uint8_t> pack_morph_weights(const ModelGeometry& geometr
 }
 #endif
 
-// The no-environment fallback face — the ported pinned contract both
-// backends must agree on: a compiled-PBR scene with no environment binds a
-// 1x1 cube of this colour, never zeros. (Dawn used to keep its
-// zero-initialized startup cube here while SDL_GPU uploaded this face — a
-// silent backend delta on any environment-less PBR scene.)
-inline constexpr float environment_fallback_face[4] = {0.15f, 0.16f, 0.2f, 1.0f};
-
 inline std::uint16_t float_to_half(float value) {
     std::uint32_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
@@ -4379,16 +4367,6 @@ inline std::uint16_t float_to_half(float value) {
     }
     return static_cast<std::uint16_t>(sign | static_cast<std::uint16_t>(half_exponent << 10) |
                                       static_cast<std::uint16_t>(rounded >> 13));
-}
-
-/** The fallback face in the decode's own storage type. */
-inline std::vector<std::uint16_t> fallback_face_halves() {
-    std::vector<std::uint16_t> face;
-    face.reserve(4);
-    for (const float channel : environment_fallback_face) {
-        face.push_back(float_to_half(channel));
-    }
-    return face;
 }
 
 // The RGBD decode both render backends upload through.

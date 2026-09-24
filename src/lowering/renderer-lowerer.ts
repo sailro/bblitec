@@ -75,6 +75,7 @@ import {
     type MeshProfileTable,
 } from "./resource-profiles.js";
 import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
+import { lowerRenderBucket } from "./render-bucket.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 
 /**
@@ -1640,9 +1641,19 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/camera_math.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+// The Standard bucket reads the lowered feature word; the PBR header goes
+// first because the Standard one hoists the shared mirrors only without it.
+#if BBLITE_PBR_VARIANTS > 0
+#include <bblite/upstream/pbr_variants.hpp>
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+#include <bblite/upstream/standard_variants.hpp>
+#endif
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <iterator>
 
@@ -1687,26 +1698,7 @@ RenderItem bind_render_item(
             : material.standard_material
             ? RenderMaterialKind::standard
             : RenderMaterialKind::pbr;
-    item.bucket =
-        material.alpha_mode == MaterialAlphaMode::blend
-            ? RenderBucket::alpha_blend
-            : material.alpha_mode == MaterialAlphaMode::mask
-                ? RenderBucket::alpha_mask
-                : RenderBucket::opaque;${
-                    options.standardVertexAlpha
-                        ? `
-    if (material.standard_material && item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& mesh = engine.meshes[item.mesh.value];
-        const bool has_vertex_color = ${options.standardVertexColors ? "mesh.geometry < engine.geometries.size() && engine.geometries[mesh.geometry].has_vertex_colors" : "false"};
-        if (standard_color_alpha_features(
-                material.no_color || material.esm_shadow,
-                mesh.has_vertex_alpha, has_vertex_color,
-                has_instance_colors(mesh)) != 0u) {
-            item.bucket = RenderBucket::alpha_blend;
-        }
-    }`
-                        : ""
-                }
+${lowerRenderBucket(this.context, options)}
     item.cull_mode = material.double_sided
         ? RenderCullMode::none
         : RenderCullMode::back;

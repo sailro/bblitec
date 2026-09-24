@@ -10018,21 +10018,12 @@ public:
             create_solid_texture(state, {0, 0, 0, 255}, WGPUTextureFormat_RGBA8Unorm, 6);
         state.black_cube_view = cube_view(state.black_cube);
         const std::vector<std::uint8_t> zero_rgba16f(8, 0);
-        // The startup value IS the no-environment value: `upload_environment`
-        // replaces this cube only when the scene carries one, so an
-        // environment-less PBR scene shades ambient reflections from this face.
-        // SDL_GPU uploads the same `environment_fallback_face`; zeros here were
-        // a silent backend delta.
-        const std::vector<std::uint16_t> fallback_halves = fallback_face_halves();
-        std::vector<std::uint8_t> fallback_rgba16f(8);
-        for (std::size_t channel = 0; channel < fallback_halves.size(); ++channel) {
-            fallback_rgba16f[channel * 2] =
-                static_cast<std::uint8_t>(fallback_halves[channel] & 0xff);
-            fallback_rgba16f[channel * 2 + 1] =
-                static_cast<std::uint8_t>(fallback_halves[channel] >> 8);
-        }
+        // `upload_environment` replaces this cube only when the scene carries
+        // an environment. Without one the pin composes no IBL arm
+        // (pbr-compose.ts `_hasIbl` needs PBR_HAS_ENV), so no variant samples
+        // it; it only fills the superset layout's slot.
         state.environment_cube =
-            create_solid_texture(state, fallback_rgba16f, WGPUTextureFormat_RGBA16Float, 6);
+            create_solid_texture(state, zero_rgba16f, WGPUTextureFormat_RGBA16Float, 6);
         state.environment_cube_view = cube_view(state.environment_cube);
         state.brdf_texture =
             create_solid_texture(state, zero_rgba16f, WGPUTextureFormat_RGBA16Float, 1);

@@ -1368,10 +1368,11 @@ MaterialHandle create_pbr_material(
     material.specular_weight = options.metallic_f0_factor;
     material.has_ior = false;
     material.has_volume = options.has_volume;
-    derive_material_alpha_mode(material);
-    if (options.alpha_blend) {
-        material.alpha_mode = MaterialAlphaMode::blend;
-    }
+    // The authored \`alphaBlend\` only: the alpha half of the pin's blend
+    // term is read live when the renderer buckets the draw.
+    material.alpha_mode = options.alpha_blend
+        ? MaterialAlphaMode::blend
+        : MaterialAlphaMode::opaque;
     material.has_occlusion_texture = true;
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};

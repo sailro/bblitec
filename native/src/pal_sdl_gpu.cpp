@@ -3976,8 +3976,11 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
                 source_bytes = face_data->bytes.data();
                 row_size = static_cast<std::size_t>(image_width) * 8;
             } else {
+                // No environment: the pin composes no IBL arm without
+                // PBR_HAS_ENV (pbr-compose.ts `_hasIbl`), so no variant
+                // samples this texel; it exists only to fill the slot.
                 decoded_half_pixels = face_data ? decode_rgbd(*face_data, image_width, image_height)
-                                                : fallback_face_halves();
+                                                : std::vector<std::uint16_t>(4, 0);
                 source_bytes = reinterpret_cast<const std::uint8_t*>(decoded_half_pixels.data());
                 byte_size = decoded_half_pixels.size() * sizeof(std::uint16_t);
                 row_size = static_cast<std::size_t>(image_width) * 4 * sizeof(std::uint16_t);
