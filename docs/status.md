@@ -138,7 +138,7 @@ Physics rows measure Bullet against Havok: their residuals are solver deltas, no
 | 127 | <img src="images/scenes/scene127.png" alt="Scene 127 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Gaussian Splat Linear Depth |
 | 128 | <img src="images/scenes/scene128.png" alt="Scene 128 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Gaussian Splat Alpha-Blended Depth |
 | 129 | <img src="images/scenes/scene129.png" alt="Scene 129 rendering" width="160"> | 0.001 / 0.004 | 0.001 / 0.004 | Gaussian Splat GPU Picking |
-| 140 | <img src="images/scenes/scene140.png" alt="Scene 140 rendering" width="160"> | 0.006 / 0.048 | 0.006 / 0.048 | NME Alpha-Discard Shadows |
+| 140 | <img src="images/scenes/scene140.png" alt="Scene 140 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Alpha-Discard Shadows |
 | 141 | <img src="images/scenes/scene141.png" alt="Scene 141 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node, Standard and PBR ESM Casters |
 | 142 | <img src="images/scenes/scene142.png" alt="Scene 142 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Post-Process Viewports |
 | 143 | <img src="images/scenes/scene143.png" alt="Scene 143 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Post-Process Chain |
@@ -162,7 +162,7 @@ Physics rows measure Bullet against Havok: their residuals are solver deltas, no
 | 161 | <img src="images/scenes/scene161.png" alt="Scene 161 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Custom Uniforms |
 | 162 | <img src="images/scenes/scene162.png" alt="Scene 162 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Defines |
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Alpha Cutout |
-| 164 | <img src="images/scenes/scene164.png" alt="Scene 164 rendering" width="160"> | 0.019 / 0.019 | 0.019 / 0.019 | Device Loss Recovery |
+| 164 | <img src="images/scenes/scene164.png" alt="Scene 164 rendering" width="160"> | 0.016 / 0.017 | 0.016 / 0.017 | Device Loss Recovery |
 | 165 | <img src="images/scenes/scene165.png" alt="Scene 165 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Material Thin Instances |
 | 166 | <img src="images/scenes/scene166.png" alt="Scene 166 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Clustered Sponza Spot Lights |
 | 167 | <img src="images/scenes/scene167.png" alt="Scene 167 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Lightmap |
@@ -270,8 +270,8 @@ Unchanged pinned applications, including their reached source and asset graphs.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
-| Ocean | <img src="images/scenes/ocean.png" alt="Ocean rendering" width="160"> | 0.307 / 0.302 | 0.305 / 0.300 | Spectral ocean; compute FFT and mipmaps; procedural sky; buoyancy; retained controls; canvas-only MAD: 0.008 / 0.008 on both backends. |
-| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | $\color{#1a7f37}{\textsf{0.423}} / \color{#9a6700}{\textsf{0.549}}$ | $\color{#1a7f37}{\textsf{0.423}} / \color{#9a6700}{\textsf{0.549}}$ | Dedicated Worker realms; transferred canvases; retained blocking control. UI and localized lens residuals; canvas-only MAD: SDL_GPU 0.002 / 0.002, Dawn 0.001 / 0.002. |
+| Ocean | <img src="images/scenes/ocean.png" alt="Ocean rendering" width="160"> | 0.306 / 0.301 | 0.305 / 0.300 | Spectral ocean; compute FFT and mipmaps; procedural sky; buoyancy; retained controls; canvas-only MAD: 0.008 / 0.008 on both backends. |
+| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | $\color{#1a7f37}{\textsf{0.423}} / \color{#9a6700}{\textsf{0.549}}$ | $\color{#1a7f37}{\textsf{0.423}} / \color{#9a6700}{\textsf{0.549}}$ | Dedicated Worker realms; transferred canvases; retained blocking control. UI and localized lens residuals; canvas-only MAD: 0.001 / 0.002 on both backends. |
 | Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | $\color{#cf222e}{\textsf{1.155}} / \color{#9a6700}{\textsf{0.918}}$ | $\color{#cf222e}{\textsf{1.155}} / \color{#9a6700}{\textsf{0.918}}$ | Thin-instance game; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.093 / 0.101, Dawn 0.093 / 0.101. |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | WAD game; sprites; audio; retained UI. |
 | LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.048 / 0.048 | 0.048 / 0.048 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
@@ -279,7 +279,7 @@ Unchanged pinned applications, including their reached source and asset graphs.
 | Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#9a6700}{\textsf{0.806}} / \color{#9a6700}{\textsf{0.806}}$ | $\color{#9a6700}{\textsf{0.803}} / \color{#9a6700}{\textsf{0.803}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.004 / 0.004, Dawn 0.000 / 0.000. |
 | Break Meshes | <img src="images/scenes/break-meshes.png" alt="Break Meshes rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Voronoi fracture; PBR; physics. |
 | Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | 0.434 / 0.434 | 0.434 / 0.434 | Driving game; CSM; physics; audio; retained HUD. UI residual; no-UI MAD: SDL_GPU 0.004 / 0.004, Dawn 0.004 / 0.004. |
-| Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{3.233}} / \color{#cf222e}{\textsf{3.293}}$ | $\color{#cf222e}{\textsf{3.233}} / \color{#cf222e}{\textsf{3.293}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: SDL_GPU 0.028 / 0.029, Dawn 0.028 / 0.029. |
+| Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{3.230}} / \color{#cf222e}{\textsf{3.290}}$ | $\color{#cf222e}{\textsf{3.230}} / \color{#cf222e}{\textsf{3.290}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: 0.000 / 0.000 on both backends. |
 | Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.143 / 0.109 | 0.143 / 0.109 | Animated glTF; PBR/IBL; retained chrome. |
 | Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.103 / 0.141 | 0.103 / 0.141 | Skinned Draco/WebP glTF; transmission; retained chrome. |
 | Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.159 / 0.158 | 0.142 / 0.141 | Strategy map; sprites; picking; retained cursor/tooltips. |
