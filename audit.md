@@ -190,7 +190,7 @@ and performance.
 | TL-2 | med | 8 of 25 scene commands restated others. | 21 commands; parity measures both backends by default. | fixed |
 | TL-3 | med | Four sizing tools. | `scene -- survey`. | fixed |
 | TL-4 | med | PowerShell packaging re-implements TypeScript helpers. | Move desktop packaging into TypeScript. | open |
-| TL-5 | med | Tools import `dist/src` unchecked. | Import-name test. Remaining: `checkJs` reports real errors in `checks/plugins/break-meshes-timing.mjs`, `ocean-controls.mjs` and `tools/android-smoke.mjs` beside inference noise. | partial |
+| TL-5 | med | Tools import `dist/src` unchecked. | `tsconfig.tools.json` (strict + `checkJs`) checks tools/ and checks/plugins/ at 0 errors through `npm run lint:tools` (part of `lint`); the build emits declarations; the import-name test is subsumed and deleted. Remaining: the three `checks/plugins/*.init.js` browser scripts (TL-24). | fixed |
 | TL-6 | med | Backend names and `--exe` accepted inconsistently. | One backend parser; `BBLITE_NATIVE_EXE` for every measuring command. | fixed |
 | TL-7 | med | Seek handled 3 ways; `parity --seek` could overwrite a golden. | One pose resolver; seeks are diagnostic. | fixed |
 | TL-8 | med | `geometry` used weaker staleness and regex task discovery. | Capture provenance and configured output; tasks from the manifest's `copyTasks`. | fixed |
@@ -199,12 +199,17 @@ and performance.
 | TL-11 | low | Dead entry points and aliases. | Deleted. | fixed |
 | TL-12 | low | Duplicated walkers and runners. | Walkers, runners and the record writer shared in `tooling/`; `validation-resume.ts` deleted. | fixed |
 | TL-13 | low | `parity`/`check` wait forever on a Window host in a locked console session (offscreen 905 s, ocean 8,830 s). | Window-host runs without their own limit are killed after 120 s + 50 ms per frame; the timeout names the locked session. | fixed |
-| TL-14 | low | `check scene149` fails 1/28 at main (the pin's live resize did not throw #84); scene149 and break-meshes-60 browser observations are stale. | Re-observe. | open |
+| TL-14 | low | `check scene149` fails 1/28 at main (the pin's live resize did not throw #84); scene149 and break-meshes-60 browser observations are stale. | The check reads the error codes the pinned `buildResolvePath` throws (1.31 renumbered #84 to #86); break-meshes-60/240/live, scene149, scene180, scene46 and scene47 re-observed; all pass on both backends. | fixed |
 | TL-15 | low | Package `.staging/` folders accumulate. | A published run removes its staging folder; a failed one keeps it. | fixed |
 | TL-16 | low | The memory gate's slope test trips on a single allocation step (quake SDL_GPU once; minecraft while its records stay flat). | Judge a sustained trend. | open |
 | TL-17 | low | Window-host runs are bounded by a tool timeout; the native frame clock already sees the occluded or timed-out present and retries forever. | Fail a measured run after a bounded streak with the actual status, then drop the tool timeout. | open |
 | TL-18 | med | 18 test files slice `pal_sdl_gpu.cpp`/`pal_dawn.cpp` as text and stub what the slice needs (the camera is non-null), so the camera-less arms are never run by a harness. | Link harnesses against extracted shared stage units (after RDN-20/NT-13). | open |
 | TL-19 | low | `build-labsound.ps1` and `build-rmlui.ps1` reset their checkout and re-apply patches on every `demos:release`, recompiling everything (build-sdl-min now records its applied series). | One applied-series record in `bblite-tools.psm1` for every builder. | open |
+| TL-20 | med | `window-input-order` is timing-dependent: it passes alone and fails under machine load (2 of 4 runs at one head). | Drive the fixture's frame clock and presentation deterministically. | open |
+| TL-21 | low | scene181 cannot be observed: its golden (2026-09-08) differs from the current Chrome only at the textarea resize grip. | Recapture the golden with provenance, then observe. | open |
+| TL-22 | low | `check scene149-transport` fails ("Generated source differs from browser source"): its inputs were captured at pin 1.27 by an observer the repository does not contain. | Capture them with repository tooling at the current pin. | open |
+| TL-23 | med | `check scene261-live` fails: the "moving" capture describes frame 161 where the phase asked for 35, and the input tape does not move the camera. | Fix the native frame timing / input replay. | open |
+| TL-24 | low | The three `checks/plugins/*.init.js` browser scripts are not type-checked (40 errors). | A browser tsconfig (DOM + WebGPU types, declared globals) in `lint:tools`. | open |
 
 ## Building (BD)
 
