@@ -98,9 +98,11 @@ inline WGPUStringView string_view(const char* text) { return WGPUStringView{text
  * attribute before a layout reads it.
  */
 template <std::size_t Count> std::array<WGPUVertexAttribute, Count> vertex_attribute_array() {
-    return []<std::size_t... Index>(std::index_sequence<Index...>) {
-        return std::array<WGPUVertexAttribute, Count>{
-            {(static_cast<void>(Index), WGPU_VERTEX_ATTRIBUTE_INIT)...}};
+    // Bound once: MSVC does not parse the header's initializer macro inside
+    // a pack expansion.
+    const WGPUVertexAttribute unset = WGPU_VERTEX_ATTRIBUTE_INIT;
+    return [&unset]<std::size_t... Index>(std::index_sequence<Index...>) {
+        return std::array<WGPUVertexAttribute, Count>{{(static_cast<void>(Index), unset)...}};
     }(std::make_index_sequence<Count>{});
 }
 

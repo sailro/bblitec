@@ -9116,12 +9116,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
     for (const PickMeshCandidate& candidate : candidates) {
         // The shared block at this backend's 256-byte dynamic-offset
         // stride.
-        DawnPickMeshUniforms block{};
-        block.world = candidate.uniforms.world;
-        block.pick_id = candidate.uniforms.pick_id;
-        block.excluded_thin_instance_start = candidate.uniforms.excluded_thin_instance_start;
-        block.excluded_thin_instance_count = candidate.uniforms.excluded_thin_instance_count;
-        blocks.push_back(block);
+        blocks.push_back(DawnPickMeshUniforms{candidate.uniforms});
     }
     if (blocks.size() > state.pick_mesh_capacity) {
 #if BBLITE_GPU_INSTANCING

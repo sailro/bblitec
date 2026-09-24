@@ -28,6 +28,7 @@
 #endif
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -41,15 +42,12 @@ namespace bbl::pal {
  *
  * The scene block needs no twin: `PickSceneUniforms` in
  * `pal_gpu_shared.hpp` is the pin's own layout and both backends upload it
- * unchanged. Only this one differs, and only in its stride -- which the
- * language computes from `alignas` rather than a hand-counted tail, so a
- * field added here cannot silently move it.
+ * unchanged. Only this one differs, and only in its stride: the tail is
+ * computed from the shared block, so a field added there cannot move it.
  */
-struct alignas(256) DawnPickMeshUniforms {
-    std::array<float, 16> world{};
-    std::uint32_t pick_id = 0;
-    std::uint32_t excluded_thin_instance_start = 0;
-    std::uint32_t excluded_thin_instance_count = 0;
+struct DawnPickMeshUniforms {
+    PickMeshUniforms uniforms;
+    std::array<std::byte, 256 - sizeof(PickMeshUniforms)> tail{};
 };
 static_assert(sizeof(DawnPickMeshUniforms) == 256,
               "a pick candidate's block is one dynamic-offset stride");
