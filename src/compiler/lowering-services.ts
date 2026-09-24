@@ -59,6 +59,7 @@ import type { ClassLowerer } from "./classes.js";
 import type { SceneManifestRecorder } from "./scene-manifest.js";
 import type { BindingScopes } from "./binding-scopes.js";
 import type { ConditionLowerer } from "./conditions.js";
+import type { BrowserErasure } from "./browser-erasure.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -98,7 +99,6 @@ export interface LoweringServices {
     hasPresentationHost(): boolean;
     hasFeature(feature: Feature): boolean;
     failAtFile(message: string): never;
-    isPrimaryCanvas2DContextCall(call: ts.CallExpression): boolean;
     hoistForwardCallbackBindings(callback: ts.Expression, before: number): void;
     platformEventCallbackIdentity(callback: Value, node: ts.Node): string;
     compilePlatformCallback(
@@ -118,6 +118,7 @@ export interface LoweringServices {
     readonly sceneManifest: SceneManifestRecorder;
     readonly bindings: BindingScopes;
     readonly conditions: ConditionLowerer;
+    readonly browserErasure: BrowserErasure;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
@@ -145,7 +146,6 @@ export interface LoweringServices {
     hasMainEntry: boolean;
     defaultRenderTaskAdapted: boolean;
     isNativeHostUiLookup(call: ts.CallExpression): boolean;
-    isBrowserOnlyHandler(handler: ts.Expression): boolean;
     emitStatement(statement: ts.Statement): void;
     statementTerminatesAfterLowering(statement: ts.Statement): boolean;
     emitExpressionAsStatement(expression: ts.Expression): void;
@@ -383,9 +383,7 @@ export interface LoweringServices {
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
     isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
-    isBrowserOnlyLocalCall(call: ts.CallExpression): boolean;
     isNativeUiHelperCall(call: ts.CallExpression): boolean;
-    isBrowserOnlyNullableClassFactoryCall(call: ts.CallExpression): boolean;
     compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean;
@@ -764,14 +762,7 @@ export interface LoweringServices {
     ): "width" | "height" | undefined;
     staticCanvasSize(expression: ts.Expression): number | undefined;
     canvasSizeValue(expression: ts.Expression): Value | undefined;
-    isBrowserOnlyExpression(expression: ts.Expression): boolean;
     isBoundedNestedFrameYield(expression: ts.Expression): boolean;
-    isBrowserDomValue(expression: ts.Expression): boolean;
-    isNativeBrowserFileExpression(expression: ts.Expression): boolean;
-    isDeferredCallbackCall(call: ts.CallExpression): boolean;
-    evaluateBrowserValue(
-        expression: ts.Expression,
-    ): Value["browserValue"] | undefined;
     isBrowserInstrumentationCall(call: ts.CallExpression): boolean;
     platformDocumentHidden(): string | undefined;
     compilePlatformCall(call: ts.CallExpression): Value | undefined;
@@ -783,7 +774,6 @@ export interface LoweringServices {
     emitPlatformEventListener(call: ts.CallExpression): boolean;
     isCanvasElement(expression: ts.Expression): boolean;
     isFrameYield(expression: ts.Expression): boolean;
-    frameDrainCondition(expression: ts.Expression): ts.Expression | undefined;
     emitFramePollAwait(call: ts.CallExpression): boolean;
     emitFrameYieldRequeue(expression: ts.Expression): void;
     promiseLatchCondition(expression: ts.Expression): string | undefined;

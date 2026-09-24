@@ -299,7 +299,7 @@ function hasOnlyInstrumentationEffects(
  * page never reads. Retained controls, layout, and observed metadata stay live. */
 export function writesUnobservedCanvasMetadata(
     checker: ts.TypeChecker,
-    program: ts.Program,
+    sourceFiles: readonly ts.SourceFile[],
     call: ts.CallExpression,
     argumentIndex: number,
     host: NativeHostUi | undefined,
@@ -394,7 +394,7 @@ export function writesUnobservedCanvasMetadata(
             return true;
         return ts.forEachChild(node, observes) ?? false;
     };
-    return !program
-        .getSourceFiles()
-        .some((file) => !file.isDeclarationFile && observes(file));
+    return !sourceFiles.some(
+        (file) => !file.isDeclarationFile && observes(file),
+    );
 }

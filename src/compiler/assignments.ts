@@ -526,9 +526,8 @@ export interface AssignmentContext
             | "requireEngine"
             | "assertAssetRootWritable"
             | "eraseBrowserInstrumentation"
-            | "isBrowserOnlyExpression"
+            | "browserErasure"
             | "isNativeUiValueExpression"
-            | "isBrowserDomValue"
             | "emit"
             | "allocateTemporaryCppName"
             | "meshTransformDirtyEntry"
@@ -1247,8 +1246,8 @@ export function emitPropertyAssignment(
         return;
     }
     if (
-        context.isBrowserOnlyExpression(left) ||
-        context.isBrowserDomValue(left)
+        context.browserErasure.isBrowserOnlyExpression(left) ||
+        context.browserErasure.isBrowserDomValue(left)
     ) {
         context.eraseBrowserInstrumentation(expression.pos);
         return;

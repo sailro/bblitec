@@ -92,7 +92,6 @@ import {
 } from "./compiler/window-events.js";
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
 import { WindowProperties } from "./compiler/window-properties.js";
-import { writesUnobservedCanvasMetadata } from "./compiler/canvas-instrumentation.js";
 import { AsyncLowerer } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
 import {
@@ -136,10 +135,7 @@ import {
 } from "./compiler/deployment.js";
 import { httpResponseProperty } from "./compiler/http.js";
 import { numberConstantValue } from "./compiler/number-intrinsics.js";
-import {
-    compileBrowserFileProperty,
-    isNativeBrowserFileExpression,
-} from "./compiler/browser-file.js";
+import { compileBrowserFileProperty } from "./compiler/browser-file.js";
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
 import { compileExecutedUrlFunctionCall } from "./compiler/executed-url-function.js";
@@ -245,7 +241,6 @@ import {
     passesByReference,
     passesByReferenceKind,
     pinnedHandleKind,
-    platformHandleKind,
     type DataIterationElement,
     type DataType,
     type TypedArrayKind,
@@ -358,11 +353,7 @@ import type {
     VariableBinding,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue } from "./compiler/types.js";
-import {
-    ClassLowerer,
-    rejectClassStaticBlocks,
-    staticClassMember,
-} from "./compiler/classes.js";
+import { ClassLowerer, rejectClassStaticBlocks } from "./compiler/classes.js";
 import {
     assertDeterministicRandomUnreached,
     isDeterministicRandomRead,
@@ -749,11 +740,7 @@ class Compiler implements LoweringServices {
     public readonly dataLowerer: DataLowerer;
     public readonly classLowerer: ClassLowerer;
     public readonly nativeFunctions: NativeFunctionLowerer;
-    private readonly browserErasure: BrowserErasure;
-    private readonly browserUtilitySources = new EmissionMap<
-        ts.SourceFile,
-        boolean
-    >();
+    public readonly browserErasure: BrowserErasure;
     /** One rebound-name walk per file, shared by every `identifierIsRebound`. */
     private readonly reboundSymbolsByFile = new EmissionMap<
         ts.SourceFile,
@@ -979,8 +966,10 @@ class Compiler implements LoweringServices {
             (expression) => this.compileValue(expression),
             (expression) => this.compileValue(expression),
             (expression) => this.conditions.compileCondition(expression),
-            (expression) => this.evaluateBrowserValue(expression),
-            (expression) => this.isBrowserOnlyExpression(expression),
+            (expression) =>
+                this.browserErasure.evaluateBrowserValue(expression),
+            (expression) =>
+                this.browserErasure.isBrowserOnlyExpression(expression),
             (value, expression, assertedNonNull, expectedType) =>
                 this.dataLowerer.narrowOptional(
                     value,
@@ -1578,37 +1567,6 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * Whether a callback only reports: its body observes or mutates browser
-     * state and nothing else.
-     *
-     * The entry reporter and `setTimeout`'s browser-only arm ask this of the
-     * same shapes, so it is one question with one answer.
-     *
-     * NOT `statementIsBrowserOnly`, which looks deeper but answers a
-     * different question: it is what decides whether a statement inside a
-     * RETAINED function may be erased, and it deliberately excludes console
-     * and document so an unresolved guard stays a refusal rather than
-     * swallowing a nested call. Reporting is exactly what those globals do.
-     */
-    public isBrowserOnlyHandler(handler: ts.Expression): boolean {
-        const body =
-            ts.isArrowFunction(handler) || ts.isFunctionExpression(handler)
-                ? handler.body
-                : undefined;
-        if (body && ts.isBlock(body)) {
-            return body.statements.every(
-                (statement) =>
-                    ts.isExpressionStatement(statement) &&
-                    this.isBrowserOnlyExpression(statement.expression),
-            );
-        }
-        // A concise body is the expression itself; anything that is not a
-        // function literal is asked directly, which lets a bare
-        // `console.error` pass and a named recovery routine not.
-        return this.isBrowserOnlyExpression(body ?? handler);
-    }
-
-    /**
      * `entry(...).catch(<reporter>)`, which is how a scene whose entry is an
      * imported async helper ends.
      *
@@ -1647,7 +1605,7 @@ class Compiler implements LoweringServices {
             return statement;
         }
         const handler = this.unwrap(argumentAt(call, 0));
-        if (!this.isBrowserOnlyHandler(handler)) {
+        if (!this.browserErasure.isBrowserOnlyHandler(handler)) {
             this.fail(
                 handler,
                 "A scene's entry may end in `.catch(<reporter>)`, whose " +
@@ -2916,10 +2874,12 @@ class Compiler implements LoweringServices {
         }
 
         if (
-            this.isBrowserOnlyExpression(declaration.initializer) &&
+            this.browserErasure.isBrowserOnlyExpression(
+                declaration.initializer,
+            ) &&
             this.moduleRelativeAssetUrl(declaration.initializer) === undefined
         ) {
-            const browserValue = this.evaluateBrowserValue(
+            const browserValue = this.browserErasure.evaluateBrowserValue(
                 declaration.initializer,
             );
             if (!(
@@ -7932,179 +7892,6 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * An imported helper with no route to Babylon and no native input can
-     * only observe or mutate browser state. Erasing the call as one unit is
-     * both safer and more faithful than trying to lower implementation
-     * details such as fetch wrappers, streams, timers, and DOM progress UI.
-     *
-     * The two guards are deliberately conservative: every explicit argument
-     * must be a browser value or literal configuration, and the declaration's
-     * entire module must reach no Babylon import. A helper receiving an engine,
-     * mesh, runtime data, or callback therefore stays on the ordinary inliner.
-     */
-    public isBrowserOnlyLocalCall(call: ts.CallExpression): boolean {
-        // A helper receiving retained controls has native effects even when
-        // its returned interface consists entirely of void methods (focus,
-        // navigation, click). Do not erase that interface as browser chrome.
-        if (
-            call.arguments.some((argument, index) => {
-                if (
-                    this.isCanvasElement(argument) &&
-                    writesUnobservedCanvasMetadata(
-                        this.checker,
-                        this.program,
-                        call,
-                        index,
-                        this.options.nativeHostUi,
-                    )
-                )
-                    return false;
-                if (this.isNativeUiValueExpression(argument)) return true;
-                const value = this.unwrap(argument);
-                const type = ts.isIdentifier(value)
-                    ? this.bindings.lookupOptional(value)?.dataType
-                    : undefined;
-                return (
-                    type?.kind === "vector" &&
-                    type.element.kind === "handle" &&
-                    type.element.handle === "ui-element"
-                );
-            })
-        )
-            return false;
-        const callee = this.unwrap(call.expression);
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            this.isBrowserOnlyNullableClassFactoryCall(call)
-        ) {
-            return true;
-        }
-        if (!ts.isIdentifier(callee)) return false;
-        const declaration = this.symbols
-            .valueSymbol(callee)
-            ?.declarations?.find(ts.isFunctionDeclaration);
-        if (!declaration?.body) return false;
-        const resultType = this.checker.getTypeAtLocation(call);
-        // An async browser setup helper exposes `Promise<void>` at the call
-        // site, but its observable result after the surrounding `await` is
-        // still void. Inspect the promised value rather than rejecting the
-        // Promise object's own `then`/`catch` surface as native application
-        // data.
-        const observableResult =
-            this.checker.getAwaitedType(resultType) ?? resultType;
-        let writeOnlyObjectResult = false;
-        if ((observableResult.flags & ts.TypeFlags.Object) !== 0) {
-            const directlyDom =
-                declaredInDomLibrary(observableResult.symbol) ||
-                declaredInDomLibrary(observableResult.aliasSymbol);
-            if (!directlyDom) {
-                writeOnlyObjectResult =
-                    observableResult.getProperties().length > 0 &&
-                    observableResult.getProperties().every((property) => {
-                        const propertyDeclaration =
-                            property.valueDeclaration ??
-                            property.declarations?.[0];
-                        if (!propertyDeclaration) return false;
-                        const propertyType =
-                            this.checker.getTypeOfSymbolAtLocation(
-                                property,
-                                propertyDeclaration,
-                            );
-                        const signatures = propertyType.getCallSignatures();
-                        return (
-                            signatures.length > 0 &&
-                            signatures.every(
-                                (signature) =>
-                                    (this.checker.getReturnTypeOfSignature(
-                                        signature,
-                                    ).flags &
-                                        ts.TypeFlags.Void) !==
-                                    0,
-                            )
-                        );
-                    });
-                const carriesNativeData = observableResult
-                    .getProperties()
-                    .some((property) => {
-                        const declaration =
-                            property.valueDeclaration ??
-                            property.declarations?.[0];
-                        if (!declaration) return false;
-                        const propertyType =
-                            this.checker.getTypeOfSymbolAtLocation(
-                                property,
-                                declaration,
-                            );
-                        return (
-                            propertyType.getCallSignatures().length === 0 &&
-                            this.dataTypes.fromTsType(
-                                propertyType,
-                                declaration,
-                            ) !== undefined
-                        );
-                    });
-                if (carriesNativeData) {
-                    // A DOM-using helper may still return an application
-                    // record whose native fields are polled later (the
-                    // platformer input controller). Erase its DOM statements
-                    // individually rather than tainting the whole object.
-                    return false;
-                }
-            }
-        }
-        if (writeOnlyObjectResult) {
-            let reachesBrowser = false;
-            let reachesBabylon = false;
-            const visit = (root: ts.Node): void =>
-                forEachAnalysisNode(root, (node) => {
-                    if (ts.isTypeNode(node)) {
-                        return "skip";
-                    }
-                    if (ts.isIdentifier(node)) {
-                        if (this.symbols.importedName(node) !== undefined) {
-                            reachesBabylon = true;
-                        }
-                        if (
-                            ["document", "window", "globalThis"].includes(
-                                node.text,
-                            ) &&
-                            this.libraryGlobal(node) !== undefined
-                        ) {
-                            reachesBrowser = true;
-                        }
-                    }
-                });
-            visit(declaration.body);
-            if (reachesBrowser && !reachesBabylon) {
-                return true;
-            }
-        }
-        const hasBrowserInput = call.arguments.some((argument) => {
-            if (!this.isBrowserOnlyExpression(argument)) return false;
-            const value = this.evaluateBrowserValue(argument);
-            // A query-resolved primitive is ordinary input to a helper,
-            // including helpers in modules with no Babylon imports.
-            return (
-                !value ||
-                (!isPrimitiveBrowserValue(value) &&
-                    value.kind !== "search-params")
-            );
-        });
-        const returnsVoid = (observableResult.flags & ts.TypeFlags.Void) !== 0;
-        if (
-            !hasBrowserInput ||
-            (!returnsVoid &&
-                !call.arguments.every((argument) =>
-                    this.isBrowserHelperArgument(argument),
-                ))
-        ) {
-            return false;
-        }
-        const source = declaration.getSourceFile();
-        return this.isBrowserUtilitySource(source);
-    }
-
-    /**
      * A local helper returning a scene-created retained element must be
      * inlined before DOM erasure gets to classify its result type. Canvas
      * helpers deliberately do not qualify: live Canvas2D belongs to its own
@@ -8112,172 +7899,6 @@ class Compiler implements LoweringServices {
      */
     public isNativeUiHelperCall(call: ts.CallExpression): boolean {
         return this.ui.isNativeUiHelperCall(call);
-    }
-
-    /**
-     * A static factory for a nullable DOM-only class has no native object to
-     * construct. This recognizes the deliberately narrow shape used by
-     * optional browser overlays: the class lives in a module with no Babylon
-     * imports, owns at least one DOM field, and exposes no native-readable
-     * public state (only void methods).
-     */
-    public isBrowserOnlyNullableClassFactoryCall(
-        call: ts.CallExpression,
-    ): boolean {
-        const callee = this.unwrap(call.expression);
-        if (!ts.isPropertyAccessExpression(callee)) return false;
-        const found = staticClassMember(
-            this.checker,
-            this.unwrap(callee.expression),
-            callee.name,
-        );
-        const method = found?.table.staticMethods.get(found.name);
-        if (!found || !method?.body) return false;
-        const { declaration } = found.table;
-
-        const result = this.checker.getAwaitedType(
-            this.checker.getTypeAtLocation(call),
-        );
-        if (!result || (result.flags & ts.TypeFlags.Union) === 0) {
-            return false;
-        }
-        const resultMembers = (result as ts.UnionType).types;
-        const nullable = resultMembers.some(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
-                0,
-        );
-        const concrete = resultMembers.filter(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) ===
-                0,
-        );
-        if (
-            !nullable ||
-            concrete.length !== 1 ||
-            !(concrete[0]!.symbol?.declarations ?? []).includes(declaration)
-        ) {
-            return false;
-        }
-
-        const isPrivateOrProtected = (member: ts.ClassElement): boolean =>
-            (ts.getCombinedModifierFlags(member) &
-                (ts.ModifierFlags.Private | ts.ModifierFlags.Protected)) !==
-            0;
-        const isStatic = (member: ts.ClassElement): boolean =>
-            (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) !==
-            0;
-        const domOwned = declaration.members.some(
-            (member) =>
-                ts.isPropertyDeclaration(member) &&
-                this.typeComesFromDom(this.checker.getTypeAtLocation(member)),
-        );
-        if (!domOwned) return false;
-
-        // Retained canvases are part of the native UI surface. Do not classify
-        // a helper which owns one as a browser-only decoration merely because
-        // its public API happens to be write-only. Such helpers (for example a
-        // decoded pixel-art HUD) must pass through ordinary class lowering so
-        // their bounded Canvas2D calls can be rewritten onto the PAL.
-        const ownsRetainedCanvas = declaration.members.some((member) => {
-            if (!ts.isPropertyDeclaration(member)) return false;
-            const type = this.checker.getTypeAtLocation(member);
-            const members =
-                (type.flags & ts.TypeFlags.Union) !== 0
-                    ? (type as ts.UnionType).types
-                    : [type];
-            return members.some((candidate) => {
-                const name = candidate.getSymbol()?.getName();
-                return (
-                    name === "HTMLCanvasElement" ||
-                    name === "OffscreenCanvas" ||
-                    name === "CanvasRenderingContext2D"
-                );
-            });
-        });
-        if (ownsRetainedCanvas) return false;
-
-        const publicSurfaceIsWriteOnly = declaration.members.every((member) => {
-            if (
-                isStatic(member) ||
-                isPrivateOrProtected(member) ||
-                ts.isConstructorDeclaration(member)
-            ) {
-                return true;
-            }
-            if (!ts.isMethodDeclaration(member)) return false;
-            const signature = this.checker.getSignatureFromDeclaration(member);
-            return (
-                signature !== undefined &&
-                (this.checker.getReturnTypeOfSignature(signature).flags &
-                    ts.TypeFlags.Void) !==
-                    0
-            );
-        });
-        return (
-            publicSurfaceIsWriteOnly &&
-            this.isBrowserUtilitySource(declaration.getSourceFile())
-        );
-    }
-
-    private typeComesFromDom(type: ts.Type): boolean {
-        const members =
-            (type.flags & ts.TypeFlags.Union) !== 0
-                ? (type as ts.UnionType).types
-                : [type];
-        return members.some((member) => declaredInDomLibrary(member.symbol));
-    }
-
-    private isBrowserUtilitySource(source: ts.SourceFile): boolean {
-        const cached = this.browserUtilitySources.get(source);
-        if (cached !== undefined) return cached;
-        let reachesBabylon = false;
-        const visit = (root: ts.Node): void =>
-            forEachAnalysisNode(root, (node) => {
-                if (reachesBabylon) return "skip";
-                if (
-                    ts.isIdentifier(node) &&
-                    this.symbols.importedName(node) !== undefined
-                ) {
-                    reachesBabylon = true;
-                    return "skip";
-                }
-            });
-        visit(source);
-        const browserOnly = !reachesBabylon;
-        this.browserUtilitySources.set(source, browserOnly);
-        return browserOnly;
-    }
-
-    private isBrowserHelperArgument(expression: ts.Expression): boolean {
-        const unwrapped = this.unwrap(expression);
-        if (this.isBrowserOnlyExpression(unwrapped)) return true;
-        if (
-            ts.isStringLiteral(unwrapped) ||
-            ts.isNumericLiteral(unwrapped) ||
-            unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
-            unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
-            unwrapped.kind === ts.SyntaxKind.NullKeyword
-        ) {
-            return true;
-        }
-        if (ts.isObjectLiteralExpression(unwrapped)) {
-            return unwrapped.properties.every(
-                (property) =>
-                    ts.isPropertyAssignment(property) &&
-                    this.isBrowserHelperArgument(property.initializer),
-            );
-        }
-        if (ts.isArrayLiteralExpression(unwrapped)) {
-            return unwrapped.elements.every(
-                (element) =>
-                    ts.isExpression(element) &&
-                    this.isBrowserHelperArgument(element),
-            );
-        }
-        return false;
     }
 
     public compileSceneDefaultRenderTask(
@@ -12648,7 +12269,9 @@ class Compiler implements LoweringServices {
             ts.isPropertyAccessExpression(unwrapped) &&
             CANVAS_SIZE_AXES.has(unwrapped.name.text)
         ) {
-            const owner = this.evaluateBrowserValue(unwrapped.expression);
+            const owner = this.browserErasure.evaluateBrowserValue(
+                unwrapped.expression,
+            );
             if (owner?.kind === "object" && owner.primaryCanvas) {
                 this.requirePresentationHost(expression);
             }
@@ -12665,26 +12288,6 @@ class Compiler implements LoweringServices {
                   dataType: { kind: "number" },
               }
             : undefined;
-    }
-
-    public isBrowserOnlyExpression(expression: ts.Expression): boolean {
-        const unwrapped = this.unwrap(expression);
-        const candidate =
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-                ? this.unwrap(unwrapped.left)
-                : unwrapped;
-        if (ts.isCallExpression(candidate)) {
-            const callee = this.unwrap(candidate.expression);
-            if (
-                ts.isPropertyAccessExpression(callee) &&
-                callee.name.text === "getGamepads" &&
-                this.libraryGlobal(callee.expression) === "navigator"
-            ) {
-                return false;
-            }
-        }
-        return this.browserErasure.isBrowserOnlyExpression(expression);
     }
 
     /**
@@ -12775,89 +12378,6 @@ class Compiler implements LoweringServices {
         return true;
     }
 
-    public isBrowserDomValue(expression: ts.Expression): boolean {
-        const type = this.checker.getTypeAtLocation(expression);
-        const members =
-            (type.flags & ts.TypeFlags.Union) !== 0
-                ? (type as ts.UnionType).types
-                : [type];
-        // Gamepads are platform handles the native input model reads.
-        if (
-            members.some((member) => {
-                const handle = platformHandleKind(member);
-                return handle === "gamepad" || handle === "gamepad-button";
-            })
-        ) {
-            return false;
-        }
-        const directlyDom = members.some((member) =>
-            declaredInDomLibrary(member.symbol),
-        );
-        if (directlyDom) return true;
-        const unwrapped = this.unwrap(expression);
-        if (ts.isIdentifier(unwrapped)) {
-            const bound = this.bindings.lookupOptional(unwrapped);
-            if (
-                bound &&
-                bound.kind !== "browser" &&
-                (bound.kind !== "node-particle-2d-binding" ||
-                    bound.nodeParticleLive)
-            ) {
-                // A local function can bridge DOM setup and return an ordinary
-                // native record. Once that record is bound, its data fields do
-                // not become browser-only merely because the initializer also
-                // registered DOM listeners.
-                return false;
-            }
-            const declaration =
-                this.symbols.valueSymbol(unwrapped)?.valueDeclaration;
-            if (
-                declaration &&
-                ts.isVariableDeclaration(declaration) &&
-                declaration.initializer &&
-                declaration.initializer !== unwrapped &&
-                this.isBrowserOnlyExpression(declaration.initializer)
-            ) {
-                return true;
-            }
-        }
-        return (
-            (ts.isPropertyAccessExpression(unwrapped) ||
-                ts.isElementAccessExpression(unwrapped)) &&
-            this.isBrowserDomValue(unwrapped.expression)
-        );
-    }
-
-    public isNativeBrowserFileExpression(expression: ts.Expression): boolean {
-        return isNativeBrowserFileExpression(this, expression);
-    }
-
-    /** See `BrowserErasure.isDeferredCallbackCall`. */
-    public isDeferredCallbackCall(call: ts.CallExpression): boolean {
-        return this.browserErasure.isDeferredCallbackCall(call);
-    }
-
-    public evaluateBrowserCondition(
-        expression: ts.Expression,
-    ): boolean | undefined {
-        const condition =
-            this.browserErasure.evaluateBrowserCondition(expression);
-        this.recordBrowserExpression(expression);
-        return condition;
-    }
-
-    public evaluateBrowserValue(
-        expression: ts.Expression,
-    ): Value["browserValue"] | undefined {
-        const value = this.browserErasure.evaluateBrowserValue(expression);
-        this.recordBrowserExpression(expression);
-        return value;
-    }
-
-    private recordBrowserExpression(expression: ts.Expression): void {
-        this.erasedBrowserExpressions.add(this.unwrap(expression).pos);
-    }
-
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
         const callee = this.unwrap(call.expression);
         if (
@@ -12891,14 +12411,6 @@ class Compiler implements LoweringServices {
 
     public platformDocumentHidden(): string | undefined {
         return this.platformDocumentHiddenCpp;
-    }
-
-    /** Platform-backed browser APIs that remain ordinary expression values. */
-    public isPrimaryCanvas2DContextCall(call: ts.CallExpression): boolean {
-        return this.browserErasure.isPrimaryCanvas2DContextCall(
-            call,
-            (expression) => this.evaluateBrowserValue(expression),
-        );
     }
 
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
@@ -13281,12 +12793,6 @@ class Compiler implements LoweringServices {
                 : undefined
             : declaration.body;
         return Boolean(returned && this.browserErasure.isFrameYield(returned));
-    }
-
-    public frameDrainCondition(
-        expression: ts.Expression,
-    ): ts.Expression | undefined {
-        return this.browserErasure.frameDrainCondition(expression);
     }
 
     public emitFramePollAwait(call: ts.CallExpression): boolean {
@@ -16288,7 +15794,7 @@ class Compiler implements LoweringServices {
             if (
                 ts.isCallExpression(node) &&
                 node.arguments.length === 0 &&
-                this.isBrowserOnlyExpression(node)
+                this.browserErasure.isBrowserOnlyExpression(node)
             )
                 return;
             const properties = ts.isPropertyAccessExpression(node)

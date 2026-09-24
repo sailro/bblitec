@@ -123,8 +123,7 @@ export interface StatementLoweringContext extends Pick<
     | "emitDiscardedValue"
     | "emitAwaitExpression"
     | "conditions"
-    | "isBrowserOnlyExpression"
-    | "isDeferredCallbackCall"
+    | "browserErasure"
     | "libraryGlobal"
     | "compileNumber"
     | "compileEnumSwitchLabel"
@@ -143,7 +142,6 @@ export interface StatementLoweringContext extends Pick<
     | "emitFrameYieldRequeue"
     | "emitFramePollAwait"
     | "isBoundedNestedFrameYield"
-    | "frameDrainCondition"
     | "promiseLatchCondition"
     | "emitStartContinuationGate"
     | "requireDefaultEngine"
@@ -975,7 +973,9 @@ export class StatementLowerer {
         // not make a later element skip the statement following the `if`.
         this.loweredTerminators.delete(statement);
         if (
-            context.isBrowserOnlyExpression(statement.expression) &&
+            context.browserErasure.isBrowserOnlyExpression(
+                statement.expression,
+            ) &&
             this.statementIsBrowserOnly(context, statement.thenStatement) &&
             (!statement.elseStatement ||
                 this.statementIsBrowserOnly(context, statement.elseStatement))
@@ -1083,7 +1083,7 @@ export class StatementLowerer {
         if (
             ts.isCallExpression(effect) &&
             effect.arguments.length === 0 &&
-            context.isBrowserOnlyExpression(effect)
+            context.browserErasure.isBrowserOnlyExpression(effect)
         ) {
             // Pointer-lock and similar zero-argument DOM effects are often
             // written behind their own browser-only state guard, sometimes
@@ -1094,7 +1094,7 @@ export class StatementLowerer {
         if (
             ts.isCallExpression(expression) &&
             ts.isIdentifier(expression.expression) &&
-            context.isBrowserOnlyExpression(expression)
+            context.browserErasure.isBrowserOnlyExpression(expression)
         ) {
             return true;
         }
@@ -1441,7 +1441,7 @@ export class StatementLowerer {
                 const directBrowserArgument =
                     ts.isCallExpression(node.parent) &&
                     node.parent.parent === statement &&
-                    context.isBrowserOnlyExpression(node.parent);
+                    context.browserErasure.isBrowserOnlyExpression(node.parent);
                 if (
                     !ts.isStatement(statement) ||
                     !(
@@ -3010,7 +3010,9 @@ export class StatementLowerer {
                     target.kind === "number" &&
                     operator === "=" &&
                     ts.isCallExpression(rightExpression) &&
-                    context.isDeferredCallbackCall(rightExpression)
+                    context.browserErasure.isDeferredCallbackCall(
+                        rightExpression,
+                    )
                 ) {
                     const scheduled = context.compileValue(rightExpression);
                     if (scheduled.kind === "void") {
@@ -3089,7 +3091,9 @@ export class StatementLowerer {
                 } else if (
                     target.kind === "json-null" &&
                     operator === "=" &&
-                    (context.isBrowserOnlyExpression(unwrapped.right) ||
+                    (context.browserErasure.isBrowserOnlyExpression(
+                        unwrapped.right,
+                    ) ||
                         context.unwrap(unwrapped.right).kind ===
                             ts.SyntaxKind.NullKeyword)
                 ) {
@@ -3240,7 +3244,7 @@ export class StatementLowerer {
                 return;
             }
         }
-        const drain = context.frameDrainCondition(unwrapped);
+        const drain = context.browserErasure.frameDrainCondition(unwrapped);
         if (drain) {
             // A bounded multi-frame wait, which the single-frame yield
             // below deliberately refuses to stand in for. The condition is

@@ -96,7 +96,7 @@ interface PlatformCallContext
             | "dataTypes"
             | "emit"
             | "engineHasStarted"
-            | "evaluateBrowserValue"
+            | "browserErasure"
             | "evaluator"
             | "expectArgumentCount"
             | "expectKind"
@@ -105,12 +105,10 @@ interface PlatformCallContext
             | "hasPresentationHost"
             | "hoistForwardCallbackBindings"
             | "probeEmission"
-            | "isBrowserOnlyExpression"
             | "isCanvasElement"
             | "libraryGlobal"
             | "isInFrameCallback"
             | "isNativeHostUiLookup"
-            | "isPrimaryCanvas2DContextCall"
             | "bindings"
             | "objectProperty"
             | "options"
@@ -160,7 +158,9 @@ export class PlatformCalls {
         if (
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "addEventListener" &&
-            !this.context.isBrowserOnlyExpression(callee.expression)
+            !this.context.browserErasure.isBrowserOnlyExpression(
+                callee.expression,
+            )
         ) {
             const owner = this.context.compileValue(callee.expression);
             if (owner.kind === "gpu-device") {
@@ -895,7 +895,7 @@ export class PlatformCalls {
                 };
             }
         }
-        if (this.context.isPrimaryCanvas2DContextCall(call)) {
+        if (this.context.browserErasure.isPrimaryCanvas2DContextCall(call)) {
             if (
                 this.context.defaultEngine() &&
                 !this.context.hasPresentationHost()

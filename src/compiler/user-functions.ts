@@ -1009,8 +1009,7 @@ export interface UserFunctionContext
             | "probeEmission"
             | "conditions"
             | "withRecordScopes"
-            | "isBrowserOnlyExpression"
-            | "evaluateBrowserValue"
+            | "browserErasure"
             | "isInFrameCallback"
             | "compileForDataSink"
             | "compileStoredDataFunction"
@@ -1709,11 +1708,12 @@ export class UserFunctionLowerer {
         expected?: ts.Type,
     ): Value {
         if (
-            context.isBrowserOnlyExpression(argument) &&
+            context.browserErasure.isBrowserOnlyExpression(argument) &&
             !ts.isCallExpression(argument) &&
             !ts.isIdentifier(argument)
         ) {
-            const browserValue = context.evaluateBrowserValue(argument);
+            const browserValue =
+                context.browserErasure.evaluateBrowserValue(argument);
             return {
                 kind: "browser",
                 cpp: "",

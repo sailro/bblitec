@@ -39,6 +39,7 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `emission-transaction.ts` | Rollback on declined or failed lowering |
 | `binding-scopes.ts` | Lexical scopes: name bindings, rebinds and capture refusals |
 | `conditions.ts`, `comparisons.ts` | Condition truth tests, comparison operators and settled folds |
+| `browser-erasure.ts` | Browser-only predicates, deployment folds and erased-expression records |
 | `analysis-walk.ts`, `lowering-services.ts` | Shared traversal and compiler interface |
 | `ui-projection.ts`, `platform-calls.ts` | Retained UI and platform calls |
 

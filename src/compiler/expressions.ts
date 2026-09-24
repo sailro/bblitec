@@ -219,14 +219,11 @@ export interface ExpressionContext
             | "propertyName"
             | "namesLocalFunction"
             | "cppString"
-            | "isBrowserOnlyExpression"
-            | "isBrowserOnlyHandler"
+            | "browserErasure"
             | "isDefaultLibraryIdentifier"
             | "libraryGlobal"
-            | "isDeferredCallbackCall"
             | "compileFrameCallback"
             | "requireDefaultEngine"
-            | "evaluateBrowserValue"
             | "handleCollections"
             | "handleCollectionIterationTarget"
             | "assetRootElementAccess"
@@ -515,8 +512,11 @@ export class ExpressionLowerer {
                 this.context.dataLowerer.compileAssignmentValue(unwrapped);
             if (assignment) return assignment;
             if (
-                this.context.isBrowserOnlyExpression(unwrapped) &&
-                this.context.evaluateBrowserValue(unwrapped) !== undefined
+                this.context.browserErasure.isBrowserOnlyExpression(
+                    unwrapped,
+                ) &&
+                this.context.browserErasure.evaluateBrowserValue(unwrapped) !==
+                    undefined
             ) {
                 // A chain the deployment answers (`qs.get("drive") ||
                 // "Studio"`) is its folded constant wherever it is read,
@@ -760,7 +760,9 @@ export class ExpressionLowerer {
             return property;
         }
         if (ts.isNewExpression(unwrapped)) {
-            const query = this.context.evaluateBrowserValue(unwrapped)
+            const query = this.context.browserErasure.evaluateBrowserValue(
+                unwrapped,
+            )
                 ? undefined
                 : compileSearchParams(this.context.dataLowerer, unwrapped);
             if (query) return query;
@@ -851,7 +853,9 @@ export class ExpressionLowerer {
                 this.context.registerClassInstance(instance, classDeclaration);
                 return instance;
             }
-            if (this.context.isBrowserOnlyExpression(unwrapped)) {
+            if (
+                this.context.browserErasure.isBrowserOnlyExpression(unwrapped)
+            ) {
                 return this.compileBrowserValue(unwrapped);
             }
             this.context.fail(unwrapped, "Unsupported constructor expression.");
@@ -896,7 +900,9 @@ export class ExpressionLowerer {
             if (this.isNavigatorGetGamepadsCall(unwrapped)) {
                 return this.compileCall(unwrapped);
             }
-            if (this.context.isBrowserOnlyExpression(unwrapped)) {
+            if (
+                this.context.browserErasure.isBrowserOnlyExpression(unwrapped)
+            ) {
                 return this.compileBrowserValue(unwrapped);
             }
         }
@@ -1163,7 +1169,8 @@ export class ExpressionLowerer {
             };
         }
         if (ts.isTypeOfExpression(unwrapped)) {
-            const browser = this.context.evaluateBrowserValue(unwrapped);
+            const browser =
+                this.context.browserErasure.evaluateBrowserValue(unwrapped);
             if (browser?.kind === "string") {
                 return staticStringValue(browser.value, (text) =>
                     this.context.cppString(text),
@@ -1310,7 +1317,7 @@ export class ExpressionLowerer {
                 cpp: this.context.conditions.compileCondition(unwrapped),
             };
         }
-        if (this.context.isBrowserOnlyExpression(unwrapped)) {
+        if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
             return this.compileBrowserValue(unwrapped);
         }
         // `const camera = (scene.camera = createArcRotateCamera(...))`: an
@@ -1674,7 +1681,8 @@ export class ExpressionLowerer {
                 this.context.emitDiscardedValue(value);
             }
         }
-        const browserValue = this.context.evaluateBrowserValue(expression);
+        const browserValue =
+            this.context.browserErasure.evaluateBrowserValue(expression);
         return this.materializeBrowserPrimitive(expression, {
             kind: "browser",
             cpp: "",
@@ -1731,7 +1739,7 @@ export class ExpressionLowerer {
         const delay = staticNumberValue(this.context, argumentAt(call, 1));
         if (delay !== 0) {
             if (
-                this.context.isBrowserOnlyHandler(
+                this.context.browserErasure.isBrowserOnlyHandler(
                     this.context.unwrap(argumentAt(call, 0)),
                 )
             ) {
@@ -2353,7 +2361,7 @@ export class ExpressionLowerer {
         // because the frame conductor already has that boundary and the
         // corpus reaches `stopEngine` through it -- the freeze a physics
         // scene pins its measured pose with.
-        if (this.context.isDeferredCallbackCall(call)) {
+        if (this.context.browserErasure.isDeferredCallbackCall(call)) {
             return this.compileDeferredCallback(call);
         }
         // A pure module-URL helper is a compile-time string whether it feeds a
@@ -2568,7 +2576,8 @@ export class ExpressionLowerer {
             isParseFloatCallee(callee, this.context) &&
             call.arguments.length === 1
         ) {
-            const settled = this.context.evaluateBrowserValue(call);
+            const settled =
+                this.context.browserErasure.evaluateBrowserValue(call);
             if (settled?.kind === "number" && Number.isFinite(settled.value)) {
                 // The value is returned already settled rather than through
                 // `materializeBrowserPrimitive`: that helper renders its cpp
@@ -3850,9 +3859,10 @@ export class ExpressionLowerer {
         // for a static record's optional field: the selected value is a
         // string, not native optional storage merely because the checker
         // still exposes the unselected `undefined` branch.
-        const browserCondition = this.context.evaluateBrowserValue(
-            unwrapped.condition,
-        );
+        const browserCondition =
+            this.context.browserErasure.evaluateBrowserValue(
+                unwrapped.condition,
+            );
         const foldedCondition =
             browserCondition?.kind === "boolean"
                 ? browserCondition.value

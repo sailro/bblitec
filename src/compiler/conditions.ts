@@ -39,7 +39,7 @@ interface ConditionContext
             | "enterRuntimeControlFlow"
             | "expectSameEngine"
             | "handleCollections"
-            | "isBrowserOnlyExpression"
+            | "browserErasure"
             | "isCanvasElement"
             | "leaveRuntimeControlFlow"
             | "libraryGlobal"
@@ -49,9 +49,7 @@ interface ConditionContext
             | "registerNativeBinding"
             | "requireDefaultEngine"
             | "unwrap"
-        > {
-    evaluateBrowserCondition(expression: ts.Expression): boolean | undefined;
-}
+        > {}
 
 export class ConditionLowerer {
     constructor(private readonly context: ConditionContext) {}
@@ -210,8 +208,9 @@ export class ConditionLowerer {
             if (operand === "false") return "true";
             return `!(${operand})`;
         }
-        if (this.context.isBrowserOnlyExpression(unwrapped)) {
-            const condition = this.context.evaluateBrowserCondition(unwrapped);
+        if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
+            const condition =
+                this.context.browserErasure.evaluateBrowserCondition(unwrapped);
             if (condition !== undefined) {
                 return condition ? "true" : "false";
             }
@@ -222,7 +221,9 @@ export class ConditionLowerer {
             // unanswered one.
             const browserOperands = ts.isBinaryExpression(unwrapped)
                 ? [unwrapped.left, unwrapped.right].filter((operand) =>
-                      this.context.isBrowserOnlyExpression(operand),
+                      this.context.browserErasure.isBrowserOnlyExpression(
+                          operand,
+                      ),
                   )
                 : [];
             this.context.fail(
