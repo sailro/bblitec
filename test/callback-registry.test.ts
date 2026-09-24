@@ -509,7 +509,7 @@ test("inlined class parameters keep borrowed event wrappers alive", () => {
         // and borrows the event from its own parameter.
         assert.match(
             result.cpp,
-            /const auto (\w+event_argument\w*) = bbl::js::Borrowed[^;]+;\s*bbl::js::make_closure\([^\n]*\(bbl::js::Borrowed(?:<[^>]+>|Event)\(\1\.get\(\)\)\);/,
+            /const auto (\w+event_argument\w*) = bbl::js::Borrowed[^;]+;\s*(?:static_cast<void>\()?bbl::js::make_closure\([^\n]*\(bbl::js::Borrowed(?:<[^>]+>|Event)\(\1\.get\(\)\)\)\)?;/,
         );
         assert.match(
             result.cpp,
