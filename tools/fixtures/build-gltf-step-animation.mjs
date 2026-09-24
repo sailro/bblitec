@@ -28,7 +28,9 @@ import {
 } from "./glb.mjs";
 
 const chunk = createBinaryChunk();
+/** @param {ReadonlyArray<readonly [number, number, number]>} triples */
 const vec3Accessor = (triples) => sharedVec3Accessor(chunk, triples);
+/** @param {ReadonlyArray<readonly number[]>} quads */
 function vec4Accessor(quads) {
     return chunk.accessor({
         bufferView: chunk.view(f32(quads.flat())),
@@ -37,6 +39,7 @@ function vec4Accessor(quads) {
         type: "VEC4",
     });
 }
+/** @param {readonly number[]} values */
 function scalarAccessor(values) {
     return chunk.accessor({
         bufferView: chunk.view(f32(values)),
@@ -48,6 +51,7 @@ function scalarAccessor(values) {
 
 // One shared unit quad, plus a morph target that folds its top edge in.
 const HALF = 0.4;
+/** @type {Array<[number, number, number]>} */
 const quad = [
     [-HALF, -HALF, 0],
     [HALF, -HALF, 0],

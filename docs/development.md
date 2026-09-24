@@ -200,6 +200,7 @@ override their executable paths; Unix versioned names such as `clang-tidy-22` ar
 
 ```powershell
 npm run lint:ts
+npm run lint:tools
 npm run patches:check
 npm run format
 npm run format:check
@@ -208,7 +209,9 @@ npm run lint -- scene1
 ```
 
 ESLint checks maintained compiler, tooling and test code with type-aware TypeScript rules.
-`npm run lint:ts -- --fix` applies safe fixes. Prettier leaves embedded source strings unchanged.
+`npm run lint:ts -- --fix` applies safe fixes. `lint:tools` type-checks the JavaScript tools and check
+plugins (`tsconfig.tools.json`, strict `checkJs`) against the declarations the build emits for
+`dist/src`. Prettier leaves embedded source strings unchanged.
 `patches:check` verifies the patch manifest against the patch files, their headers and every consumer.
 clang-format formats maintained native sources and C++ test fixtures without sorting includes.
 Corpus, example scenes, references, source pins, vendored code and generated output are excluded.
@@ -239,6 +242,7 @@ do not repeat them after individual fixes:
 
 ```powershell
 npm run lint:ts
+npm run lint:tools
 npm run format:check
 npm run lint:cpp -- <representative-native-build-directory>
 npm run simplify:verify

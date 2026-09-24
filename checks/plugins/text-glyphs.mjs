@@ -21,33 +21,85 @@ import {
     requireObservations,
 } from "./support.mjs";
 
+/**
+ * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
+ */
+
+/**
+ * @typedef {{ full: number, foreground: number }} Gate
+ * @typedef {{
+ *     background: [number, number, number],
+ *     gates: Record<string, Gate>,
+ *     textareaColumn?: number,
+ *     textareaRows?: number,
+ *     uniform?: boolean,
+ * }} Options the check's plugin options
+ * @typedef {{ width: number, height: number }} Extent
+ * @typedef {{ alpha: number, beta: number, radius: number }} OrbitCamera
+ * @typedef {[number | null, number, number, number]} GlyphInstance glyph id, x, y, style
+ * @typedef {{
+ *     viewport: Extent,
+ *     instances: Array<GlyphInstance | null>,
+ *     styles: number[],
+ *     form: Extent,
+ *     uniform?: number[],
+ *     camera?: OrbitCamera,
+ *     position?: { x: number, y: number, z: number },
+ *     width?: number,
+ *     height?: number,
+ * }} ObservedState the hook's `window.__observe()` record (180 adds `uniform`; 181 adds the camera and the text's position and size)
+ * @typedef {{ id: number, role: string, destroyed: boolean, uploadedBytes: number[] }} GpuResource
+ * @typedef {{
+ *     samples: number,
+ *     depthFormat: string,
+ *     instances: number,
+ *     instanceCount: number,
+ *     firstInstance: number,
+ *     bindings: Array<{ role: string, resource: number }>,
+ * }} TextDraw
+ * @typedef {{
+ *     viewport: Extent,
+ *     camera?: OrbitCamera,
+ *     textGpu?: { draws: TextDraw[], resources: GpuResource[] },
+ * }} NativeCapture the fields read from a phase's render capture (a standalone text frame has no camera)
+ */
+
+const CAMERA_KEYS = /** @type {const} */ (["alpha", "beta", "radius"]);
+
+/** @param {PluginContext} context */
 export function check(context) {
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
     const manifest = readManifest(context);
-    const ids = new Map(
-        manifest.textData[0].live.glyphSlots.map((slot, id) => [slot, id]),
-    );
-    const { background, gates } = context.options;
+    const live = manifest.textData?.[0]?.live;
+    assert(live, "the manifest carries no live text data");
+    const ids = new Map(live.glyphSlots.map((slot, id) => [slot, id]));
+    const options = /** @type {Options} */ (context.options);
+    const { background, gates } = options;
+    /** @type {Record<string, { glyphs: number, fullMad: number, foregroundMad: number }>} */
     const details = {};
     for (const backend of context.backends) {
-        for (const phase of Object.values(context.results[backend])) {
+        const results = context.results[backend];
+        assert(results, `${backend}: no phase results`);
+        for (const phase of Object.values(results)) {
             const where = `${backend}/${phase.id}`;
             const step = observedStep(observations, phase.id);
-            const state = step.state;
-            const gpu = phase.capture.textGpu;
+            assert(step.state, `${where}: the observed step recorded no state`);
+            const state = /** @type {ObservedState} */ (step.state);
+            const capture = /** @type {NativeCapture} */ (phase.capture);
+            const gpu = capture.textGpu;
             assert.deepEqual(
-                phase.capture.viewport,
+                capture.viewport,
                 state.viewport,
                 `${where}: viewport`,
             );
             if (state.camera !== undefined) {
-                for (const key of ["alpha", "beta", "radius"]) {
+                const camera = capture.camera;
+                assert(camera, `${where}: the capture carries no camera`);
+                for (const key of CAMERA_KEYS) {
                     assert(
-                        Math.abs(
-                            phase.capture.camera[key] - state.camera[key],
-                        ) < 1e-8,
-                        `${where}: camera ${key}: ${phase.capture.camera[key]} vs ${state.camera[key]}`,
+                        Math.abs(camera[key] - state.camera[key]) < 1e-8,
+                        `${where}: camera ${key}: ${camera[key]} vs ${state.camera[key]}`,
                     );
                 }
             }
@@ -65,15 +117,17 @@ export function check(context) {
                     `${where}: the browser text is centred (x ${state.position.x}, width ${state.width})`,
                 );
                 assert.ok(
-                    state.position.y === state.height * 0.01 * 0.5,
+                    state.position.y === (state.height ?? NaN) * 0.01 * 0.5,
                     `${where}: the browser text is centred (y ${state.position.y}, height ${state.height})`,
                 );
             }
+            assert(gpu, `${where}: missing text GPU operation receipts`);
             const draw = gpu.draws[0];
             const expectedLive = state.instances.filter(Boolean);
+            /** @type {Array<[number | undefined, number, number, number]>} */
             const actual = [];
             if (draw) {
-                if (context.options.uniform) {
+                if (options.uniform) {
                     assert.equal(draw.samples, 1, `${where}: samples`);
                     assert.equal(
                         draw.depthFormat,
@@ -100,11 +154,11 @@ export function check(context) {
                             word >>> 16,
                         ]);
                 }
-                const palette = Buffer.from(
-                    gpu.resources.find(
-                        (row) => row.role === "styles" && !row.destroyed,
-                    ).uploadedBytes,
+                const styles = gpu.resources.find(
+                    (row) => row.role === "styles" && !row.destroyed,
                 );
+                assert(styles, `${where}: no live style buffer`);
+                const palette = Buffer.from(styles.uploadedBytes);
                 assert.deepEqual(
                     Array.from({ length: state.styles.length }, (_, i) =>
                         palette.readFloatLE(i * 4),
@@ -112,13 +166,24 @@ export function check(context) {
                     state.styles,
                     `${where}: style palette`,
                 );
-                if (context.options.uniform) {
-                    const uniformId = draw.bindings.find(
+                if (options.uniform) {
+                    const uniformBinding = draw.bindings.find(
                         (binding) => binding.role === "uniform",
-                    ).resource;
+                    );
+                    assert(
+                        uniformBinding,
+                        `${where}: the draw binds no uniform`,
+                    );
+                    const uniformId = uniformBinding.resource;
+                    const uniform = gpu.resources.find(
+                        (row) => row.id === uniformId,
+                    );
+                    assert(
+                        uniform,
+                        `${where}: no uniform resource ${uniformId}`,
+                    );
                     assert.deepEqual(
-                        gpu.resources.find((row) => row.id === uniformId)
-                            .uploadedBytes,
+                        uniform.uploadedBytes,
                         state.uniform,
                         `${where}: source uniform writes`,
                     );
@@ -138,6 +203,7 @@ export function check(context) {
                 30,
             );
             const gate = gates[phase.id] ?? gates.default;
+            assert(gate, `${where}: no gate for the phase and no default gate`);
             assert(
                 full.mad < gate.full && foreground.mad < gate.foreground,
                 `${where}: canvas full ${full.mad} / foreground ${foreground.mad} (gates ${gate.full} / ${gate.foreground})`,
@@ -149,12 +215,12 @@ export function check(context) {
                 `${where}: image width`,
             );
             if (
-                context.options.textareaColumn !== undefined &&
+                options.textareaColumn !== undefined &&
                 phase.id === "textarea-resize"
             ) {
-                const column = context.options.textareaColumn;
+                const column = options.textareaColumn;
                 const rows = Array.from(
-                    { length: context.options.textareaRows },
+                    { length: options.textareaRows ?? 0 },
                     (_, y) => y,
                 ).filter((y) =>
                     background.some(
@@ -164,7 +230,7 @@ export function check(context) {
                     ),
                 );
                 assert.equal(
-                    rows.at(-1) - rows[0] + 1,
+                    (rows.at(-1) ?? NaN) - (rows[0] ?? NaN) + 1,
                     state.form.height,
                     `${where}: native textarea resize height`,
                 );

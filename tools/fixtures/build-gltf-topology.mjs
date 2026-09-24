@@ -35,8 +35,12 @@ import {
     writeFixture,
 } from "./glb.mjs";
 
+/** @typedef {[number, number, number]} Point */
+
 const chunk = createBinaryChunk();
+/** @param {readonly Point[]} points */
 const positionAccessor = (points) => vec3Accessor(chunk, points);
+/** @param {number} count */
 function normalAccessor(count) {
     return chunk.accessor({
         bufferView: chunk.view(f32(new Array(count).fill([0, 0, 1]).flat())),
@@ -47,20 +51,25 @@ function normalAccessor(count) {
 }
 // A saturated hue wheel, so a point or a segment that lands in the wrong place
 // is visible as a colour rather than only as a gap.
+/** @param {number} count */
 function colorAccessor(count) {
+    /** @type {number[]} */
     const bytes = [];
     for (let index = 0; index < count; index++) {
         const turn = (index / count) * 6;
         const stage = Math.floor(turn) % 6;
         const ramp = Math.round((turn - Math.floor(turn)) * 255);
-        const wheel = [
+        /** @type {Point[]} */
+        const hues = [
             [255, ramp, 0],
             [255 - ramp, 255, 0],
             [0, 255, ramp],
             [0, 255 - ramp, 255],
             [ramp, 0, 255],
             [255, 0, 255 - ramp],
-        ][stage];
+        ];
+        const wheel = hues[stage];
+        if (wheel === undefined) throw new RangeError(`hue stage ${stage}`);
         bytes.push(wheel[0], wheel[1], wheel[2], 255);
     }
     return chunk.accessor({
@@ -71,6 +80,7 @@ function colorAccessor(count) {
         type: "VEC4",
     });
 }
+/** @param {readonly number[]} indices */
 function indexAccessor(indices) {
     return chunk.accessor({
         bufferView: chunk.view(u16(indices)),
@@ -82,6 +92,7 @@ function indexAccessor(indices) {
 
 // POINTS: an 8x8 grid, drawn non-indexed so the fixture also measures the
 // loader's sequential-index synthesis on a non-triangle mode.
+/** @type {Point[]} */
 const gridPoints = [];
 for (let row = 0; row < 8; row++) {
     for (let column = 0; column < 8; column++) {
@@ -99,6 +110,7 @@ const pointsPrimitive = {
 };
 
 // LINES: twelve disjoint radial spokes, indexed in pairs.
+/** @type {Point[]} */
 const spokePoints = [];
 const spokeIndices = [];
 for (let spoke = 0; spoke < 12; spoke++) {
@@ -120,7 +132,9 @@ const linesPrimitive = {
 
 // LINE_STRIP: one connected zig-zag, indexed so WebGPU needs the strip index
 // format the pipeline now declares.
+/** @type {Point[]} */
 const stripPoints = [];
+/** @type {number[]} */
 const stripIndices = [];
 for (let step = 0; step < 17; step++) {
     stripPoints.push([-0.5 + step * 0.0625, step % 2 === 0 ? -0.45 : 0.45, 0]);
@@ -139,6 +153,7 @@ const lineStripPrimitive = {
 
 // TRIANGLES: the reference quad, so the gate shows the three new topologies
 // beside the one that already worked.
+/** @type {Point[]} */
 const quadPoints = [
     [-0.5, -0.5, 0],
     [0.5, -0.5, 0],

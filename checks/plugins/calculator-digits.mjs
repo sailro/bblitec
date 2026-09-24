@@ -15,16 +15,38 @@
 //            dispatches: { <phase>: ["Button 7", ...] } }
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { parseGlbJson } from "../../dist/src/gltf-document.js";
+import { asObject, parseGlbJson } from "../../dist/src/gltf-document.js";
 import { loadPng, readManifest } from "./support.mjs";
 
+/**
+ * @import { PluginContext, PluginOutcome } from "../../dist/src/tooling/check-run.js"
+ */
+
+/**
+ * @typedef {{ x: number, y: number, width: number, height: number }} Rect
+ * @typedef {{ tens: Rect, ones: Rect }} Layout
+ * @typedef {{ layout: Layout, dispatches: Record<string, string[]> }} Options
+ * @typedef {{ tens: number, ones: number, rest: number }} CellMad
+ */
+
+/**
+ * @param {Rect} rect
+ * @param {number} x
+ * @param {number} y
+ */
 const inside = (rect, x, y) =>
     x >= rect.x &&
     x < rect.x + rect.width &&
     y >= rect.y &&
     y < rect.y + rect.height;
 
-/** Mean absolute channel difference inside each digit cell and over the rest. */
+/**
+ * Mean absolute channel difference inside each digit cell and over the rest.
+ * @param {string} firstPath
+ * @param {string} secondPath
+ * @param {Layout} layout
+ * @returns {CellMad}
+ */
 function digitMad(firstPath, secondPath, layout) {
     const first = loadPng(firstPath);
     const second = loadPng(secondPath);
@@ -40,8 +62,8 @@ function digitMad(firstPath, secondPath, layout) {
             let difference = 0;
             for (let channel = 0; channel < 3; channel++) {
                 difference += Math.abs(
-                    first.data[offset + channel] -
-                        second.data[offset + channel],
+                    first.data.readUInt8(offset + channel) -
+                        second.data.readUInt8(offset + channel),
                 );
             }
             const cell = inside(layout.tens, x, y)
@@ -60,28 +82,38 @@ function digitMad(firstPath, secondPath, layout) {
     };
 }
 
+/**
+ * @param {PluginContext} context
+ * @returns {PluginOutcome}
+ */
 export function check(context) {
-    const { layout, dispatches } = context.options;
+    const { layout, dispatches } = /** @type {Options} */ (context.options);
     // The keys' glTF nodes, by the names the asset gives them, from the
     // packaged glTF the executable loads.
     const manifest = readManifest(context);
     const packaged = manifest.assets.filter((asset) => asset.kind === "gltf");
+    const [asset] = packaged;
     assert.equal(
         packaged.length,
         1,
         `${context.scene.id} packages ${packaged.length} glTF assets`,
     );
+    assert(asset);
     const document = parseGlbJson(
-        resolve(context.target.output, "assets", packaged[0].output),
+        resolve(context.target.output, "assets", asset.output),
     );
+    const nodes = document.nodes;
+    assert(Array.isArray(nodes), "The asset has no nodes");
+    /** @param {string} name */
     const nodeNamed = (name) => {
-        const index = document.nodes.findIndex((node) => node.name === name);
+        const index = nodes.findIndex((node) => asObject(node)?.name === name);
         assert(index >= 0, `The asset has no node named ${name}`);
         return index;
     };
+    /** @type {Record<string, { firstTap: CellMad, secondTap: CellMad }>} */
     const details = {};
     for (const backend of context.backends) {
-        const results = context.results[backend];
+        const results = context.results[backend] ?? {};
         for (const [phaseId, names] of Object.entries(dispatches)) {
             const phase = results[phaseId];
             assert(phase, `${backend}: phase ${phaseId} did not run`);
@@ -94,16 +126,13 @@ export function check(context) {
                 `${backend} ${phaseId}: the bridge dispatched nodes ${JSON.stringify(dispatched)}`,
             );
         }
-        const firstTap = digitMad(
-            results.press.image,
-            results.seven.image,
-            layout,
+        const { press, seven, "seven-times": sevenTimes } = results;
+        assert(
+            press && seven && sevenTimes,
+            `${backend}: the press, seven and seven-times phases are required`,
         );
-        const secondTap = digitMad(
-            results.seven.image,
-            results["seven-times"].image,
-            layout,
-        );
+        const firstTap = digitMad(press.image, seven.image, layout);
+        const secondTap = digitMad(seven.image, sevenTimes.image, layout);
         // 00 -> 07: the ones digit scrolls, the tens digit and the scene hold.
         assert(
             firstTap.ones > 2,

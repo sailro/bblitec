@@ -8,6 +8,23 @@ import {
     requireObservations,
 } from "./support.mjs";
 
+/**
+ * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
+ */
+
+/**
+ * @typedef {{
+ *     search: string,
+ *     timeOrigin: number,
+ *     dataset: Record<string, string | undefined>,
+ *     viewport: { width: number, height: number },
+ *     resolution: string,
+ *     options: string[],
+ *     selectRect: { x: number, y: number, width: number, height: number },
+ * }} ResolutionState the check's `observe.state` record
+ */
+
+/** @param {PluginContext} context */
 export function check(context) {
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
@@ -16,51 +33,38 @@ export function check(context) {
         observations.moduleSha256,
         suiteBrowserModuleDigest(context.scene.source),
     );
-    const states = {};
-    const images = {};
-    for (const id of [
-        "resolution-256",
-        "resolution-128",
-        "resolution-128-idle",
-    ]) {
+    /** @param {string} id */
+    const observed = (id) => {
         const step = observedStep(observations, id);
         assert.deepEqual(step.errors ?? [], [], `${id}: browser errors`);
-        assert.equal(step.state.dataset.ready, "true");
-        assert.equal(step.state.dataset.oceanStage, "complete");
-        assert.equal(step.state.dataset.animationFrozen, "true");
-        assert.equal(step.state.dataset.error, undefined);
-        assert.deepEqual(step.state.viewport, { width: 1280, height: 720 });
-        assert.deepEqual(step.state.options, ["256", "128", "64", "32"]);
+        assert(step.state, `${id}: browser state is missing`);
+        const state = /** @type {ResolutionState} */ (step.state);
+        assert.equal(state.dataset.ready, "true");
+        assert.equal(state.dataset.oceanStage, "complete");
+        assert.equal(state.dataset.animationFrozen, "true");
+        assert.equal(state.dataset.error, undefined);
+        assert.deepEqual(state.viewport, { width: 1280, height: 720 });
+        assert.deepEqual(state.options, ["256", "128", "64", "32"]);
         assert(step.image, `${id}: browser image is missing`);
-        states[id] = step.state;
-        images[id] = observedImage(context, step.image);
+        return { state, image: observedImage(context, step.image) };
+    };
+    const at256 = observed("resolution-256");
+    const at128 = observed("resolution-128");
+    const at128Idle = observed("resolution-128-idle");
+    assert.equal(at256.state.search, "?seekTime=0.1");
+    assert.equal(at256.state.resolution, "256");
+    for (const { state } of [at128, at128Idle]) {
+        assert.equal(state.search, "?seekTime=0.1&resolution=128");
+        assert.equal(state.resolution, "128");
+        assert.notEqual(state.timeOrigin, at256.state.timeOrigin);
     }
-    assert.equal(states["resolution-256"].search, "?seekTime=0.1");
-    assert.equal(states["resolution-256"].resolution, "256");
-    for (const id of ["resolution-128", "resolution-128-idle"]) {
-        assert.equal(states[id].search, "?seekTime=0.1&resolution=128");
-        assert.equal(states[id].resolution, "128");
-        assert.notEqual(
-            states[id].timeOrigin,
-            states["resolution-256"].timeOrigin,
-        );
-    }
-    assert.equal(
-        states["resolution-128"].timeOrigin,
-        states["resolution-128-idle"].timeOrigin,
-    );
-    const changed = compareImages(
-        images["resolution-256"],
-        images["resolution-128"],
-    );
+    assert.equal(at128.state.timeOrigin, at128Idle.state.timeOrigin);
+    const changed = compareImages(at256.image, at128.image);
     assert(
         changed.totalPixels - changed.exactMatch >= 100,
         "Resolution changes the frozen canvas",
     );
-    const idle = compareImages(
-        images["resolution-128"],
-        images["resolution-128-idle"],
-    );
+    const idle = compareImages(at128.image, at128Idle.image);
     assert.equal(idle.maxDiff, 0, "The reloaded simulation stays frozen");
     for (const backend of context.backends) {
         for (const phase of context.spec.phases) {
@@ -97,7 +101,7 @@ export function check(context) {
         details: {
             changed,
             idle,
-            selectRect: states["resolution-128"].selectRect,
+            selectRect: at128.state.selectRect,
         },
     };
 }

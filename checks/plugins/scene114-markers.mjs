@@ -14,6 +14,16 @@ import {
     requireObservations,
 } from "./support.mjs";
 
+/**
+ * @import { PluginContext, PluginOutcome } from "../../dist/src/tooling/check-run.js"
+ */
+
+/**
+ * @typedef {{ name: string, index: number, position: number[], scaling: number[] }} ObservedMesh
+ * @typedef {{ hits: Record<string, string>, meshes: ObservedMesh[] }} PickState the observed steps' state
+ * @typedef {{ meshes: Array<{ position: number[], scaling: number[] }> }} NativeCapture the fields read from a phase's render capture
+ */
+
 const MARKERS = [
     "morph-gpu-marker",
     "morph-detailed-marker",
@@ -21,13 +31,19 @@ const MARKERS = [
     "skeleton-detailed-marker",
 ];
 
+/**
+ * @param {PluginContext} context
+ * @returns {PluginOutcome}
+ */
 export function check(context) {
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
     const first = observedStep(observations, "first");
     const idle = observedStep(observations, "idle");
+    assert(first.state, "the first observation recorded no state");
+    const firstState = /** @type {PickState} */ (first.state);
     assert.deepEqual(
-        first.state.hits,
+        firstState.hits,
         {
             morphGpuHit: "scene114-morph-target",
             morphDetailedHit: "scene114-morph-target",
@@ -50,7 +66,7 @@ export function check(context) {
         "the browser image changed while idle",
     );
     const referenceMarkers = MARKERS.map((suffix) => {
-        const marker = first.state.meshes.find(
+        const marker = firstState.meshes.find(
             (mesh) => mesh.name === `scene114-${suffix}`,
         );
         assert(
@@ -59,17 +75,23 @@ export function check(context) {
         );
         return marker;
     });
+    /** @type {Record<string, Array<{ name: string, positionError: number, scalingError: number }>>} */
     const details = {};
     for (const backend of context.backends) {
-        for (const phase of Object.values(context.results[backend])) {
+        for (const phase of Object.values(context.results[backend] ?? {})) {
+            const capture = /** @type {NativeCapture} */ (phase.capture);
             assert.equal(
-                phase.capture.meshes.length,
-                first.state.meshes.length,
+                capture.meshes.length,
+                firstState.meshes.length,
                 `${backend}/${phase.id}: mesh count differs from the browser`,
             );
             details[`${backend}/${phase.id}`] = referenceMarkers.map(
                 (expected) => {
-                    const actual = phase.capture.meshes[expected.index];
+                    const actual = capture.meshes[expected.index];
+                    assert(
+                        actual,
+                        `${backend}/${phase.id}: no native mesh ${expected.index}`,
+                    );
                     const positionError = maxError(
                         actual.position,
                         expected.position,

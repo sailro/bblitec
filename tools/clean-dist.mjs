@@ -38,7 +38,12 @@ function liveLock() {
     } catch (error) {
         // ESRCH is "no such process": the writer died without releasing.
         // EPERM is "it exists but is not ours", which still means live.
-        if (error?.code === "ESRCH") {
+        if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "ESRCH"
+        ) {
             unlinkSync(lockPath);
             return undefined;
         }

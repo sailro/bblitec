@@ -16,9 +16,43 @@ import { writeJsonRecord } from "../dist/src/tooling/records.js";
 import { runConcurrently } from "../dist/src/run-concurrently.js";
 import { runLoggedProcess } from "../dist/src/tooling/logged-process.js";
 import { holdDistLock } from "../dist/src/dist-lock.js";
-import { NATIVE_BACKENDS } from "../dist/src/tooling/artifacts.js";
+import { parseBackendName } from "../dist/src/tooling/backends.js";
 import { compileOfflineShaders } from "../dist/src/compile-shaders.js";
 import { refreshBuildStamp } from "../dist/src/generation-stamp.js";
+
+/**
+ * @import { SceneDefinition } from "../dist/src/scene-registry.js"
+ * @import { CompareResult, RegionResult } from "../dist/src/parity.js"
+ */
+
+/**
+ * @typedef {{ width?: number, height?: number }} SmokeReceipt the fields read from android-smoke's report.json
+ * @typedef {{
+ *     scene: string,
+ *     status: string,
+ *     stage: string,
+ *     startedAt: string,
+ *     capture?: SmokeReceipt,
+ *     full?: CompareResult,
+ *     foreground?: RegionResult,
+ *     thresholds?: ReturnType<typeof resolveParityThresholds>,
+ *     reason?: string,
+ *     completedAt?: string,
+ * }} SceneResult
+ * @typedef {{
+ *     runId: string,
+ *     startedAt: string,
+ *     abi: string,
+ *     backend: string,
+ *     device: string,
+ *     model: string,
+ *     api: string,
+ *     total: number,
+ *     results: SceneResult[],
+ *     completedAt?: string,
+ *     counts?: Record<string, number>,
+ * }} SweepReport
+ */
 
 const { values } = parseArgs({
     options: {
@@ -32,10 +66,11 @@ const { values } = parseArgs({
     },
 });
 if (!values.sdk || !values.device) throw new Error("Use --sdk and --device.");
+const sdk = values.sdk;
+const serial = values.device;
 if (!["x86_64", "arm64-v8a"].includes(values.abi))
     throw new Error("Unsupported ABI.");
-if (!NATIVE_BACKENDS.includes(values.backend))
-    throw new Error(`--backend must be ${NATIVE_BACKENDS.join(" or ")}.`);
+const backend = parseBackendName(values.backend, "--backend", false);
 if (!/^[1-9][0-9]*$/.test(values.jobs))
     throw new Error("--jobs must be a positive integer.");
 if (!/^[1-9][0-9]*$/.test(values.parallel))
@@ -43,19 +78,23 @@ if (!/^[1-9][0-9]*$/.test(values.parallel))
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(root);
 holdDistLock("android-sweep");
-const selected = values.scene
-    ? scenes.filter((scene) => values.scene.includes(scene.id))
+const requested = values.scene;
+const selected = requested
+    ? scenes.filter((scene) => requested.includes(scene.id))
     : scenes;
-if (values.scene?.some((id) => !selected.some((scene) => scene.id === id)))
+if (requested?.some((id) => !selected.some((scene) => scene.id === id)))
     throw new Error("Unknown scene selection.");
-const variant = `${values.abi}${values.backend === "sdl_gpu" ? "" : "-dawn"}`;
+const first = selected[0];
+if (first === undefined) throw new Error("No scene selected.");
+const variant = `${values.abi}${backend === "sdl_gpu" ? "" : "-dawn"}`;
 const adb = join(
-    resolve(values.sdk),
+    resolve(sdk),
     "platform-tools",
     process.platform === "win32" ? "adb.exe" : "adb",
 );
+/** @param {string[]} args */
 function device(...args) {
-    return execFileSync(adb, ["-s", values.device, ...args], {
+    return execFileSync(adb, ["-s", serial, ...args], {
         encoding: "utf8",
         timeout: 30000,
         windowsHide: true,
@@ -64,12 +103,13 @@ function device(...args) {
 const runId = randomUUID();
 const output = join(root, "artifacts/android/sweep", runId);
 mkdirSync(output, { recursive: true });
+/** @type {SweepReport} */
 const report = {
     runId,
     startedAt: new Date().toISOString(),
     abi: values.abi,
-    backend: values.backend,
-    device: values.device,
+    backend,
+    device: serial,
     model: device("shell", "getprop", "ro.product.model").trim(),
     api: device("shell", "getprop", "ro.build.version.sdk").trim(),
     total: selected.length,
@@ -78,6 +118,11 @@ const report = {
 function save() {
     writeJsonRecord(join(output, "report.json"), report);
 }
+/**
+ * @param {string} program
+ * @param {string[]} args
+ * @param {string} logPath
+ */
 async function run(program, args, logPath) {
     const code = await runLoggedProcess(program, args, logPath, { cwd: root });
     if (code !== 0)
@@ -101,7 +146,7 @@ if (values.scene) {
         join(output, "generation.log"),
     );
 }
-if (values.backend === "sdl_gpu") {
+if (backend === "sdl_gpu") {
     writeJsonRecord(
         join(output, "shaders.json"),
         compileOfflineShaders({
@@ -131,13 +176,13 @@ await run(
         "-File",
         "tools/android.ps1",
         "-Scene",
-        selected[0].id,
+        first.id,
         "-Sdk",
-        values.sdk,
+        sdk,
         "-Abi",
         values.abi,
         "-Backend",
-        values.backend,
+        backend,
         "-Jobs",
         values.jobs,
         "-SkipGenerate",
@@ -150,6 +195,11 @@ const originalSize =
     device("shell", "wm", "size").match(/Override size: (\d+x\d+)/)?.[1] ??
     "reset";
 let captureQueue = Promise.resolve();
+/**
+ * @param {SceneDefinition} scene
+ * @param {SceneResult} result
+ * @param {string} sceneOutput
+ */
 async function captureScene(scene, result, sceneOutput) {
     const apk = join(
         root,
@@ -164,7 +214,8 @@ async function captureScene(scene, result, sceneOutput) {
         join(sceneOutput, "install.log"),
         device("install", "-r", apk),
     );
-    const reference = scene.parity?.reference.path;
+    const parity = scene.parity;
+    const reference = parity?.reference.path;
     const dimensions =
         reference && existsSync(reference)
             ? imageDimensions(reference)
@@ -182,7 +233,7 @@ async function captureScene(scene, result, sceneOutput) {
             "--adb",
             adb,
             "--device",
-            values.device,
+            serial,
             "--apk",
             apk,
             "--output",
@@ -190,14 +241,15 @@ async function captureScene(scene, result, sceneOutput) {
             "--scene",
             scene.id,
             "--backend",
-            values.backend,
+            backend,
         ],
         join(sceneOutput, "capture.log"),
     );
-    result.capture = JSON.parse(
-        readFileSync(join(sceneOutput, "report.json"), "utf8"),
+    const capture = /** @type {SmokeReceipt} */ (
+        JSON.parse(readFileSync(join(sceneOutput, "report.json"), "utf8"))
     );
-    if (!dimensions) {
+    result.capture = capture;
+    if (!dimensions || !parity || !reference) {
         result.status = "captured";
         result.reason =
             "No registered golden image; visual parity was not assessed.";
@@ -206,38 +258,42 @@ async function captureScene(scene, result, sceneOutput) {
         save();
         const actual = join(sceneOutput, "capture.png");
         if (
-            dimensions.width !== result.capture.width ||
-            dimensions.height !== result.capture.height
+            dimensions.width !== capture.width ||
+            dimensions.height !== capture.height
         ) {
             throw new Error(
-                `Capture dimensions ${result.capture.width}x${result.capture.height} differ from reference ${dimensions.width}x${dimensions.height}.`,
+                `Capture dimensions ${capture.width}x${capture.height} differ from reference ${dimensions.width}x${dimensions.height}.`,
             );
         }
-        result.full = compareImages(actual, reference);
-        result.foreground = compareRegion(
+        const full = compareImages(actual, reference);
+        const foreground = compareRegion(
             actual,
             reference,
-            scene.parity.backgroundColor,
-            scene.parity.backgroundThreshold,
+            parity.backgroundColor,
+            parity.backgroundThreshold,
         );
-        result.thresholds = resolveParityThresholds(
-            scene.parity,
-            values.backend,
-        );
+        const thresholds = resolveParityThresholds(parity, backend);
+        result.full = full;
+        result.foreground = foreground;
+        result.thresholds = thresholds;
         result.status =
-            result.thresholds.gate === "diagnostic-only"
+            thresholds.gate === "diagnostic-only"
                 ? "captured"
-                : result.full.mad <= result.thresholds.maxMad &&
-                    result.foreground.mad <= result.thresholds.maxRegionMad
+                : thresholds.maxMad !== undefined &&
+                    thresholds.maxRegionMad !== undefined &&
+                    full.mad <= thresholds.maxMad &&
+                    foreground.mad <= thresholds.maxRegionMad
                   ? "passed"
                   : "parity-failed";
         if (result.status === "parity-failed")
             generateDiffMap(actual, reference, join(sceneOutput, "diff.png"));
     }
 }
+/** @param {SceneDefinition} scene */
 async function runScene(scene) {
     const sceneOutput = join(output, scene.id);
     mkdirSync(sceneOutput, { recursive: true });
+    /** @type {SceneResult} */
     const result = {
         scene: scene.id,
         status: "running",
@@ -259,11 +315,11 @@ async function runScene(scene) {
                 "-Scene",
                 scene.id,
                 "-Sdk",
-                values.sdk,
+                sdk,
                 "-Abi",
                 values.abi,
                 "-Backend",
-                values.backend,
+                backend,
                 "-Jobs",
                 values.jobs,
                 "-SkipGenerate",
@@ -280,7 +336,7 @@ async function runScene(scene) {
         await capture;
     } catch (error) {
         result.status = "failed";
-        result.reason = error.message;
+        result.reason = error instanceof Error ? error.message : String(error);
     }
     result.completedAt = new Date().toISOString();
     save();
@@ -298,12 +354,14 @@ try {
 } finally {
     device("shell", "wm", "size", originalSize);
 }
-report.completedAt = new Date().toISOString();
-report.counts = {};
+/** @type {Record<string, number>} */
+const counts = {};
 for (const result of report.results)
-    report.counts[result.status] = (report.counts[result.status] ?? 0) + 1;
+    counts[result.status] = (counts[result.status] ?? 0) + 1;
+report.completedAt = new Date().toISOString();
+report.counts = counts;
 save();
-console.log(JSON.stringify(report.counts));
+console.log(JSON.stringify(counts));
 console.log(`Report: ${join(output, "report.json")}`);
 if (
     report.results.some(

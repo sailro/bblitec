@@ -32,6 +32,7 @@ import { createBinaryChunk, f32, u16, writeFixture } from "./glb.mjs";
 import { quadrantPng } from "./png.mjs";
 
 const chunk = createBinaryChunk();
+/** @param {Uint8Array} bytes */
 const view = (bytes) => chunk.view(bytes);
 
 // One shared unit quad in the XY plane, placed by node translation. The

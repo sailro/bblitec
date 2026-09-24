@@ -8,6 +8,16 @@
 import assert from "node:assert/strict";
 import { loadPng } from "./support.mjs";
 
+/**
+ * @import { PNG } from "pngjs"
+ * @import { PluginContext, PluginOutcome } from "../../dist/src/tooling/check-run.js"
+ */
+
+/**
+ * @param {PNG} actual
+ * @param {PNG} expected
+ * @param {boolean} right
+ */
 function paneDifference(actual, expected, right) {
     assert.equal(actual.width, expected.width);
     assert.equal(actual.height, expected.height);
@@ -18,15 +28,24 @@ function paneDifference(actual, expected, right) {
         for (let x = start; x < end; x++)
             for (let lane = 0; lane < 3; lane++) {
                 const offset = (y * actual.width + x) * 4 + lane;
-                total += Math.abs(actual.data[offset] - expected.data[offset]);
+                total += Math.abs(
+                    actual.data.readUInt8(offset) -
+                        expected.data.readUInt8(offset),
+                );
             }
     return total / ((end - start) * (actual.height - 40) * 3);
 }
 
+/**
+ * @param {PluginContext} context
+ * @returns {PluginOutcome}
+ */
 export function check(context) {
+    /** @type {Record<string, { dimensions: number[] } | { left: number, right: number }>} */
     const details = {};
     for (const backend of context.backends) {
-        const results = context.results[backend];
+        const results = context.results[backend] ?? {};
+        assert(results.baseline, `${backend}: missing phase baseline`);
         const baseline = loadPng(results.baseline.image);
         for (const phase of Object.values(results)) {
             const where = `${backend}/${phase.id}`;
@@ -53,8 +72,10 @@ export function check(context) {
                                 [0, 1, 2].some(
                                     (lane) =>
                                         Math.abs(
-                                            png.data[offset + lane] -
-                                                png.data[background + lane],
+                                            png.data.readUInt8(offset + lane) -
+                                                png.data.readUInt8(
+                                                    background + lane,
+                                                ),
                                         ) > 30,
                                 )
                             )
