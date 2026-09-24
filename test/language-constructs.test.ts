@@ -1797,6 +1797,13 @@ check(
     function parse(s: string): number { return parseFloat(s) + Number.parseFloat(s) + parseInt(s, 10); }
     if (parse("1.5x") !== 4 || !Number.isNaN(parseFloat("x")) || parseFloat("  -2e1z") !== -20) throw new Error("parseFloat");
     if ("\\u00a0\\u3000x\\u2028\\ufeff".trim() !== "x" || parseFloat("\\u00a0\\u2029 3.5") !== 3.5) throw new Error("JavaScript white space");
+    function num(s: string): number { return Number(s); }
+    if (num(" \\u00a012\\u3000") !== 12 || num("\\u2028") !== 0 || num("5.") !== 5 || num("-Infinity") !== -Infinity || parseInt("\\u00a0 42px") !== 42)
+        throw new Error("Number of decimal strings");
+    if (num("0x1F") !== 31 || num("0o17") !== 15 || num("0B101") !== 5 || num("0x20000000000001") !== 9007199254740992)
+        throw new Error("Number of radix strings");
+    for (const bad of ["inf", "-0x10", "0x", "1e", "1_0", "0x1p3", "Infinityx", "."])
+        if (!Number.isNaN(num(bad))) throw new Error("Number of " + bad);
     function truthy(n: number, s: string): number { return (Boolean(n) ? 1 : 0) + (Boolean(s) ? 2 : 0); }
     if (truthy(0, "x") !== 2 || truthy(3, "") !== 1) throw new Error("Boolean()");
     if (String(null) + String(undefined) !== "nullundefined") throw new Error("String of nullish");
