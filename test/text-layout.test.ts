@@ -71,6 +71,9 @@ test("native live layout matches the pinned shaper and layout over editing, wrap
         "AV fi ffi office",
         "A\t  B\n\n C",
         "Résumé é Ω Ж",
+        // JavaScript white space beyond ASCII trims; an astral codepoint is one cluster.
+        "\u00a0Nbsp trimmed\u2003\n\u3000second",
+        "emoji \u{1F600} cluster",
         "This long line wraps onto multiple lines after editing.",
         Array.from({ length: 40 }, (_, i) => `row ${i}: AV`).join("\n"),
     ];
@@ -114,7 +117,7 @@ int main() {
     ${cases
         .map(
             (input) => `{
-        const auto result = bbl::layout_text(*font, ${stringLiteral(input.text)}, 48, bbl::TextLayoutOptions{${input.maxWidth}, ${input.lineHeight}, ${stringLiteral(input.align)}, ${input.letterSpacing}, ${input.tabSize}});
+        const auto result = bbl::layout_text(font, ${stringLiteral(input.text)}, 48, bbl::TextLayoutOptions{${input.maxWidth}, ${input.lineHeight}, ${stringLiteral(input.align)}, ${input.letterSpacing}, ${input.tabSize}});
         std::vector<double> row{result.width,result.height,result.pixels_per_font_unit};
         for (const auto& glyph : result.glyphs) { row.push_back(glyph.glyph_id); row.push_back(glyph.x); row.push_back(glyph.y); }
         output.push_back(row);
