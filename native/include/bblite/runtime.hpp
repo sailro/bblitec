@@ -1025,7 +1025,12 @@ struct RenderTextureRef {
 struct RenderTaskOptions {
     std::string name;
     RenderTargetHandle target{};
-    Color4 clear_color{};
+    /**
+     * `clrColor`, absent when the task named none: the pass then clears to
+     * its scene's live `clearColor`, read at execution
+     * (`att.clearValue = cfg.clrColor ?? sc.clearColor`, render-task-base.ts).
+     */
+    std::optional<Color4> clear_color;
     bool clear = false;
     CameraHandle camera{};
     bool has_camera = false;

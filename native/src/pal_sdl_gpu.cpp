@@ -9724,11 +9724,16 @@ public:
                             SDL_GPUColorTargetInfo target_info{};
                             target_info.texture =
                                 target_record.swapchain ? swapchain : target.color;
+                            // `cfg.clrColor ?? sc.clearColor`, the task's own scene
+                            // read live at the pass.
+                            const Color4 task_clear_color = task.render.clear_color
+                                                                ? *task.render.clear_color
+                                                                : task.source_scene->clear_color;
                             target_info.clear_color = SDL_FColor{
-                                task.render.clear_color.r,
-                                task.render.clear_color.g,
-                                task.render.clear_color.b,
-                                task.render.clear_color.a,
+                                task_clear_color.r,
+                                task_clear_color.g,
+                                task_clear_color.b,
+                                task_clear_color.a,
                             };
                             target_info.load_op =
                                 task.render.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;

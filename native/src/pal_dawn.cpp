@@ -12341,11 +12341,16 @@ public:
                             color_attachment.loadOp =
                                 task.render.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
                             color_attachment.storeOp = WGPUStoreOp_Store;
+                            // `cfg.clrColor ?? sc.clearColor`, the task's own scene
+                            // read live at the pass.
+                            const Color4 task_clear_color = task.render.clear_color
+                                                                ? *task.render.clear_color
+                                                                : task.source_scene->clear_color;
                             color_attachment.clearValue = WGPUColor{
-                                task.render.clear_color.r,
-                                task.render.clear_color.g,
-                                task.render.clear_color.b,
-                                task.render.clear_color.a,
+                                task_clear_color.r,
+                                task_clear_color.g,
+                                task_clear_color.b,
+                                task_clear_color.a,
                             };
                             // The pin resolves into `rst` at end-of-pass, and ignores it
                             // outright when the task's own target is single-sample. That
