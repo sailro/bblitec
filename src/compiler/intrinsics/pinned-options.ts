@@ -14,8 +14,10 @@
  */
 import { EmissionMap, EmissionSet } from "../emission-transaction.js";
 import ts from "typescript";
-import { LoweringContext } from "../../lowering/context.js";
-import { sharedUpstreamStore } from "../../upstream-source.js";
+import {
+    sharedPinnedContext,
+    type LoweringContext,
+} from "../../lowering/context.js";
 
 /** The value shape one declared option takes. */
 export type PinnedOptionKind =
@@ -42,12 +44,6 @@ interface DeclaredMember {
     readonly module: string;
     readonly file: ts.SourceFile;
     readonly type: ts.TypeNode;
-}
-
-let shared: LoweringContext | undefined;
-function pinnedSource(): LoweringContext {
-    if (!shared) shared = new LoweringContext(sharedUpstreamStore());
-    return shared;
 }
 
 const memberCache = new EmissionMap<
@@ -81,7 +77,7 @@ function configMembers(
     const cacheKey = `${factory.module}#${factory.factory}`;
     const cached = memberCache.get(cacheKey);
     if (cached) return cached;
-    const source = pinnedSource();
+    const source = sharedPinnedContext();
     const { declaration } = source.functionDeclaration(
         factory.module,
         factory.factory,
@@ -208,7 +204,7 @@ function classify(
     key: string,
     factory: PinnedFactory,
 ): PinnedOptionKind {
-    const source = pinnedSource();
+    const source = sharedPinnedContext();
     const refuse = (node: ts.Node, why: string): never =>
         source.contractError(
             node,

@@ -16,20 +16,11 @@
  * scene can carry it.
  */
 import ts from "typescript";
-import { LoweringContext } from "./lowering/context.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 import {
     pinnedOptionFlag,
     pinnedOptionNumber,
 } from "./lowering/pinned-option-defaults.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
-
-/** One reader per process; the pin cannot move under a generation. */
-let sharedContext: LoweringContext | undefined;
-
-function reader(): LoweringContext {
-    sharedContext ??= new LoweringContext(sharedUpstreamStore());
-    return sharedContext;
-}
 
 /**
  * One `const <local> = wrap(<options>.<local> ?? <number>)` fallback.
@@ -44,7 +35,7 @@ export function pinnedMeshOptionDefault(
     factory: string,
     local: string,
 ): number {
-    const context = reader();
+    const context = sharedPinnedContext();
     const { file, declaration } = context.functionDeclaration(
         modulePath,
         factory,
@@ -71,7 +62,7 @@ export function pinnedMeshOptionLocals(
     modulePath: string,
     factory: string,
 ): readonly string[] {
-    const context = reader();
+    const context = sharedPinnedContext();
     const { declaration } = context.functionDeclaration(modulePath, factory);
     const options = declaration.parameters[0];
     if (!options || !ts.isIdentifier(options.name)) {
@@ -131,7 +122,7 @@ export function pinnedMeshOptionFlag(
     factory: string,
     local: string,
 ): boolean {
-    const context = reader();
+    const context = sharedPinnedContext();
     const { declaration } = context.functionDeclaration(modulePath, factory);
     return pinnedOptionFlag(context, declaration, { wrapped: local });
 }
@@ -151,7 +142,7 @@ export function pinnedParameterFlag(
     functionName: string,
     parameter: string,
 ): boolean {
-    const context = reader();
+    const context = sharedPinnedContext();
     const { declaration } = context.functionDeclaration(
         modulePath,
         functionName,
@@ -208,7 +199,7 @@ export function transformNodeDefaults(): ReadonlyMap<
     number
 > {
     if (transformDefaults) return transformDefaults;
-    const context = reader();
+    const context = sharedPinnedContext();
     const { file, declaration } = context.functionDeclaration(
         transformNodeModule,
         transformNodeFactory,

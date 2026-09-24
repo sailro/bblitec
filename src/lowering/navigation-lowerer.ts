@@ -42,12 +42,12 @@ import {
     LoweredSource,
     LoweringContext,
     numericValue,
+    sharedPinnedContext,
     unwrapExpression,
     variableInitializer,
 } from "./context.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { doubleLiteral } from "../cpp-literals.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
 import { recordAt } from "../compiler/record-access.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
@@ -179,7 +179,6 @@ const AGENT_BYTE_FIELDS: ReadonlyMap<string, string> = new Map([
     ["queryFilterType", "query_filter_type"],
 ]);
 
-let agentContext: LoweringContext | undefined;
 let agentDefaults: readonly (readonly [string, string, number])[] | undefined;
 
 /**
@@ -196,9 +195,7 @@ export function pinnedAgentParamDefaults(): readonly (readonly [
     number,
 ])[] {
     if (agentDefaults) return agentDefaults;
-    const context: LoweringContext = (agentContext ??= new LoweringContext(
-        sharedUpstreamStore(),
-    ));
+    const context: LoweringContext = sharedPinnedContext();
     const { file, declaration } = context.functionDeclaration(
         NAVIGATION_MODULE,
         "addAgent",
@@ -207,16 +204,10 @@ export function pinnedAgentParamDefaults(): readonly (readonly [
     const defaults: (readonly [string, string, number])[] = [];
     for (const property of agentParams.properties) {
         if (!ts.isPropertyAssignment(property)) continue;
-        const initializer = unwrapExpression(property.initializer);
-        if (
-            !ts.isBinaryExpression(initializer) ||
-            initializer.operatorToken.kind !==
-                ts.SyntaxKind.QuestionQuestionToken
-        ) {
-            continue;
-        }
+        const nullish = context.nullishDefault(property.initializer);
+        if (!nullish) continue;
         const name = context.propertyName(property.name);
-        const path = context.propertyPath(initializer.left);
+        const path = context.propertyPath(nullish.left);
         const field = name ? AGENT_BYTE_FIELDS.get(name) : undefined;
         if (!name || path?.join(".") !== `params.${name}` || !field) {
             context.contractError(
@@ -226,11 +217,7 @@ export function pinnedAgentParamDefaults(): readonly (readonly [
                     "each from its own params field.",
             );
         }
-        defaults.push([
-            name,
-            field,
-            context.numericValue(initializer.right, file),
-        ]);
+        defaults.push([name, field, context.numericValue(nullish.right, file)]);
     }
     if (defaults.length !== AGENT_BYTE_FIELDS.size) {
         context.contractError(
