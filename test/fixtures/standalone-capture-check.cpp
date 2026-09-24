@@ -223,7 +223,7 @@ Pass create_dawn_sprite_pass(WGPUDevice, WGPUQueue, int&, Engine&, SpriteRendere
     ++pass_creations;
     return {handle};
 }
-void run_sprite_renderer_before_update(Engine&, SpriteRendererHandle handle, double) {
+void begin_sprite_renderer_update(Engine&, SpriteRendererHandle handle, double) {
     updated_renderers.push_back(handle.value);
 }
 void sync_sprite_pass_layers(SDL_GPUDevice*, Engine&, Pass&, const std::vector<SDL_GPUTexture*>&) {}

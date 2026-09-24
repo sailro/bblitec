@@ -28,7 +28,11 @@ import {
 import { packagedWgsl } from "../pinned-wgsl-build.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
-import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    absentBinding,
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { recordAt } from "../compiler/record-access.js";
 import {
@@ -877,6 +881,93 @@ ${body}
      * `compareLayers`, the comparator `spriteRendererUpdate` sorts a
      * renderer's layers by, translated from `sprite-renderer.ts`.
      */
+    /**
+     * `spriteRendererUpdate`'s `if (rr.layers.length > 1) rr._layers.sort(
+     * compareLayers)`: the renderer's own list sorted IN PLACE once per frame,
+     * after its hooks ran and before anything reads it. JavaScript's sort is
+     * stable over the order the list was left in, so a tie after an order
+     * change resolves against the previous frame's order rather than the
+     * registration order; `std::stable_sort` over the record's own list is
+     * that. A reorder moves each backend's per-layer GPU records with it
+     * through `layers_version`, as the pin's `_layerGpu` map is keyed by layer.
+     */
+    private sortLayersCpp(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            rendererModule,
+            "spriteRendererUpdate",
+        );
+        const guards = this.context.findNodes(
+            declaration,
+            (node): node is ts.IfStatement =>
+                ts.isIfStatement(node) &&
+                this.context
+                    .findNodes(
+                        node.thenStatement,
+                        (call): call is ts.CallExpression =>
+                            ts.isCallExpression(call) &&
+                            call.expression.getText(file) === "rr._layers.sort",
+                    )
+                    .some(
+                        (call) =>
+                            call.arguments.length === 1 &&
+                            call.arguments[0]!.getText(file) ===
+                                "compareLayers",
+                    ),
+        );
+        const guard = guards[0];
+        if (guards.length !== 1 || !guard || guard.elseStatement) {
+            return this.context.contractError(
+                declaration,
+                "Expected spriteRendererUpdate to sort rr._layers in place by compareLayers under one guard.",
+            );
+        }
+        const condition = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                [
+                    "rr.layers.length",
+                    {
+                        cpp: "static_cast<double>(renderer.layers.size())",
+                        type: "scalar",
+                    },
+                ],
+            ]),
+            calls: new Map(),
+        }).expression(guard.expression);
+        return `/**
+ * ${this.context.provenance(rendererModule, "spriteRendererUpdate", "rr._layers.sort(compareLayers)")}
+ * The renderer's layer list sorted in place, stable over the order the last
+ * frame left it in; both backends and the capture then walk the list as it
+ * stands. A reorder bumps \`layers_version\`, which moves each backend's
+ * per-layer GPU records to the new positions without rebuilding them.
+ */
+inline void sort_sprite_renderer_layers(
+    const Engine& engine,
+    SpriteRendererRecord& renderer) {
+    if (${condition}) {
+        std::vector<Sprite2DLayerHandle> sorted = renderer.layers;
+        std::stable_sort(
+            sorted.begin(),
+            sorted.end(),
+            [&](Sprite2DLayerHandle left, Sprite2DLayerHandle right) {
+                return upstream::compare_sprite_layers(
+                           ${recordAt("engine.sprite_layers", "left")},
+                           ${recordAt("engine.sprite_layers", "right")}) < 0.0;
+            });
+        const bool moved = !std::equal(
+            sorted.begin(),
+            sorted.end(),
+            renderer.layers.begin(),
+            [](Sprite2DLayerHandle left, Sprite2DLayerHandle right) {
+                return left.value == right.value;
+            });
+        if (moved) {
+            renderer.layers = std::move(sorted);
+            renderer.layers_version += 1u;
+        }
+    }
+}`;
+    }
+
     private compareLayersCpp(): string {
         const layer = (name: string) => ({
             pinned: name,
@@ -1351,27 +1442,7 @@ namespace bbl {
  * blend is the pin's opaque replacement, which is blending disabled.
  */
 ${blendFactoriesCpp(blends, "sprite", "sprite-blend.ts")}
-/**
- * sprite-renderer.ts spriteRendererUpdate's \`rr._layers.sort(compareLayers)\`:
- * the order both backends draw a renderer's layers in and the capture walks
- * them in, by the pin's own comparator under JavaScript's stable sort. It is
- * a permutation of the renderer's list, decided here once.
- */
-inline std::vector<std::size_t> sprite_layer_draw_order(
-    const Engine& engine,
-    const SpriteRendererRecord& renderer) {
-    std::vector<std::size_t> draw_order(renderer.layers.size());
-    std::iota(draw_order.begin(), draw_order.end(), std::size_t{0});
-    std::stable_sort(
-        draw_order.begin(),
-        draw_order.end(),
-        [&](std::size_t left, std::size_t right) {
-            return upstream::compare_sprite_layers(
-                       ${recordAt("engine.sprite_layers", "renderer.layers[left]")},
-                       ${recordAt("engine.sprite_layers", "renderer.layers[right]")}) < 0.0;
-        });
-    return draw_order;
-}
+${this.sortLayersCpp()}
 
 ${this.pickSprite2DCpp()}
 } // namespace bbl

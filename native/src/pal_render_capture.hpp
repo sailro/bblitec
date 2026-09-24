@@ -1335,7 +1335,7 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
 #if BBLITE_HAS_SPRITE_RENDERER
 /**
  * The 2D sprite rendering contexts the engine records, layers in the
- * draw order `sprite_layer_draw_order` decides for both backends, each
+ * list order `sort_sprite_renderer_layers` leaves for both backends, each
  * with the exact sixteen-float layer block its pass pushes
  * (`build_sprite_layer_ubo`) and the six-index, count-instance draw shape.
  *
@@ -1363,8 +1363,7 @@ inline void write_sprite_renderer_list(JsonWriter& json, const Engine& engine, i
         json.field("clearValue", renderer.clear_value);
         json.key("layers");
         json.begin_array();
-        for (const std::size_t slot : sprite_layer_draw_order(engine, renderer)) {
-            const Sprite2DLayerHandle handle = renderer.layers[slot];
+        for (const Sprite2DLayerHandle handle : renderer.layers) {
             if (handle.value >= engine.sprite_layers.size())
                 continue;
             const Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);

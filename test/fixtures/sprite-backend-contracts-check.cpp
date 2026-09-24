@@ -220,6 +220,43 @@ void billboard_upload_instances(const BillboardSystemRecord& system, const std::
 namespace bbl {
 #include "mutations.hpp"
 }
+#include "layer-sort.hpp"
+
+namespace {
+// spriteRendererUpdate sorts rr._layers in place: a tie after an order
+// change keeps the order the previous frame left, where a fresh permutation
+// of the registration order would not, and only a reorder moves the GPU
+// records (`layers_version`).
+void check_layer_sort() {
+    using namespace bbl;
+    Engine engine;
+    engine.sprite_layers.resize(3);
+    engine.sprite_layers[0].order = 1.0f;
+    engine.sprite_layers[1].order = 1.0f;
+    engine.sprite_layers[2].order = 0.0f;
+    SpriteRendererRecord renderer;
+    renderer.layers = {{0}, {1}, {2}};
+    const auto order = [&] {
+        std::vector<std::uint32_t> values;
+        for (const Sprite2DLayerHandle handle : renderer.layers)
+            values.push_back(handle.value);
+        return values;
+    };
+    sort_sprite_renderer_layers(engine, renderer);
+    assert((order() == std::vector<std::uint32_t>{2, 0, 1}) && renderer.layers_version == 1);
+    sort_sprite_renderer_layers(engine, renderer);
+    assert(renderer.layers_version == 1);
+    engine.sprite_layers[2].order = 1.0f;
+    sort_sprite_renderer_layers(engine, renderer);
+    assert((order() == std::vector<std::uint32_t>{2, 0, 1}) && renderer.layers_version == 1);
+    engine.sprite_layers[0].order = 0.5f;
+    sort_sprite_renderer_layers(engine, renderer);
+    assert((order() == std::vector<std::uint32_t>{0, 2, 1}) && renderer.layers_version == 2);
+    renderer.layers = {{1}};
+    sort_sprite_renderer_layers(engine, renderer);
+    assert(renderer.layers_version == 2);
+}
+} // namespace
 
 namespace bbl::pal {
 struct OwnedSdlPipeline {
@@ -576,6 +613,7 @@ void check_layer(Gpu& gpu, bbl::Engine& engine, Upload upload, Record record) {
 int main() {
     using namespace bbl;
     using namespace bbl::pal;
+    check_layer_sort();
     check_pipeline_cache();
     Engine engine;
     engine.sprite_layers.resize(1);

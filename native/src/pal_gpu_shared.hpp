@@ -4070,29 +4070,34 @@ inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
 }
 
 /**
- * `spriteRendererUpdate`'s first act: run the renderer's own per-frame hooks
- * with the frame's delta, before anything reads its layer list.
+ * `spriteRendererUpdate` up to its upload: run the renderer's own per-frame
+ * hooks with the frame's delta, then sort its layer list in place
+ * (`sort_sprite_renderer_layers`), before anything reads the list.
  *
- * A disposed renderer runs none, which is the pin's own early return; the
- * list is copied because a hook may push another one, and upstream's
+ * A disposed renderer runs neither, which is the pin's own early return; the
+ * hook list is copied because a hook may push another one, and upstream's
  * `for (const hook of rr._beforeUpdate)` iterates the array it entered with.
  */
-inline void run_sprite_renderer_before_update(Engine& engine, SpriteRendererHandle renderer,
-                                              double delta_ms) {
+inline void begin_sprite_renderer_update(Engine& engine, SpriteRendererHandle renderer,
+                                         double delta_ms) {
     if (renderer.value >= engine.sprite_renderers.size())
         return;
     SpriteRendererRecord& record = handle_at(engine.sprite_renderers, renderer);
-    if (record.disposed || record.before_update.empty())
+    if (record.disposed)
         return;
-    // Copied into the record's own scratch rather than a fresh vector: the
-    // copy is what makes this iterate the list it entered with, the way
-    // upstream's `for (const hook of rr._beforeUpdate)` does, and assigning
-    // into a retained buffer keeps that guarantee while paying the
-    // allocation once instead of once per renderer per frame.
-    record.before_update_running.assign(record.before_update.begin(), record.before_update.end());
-    for (const auto& hook : record.before_update_running) {
-        hook(delta_ms);
+    if (!record.before_update.empty()) {
+        // Copied into the record's own scratch rather than a fresh vector:
+        // the copy is what makes this iterate the list it entered with, the
+        // way upstream's `for (const hook of rr._beforeUpdate)` does, and
+        // assigning into a retained buffer keeps that guarantee while paying
+        // the allocation once instead of once per renderer per frame.
+        record.before_update_running.assign(record.before_update.begin(),
+                                            record.before_update.end());
+        for (const auto& hook : record.before_update_running) {
+            hook(delta_ms);
+        }
     }
+    sort_sprite_renderer_layers(engine, handle_at(engine.sprite_renderers, renderer));
 }
 
 /**

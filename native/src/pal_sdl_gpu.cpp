@@ -7824,7 +7824,7 @@ public:
             // `spriteRendererUpdate` runs the renderer's own hooks
             // before it reads its layers, so an overlay HUD's hook is
             // seen by this frame rather than the next.
-            run_sprite_renderer_before_update(engine, sprite_pass.renderer, delta_ms);
+            begin_sprite_renderer_update(engine, sprite_pass.renderer, delta_ms);
             sync_sprite_pass_layers(state.device, engine, sprite_pass, sprite_render_textures);
             upload_sprite_pass(state.device, engine, sprite_pass, delta_ms, frame_buffer_uploads);
         }
@@ -9944,7 +9944,8 @@ public:
                     }
                     if (item.material_kind == upstream::RenderMaterialKind::shader) {
                         if (!material) {
-                            pal::refuse_invalid_frame_handle("Shader draw has an invalid material.");
+                            pal::refuse_invalid_frame_handle(
+                                "Shader draw has an invalid material.");
                         }
                         const ShaderDrawMatrices shader_matrices(
                             *pass_scene, engine, handle_at(engine.meshes, item.mesh),

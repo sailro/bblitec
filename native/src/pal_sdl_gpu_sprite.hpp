@@ -562,12 +562,9 @@ inline void record_sprite_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
     const SDL_GPUBufferBinding index_binding{pass.index_buffer, 0};
     SDL_BindGPUIndexBuffer(render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
-    // The per-frame layer order (pal_gpu_shared.hpp): the pinned
-    // by-`order` stable sort both backends draw with.
-    if (renderer.layers.empty())
-        return;
-    const std::vector<std::size_t> draw_order = sprite_layer_draw_order(engine, renderer);
-    for (const std::size_t index : draw_order) {
+    // The list as `begin_sprite_renderer_update` left it this frame: the
+    // pin's in-place by-`order` sort, which the GPU records follow.
+    for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
         const Sprite2DLayerRecord& layer = engine.sprite_layers[renderer.layers[index].value];
         if (!layer.visible || layer.count == 0) {
             continue;

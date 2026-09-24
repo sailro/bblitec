@@ -9748,7 +9748,7 @@ public:
             // `spriteRendererUpdate` runs the renderer's own hooks before
             // it reads its layers, so an overlay HUD's hook is seen by this
             // frame rather than the next.
-            run_sprite_renderer_before_update(engine, sprite_pass.renderer, delta_ms);
+            begin_sprite_renderer_update(engine, sprite_pass.renderer, delta_ms);
             sync_dawn_sprite_pass_layers(state.device, state.queue, state.mips, engine, sprite_pass,
                                          state.sprite_render_textures,
                                          state.sprite_render_texture_views);
