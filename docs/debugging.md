@@ -95,7 +95,8 @@ unchanged-module startup at 960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelU
 packets, WheelUp/Down a browser notch. `<entry>*<n>` repeats entries. Recovery tapes include Dataset,
 GlobalCall and DeviceLoss.
 
-`memory` runs 6,000 frames and judges the samples after the warm-up third. It fails a working-set trend
+`memory` runs 6,000 frames, or the `frames` a demo's tape declares when its content grows for longer than a
+warm-up third (minecraft's streamed world), and judges the samples after the warm-up third. It fails a working-set trend
 above `--max-slope-mb` (MB per 1,000 frames, default 2; Theil–Sen, over the whole window and over its
 later half, so one allocation step or a rise that settles does not fail), occupied mesh records the scene does not draw
 or geometry records without vertices that pile up, and GC nodes that rise steadily; missing samples fail. The report
