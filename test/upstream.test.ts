@@ -3011,7 +3011,7 @@ test("executes the pinned CSG solid and bakes the geometry it produced", () => {
     // A subtraction is bounded by the box it started from. (Byte-stability
     // across compilations is not asserted here -- a repeat call answers
     // from the plan memo, so it would compare an array with itself; what
-    // proves it is the generated-tree digest the neutrality ladder takes
+    // proves it is the generated-tree digest `neutrality --generated` takes
     // over two `compile all` runs.)
     for (const value of subtract.positions) {
         assert.ok(Math.abs(value) <= 1.0000001, `${value} is outside the box`);

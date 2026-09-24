@@ -38,7 +38,7 @@ import {
  * appears nowhere on the browser side is the finding worth reading.
  *
  * The same pairing covers the capture's pinned material and mesh blocks
- * (rung 4b's two listings, diffed instead of read), and the shader half
+ * (the two block listings, diffed instead of read), and the shader half
  * gets its own comparison: the browser's composed modules hashed against
  * the generated arms, matched and one-sided sets named, and the closest
  * near miss opened at its first divergent line.
@@ -495,9 +495,7 @@ function vec4Chunks(
  *
  * The capture builds these through the draw path's own writers
  * (`write_pbr_variant_material`, `pinned_mesh_block`) for every selector
- * row, CPU-side — variants the draw gate refuses included — and until now
- * rung 4b was a human diffing that listing against `scene -- diff --uniforms` by
- * eye. Field names carry the block's identity plus a vec4 chunk range
+ * row, CPU-side — variants the draw gate refuses included. Field names carry the block's identity plus a vec4 chunk range
  * rather than per-field names: `correspond` matches by value, so
  * `variant<n>:<key> values[i..j]` is sufficient and honest, and the
  * variant's own field layout stays where it lives, in the generated
@@ -1346,8 +1344,7 @@ export function buildRenderDiff(
         for (const field of nativeFields(block, layouts)) admit(field);
     }
     // The pinned material and mesh blocks ride the same pairing as every
-    // other native field — rung 4b's two listings, diffed here instead of
-    // by hand.
+    // other native field.
     const pinned = pinnedBlockFields(capture);
     const pinnedBlockList = [...pinned.material, ...pinned.mesh];
     for (const entry of pinnedBlockList) {

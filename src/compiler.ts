@@ -14551,9 +14551,9 @@ class Compiler implements LoweringServices {
                 // it has returned, so a name bound inside that frame is
                 // dead storage by then. The emitted lambda captures by
                 // reference, so this would compile clean and read freed
-                // memory; it refuses instead. Escaping captures are
-                // unsolved generally (see TODO), and this is the one
-                // place the reached slice can walk into them.
+                // memory; it refuses instead. Escaping captures of frame
+                // locals are not supported in general, and this is the
+                // one place the reached slice can walk into them.
                 this.refuseDeadDeferredCapture(
                     identifier,
                     index,

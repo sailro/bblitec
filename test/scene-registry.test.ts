@@ -473,9 +473,8 @@ test("registers unique generated scene targets", () => {
 test("spells the measured pose once: the native seek derives from referenceTimeSeconds", () => {
     // 23 entries used to hand-pair referenceTimeSeconds with
     // nativeEnvironment.BBLITE_ANIMATION_SEEK_SECONDS; drift would have
-    // split rung 1 (the env var, read by the parity run) from rung 3
-    // (referenceTimeSeconds, read by capture --native and diff)
-    // silently. The registry now derives the env var, and this asserts
+    // split the env var the parity run reads from the
+    // referenceTimeSeconds capture --native and diff read, silently. The registry now derives the env var, and this asserts
     // the pairing holds for every entry in both directions.
     let derived = 0;
     for (const scene of scenes) {
