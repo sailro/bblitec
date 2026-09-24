@@ -61,8 +61,10 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -865,13 +867,18 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
                            static_cast<std::uint32_t>(engine_options.height));
 }
 
-inline WGPUShaderModule load_wgsl_module(WGPUDevice device, const std::string& base_name) {
+/** A deployed shader artifact: `<stem><suffix>` in the shader directory. */
+inline std::vector<std::uint8_t> read_dawn_shader_file(const std::string& base_name,
+                                                       std::string_view suffix) {
     const std::string shader_override = environment_variable("BBLITE_GPU_SHADER_DIR");
     const std::string shader_root = shader_override.empty()
                                         ? join_path(executable_directory(), BBLITE_GPU_SHADER_DIR)
                                         : shader_override;
-    const std::vector<std::uint8_t> bytes =
-        read_binary_file(join_path(shader_root, base_name + ".native.wgsl"));
+    return read_binary_file(join_path(shader_root, base_name + std::string(suffix)));
+}
+
+inline WGPUShaderModule load_wgsl_module(WGPUDevice device, const std::string& base_name) {
+    const std::vector<std::uint8_t> bytes = read_dawn_shader_file(base_name, ".native.wgsl");
     const std::string source(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
     wgsl.code = WGPUStringView{source.c_str(), source.size()};
@@ -885,9 +892,278 @@ inline WGPUShaderModule load_wgsl_module(WGPUDevice device, const std::string& b
     return module.release();
 }
 
+/** One bit per binding index, for a `DawnLayoutBindingModel` set. */
+constexpr std::uint64_t dawn_binding_bit(std::uint32_t binding) {
+    return std::uint64_t{1} << binding;
+}
+
+/** A stage a layout reflects: the deployed stem and the stage it runs as. */
+struct DawnLayoutStage {
+    std::string_view stem;
+    WGPUShaderStage stage;
+};
+
+/**
+ * What a layout needs beyond the module's own declarations: how the site
+ * binds a group. WGSL states a buffer's type but not whether a pass binds it
+ * at a dynamic offset, and a texture's sample type but not whether the
+ * format bound there filters -- an rgba32float texture read through
+ * `textureSampleLevel` is `unfilterable-float`, and the sampler that
+ * reads it `non-filtering`, only because of that format. Each set holds
+ * `dawn_binding_bit`s of the group's bindings.
+ */
+struct DawnLayoutBindingModel {
+    std::uint64_t dynamic_offsets = 0;
+    /** Float textures whose format does not filter, and their samplers. */
+    std::uint64_t unfilterable = 0;
+};
+
+/**
+ * One `@binding` line of a stage's `.slots` sidecar: the layout shape
+ * the shader step reflected off the stage's module, visibility aside.
+ */
+struct DawnReflectedBinding {
+    std::uint32_t group = 0;
+    WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    /** A resource the shader may write, which no vertex stage may see. */
+    bool writable = false;
+};
+
+inline WGPUTextureViewDimension dawn_reflected_view_dimension(std::string_view value,
+                                                              std::string_view stem) {
+    static constexpr std::pair<std::string_view, WGPUTextureViewDimension> dimensions[] = {
+        {"1d", WGPUTextureViewDimension_1D},
+        {"2d", WGPUTextureViewDimension_2D},
+        {"2d-array", WGPUTextureViewDimension_2DArray},
+        {"3d", WGPUTextureViewDimension_3D},
+        {"cube", WGPUTextureViewDimension_Cube},
+        {"cube-array", WGPUTextureViewDimension_CubeArray}};
+    for (const auto& [name, dimension] : dimensions)
+        if (name == value)
+            return dimension;
+    dawn_error(std::string(stem) + ".slots names view dimension '" + std::string(value) + "'.");
+}
+
+inline WGPUTextureSampleType dawn_reflected_sample_type(std::string_view value,
+                                                        std::string_view stem) {
+    static constexpr std::pair<std::string_view, WGPUTextureSampleType> types[] = {
+        {"float", WGPUTextureSampleType_Float},
+        {"unfilterable-float", WGPUTextureSampleType_UnfilterableFloat},
+        {"depth", WGPUTextureSampleType_Depth},
+        {"sint", WGPUTextureSampleType_Sint},
+        {"uint", WGPUTextureSampleType_Uint}};
+    for (const auto& [name, type] : types)
+        if (name == value)
+            return type;
+    dawn_error(std::string(stem) + ".slots names sample type '" + std::string(value) + "'.");
+}
+
+/** Parses one `@binding <group> <binding> <resource...>` line. */
+inline DawnReflectedBinding parse_dawn_reflected_binding(std::string_view line,
+                                                         std::string_view stem) {
+    std::vector<std::string_view> words;
+    for (std::size_t start = 0; start < line.size();) {
+        const std::size_t end = std::min(line.find(' ', start), line.size());
+        if (end > start)
+            words.push_back(line.substr(start, end - start));
+        start = end + 1;
+    }
+    const auto malformed = [&]() -> DawnReflectedBinding {
+        dawn_error(std::string(stem) + ".slots has a malformed layout line '" + std::string(line) +
+                   "'.");
+    };
+    const auto number = [&](std::string_view word) {
+        constexpr std::uint32_t max_index = 4096;
+        std::uint32_t value = 0;
+        if (word.empty())
+            malformed();
+        for (const char digit : word) {
+            if (digit < '0' || digit > '9')
+                malformed();
+            value = value * 10 + static_cast<std::uint32_t>(digit - '0');
+            if (value > max_index)
+                malformed();
+        }
+        return value;
+    };
+    if (words.size() < 4)
+        return malformed();
+    DawnReflectedBinding row;
+    row.group = number(words[1]);
+    row.entry.binding = number(words[2]);
+    const std::string_view resource = words[3];
+    if (resource == "uniform" && words.size() == 4) {
+        row.entry.buffer.type = WGPUBufferBindingType_Uniform;
+    } else if (resource == "storage" && words.size() == 5) {
+        row.writable = words[4] == "read_write";
+        if (!row.writable && words[4] != "read")
+            return malformed();
+        row.entry.buffer.type =
+            row.writable ? WGPUBufferBindingType_Storage : WGPUBufferBindingType_ReadOnlyStorage;
+    } else if (resource == "sampler" && words.size() == 5) {
+        if (words[4] != "filtering" && words[4] != "comparison")
+            return malformed();
+        row.entry.sampler.type = words[4] == "comparison" ? WGPUSamplerBindingType_Comparison
+                                                          : WGPUSamplerBindingType_Filtering;
+    } else if (resource == "texture" && words.size() == 7) {
+        if (words[6] != "single" && words[6] != "multisampled")
+            return malformed();
+        row.entry.texture.sampleType = dawn_reflected_sample_type(words[4], stem);
+        row.entry.texture.viewDimension = dawn_reflected_view_dimension(words[5], stem);
+        row.entry.texture.multisampled = words[6] == "multisampled";
+    } else if (resource == "storage-texture") {
+        // No reached render stage writes a storage texture; the compute
+        // families lay theirs out from the pin's own binding descriptors.
+        dawn_error(std::string(stem) + " declares a storage texture at @group(" +
+                   std::to_string(row.group) + ") @binding(" + std::to_string(row.entry.binding) +
+                   "), which no reflected render layout represents.");
+    } else {
+        return malformed();
+    }
+    return row;
+}
+
+/** Every `@binding` line of a deployed stage's `.slots` sidecar. */
+inline std::vector<DawnReflectedBinding> read_dawn_reflected_bindings(std::string_view stem) {
+    const std::vector<std::uint8_t> bytes = read_dawn_shader_file(std::string(stem), ".slots");
+    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    constexpr std::string_view prefix = "@binding ";
+    std::vector<DawnReflectedBinding> rows;
+    for (std::size_t start = 0; start < text.size();) {
+        std::size_t end = std::min(text.find('\n', start), text.size());
+        std::string_view line = text.substr(start, end - start);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+            line.remove_suffix(1);
+        if (line.starts_with(prefix))
+            rows.push_back(parse_dawn_reflected_binding(line, stem));
+        start = end + 1;
+    }
+    return rows;
+}
+
+/** Whether two stages declare one binding as the same resource. */
+inline bool same_dawn_binding_shape(const WGPUBindGroupLayoutEntry& left,
+                                    const WGPUBindGroupLayoutEntry& right) {
+    return left.buffer.type == right.buffer.type && left.sampler.type == right.sampler.type &&
+           left.texture.sampleType == right.texture.sampleType &&
+           left.texture.viewDimension == right.texture.viewDimension &&
+           left.texture.multisampled == right.texture.multisampled;
+}
+
+/**
+ * Group `group` of a pipeline, laid out from what its stages' modules
+ * declare there -- the `@binding` lines the shader step reflected into each
+ * stage's `.slots` sidecar -- and the site's binding model.
+ *
+ * A binding is visible to every stage whose module declares it, except that
+ * no vertex stage sees a resource the shader may write. A texture one stage
+ * samples and another only loads is filterable in both. Two stages that
+ * declare one binding as different resources, and a binding model naming a
+ * binding the group does not declare as that kind of resource, refuse.
+ */
+inline std::vector<WGPUBindGroupLayoutEntry>
+dawn_reflected_layout_entries(std::span<const DawnLayoutStage> stages, std::uint32_t group,
+                              const DawnLayoutBindingModel& model = {}) {
+    std::vector<WGPUBindGroupLayoutEntry> entries;
+    const std::string label = [&] {
+        std::string joined;
+        for (const DawnLayoutStage& stage : stages)
+            joined += (joined.empty() ? "" : "+") + std::string(stage.stem);
+        return joined + " @group(" + std::to_string(group) + ")";
+    }();
+    for (const DawnLayoutStage& stage : stages) {
+        for (DawnReflectedBinding row : read_dawn_reflected_bindings(stage.stem)) {
+            if (row.group != group)
+                continue;
+            const WGPUShaderStage visibility = row.writable && stage.stage == WGPUShaderStage_Vertex
+                                                   ? WGPUShaderStage_None
+                                                   : stage.stage;
+            const auto existing =
+                std::find_if(entries.begin(), entries.end(),
+                             [&](const auto& entry) { return entry.binding == row.entry.binding; });
+            if (existing == entries.end()) {
+                row.entry.visibility = visibility;
+                entries.push_back(row.entry);
+                continue;
+            }
+            const bool float_pair =
+                existing->texture.sampleType != WGPUTextureSampleType_BindingNotUsed &&
+                row.entry.texture.sampleType != WGPUTextureSampleType_BindingNotUsed &&
+                existing->texture.viewDimension == row.entry.texture.viewDimension &&
+                existing->texture.multisampled == row.entry.texture.multisampled &&
+                (existing->texture.sampleType == WGPUTextureSampleType_Float ||
+                 existing->texture.sampleType == WGPUTextureSampleType_UnfilterableFloat) &&
+                (row.entry.texture.sampleType == WGPUTextureSampleType_Float ||
+                 row.entry.texture.sampleType == WGPUTextureSampleType_UnfilterableFloat);
+            if (!float_pair && !same_dawn_binding_shape(*existing, row.entry))
+                dawn_error(label + " binding " + std::to_string(row.entry.binding) +
+                           " is declared as different resources by its stages.");
+            if (float_pair && row.entry.texture.sampleType == WGPUTextureSampleType_Float)
+                existing->texture.sampleType = WGPUTextureSampleType_Float;
+            existing->visibility |= visibility;
+        }
+    }
+    const auto claim = [&](std::uint64_t bits, const char* what, auto&& accepts, auto&& apply) {
+        for (std::uint32_t binding = 0; bits != 0; ++binding, bits >>= 1) {
+            if (!(bits & 1))
+                continue;
+            const auto found = std::find_if(entries.begin(), entries.end(), [&](const auto& entry) {
+                return entry.binding == binding;
+            });
+            if (found == entries.end() || !accepts(*found))
+                dawn_error(label + " binds " + std::to_string(binding) + " " + what +
+                           ", which its modules do not declare there.");
+            apply(*found);
+        }
+    };
+    claim(
+        model.dynamic_offsets, "at a dynamic offset",
+        [](const WGPUBindGroupLayoutEntry& entry) {
+            return entry.buffer.type != WGPUBufferBindingType_BindingNotUsed;
+        },
+        [](WGPUBindGroupLayoutEntry& entry) { entry.buffer.hasDynamicOffset = true; });
+    claim(
+        model.unfilterable, "as an unfilterable texture or its sampler",
+        [](const WGPUBindGroupLayoutEntry& entry) {
+            return entry.texture.sampleType == WGPUTextureSampleType_Float ||
+                   entry.texture.sampleType == WGPUTextureSampleType_UnfilterableFloat ||
+                   entry.sampler.type == WGPUSamplerBindingType_Filtering;
+        },
+        [](WGPUBindGroupLayoutEntry& entry) {
+            if (entry.sampler.type == WGPUSamplerBindingType_Filtering)
+                entry.sampler.type = WGPUSamplerBindingType_NonFiltering;
+            else
+                entry.texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
+        });
+    for (const WGPUBindGroupLayoutEntry& entry : entries) {
+        if (entry.visibility == WGPUShaderStage_None)
+            dawn_error(label + " binding " + std::to_string(entry.binding) +
+                       " is writable and declared only by a vertex stage.");
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const auto& left, const auto& right) { return left.binding < right.binding; });
+    return entries;
+}
+
+/** The group layout `dawn_reflected_layout_entries` describes; the caller owns it. */
+inline WGPUBindGroupLayout create_dawn_reflected_layout(WGPUDevice device,
+                                                        std::span<const DawnLayoutStage> stages,
+                                                        std::uint32_t group,
+                                                        const DawnLayoutBindingModel& model = {}) {
+    const std::vector<WGPUBindGroupLayoutEntry> entries =
+        dawn_reflected_layout_entries(stages, group, model);
+    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    WGPUBindGroupLayout layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    if (!layout)
+        dawn_error("reflected bind group layout for @group(" + std::to_string(group) + ")");
+    return layout;
+}
+
 /**
  * The pinned mip generator (`src/texture/generate-mipmaps.ts`): one blit
- * pipeline per format over the deployed `mip-blit` stages, sampling each
+ * pipeline per format over the deployed `mip-blit` module, sampling each
  * level from the one above with the bilinear sampler.
  *
  * It lives at the device level rather than on the scene driver's state
@@ -896,8 +1172,7 @@ inline WGPUShaderModule load_wgsl_module(WGPUDevice device, const std::string& b
  * driver's layers over a node-particle texture.
  */
 struct DawnMipGenerator {
-    DawnShaderModule vertex_module;
-    DawnShaderModule fragment_module;
+    DawnShaderModule module;
     DawnSampler sampler;
     std::map<WGPUTextureFormat, DawnRenderPipeline> pipelines;
 };
@@ -905,8 +1180,20 @@ struct DawnMipGenerator {
 inline void release_dawn_mip_generator(DawnMipGenerator& mips) {
     mips.pipelines.clear();
     mips.sampler.reset();
-    mips.fragment_module.reset();
-    mips.vertex_module.reset();
+    mips.module.reset();
+}
+
+/**
+ * The pin's bilinear sampler (`resource/samplers.ts` getBilinearSampler):
+ * linear filters and WebGPU-default clamp addressing. The mip generator and
+ * the transmission grab's single-sample arm both sample through it.
+ */
+inline WGPUSampler create_dawn_bilinear_sampler(WGPUDevice device) {
+    WGPUSamplerDescriptor sampler_descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
+    sampler_descriptor.magFilter = WGPUFilterMode_Linear;
+    sampler_descriptor.minFilter = WGPUFilterMode_Linear;
+    return require_dawn_resource(wgpuDeviceCreateSampler(device, &sampler_descriptor),
+                                 "bilinear sampler");
 }
 
 inline WGPURenderPipeline mip_pipeline_for(WGPUDevice device, DawnMipGenerator& mips,
@@ -914,26 +1201,19 @@ inline WGPURenderPipeline mip_pipeline_for(WGPUDevice device, DawnMipGenerator& 
     const auto existing = mips.pipelines.find(format);
     if (existing != mips.pipelines.end())
         return existing->second;
-    if (!mips.vertex_module) {
-        mips.vertex_module = load_wgsl_module(device, "mip-blit.vert");
-        mips.fragment_module = load_wgsl_module(device, "mip-blit.frag");
-        // The pinned generator samples with the bilinear sampler:
-        // linear filters and WebGPU-default clamp addressing.
-        WGPUSamplerDescriptor sampler_descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
-        sampler_descriptor.magFilter = WGPUFilterMode_Linear;
-        sampler_descriptor.minFilter = WGPUFilterMode_Linear;
-        mips.sampler = require_dawn_resource(wgpuDeviceCreateSampler(device, &sampler_descriptor),
-                                             "mip sampler");
+    if (!mips.module) {
+        // The pin's module, deployed whole: both stages enter where the
+        // module declares its entry points.
+        mips.module = load_wgsl_module(device, "mip-blit.frag");
+        mips.sampler = create_dawn_bilinear_sampler(device);
     }
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.vertex.module = mips.vertex_module;
-    descriptor.vertex.entryPoint = string_view("mainVertex");
+    descriptor.vertex.module = mips.module;
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = format;
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = mips.fragment_module;
-    fragment.entryPoint = string_view("mainFragment");
+    fragment.module = mips.module;
     fragment.targetCount = 1;
     fragment.targets = &color_target;
     descriptor.fragment = &fragment;

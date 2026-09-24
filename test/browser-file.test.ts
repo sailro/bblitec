@@ -156,7 +156,7 @@ test("lowers one-file input, change dispatch, files[0], and File.text", () => {
     );
     assert.match(
         result.cpp,
-        /make_closure\(std::tuple\{v_input, std::ref\(v_engine\), v_imports\}, bblscene::\w+/,
+        /make_closure\(bblscene::bbl_environment_\w+\{v_input, std::ref\(v_engine\), v_imports\}, bblscene::\w+/,
         "owned callback-local handles are copied while shared state stays live",
     );
     assert.ok(
@@ -291,7 +291,7 @@ test("registers one-shot pointer-lock listeners in the native registry", () => {
 
     assert.match(
         result.cpp,
-        /bbl::on_pointer_lock_change\(v_engine, \d+u, bbl::js::make_closure\(std::tuple\{v_transitions\}, bblscene::\w+/,
+        /bbl::on_pointer_lock_change\(v_engine, \d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_transitions\}, bblscene::\w+/,
     );
     assert.doesNotMatch(
         result.cpp,

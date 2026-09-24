@@ -60,13 +60,29 @@
 #include "src/tint/lang/core/ir/transform/substitute_overrides.h"
 #include "src/tint/lang/core/ir/traverse.h"
 #include "src/tint/lang/core/ir/var.h"
+#include "src/tint/lang/core/type/depth_multisampled_texture.h"
+#include "src/tint/lang/core/type/depth_texture.h"
+#include "src/tint/lang/core/type/f32.h"
+#include "src/tint/lang/core/type/i32.h"
+#include "src/tint/lang/core/type/multisampled_texture.h"
+#include "src/tint/lang/core/type/sampled_texture.h"
 #include "src/tint/lang/core/type/sampler.h"
+#include "src/tint/lang/core/type/storage_texture.h"
 #include "src/tint/lang/core/type/texture.h"
+#include "src/tint/lang/core/type/u32.h"
 #include "src/tint/lang/hlsl/writer/writer.h"
 #include "src/tint/lang/msl/writer/writer.h"
 #include "src/tint/lang/spirv/writer/writer.h"
+#include "src/tint/lang/wgsl/ast/function.h"
+#include "src/tint/lang/wgsl/ast/identifier.h"
+#include "src/tint/lang/wgsl/ast/module.h"
+#include "src/tint/lang/wgsl/ast/variable.h"
 #include "src/tint/lang/wgsl/inspector/inspector.h"
 #include "src/tint/lang/wgsl/reader/reader.h"
+#include "src/tint/lang/wgsl/sem/builtin_fn.h"
+#include "src/tint/lang/wgsl/sem/call.h"
+#include "src/tint/lang/wgsl/sem/function.h"
+#include "src/tint/lang/wgsl/sem/variable.h"
 
 namespace {
 
@@ -89,6 +105,7 @@ struct Arguments {
     std::string slots;
     std::string layout_json;
     bool position_first = false;
+    std::string binding_layout_of;
 };
 
 [[noreturn]] void Fail(const std::string& message) {
@@ -155,6 +172,8 @@ Arguments Parse(int argc, const char** argv) {
             arguments.spirv_demote = value;
         } else if (flag == "--slots") {
             arguments.slots = value;
+        } else if (flag == "--binding-layout-of") {
+            arguments.binding_layout_of = value;
         } else if (flag == "--layout-json") {
             arguments.layout_json = value;
         } else {
@@ -435,6 +454,22 @@ tint::Bindings BindingsFor(const std::vector<Slot>& slots,
     return bindings;
 }
 
+/// The module `file` holds, its diagnostics printed as the pinned `tint` prints them
+/// (`always`) or only when it is invalid.
+tint::Program ParseProgram(const tint::Source::File& file, bool always) {
+    tint::wgsl::reader::Options options;
+    options.allowed_features = tint::wgsl::AllowedFeatures::Everything();
+    tint::Program program = tint::wgsl::reader::Parse(&file, options);
+    if (program.Diagnostics().Count() > 0 && (always || !program.IsValid())) {
+        tint::cmd::PrintDiagnostics(program.Diagnostics(), tint::cmd::DiagnosticsFormat::kPlain,
+                                    nullptr);
+    }
+    if (!program.IsValid()) {
+        std::exit(1);
+    }
+    return program;
+}
+
 tint::core::ir::Module LoweredIr(const tint::Program& program) {
     auto ir = tint::wgsl::reader::ProgramToLoweredIR(program);
     if (ir != tint::Success) {
@@ -514,6 +549,170 @@ ReachedResources Reached(const tint::Program& program, const std::string& entry_
     return reached;
 }
 
+/// The module-scope textures the module passes to a sampling builtin (one taking a sampler:
+/// `textureSample*`, `textureGather*`), followed through its functions' parameters: a texture
+/// handed to a function is sampled when the function samples the parameter it arrives as. Every
+/// function counts, whether an entry point reaches it or not.
+std::set<const tint::sem::Variable*> SampledTextures(const tint::Program& program) {
+    const auto& sem = program.Sem();
+    std::map<const tint::sem::Function*, std::set<const tint::sem::Variable*>> sampled;
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (const auto* declaration : program.AST().Functions()) {
+            const tint::sem::Function* function = sem.Get(declaration);
+            auto& handles = sampled[function];
+            const auto mark = [&](const tint::sem::ValueExpression* argument) {
+                const tint::sem::Variable* root = argument->RootIdentifier();
+                if (root && root->IsAnyOf<tint::sem::GlobalVariable, tint::sem::Parameter>() &&
+                    handles.insert(root).second) {
+                    changed = true;
+                }
+            };
+            for (const tint::sem::Call* call : function->DirectCalls()) {
+                const auto& arguments = call->Arguments();
+                if (const auto* builtin = call->Target()->As<tint::sem::BuiltinFn>()) {
+                    const auto& signature = builtin->Signature();
+                    const int texture = signature.IndexOf(tint::core::ParameterUsage::kTexture);
+                    if (texture >= 0 &&
+                        signature.IndexOf(tint::core::ParameterUsage::kSampler) >= 0) {
+                        mark(arguments[static_cast<std::size_t>(texture)]);
+                    }
+                } else if (const auto* callee = call->Target()->As<tint::sem::Function>()) {
+                    const auto& reads = sampled[callee];
+                    const auto& parameters = callee->Parameters();
+                    for (std::size_t index = 0; index < parameters.Length(); ++index) {
+                        if (reads.contains(parameters[index])) {
+                            mark(arguments[index]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    std::set<const tint::sem::Variable*> textures;
+    for (const auto& [function, handles] : sampled) {
+        for (const tint::sem::Variable* handle : handles) {
+            if (handle->Is<tint::sem::GlobalVariable>()) {
+                textures.insert(handle);
+            }
+        }
+    }
+    return textures;
+}
+
+std::string ViewDimension(tint::core::type::TextureDimension dimension) {
+    using tint::core::type::TextureDimension;
+    switch (dimension) {
+    case TextureDimension::k1d:
+        return "1d";
+    case TextureDimension::k2d:
+        return "2d";
+    case TextureDimension::k2dArray:
+        return "2d-array";
+    case TextureDimension::k3d:
+        return "3d";
+    case TextureDimension::kCube:
+        return "cube";
+    case TextureDimension::kCubeArray:
+        return "cube-array";
+    default:
+        Fail("a texture has no view dimension");
+    }
+}
+
+/// One declared binding's bind-group layout shape, as its `@binding` line spells it.
+std::string LayoutResource(const tint::sem::GlobalVariable* variable, const BindingPoint& point,
+                           const std::string& name,
+                           const std::set<const tint::sem::Variable*>& sampled) {
+    namespace type = tint::core::type;
+    const type::Type* store = variable->Type()->UnwrapRef();
+    const auto refuse = [&]() -> std::string {
+        Fail("binding '" + name + "' (@group(" + std::to_string(point.group) + ") @binding(" +
+             std::to_string(point.binding) + ")) declares " + store->FriendlyName() +
+             ", which no bind-group layout represents");
+    };
+    const auto element = [&](const type::Type* type, bool filterable) -> std::string {
+        if (type->Is<type::I32>()) {
+            return "sint";
+        }
+        if (type->Is<type::U32>()) {
+            return "uint";
+        }
+        if (type->Is<type::F32>()) {
+            return filterable ? "float" : "unfilterable-float";
+        }
+        return refuse();
+    };
+    switch (variable->AddressSpace()) {
+    case tint::core::AddressSpace::kUniform:
+        return "uniform";
+    case tint::core::AddressSpace::kStorage:
+        return variable->Access() == tint::core::Access::kReadWrite ? "storage read_write"
+                                                                    : "storage read";
+    default:
+        break;
+    }
+    if (const auto* sampler = store->As<type::Sampler>()) {
+        return sampler->IsComparison() ? "sampler comparison" : "sampler filtering";
+    }
+    if (const auto* texture = store->As<type::StorageTexture>()) {
+        const tint::core::Access access = texture->Access();
+        const std::string mode = access == tint::core::Access::kWrite  ? "write-only"
+                                 : access == tint::core::Access::kRead ? "read-only"
+                                                                       : "read-write";
+        return "storage-texture " + mode + " " +
+               std::string(tint::core::ToString(texture->TexelFormat())) + " " +
+               ViewDimension(texture->Dim());
+    }
+    if (const auto* texture = store->As<type::DepthTexture>()) {
+        return "texture depth " + ViewDimension(texture->Dim()) + " single";
+    }
+    if (const auto* texture = store->As<type::DepthMultisampledTexture>()) {
+        return "texture depth " + ViewDimension(texture->Dim()) + " multisampled";
+    }
+    if (const auto* texture = store->As<type::SampledTexture>()) {
+        return "texture " + element(texture->Type(), sampled.contains(variable)) + " " +
+               ViewDimension(texture->Dim()) + " single";
+    }
+    if (const auto* texture = store->As<type::MultisampledTexture>()) {
+        return "texture " + element(texture->Type(), false) + " " + ViewDimension(texture->Dim()) +
+               " multisampled";
+    }
+    return refuse();
+}
+
+/// The bind-group layout of every binding a module declares, read or not, one
+/// `@binding <group> <binding> <resource>` line each in group and binding order. SDL_GPU binds by
+/// the compacted slots; WebGPU binds by the module's own group and binding numbers, so the Dawn
+/// PAL lays each group out from these lines. The resource is `uniform`, `storage
+/// read|read_write`, `sampler filtering|comparison`, `texture <sample type> <view dimension>
+/// single|multisampled`, or `storage-texture <access> <format> <view dimension>`; an f32 texture
+/// is `float` when the module samples it and `unfilterable-float` otherwise.
+std::vector<std::string> LayoutLines(const tint::Program& program) {
+    const auto sampled = SampledTextures(program);
+    std::vector<std::pair<BindingPoint, std::string>> lines;
+    for (const auto* declaration : program.AST().GlobalVariables()) {
+        const auto* variable = program.Sem().Get<tint::sem::GlobalVariable>(declaration);
+        if (!variable || !variable->Attributes().binding_point) {
+            continue;
+        }
+        const BindingPoint point = *variable->Attributes().binding_point;
+        lines.emplace_back(
+            point, "@binding " + std::to_string(point.group) + " " + std::to_string(point.binding) +
+                       " " +
+                       LayoutResource(variable, point, declaration->name->symbol.Name(), sampled));
+    }
+    std::stable_sort(lines.begin(), lines.end(), [](const auto& left, const auto& right) {
+        return std::make_pair(left.first.group, left.first.binding) <
+               std::make_pair(right.first.group, right.first.binding);
+    });
+    std::vector<std::string> result;
+    for (auto& [point, line] : lines) {
+        result.push_back(std::move(line));
+    }
+    return result;
+}
+
 std::string JsonString(const std::string& text) {
     std::string quoted = "\"";
     for (const char character : text) {
@@ -531,17 +730,8 @@ int main(int argc, const char** argv) {
     tint::Initialize();
     const Arguments arguments = Parse(argc, argv);
 
-    tint::wgsl::reader::Options reader_options;
-    reader_options.allowed_features = tint::wgsl::AllowedFeatures::Everything();
     tint::Source::File file(arguments.display_name, ReadText(arguments.input));
-    tint::Program program = tint::wgsl::reader::Parse(&file, reader_options);
-    if (program.Diagnostics().Count() > 0) {
-        tint::cmd::PrintDiagnostics(program.Diagnostics(), tint::cmd::DiagnosticsFormat::kPlain,
-                                    nullptr);
-    }
-    if (!program.IsValid()) {
-        return 1;
-    }
+    const tint::Program program = ParseProgram(file, true);
 
     tint::inspector::Inspector inspector(program);
     // The reflection record: every entry point's bindings, as Tint reports them.
@@ -716,7 +906,9 @@ int main(int argc, const char** argv) {
 
     // The slot sidecar: `<kind><index> <name>` per slot; a compute stage leads
     // with its workgroup size and carries each resource's WGSL group and binding
-    // with those of its sampler.
+    // with those of its sampler. A render stage's opens with its entry point and
+    // closes with the layout lines of the module Dawn compiles: the input, or
+    // `--binding-layout-of` when the input is SDL's adaptation of it.
     std::string sidecar;
     if (*arguments.stage == Stage::kCompute) {
         const auto samplers = TextureSamplers(pairs, entry_point);
@@ -735,9 +927,19 @@ int main(int argc, const char** argv) {
                        "\n";
         }
     } else {
+        sidecar += "@entry " + entry_point + "\n";
         for (const auto& slot : slots) {
             sidecar += std::string(1, slot.kind) + std::to_string(slot.kind_index) + " " +
                        slot.resource.variable_name + "\n";
+        }
+        std::optional<tint::Source::File> layout_file;
+        std::optional<tint::Program> layout_program;
+        if (!arguments.binding_layout_of.empty()) {
+            layout_file.emplace(arguments.display_name, ReadText(arguments.binding_layout_of));
+            layout_program.emplace(ParseProgram(*layout_file, false));
+        }
+        for (const std::string& line : LayoutLines(layout_program ? *layout_program : program)) {
+            sidecar += line + "\n";
         }
     }
     if (!arguments.slots.empty()) {

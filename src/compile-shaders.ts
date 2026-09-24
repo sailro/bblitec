@@ -447,6 +447,9 @@ export function compileOfflineShaders(
                             ]),
                             "--layout-json",
                             pendingLayout,
+                            ...(input === source
+                                ? []
+                                : ["--binding-layout-of", source]),
                         ],
                         environment,
                         source,
@@ -483,10 +486,16 @@ export function compileOfflineShaders(
                             `${source} (after SDL uniform adaptation)`,
                         );
                     }
+                    // A render stage's sidecar opens with its entry point
+                    // and closes with the `@binding` lines of the module
+                    // Dawn compiles, laid out as WebGPU binds it where SDL_GPU
+                    // binds the compacted slots; lines end as the tree's do.
                     for (const { extension } of written)
                         tree.write(
                             `${stage.stem}${extension}`,
-                            readFileSync(pending(extension)),
+                            extension === ".slots"
+                                ? `${lines(readFileSync(pending(extension), "utf8")).join(EOL)}${EOL}`
+                                : readFileSync(pending(extension)),
                         );
                     // The reflection record: Tint's diagnostics for the
                     // module, then every entry point's bindings.

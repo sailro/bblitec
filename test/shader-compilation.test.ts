@@ -79,10 +79,17 @@ function compileStages(
     return directory;
 }
 
-function slotLines(directory: string, stem: string): string[] {
+function sidecarLines(directory: string, stem: string): string[] {
     return readFileSync(join(directory, `${stem}.slots`), "utf8")
         .split(/\r?\n/)
         .filter((line) => line.length > 0);
+}
+
+/** A sidecar's slot lines, without its `@entry` and `@binding` lines. */
+function slotLines(directory: string, stem: string): string[] {
+    return sidecarLines(directory, stem).filter(
+        (line) => !line.startsWith("@"),
+    );
 }
 
 const pinnedResources = `
@@ -364,6 +371,81 @@ var<uniform> nmeShadowParams: Node;`;
         /fixture.frag lacks uniformBuffers or bindings/,
     );
 });
+
+test(
+    "stage layout lines reflect every declared binding's bind-group layout shape",
+    { skip: !tools.bbliteTint || !tools.dxc },
+    (t) => {
+        const root = fixtureRoot(t);
+        const directory = compileStages(
+            root,
+            "layout",
+            `struct U { v: vec4f };
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var<storage, read> values: array<f32>;
+@group(0) @binding(2) var<storage, read_write> results: array<f32>;
+@group(1) @binding(0) var color: texture_2d<f32>;
+@group(1) @binding(1) var colorSampler: sampler;
+@group(1) @binding(2) var data: texture_2d<f32>;
+@group(1) @binding(3) var cells: texture_2d<u32>;
+@group(1) @binding(4) var shadow: texture_depth_2d_array;
+@group(1) @binding(5) var shadowSampler: sampler_comparison;
+@group(1) @binding(6) var sky: texture_cube<f32>;
+@group(1) @binding(7) var samples: texture_multisampled_2d<f32>;
+@group(1) @binding(8) var unused: texture_2d<f32>;
+@group(2) @binding(0) var written: texture_storage_2d<rgba8unorm, write>;
+fn tint(t: texture_2d<f32>, s: sampler, uv: vec2f) -> vec4f { return textureSample(t, s, uv); }
+@fragment fn main(@builtin(position) p: vec4f) -> @location(0) vec4f {
+    let a = tint(color, colorSampler, p.xy);
+    let b = textureLoad(data, vec2i(0), 0);
+    let c = vec4f(textureLoad(cells, vec2i(0), 0));
+    let d = textureSampleCompare(shadow, shadowSampler, p.xy, 0, 0.5);
+    let e = textureGather(0, sky, colorSampler, vec3f(1.0));
+    let f = textureLoad(samples, vec2i(0), 0);
+    return a + b + c + vec4f(d) + e + f + u.v;
+}`,
+            [{ stem: "layout.frag", entryPoint: "main" }],
+            true,
+        );
+        // A texture reaching a sampling builtin through a helper's parameter
+        // is filterable; one only loaded is not; a declared binding nothing
+        // reads is still listed, as its bind group carries it (the writable
+        // ones too, which SDL_GPU binds in compute stages only). The sidecar
+        // opens with the entry point.
+        const sidecar = sidecarLines(directory, "layout.frag");
+        assert.equal(sidecar[0], "@entry main");
+        assert.deepEqual(
+            sidecar.filter((line) => line.startsWith("@binding ")),
+            [
+                "@binding 0 0 uniform",
+                "@binding 0 1 storage read",
+                "@binding 0 2 storage read_write",
+                "@binding 1 0 texture float 2d single",
+                "@binding 1 1 sampler filtering",
+                "@binding 1 2 texture unfilterable-float 2d single",
+                "@binding 1 3 texture uint 2d single",
+                "@binding 1 4 texture depth 2d-array single",
+                "@binding 1 5 sampler comparison",
+                "@binding 1 6 texture float cube single",
+                "@binding 1 7 texture unfilterable-float 2d multisampled",
+                "@binding 1 8 texture unfilterable-float 2d single",
+                "@binding 2 0 storage-texture write-only rgba8unorm 2d",
+            ],
+        );
+        assert.throws(
+            () =>
+                compileStages(
+                    root,
+                    "external",
+                    `@group(2) @binding(0) var video: texture_external;
+@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }`,
+                    [{ stem: "external.frag", entryPoint: "main" }],
+                    true,
+                ),
+            /declares texture_external, which no bind-group layout represents/,
+        );
+    },
+);
 
 test("offline targets select only their executable format", () => {
     for (const [target, products, dxil] of [

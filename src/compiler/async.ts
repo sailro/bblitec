@@ -10,6 +10,7 @@ import {
     type SupportedFunction,
 } from "./user-functions.js";
 import { unwrapExpression, argumentAt } from "./syntax.js";
+import { declaredSymbol } from "./symbols.js";
 import type { Value } from "./types.js";
 import { findAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import {
@@ -653,9 +654,7 @@ export class AsyncLowerer {
             return undefined;
         const resolving = new Set(
             executor.parameters.flatMap((parameter) => {
-                const symbol = context.checker.getSymbolAtLocation(
-                    parameter.name,
-                );
+                const symbol = declaredSymbol(context.checker, parameter.name);
                 return symbol ? [symbol] : [];
             }),
         );
@@ -665,7 +664,7 @@ export class AsyncLowerer {
         const namesResolving = (root: ts.Node): boolean =>
             someAnalysisNode(root, (candidate) => {
                 if (!ts.isIdentifier(candidate)) return false;
-                const symbol = context.checker.getSymbolAtLocation(candidate);
+                const symbol = declaredSymbol(context.checker, candidate);
                 if (symbol === undefined) return false;
                 if (resolving.has(symbol)) return true;
                 const declaration = symbol.valueDeclaration;

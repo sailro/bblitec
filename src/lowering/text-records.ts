@@ -18,18 +18,25 @@
  *  - `familyCurveSetId` reads the family name the text shaper answered at
  *    generation;
  *  - the weight variant's resolver installs the native composed pipeline;
- *  - GPU objects are the backends' leases.
+ *  - the GPU path's WebGPU objects, engine surface and pipeline cache are
+ *    `text-gpu-schema.ts`'s.
  */
 import type { LoweringContext } from "./context.js";
 import {
     type CallAdapter,
     type MemberSpec,
-    type NativeMethod,
     PinnedRecordModel,
     type RecordShape,
     type RecordSpec,
 } from "./pinned-record-lowerer.js";
 import { pinnedTypedProgram } from "./pinned-typed-program.js";
+import {
+    textGpuAdapters,
+    textGpuConstants,
+    textGpuRecords,
+    textGpuUnresolved,
+    textGpuValues,
+} from "./text-gpu-schema.js";
 
 const TEXT_DATA = "src/text/text-data.ts";
 const DEFAULT_TEXT_DATA = "src/text/default-text-data.ts";
@@ -48,25 +55,20 @@ const TEXT_ROOTS = [
     "src/text/_gpu/text-style-gpu.ts",
     "src/text/text-renderable.ts",
     "src/text/text-renderer.ts",
+    "src/render/alpha-to-coverage.ts",
 ] as const;
 
-/** A GPU resource the backend leases: destroying it releases the lease. */
-const lease: RecordShape = {
-    kind: "native",
-    cpp: "std::function<void()>",
-    nullable: true,
-    methods: new Map<string, NativeMethod>([
-        ["destroy", (receiver) => `(${receiver} ? ${receiver}() : void())`],
-    ]),
-};
-const handle: RecordShape = {
-    kind: "native",
-    cpp: "std::shared_ptr<void>",
-    nullable: true,
-};
+const TEXT_RENDERABLE = "src/text/text-renderable.ts";
+const TEXT_RENDERER = "src/text/text-renderer.ts";
+const TEXT_TEXTURES = "src/text/_gpu/text-textures.ts";
+const TEXT_STYLE_GPU = "src/text/_gpu/text-style-gpu.ts";
+const ALPHA_TO_COVERAGE = "src/render/alpha-to-coverage.ts";
+
 const number: RecordShape = { kind: "number" };
+const flag: RecordShape = { kind: "boolean" };
 
 const records: readonly RecordSpec[] = [
+    ...textGpuRecords,
     {
         pinned: ["DefaultTextData", "TextData"],
         cpp: "TextDataState",
@@ -103,41 +105,45 @@ const records: readonly RecordSpec[] = [
     { pinned: ["SharedAtlas"], cpp: "SharedAtlas", reference: true },
     { pinned: ["AtlasSlot"], cpp: "AtlasSlot", reference: false },
     {
-        pinned: ["SharedAtlasGpu"],
-        cpp: "TextAtlasGpuState",
-        reference: true,
-        native: true,
-        members: new Map([
-            ["_curveTex", { shape: lease, field: "destroy_curves" }],
-            ["_bandTex", { shape: lease, field: "destroy_bands" }],
-            ["_metaBuf", { shape: lease, field: "destroy_metadata" }],
-        ]),
-    },
-    {
         pinned: ["TextRenderable"],
         cpp: "TextRenderableState",
         handle: "TextRenderable",
         reference: true,
         native: true,
-        members: new Map([
+        // The members the GPU path reads; the observable transforms stay
+        // the renderable's native state.
+        members: new Map<string, MemberSpec>([
             [
                 "_gpu",
                 {
-                    shape: { kind: "record", name: "TextRenderableGpu" },
+                    shape: {
+                        kind: "optional",
+                        value: { kind: "record", name: "TextRenderableGpu" },
+                    },
                     field: "gpu",
                 },
             ],
-        ]),
-    },
-    {
-        pinned: ["TextRenderableGpu"],
-        cpp: "TextGpuState",
-        reference: true,
-        native: true,
-        members: new Map([
-            ["_textU", { shape: lease, field: "destroy_uniform" }],
-            ["_instanceBuf", { shape: lease, field: "destroy_instances" }],
-            ["_styleBuf", { shape: lease, field: "destroy_styles" }],
+            [
+                "_data",
+                {
+                    shape: { kind: "record", name: "DefaultTextData" },
+                    field: "data",
+                },
+            ],
+            ["_wmDirty", { shape: flag, field: "wm_dirty" }],
+            ["opacity", { shape: number }],
+            ["ignoreDepth", { shape: flag, field: "ignore_depth" }],
+            [
+                "_worldMatrix",
+                {
+                    shape: {
+                        kind: "function",
+                        parameters: [],
+                        result: { kind: "typed", element: "f32" },
+                    },
+                    call: (owner) => `bbl::text_world_matrix(*${owner})`,
+                },
+            ],
         ]),
     },
     {
@@ -262,6 +268,29 @@ const adapters = new Map<string, CallAdapter>([
     ],
 ]);
 
+/**
+ * The functions generated native code names: the compiler's text
+ * intrinsics call these. Every other lowered function, the ones backends
+ * call included, lives in its module's detail namespace.
+ */
+const EXPORTED: ReadonlySet<string> = new Set(
+    [
+        [TEXT_DATA, "updateTextData"],
+        [TEXT_DATA, "disposeTextData"],
+        [DEFAULT_TEXT_DATA, "createDefaultTextData"],
+        [DEFAULT_TEXT_DATA, "updateDefaultTextData"],
+        [DEFAULT_TEXT_DATA, "disposeDefaultTextData"],
+        [WEIGHT, "setFontWeightOffset"],
+        [TEXT_RENDERABLE, "disposeTextRenderable"],
+        [TEXT_RENDERER, "createTextLayer"],
+        [TEXT_RENDERER, "setTextLayerPosition"],
+        [TEXT_RENDERER, "createTextRenderer"],
+        [TEXT_RENDERER, "registerTextRenderer"],
+        [ALPHA_TO_COVERAGE, "setAlphaToCoverage"],
+        [ALPHA_TO_COVERAGE, "getAlphaToCoverage"],
+    ].map(([module, name]) => `${module}#${name}`),
+);
+
 /** The text record model over the pinned text modules. */
 export function textRecordModel(context: LoweringContext): PinnedRecordModel {
     return new PinnedRecordModel(
@@ -270,6 +299,7 @@ export function textRecordModel(context: LoweringContext): PinnedRecordModel {
         {
             records,
             values: new Map<string, RecordShape>([
+                ...textGpuValues,
                 [
                     "TextGroupKey",
                     // A generated group's key is its curve-set id; an
@@ -280,15 +310,11 @@ export function textRecordModel(context: LoweringContext): PinnedRecordModel {
                         fromString: true,
                     },
                 ],
-                ["GPUBindGroup", handle],
-                ["GPUTexture", lease],
-                ["GPUBuffer", lease],
-                [
-                    "GPUDevice",
-                    { kind: "native", cpp: "const void*", nullable: true },
-                ],
             ]),
-            adapters,
+            adapters: new Map([...adapters, ...textGpuAdapters]),
+            constants: textGpuConstants,
+            exported: EXPORTED,
+            unresolved: new Map(textGpuUnresolved),
             omittedLocals: new Map([
                 [
                     `${DEFAULT_TEXT_DATA}#createDefaultTextData#innerCurves`,
@@ -305,6 +331,15 @@ export function textRecordModel(context: LoweringContext): PinnedRecordModel {
 
 /** The records a generated text header declares, in emission order. */
 export const TEXT_RECORDS = [
+    "SharedAtlasGpu",
+    "SharedAtlasGpuResult",
+    "TextStyleGpu",
+    "TextRenderableGpu",
+    "LayerGpu",
+    "BindGroupCacheEntry",
+    "TextRenderer",
+    "TextRendererOptions",
+    "TextLayerOptions",
     "TextLayoutOptions",
     "PlacedGlyph",
     "TextLayoutResult",
@@ -327,7 +362,10 @@ export interface TextFunction {
 
 /** The pinned text functions each generated header owns. */
 export const TEXT_HEADER_ROOTS: Readonly<
-    Record<"records" | "update" | "weight", readonly TextFunction[]>
+    Record<
+        "records" | "update" | "weight" | "gpu" | "renderer" | "coverage",
+        readonly TextFunction[]
+    >
 > = {
     records: [
         { module: TEXT_DATA, name: "disposeTextData" },
@@ -344,6 +382,25 @@ export const TEXT_HEADER_ROOTS: Readonly<
         { module: DEFAULT_TEXT_DATA, name: "updateDefaultTextData" },
     ],
     weight: [{ module: WEIGHT, name: "setFontWeightOffset" }],
+    gpu: [
+        { module: TEXT_TEXTURES, name: "ensureSharedAtlasGpu" },
+        { module: TEXT_STYLE_GPU, name: "ensureStyleGpu" },
+        { module: TEXT_RENDERABLE, name: "ensureGpu" },
+        { module: TEXT_RENDERABLE, name: "updateTextRenderable" },
+        { module: TEXT_RENDERABLE, name: "drawTextRenderable" },
+    ],
+    renderer: [
+        { module: TEXT_RENDERER, name: "createTextLayer" },
+        { module: TEXT_RENDERER, name: "setTextLayerPosition" },
+        { module: TEXT_RENDERER, name: "createTextRenderer" },
+        { module: TEXT_RENDERER, name: "registerTextRenderer" },
+        { module: TEXT_RENDERER, name: "textRendererUpdate" },
+        { module: TEXT_RENDERER, name: "textRendererRecord" },
+    ],
+    coverage: [
+        { module: ALPHA_TO_COVERAGE, name: "setAlphaToCoverage" },
+        { module: ALPHA_TO_COVERAGE, name: "getAlphaToCoverage" },
+    ],
 };
 
 /**

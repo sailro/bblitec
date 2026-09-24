@@ -379,12 +379,18 @@ export function memoryArgumentsFrom(parsed: ParsedFlags): MemoryArguments {
 
 /** One `[mem][frame]` sample used by the memory report. */
 export interface MemorySample {
+    /** The frame loop that printed it, numbered in start order: a process
+     *  running several engines (a Window host's canvases) prints one
+     *  ordered stream per engine. */
+    engine: number;
     frame: number;
     workingSetMb: number;
     /** Occupied engine mesh records (the table less its free slots),
      *  against the meshes the scene still draws. */
     meshRecords: number;
     sceneMeshes: number;
+    /** Occupied engine transform-node records. */
+    transformNodeRecords: number;
     /** Occupied engine geometry records, against the ones still holding
      *  vertices. */
     geometryRecords: number;
@@ -418,21 +424,26 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
                 ? value
                 : undefined;
         };
+        const engine = count("engine");
         const frame = count("frame");
         const workingSetMb = read("working_set_mb");
         const meshRecords = count("mesh_records");
         const sceneMeshes = count("scene_meshes");
+        const transformNodeRecords = count("transform_node_records");
         const geometryRecords = count("geometry_records");
         const liveGeometries = count("live_geometries");
         const geometryMb = read("geometry_mb");
         const gcNodes = count("gc_nodes");
         const gcAllocations = count("gc_allocations");
         if (
+            engine === undefined ||
+            engine === 0 ||
             frame === undefined ||
             workingSetMb === undefined ||
             workingSetMb === 0 ||
             meshRecords === undefined ||
             sceneMeshes === undefined ||
+            transformNodeRecords === undefined ||
             geometryRecords === undefined ||
             liveGeometries === undefined ||
             geometryMb === undefined ||
@@ -442,10 +453,12 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
             continue;
         }
         samples.push({
+            engine,
             frame,
             workingSetMb,
             meshRecords,
             sceneMeshes,
+            transformNodeRecords,
             geometryRecords,
             liveGeometries,
             geometryMb,
@@ -454,6 +467,27 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
         });
     }
     return samples;
+}
+
+/** One engine's samples, in the order it printed them. */
+export interface MemoryStream {
+    engine: number;
+    samples: MemorySample[];
+}
+
+/** A run's samples as one stream per engine, in engine order. */
+export function memoryStreams(
+    samples: readonly MemorySample[],
+): MemoryStream[] {
+    const streams = new Map<number, MemorySample[]>();
+    for (const sample of samples) {
+        const stream = streams.get(sample.engine);
+        if (stream) stream.push(sample);
+        else streams.set(sample.engine, [sample]);
+    }
+    return [...streams.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([engine, stream]) => ({ engine, samples: stream }));
 }
 
 /**
@@ -654,6 +688,7 @@ export function formatMemorySummary(
             `${signed(recentSlopeMbPer1000Frames, 2)} over the later half), ` +
             `geometry ${last.geometryMb.toFixed(1)} MB, ` +
             `${last.meshRecords} mesh records for ${last.sceneMeshes} scene mesh entries, ` +
+            `${last.transformNodeRecords} transform-node records, ` +
             `${last.geometryRecords} geometry records for ${last.liveGeometries} live, ` +
             `GC nodes ${settled.gcNodes} -> ${last.gcNodes}, ` +
             `${last.gcAllocations - settled.gcAllocations} GC allocations after warm-up`,
@@ -715,11 +750,23 @@ export function runMemoryReport(
         );
         verifyBuildIdentity(executable, generatedDirectory, stampPath);
         const samples = parseMemoryProfile(stderr);
-        const summary = summarizeMemoryProfile(
-            samples,
-            memoryArguments.maxSlopeMb,
-            memoryArguments.frames,
-        );
+        // Each engine is judged on its own stream; a run is measured when
+        // it printed a stream and every stream is complete.
+        const engines = memoryStreams(samples).map((stream) => ({
+            engine: stream.engine,
+            summary: summarizeMemoryProfile(
+                stream.samples,
+                memoryArguments.maxSlopeMb,
+                memoryArguments.frames,
+            ),
+        }));
+        const status =
+            engines.length === 0 ||
+            engines.some(({ summary }) => summary === undefined)
+                ? "unmeasured"
+                : engines.every(({ summary }) => summary?.passed)
+                  ? "passed"
+                  : "failed";
         const reportStem = stampPath.slice(0, -".build-stamp".length);
         writeFileSync(`${reportStem}.log`, stderr);
         writeReport(
@@ -739,20 +786,29 @@ export function runMemoryReport(
                 ...(defaultTape !== undefined
                     ? { tape: defaultTape.path }
                     : {}),
-                status:
-                    summary === undefined
-                        ? "unmeasured"
-                        : summary.passed
-                          ? "passed"
-                          : "failed",
+                status,
                 samples,
-                ...(summary !== undefined ? { summary } : {}),
+                engines: engines.map(({ engine, summary }) => ({
+                    engine,
+                    ...(summary !== undefined ? { summary } : {}),
+                })),
             },
         );
-        if (!summary) unmeasured += 1;
-        if (summary && !summary.passed) failures += 1;
+        if (status === "unmeasured") unmeasured += 1;
+        if (status === "failed") failures += 1;
+        const verdicts =
+            engines.length === 0
+                ? [formatMemorySummary(scene.id, undefined)]
+                : engines.map(({ engine, summary }) =>
+                      formatMemorySummary(
+                          engines.length > 1
+                              ? `${scene.id} engine ${engine}`
+                              : scene.id,
+                          summary,
+                      ),
+                  );
         console.log(
-            `${formatMemorySummary(scene.id, summary)}${
+            `${verdicts.join("\n")}${
                 defaultTape !== undefined
                     ? `\n  tape: ${defaultTape.path}`
                     : replay === undefined

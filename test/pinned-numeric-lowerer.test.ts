@@ -41,6 +41,7 @@ function lower(
             | "receiverReturningMethods"
             | "vec3Literal"
             | "returnValue"
+            | "recordTypes"
         >
     > = {},
 ): string {
@@ -61,6 +62,7 @@ function lower(
             : {}),
         ...(extra.vec3Literal ? { vec3Literal: extra.vec3Literal } : {}),
         ...(extra.returnValue ? { returnValue: extra.returnValue } : {}),
+        ...(extra.recordTypes ? { recordTypes: extra.recordTypes } : {}),
     });
     // The statement list, as a lowered body is: a statement after one that
     // definitely returns is not translated.
@@ -166,6 +168,75 @@ test("indexed store adapters survive buffer aliases and refuse unsupported updat
     assert.throws(
         () => lower("values[0]++;", [["values", values]]),
         /reference to an adapted indexed store/,
+    );
+});
+
+test("a string set and a composed throw message lower as JavaScript's", (t) => {
+    const strings: [string, PinnedBinding][] = [
+        ["first", { cpp: "first", type: "string" }],
+        ["second", { cpp: "second", type: "string" }],
+    ];
+    const body = lower(
+        'const names = new Set<string>(); names.add(first); names.add(second); names.add(first); if (names.size) { throw new Error(`missing: ${Array.from(names).sort().join(", ")}. ` + "Register them."); }',
+        strings,
+    );
+    assert.match(body, /bbl::js::Set<std::string> names;/);
+    assert.match(body, /names\.add\(first\);/);
+    assert.match(body, /if \(static_cast<double>\(names\.size\(\)\)\) \{/);
+    // A number inside a template would need JavaScript's own formatting.
+    assert.throws(
+        () =>
+            lower("const n = 2; throw new Error(`count ${n}`);", [
+                ["n", { cpp: "n", type: "scalar" }],
+            ]),
+        /string expression/,
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const output = resolve("artifacts/pinned-numeric-strings");
+    mkdirSync(output, { recursive: true });
+    const file = join(output, "check.cpp"),
+        executable = join(output, "check.exe");
+    // JavaScript's default sort compares UTF-16 code units, so "Z" < "a".
+    writeFileSync(
+        file,
+        `#include <bblite/js_data.hpp>
+        #include <cstdio>
+        #include <stdexcept>
+        #include <string>
+        static void run(const std::string& first, const std::string& second) {
+            ${body}
+        }
+        int main() {
+            try {
+                run("text", "Zone");
+            } catch (const std::runtime_error& error) {
+                std::fputs(error.what(), stdout);
+            }
+        }`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        `/Fo:${output}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        file,
+    ]);
+    assert.equal(
+        execFileSync(executable, { encoding: "utf8" }),
+        `missing: ${Array.from(new Set(["text", "Zone", "text"]))
+            .sort()
+            .join(", ")}. Register them.`,
     );
 });
 
@@ -1004,5 +1075,96 @@ test("keeps a truth-initialized local boolean through logical stores", () => {
     assert.throws(
         () => lower("let dirty = false; dirty = 3;"),
         /non-boolean store into a boolean local/,
+    );
+});
+
+// The pin's factories resolve each optional option with its own `??`
+// default. A nullable value the caller holds (a `std::optional` option)
+// takes that default exactly where it is absent; read any other way it
+// refuses, where a bare dereference would read an empty optional.
+test("resolves a nullable value through the pin's own `??` default", () => {
+    const range: [string, PinnedBinding] = [
+        "options.range",
+        {
+            cpp: "(*options.range)",
+            type: "scalar",
+            nullish: "!options.range.has_value()",
+        },
+    ];
+    assert.match(
+        lower("const r = options.range ?? 1;", [range]),
+        /const double r = \(!options\.range\.has_value\(\) \? 1\.0 : \(\*options\.range\)\);/,
+    );
+    assert.throws(
+        () => lower("const r = options.range + 1;", [range]),
+        /read of a nullable value outside '\?\?'/,
+    );
+});
+
+// JavaScript's `===` over two objects compares identities. A caller that
+// holds an object by its handle names the handle as the identity, so the
+// comparison -- absent or present -- and a store between two such names
+// carry the handle, never an address a record list's growth could move.
+test("compares and stores an object by the identity its caller names", () => {
+    const bindings: [string, PinnedBinding][] = [
+        [
+            "camera",
+            {
+                cpp: "camera",
+                type: "opaque",
+                identity: "cameraHandle.value",
+                absentCpp: "camera == nullptr",
+            },
+        ],
+        [
+            "last",
+            {
+                cpp: "state.last",
+                type: "opaque",
+                identity: "state.last",
+                absentCpp: "state.last == invalid_handle",
+            },
+        ],
+        ["other", { cpp: "other", type: "opaque" }],
+    ];
+    const emitted = lower("if (camera !== last) { last = camera; }", bindings);
+    assert.match(emitted, /\(cameraHandle\.value == state\.last\)/);
+    assert.doesNotMatch(emitted, /\(camera == state\.last\)/);
+    assert.match(emitted, /state\.last = cameraHandle\.value;/);
+    assert.match(
+        lower("const same = camera === other;", [
+            bindings[0]!,
+            ["other", { cpp: "other", type: "opaque", identity: "otherId" }],
+        ]),
+        /\(cameraHandle\.value == otherId\)/,
+    );
+    assert.throws(
+        () => lower("last = other;", bindings),
+        /store of a value without an identity/,
+    );
+});
+
+// `const light: ClusteredPointLight = { ... }` -- an object literal under
+// one of the pin's own type annotations is the native struct the caller
+// names for that type, built member by member and read through it.
+test("builds an annotated object literal as the struct its type names", () => {
+    const emitted = lower(
+        "const n: Node = { weight: w }; total += n.weight;",
+        [
+            ["w", { cpp: "w", type: "scalar" }],
+            ["total", { cpp: "total", type: "scalar" }],
+        ],
+        { recordTypes: new Map([["Node", nodeShape]]) },
+    );
+    assert.match(emitted, /const Node n = Node\{w\};/);
+    assert.match(emitted, /total \+= n\.weight;/);
+    assert.throws(
+        () =>
+            lower(
+                "const n: Node = { mass: w };",
+                [["w", { cpp: "w", type: "scalar" }]],
+                { recordTypes: new Map([["Node", nodeShape]]) },
+            ),
+        /Node literal without 'weight'|mass/,
     );
 });

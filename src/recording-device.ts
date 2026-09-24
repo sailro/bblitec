@@ -51,7 +51,10 @@ export type ComputePassMethod =
 export type RenderPassMethod =
     | "setPipeline"
     | "setBindGroup"
+    | "setVertexBuffer"
+    | "setIndexBuffer"
     | "draw"
+    | "drawIndexed"
     | "setViewport"
     | "setScissorRect"
     | "end";
@@ -313,6 +316,12 @@ export interface RecordedRenderPass<S extends DescriptorShapes> {
     }[];
     /** Each `draw` call's arguments, as passed. */
     readonly draws: (readonly number[])[];
+    /** The buffer each vertex slot was last set to. */
+    readonly vertexBuffers: Map<number, RecordedBuffer>;
+    /** The index buffer last set, with the format it was set with. */
+    indexBuffer?: { readonly buffer: RecordedBuffer; readonly format: string };
+    /** Each `drawIndexed` call's arguments, as passed. */
+    readonly indexedDraws: (readonly number[])[];
     ended: boolean;
 }
 
@@ -612,8 +621,23 @@ export function createRecordingDevice<
                 }
                 pass.bindGroups.push({ index, group });
             },
+            setVertexBuffer: (slot: number, buffer: unknown) => {
+                pass.vertexBuffers.set(
+                    slot,
+                    recordedBuffer(buffer, `vertex slot ${slot}`),
+                );
+            },
+            setIndexBuffer: (buffer: unknown, format: string) => {
+                pass.indexBuffer = {
+                    buffer: recordedBuffer(buffer, "the index buffer"),
+                    format,
+                };
+            },
             draw: (...counts: number[]) => {
                 pass.draws.push(counts);
+            },
+            drawIndexed: (...counts: number[]) => {
+                pass.indexedDraws.push(counts);
             },
             setViewport: () => undefined,
             setScissorRect: () => undefined,
@@ -704,6 +728,8 @@ export function createRecordingDevice<
                         descriptor,
                         bindGroups: [],
                         draws: [],
+                        vertexBuffers: new Map(),
+                        indexedDraws: [],
                         ended: false,
                     };
                     renderPasses.push(pass);

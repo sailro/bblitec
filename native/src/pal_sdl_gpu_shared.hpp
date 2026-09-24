@@ -166,6 +166,8 @@ inline void save_texture_png(SDL_GPUDevice*, SdlGpuCommand& command, SDL_GPUText
  * which of them survives is the caller's own WGSL to decide.
  */
 struct PinnedStageSlots {
+    /** The entry point the stage's module declared, as the sidecar names it. */
+    std::string entry_point;
     /** Uniform blocks in slot order: `scene`, `lights`, `mesh`, `material`. */
     std::vector<std::string> uniforms;
     /** Texture names in binding order; each one's sampler is bound with it. */
@@ -193,6 +195,10 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
         std::string name = line.substr(space + 1);
         while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) {
             name.pop_back();
+        }
+        if (reg == "@entry") {
+            slots.entry_point = name;
+            return;
         }
         // Placed at its own register index rather than appended: the sidecar
         // lists declarations in the order they appear in the HLSL, which is not
@@ -573,6 +579,32 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
         registry.layouts.emplace(shader, std::move(inputs));
     }
     return owned;
+}
+
+/** A compiled stage and the sidecar it was created from. */
+struct PinnedStage {
+    OwnedSdlShader shader;
+    PinnedStageSlots slots;
+};
+
+/**
+ * A stage created entirely from its sidecar: the entry point the module
+ * declared, and the uniform, texture and storage counts the compaction left.
+ * Nothing about the stage is restated here, so a module the pin reshapes
+ * reaches the device as the pin wrote it.
+ */
+inline PinnedStage load_pinned_stage(SDL_GPUDevice* device, const std::string& stem,
+                                     SDL_GPUShaderStage stage) {
+    PinnedStageSlots slots = read_pinned_stage_slots(stem);
+    if (slots.entry_point.empty()) {
+        throw std::runtime_error("Shader stage " + stem + ".slots names no entry point.");
+    }
+    OwnedSdlShader shader =
+        load_shader(device, stem.c_str(), stage, static_cast<std::uint32_t>(slots.textures.size()),
+                    static_cast<std::uint32_t>(slots.uniforms.size()), slots.entry_point.c_str(),
+                    static_cast<std::uint32_t>(slots.storage.size()),
+                    static_cast<std::uint32_t>(slots.storage_textures.size()));
+    return {std::move(shader), std::move(slots)};
 }
 
 inline SDL_GPUBuffer* upload_buffer(SDL_GPUDevice* device, SDL_GPUBufferUsageFlags usage,

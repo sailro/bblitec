@@ -102,7 +102,7 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
-import { integerCounterRead } from "./integer-loops.js";
+import { integerCounterOf } from "./integer-loops.js";
 
 /** Container length mutations, isolated by checker and source file. */
 const resizedSymbolsByChecker = new EmissionWeakMap<
@@ -3144,11 +3144,7 @@ export class DataLowerer {
         const value = ts.isIdentifier(unwrapped)
             ? this.context.bindings.lookupOptional(unwrapped)
             : undefined;
-        const counter = value?.integerCounterCpp;
-        return counter !== undefined &&
-            value!.cpp === integerCounterRead(counter)
-            ? counter
-            : undefined;
+        return integerCounterOf(value);
     }
 
     /**

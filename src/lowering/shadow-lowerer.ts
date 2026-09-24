@@ -1859,8 +1859,11 @@ inline std::uint64_t shadow_caster_version_sum(
     }) {
     std::uint64_t sum = 0;
     for (const MeshHandle handle : caster_meshes) {
-        if (handle.value >= engine.meshes.size()) continue;
-        const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
+        // The caster array is the program's own and keeps a removed mesh;
+        // once a later mesh holds its slot nothing moves it any more.
+        const MeshRecord* found = current_mesh_record(engine, handle);
+        if (!found) continue;
+        const MeshRecord& mesh = *found;
         sum += mesh.transform_version + mesh.instance_version;${
             morphBounds
                 ? `
@@ -2503,7 +2506,11 @@ void refresh_shadow_task_meshes(
         FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "task_handle")};
         task.render_meshes.clear();
         for (const MeshHandle mesh : generator.caster_meshes) {
-            const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
+            // A removed caster's task entries went with its removal
+            // (\`_removeMeshFromRenderTask\`); the array still names it.
+            const MeshRecord* found = current_mesh_record(engine, mesh);
+            if (!found || found->retired) continue;
+            const MeshRecord& record = *found;
             // Invisible anchors participate in the light-volume fit but
             // the pin's normal renderable traversal does not draw them.
             if (!record.visible) continue;

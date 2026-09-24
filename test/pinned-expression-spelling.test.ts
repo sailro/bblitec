@@ -35,7 +35,7 @@ function render(
                 { cpp: name, type: "scalar" },
             ]),
         ),
-        calls: pinnedNumericMathCalls("deduced"),
+        calls: pinnedNumericMathCalls(),
         expressionSpelling: spelling,
         booleanAnd: true,
         booleanOr: true,
@@ -53,16 +53,12 @@ test("minimal spelling retains grouping and separates adjacent unary operators",
     assert.equal(render("(a ? b : c) ? a : c", minimal), "(a ? b : c) ? a : c");
 });
 
-test("source spelling preserves parentheses through non-null assertions and prints float literals", () => {
-    const source: PinnedExpressionSpelling = {
-        parentheses: "source",
-        numeric: (node) =>
-            /[.e]/i.test(node.text) ? `${node.text}f` : `${node.text}.0f`,
-    };
-    assert.equal(render("(a * (b + 1))!", source), "(a * (b + 1.0f))");
+test("source spelling preserves parentheses through non-null assertions and prints double literals", () => {
+    const source: PinnedExpressionSpelling = { parentheses: "source" };
+    assert.equal(render("(a * (b + 1))!", source), "(a * (b + 1.0))");
     assert.equal(
         render("a ? Math.max(b, 1e-6) : 2", source),
-        "(a ? bbl::js::math_extreme_lane<true>({b, 0.000001f}) : 2.0f)",
+        "(a ? bbl::js::math_extreme<true>({b, 0.000001}) : 2.0)",
     );
     assert.equal(render("a % b", source), "std::fmod(a, b)");
     assert.equal(
@@ -82,7 +78,7 @@ test("glTF expression scopes carry arithmetic, comparisons and Math calls throug
         ["a <= b && b !== c", "a <= b && b != c"],
         [
             "a <= b ? Math.max(a, b) : c",
-            "a <= b ? bbl::js::math_extreme_lane<true>({a, b}) : c",
+            "a <= b ? bbl::js::math_extreme<true>({a, b}) : c",
         ],
         ["a % 3", "a % 3"],
     ]) {

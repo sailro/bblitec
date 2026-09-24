@@ -26,7 +26,7 @@ Artifact paths are relative to `generated/<id>/`.
 | Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data |
 | Error | Identity, name, message and represented Error causes retained; AggregateError retains ordered errors. Cause/errors property reads are unadmitted; stack is undefined |
 | Weak collections | Keys retained strongly |
-| Retired meshes | A mesh that left its last scene gives its record slot to a later mesh; touching it through a kept reference afterwards throws "mesh handle refers to a retired mesh", where JavaScript reaches the detached object |
+| Retired meshes | A mesh that left its last scene gives its record slot to a later mesh once no mesh is parented under it; touching it through a kept reference afterwards throws "Native handle refers to a retired record", where JavaScript reaches the detached object, and tables that still name it (a physics body, an animation target, a light list) stop writing it |
 | Object immutability | freeze/seal/preventExtensions return the original value without enforcing immutability |
 | Storage/files | Host preferences, native URL tokens, synchronized picker completion; FileReader loads inside readAsText |
 | Promises outside a realm | An await reads a constructed promise's settlement in place; one still pending ends the awaiting activation without its catch or finally blocks, resuming after the statement that discarded its promise; a later settlement throws, and an entry that awaits one exits with an error |
@@ -60,8 +60,7 @@ PBR/Standard, nodes, plugins, sprites and effects use their pinned composers/bui
 failure cannot select a substitute shader. Assertions around a transcription do not prove equivalence.
 
 Shared vertex transport uses baked worlds, fixed PAL bindings and a 64-matrix palette.
-Lifted skybox fog uses interpolated world position; HDR positionUVW is world position minus background
-center. SDL single-sample image processing samples texel centers. Single-sample transmission replaces
+SDL single-sample image processing samples texel centers. Single-sample transmission replaces
 MSAA averaging with mip-zero loads while retaining the source bilinear filter.
 
 ### Numeric width
@@ -90,6 +89,11 @@ does not establish matching CSM bounds, instance coverage or sampler bindings.
 
 ### Background and environment
 
+Background arms (ground, DDS, .env, solid and image skyboxes) run their pinned factories at generation:
+the composed modules deploy whole, and the vertex layouts, rasterizer/depth/blend state, group-1
+layout and buffer bindings are what the factory built and drew. Geometry and mesh blocks are the
+pinned builders and writers, lowered and run over the scene's double-width sizes and root; the
+scene block is the pass's own.
 Cube orientation, mips, encoding, samplers and pass order follow the reached source. GLTF IBL retains
 Float32 harmonics, RGBD decoding and the 256-square RGBA16F BRDF bake. Local probes execute source
 validation/grid/UBO/copy planning.
@@ -167,9 +171,10 @@ different properties.
 Live text uses HarfBuzz and pinned layout over the packaged repertoire, whose outlines are extracted
 and packed at generation. TextData is the pin's record graph (runs, draw groups, style palette, slot
 allocator) updated by the pin's lowered bodies; it retains identity, and shared data owns group caches
-and captured styles. Disposal releases GPU leases while CPU data
-follows source lifetime. Deferred registration publishes only after successful construction. Arbitrary
-async builders refuse. Both backends use Slug WGSL.
+and captured styles. Buffer, texture, bind-group and bundle creation, writes and draws are the pin's
+own calls on a WebGPU-shaped device; SDL_GPU keeps uniform buffers as CPU copies pushed at each draw.
+Disposal destroys GPU resources while CPU data follows source lifetime. Deferred registration publishes
+only after successful construction. Arbitrary async builders refuse. Both backends use Slug WGSL.
 
 ## Audio contract
 

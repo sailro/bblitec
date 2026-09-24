@@ -225,6 +225,8 @@ Corpus, example scenes, references, source pins, vendored code and generated out
 `--backend sdl_gpu|dawn|both` selects registered build directories; `--file <source>` and `--jobs <count>`
 bound the work. CMake exports `compile_commands.json`; clang-tidy uses its flags and includes and fails
 on diagnostics. Missing builds or matching sources are errors; lint never generates or builds scenes.
+A build whose precompiled header is older than one of its inputs is refused: clang-tidy would
+otherwise reuse the stale header and report diagnostics against code that no longer exists.
 Each run writes logs, clang-tidy YAML diagnostics and a JSON result index to `artifacts/code-quality/`.
 
 `.clang-tidy` enables only checks that pass on maintained and generated code. By default, native lint

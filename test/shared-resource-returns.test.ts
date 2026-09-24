@@ -6,7 +6,10 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
-import { meshProfileBindingCpp } from "../src/lowering/resource-profiles.js";
+import {
+    meshCompositionRowsCpp,
+    meshProfileBeginCpp,
+} from "../src/lowering/resource-profiles.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -131,7 +134,7 @@ test(
             join(includes, "renderer_plan.hpp"),
             `#pragma once
         #include <bblite/runtime.hpp>
-        namespace bbl::upstream { MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle, std::uint32_t); }
+        namespace bbl::upstream { void begin_scene_mesh_profile(Engine&, std::uint32_t); }
     `,
         );
         const file = join(output, "check.cpp"),
@@ -146,12 +149,14 @@ test(
         namespace { unsigned int constructions = 0; }
         namespace bbl {
             ${lowerMeshMaterialSetter(new LoweringContext())}
-            Engine create_engine(EngineOptions) { return {}; }
+            Engine create_engine(EngineOptions) {
+                Engine engine;
+${meshCompositionRowsCpp({ sceneRows: [0, 1, 2], staticRows: [1], rowCount: 3 })}                return engine;
+            }
             MeshHandle create_box(Engine& engine, BoxOptions options) {
                 const std::array<float, 7> widths{2, 3, 4, 5, 6, 7, 8};
                 assert(constructions < widths.size() && options.width == widths[constructions++]);
-                engine.meshes.emplace_back();
-                return {static_cast<std::uint32_t>(engine.meshes.size() - 1)};
+                return store_mesh_record(engine, {});
             }
             MaterialHandle create_standard_material(Engine& engine) {
                 engine.materials.emplace_back();
@@ -160,7 +165,7 @@ test(
             void mark_mesh_dirty(Engine&, MeshHandle) {}
         }
         namespace bbl::upstream {
-            ${meshProfileBindingCpp({ sceneRows: [0, 1, 2], staticRows: [1], rowCount: 3 })}
+            ${meshProfileBeginCpp}
         }
         int main() { assert(generated_main() == 0); assert(constructions == 7); }
     `,

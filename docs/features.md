@@ -53,7 +53,7 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 | Modules | Named/namespace imports, re-exports, constant aliases, external local TS/JS, JSDoc, `?raw`, ordered initialization | Runtime-selected modules; unrepresented mutable initializer dependencies |
 | Control flow | Blocks, conditionals, switches, loops, break/continue, throw, owned caught Errors, nested synchronous finally around await | Await inside catch/finally; arbitrary cleanup across `startEngine` |
 | Functions | Typed/generic functions, defaults, rest parameters, destructuring, supported recursion, stored values shared or adapted across sink signatures, type parameters narrowed past null inside generic bodies | Unresolved type arguments; unbounded resource specialization; a stored value cannot take a narrower signature; an adapted value is rebuilt at each reach; a value-typed parameter narrowed past null keeps its nullable representation inside an object literal |
-| Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`); inheritance between local classes: `super(...)`/`super.m()`, abstract and protected members, overrides dispatched through base-typed stored references, `instanceof`; mutable static fields and static blocks, run where the declaration evaluates; private brand checks (`#x in value`) | Extending a non-local class; generic classes or sibling fields of different types in a stored hierarchy; a private name redeclared in a subclass; writing an inherited static through a subclass; static accessors; recursion through stored instances; an uninitialized `let c: C \| undefined`; unsupported field storage |
+| Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`); inheritance between local classes: `super(...)`/`super.m()`, abstract and protected members, overrides dispatched through base-typed stored references, `instanceof`; mutable static fields and static blocks, run where the declaration evaluates; private brand checks (`#x in value`); methods recursing through stored instances | Extending a non-local class; generic classes or sibling fields of different types in a stored hierarchy; a private name redeclared in a subclass; writing an inherited static through a subclass; static accessors; an uninitialized `let c: C \| undefined`; unsupported field storage |
 | Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
 | Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; earlier class instances; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
 | Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations; outside a realm, constructed promises whose resolving functions escape into callbacks | Custom thenables; general async iteration; outside a realm a constructed promise is awaited or returned where it is created and is not settled from a timer or frame callback, and a call that can await one still pending is awaited, returned or a statement (not stored or a callback) |
@@ -69,8 +69,12 @@ A module executed at generation may import its relative siblings without an exte
 `CompileOptions.environment`; absent keys are undefined. Built-ins cannot be overridden; dotenv and host
 variables are not loaded implicitly.
 
-Defaults and short-circuit operands evaluate once and lazily. Loose equality between operands of one
-primitive type is strict equality; across types it refuses. Destructuring finishes the source before
+Defaults and short-circuit operands evaluate once and lazily. Operands of concatenation, arithmetic,
+comparisons, calls, constructions and array/object literals evaluate left to right wherever two of
+them touch the same variable or object state and one writes it, including through the functions they
+call and `Math.random` draws; a function value the compiler cannot name counts as touching everything,
+and an engine method is taken to write nothing but what the callbacks it is handed write. Loose
+equality between operands of one primitive type is strict equality; across types it refuses. Destructuring finishes the source before
 left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings and plain struct fields;
 nested/default/renamed struct bindings refuse.
@@ -107,7 +111,7 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | --- | --- | --- |
 | Numbers | Reached Math operations, non-coercing Number predicates/constants, JS coercions and rounding, numeric callbacks | Native double transcendental functions; deterministic random; bounded rest signatures |
 | Variadic Math | `min`, `max`, `hypot`, numeric tails and array spreads | Native `hypot` approximation; NaN/signed-zero rules retained for min/max |
-| Arrays | Map/filter/find/reduce/predicates, flatMap/flat/concat, sorting, indexed searches, fill/copyWithin/splice, joins | Closed flatten depth; no callback `thisArg`; some scalar pop/shift paths require nonempty arrays |
+| Arrays | Map/filter/find/reduce/predicates, flatMap/flat/concat, sorting, indexed searches, fill/copyWithin/splice, joins, pop/shift yielding absent on an empty array | Closed flatten depth; no callback `thisArg`; an asserted `pop()!`/`shift()!` of a non-nullable element refuses at run time on an empty array |
 | Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring | Sparse length growth and ambiguous null/undefined defaults refuse |
 | Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach` | An iterator value of a nullable reference type reads as present |
 | Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | Generators and general `Symbol.iterator` objects refuse |
@@ -216,8 +220,9 @@ own extent refresh.
 
 Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
 before startup and observations require one scene. Failure callbacks expose `Error.message`. As
-upstream, a failed recovery does not re-arm; a later loss then refuses rather than continuing.
-Shared worker/offscreen recovery and engine render-function wrapping are unsupported.
+upstream, a failed recovery does not re-arm; a later loss then refuses rather than continuing. Only the
+scene strategy registers, so a loss with an active sprite, text, effect or frame-graph context refuses with
+the pin's own message. Shared worker/offscreen recovery and engine render-function wrapping are unsupported.
 `disposeEngine` preserves retirement, stop, surface and resource cleanup order, including device
 teardown after a disposer throws. It is independent of recovery. On Windows, application iteration
 stalls during the modal window move/resize loop.
@@ -312,7 +317,8 @@ Intensity and diffuse-color setters retain validation and unchanged-value behavi
 
 ### Clustered lights
 
-PBR clustered containers compose shaders at generation and update bins/data textures natively.
+PBR clustered containers compose shaders at generation. The container and light factories, the container's
+addition and its per-frame refresh are lowered from the pinned bodies; the refresh keys its camera by handle.
 
 ## Materials and material state
 

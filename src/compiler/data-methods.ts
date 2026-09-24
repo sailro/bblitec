@@ -2211,27 +2211,44 @@ function compileArrayPush(state: ArrayMethodState): Value {
     );
 }
 
-function compileArrayPop(state: ArrayMethodState): Value {
+/**
+ * `array.pop()` / `array.shift()`. JavaScript yields `undefined` for an
+ * empty array, so the result is the element or absent. Only a non-null
+ * assertion (`pop()!`, `pop() as T`) states presence; that keeps the
+ * element type and an empty array refuses by name at run time.
+ */
+function compileArrayRemoval(
+    state: ArrayMethodState,
+    method: "pop" | "shift",
+): Value {
     const lowerer: DataLowerer = state.lowerer;
     const { call, narrowed, dataType } = state;
     if (call.arguments.length !== 0) {
-        lowerer.context.fail(call, "Array.pop expects no arguments.");
+        lowerer.context.fail(call, `Array.${method} expects no arguments.`);
     }
     lowerer.invalidateAliases(narrowed.cpp);
-    const popped = `bbl::js::array_pop(${narrowed.cpp})`;
-    return lowerer.leafValue(popped, dataType.element);
-}
-
-function compileArrayShift(state: ArrayMethodState): Value {
-    const lowerer: DataLowerer = state.lowerer;
-    const { call, narrowed, dataType } = state;
-    if (call.arguments.length !== 0) {
-        lowerer.context.fail(call, "Array.shift expects no arguments.");
+    let parent = call.parent;
+    while (ts.isParenthesizedExpression(parent)) parent = parent.parent;
+    if (
+        ts.isNonNullExpression(parent) ||
+        ts.isAsExpression(parent) ||
+        ts.isTypeAssertionExpression(parent)
+    ) {
+        return lowerer.leafValue(
+            `bbl::js::array_${method}(${narrowed.cpp})`,
+            dataType.element,
+        );
     }
-    lowerer.invalidateAliases(narrowed.cpp);
+    // A nullable element is its own absent state, and a shared object is
+    // absent as the empty reference, as `Map.get` reads them.
+    const element = dataType.element;
     return lowerer.leafValue(
-        `bbl::js::array_shift(${narrowed.cpp})`,
-        dataType.element,
+        `bbl::js::array_${method}_or_absent(${narrowed.cpp})`,
+        element.kind === "optional" ||
+            (element.kind === "struct" &&
+                lowerer.context.dataTypes.isReferenceStruct(element.name))
+            ? element
+            : { kind: "optional", inner: element },
     );
 }
 
@@ -3158,8 +3175,8 @@ const arrayMethodHandlers = new EmissionMap<
     ["keys", compileArrayKeys],
     ["values", ({ narrowed }) => narrowed],
     ["push", compileArrayPush],
-    ["pop", compileArrayPop],
-    ["shift", compileArrayShift],
+    ["pop", (state) => compileArrayRemoval(state, "pop")],
+    ["shift", (state) => compileArrayRemoval(state, "shift")],
     ["unshift", compileArrayUnshift],
     ["reverse", compileArrayReverse],
 ]);

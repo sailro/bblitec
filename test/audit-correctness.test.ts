@@ -331,11 +331,15 @@ test(
             `
         #include <bblite/runtime.hpp>
         #include <cassert>
+        namespace bbl { struct ClusteredRefreshState { int runs = 0; }; }
         namespace bbl::upstream {
             int refreshes = 0;
-            void refresh_clustered_lights(ClusteredLightContainer&, CameraRecord* camera,
+            void refresh_clustered_lights(Engine&, ClusteredLightContainer& container,
+                ClusteredRefreshState& captured, CameraHandle camera,
                 double target_width, double target_height) {
-                assert(camera == nullptr && target_width == 640 && target_height == 480); ++refreshes;
+                assert(&captured == container.refresh.get() && camera.value == 7 &&
+                    target_width == 640 && target_height == 480);
+                ++captured.runs; ++refreshes;
             }
         }
         namespace bbl::pal {
@@ -344,6 +348,7 @@ test(
             template<class Params, class Texture> ${cppFunction(source, "void sync_clustered_payloads(")}
         }
         int main() {
+            bbl::Engine engine;
             bbl::ClusteredLightContainer container;
             container.light_data.resize(12);
             container.slice_data.resize(32);
@@ -358,7 +363,7 @@ test(
             std::string events;
             bool fail = true;
             const auto sync = [&] {
-                bbl::pal::sync_clustered_payloads(container, uploaded, nullptr, 640, 480,
+                bbl::pal::sync_clustered_payloads(engine, container, uploaded, bbl::CameraHandle{7}, 640, 480,
                     [&](const void* bytes, std::size_t size) { assert(bytes == container.params.data() && size == 32); events += 'p'; },
                     [&](bbl::pal::ClusteredTexture slot, const void* bytes, std::size_t size,
                         const bbl::ClusteredTextureWrite& write) {
@@ -373,11 +378,14 @@ test(
                         }
                     });
             };
+            // No updater until the build returned its refresh state.
             try { sync(); assert(false); } catch (const std::runtime_error&) {}
+            assert(bbl::upstream::refreshes == 0);
+            container.refresh = std::make_shared<bbl::ClusteredRefreshState>();
             // What uploaded is published; the failed one retries alone.
             assert(uploaded.params == 1 && uploaded.lights == 1 && uploaded.cells == 1 && uploaded.indices == 0 && events == "plci");
             fail = false; events.clear(); sync(); assert(uploaded.indices == 1 && events == "i");
-            events.clear(); sync(); assert(events.empty() && bbl::upstream::refreshes == 3);
+            events.clear(); sync(); assert(events.empty() && bbl::upstream::refreshes == 2);
             // A later write re-uploads only its own texture.
             container.light_write.version = 2;
             sync(); assert(events == "l");
@@ -663,7 +671,7 @@ test(
                 }
                 assert(false);
             };
-            for (auto kind : {Kind::pbr, Kind::grid, Kind::shader, Kind::node}) {
+            for (auto kind : {Kind::pbr, Kind::shader, Kind::node}) {
                 draws.transparent.commands.push_back({{kind}});
                 refuses("material draw adapter"); draws.transparent.commands.clear();
             }

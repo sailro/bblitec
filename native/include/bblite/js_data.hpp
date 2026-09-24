@@ -599,10 +599,10 @@ private:
 
 namespace gc {
 /**
- * A reference's payload may be incomplete where a container asks, so any
- * reference counts as a possible edge; an unregistered block reports none.
+ * A reference is an edge exactly when `make_ref` registers its payload, so a
+ * container of references to edge-free payloads stays out of the registry.
  */
-template <typename T> struct Traceable<Ref<T>> : std::true_type {};
+template <typename T> struct Traceable<Ref<T>> : Traceable<std::remove_cv_t<T>> {};
 } // namespace gc
 
 /**
@@ -1792,7 +1792,9 @@ template <typename V> class WeakMap {
             }
         }
     };
-    std::shared_ptr<Storage> storage_ = make_gc_shared_if<gc_traceable<V>, Storage>();
+    // Registered whatever its values: each collection prunes the entries
+    // whose keys died, even when no value can own a traced edge.
+    std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
 
 public:
     [[nodiscard]] typename MapGetResult<V>::Type get(const WeakIdentity& key) const {
@@ -3007,6 +3009,16 @@ template <typename Range>
     return array_join(values, separator, [](const auto& value) -> const auto& { return value; });
 }
 
+/** `Array.prototype.sort()` with no comparator over strings: stable, ascending UTF-16
+ * code units. An `Array` shares its storage, so the caller's array is the one sorted. */
+template <typename Strings> [[nodiscard]] inline Strings string_array_sort(Strings values) {
+    std::stable_sort(values.begin(), values.end(),
+                     [](const std::string& left, const std::string& right) {
+                         return string_code_units(left) < string_code_units(right);
+                     });
+    return values;
+}
+
 /** `%TypedArray%.prototype.subarray`: a view over the same bytes for a numeric range. */
 template <typename Values>
 [[nodiscard]] inline Values typed_array_subarray(const Values& values, double begin_value,
@@ -3090,10 +3102,10 @@ template <typename Values, typename T>
     return value ? array_index_of(values, *value) : -1.0;
 }
 
-// `array.pop()!` — the compiled subset requires a non-empty array (the
-// corpus always guards with `.length`); JavaScript would yield `undefined`,
-// which the plain-data model cannot represent, so an empty pop refuses by
-// name in every build configuration instead of reading freed storage.
+// `array.pop()!` — the non-null assertion states the array is not empty. A
+// nullable element is its own absent state; any other element has none, so an
+// empty pop refuses by name in every build configuration instead of reading
+// freed storage. An unasserted `pop()` lowers to `array_pop_or_absent`.
 template <typename T> inline T array_pop(Array<T>& values) {
     if (values.empty()) [[unlikely]] {
         if constexpr (std::is_same_v<T, typename MapGetResult<T>::Type>)
@@ -3124,6 +3136,50 @@ template <typename T> inline T array_shift(Array<T>& values) {
 }
 
 template <typename T> inline T array_shift(Array<T>&& values) { return array_shift(values); }
+
+/**
+ * What `array.pop()` and `array.shift()` yield: the removed element, or
+ * absent -- JavaScript's `undefined` -- for an empty array. Null and
+ * undefined are one absent state, so a nullable element is its own result,
+ * and an object reference is absent as the empty reference.
+ */
+template <typename T> struct ArrayRemovalResult {
+    using Type = Nullable<T>;
+};
+template <typename T> struct ArrayRemovalResult<Nullable<T>> {
+    using Type = Nullable<T>;
+};
+template <typename T> struct ArrayRemovalResult<Ref<T>> {
+    using Type = Ref<T>;
+};
+
+template <typename T>
+inline typename ArrayRemovalResult<T>::Type array_pop_or_absent(Array<T>& values) {
+    if (values.empty())
+        return {};
+    T last = values.back();
+    values.pop_back();
+    return last;
+}
+
+template <typename T>
+inline typename ArrayRemovalResult<T>::Type array_pop_or_absent(Array<T>&& values) {
+    return array_pop_or_absent(values);
+}
+
+template <typename T>
+inline typename ArrayRemovalResult<T>::Type array_shift_or_absent(Array<T>& values) {
+    if (values.empty())
+        return {};
+    T first = values.front();
+    values.erase(values.begin());
+    return first;
+}
+
+template <typename T>
+inline typename ArrayRemovalResult<T>::Type array_shift_or_absent(Array<T>&& values) {
+    return array_shift_or_absent(values);
+}
 
 // `array.unshift(...items)` inserts the arguments at the front in source
 // order and returns the new JavaScript length.
@@ -3899,18 +3955,6 @@ struct MathOperand {
 template <bool Maximum>
 [[nodiscard]] inline double math_extreme(std::initializer_list<MathOperand> operands) {
     return math_extreme_in<Maximum, double>(operands);
-}
-
-/**
- * Over a call's own argument list whose operands share one floating type,
- * computed and returned at that type. A pinned float writer lane computes
- * the arithmetic around the call in `float`; the extreme is one of its
- * operands either way, so keeping the type keeps that arithmetic, and what
- * it stores, while NaN and signed zero follow JavaScript.
- */
-template <bool Maximum, std::floating_point Number>
-[[nodiscard]] inline Number math_extreme_lane(std::initializer_list<Number> operands) {
-    return math_extreme_in<Maximum, Number>(operands);
 }
 
 /**

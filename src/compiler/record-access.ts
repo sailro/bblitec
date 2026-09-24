@@ -13,3 +13,12 @@
 export function recordAt(records: string, handle: string): string {
     return `bbl::handle_at(${records}, ${handle})`;
 }
+
+/**
+ * The record a handle names as a pointer, null where `recordAt` would
+ * refuse: `bbl::handle_find`, for a lookup whose absent record is an
+ * expected state (an unset camera) rather than a broken handle.
+ */
+export function recordFind(records: string, handle: string): string {
+    return `bbl::handle_find(${records}, ${handle})`;
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bblite/runtime.hpp>
+#include <bblite/text_gpu.hpp>
 #include <array>
 #include <cstddef>
 #include <functional>
@@ -34,18 +35,6 @@ struct TextGroupKey {
  * its own.
  */
 inline thread_local bool text_weight_installed = false;
-/** The pin's `SharedAtlasGpu`: the backend's leases for one atlas. */
-struct TextAtlasGpuState {
-    std::function<void()> destroy_curves;
-    std::function<void()> destroy_bands;
-    std::function<void()> destroy_metadata;
-    std::shared_ptr<void> backend;
-    const void* device_identity = nullptr;
-    double curve_rows = 0;
-    double band_rows = 0;
-    double metadata_capacity = 0;
-    double uploaded_version = -1;
-};
 // The pin's text records are emitted from its own declarations
 // (`upstream_text_records.hpp`); these are their handles.
 struct TextDataState;
@@ -54,6 +43,7 @@ struct GlyphRun;
 using TextRun = std::shared_ptr<GlyphRun>;
 using TextRunRef = std::variant<double, TextRun>;
 struct TextLayoutFont;
+struct TextRenderableGpu;
 
 struct TextQuaternion {
     double x = 0, y = 0, z = 0, w = 1;
@@ -66,41 +56,12 @@ struct TextRenderableOptions {
     std::optional<bool> ignore_depth;
     std::optional<double> order;
 };
-// Resource callbacks are native backend leases, never source JS closures. A
-// retained DrawBinding can keep this state after renderable disposal, as upstream.
-struct TextGpuState {
-    std::function<void()> destroy_uniform;
-    std::function<void()> destroy_instances;
-    std::function<void()> destroy_styles;
-    double uploaded_camera_version = -1;
-    double uploaded_aspect = -1;
-    double uploaded_viewport_w = 0;
-    double uploaded_viewport_h = 0;
-    double uploaded_opacity = std::numeric_limits<double>::quiet_NaN();
-    std::shared_ptr<void> backend;
-    const void* device_identity = nullptr;
-    std::string target_key;
-    std::shared_ptr<void> pipeline;
-    std::shared_ptr<void> variant_pipeline;
-    double instance_capacity = 0;
-    double style_buffer_bytes = 0;
-    double uploaded_data_version = -1;
-    double uploaded_style_version = -1;
-};
-
-enum class TextBufferKind { uniform, instances, styles };
-enum class TextAtlasTextureKind { curves, bands };
-struct TextPipelineBinding {
-    std::shared_ptr<void> pipeline;
-    std::shared_ptr<void> variant_pipeline;
-    std::shared_ptr<void> layout;
-    std::shared_ptr<void> quad;
-};
+/** The pin's `RenderTargetSignature`, as a scene pass describes its target. */
 struct TextTargetSignature {
     std::optional<std::string> color_format;
-    std::optional<std::uint32_t> sample_count;
     std::optional<std::string> depth_format;
-    std::optional<std::string> depth_compare = std::nullopt;
+    std::optional<std::string> depth_compare;
+    double sample_count = 1;
 };
 struct TextRenderableState {
     TextData data;
@@ -112,24 +73,30 @@ struct TextRenderableState {
     double synced_quaternion_version = -1;
     double world_version = 0;
     bool world_cached = false;
-    std::array<float, 16> world{};
+    js::TypedArray<float> world = js::TypedArray<float>(16);
     bool wm_dirty = true;
     double opacity = 1;
     bool ignore_depth = false;
     double order = 200;
     bool is_transparent = true;
-    bool alpha_to_coverage = false;
     double version = 0;
-    std::shared_ptr<TextGpuState> gpu;
+    std::shared_ptr<TextRenderableGpu> gpu;
 };
 using TextRenderable = std::shared_ptr<TextRenderableState>;
 
+/** The scene camera as the pin's text uniform update reads it. */
 struct TextCameraInput {
-    const std::array<float, 16>& view_projection;
-    double change_key;
-    double effective_aspect;
+    js::TypedArray<float> view_projection;
+    double change_key = 0;
+    double effective_aspect = 0;
 };
-using TextUniformWrite = std::function<void(std::size_t, std::span<const std::uint8_t>)>;
+using TextCameraInputPointer = const TextCameraInput*;
+/** The pin's `DrawUpdateContext` for a text renderable. */
+struct TextDrawUpdateContext {
+    TextCameraInputPointer camera = nullptr;
+    double target_width = 0;
+    double target_height = 0;
+};
 
 } // namespace bbl
 

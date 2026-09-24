@@ -457,7 +457,7 @@ test("exact text source projects unchanged shaders, observed descriptors and com
         readFileSync(
             resolve(output, "upstream/include/bblite/upstream_text_gpu.hpp"),
             "utf8",
-        ).includes("ensure_text_gpu"),
+        ).includes("text-renderable.ts#ensureGpu"),
     );
     const dataSource = readFileSync(
         resolve(output, "upstream/src/text_data.cpp"),
