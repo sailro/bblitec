@@ -148,7 +148,9 @@ int main() try {
         tile_params.tile_size = 32;
         tile_params.expected_layers_per_tile = 1;
         navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults, tile_cache);
-        const auto obstacle = navigation_add_box_obstacle(plugin, {0, 0, 0}, {1, 2, 1}, 0);
+        const auto added = navigation_add_box_obstacle(plugin, {0, 0, 0}, {1, 2, 1}, 0);
+        require(added.has_value(), "tile cache refused its first obstacle");
+        const NavObstacleHandle obstacle = *added;
         navigation_remove_obstacle(plugin, obstacle);
         navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults, tile_cache);
         bool refused = false;
@@ -158,6 +160,18 @@ int main() try {
             refused = true;
         }
         require(refused, "obstacle from a retired tile cache was accepted");
+        {
+            // A full cache reports the refusal the pinned factory returns
+            // null for, rather than deciding what it means.
+            NavMeshBuildParams full_params = tile_params;
+            full_params.max_obstacles = 1;
+            auto full = navigation_create_plugin();
+            navigation_create_tile_cache_nav_mesh(full, ground, full_params, defaults, tile_cache);
+            require(navigation_add_cylinder_obstacle(full, {0, 0, 0}, 1, 1).has_value(),
+                    "tile cache refused an obstacle it had room for");
+            require(!navigation_add_box_obstacle(full, {2, 0, 2}, {1, 1, 1}, 0).has_value(),
+                    "a full tile cache reported an obstacle it could not hold");
+        }
         boundary_allocations = 0;
         navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults, tile_cache);
         const unsigned build_allocations = boundary_allocations;

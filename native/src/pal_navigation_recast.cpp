@@ -832,28 +832,28 @@ void drain_obstacle_requests(NavigationMeshState& state) {
     }
 }
 
-NavObstacleHandle navigation_add_box_obstacle(NavigationHandle plugin, NavVec3 position,
-                                              NavVec3 half_extents, float angle) {
+std::optional<NavObstacleHandle> navigation_add_box_obstacle(NavigationHandle plugin,
+                                                             NavVec3 position, NavVec3 half_extents,
+                                                             float angle) {
     NavigationMeshState& state = tile_cache_state(plugin);
     const float centre[3] = {position.x, position.y, position.z};
     const float half[3] = {half_extents.x, half_extents.y, half_extents.z};
     dtObstacleRef reference = 0;
     if (dtStatusFailed(state.tile_cache->addBoxObstacle(centre, half, angle, &reference))) {
-        throw std::runtime_error("addBoxObstacle failed: the tile cache holds no room for "
-                                 "another obstacle.");
+        return std::nullopt;
     }
     drain_obstacle_requests(state);
     return NavObstacleHandle{static_cast<std::uint32_t>(reference), plugin.ownership->mesh};
 }
 
-NavObstacleHandle navigation_add_cylinder_obstacle(NavigationHandle plugin, NavVec3 position,
-                                                   float radius, float height) {
+std::optional<NavObstacleHandle> navigation_add_cylinder_obstacle(NavigationHandle plugin,
+                                                                  NavVec3 position, float radius,
+                                                                  float height) {
     NavigationMeshState& state = tile_cache_state(plugin);
     const float centre[3] = {position.x, position.y, position.z};
     dtObstacleRef reference = 0;
     if (dtStatusFailed(state.tile_cache->addObstacle(centre, radius, height, &reference))) {
-        throw std::runtime_error("addCylinderObstacle failed: the tile cache holds no room for "
-                                 "another obstacle.");
+        return std::nullopt;
     }
     drain_obstacle_requests(state);
     return NavObstacleHandle{static_cast<std::uint32_t>(reference), plugin.ownership->mesh};
@@ -869,11 +869,7 @@ void navigation_remove_obstacle(NavigationHandle plugin, NavObstacleHandle obsta
 }
 
 void navigation_update_obstacles(NavigationHandle plugin) {
-    NavigationMeshState& state = tile_cache_state(plugin);
-    bool up_to_date = false;
-    while (!up_to_date) {
-        state.tile_cache->update(0.0f, state.nav_mesh.get(), &up_to_date);
-    }
+    drain_obstacle_requests(tile_cache_state(plugin));
 }
 
 #endif

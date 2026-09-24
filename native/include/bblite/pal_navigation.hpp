@@ -21,8 +21,8 @@
  * detached-triangle flat-normal build with its reversed stored winding;
  * the raycast is `findNearestPoly` (±1 half-extents, include-all filter)
  * then `dtNavMeshQuery::raycast`, hit exactly when `0 < t < 1`. Nothing
- * generated names Recast — swapping the toolset is
- * dropping in a different translation unit.
+ * generated names Recast — swapping the toolset is dropping in a different
+ * translation unit.
  */
 
 #include <cstdint>
@@ -247,10 +247,10 @@ void navigation_create_tile_cache_nav_mesh(NavigationHandle plugin, const NavMes
 /**
  * One obstacle in a plugin's tile cache, as `ObstacleHandle` carries one.
  *
- * Zero is the null: Detour never issues that reference, and the pinned
- * factories return `null` for a refused add. This port throws there
- * instead, as it does for every other failed stage, so the zero handle is
- * only ever what a SCENE cleared a name to.
+ * Zero is the null: Detour never issues that reference. The pinned
+ * factories return `null` for a refused add, which the adds below report
+ * as an empty optional for the generated layer to decide on, so the zero
+ * handle is only ever what a SCENE cleared a name to.
  */
 struct NavObstacleHandle {
     std::uint32_t value = 0;
@@ -259,14 +259,16 @@ struct NavObstacleHandle {
 
 /**
  * `addBoxObstacle(position, halfExtents, angle)`: the cache's own oriented
- * box. Throws where the pinned factory returns null -- the cache is full.
+ * box. Empty where the pinned factory returns null -- the cache is full.
  */
-NavObstacleHandle navigation_add_box_obstacle(NavigationHandle plugin, NavVec3 position,
-                                              NavVec3 half_extents, float angle);
+std::optional<NavObstacleHandle> navigation_add_box_obstacle(NavigationHandle plugin,
+                                                             NavVec3 position, NavVec3 half_extents,
+                                                             float angle);
 
 /** `addCylinderObstacle(position, radius, height)`, likewise. */
-NavObstacleHandle navigation_add_cylinder_obstacle(NavigationHandle plugin, NavVec3 position,
-                                                   float radius, float height);
+std::optional<NavObstacleHandle> navigation_add_cylinder_obstacle(NavigationHandle plugin,
+                                                                  NavVec3 position, float radius,
+                                                                  float height);
 
 /** `removeObstacle`: drop one the cache holds. */
 void navigation_remove_obstacle(NavigationHandle plugin, NavObstacleHandle obstacle);
