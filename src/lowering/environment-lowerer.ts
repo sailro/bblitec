@@ -740,7 +740,11 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
             declaration,
             "computeSceneSize",
         );
-        return { sceneSizeCall: sceneSize.getText(file).replace(/\s+/g, " ") };
+        return {
+            sceneSizeCall: ts
+                .createPrinter({ removeComments: true })
+                .printNode(ts.EmitHint.Expression, sceneSize, file),
+        };
     }
 
     public lowerDdsLoaderAdapter(): LoweredSource {

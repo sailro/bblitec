@@ -164,7 +164,6 @@ export class UpstreamSourceStore {
         // only while the helper is the identity over its template; one
         // check per store settles it for every reader.
         assertPinnedWgslTagIsIdentity(this.getSourceFile("src/shader/wgsl.ts"));
-        this.loadPublicExports();
     }
 
     public getSource(modulePath: string): string {
@@ -218,6 +217,7 @@ export class UpstreamSourceStore {
     }
 
     public resolvePublicExport(name: string): PublicExport {
+        if (this.publicExports.size === 0) this.loadPublicExports();
         const entry = this.publicExports.get(name);
         if (!entry)
             throw new Error(
@@ -315,15 +315,21 @@ export class UpstreamSourceStore {
      * The module declaring an export the barrel names without a specifier
      * (a bundled barrel aliases its imports through minified local names).
      * The index of every source's exported declarations is built from their
-     * syntax the first time one is asked for; a barrel carrying specifiers
-     * never builds it.
+     * syntax the first time one is asked for, which is also the first time a
+     * public export is resolved: a process that never resolves one parses
+     * none of it. The parse is the index's own, so it retains no tree.
      */
     private findSourceExport(name: string): string | undefined {
         if (this.declarationModules.size === 0) {
             for (const path of this.listSources()) {
                 if (path === "src/index.ts") continue;
                 for (const declared of exportedDeclarationNames(
-                    this.getSourceFile(path),
+                    ts.createSourceFile(
+                        path,
+                        this.sources.get(path)!,
+                        ts.ScriptTarget.Latest,
+                        false,
+                    ),
                 )) {
                     const modules = this.declarationModules.get(declared) ?? [];
                     modules.push(path);
