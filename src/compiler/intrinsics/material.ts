@@ -474,8 +474,9 @@ function compileCreatePbrMaterial(
             context.fail(
                 option,
                 `createPbrMaterial takes no '${name}' option: Babylon Lite ` +
-                    "stores refraction through setPbrTransmission and " +
-                    "subsurface state through setPbrSubsurface.",
+                    "writes refraction only through setPbrTransmission, " +
+                    "which is not lowered, and subsurface state through " +
+                    "setPbrSubsurface.",
             );
         }
     }
