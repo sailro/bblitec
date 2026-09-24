@@ -14,7 +14,7 @@ const expressionLowerers = new WeakMap<
     CppExpressionScope,
     PinnedNumericLowerer
 >();
-const expressionMathCalls = pinnedNumericMathCalls("deduced");
+const expressionMathCalls = pinnedNumericMathCalls();
 
 export function renderCppExpression(
     scope: CppExpressionScope,

@@ -149,26 +149,14 @@ export function mathExtremeCpp(method: string, source: string): string {
 /**
  * `Math.max`/`Math.min` over a call's own arguments, at any arity: the one
  * spelling scene code and pinned bodies share. The braced list evaluates
- * left to right, as JavaScript's argument list does.
- *
- * At `"double"` every operand, whatever its native type, converts to
- * JavaScript's own width first. At `"deduced"` the operands share one
- * floating type and the call keeps it, which is what a float writer lane
- * computes in; the result is one of the operands (or the empty list's
- * infinity) either way, so the float arithmetic around it is unchanged and
- * only NaN and signed zero decide differently from `std::max`/`std::min`.
+ * left to right, as JavaScript's argument list does, and every operand,
+ * whatever its native type, converts to JavaScript's own width first.
  */
 export function mathExtremeCall(
     method: "max" | "min",
     args: readonly string[],
-    width: "double" | "deduced" = "double",
 ): string {
-    const list = `{${args.join(", ")}}`;
-    // An empty list has no operand to deduce a type from; its infinity is
-    // JavaScript's double either way.
-    return width === "double" || args.length === 0
-        ? mathExtremeCpp(method, list)
-        : `bbl::js::math_extreme_lane<${method === "max"}>(${list})`;
+    return mathExtremeCpp(method, `{${args.join(", ")}}`);
 }
 
 /** The operators that mean in C++ exactly what they mean in TypeScript. */
@@ -282,16 +270,15 @@ export function pinnedMathSpelling(name: string): string {
 /**
  * Math calls for numeric scopes: the `<cmath>` members one to one, and
  * `Math.max`/`Math.min` at any arity with JavaScript's NaN and signed-zero
- * rules through `mathExtremeCall`. A `"double"` scope computes them at
- * JavaScript's width; a `"deduced"` scope (the float writer lanes) keeps
- * its operands' own floating type. Their spelling lives in
- * `bblite/js_data.hpp`, which every unit a pinned numeric scope lands in
- * includes. Math.round and Math.hypot are supplied by their dedicated
- * helpers.
+ * rules through `mathExtremeCall`, all at JavaScript's width. Their spelling
+ * lives in `bblite/js_data.hpp`, which every unit a pinned numeric scope
+ * lands in includes. Math.round and Math.hypot are supplied by their
+ * dedicated helpers.
  */
-export function pinnedNumericMathCalls(
-    width: "double" | "deduced" = "double",
-): Map<string, (args: readonly string[]) => string> {
+export function pinnedNumericMathCalls(): Map<
+    string,
+    (args: readonly string[]) => string
+> {
     const calls = new Map(
         Object.entries(PINNED_MATH_FUNCTIONS).map(
             ([name, spelling]): [
@@ -301,9 +288,7 @@ export function pinnedNumericMathCalls(
         ),
     );
     for (const method of ["max", "min"] as const) {
-        calls.set(`Math.${method}`, (args) =>
-            mathExtremeCall(method, args, width),
-        );
+        calls.set(`Math.${method}`, (args) => mathExtremeCall(method, args));
     }
     return calls;
 }
