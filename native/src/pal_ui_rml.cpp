@@ -1379,13 +1379,13 @@ void reset_canvas(UiElementRecord::CanvasState& canvas, double width, double hei
 
 } // namespace
 
-UiElementHandle ui_primary_canvas(Engine& engine) {
+UiElementHandle ui_primary_canvas(Engine& engine, std::string_view id) {
     if (engine.primary_canvas.value < engine.ui_elements.size()) {
         return engine.primary_canvas;
     }
     const auto canvas = ui_create_element(engine, "canvas");
     engine.primary_canvas = canvas;
-    ui_set_attribute(engine, canvas, "id", "renderCanvas");
+    ui_set_attribute(engine, canvas, "id", std::string(id));
     ui_set_style_property(engine, canvas, "position", "absolute");
     ui_set_style_property(engine, canvas, "left", "0px");
     ui_set_style_property(engine, canvas, "top", "0px");
