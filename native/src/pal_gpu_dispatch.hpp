@@ -7,7 +7,6 @@
 #endif
 #include <SDL3/SDL.h>
 #include <memory>
-#include <stdexcept>
 #include <string_view>
 
 namespace bbl::pal {
@@ -94,19 +93,22 @@ inline constexpr GpuBackend dawn_gpu_backend{
 
 /** The backend BBLITE_GPU_BACKEND selects; `use_dawn_backend` refuses one this build lacks. */
 inline const GpuBackend& selected_gpu_backend() {
-    const GpuBackend* selected = nullptr;
-    if (use_dawn_backend()) {
+#if BBLITE_HAS_SDL_GPU && BBLITE_HAS_DAWN
+    return use_dawn_backend() ? dawn_gpu_backend : sdl_gpu_backend;
+#elif BBLITE_HAS_SDL_GPU || BBLITE_HAS_DAWN
+    // Refuses a request for the backend this build did not compile.
+    static_cast<void>(use_dawn_backend());
 #if BBLITE_HAS_DAWN
-        selected = &dawn_gpu_backend;
+    return dawn_gpu_backend;
+#else
+    return sdl_gpu_backend;
 #endif
-    } else {
-#if BBLITE_HAS_SDL_GPU
-        selected = &sdl_gpu_backend;
+#else
+    // A PAL unit compiled without any renderer (a native fixture): every
+    // entry is absent, so each caller refuses by name.
+    static constexpr GpuBackend none{"none", nullptr, nullptr, nullptr, nullptr, nullptr, 0};
+    return none;
 #endif
-    }
-    if (!selected)
-        throw std::logic_error("The selected GPU backend has no dispatch table.");
-    return *selected;
 }
 
 } // namespace bbl::pal
