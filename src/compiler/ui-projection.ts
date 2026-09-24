@@ -113,15 +113,6 @@ interface UiElementMetadata {
     tag: string | undefined;
 }
 
-/** Methods `uiElementValue` lowers to an element: a canvas context and the lookups. */
-const UI_ELEMENT_CALL_METHODS: ReadonlySet<string> = new Set([
-    "getContext",
-    "querySelector",
-    "closest",
-    "getElementById",
-    "querySelectorAll",
-]);
-
 interface UiPendingClassQuery {
     root: Value;
     className: string;
@@ -290,38 +281,35 @@ export class UiProjection {
         if (root) return root;
         const owner = this.context.unwrap(expression);
         const asElement = (value: Value | undefined): Value | undefined => {
-            if (value && this.presentsPrimaryCanvas(value)) {
+            if (!value) return undefined;
+            if (this.presentsPrimaryCanvas(value)) {
                 return Object.assign(
                     value,
                     this.primaryPresentationCanvas(owner),
                 );
             }
-            const tracked = value
-                ? this.trackedUiElementMetadata(value)
-                : undefined;
-            const trackedTag = tracked?.tag;
-            const trackedId = tracked?.staticId;
+            const tracked = this.trackedUiElementMetadata(value);
             const withTrackedTag = (
                 element: Value<"ui-element">,
-            ): Value<"ui-element"> =>
-                (trackedTag !== undefined && element.uiTag === undefined) ||
-                (trackedId !== undefined && element.uiStaticId === undefined)
-                    ? {
+            ): Value<"ui-element"> => {
+                const uiTag =
+                    element.uiTag === undefined ? tracked.tag : undefined;
+                const uiStaticId =
+                    element.uiStaticId === undefined
+                        ? tracked.staticId
+                        : undefined;
+                return uiTag === undefined && uiStaticId === undefined
+                    ? element
+                    : {
                           ...element,
-                          ...(trackedTag === undefined ||
-                          element.uiTag !== undefined
-                              ? {}
-                              : { uiTag: trackedTag }),
-                          ...(trackedId === undefined ||
-                          element.uiStaticId !== undefined
-                              ? {}
-                              : { uiStaticId: trackedId }),
-                      }
-                    : element;
-            if (value?.kind === "ui-element") {
+                          ...(uiTag === undefined ? {} : { uiTag }),
+                          ...(uiStaticId === undefined ? {} : { uiStaticId }),
+                      };
+            };
+            if (value.kind === "ui-element") {
                 return withTrackedTag(value);
             }
-            if (value?.kind !== "data" || !value.dataType) {
+            if (value.kind !== "data" || !value.dataType) {
                 return undefined;
             }
             const narrowed = this.context.dataLowerer.narrowOptional(
@@ -419,9 +407,7 @@ export class UiProjection {
             }
             if (
                 ts.isPropertyAccessExpression(callee) &&
-                (callee.name.text === "querySelector" ||
-                    callee.name.text === "closest" ||
-                    this.isNativeHostUiLookup(owner))
+                this.isUiElementLookup(owner, callee)
             ) {
                 const value = this.context.compilePlatformCall(owner);
                 return asElement(
@@ -450,18 +436,15 @@ export class UiProjection {
     }
 
     /**
-     * `uiElementMetadata` read without lowering, arm for arm with
-     * `uiElementValue`: a `this` field from its bound value, any other
-     * member or element read from its checker type, and a call from its
-     * method name. "lower" names what only lowering decides: a document
-     * root (its engine can refuse), a read typed as an element (record
-     * getters and data paths), a bound name, a canvas context, a lookup
-     * call, a presented primary canvas and data that can narrow to an
-     * element.
+     * `uiElementMetadata` without lowering where `uiElementValue`'s arm is
+     * decided before it lowers anything: a `this` field by its bound value,
+     * another member or element read by its checker type, a call by its
+     * method. "lower" everywhere else.
      */
     public analyzedUiElementMetadata(
         expression: ts.Expression,
     ): UiElementMetadata | undefined | "lower" {
+        // A document root selects its engine, which can refuse.
         if (this.documentRootTag(expression)) return "lower";
         const owner = this.context.unwrap(expression);
         if (
@@ -494,11 +477,24 @@ export class UiProjection {
         if (ts.isCallExpression(owner)) {
             const callee = this.context.unwrap(owner.expression);
             return ts.isPropertyAccessExpression(callee) &&
-                UI_ELEMENT_CALL_METHODS.has(callee.name.text)
+                (callee.name.text === "getContext" ||
+                    this.isUiElementLookup(owner, callee))
                 ? "lower"
                 : undefined;
         }
-        return ts.isIdentifier(owner) ? "lower" : undefined;
+        return "lower";
+    }
+
+    /** A call `uiElementValue` lowers through the platform call: a query, a closest ancestor, a host lookup. */
+    private isUiElementLookup(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): boolean {
+        return (
+            callee.name.text === "querySelector" ||
+            callee.name.text === "closest" ||
+            this.isNativeHostUiLookup(call)
+        );
     }
 
     /** `uiElementMetadata` by lowering the expression in a declined probe. */
@@ -621,11 +617,7 @@ export class UiProjection {
             value.arguments[0] !== undefined &&
             (ts.isStringLiteral(value.arguments[0]) ||
                 ts.isNoSubstitutionTemplateLiteral(value.arguments[0]));
-        return (
-            createsElement ||
-            this.isNativeHostUiLookup(value) ||
-            this.isNativeUiHelperCall(value)
-        );
+        return createsElement || this.isNativeUiHelperCall(value);
     }
 
     public uiStringCpp(expression: ts.Expression, purpose: string): string {

@@ -13,8 +13,6 @@ import {
 } from "../src/compiler/ui-element-analysis.js";
 
 test("checker types reach the UI element handle only through DOM element interfaces", () => {
-    const directory = resolve("artifacts/ui-element-analysis");
-    mkdirSync(directory, { recursive: true });
     const frontend = createCompilerProgram(
         `
         interface Panel { label: HTMLElement; }
@@ -30,27 +28,25 @@ test("checker types reach the UI element handle only through DOM element interfa
         declare const target: EventTarget;
         declare const present: NonNullable<HTMLElement | null>;
         declare const mixed: HTMLButtonElement | number;
-        function identity<T>(value: T): T { const held = value; return held; }
+        function identity<T>(value: T): T { return value; }
         `,
-        join(directory, "types.ts"),
+        resolve("artifacts/ui-element-analysis/types.ts"),
     );
-    const typeOf = (name: string): ts.Type => {
-        let found: ts.Type | undefined;
-        const visit = (node: ts.Node): void => {
-            if (
-                (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
-                ts.isIdentifier(node.name) &&
-                node.name.text === name
-            )
-                found = frontend.checker.getTypeAtLocation(node.name);
-            ts.forEachChild(node, visit);
-        };
-        visit(frontend.sourceFile);
-        assert.ok(found, name);
-        return found;
+    const types = new Map<string, ts.Type>();
+    const visit = (node: ts.Node): void => {
+        if (
+            (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
+            ts.isIdentifier(node.name)
+        )
+            types.set(
+                node.name.text,
+                frontend.checker.getTypeAtLocation(node.name),
+            );
+        ts.forEachChild(node, visit);
     };
+    visit(frontend.sourceFile);
     const may = (name: string): boolean =>
-        typeMayMapToUiElement(typeOf(name), frontend.checker);
+        typeMayMapToUiElement(types.get(name)!, frontend.checker);
     for (const name of [
         "element",
         "canvas",
@@ -97,8 +93,10 @@ test("data values hold UI elements only as the handle or a narrowable event targ
 });
 
 interface Comparison {
-    decided: Map<string, number>;
-    lowered: Map<string, number>;
+    /** `<answer> <syntax kind> <source text>` for each query the analysis decided. */
+    decided: Set<string>;
+    /** `<syntax kind> <source text>` for each query left to lowering. */
+    lowered: Set<string>;
     mismatches: string[];
 }
 
@@ -111,12 +109,9 @@ function compareWithLowering(
     options: Parameters<typeof compileSource>[1] = {},
 ): Comparison {
     const comparison: Comparison = {
-        decided: new Map(),
-        lowered: new Map(),
+        decided: new Set(),
+        lowered: new Set(),
         mismatches: [],
-    };
-    const count = (map: Map<string, number>, key: string): void => {
-        map.set(key, (map.get(key) ?? 0) + 1);
     };
     // eslint-disable-next-line @typescript-eslint/unbound-method -- Saved for .call(this, ...) and exact restoration.
     const analyze = UiProjection.prototype.analyzedUiElementMetadata;
@@ -124,11 +119,10 @@ function compareWithLowering(
         const analyzed = analyze.call(this, expression);
         const site = `${ts.SyntaxKind[expression.kind]} ${expression.getText()}`;
         if (analyzed === "lower") {
-            count(comparison.lowered, site);
+            comparison.lowered.add(site);
             return analyzed;
         }
-        count(
-            comparison.decided,
+        comparison.decided.add(
             `${analyzed ? `element<${analyzed.tag ?? ""}>` : "none"} ${site}`,
         );
         let lowered: unknown;
@@ -149,12 +143,6 @@ function compareWithLowering(
         UiProjection.prototype.analyzedUiElementMetadata = analyze;
     }
     return comparison;
-}
-
-function decidedSites(comparison: Comparison, prefix: string): string[] {
-    return [...comparison.decided.keys()].filter((key) =>
-        key.startsWith(prefix),
-    );
 }
 
 test("the analysis answers retained UI queries exactly as lowering them does", () => {
@@ -218,24 +206,20 @@ test("the analysis answers retained UI queries exactly as lowering them does", (
         { fileName: join(directory, "entry.ts") },
     );
     assert.deepEqual(comparison.mismatches, []);
-    // Retained handles on `this` answer from their bound value, tag included.
-    assert.ok(
-        decidedSites(
-            comparison,
-            "element<span> PropertyAccessExpression this.title",
-        ).length > 0,
-    );
-    // Plain data on `this`, other typed members, calls, optional chains and
-    // members of conditionals are not elements.
-    for (const prefix of [
+    for (const site of [
+        // A retained handle on `this` answers from its bound value, tag included.
+        "element<span> PropertyAccessExpression this.title",
+        // Plain data on `this`, other typed members, calls, optional chains
+        // and members of conditionals are not elements.
         "none PropertyAccessExpression this.clicks",
         "none PropertyAccessExpression this.stats",
+        "none PropertyAccessExpression this.stats.count",
         "none PropertyAccessExpression stats.count",
         "none PropertyAccessExpression (stats.count > 0 ? first : root).textContent",
         "none CallExpression String(this.clicks)",
         "none CallExpression view.optional?.remove()",
     ])
-        assert.ok(decidedSites(comparison, prefix).length > 0, prefix);
+        assert.ok(comparison.decided.has(site), site);
     // Element-typed reads, bound names and lookups still lower.
     for (const site of [
         "PropertyAccessExpression view.label",
