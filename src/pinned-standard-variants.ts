@@ -99,35 +99,35 @@ const SKELETON_FRAGMENT_MODULE = "src/shader/fragments/skeleton-fragment.ts";
 
 /** The material fields the pin's Standard feature derivation reads. */
 export interface PinnedStandardMaterialInput {
-    diffuseTexture?: unknown;
-    diffuseCoordIndex?: number;
-    emissiveTexture?: unknown;
-    bumpTexture?: unknown;
-    specularTexture?: unknown;
-    specularCoordIndex?: number;
-    ambientTexture?: unknown;
-    ambientCoordIndex?: number;
-    lightmapTexture?: unknown;
-    lightmapCoordIndex?: number;
-    useLightmapAsShadowmap?: boolean;
-    opacityTexture?: unknown;
-    opacityFromRGB?: boolean;
-    reflectionTexture?: unknown;
-    reflectionCubeTexture?: unknown;
+    readonly diffuseTexture?: unknown;
+    readonly diffuseCoordIndex?: number;
+    readonly emissiveTexture?: unknown;
+    readonly bumpTexture?: unknown;
+    readonly specularTexture?: unknown;
+    readonly specularCoordIndex?: number;
+    readonly ambientTexture?: unknown;
+    readonly ambientCoordIndex?: number;
+    readonly lightmapTexture?: unknown;
+    readonly lightmapCoordIndex?: number;
+    readonly useLightmapAsShadowmap?: boolean;
+    readonly opacityTexture?: unknown;
+    readonly opacityFromRGB?: boolean;
+    readonly reflectionTexture?: unknown;
+    readonly reflectionCubeTexture?: unknown;
     /** The pin's default is `true` (`createStandardMaterial`); an absent
      *  value is normalized to it so `DOUBLE_SIDED` needs an explicit opt-in
      *  the way it does upstream. */
-    backFaceCulling?: boolean;
-    disableLighting?: boolean;
+    readonly backFaceCulling?: boolean;
+    readonly disableLighting?: boolean;
     /** Defaults to the pin's 1; below 1 adds `MATERIAL_ALPHA_BLEND`. */
-    alpha?: number;
+    readonly alpha?: number;
     /** `enableMaterialUvTransform(material)` marked this material, which is
      *  what `stdUvTransformExt._meshFeatures` reads. */
-    _hasUvTx?: boolean;
+    readonly _hasUvTx?: boolean;
     /** `material.plugins = [...]`: the compiler's own 1-based index for the
      *  list, which is the one the pin's Standard bridge baked and the one the
      *  material record carries. The bits come from that bake. */
-    pluginIndex?: number;
+    readonly pluginIndex?: number;
     [key: string]: unknown;
 }
 

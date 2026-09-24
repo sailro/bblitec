@@ -142,8 +142,11 @@ function loopTargets(node: ts.Node): readonly ts.Expression[] {
 }
 
 export class EvaluationOrder {
+    /** @unjournaled A cache of the checker's answers for a file. */
     private readonly written = new WeakMap<ts.SourceFile, Set<ts.Symbol>>();
+    /** @unjournaled A cache of one unit's own accesses, from its source alone. */
     private readonly direct = new Map<Unit, DirectAccess>();
+    /** @unjournaled A cache of one unit's reachable accesses, from source alone. */
     private readonly summaries = new Map<Unit, Access>();
 
     public constructor(

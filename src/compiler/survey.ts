@@ -128,7 +128,9 @@ function declaredNames(statement: ts.Statement): ts.Identifier[] {
 }
 
 export class SurveyCollector {
+    /** @unjournaled The census counts refusals a rollback discards too. */
     private readonly realms = new Map<string, Attempt>();
+    /** @unjournaled The census counts refusals a rollback discards too. */
     private current: Attempt | undefined;
 
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
