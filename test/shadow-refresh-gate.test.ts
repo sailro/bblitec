@@ -247,10 +247,7 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
         dawn,
         /depth_format = target\s*\? target->depth[\s\S]{0,100}shadow_pass\s*\? WGPUTextureFormat_Depth32Float/,
     );
-    assert.match(
-        dawn,
-        /descriptor\.fragment =\s*shadow_pass &&\s*shader_info\s*\? nullptr/,
-    );
+    assert.match(dawn, /descriptor\.fragment =\s*shadow_pass\s*\? nullptr/);
     assert.match(
         dawn,
         /if \(!shadow_pass && !state\.shader_fragment_modules\[shader_variant\]\) \{/,
@@ -278,7 +275,7 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
     assert.match(dawn, /return WGPUTextureViewDimension_2DArray;/);
     assert.match(
         dawn,
-        /descriptor\.layout = shader_info\s*\? shader_pipeline_layout_for\(state, shader_variant\)\s*: mesh_pipeline_layout_for\(state\)/,
+        /descriptor\.layout = shader_pipeline_layout_for\(state, shader_variant\);/,
     );
     assert.match(dawn, /esm_shadow_index,\s*render_task\.view_projection\);/);
     assert.match(dawn, /sync_shader_storage_buffers\(state, engine\);/);
