@@ -248,9 +248,22 @@ inline void update_camera(CameraRecord& camera, double delta_ms) {
     upstream::free_camera_update(camera, delta_ms, pressed);
 }
 
+/**
+ * One frame of `camera`'s control hook at the delta the pin hands it: the
+ * hook lives in the `_beforeRender` list of the scene `attachControl` was
+ * given, whose `_update` passes `fixedDeltaMs > 0 ? fixedDeltaMs :
+ * _currentDelta` (`scene_callback_delta`). A control installed without a
+ * scene has no per-frame hook there.
+ */
+inline void update_attached_camera(const Engine& engine, CameraRecord& camera) {
+    const std::shared_ptr<SceneState> scene = camera.controls_scene.lock();
+    if (!scene)
+        return;
+    update_camera(camera, scene_callback_delta(Scene::from_state(scene), engine.current_delta_ms));
+}
+
 // `primary` is the scene's active camera, null when it has none.
-inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord* primary,
-                                   double delta_ms) {
+inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord* primary) {
 #if BBLITE_HAS_UI
     if (engine.surface_canvas) {
         for (std::size_t i = 0; i < engine.cameras.size(); ++i) {
@@ -258,13 +271,13 @@ inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord
                 std::any_of(engine.registered_scenes.begin(), engine.registered_scenes.end(),
                             [i](const auto& scene) { return scene && scene->camera.value == i; });
             if (attached)
-                update_camera(engine.cameras[i], delta_ms);
+                update_attached_camera(engine, engine.cameras[i]);
         }
         return;
     }
 #endif
     if (primary) {
-        update_camera(*primary, delta_ms);
+        update_attached_camera(engine, *primary);
     }
 }
 

@@ -9962,7 +9962,7 @@ public:
                              state.overlay_meshes[layer]);
         }
         uploaded = cpu_profile ? monotonic_milliseconds() : 0.0;
-        update_surface_cameras(engine, camera, delta_ms);
+        update_surface_cameras(engine, camera);
         surface_extent = scene_surface_extent(engine, scene, width, height);
         if (camera) {
             trace_camera_state(*camera, camera_trace_state, frame);

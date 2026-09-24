@@ -5441,9 +5441,11 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 [[nodiscard]] inline double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock,
                                           double frame_delta_ms) {
     if (engine.stopped) {
+        engine.current_delta_ms = 0.0;
         return 0.0;
     }
     const double delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     const double scene_delta_ms = scene_callback_delta(scene, delta_ms);
     // The scene callback API is the engine's float delta.
@@ -5487,9 +5489,11 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 [[nodiscard]] inline double advance_frame(Engine& engine, FrameClock& frame_clock,
                                           double frame_delta_ms) {
     if (engine.stopped) {
+        engine.current_delta_ms = 0.0;
         return 0.0;
     }
     const double delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     return delta_ms;
 }
@@ -5497,9 +5501,12 @@ inline void run_animation_frame_callbacks(Engine& engine) {
 /** The measured update boundary for a standalone FrameGraphContext. */
 [[nodiscard]] inline double advance_frame(Engine& engine, FrameGraphContext& context,
                                           FrameClock& frame_clock, double frame_delta_ms) {
-    if (engine.stopped)
+    if (engine.stopped) {
+        engine.current_delta_ms = 0.0;
         return 0.0;
+    }
     const double delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
     const float callback_delta_ms = static_cast<float>(delta_ms);
     for (const auto& callback : context.updates) {
