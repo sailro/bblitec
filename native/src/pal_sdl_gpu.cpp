@@ -1817,7 +1817,7 @@ pinned_resource_for(GpuState& state, const GpuMesh& mesh, const std::string& nam
                     if (source->engine_lifetime.expired())
                         throw std::runtime_error("Render texture engine has expired.");
                     const auto& reference = source->reference;
-                    auto& target = state.render_targets.at(reference.target.value);
+                    auto& target = handle_at(state.render_targets, reference.target);
                     if (target.color || target.depth) {
                         const auto texture =
                             reference.depth_only ? target.depth : target.sampled_color;
@@ -5439,13 +5439,13 @@ SDL_GPUTexture* screen_space_binding_texture(GpuState& state, const ScreenSpaceT
                                              upstream::ScreenSpaceTextureRole role) {
     switch (role) {
     case upstream::ScreenSpaceTextureRole::depth:
-        return state.render_targets.at(task.depth.value).depth;
+        return handle_at(state.render_targets, task.depth).depth;
     case upstream::ScreenSpaceTextureRole::source_color:
-        return state.render_targets.at(task.source.value).sampled_color;
+        return handle_at(state.render_targets, task.source).sampled_color;
     case upstream::ScreenSpaceTextureRole::raw:
-        return state.render_targets.at(task.raw.value).sampled_color;
+        return handle_at(state.render_targets, task.raw).sampled_color;
     case upstream::ScreenSpaceTextureRole::history:
-        return state.render_targets.at(task.history.value).sampled_color;
+        return handle_at(state.render_targets, task.history).sampled_color;
     default:
         throw std::runtime_error("A screen-space stage binds a texture role this backend "
                                  "does not serve.");
@@ -5522,9 +5522,9 @@ void record_screen_space_task(GpuState& state, Engine& engine, TaskHandle handle
                               SourceTexture source_texture, TargetTexture target_texture) {
     FrameTaskRecord& record = handle_at(engine.frame_tasks, handle);
     const ScreenSpaceTaskOptions& task = record.screen_space;
-    const GpuRenderTarget& raw = state.render_targets.at(task.raw.value);
-    const GpuRenderTarget& stable = state.render_targets.at(task.stable.value);
-    const GpuRenderTarget& history = state.render_targets.at(task.history.value);
+    const GpuRenderTarget& raw = handle_at(state.render_targets, task.raw);
+    const GpuRenderTarget& stable = handle_at(state.render_targets, task.stable);
+    const GpuRenderTarget& history = handle_at(state.render_targets, task.history);
     const ScreenSpaceFrameDecision decision = upstream::screen_space_frame(
         engine, handle, screen_space_frame_inputs(state.render_targets, task));
     record_screen_space_decision(
@@ -8975,8 +8975,8 @@ public:
                             const std::array<float, 16>& view_projection,
                             const std::array<float, 16>& view) {
                             for (const BillboardPass& billboard : state.billboard_passes) {
-                                if (engine.billboard_systems[billboard.system.value].depth_mode !=
-                                    mode) {
+                                if (handle_at(engine.billboard_systems, billboard.system)
+                                        .depth_mode != mode) {
                                     continue;
                                 }
                                 record_billboard_pass(command, pass, engine, billboard,
@@ -9129,7 +9129,7 @@ public:
                                 const upstream::RenderItem& draw_item = draw.item;
                                 const MaterialRecord* material =
                                     draw_item.material.value < engine.materials.size()
-                                        ? &engine.materials[draw_item.material.value]
+                                        ? &handle_at(engine.materials, draw_item.material)
                                         : nullptr;
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
                                 if (deferred && draw_item.material_kind !=
@@ -9287,7 +9287,7 @@ public:
                                             "Shader draw has an invalid material.");
                                     }
                                     const ShaderDrawMatrices shader_matrices(
-                                        engine, engine.meshes[draw_item.mesh.value],
+                                        engine, handle_at(engine.meshes, draw_item.mesh),
                                         draw_pass_matrices);
                                     const ShaderPassMatrices shader_pass_matrices =
                                         shader_matrices.apply(draw_pass_matrices);
@@ -9360,7 +9360,7 @@ public:
                                     if (!grid_bucket) {
                                         const DeformationUniforms deformation =
                                             build_deformation_uniforms(
-                                                engine.meshes[draw_item.mesh.value],
+                                                handle_at(engine.meshes, draw_item.mesh),
                                                 engine.geometries[draw_item.geometry].flat_normals);
                                         SDL_PushGPUVertexUniformData(command, 1, &deformation,
                                                                      sizeof(deformation));
@@ -9370,8 +9370,8 @@ public:
                                     if (!grid_bucket) {
                                         const std::array<float, 16> parent_world =
                                             instance_parent_draw_world(
-                                                engine.meshes[draw_item.mesh.value], draw_context,
-                                                engine);
+                                                handle_at(engine.meshes, draw_item.mesh),
+                                                draw_context, engine);
                                         SDL_PushGPUVertexUniformData(command, instance_uniform_slot,
                                                                      parent_world.data(),
                                                                      sizeof(parent_world));
@@ -9412,7 +9412,7 @@ public:
                     if (graph_layer == 0) {
                         for (const auto& registered : engine.registered_scenes) {
                             for (const TaskHandle recorded_handle : registered->tasks) {
-                                auto& recorded = engine.frame_tasks.at(recorded_handle.value);
+                                auto& recorded = handle_at(engine.frame_tasks, recorded_handle);
                                 if (!recorded.post_process.taa)
                                     continue;
                                 auto& first =
@@ -9495,7 +9495,7 @@ public:
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
                             CameraRecord* source_camera =
                                 task.render.has_camera
-                                    ? &engine.cameras.at(task.render.camera.value)
+                                    ? &handle_at(engine.cameras, task.render.camera)
                                 : task.source_scene->camera.value < engine.cameras.size()
                                     ? &handle_at(engine.cameras, task.source_scene->camera)
                                     : nullptr;
@@ -9565,8 +9565,8 @@ public:
                                     throw std::runtime_error(
                                         "Shadow render task has no depth attachment.");
                                 }
-                                const ShadowGeneratorRecord& generator =
-                                    engine.shadow_generators[task.render.shadow_generator.value];
+                                const ShadowGeneratorRecord& generator = handle_at(
+                                    engine.shadow_generators, task.render.shadow_generator);
                                 // A cascaded generator has one pass per
                                 // cascade, each clearing and writing its own
                                 // layer of the shared depth array and
@@ -9682,7 +9682,7 @@ public:
                                                 "Depth task material override is invalid.");
                                         }
                                         const MaterialRecord& material =
-                                            engine.materials[material_handle.value];
+                                            handle_at(engine.materials, material_handle);
                                         if (!material.no_color) {
                                             throw std::runtime_error(
                                                 "Depth-only render task requires a no-color material view.");
@@ -9695,7 +9695,7 @@ public:
                                         // own meshes and resolves each against the plan -- so it cannot
                                         // inherit append_draw's answer and asks the same predicate.
                                         if (!upstream::mesh_draws(
-                                                engine.meshes[entry.mesh.value])) {
+                                                handle_at(engine.meshes, entry.mesh))) {
                                             continue;
                                         }
                                         const std::size_t mesh_index = gpu_mesh_index(entry.mesh);
@@ -9926,7 +9926,7 @@ public:
                             }
                             if (task.geometry.target.value != invalid_handle) {
                                 GpuRenderTarget& output_target =
-                                    state.render_targets[task.geometry.target.value];
+                                    handle_at(state.render_targets, task.geometry.target);
                                 SDL_GPUColorTargetInfo target_info{};
                                 target_info.texture = output_target.color;
                                 target_info.clear_color = SDL_FColor{
@@ -10030,7 +10030,7 @@ public:
                                     state.device, engine, task.effect.effect,
                                     target_record.swapchain
                                         ? swapchain_format
-                                        : state.render_targets[task.effect.target.value]
+                                        : handle_at(state.render_targets, task.effect.target)
                                               .color_format,
                                     // Through the MSAA gate like every other
                                     // task pipeline, so a single-sample run
@@ -10093,7 +10093,8 @@ public:
                                         [&](TaaPostProcessState& value) {
                                             const auto& blend = task.post_process.passes.at(0);
                                             const auto extent = resolve_post_process_extent(
-                                                engine.render_targets.at(blend.output_target.value),
+                                                handle_at(engine.render_targets,
+                                                          blend.output_target),
                                                 state.render_targets, blend, width, height);
                                             advance_temporal_jitter(
                                                 value, *source.scene_uniforms, extent.source_width,
@@ -10150,7 +10151,7 @@ public:
                                 // close, which is why every geometry-output
                                 // scene failed under BBLITE_MSAA=1.
                                 const GpuRenderTarget& resolve_source =
-                                    state.render_targets[copy.source.target.value];
+                                    handle_at(state.render_targets, copy.source.target);
                                 SDL_GPUTextureLocation copy_source{};
                                 copy_source.texture = target_texture(copy.source.target, false);
                                 SDL_GPUTextureLocation copy_destination{};
@@ -10607,9 +10608,10 @@ public:
                     }
                     const upstream::RenderItem& item = draw.item;
                     const GpuMesh& mesh = (*pass_meshes)[draw.item_index];
-                    const MaterialRecord* material = item.material.value < engine.materials.size()
-                                                         ? &engine.materials[item.material.value]
-                                                         : nullptr;
+                    const MaterialRecord* material =
+                        item.material.value < engine.materials.size()
+                            ? &handle_at(engine.materials, item.material)
+                            : nullptr;
 #if BBLITE_RENDERER_TRANSMISSION
                     if (transmission_enabled && !transmission_copied &&
                         transmissive_draw_material(material)) {
@@ -10807,7 +10809,7 @@ public:
 #if BBLITE_GPU_DEFORMATION
                         if (item.material_kind != upstream::RenderMaterialKind::grid) {
                             const DeformationUniforms deformation = build_deformation_uniforms(
-                                engine.meshes[item.mesh.value],
+                                handle_at(engine.meshes, item.mesh),
                                 engine.geometries[item.geometry].flat_normals);
                             dump_deformation_uniforms(item.mesh.value, deformation);
                             SDL_PushGPUVertexUniformData(command, 1, &deformation,
@@ -10817,7 +10819,7 @@ public:
 #if BBLITE_GPU_INSTANCING
                         if (item.material_kind != upstream::RenderMaterialKind::grid) {
                             const std::array<float, 16> parent_world = instance_parent_draw_world(
-                                engine.meshes[item.mesh.value], *pass_scene, engine);
+                                handle_at(engine.meshes, item.mesh), *pass_scene, engine);
                             SDL_PushGPUVertexUniformData(command, instance_uniform_slot,
                                                          parent_world.data(), sizeof(parent_world));
                         }

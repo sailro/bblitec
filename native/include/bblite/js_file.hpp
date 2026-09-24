@@ -164,7 +164,7 @@ struct FileList {
     if (handle.value >= engine.ui_elements.size()) {
         throw std::runtime_error("Native browser-file UI handle is out of range.");
     }
-    return engine.ui_elements[handle.value];
+    return handle_at(engine.ui_elements, handle);
 }
 
 [[nodiscard]] inline FileList input_files(Engine& engine, UiElementHandle input) {

@@ -225,7 +225,7 @@ std::pair<WGPUTexture, WGPUTextureView> source_view(State& state, const Engine& 
     if (source.source != RenderTextureSource::render_target) {
         throw std::runtime_error("A standalone frame graph cannot sample a scene geometry task.");
     }
-    const RenderTargetRecord& record = engine.render_targets.at(source.target.value);
+    const RenderTargetRecord& record = handle_at(engine.render_targets, source.target);
     if (record.swapchain) {
         throw std::runtime_error("A post-process pass cannot sample the swapchain target.");
     }
@@ -330,11 +330,11 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
                          std::size_t pass_index, WGPUCommandEncoder encoder,
                          WGPUTextureView surface_view, std::uint32_t width, std::uint32_t height) {
     PostProcessPassOptions& pass =
-        engine.frame_tasks.at(task_handle.value).post_process.passes.at(pass_index);
+        handle_at(engine.frame_tasks, task_handle).post_process.passes.at(pass_index);
     const upstream::PostProcessShaderInfo& info =
         upstream::post_process_shader_infos.at(pass.shader_index);
     PostProcessPass& gpu = state.post_processes.at(task_handle.value).at(pass_index);
-    const RenderTargetRecord& output_record = engine.render_targets.at(pass.output_target.value);
+    const RenderTargetRecord& output_record = handle_at(engine.render_targets, pass.output_target);
     const Target& output = state.targets.at(pass.output_target.value);
     const std::uint32_t output_width = output_record.swapchain ? width : output.width;
     const std::uint32_t output_height = output_record.swapchain ? height : output.height;
@@ -514,7 +514,7 @@ public:
             engine, [&](const auto& write) { encode_dawn_gpu_timestamp(encoder, write); });
 #endif
         for (const TaskHandle handle : context->tasks) {
-            FrameTaskRecord& task = engine.frame_tasks.at(handle.value);
+            FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
             if (task.execution_enabled == false)
                 continue;
 #if BBLITE_GPU_TASK_TIMING
@@ -524,7 +524,7 @@ public:
             if (task.kind == FrameTaskKind::effect) {
                 DawnEffectPass& pass = state.effects.at(handle.value);
                 const RenderTargetRecord& record =
-                    engine.render_targets.at(task.effect.target.value);
+                    handle_at(engine.render_targets, task.effect.target);
                 const Target& output = state.targets.at(task.effect.target.value);
                 if (!pass.pipeline) {
                     pass = create_dawn_effect_pass(

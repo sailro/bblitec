@@ -4643,10 +4643,10 @@ inline void refuse_disposed_sprite_render_texture_in_use(const Engine& engine) {
     for (const SpriteRendererHandle& renderer_handle : engine.registered_sprite_renderers) {
         const SpriteRendererRecord& renderer = handle_at(engine.sprite_renderers, renderer_handle);
         for (const Sprite2DLayerHandle& layer_handle : renderer.layers) {
-            const SpriteAtlasRecord& atlas =
-                engine.sprite_atlases[handle_at(engine.sprite_layers, layer_handle).atlas.value];
+            const SpriteAtlasRecord& atlas = handle_at(
+                engine.sprite_atlases, handle_at(engine.sprite_layers, layer_handle).atlas);
             if (atlas.has_render_texture &&
-                engine.sprite_render_textures[atlas.render_texture.value].disposed) {
+                handle_at(engine.sprite_render_textures, atlas.render_texture).disposed) {
                 throw std::runtime_error("A disposed sprite render texture is "
                                          "still sampled by a registered "
                                          "SpriteRenderer layer's atlas.");

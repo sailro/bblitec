@@ -88,7 +88,7 @@ inline void append_solid_texture(SDL_GPUDevice* device,
 inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine,
                                      EffectWrapperHandle handle, SDL_GPUTextureFormat format,
                                      std::uint32_t samples) {
-    const EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
+    const EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     const upstream::EffectVariantEntry& entry = upstream::effect_variants.at(wrapper.variant);
     EffectPass pass{device};
     // What the compiled stage kept, from the sidecar the shader step wrote
@@ -165,7 +165,7 @@ inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
                                const Engine& engine, const EffectPass& pass,
                                EffectWrapperHandle handle) {
     SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
-    const EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
+    const EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     if (pass.has_uniform_block && !wrapper.uniform_values.empty()) {
         // The symmetric size validation (pal_gpu_shared.hpp): a short
         // push leaves a stale tail behind the declared size.

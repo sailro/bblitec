@@ -3337,7 +3337,7 @@ PinnedResource pinned_resource_for(DawnState& state, const DawnMesh& mesh, std::
                     if (source->engine_lifetime.expired())
                         throw std::runtime_error("Render texture engine has expired.");
                     const auto& reference = source->reference;
-                    const auto& target = state.render_targets.at(reference.target.value);
+                    const auto& target = handle_at(state.render_targets, reference.target);
                     if (target.color || target.depth) {
                         const auto [texture, view] = dawn_render_target_texture(
                             state, *source->engine, reference.target, reference.depth_only);
@@ -7619,13 +7619,13 @@ WGPUTextureView screen_space_binding_view(DawnState& state, const ScreenSpaceTas
                                           upstream::ScreenSpaceTextureRole role) {
     switch (role) {
     case upstream::ScreenSpaceTextureRole::depth:
-        return state.render_targets.at(task.depth.value).depth_sampled_view;
+        return handle_at(state.render_targets, task.depth).depth_sampled_view;
     case upstream::ScreenSpaceTextureRole::source_color:
-        return state.render_targets.at(task.source.value).sampled_color_view;
+        return handle_at(state.render_targets, task.source).sampled_color_view;
     case upstream::ScreenSpaceTextureRole::raw:
-        return state.render_targets.at(task.raw.value).sampled_color_view;
+        return handle_at(state.render_targets, task.raw).sampled_color_view;
     case upstream::ScreenSpaceTextureRole::history:
-        return state.render_targets.at(task.history.value).sampled_color_view;
+        return handle_at(state.render_targets, task.history).sampled_color_view;
     default:
         dawn_error("A screen-space stage binds a texture role this backend "
                    "does not serve.");
@@ -7730,9 +7730,9 @@ void record_screen_space_task(DawnState& state, Engine& engine, TaskHandle handl
     FrameTaskRecord& record = handle_at(engine.frame_tasks, handle);
     const ScreenSpaceTaskOptions& task = record.screen_space;
     DawnScreenSpaceTask& gpu = handle_at(state.screen_space_tasks, handle);
-    const DawnRenderTarget& raw = state.render_targets.at(task.raw.value);
-    const DawnRenderTarget& stable = state.render_targets.at(task.stable.value);
-    const DawnRenderTarget& history = state.render_targets.at(task.history.value);
+    const DawnRenderTarget& raw = handle_at(state.render_targets, task.raw);
+    const DawnRenderTarget& stable = handle_at(state.render_targets, task.stable);
+    const DawnRenderTarget& history = handle_at(state.render_targets, task.history);
     const ScreenSpaceFrameDecision decision = upstream::screen_space_frame(
         engine, handle, screen_space_frame_inputs(state.render_targets, task));
     record_screen_space_decision(
@@ -9704,7 +9704,7 @@ class DawnSceneRun {
                 }
                 const MaterialRecord* standard_material =
                     draw.item.material.value < engine.materials.size()
-                        ? &engine.materials[draw.item.material.value]
+                        ? &handle_at(engine.materials, draw.item.material)
                         : nullptr;
 #if defined(BBLITE_STANDARD_SKELETON)
                 if (upstream::standard_variant_skeleton(upstream::standard_variants[variant])) {
@@ -9750,11 +9750,12 @@ class DawnSceneRun {
                                      0, &fragment, sizeof(fragment));
             } else if (shader_draw) {
                 if (draw.item.material.value < engine.materials.size()) {
-                    const MaterialRecord& material = engine.materials[draw.item.material.value];
+                    const MaterialRecord& material =
+                        handle_at(engine.materials, draw.item.material);
                     const upstream::ShaderVariantInfo& shader_info =
                         upstream::shader_variant_info(draw.item.shader_variant);
                     const ShaderDrawMatrices shader_matrices(
-                        engine, engine.meshes[draw.item.mesh.value], pass_matrices);
+                        engine, handle_at(engine.meshes, draw.item.mesh), pass_matrices);
                     const ShaderPassMatrices shader_pass_matrices =
                         shader_matrices.apply(pass_matrices);
                     // A block that is exactly the shared scene
@@ -9820,7 +9821,7 @@ class DawnSceneRun {
                     DawnDrawState& pinned_state = ensure_pinned_draw_bindings(
                         state, draw_mesh, draw.item.material.value, variant,
                         draw.item.material.value < engine.materials.size()
-                            ? &engine.materials[draw.item.material.value]
+                            ? &handle_at(engine.materials, draw.item.material)
                             : nullptr);
                     pinned_state.mirrored_vertices = conventions.mirrored_vertices;
                     write_pinned_draw_blocks(state, *pass_scene, engine, draw, variant, conventions,
@@ -11440,7 +11441,7 @@ public:
                     if (!standard_state.group) {
                         const MaterialRecord* standard_material =
                             draw.item.material.value < engine.materials.size()
-                                ? &engine.materials[draw.item.material.value]
+                                ? &handle_at(engine.materials, draw.item.material)
                                 : nullptr;
                         standard_state.group = build_standard_draw_group(
                             state, mesh, standard_material, variant, standard_state.mesh_uniforms,
@@ -11656,7 +11657,7 @@ public:
                     }
                     const MaterialRecord* material =
                         draw.item.material.value < engine.materials.size()
-                            ? &engine.materials[draw.item.material.value]
+                            ? &handle_at(engine.materials, draw.item.material)
                             : nullptr;
                     if (!transmission_copied && transmissive_draw_material(material)) {
                         // The pinned mid-pass break: grab the scene
@@ -11991,7 +11992,7 @@ public:
             if (!engine.stopped) {
                 for (const auto& registered : engine.registered_scenes) {
                     for (const TaskHandle handle : registered->tasks) {
-                        auto& task = engine.frame_tasks.at(handle.value);
+                        auto& task = handle_at(engine.frame_tasks, handle);
                         if (!task.post_process.taa)
                             continue;
                         auto& first = state.post_process_tasks.at(handle.value).at(0);
@@ -12076,7 +12077,7 @@ public:
                             }
                             CameraRecord* source_camera =
                                 task.render.has_camera
-                                    ? &engine.cameras.at(task.render.camera.value)
+                                    ? &handle_at(engine.cameras, task.render.camera)
                                 : task.source_scene->camera.value < engine.cameras.size()
                                     ? &handle_at(engine.cameras, task.source_scene->camera)
                                     : nullptr;
@@ -12181,8 +12182,8 @@ public:
                                 shadow_descriptor.depthStencilAttachment = &shadow_attachment;
                                 DawnRenderPass shadow_pass_encoder{
                                     wgpuCommandEncoderBeginRenderPass(encoder, &shadow_descriptor)};
-                                const ShadowGeneratorRecord& shadow_generator =
-                                    engine.shadow_generators[task.render.shadow_generator.value];
+                                const ShadowGeneratorRecord& shadow_generator = handle_at(
+                                    engine.shadow_generators, task.render.shadow_generator);
                                 const std::uint32_t esm_shadow_index =
                                     shadow_generator.filter == ShadowFilter::esm_directional
                                         ? shadow_generator.esm_index
@@ -12417,7 +12418,7 @@ public:
 #if BBLITE_HAS_BILLBOARDS
                             const auto draw_task_billboards = [&](BillboardDepthMode mode) {
                                 for (const DawnBillboardPass& billboard : state.billboard_passes) {
-                                    if (engine.billboard_systems[billboard.system.value]
+                                    if (handle_at(engine.billboard_systems, billboard.system)
                                             .depth_mode != mode) {
                                         continue;
                                     }
@@ -12663,7 +12664,7 @@ public:
                             }
                             if (task.geometry.target.value != invalid_handle) {
                                 DawnRenderTarget& output_target =
-                                    state.render_targets[task.geometry.target.value];
+                                    handle_at(state.render_targets, task.geometry.target);
                                 WGPURenderPassColorAttachment attachment =
                                     WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
                                 attachment.view = output_target.color_view;
@@ -12739,7 +12740,7 @@ public:
                                                        "encoder with no bindings.");
                                         }
                                         const InstanceStreams pinned_streams = instance_streams_for(
-                                            engine.meshes[draw.item.mesh.value], mesh,
+                                            handle_at(engine.meshes, draw.item.mesh), mesh,
                                             InstanceMatrixSource::pinned);
                                         encode_variant_draw(
                                             task_pass,
@@ -12780,7 +12781,7 @@ public:
                                         }
                                         const InstanceStreams standard_streams =
                                             instance_streams_for(
-                                                engine.meshes[draw.item.mesh.value], mesh,
+                                                handle_at(engine.meshes, draw.item.mesh), mesh,
                                                 InstanceMatrixSource::standard);
                                         encode_variant_draw(
                                             task_pass,
@@ -12898,7 +12899,7 @@ public:
                             if (task.post_process.taa) {
                                 auto& taa = *task.post_process.taa;
                                 const auto source_handle = task.post_process.source_tasks.at(0);
-                                auto& source = engine.frame_tasks.at(source_handle.value);
+                                auto& source = handle_at(engine.frame_tasks, source_handle);
                                 auto& gpu_source = state.render_tasks.at(source_handle.value);
                                 if (!source.source_scene)
                                     throw std::runtime_error(
@@ -12925,7 +12926,8 @@ public:
                                         [&](TaaPostProcessState& value) {
                                             const auto& blend = task.post_process.passes.at(0);
                                             const auto extent = resolve_post_process_extent(
-                                                engine.render_targets.at(blend.output_target.value),
+                                                handle_at(engine.render_targets,
+                                                          blend.output_target),
                                                 state.render_targets, blend, width, height);
                                             advance_temporal_jitter(
                                                 value, *source.scene_uniforms, extent.source_width,

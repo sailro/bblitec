@@ -25,7 +25,7 @@ struct NodeMaterialGroupState {
 
 inline js::Map<std::string, NodeInputHandle> node_material_inputs(Engine& engine,
                                                                   MaterialHandle material) {
-    const auto& owner = engine.materials.at(material.value).node_inputs;
+    const auto& owner = handle_at(engine.materials, material).node_inputs;
     if (!owner)
         throw std::runtime_error("Material has no node inputs.");
     return owner->inputs;

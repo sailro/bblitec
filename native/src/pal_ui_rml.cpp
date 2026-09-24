@@ -4795,7 +4795,7 @@ struct UiRmlRuntime {
             for (const auto handle : engine.ui_root_children) {
                 if (handle.value < projected_elements.size() &&
                     projected_elements[handle.value].element &&
-                    engine.ui_elements[handle.value].attached_to_root)
+                    handle_at(engine.ui_elements, handle).attached_to_root)
                     update_element(handle);
             }
         refresh_current_color_svg_elements();
