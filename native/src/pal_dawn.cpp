@@ -10731,7 +10731,7 @@ public:
             sync_plan_meshes(overlay_plans[layer], state.overlay_meshes[layer]);
         }
         uploaded = cpu_profile ? monotonic_milliseconds() : 0.0;
-        update_surface_cameras(engine, camera);
+        update_surface_cameras(engine, camera, delta_ms);
         trace_camera_state(camera, camera_trace_state, frame);
         upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, camera);
 

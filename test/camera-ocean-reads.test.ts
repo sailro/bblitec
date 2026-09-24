@@ -101,7 +101,7 @@ ${second.map((value, index) => `if(second[${index}]!==${value}||camera.worldMatr
         headers = join(directory, "bblite/upstream");
     mkdirSync(headers, { recursive: true });
     const context = new LoweringContext(),
-        lowerer = new CameraLowerer(context, true);
+        lowerer = new CameraLowerer(context);
     const arc = lowerer.lowerArcRotateFactory(),
         controls = lowerer.lowerControls();
     writeFileSync(join(headers, "camera_math.hpp"), arc.header);

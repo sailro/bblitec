@@ -1845,22 +1845,14 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         reachesCameraFactory: boolean,
         features: string[],
         context: LoweringContext,
-        options: UpstreamEmitOptions,
+        _options: UpstreamEmitOptions,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
         if (
             reachesCameraFactory ||
             features.includes("camera:view-projection")
         ) {
-            const cameraLowerer = new CameraLowerer(
-                context,
-                features.includes("camera:world-matrix-version") ||
-                    features.includes("text:renderable") ||
-                    options.postProcessComposites.some(
-                        (composite) =>
-                            composite.intrinsic === "createTaaPostProcessTask",
-                    ),
-            );
+            const cameraLowerer = new CameraLowerer(context);
             this.writeSource(
                 "upstream/src/camera_arc_rotate.cpp",
                 cameraLowerer.lowerArcRotateFactory(
