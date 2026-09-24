@@ -11,6 +11,11 @@ import {
     discoverWindowsBuildTools,
 } from "../src/development-tools.js";
 import { runPatchIdentity } from "../src/patch-inventory.js";
+import {
+    findTintTool,
+    tintToolMismatch,
+    tintToolSources,
+} from "../src/tint-tool.js";
 
 const host = discoverDevelopmentTools();
 
@@ -295,3 +300,67 @@ test(
         }
     },
 );
+
+test("a checkout uses only the bblite-tint that records its own tool sources", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-tint-tool-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    for (const [path, content] of [
+        ["tools/build-tint.ps1", "build"],
+        ["upstream/tint.json", '{"commit":"a21a4a1c"}'],
+        ["tools/tint-sdl/main.cc", "int main() {}"],
+        ["tools/tint-sdl/CMakeLists.txt", "project(bblite_tint)"],
+    ] as const) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), content);
+    }
+    const sources = Object.fromEntries(tintToolSources(root));
+    assert.deepEqual(Object.keys(sources).sort(), [
+        "tools/build-tint.ps1",
+        "tools/tint-sdl/CMakeLists.txt",
+        "tools/tint-sdl/main.cc",
+        "upstream/tint.json",
+    ]);
+    // One build per source identity: another checkout's beside this one's.
+    const build = (identity: string, recorded: Record<string, string>) => {
+        const tool = join(
+            root,
+            "artifacts/tools/tint",
+            identity,
+            "bblite-tint",
+        );
+        touch(tool);
+        writeFileSync(
+            join(dirname(tool), "provenance.json"),
+            JSON.stringify({ identity, sources: recorded }),
+        );
+        return tool;
+    };
+    const other = build("0000000000000000", {
+        ...sources,
+        "tools/tint-sdl/main.cc": "0".repeat(64),
+    });
+    assert.equal(findTintTool(root, "linux"), undefined);
+    assert.match(
+        tintToolMismatch(other, root) ?? "",
+        /tools\/tint-sdl\/main\.cc differs/,
+    );
+    const own = build("1111111111111111", sources);
+    assert.equal(findTintTool(root, "linux"), own);
+    assert.equal(tintToolMismatch(own, root), undefined);
+    const options = { cwd: root, platform: "linux" as const, environment: {} };
+    assert.equal(discoverDevelopmentTools(options).bbliteTint, own);
+    // An explicit tool stands for discovery; the compiler still verifies it.
+    assert.equal(
+        discoverDevelopmentTools({
+            ...options,
+            environment: { BBLITE_TINT_PATH: other },
+        }).bbliteTint,
+        other,
+    );
+    // Editing a source retires the build that recorded it.
+    writeFileSync(
+        join(root, "tools/tint-sdl/main.cc"),
+        "int main() { return 1; }",
+    );
+    assert.equal(findTintTool(root, "linux"), undefined);
+});
