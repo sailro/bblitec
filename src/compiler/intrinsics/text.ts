@@ -1,4 +1,4 @@
-import { EmissionSet, EmissionMap } from "../emission-transaction.js";
+import { EmissionSet, EmissionMap, writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 /** Static shaping executes the pin; native text entities retain the resulting bytes. */
 import ts from "typescript";
@@ -604,7 +604,7 @@ export function promoteLiveTextData(context: TextIntrinsicContext): void {
             context.assetPayloads.get(row.font.source) ?? row.font.source;
         const bytes = readAssetBytesSync(payload, context.options.fileName);
         Object.assign(
-            row,
+            writable(row),
             textRow(
                 context,
                 bytes,

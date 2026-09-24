@@ -15,6 +15,7 @@ import {
     EmissionSet,
     EmissionMap,
     EmissionWeakMap,
+    writable,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
@@ -510,7 +511,7 @@ export function parameterIsReadOnly(
     checker: ts.TypeChecker,
     declaration: SupportedFunction,
     parameter: ts.Identifier,
-    active = new EmissionSet<ts.Symbol>(),
+    active: Set<ts.Symbol> = new EmissionSet<ts.Symbol>(),
 ): boolean {
     const symbol = declaredSymbol(checker, parameter);
     if (!symbol || !declaration.body) return false;
@@ -655,7 +656,7 @@ function finalReturnExpression(
 function returnedValueCanMove(
     checker: ts.TypeChecker,
     declaration: SupportedFunction,
-    active = new EmissionSet<SupportedFunction>(),
+    active: Set<SupportedFunction> = new EmissionSet<SupportedFunction>(),
 ): boolean {
     const body = declaration.body;
     const returnExpression = finalReturnExpression(declaration);
@@ -1614,7 +1615,8 @@ export class UserFunctionLowerer {
                 continue;
             }
             const properties =
-                argument.recordProperties ?? (argument.recordProperties = {});
+                argument.recordProperties ??
+                (writable(argument).recordProperties = {});
             for (const [name, property] of Object.entries(properties)) {
                 const callback = property.callbackDeclaration;
                 const declaration =
@@ -1635,7 +1637,7 @@ export class UserFunctionLowerer {
                 if (dataType?.kind !== "function") continue;
                 const active = this.activeStoredDataFunctions.get(declaration);
                 if (active) {
-                    properties[name] = {
+                    writable(properties)[name] = {
                         kind: "data",
                         cpp: active.cpp,
                         dataType: active.dataType,
@@ -1647,7 +1649,7 @@ export class UserFunctionLowerer {
                     dataType,
                     property.callbackRecordOwner,
                 );
-                properties[name] = {
+                writable(properties)[name] = {
                     kind: "data",
                     cpp,
                     dataType,
@@ -1667,12 +1669,12 @@ export class UserFunctionLowerer {
                 if (dataType?.kind !== "function") continue;
                 const active = this.activeStoredDataFunctions.get(declaration);
                 if (active) {
-                    properties[name] = {
+                    writable(properties)[name] = {
                         kind: "data",
                         cpp: active.cpp,
                         dataType: active.dataType,
                     };
-                    delete argument.recordMethods![name];
+                    delete writable(argument.recordMethods!)[name];
                     continue;
                 }
                 const cpp = context.compileStoredDataFunction(
@@ -1680,12 +1682,12 @@ export class UserFunctionLowerer {
                     dataType,
                     argument,
                 );
-                properties[name] = {
+                writable(properties)[name] = {
                     kind: "data",
                     cpp,
                     dataType,
                 };
-                delete argument.recordMethods![name];
+                delete writable(argument.recordMethods!)[name];
             }
         }
     }
@@ -2087,7 +2089,7 @@ export class UserFunctionLowerer {
                     "A recursive function was called with a different compile-time argument; separate runtime class/resource specializations are not supported at one call site.",
                 );
             }
-            captured[index] = existing ?? value;
+            writable(captured)[index] = existing ?? value;
         });
         const cpp = `${bound.cpp}(${runtimeArguments.join(", ")})`;
         return bound.nativeCallbackReturnType
@@ -2657,7 +2659,7 @@ export class UserFunctionLowerer {
                   };
         for (const [index, entry] of entries.entries()) {
             if (localGroup) {
-                entry.value.cpp = recursive
+                writable(entry.value).cpp = recursive
                     ? `${localGroup.self}.template call<${index}>`
                     : localGroup.cpp;
                 continue;
@@ -2690,7 +2692,7 @@ export class UserFunctionLowerer {
                 `${returnCpp}(${parametersCpp.join(", ")})`,
                 escapes,
             );
-            Object.assign(entry.value, storage);
+            Object.assign(writable(entry.value), storage);
             entry.cppName = storage.cpp;
         }
 
@@ -2740,7 +2742,7 @@ export class UserFunctionLowerer {
             const bodies = entries
                 .map((entry) => localGroup.bodies.get(entry.declaration)!)
                 .join(",\n");
-            if (sharedBody) rootEntry.value.cpp = bodies;
+            if (sharedBody) writable(rootEntry.value).cpp = bodies;
             else {
                 context.emit({
                     kind: "declaration",
@@ -2756,10 +2758,10 @@ export class UserFunctionLowerer {
                     true,
                 );
                 for (const [index, entry] of entries.entries()) {
-                    entry.value.cpp = recursive
+                    writable(entry.value).cpp = recursive
                         ? `${localGroup.cpp}.template call<${index}>`
                         : localGroup.cpp;
-                    entry.value.nativeCaptures = [binding];
+                    writable(entry.value).nativeCaptures = [binding];
                 }
             }
         }
@@ -3079,7 +3081,7 @@ export class UserFunctionLowerer {
                                     value.nativeBinding &&
                                     parameterNames.includes(value.cpp)
                                 ) {
-                                    value.nativeCaptures = [
+                                    writable(value).nativeCaptures = [
                                         context.registerNativeBinding(
                                             value.cpp,
                                             true,
@@ -3227,7 +3229,7 @@ export class UserFunctionLowerer {
                     ],
                 );
                 closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName}{})`;
-                entry.value.nativeCaptures = captured.nativeCaptures;
+                writable(entry.value).nativeCaptures = captured.nativeCaptures;
             } else if (localGroup?.sharedName) {
                 closure = context.renderSharedClosure(
                     captured,
@@ -3237,7 +3239,7 @@ export class UserFunctionLowerer {
                     parameterNames,
                     localGroup.sharedName,
                 );
-                entry.value.nativeCaptures = captured.nativeCaptures;
+                writable(entry.value).nativeCaptures = captured.nativeCaptures;
             } else
                 closure = renderClosure(
                     captured,

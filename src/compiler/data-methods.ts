@@ -7,7 +7,7 @@ import {
 // The data-container method knowledge: the method-name sets every
 // mutation walk consults, and the dispatcher that lowers a data-method
 // call (invoked through `DataLowerer.compileDataMethodCall`).
-import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -450,7 +450,7 @@ export function compileDataMethodCall(
         return compileSearchParamsMethod(lowerer, call, dynamicOwner, method);
     if (dynamicOwner?.dataType?.kind === "date-time-format")
         return compileDateTimeFormatMethod(lowerer, call, dynamicOwner, method);
-    const tupleOwnerElements: Value[] | undefined =
+    const tupleOwnerElements: readonly Value[] | undefined =
         dynamicOwner?.kind === "tuple"
             ? (dynamicOwner.tupleElements ?? [])
             : dynamicOwner?.kind === "data" &&
@@ -2033,7 +2033,7 @@ function compileArrayPush(state: ArrayMethodState): Value {
     ) {
         const firstIndex = staticElements.length;
         const snapshotCpp = (narrowed.staticElementsOwner ?? narrowed).cpp;
-        staticElements.push(
+        writable(staticElements).push(
             ...pushedValues.map((value, index) => {
                 if (pushedHandleKind) return value;
                 // A pushed object literal is a compile-time record,
@@ -2051,7 +2051,9 @@ function compileArrayPush(state: ArrayMethodState): Value {
         );
     } else {
         if (pushedHandleKind && pushedValues?.length) {
-            const snapshotOwner = narrowed.staticElementsOwner ?? narrowed;
+            const snapshotOwner = writable(
+                narrowed.staticElementsOwner ?? narrowed,
+            );
             snapshotOwner.runtimeElementTemplate ??=
                 staticElements?.[0] ?? pushedValues[0]!;
             if (pushedHandleKind === "mesh") {
@@ -2294,7 +2296,7 @@ function compileMapDataMethod(
             lowerer.context.bindings.invalidateRecordProperties(narrowed);
         } else if (narrowed.recordProperties) {
             for (const key of Object.keys(narrowed.recordProperties)) {
-                delete narrowed.recordProperties[key];
+                delete writable(narrowed.recordProperties)[key];
             }
         }
         return {
@@ -2331,7 +2333,7 @@ function compileMapDataMethod(
             if (lowerer.context.isInRuntimeControlFlow()) {
                 lowerer.context.bindings.invalidateRecordProperties(narrowed);
             } else if (staticKey !== undefined && narrowed.recordProperties) {
-                delete narrowed.recordProperties[staticKey];
+                delete writable(narrowed.recordProperties)[staticKey];
             } else if (staticKey === undefined) {
                 lowerer.context.bindings.invalidateRecordProperties(narrowed);
             }
@@ -2442,7 +2444,7 @@ function compileMapDataMethod(
         if (lowerer.context.isInRuntimeControlFlow()) {
             lowerer.context.bindings.invalidateRecordProperties(narrowed);
         } else if (staticKey !== undefined && narrowed.recordProperties) {
-            narrowed.recordProperties[staticKey] = assignedValue;
+            writable(narrowed.recordProperties)[staticKey] = assignedValue;
         } else if (staticKey === undefined) {
             lowerer.context.bindings.invalidateRecordProperties(narrowed);
         }
@@ -2797,7 +2799,7 @@ function compileStringDataMethod(
                 value.cpp !== lowerer.context.cppString(value.staticString)
             ) {
                 value = { ...value };
-                delete value.staticString;
+                delete writable(value).staticString;
             }
             return lowerer.context.bindings.pinValueToTemporary(value, label)
                 .cpp;

@@ -43,7 +43,7 @@ import {
 } from "./canvas.js";
 import { renderClosure } from "./closure-captures.js";
 import { handleCppType, type DataType } from "./data-types.js";
-import { EmissionMap } from "./emission-transaction.js";
+import { EmissionMap, writable } from "./emission-transaction.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import { httpResponseProperty } from "./http.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
@@ -1501,7 +1501,7 @@ export function readProperty(
             property,
         ]).find((entry) => entry.property === property);
         if (accessor) {
-            composite.scalarAccesses = [
+            writable(composite).scalarAccesses = [
                 ...new Set([...(composite.scalarAccesses ?? []), property]),
             ];
             const engineCpp = context.requireEngine(owner, expression);
@@ -2475,8 +2475,8 @@ export class PropertyAccessLowerer {
                     owner.textureFile.entryFileName,
                 );
                 if (dimensions) {
-                    owner.textureWidth = dimensions.width;
-                    owner.textureHeight = dimensions.height;
+                    writable(owner).textureWidth = dimensions.width;
+                    writable(owner).textureHeight = dimensions.height;
                     size =
                         property === "width"
                             ? dimensions.width

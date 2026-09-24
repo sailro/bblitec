@@ -14,10 +14,13 @@ import {
 import {
     emissionArray,
     EmissionMap,
+    emissionRecord,
     EmissionSet,
     EmissionTransaction,
     EmissionWeakMap,
     EmissionWeakSet,
+    journaled,
+    writable,
 } from "./compiler/emission-transaction.js";
 import type {
     LoweringServices,
@@ -693,7 +696,8 @@ class Compiler implements LoweringServices {
         ts.Node,
         SharedClosureBindings
     >();
-    private staticAssetUrlCandidateCache: readonly string[] | undefined;
+    @journaled private accessor staticAssetUrlCandidateCache:
+        readonly string[] | undefined;
     private readonly expressions: ExpressionLowerer;
     private readonly nativeDefinitions =
         emissionArray<NativeFunctionDefinition>();
@@ -721,12 +725,12 @@ class Compiler implements LoweringServices {
     private readonly deferredResourceCaptureDepths = new EmissionSet<number>();
     private readonly collectionCardinalities =
         new EmissionSet<CollectionCardinality>();
-    public jsDataReached = false;
+    @journaled public accessor jsDataReached = false;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
-    public imageDecodeReached = false;
-    public jsRandomReached = false;
-    private audioSessionReached = false;
-    public voxelFileStorageReached = false;
+    @journaled public accessor imageDecodeReached = false;
+    @journaled public accessor jsRandomReached = false;
+    @journaled private accessor audioSessionReached = false;
+    @journaled public accessor voxelFileStorageReached = false;
     /**
      * The bounded canvas-owning functions this compilation executed at
      * generation, by name. It is the fidelity adaptation's reach test: the
@@ -736,7 +740,7 @@ class Compiler implements LoweringServices {
     public readonly browserTextureFunctions = new EmissionSet<string>();
     public readonly canvasReadbackFunctions = new EmissionSet<string>();
     /** Whether a scene threw one of its own preconditions. */
-    public throwReached = false;
+    @journaled public accessor throwReached = false;
     public readonly staticConstants = new EmissionMap<
         ts.Symbol,
         ts.Expression
@@ -752,7 +756,8 @@ class Compiler implements LoweringServices {
     >();
     private readonly decoderBootstrapDepths: number[] = emissionArray([]);
     /** The source-keyed record for the most recent `loadGltf` call. */
-    private lastGltfContainerAsset: CompileAsset | undefined;
+    @journaled private accessor lastGltfContainerAsset:
+        CompileAsset | undefined;
     /**
      * Pixels-texture locals already handed to a material slot.
      *
@@ -763,7 +768,7 @@ class Compiler implements LoweringServices {
      * hold across scopes.
      */
     public readonly boundPixelsTextures = new EmissionSet<string>();
-    private thisInstance: Value | undefined;
+    @journaled private accessor thisInstance: Value | undefined;
     private readonly classInstances = new EmissionMap<
         Value,
         ts.ClassDeclaration
@@ -776,8 +781,8 @@ class Compiler implements LoweringServices {
         ts.Node,
         Map<object, number>
     >();
-    private nextCallbackIdentity = 0;
-    private nextNativeBindingSequence = 0;
+    @journaled private accessor nextCallbackIdentity = 0;
+    @journaled private accessor nextNativeBindingSequence = 0;
     private readonly nativeBindings = new EmissionMap<
         string,
         NativeCaptureBinding
@@ -805,7 +810,7 @@ class Compiler implements LoweringServices {
         emissionArray([]);
     private readonly continuationUses = new EmissionMap<string, Set<number>>();
     private readonly continuationLocals = new EmissionMap<string, number>();
-    private continuationSequence = 0;
+    @journaled private accessor continuationSequence = 0;
     /**
      * Collision listeners are registered before every startup assignment has
      * necessarily run. Their native bodies are specialized only after the
@@ -842,30 +847,31 @@ class Compiler implements LoweringServices {
     private readonly materialColorReads: Array<
         "baseColorFactor" | "diffuseColor"
     > = emissionArray([]);
-    private temporalSceneRegistration: ts.Node | undefined;
+    @journaled private accessor temporalSceneRegistration: ts.Node | undefined;
     private readonly temporalRegisteredScenes: Array<
         Value["sceneTopologyState"]
     > = emissionArray([]);
-    private temporalControlAttachment: ts.Node | undefined;
-    public readonly localCubemapState: { maxCandidates?: number } = {};
+    @journaled private accessor temporalControlAttachment: ts.Node | undefined;
+    public readonly localCubemapState: { maxCandidates?: number } =
+        emissionRecord({});
     /** `constArrayIsWritten` answers, by binding: the scan walks a file. */
     private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
-    public hasMainEntry = false;
-    public defaultEngineCpp: string | undefined;
+    @journaled public accessor hasMainEntry = false;
+    @journaled public accessor defaultEngineCpp: string | undefined;
     /** Platform owner for an entry that has no source-created Babylon engine. */
-    public presentationHostCpp: string | undefined;
+    @journaled public accessor presentationHostCpp: string | undefined;
     /** First statement after the one engine is created. */
-    private engineCreationInsertion: number | undefined;
+    @journaled private accessor engineCreationInsertion: number | undefined;
     /** Explicit static surface sample count; absence means the pinned default. */
-    private engineMsaaSamples: 1 | 4 | undefined;
+    @journaled private accessor engineMsaaSamples: 1 | 4 | undefined;
     /** Bound only while lowering a platform visibility callback body. */
-    public platformDocumentHiddenCpp: string | undefined;
-    private indentLevel = 2;
+    @journaled public accessor platformDocumentHiddenCpp: string | undefined;
+    @journaled private accessor indentLevel = 2;
     private readonly emissionBlocks = emissionArray([0]);
-    private nextEmissionBlock = 1;
-    private temporaryIndex = 0;
-    public defaultRenderTaskAdapted = false;
-    private sceneRegistrationSite: ts.Node | undefined;
+    @journaled private accessor nextEmissionBlock = 1;
+    @journaled private accessor temporaryIndex = 0;
+    @journaled public accessor defaultRenderTaskAdapted = false;
+    @journaled private accessor sceneRegistrationSite: ts.Node | undefined;
 
     public constructor(
         private readonly program: ts.Program,
@@ -1797,9 +1803,10 @@ class Compiler implements LoweringServices {
         });
     }
 
-    private textAttachmentReached = false;
-    private reachedRenderContextRegistrations = new EmissionSet<string>();
-    private textCameraMutation: ts.Node | undefined;
+    @journaled private accessor textAttachmentReached = false;
+    private readonly reachedRenderContextRegistrations =
+        new EmissionSet<string>();
+    @journaled private accessor textCameraMutation: ts.Node | undefined;
 
     public noteTextCameraControl(
         node: ts.Node,
@@ -2050,7 +2057,7 @@ class Compiler implements LoweringServices {
         );
     }
 
-    private nativeParticleProviderUse: boolean | undefined;
+    @journaled private accessor nativeParticleProviderUse: boolean | undefined;
 
     /** Closure ownership is decided before the first resource is emitted. */
     private sourceUsesNativeParticleProvider(): boolean {
@@ -2525,8 +2532,8 @@ class Compiler implements LoweringServices {
             sourceValue?.staticElements;
         const sourceOwner = sourceValue?.staticElementsOwner ?? sourceValue;
         if (binding && sourceState && previousState === sourceState) {
-            target.collectionCardinality = sourceState;
-            binding.collectionCardinality = sourceState;
+            writable(target).collectionCardinality = sourceState;
+            writable(binding).collectionCardinality = sourceState;
             return;
         }
         if (sourceValue?.kind === "tuple" && !fresh) {
@@ -2539,9 +2546,9 @@ class Compiler implements LoweringServices {
         const taint = (state: CollectionCardinality | undefined): void => {
             if (!state) return;
             tainted = true;
-            state.untrackedAliases = true;
-            state.count = undefined;
-            delete state.keys;
+            writable(state).untrackedAliases = true;
+            writable(state).count = undefined;
+            delete writable(state).keys;
         };
         if (!definite) taint(previousState);
         if (!sourceState && !fresh) {
@@ -2558,9 +2565,9 @@ class Compiler implements LoweringServices {
                     value.collectionCardinality ??
                     value.staticElementsOwner?.collectionCardinality;
                 if (state?.untrackedAliases) {
-                    delete value.staticElements;
-                    delete value.staticElementsOwner;
-                    delete value.runtimeElementTemplate;
+                    delete writable(value).staticElements;
+                    delete writable(value).staticElementsOwner;
+                    delete writable(value).runtimeElementTemplate;
                 }
             });
         }
@@ -2568,20 +2575,20 @@ class Compiler implements LoweringServices {
         if (owner === previous || owner === target)
             this.bindings.invalidateStaticElements(previous, true);
         for (const value of new EmissionSet([target, previous])) {
-            delete value.staticElements;
-            delete value.staticElementsOwner;
-            delete value.runtimeElementTemplate;
-            delete value.collectionCardinality;
+            delete writable(value).staticElements;
+            delete writable(value).staticElementsOwner;
+            delete writable(value).runtimeElementTemplate;
+            delete writable(value).collectionCardinality;
         }
         let state: CollectionCardinality;
         if (definite && binding && sourceState) {
             state = sourceState;
             if (!state.untrackedAliases && sourceElements && sourceOwner) {
-                binding.staticElements = sourceElements;
-                binding.staticElementsOwner = sourceOwner;
+                writable(binding).staticElements = sourceElements;
+                writable(binding).staticElementsOwner = sourceOwner;
             }
             if (!state.untrackedAliases && template)
-                binding.runtimeElementTemplate = template;
+                writable(binding).runtimeElementTemplate = template;
         } else {
             let count: number | undefined;
             if (definite && binding && fresh) {
@@ -2615,8 +2622,8 @@ class Compiler implements LoweringServices {
             };
         }
         this.collectionCardinalities.add(state);
-        target.collectionCardinality = state;
-        if (binding) binding.collectionCardinality = state;
+        writable(target).collectionCardinality = state;
+        if (binding) writable(binding).collectionCardinality = state;
     }
 
     public recordDataAssignmentMetadata(
@@ -2673,9 +2680,9 @@ class Compiler implements LoweringServices {
                     : { staticId: retainedStaticId }),
             });
         }
-        target.uiTag = tag;
+        writable(target).uiTag = tag;
         if (staticId !== undefined) {
-            target.uiStaticId = staticId;
+            writable(target).uiStaticId = staticId;
         }
         return false;
     }
@@ -2797,7 +2804,7 @@ class Compiler implements LoweringServices {
             }
         }
         if (retained.size && !this.nativeStoredValues.has(value))
-            value.nativeCaptures = [...retained];
+            writable(value).nativeCaptures = [...retained];
         if (this.options.workers && value.engineCpp) {
             if (value.kind === "engine" && value.ownedEngineCpp) {
                 const owner = this.nativeBindings.get(value.ownedEngineCpp);
@@ -2806,7 +2813,7 @@ class Compiler implements LoweringServices {
             }
             const owners = this.realmEngineCaptures.get(value.engineCpp);
             if (owners)
-                value.nativeCompanionCaptures = {
+                writable(value).nativeCompanionCaptures = {
                     ...value.nativeCompanionCaptures,
                     engineCpp: owners,
                 };
@@ -2916,7 +2923,7 @@ class Compiler implements LoweringServices {
         }
     }
 
-    private awaitedSetupDepth = 0;
+    @journaled private accessor awaitedSetupDepth = 0;
 
     /** Immediately awaited helpers preserve their new engine's resource order. */
     public withAsyncInvocation<T>(node: ts.Node, body: () => T): T {
@@ -3295,9 +3302,10 @@ class Compiler implements LoweringServices {
         if (value.kind === "mesh" && value.sceneMeshIndex !== undefined) {
             const index = value.sceneMeshIndex;
             this.sceneManifest.recordRuntimeMeshProfile(index);
-            value.sceneMeshProfileIndex = index;
-            delete value.sceneMeshIndex;
-            value.cpp = `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
+            writable(value).sceneMeshProfileIndex = index;
+            delete writable(value).sceneMeshIndex;
+            writable(value).cpp =
+                `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
         }
         return value;
     }
@@ -3335,13 +3343,15 @@ class Compiler implements LoweringServices {
         return !this.definiteCollectionMutation();
     }
 
-    private engineCreationExecution?: {
-        callback: number;
-        control: number;
-        iteration: number;
-        native: number;
-        awaited: number;
-    };
+    @journaled private accessor engineCreationExecution:
+        | {
+              callback: number;
+              control: number;
+              iteration: number;
+              native: number;
+              awaited: number;
+          }
+        | undefined;
 
     /**
      * Some applications update an established thin-instance pool
@@ -3935,11 +3945,11 @@ class Compiler implements LoweringServices {
     }
 
     /** Nonzero while a frame callback's statements are being lowered. */
-    private frameCallbackDepth = 0;
+    @journaled private accessor frameCallbackDepth = 0;
     /** Native path-dependent bodies currently being lowered. */
-    private runtimeControlFlowDepth = 0;
+    @journaled private accessor runtimeControlFlowDepth = 0;
     /** Native loop expressions/bodies currently being lowered. */
-    private runtimeIterationDepth = 0;
+    @journaled private accessor runtimeIterationDepth = 0;
     private readonly parameterizedResourceIterations: Array<{
         statement: ResourceLoop;
         iterations: number;
@@ -4998,7 +5008,7 @@ class Compiler implements LoweringServices {
         const engineCpp = this.options.workers ? `(*${cppName})` : cppName;
         this.defaultEngineCpp = engineCpp;
         for (const lookup of this.pendingHostUiLookups) {
-            lookup.engineCpp = engineCpp;
+            writable(lookup).engineCpp = engineCpp;
             this.emit({
                 kind: "declaration",
                 type: "const auto",
@@ -6050,8 +6060,8 @@ class Compiler implements LoweringServices {
         );
         this.dataLowerer.registerLocal(storage, "owned");
         const value = this.dataLowerer.leafValue(storage, dataType);
-        value.nativeLvalue = true;
-        if (sharedStorage) value.sharedStorageCpp = cppName;
+        writable(value).nativeLvalue = true;
+        if (sharedStorage) writable(value).sharedStorageCpp = cppName;
         this.bindings.defineVariable(name, value);
         return value;
     }
@@ -6124,8 +6134,8 @@ class Compiler implements LoweringServices {
         // Leaves use the same surface as a container read: numbers stay
         // numeric and stored resource handles remain resources.
         const value = this.dataLowerer.leafValue(storage, dataType);
-        value.nativeLvalue = true;
-        if (sharedStorage) value.sharedStorageCpp = cppName;
+        writable(value).nativeLvalue = true;
+        if (sharedStorage) writable(value).sharedStorageCpp = cppName;
         this.bindings.defineVariable(name, value);
         return value;
     }
@@ -6144,7 +6154,7 @@ class Compiler implements LoweringServices {
         instance: Value,
         declaration: ts.ClassDeclaration,
     ): void {
-        instance.classDeclaration = declaration;
+        writable(instance).classDeclaration = declaration;
         this.classInstances.set(instance, declaration);
     }
 
@@ -6344,7 +6354,7 @@ class Compiler implements LoweringServices {
     }
 
     /** How many speculative probes are open; a probe decides its own refusals. */
-    private probeDepth = 0;
+    @journaled private accessor probeDepth = 0;
 
     public get speculating(): boolean {
         return this.probeDepth > 0;
@@ -6371,12 +6381,7 @@ class Compiler implements LoweringServices {
         probe: () => T,
         answered: (result: T) => boolean,
     ): T {
-        return new EmissionTransaction(this, [
-            this.program,
-            this.checker,
-            this.sourceFile,
-            this.options,
-        ]).run(probe, answered);
+        return new EmissionTransaction().run(probe, answered);
     }
 
     /**
@@ -6416,8 +6421,8 @@ class Compiler implements LoweringServices {
      * Captured callback/IIFE bodies get their own identity so a lazily
      * materialized local cannot be reused by code emitted outside that body.
      */
-    private activeEmissionScope = 0;
-    private nextEmissionScope = 1;
+    @journaled private accessor activeEmissionScope = 0;
+    @journaled private accessor nextEmissionScope = 1;
 
     public recordAccessor(
         owner: Value,
@@ -6430,12 +6435,12 @@ class Compiler implements LoweringServices {
                 !owner.runtimeRecordCpp ||
                 owner.runtimeRecordScope !== this.activeEmissionScope
             ) {
-                owner.runtimeRecordCpp =
-                    this.allocateTemporaryCppName("record_table");
-                owner.runtimeRecordScope = this.activeEmissionScope;
-                this.emit(
-                    `${mapType} ${owner.runtimeRecordCpp}{${entries.join(", ")}};`,
-                );
+                const table = writable(owner);
+                const cppName = this.allocateTemporaryCppName("record_table");
+                table.runtimeRecordCpp = cppName;
+                table.runtimeRecordScope = this.activeEmissionScope;
+                this.emit(`${mapType} ${cppName}{${entries.join(", ")}};`);
+                return cppName;
             }
             return owner.runtimeRecordCpp;
         }
@@ -6759,7 +6764,7 @@ class Compiler implements LoweringServices {
                     ? `std::shared_ptr<${cppType}>`
                     : cppType,
             );
-        value.nativeCaptures = [
+        writable(value).nativeCaptures = [
             this.registerNativeBinding(
                 storage,
                 value.kind === "engine" && !value.ownedEngineCpp,
@@ -6966,20 +6971,18 @@ class Compiler implements LoweringServices {
         );
         for (const checkpoint of this.resourceConstructionCheckpoints) {
             if (checkpoint.callbackDepth >= before.callbackDepth) continue;
-            for (const [
-                index,
-                baseline,
-            ] of checkpoint.state.counters.entries()) {
-                checkpoint.state.counters[index] =
+            const state = writable(checkpoint.state);
+            const counters = writable(state.counters);
+            for (const [index, baseline] of counters.entries()) {
+                counters[index] =
                     baseline +
                     after.counters[index]! -
                     before.state.counters[index]!;
             }
-            checkpoint.state.lightIdentities =
-                checkpoint.state.lightIdentities.filter(
-                    (value) => !removed.has(value),
-                );
-            checkpoint.state.lightIdentities.push(...added);
+            state.lightIdentities = [
+                ...state.lightIdentities.filter((value) => !removed.has(value)),
+                ...added,
+            ];
         }
     }
 
@@ -7396,11 +7399,11 @@ class Compiler implements LoweringServices {
                   ? `[[maybe_unused]] auto& ${name} = ${initial};`
                   : `[[maybe_unused]] bbl::pal::AudioNodeHandle ${name} = ${initial};`,
         );
-        value.audioMainBusCpp = shared ? `(*${name})` : name;
-        value.audioMainBusOwnerCpp = owner;
+        writable(value).audioMainBusCpp = shared ? `(*${name})` : name;
+        writable(value).audioMainBusOwnerCpp = owner;
         const binding = this.registerNativeBinding(name, false, !shared);
         if (borrows) this.nativeConstBindings.add(binding);
-        value.nativeCompanionCaptures = {
+        writable(value).nativeCompanionCaptures = {
             ...value.nativeCompanionCaptures,
             audioMainBusCpp: [binding],
         };
@@ -7486,7 +7489,7 @@ class Compiler implements LoweringServices {
         this.emit(`${storage} = ${this.optionalResourceCpp(value)};`);
         this.assignAudioMainBus(target, value, node);
         if (value.engineCpp !== undefined && target.kind !== "engine") {
-            target.engineCpp = value.engineCpp;
+            writable(target).engineCpp = value.engineCpp;
         }
         // A declaration without an initializer is represented by optional
         // native storage, but assigning into that storage must still make the
@@ -7497,19 +7500,20 @@ class Compiler implements LoweringServices {
         // silently describes a different mesh.
         if (target.kind === "mesh") {
             if (value.sceneMeshIndex === undefined) {
-                delete target.sceneMeshIndex;
+                delete writable(target).sceneMeshIndex;
             } else {
-                target.sceneMeshIndex = value.sceneMeshIndex;
+                writable(target).sceneMeshIndex = value.sceneMeshIndex;
             }
             if (value.runtimeMeshStreams === undefined) {
-                delete target.runtimeMeshStreams;
+                delete writable(target).runtimeMeshStreams;
             } else {
-                target.runtimeMeshStreams = value.runtimeMeshStreams;
+                writable(target).runtimeMeshStreams = value.runtimeMeshStreams;
             }
             if (value.directMorphCompatible === undefined) {
-                delete target.directMorphCompatible;
+                delete writable(target).directMorphCompatible;
             } else {
-                target.directMorphCompatible = value.directMorphCompatible;
+                writable(target).directMorphCompatible =
+                    value.directMorphCompatible;
             }
         }
         // The same alias rule applies when a material itself is first filled
@@ -7517,66 +7521,71 @@ class Compiler implements LoweringServices {
         // identity and composition state paired with its native handle.
         if (target.kind === "material") {
             if (value.scenePbrMaterialIndex === undefined) {
-                delete target.scenePbrMaterialIndex;
+                delete writable(target).scenePbrMaterialIndex;
             } else {
-                target.scenePbrMaterialIndex = value.scenePbrMaterialIndex;
+                writable(target).scenePbrMaterialIndex =
+                    value.scenePbrMaterialIndex;
             }
             if (value.assetPbrMaterial === undefined) {
-                delete target.assetPbrMaterial;
+                delete writable(target).assetPbrMaterial;
             } else {
-                target.assetPbrMaterial = value.assetPbrMaterial;
+                writable(target).assetPbrMaterial = value.assetPbrMaterial;
             }
             if (value.standardMaterial === undefined) {
-                delete target.standardMaterial;
+                delete writable(target).standardMaterial;
             } else {
-                target.standardMaterial = value.standardMaterial;
+                writable(target).standardMaterial = value.standardMaterial;
             }
             if (value.standardMaterialPluginIndex === undefined) {
-                delete target.standardMaterialPluginIndex;
+                delete writable(target).standardMaterialPluginIndex;
             } else {
-                target.standardMaterialPluginIndex =
+                writable(target).standardMaterialPluginIndex =
                     value.standardMaterialPluginIndex;
             }
             if (value.standardMaterialInput === undefined) {
-                delete target.standardMaterialInput;
+                delete writable(target).standardMaterialInput;
             } else {
-                target.standardMaterialInput = value.standardMaterialInput;
+                writable(target).standardMaterialInput =
+                    value.standardMaterialInput;
             }
             if (value.nodeMaterialIndex === undefined) {
-                delete target.nodeMaterialIndex;
+                delete writable(target).nodeMaterialIndex;
             } else {
-                target.nodeMaterialIndex = value.nodeMaterialIndex;
+                writable(target).nodeMaterialIndex = value.nodeMaterialIndex;
             }
             if (value.sceneShaderVariant === undefined) {
-                delete target.sceneShaderVariant;
+                delete writable(target).sceneShaderVariant;
             } else {
-                target.sceneShaderVariant = value.sceneShaderVariant;
+                writable(target).sceneShaderVariant = value.sceneShaderVariant;
             }
         }
-        if (value.asset === undefined) delete target.asset;
-        else target.asset = value.asset;
-        if (value.assetRootState === undefined) delete target.assetRootState;
-        else target.assetRootState = value.assetRootState;
-        if (value.assetRootClone === undefined) delete target.assetRootClone;
-        else target.assetRootClone = value.assetRootClone;
+        if (value.asset === undefined) delete writable(target).asset;
+        else writable(target).asset = value.asset;
+        if (value.assetRootState === undefined)
+            delete writable(target).assetRootState;
+        else writable(target).assetRootState = value.assetRootState;
+        if (value.assetRootClone === undefined)
+            delete writable(target).assetRootClone;
+        else writable(target).assetRootClone = value.assetRootClone;
         if (target.kind === "ui-element") {
-            if (value.uiStaticId === undefined) delete target.uiStaticId;
-            else target.uiStaticId = value.uiStaticId;
-            if (value.uiTag === undefined) delete target.uiTag;
-            else target.uiTag = value.uiTag;
+            if (value.uiStaticId === undefined)
+                delete writable(target).uiStaticId;
+            else writable(target).uiStaticId = value.uiStaticId;
+            if (value.uiTag === undefined) delete writable(target).uiTag;
+            else writable(target).uiTag = value.uiTag;
         }
         if (value.spriteDepthMode === undefined) {
-            delete target.spriteDepthMode;
+            delete writable(target).spriteDepthMode;
         } else {
-            target.spriteDepthMode = value.spriteDepthMode;
+            writable(target).spriteDepthMode = value.spriteDepthMode;
         }
         if (value.textureStorage !== undefined) {
-            target.textureStorage = value.textureStorage;
+            writable(target).textureStorage = value.textureStorage;
             if (value.textureWidth !== undefined) {
-                target.textureWidth = value.textureWidth;
+                writable(target).textureWidth = value.textureWidth;
             }
             if (value.textureHeight !== undefined) {
-                target.textureHeight = value.textureHeight;
+                writable(target).textureHeight = value.textureHeight;
             }
         }
     }
@@ -7591,14 +7600,14 @@ class Compiler implements LoweringServices {
         if (right.kind === ts.SyntaxKind.NullKeyword) {
             this.emit(`${storage}.reset();`);
             this.assignAudioMainBus(target, undefined, right);
-            delete target.spriteDepthMode;
+            delete writable(target).spriteDepthMode;
             return true;
         }
         const value = this.compileValue(right);
         if (value.kind === "json-null") {
             this.emit(`${storage}.reset();`);
             this.assignAudioMainBus(target, undefined, right);
-            delete target.spriteDepthMode;
+            delete writable(target).spriteDepthMode;
             return true;
         }
         this.assignOptionalResourceValue(target, value, right);
@@ -7797,7 +7806,8 @@ class Compiler implements LoweringServices {
     ): CompileAsset {
         const asset = registerAsset(this, source, kind, faceSize);
         const decoders = this.assetDecoders.get("configuration");
-        if (kind === "gltf" && decoders) asset.assetDecoders = decoders;
+        if (kind === "gltf" && decoders)
+            writable(asset).assetDecoders = decoders;
         return asset;
     }
 
@@ -7814,7 +7824,7 @@ class Compiler implements LoweringServices {
             );
         }
         for (const state of assetRootMutationStates(root))
-            state.reparented = true;
+            writable(state).reparented = true;
     }
 
     /**
@@ -7870,8 +7880,9 @@ class Compiler implements LoweringServices {
         // by source. A fact generation stamps on the record reaches all of
         // them, so the count is also what lets such a fact refuse instead of
         // widening silently.
-        asset.containerCount = (asset.containerCount ?? 0) + 1;
-        if (this.hasFeature("loader:gltf-cameras")) asset.gltfCameras = true;
+        writable(asset).containerCount = (asset.containerCount ?? 0) + 1;
+        if (this.hasFeature("loader:gltf-cameras"))
+            writable(asset).gltfCameras = true;
         this.lastGltfContainerAsset = asset;
     }
 
@@ -7955,7 +7966,7 @@ class Compiler implements LoweringServices {
                     "run-time variant table.",
             );
         }
-        asset.selectedVariant = variantName;
+        writable(asset).selectedVariant = variantName;
     }
 
     /**
@@ -7995,7 +8006,7 @@ class Compiler implements LoweringServices {
                     "per-material record read.",
             );
         }
-        asset.sceneUnlit = tint ? { tint } : {};
+        writable(asset).sceneUnlit = tint ? { tint } : {};
     }
 
     public resolveBundledAsset(source: string): string {
@@ -9442,18 +9453,24 @@ class Compiler implements LoweringServices {
                   !initializer.elements.some(ts.isSpreadElement)
                       ? initializer.elements.length
                       : undefined));
-            value.collectionCardinality = owner.collectionCardinality ??
-                value.collectionCardinality ?? {
-                    kind: keyed ? "keyed" : "array",
-                    count,
-                    ...(emptyKeys
-                        ? { keys: new EmissionSet<string | number | boolean>() }
-                        : {}),
-                    createdIn: [...this.parameterizedResourceIterations],
-                    varyingIn: new EmissionSet(),
-                };
-            owner.collectionCardinality = value.collectionCardinality;
-            this.collectionCardinalities.add(value.collectionCardinality);
+            const cardinality: CollectionCardinality =
+                owner.collectionCardinality ??
+                    value.collectionCardinality ?? {
+                        kind: keyed ? "keyed" : "array",
+                        count,
+                        ...(emptyKeys
+                            ? {
+                                  keys: new EmissionSet<
+                                      string | number | boolean
+                                  >(),
+                              }
+                            : {}),
+                        createdIn: [...this.parameterizedResourceIterations],
+                        varyingIn: new EmissionSet(),
+                    };
+            writable(value).collectionCardinality = cardinality;
+            writable(owner).collectionCardinality = cardinality;
+            this.collectionCardinalities.add(cardinality);
         }
     }
 
@@ -9559,20 +9576,20 @@ class Compiler implements LoweringServices {
         const owner = value.staticElementsOwner ?? value;
         const state =
             owner.collectionCardinality ?? value.collectionCardinality;
-        if (state) value.collectionCardinality = state;
+        if (state) writable(value).collectionCardinality = state;
         if (
             added === undefined ||
             !this.definiteCollectionMutation() ||
             state?.untrackedAliases
         ) {
             if (state) {
-                state.count = undefined;
+                writable(state).count = undefined;
                 if (
                     this.frameCallbackDepth > 0 ||
                     (!this.parameterizedResourceIterations.length &&
                         this.isInNativeFunctionBody())
                 ) {
-                    state.untrackedAliases = true;
+                    writable(state).untrackedAliases = true;
                 }
             }
             return false;
@@ -9587,7 +9604,9 @@ class Compiler implements LoweringServices {
         }
         if (state.count !== undefined) {
             const count = state.count + added * repetitions;
-            state.count = Number.isSafeInteger(count) ? count : undefined;
+            writable(state).count = Number.isSafeInteger(count)
+                ? count
+                : undefined;
         }
         return true;
     }
@@ -9606,14 +9625,14 @@ class Compiler implements LoweringServices {
             !this.definiteCollectionMutation() ||
             state.untrackedAliases
         ) {
-            state.count = undefined;
-            delete state.keys;
+            writable(state).count = undefined;
+            delete writable(state).keys;
             if (
                 this.frameCallbackDepth > 0 ||
                 (!this.parameterizedResourceIterations.length &&
                     this.isInNativeFunctionBody())
             ) {
-                state.untrackedAliases = true;
+                writable(state).untrackedAliases = true;
             }
             return;
         }
@@ -9623,7 +9642,7 @@ class Compiler implements LoweringServices {
             : !state.keys.has(scalar);
         if (removed) state.keys.delete(scalar);
         else state.keys.add(scalar);
-        state.count = state.keys.size;
+        writable(state).count = state.keys.size;
         if (changed) {
             for (const current of this.parameterizedResourceIterations) {
                 if (
@@ -9639,11 +9658,11 @@ class Compiler implements LoweringServices {
         const state = value.collectionCardinality;
         if (!state || state.kind !== "keyed") return;
         if (this.definiteCollectionMutation() && !state.untrackedAliases) {
-            state.keys = new EmissionSet();
-            state.count = 0;
+            writable(state).keys = new EmissionSet();
+            writable(state).count = 0;
         } else {
-            delete state.keys;
-            state.count = undefined;
+            delete writable(state).keys;
+            writable(state).count = undefined;
         }
     }
 
@@ -9979,7 +9998,7 @@ class Compiler implements LoweringServices {
      * queue `finish_frame` drains at the end of each frame, after that
      * frame's uploads and render.
      */
-    private engineStartMark:
+    @journaled private accessor engineStartMark:
         | {
               index: number;
               engine: string;
@@ -9988,7 +10007,7 @@ class Compiler implements LoweringServices {
           }
         | undefined;
 
-    private continuationStorageReached = false;
+    @journaled private accessor continuationStorageReached = false;
 
     private readonly deviceRecoveryCallbacks: Array<{
         cpp: string;
@@ -10252,8 +10271,9 @@ class Compiler implements LoweringServices {
             ? this.emitFinallyGuard(cleanupLines)
             : undefined;
         for (const line of body.slice(0, start)) this.emit(line);
-        mark.index = this.body.length;
-        mark.indentLevel = this.indentLevel;
+        const started = writable(mark);
+        started.index = this.body.length;
+        started.indentLevel = this.indentLevel;
         this.emit(body[start]!);
         if (!guard) {
             for (const line of body.slice(start + 1)) this.emit(line);

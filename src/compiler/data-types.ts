@@ -24,7 +24,12 @@ export {
     passesByReferenceKind,
     isOpaqueReference,
 } from "./data-types/operations.js";
-import { EmissionMap, EmissionSet } from "./emission-transaction.js";
+import {
+    emissionArray,
+    EmissionMap,
+    EmissionSet,
+    journaled,
+} from "./emission-transaction.js";
 import {
     NativeRecordStorageRequired,
     type NativeRecordStorageDemand,
@@ -587,23 +592,25 @@ export class DataTypeRegistry {
      * member, a stored field, a callback parameter or result. Without that
      * demand a class maps to nothing and stays a record.
      */
-    private classDemanded = false;
+    @journaled private accessor classDemanded = false;
     /**
      * What the class's type parameters stand for while one of its bodies is
      * being inlined. Empty outside a generic receiver.
      */
-    private activeTypeArguments: ReadonlyMap<ts.Symbol, ts.Type> | undefined;
+    @journaled private accessor activeTypeArguments:
+        ReadonlyMap<ts.Symbol, ts.Type> | undefined;
     /**
      * What generic functions' type parameters stand for while their bodies
      * are inlined, innermost call last. A frame's binding may itself name an
      * enclosing frame's parameter (`g<U>` called on `f<T>`'s `T`), which the
      * lookup follows outward.
      */
-    private readonly callTypeArguments: ReadonlyMap<ts.Symbol, ts.Type>[] = [];
+    private readonly callTypeArguments: ReadonlyMap<ts.Symbol, ts.Type>[] =
+        emissionArray([]);
     /** Every substitution in force as one struct-identity key, spelled when they change. */
-    private activeTypeArgumentKey = "";
-    private anonymousStructIndex = 0;
-    private anonymousEnumIndex = 0;
+    @journaled private accessor activeTypeArgumentKey = "";
+    @journaled private accessor anonymousStructIndex = 0;
+    @journaled private accessor anonymousEnumIndex = 0;
     /**
      * The structs `JSON.stringify` actually reaches, in the order the walk
      * found them. Nothing else emits a codec: a scene that serializes one
@@ -895,7 +902,7 @@ export class DataTypeRegistry {
             : undefined;
     }
 
-    private dynamicJsonStorage = false;
+    @journaled private accessor dynamicJsonStorage = false;
     public get hasDynamicJsonStorage(): boolean {
         return this.dynamicJsonStorage;
     }
@@ -2033,8 +2040,8 @@ export class DataTypeRegistry {
     }
 
     /** The receiver frame's key, and the call frames' keys beside their stack. */
-    private activeTypeArgumentFrameKey: string | undefined;
-    private readonly callTypeArgumentKeys: string[] = [];
+    @journaled private accessor activeTypeArgumentFrameKey: string | undefined;
+    private readonly callTypeArgumentKeys: string[] = emissionArray([]);
 
     /**
      * The struct-identity key folds every instantiation in force in, and it

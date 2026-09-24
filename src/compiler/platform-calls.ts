@@ -1,3 +1,4 @@
+import { journaled } from "./emission-transaction.js";
 import ts from "typescript";
 import { registerUiImageAsset } from "./assets.js";
 import { bakeCanvasReadback } from "./canvas-readback.js";
@@ -518,7 +519,8 @@ export class PlatformCalls {
         };
     }
 
-    private frameConductorOwner: "manager" | "persistent" | undefined;
+    @journaled private accessor frameConductorOwner:
+        "manager" | "persistent" | undefined;
 
     public requireCompatibleFrameConductor(
         owner: "manager" | "persistent",

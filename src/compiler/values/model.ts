@@ -14,12 +14,17 @@ type PayloadValue<K extends keyof ValuePayloads> = {
         Partial<Record<Exclude<PayloadKey, keyof ValuePayloads[P]>, never>>;
 }[K];
 
-/** The value kind determines which compile-time payload it may carry. */
-export type Value<K extends ValueKind = ValueKind> =
+/**
+ * The value kind determines which compile-time payload it may carry. A value
+ * is compiler state a declined probe must restore, so its fields are written
+ * in place only through `writable()`.
+ */
+export type Value<K extends ValueKind = ValueKind> = Readonly<
     | PayloadValue<Extract<K, keyof ValuePayloads>>
     | (ValueBase & { kind: Exclude<K, keyof ValuePayloads> } & Partial<
               Record<PayloadKey, never>
-          >);
+          >)
+>;
 
 const payloadFields = new Map<ValueKind, ReadonlySet<string>>(
     Object.entries({ ...valueMetadataFields, ...generationPayloadFields }).map(

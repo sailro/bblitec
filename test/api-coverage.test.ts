@@ -122,7 +122,7 @@ test("API collection rolls back speculative lowering, failed replays and failed 
             );
             traceSourceProgram(data.program, () => {
                 traceSourceNode(a);
-                new EmissionTransaction({}).run(
+                new EmissionTransaction().run(
                     () => {
                         traceSourceNode(b);
                         return false;

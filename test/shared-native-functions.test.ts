@@ -134,7 +134,7 @@ test("native definition interning retains binding topology and external identiti
         ),
         { name: "field_a", added: false },
     );
-    const speculative = new EmissionTransaction(cache);
+    const speculative = new EmissionTransaction();
     assert.equal(
         cache.intern(
             "probe",

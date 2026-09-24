@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 /**
  * The clustered light field's scene surface.
@@ -143,7 +144,7 @@ function appendLight(
             context.compileVec3(required("direction"), "double"),
             angle ? context.compileNumber(angle, "double") : `${Math.PI / 2}`,
         );
-        container.state.hasSpots = true;
+        writable(container.state).hasSpots = true;
     }
     return {
         kind: "clustered-light",
@@ -215,7 +216,7 @@ export function compileClusteredLightIntrinsic(
                         "another scene's textures.",
                 );
             }
-            container.state.frozen = true;
+            writable(container.state).frozen = true;
             context.reachFeature("light:clustered", call);
             context.reachFeature("renderer:scene", call);
             context.sceneManifest.reachClusteredContainer(

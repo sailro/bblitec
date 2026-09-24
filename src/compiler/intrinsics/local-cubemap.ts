@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import type ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -40,7 +41,7 @@ function optionsJson(
             (environment) => environment.cpp === value.cpp,
         );
         if (index >= 0) return index;
-        environments.push(value);
+        writable(environments).push(value);
         return environments.length - 1;
     }
     if (
@@ -185,7 +186,7 @@ export function compileLocalCubemapIntrinsic(
             );
         if ((first.localCubemap.plan.debug ?? false) === (enabled === "true"))
             return { kind: "void", cpp: "" };
-        first.localCubemap.plan.debug = enabled === "true";
+        writable(first.localCubemap.plan).debug = enabled === "true";
         return {
             kind: "void",
             cpp: `*${first.cpp} = *${packetExpression(context, first.localCubemap, call)}`,
@@ -205,13 +206,13 @@ export function compileLocalCubemapIntrinsic(
                 first.scenePbrMaterialIndex
             ]!;
         if (name === "clearPbrLocalEnvironment") {
-            delete material.localCubemapCandidates;
+            delete writable(material).localCubemapCandidates;
             return {
                 kind: "void",
                 cpp: `${recordAt(`${first.engineCpp}.materials`, first.cpp)}.local_environment.reset()`,
             };
         }
-        material.localCubemapCandidates = maxCandidates;
+        writable(material).localCubemapCandidates = maxCandidates;
         if (name === "setPbrLocalEnvironmentProbeSet") {
             const set = context.compileValue(argumentAt(call, 1));
             context.expectKind(set, "pbr-local-probe-set", argumentAt(call, 1));

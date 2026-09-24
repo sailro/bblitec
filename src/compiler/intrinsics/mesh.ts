@@ -2,6 +2,7 @@ import {
     EmissionSet,
     EmissionMap,
     EmissionWeakSet,
+    writable,
 } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
@@ -643,7 +644,7 @@ function compileDisposeCsg2(
     context.expectKind(value, "csg2-solid", argumentAt(call, 0));
     if (!value.csg2Solid)
         context.fail(call, "CSG2 disposal requires a generation-known solid.");
-    value.csg2Solid.disposed = true;
+    writable(value.csg2Solid).disposed = true;
     context.reachFeature("mesh:csg2", call);
     return { kind: "void", cpp: "" };
 }

@@ -39,7 +39,7 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `native-functions.ts`, `user-functions.ts`, `classes.ts` | Native functions, specialization, classes |
 | `module-initializers.ts` | Ordered initialization and shared mutable bindings |
 | `scene-manifest.ts`, `scene-materials.ts` | Scene composition records and their `manifest.json` projection |
-| `emission-transaction.ts` | Rollback on declined or failed lowering |
+| `emission-transaction.ts` | Undo journal of compiler state (journaled maps, sets, arrays, records, `@journaled` fields, `writable()` records); a declined or failed lowering replays it |
 | `binding-scopes.ts` | Lexical scopes, name bindings and capture refusals; pinned temporaries and materialized records |
 | `conditions.ts`, `comparisons.ts` | Condition truth tests, comparison operators and settled folds |
 | `browser-erasure.ts` | Browser-only predicates, deployment folds and erased-expression records |

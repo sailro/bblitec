@@ -1,4 +1,4 @@
-import { EmissionMap } from "./emission-transaction.js";
+import { EmissionMap, writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { AssignmentContext } from "./assignments.js";
@@ -137,7 +137,7 @@ export function emitFrozenParticleSheetAssignment(
             "Replacing a frozen particle sprite-sheet object is not lowered; its shared cellIndex elements remain writable.",
         );
     }
-    request.sheet = true;
+    writable(request).sheet = true;
     context.emit(
         `bbl::upstream::set_frozen_node_particle_sheet(${owner.set}, ${owner.system}, ${doubleLiteral(width)}, ${doubleLiteral(height)}, ${indices.cpp});`,
     );
