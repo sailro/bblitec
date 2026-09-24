@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { basename, join, relative, resolve, sep } from "node:path";
 import {
@@ -100,6 +100,138 @@ export function nativeCompilationFiles(
         }
     }
     return [...files].sort();
+}
+
+/** Ninja spells a build-relative path with forward slashes. */
+const ninjaPath = (path: string): string => path.split(sep).join("/");
+
+/** A compilation database entry's arguments, from `arguments` or its quoted `command`. */
+function commandArguments(entry: object): string[] {
+    if ("arguments" in entry && Array.isArray(entry.arguments))
+        return entry.arguments.filter(
+            (argument): argument is string => typeof argument === "string",
+        );
+    if (!("command" in entry) || typeof entry.command !== "string") return [];
+    return [...entry.command.matchAll(/"((?:[^"\\]|\\.)*)"|(\S+)/g)].map(
+        (match) => match[1] ?? match[2]!,
+    );
+}
+
+/**
+ * The precompiled headers a build creates: the build target Ninja records
+ * dependencies for and the header file it writes. MSVC-style drivers create
+ * one with `/Yc` (`/Fo` the object, `/Fp` the header); GNU-style drivers
+ * with `-emit-pch`, whose `-o` output is both.
+ */
+export function precompiledHeaderOutputs(
+    database: unknown,
+    buildDirectory: string,
+): { target: string; header: string }[] {
+    if (!Array.isArray(database)) {
+        throw new Error("compile_commands.json must contain an array.");
+    }
+    const outputs: { target: string; header: string }[] = [];
+    const entries: readonly unknown[] = database;
+    for (const entry of entries) {
+        if (entry === null || typeof entry !== "object") continue;
+        const directory =
+            "directory" in entry && typeof entry.directory === "string"
+                ? resolve(buildDirectory, entry.directory)
+                : buildDirectory;
+        const argumentsList = commandArguments(entry);
+        const flag = (prefix: string): string | undefined =>
+            argumentsList
+                .find(
+                    (argument) =>
+                        argument.startsWith(`/${prefix}`) ||
+                        argument.startsWith(`-${prefix}`),
+                )
+                ?.slice(prefix.length + 1);
+        if (argumentsList.some((argument) => /^[/-]Yc/.test(argument))) {
+            const object = flag("Fo");
+            const header = flag("Fp");
+            if (object && header)
+                outputs.push({
+                    target: ninjaPath(
+                        relative(buildDirectory, resolve(directory, object)),
+                    ),
+                    header: resolve(directory, header),
+                });
+            continue;
+        }
+        if (argumentsList.includes("-emit-pch")) {
+            const index = argumentsList.indexOf("-o");
+            const header = argumentsList[index + 1];
+            if (index >= 0 && header)
+                outputs.push({
+                    target: ninjaPath(
+                        relative(buildDirectory, resolve(directory, header)),
+                    ),
+                    header: resolve(directory, header),
+                });
+        }
+    }
+    return outputs;
+}
+
+/** The first input newer than its precompiled header, if any. */
+export function newerPrecompiledHeaderInput(
+    headerModified: number,
+    inputs: readonly { path: string; modified: number | undefined }[],
+): string | undefined {
+    return inputs.find(
+        ({ modified }) => modified === undefined || modified > headerModified,
+    )?.path;
+}
+
+/**
+ * Refuses a build whose precompiled header predates one of its inputs.
+ * The builds pass `-fno-pch-timestamp`, so clang-tidy reuses such a header
+ * whenever the input's size is unchanged and reports against the old
+ * declarations. Ninja's dependency log names each header's inputs.
+ */
+function requireCurrentPrecompiledHeaders(
+    build: string,
+    database: unknown,
+    ninja: string | undefined,
+): void {
+    const outputs = precompiledHeaderOutputs(database, build);
+    if (outputs.length === 0) return;
+    if (!ninja)
+        throw new Error(
+            `${build} has precompiled headers but no CMAKE_MAKE_PROGRAM to read their dependencies.`,
+        );
+    for (const { target, header } of outputs) {
+        const modified = statSync(header, { throwIfNoEntry: false })?.mtimeMs;
+        if (modified === undefined)
+            throw new Error(
+                `${build} has not built ${header}; build the scene first.`,
+            );
+        const log = execFileSync(ninja, ["-C", build, "-t", "deps", target], {
+            encoding: "utf8",
+            windowsHide: true,
+        });
+        const inputs = log
+            .split(/\r?\n/)
+            .filter((line) => /^\s+\S/.test(line))
+            .map((line) => {
+                const path = resolve(build, line.trim());
+                return {
+                    path,
+                    modified: statSync(path, { throwIfNoEntry: false })
+                        ?.mtimeMs,
+                };
+            });
+        if (inputs.length === 0)
+            throw new Error(
+                `Ninja records no dependencies for ${target} in ${build}; build the scene first.`,
+            );
+        const newer = newerPrecompiledHeaderInput(modified, inputs);
+        if (newer)
+            throw new Error(
+                `${header} is older than ${newer}; rebuild ${build} before linting it.`,
+            );
+    }
 }
 
 function clangTool(command: "clang-format" | "clang-tidy"): string {
@@ -290,6 +422,11 @@ async function lintCommand(args: readonly string[]): Promise<void> {
             );
         }
         const database: unknown = JSON.parse(contents);
+        requireCurrentPrecompiledHeaders(
+            build,
+            database,
+            cache?.CMAKE_MAKE_PROGRAM,
+        );
         const sources = nativeCompilationFiles(
             database,
             build,

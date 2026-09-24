@@ -87,13 +87,13 @@ inline void create_dawn_clustered(WGPUDevice device, const ClusteredLightContain
  * nothing. The params block is written where upstream writes it: at
  * creation and inside the branch that rebinned.
  */
-inline void upload_dawn_clustered(WGPUDevice device, WGPUQueue queue,
-                                  ClusteredLightContainer& container, CameraRecord* camera,
+inline void upload_dawn_clustered(WGPUDevice device, WGPUQueue queue, Engine& engine,
+                                  ClusteredLightContainer& container, CameraHandle camera,
                                   double target_width, double target_height,
                                   DawnClusteredLights& gpu) {
     create_dawn_clustered(device, container, gpu);
     sync_clustered_payloads(
-        container, gpu.uploaded, camera, target_width, target_height,
+        engine, container, gpu.uploaded, camera, target_width, target_height,
         [&](const void* bytes, std::size_t size) {
             wgpuQueueWriteBuffer(queue, gpu.params, 0, bytes, size);
         },

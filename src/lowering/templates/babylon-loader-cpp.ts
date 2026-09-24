@@ -319,8 +319,6 @@ ${meshClones ? "    geometry.bind_vertices.resize(vertex_count);" : ""}
 ${meshClones ? "        geometry.bind_vertices[index] = vertex;" : ""}
     }
     geometry.indices = indices;
-    // An asset's records keep their slots after retirement.
-    geometry.slot_reserved = true;
     return store_geometry_record(engine, std::move(geometry));
 }
 
@@ -329,7 +327,6 @@ std::size_t create_babylon_mesh(Engine& engine, std::vector<BabylonHierarchyNode
     std::uint32_t geometry, const upstream::TrsLanes& transform) {
     MeshRecord mesh;
     mesh.name = name;
-    mesh.primitive = PrimitiveKind::babylon;
     mesh.geometry = geometry;
     mesh.material = material;
     mesh.receives_shadows = receives_shadows;
@@ -340,7 +337,6 @@ ${
         transform.rotation, transform.scaling};`
         : ""
 }
-    mesh.asset_indexed = true;
     BabylonHierarchyNode node;
     node.id = id;
     node.transform = transform;
@@ -362,18 +358,18 @@ ${lowered.meshConstruction}
 
 ${
     lightMeshLists
-        ? `std::vector<std::uint32_t> resolve_babylon_light_meshes(const Json& ids,
+        ? `std::vector<MeshHandle> resolve_babylon_light_meshes(const Json& ids,
     const std::unordered_map<std::string, std::vector<std::size_t>>& meshes_by_id,
     const std::vector<BabylonHierarchyNode>& nodes) {
     std::unordered_set<std::string> seen;
-    std::vector<std::uint32_t> result;
+    std::vector<MeshHandle> result;
     for (const auto& value : ids) {
         if (!value.is_string()) continue;
         const auto id = value.get<std::string>();
         if (!seen.insert(id).second) continue;
         const auto found = meshes_by_id.find(id);
         if (found == meshes_by_id.end()) continue;
-        for (const auto index : found->second) result.push_back(nodes.at(index).mesh.value);
+        for (const auto index : found->second) result.push_back(nodes.at(index).mesh);
     }
     return result;
 }

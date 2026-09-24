@@ -12,8 +12,10 @@
  * This module owns the translation, never the formula: `data[off + n]` becomes
  * the field the composer placed at that offset, `x ?? default` becomes the
  * record field (which always carries a value natively), and `Math.*` becomes
- * `std::*`. Anything else in the pinned body fails generation, which is what
- * keeps a changed writer visible instead of silently stale. The discarded
+ * `std::*`. The body computes in double, as the pin's numbers do, and rounds
+ * once where it stores into the Float32Array: the `static_cast<float>` at
+ * each `data[...]` write. Anything else in the pinned body fails generation,
+ * which keeps a changed writer visible instead of silently stale. The discarded
  * `?? default` is not thrown away blind: it is folded and asserted against
  * `pinned-material-defaults.ts`, the table the intrinsics seed the record
  * from, so a pin that moves a default fails generation by name.
@@ -115,8 +117,6 @@ interface UboWriterRequest {
     vectorHooks?: Readonly<Record<string, { property: string; lanes: number }>>;
     /** Source-lowered helpers that write a fixed number of contiguous float lanes. */
     bufferWriters?: Readonly<Record<string, { cpp: string; lanes: number }>>;
-    /** Preserve JavaScript numeric intermediates for writers with live f64 inputs. */
-    scalarPrecision?: "float" | "double";
 }
 
 interface WriterState {
@@ -794,7 +794,7 @@ function vectorMember(
 }
 
 const numericWriters = new WeakMap<WriterState, PinnedNumericLowerer>();
-const writerMathCalls = pinnedNumericMathCalls("deduced");
+const writerMathCalls = pinnedNumericMathCalls();
 
 function emitExpression(state: WriterState, expression: ts.Expression): string {
     let lowerer = numericWriters.get(state);
@@ -805,13 +805,7 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
             booleanOr: true,
             booleanAnd: true,
             foldConditions: false,
-            expressionSpelling: {
-                parentheses: "source",
-                numeric: (node) =>
-                    /[.e]/i.test(node.text)
-                        ? node.text + "f"
-                        : node.text + ".0f",
-            },
+            expressionSpelling: { parentheses: "source" },
             expression: (node) => emitRecordExpression(state, node),
         });
         numericWriters.set(state, lowerer);
@@ -1206,9 +1200,7 @@ function emitPlainStatement(
                         continue;
                     }
                     state.locals.add(local);
-                    lines.push(
-                        `    const ${state.request.scalarPrecision ?? "float"} ${local} = ${source};`,
-                    );
+                    lines.push(`    const double ${local} = ${source};`);
                 }
                 continue;
             }
@@ -1325,7 +1317,7 @@ function emitPlainStatement(
                     kind: "array",
                 });
                 lines.push(
-                    `    const std::array<float, ${defaultLanes}> ${name}` +
+                    `    const std::array<double, ${defaultLanes}> ${name}` +
                         `${emitExpression(state, binding.initializer)};`,
                 );
                 continue;
@@ -1337,8 +1329,8 @@ function emitPlainStatement(
             // single-assignment form expresses.
             lines.push(
                 state.mutatedLocals.has(name)
-                    ? `    ${state.request.scalarPrecision ?? "float"} ${name} = ${value};`
-                    : `    const ${state.request.scalarPrecision ?? "float"} ${name} = ${value};`,
+                    ? `    double ${name} = ${value};`
+                    : `    const double ${name} = ${value};`,
             );
         }
         return lines;

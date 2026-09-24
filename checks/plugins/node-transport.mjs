@@ -2,13 +2,13 @@
 // texture sharing, per-view bindings and world uploads the native PAL
 // binds, joined against the browser's receipts and the source asset.
 // Two controls share the decoders: the PowerPlant scene (149), whose
-// browser reference directory holds the identity observation and the
-// instrumented buffer capture, and the node-local-attributes fixture,
+// browser side is the check's observation (checks/plugins/
+// scene149-identity.init.js), and the node-local-attributes fixture,
 // whose browser side is an instrumented capture of a scene loading it.
 // Native receipts are the check's own captures taken with
 // BBLITE_NODE_GPU_CAPTURE=1 (`capture.nodeGpu`).
 //
-// options: { control: "scene149", referenceDirectory?, allowStale? }
+// options: { control: "scene149", allowStale? }
 //       or { control: "node-local", browserCapture: <directory> }
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -21,7 +21,13 @@ import {
 } from "../../dist/src/gltf-document.js";
 import { importPinnedModule } from "../../dist/src/pinned-shader-composer.js";
 import { findRepositoryRoot } from "../../dist/src/repository-root.js";
-import { readJson, sha256 } from "./support.mjs";
+import {
+    assertObservationProvenance,
+    observedStep,
+    readJson,
+    requireObservations,
+    sha256,
+} from "./support.mjs";
 
 /**
  * @import { BuildStamp } from "../../dist/src/build-stamp.js"
@@ -93,32 +99,30 @@ import { readJson, sha256 } from "./support.mjs";
  *     mappedWrites: BrowserWrite[],
  *     writes: BrowserWrite[],
  * }} BrowserBuffer an instrumented capture's `buffers.json` row
- * @typedef {{ moduleSha256: string }} CaptureMeta the instrumented capture's `capture-meta.json`
  * @typedef {{
- *     kind: "buffer",
  *     id: number,
- *     ordinal: number,
- *     label?: string,
+ *     label: string,
  *     size: number,
  *     usage: number,
- * }} BrowserBufferResource
- * @typedef {BrowserBufferResource | { kind: "view" | "sampler" | "texture" | "shader" }} BrowserResource
+ *     data: string,
+ *     written: Array<[number, number]>,
+ * }} ObservedBuffer a buffer's bytes (base64) and the [start, end) ranges the page wrote
  * @typedef {{ id: number, entries: Array<{ binding: number, resource: number }> }} BrowserGroup
  * @typedef {{ format: string, offset: number }} BrowserVertexAttribute
  * @typedef {{ arrayStride: number, attributes: BrowserVertexAttribute[] }} BrowserVertexLayout
  * @typedef {{ buffer: number, offset?: number }} BrowserVertexBinding
  * @typedef {{
  *     id: number,
- *     vertex: { buffers?: BrowserVertexLayout[] },
+ *     vertex: { buffers: Array<BrowserVertexLayout | null> },
  *     fragment: { targets: unknown[] },
  * }} BrowserPipeline
  * @typedef {{
  *     method: "drawIndexed",
  *     args: number[],
- *     pipeline: number,
+ *     pipeline: number | null,
  *     groups: Record<string, { group: number }>,
  *     vertices: Record<string, BrowserVertexBinding>,
- *     index: { buffer: number, format: string, offset?: number },
+ *     index: { buffer: number, format: string, offset?: number } | null,
  * }} BrowserIndexedDraw
  * @typedef {BrowserIndexedDraw | { method: "draw" }} BrowserDraw
  * @typedef {{
@@ -143,17 +147,14 @@ import { readJson, sha256 } from "./support.mjs";
  *     meshes: IdentityMesh[],
  * }} IdentityGroup
  * @typedef {{
- *     sourceSha256: string,
- *     moduleSha256: string,
- *     comparison: { mad: number },
+ *     materials: IdentityGroup[],
  *     observation: {
- *         resources: BrowserResource[],
+ *         buffers: ObservedBuffer[],
  *         groups: BrowserGroup[],
  *         pipelines: BrowserPipeline[],
  *         submissions: BrowserDraw[][],
  *     },
- *     groups: IdentityGroup[],
- * }} Identity the browser reference's `identities.json`
+ * }} Identity the observation's `identity` step record
  * @typedef {{ index: number, group: IdentityGroup, mesh: IdentityMesh }} SourceOwner
  * @typedef {SourceOwner & {
  *     attributes: Record<string, Buffer>,
@@ -218,7 +219,7 @@ import { readJson, sha256 } from "./support.mjs";
  *     meshes: NativeMesh[],
  *     nodeGpu?: NodeGpuCapture,
  * }} NativeCapture the fields read from a phase's render capture
- * @typedef {Awaited<ReturnType<typeof readScene149Reference>>} Scene149Reference
+ * @typedef {Awaited<ReturnType<typeof readScene149Observation>>} Scene149Reference
  */
 
 /**
@@ -439,32 +440,37 @@ function countDraw(views, targets, mesh, material) {
 }
 
 /**
- * @param {string} referenceDirectory
+ * The bytes an observed buffer holds, and which of them the page wrote.
+ * @param {ObservedBuffer} buffer
+ */
+function observedUpload(buffer) {
+    const bytes = Buffer.from(buffer.data, "base64");
+    assert.equal(bytes.length, buffer.size, `browser buffer ${buffer.id} size`);
+    const covered = Buffer.alloc(buffer.size);
+    for (const [start, end] of buffer.written) covered.fill(1, start, end);
+    return { bytes, covered };
+}
+
+/**
+ * The check's browser observation (the observed page is not perturbed: the
+ * observe run refuses a hooked page that differs from the golden) joined
+ * against the generated asset.
+ * @param {PluginContext} context
  * @param {string} generatedDirectory
  */
-async function readScene149Reference(referenceDirectory, generatedDirectory) {
-    const identity = /** @type {Identity} */ (
-        readJson(join(referenceDirectory, "identities.json"))
-    );
-    const raw = /** @type {BrowserBuffer[]} */ (
-        readJson(join(referenceDirectory, "instrumented/buffers.json"))
-    );
-    const meta = /** @type {CaptureMeta} */ (
-        readJson(join(referenceDirectory, "instrumented/capture-meta.json"))
-    );
-    assert.equal(meta.moduleSha256, identity.moduleSha256);
-    assert.equal(
-        identity.comparison.mad,
-        0,
-        "Identity instrumentation changes canonical pixels",
-    );
+async function readScene149Observation(context, generatedDirectory) {
+    const observations = requireObservations(context);
+    assertObservationProvenance(context, observations);
+    const recorded = observedStep(observations, "identity").extras?.identity;
+    assert(recorded, "the identity step recorded no identity");
+    const identity = /** @type {Identity} */ (recorded);
     const manifest = /** @type {GeneratedManifest} */ (
         readJson(join(generatedDirectory, "manifest.json"))
     );
     assert.equal(
         // manifest.json records repository-relative source paths.
         sha256(readFileSync(resolve(findRepositoryRoot(), manifest.source))),
-        identity.sourceSha256,
+        observations.sourceSha256,
         "Generated source differs from browser source",
     );
     const assets = manifest.assets.filter((asset) => asset.kind === "gltf");
@@ -489,24 +495,13 @@ async function readScene149Reference(referenceDirectory, generatedDirectory) {
     assert.equal(associations?.length, document.materials.length + 1);
     /** @type {PinnedGltfParser} */
     const parser = await importPinnedModule("loader-gltf/gltf-parser.js");
-    const browserResources = identity.observation.resources.filter(
-        (resource) => resource.kind === "buffer",
-    );
-    assert.equal(browserResources.length, raw.length);
     /** @type {Map<number, { bytes: Buffer, covered: Buffer }>} */
-    const uploads = new Map();
-    for (const resource of browserResources) {
-        const buffer = raw[resource.ordinal - 1];
-        assert(
-            buffer,
-            `Browser buffer ordinal ${resource.ordinal} is absent from buffers.json`,
-        );
-        assert.deepEqual(
-            [resource.label ?? "", resource.size, resource.usage],
-            [buffer.label, buffer.size, buffer.usage],
-        );
-        uploads.set(resource.id, browserUpload(buffer));
-    }
+    const uploads = new Map(
+        identity.observation.buffers.map((buffer) => [
+            buffer.id,
+            observedUpload(buffer),
+        ]),
+    );
     /** @param {number} id */
     const upload = (id) => {
         const value = uploads.get(id);
@@ -517,7 +512,7 @@ async function readScene149Reference(referenceDirectory, generatedDirectory) {
         return value.bytes;
     };
     const sources = uniqueMap(
-        identity.groups.flatMap((group) =>
+        identity.materials.flatMap((group) =>
             group.meshes.map((mesh) => {
                 assert(
                     group.sameSourceTexture && group.sameOwner,
@@ -611,7 +606,7 @@ async function readScene149Reference(referenceDirectory, generatedDirectory) {
     assert.equal(sourceMaterials.size, 79);
     assert.equal(partition.size, 65);
     assert.equal(
-        new Set(identity.groups.map((group) => group.sampler)).size,
+        new Set(identity.materials.map((group) => group.sampler)).size,
         1,
     );
     const groups = uniqueMap(
@@ -638,9 +633,14 @@ async function readScene149Reference(referenceDirectory, generatedDirectory) {
         /** @type {Set<number>} */
         const worldBuffers = new Set();
         for (const draw of indexed) {
+            const index = draw.index;
+            assert(
+                index && draw.pipeline !== null,
+                "A browser drawIndexed binds no pipeline or index buffer",
+            );
             const matching = Object.values(draw.vertices)
                 .map((vertex) =>
-                    bufferOwners.get(`${vertex.buffer}/${draw.index.buffer}`),
+                    bufferOwners.get(`${vertex.buffer}/${index.buffer}`),
                 )
                 .filter(Boolean);
             assert.equal(
@@ -666,9 +666,9 @@ async function readScene149Reference(referenceDirectory, generatedDirectory) {
             );
             assert(
                 selectedIndices(
-                    upload(draw.index.buffer),
-                    draw.index.format,
-                    draw.index.offset ?? 0,
+                    upload(index.buffer),
+                    index.format,
+                    index.offset ?? 0,
                     owner.indexCount,
                 ).equals(owner.indices),
             );
@@ -708,8 +708,8 @@ async function readScene149Reference(referenceDirectory, generatedDirectory) {
                 const [vertexBinding] = selected;
                 assert(vertexBinding);
                 const [slot, vertex] = vertexBinding;
-                /** @type {BrowserVertexLayout | undefined} */
-                const layout = pipeline.vertex.buffers?.[Number(slot)];
+                /** @type {BrowserVertexLayout | null | undefined} */
+                const layout = pipeline.vertex.buffers[Number(slot)];
                 assert(
                     layout,
                     `Browser pipeline ${pipeline.id} declares no vertex buffer ${slot}`,
@@ -742,13 +742,13 @@ async function readScene149Reference(referenceDirectory, generatedDirectory) {
     assert(submissions.length > 0);
     return {
         owners,
-        sourceSha256: identity.sourceSha256,
-        moduleSha256: identity.moduleSha256,
+        sourceSha256: observations.sourceSha256,
+        moduleSha256: observations.moduleSha256,
         generatedStamp: /** @type {GeneratedStamp} */ (
             readJson(join(generatedDirectory, "build-inputs.json"))
         ).stamp,
         browser: {
-            buffers: raw.length,
+            buffers: identity.observation.buffers.length,
             submissions,
             sourceMaterials: sourceMaterials.size,
             sourceTextures: partition.size,
@@ -1358,14 +1358,8 @@ export async function check(context) {
             ),
         };
     }
-    const referenceDirectory =
-        context.options.referenceDirectory ?? "artifacts/scene149-reference";
-    assert(
-        typeof referenceDirectory === "string",
-        "options.referenceDirectory names the browser reference directory",
-    );
-    const reference = await readScene149Reference(
-        resolve(referenceDirectory),
+    const reference = await readScene149Observation(
+        context,
         resolve(context.target.output),
     );
     const backends = captures.map((capture) =>

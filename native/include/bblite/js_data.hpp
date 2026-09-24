@@ -599,10 +599,10 @@ private:
 
 namespace gc {
 /**
- * A reference's payload may be incomplete where a container asks, so any
- * reference counts as a possible edge; an unregistered block reports none.
+ * A reference is an edge exactly when `make_ref` registers its payload, so a
+ * container of references to edge-free payloads stays out of the registry.
  */
-template <typename T> struct Traceable<Ref<T>> : std::true_type {};
+template <typename T> struct Traceable<Ref<T>> : Traceable<std::remove_cv_t<T>> {};
 } // namespace gc
 
 /**
@@ -1792,7 +1792,9 @@ template <typename V> class WeakMap {
             }
         }
     };
-    std::shared_ptr<Storage> storage_ = make_gc_shared_if<gc_traceable<V>, Storage>();
+    // Registered whatever its values: each collection prunes the entries
+    // whose keys died, even when no value can own a traced edge.
+    std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
 
 public:
     [[nodiscard]] typename MapGetResult<V>::Type get(const WeakIdentity& key) const {
@@ -3007,6 +3009,16 @@ template <typename Range>
     return array_join(values, separator, [](const auto& value) -> const auto& { return value; });
 }
 
+/** `Array.prototype.sort()` with no comparator over strings: stable, ascending UTF-16
+ * code units. An `Array` shares its storage, so the caller's array is the one sorted. */
+template <typename Strings> [[nodiscard]] inline Strings string_array_sort(Strings values) {
+    std::stable_sort(values.begin(), values.end(),
+                     [](const std::string& left, const std::string& right) {
+                         return string_code_units(left) < string_code_units(right);
+                     });
+    return values;
+}
+
 /** `%TypedArray%.prototype.subarray`: a view over the same bytes for a numeric range. */
 template <typename Values>
 [[nodiscard]] inline Values typed_array_subarray(const Values& values, double begin_value,
@@ -3899,18 +3911,6 @@ struct MathOperand {
 template <bool Maximum>
 [[nodiscard]] inline double math_extreme(std::initializer_list<MathOperand> operands) {
     return math_extreme_in<Maximum, double>(operands);
-}
-
-/**
- * Over a call's own argument list whose operands share one floating type,
- * computed and returned at that type. A pinned float writer lane computes
- * the arithmetic around the call in `float`; the extreme is one of its
- * operands either way, so keeping the type keeps that arithmetic, and what
- * it stores, while NaN and signed zero follow JavaScript.
- */
-template <bool Maximum, std::floating_point Number>
-[[nodiscard]] inline Number math_extreme_lane(std::initializer_list<Number> operands) {
-    return math_extreme_in<Maximum, Number>(operands);
 }
 
 /**

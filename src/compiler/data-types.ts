@@ -47,6 +47,7 @@ import {
     declaredIn,
     declaredInDefaultLibrary,
     declaredInDomLibrary,
+    declaredSymbol,
     libraryGlobal,
 } from "./symbols.js";
 import { isNullable, nullability, presentMembers } from "./type-facts.js";
@@ -2392,7 +2393,7 @@ export class DataTypeRegistry {
         const classes = this.classHierarchy.hierarchyClasses(root);
         const typeOf = (member: ts.ClassDeclaration): ts.Type => {
             const symbol = member.name
-                ? this.checker.getSymbolAtLocation(member.name)
+                ? declaredSymbol(this.checker, member.name)
                 : undefined;
             if (!symbol || member.typeParameters?.length) {
                 this.fail(
@@ -3782,7 +3783,7 @@ export class DataTypeRegistry {
                 ...(untraced.has(definition.name)
                     ? []
                     : [
-                          `    friend void gc_trace_edges([[maybe_unused]] const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, [[maybe_unused]] const bbl::js::TraceVisitor& visitor) {`,
+                          `    friend void gc_trace_edges(const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, const bbl::js::TraceVisitor& visitor) {`,
                           ...definition.fields
                               .filter((field) =>
                                   ownsTracedEdge(

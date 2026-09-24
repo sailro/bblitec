@@ -135,7 +135,6 @@ import {
 import {
     compileAnisotropyOptions,
     compileClearCoatOptions,
-    compileGridMaterialOptions,
     compileIridescenceOptions,
     compileMetallicReflectanceOptions,
     compilePbrMaterialOptions,
@@ -183,6 +182,10 @@ import {
     type ReachedLineMaterial,
 } from "./compiler/line-material.js";
 import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
+import {
+    reachGridMaterial,
+    type ReachedGridMaterial,
+} from "./compiler/grid-material.js";
 import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
 import {
     executeApplicationFunction,
@@ -307,7 +310,10 @@ import type {
     ValueKind,
     VariableBinding,
 } from "./compiler/types.js";
-import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import {
+    frameCallbackParameterType,
+    isCompileTimeOnlyValue,
+} from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import { ClassHierarchy } from "./compiler/class-members.js";
 import {
@@ -3345,7 +3351,7 @@ class Compiler implements LoweringServices {
             writable(value).sceneMeshProfileIndex = index;
             delete writable(value).sceneMeshIndex;
             writable(value).cpp =
-                `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
+                `(bbl::upstream::begin_scene_mesh_profile(${this.requireEngine(value, call)}, ${index}u), ${value.cpp})`;
         }
         return value;
     }
@@ -3653,8 +3659,11 @@ class Compiler implements LoweringServices {
         return compileMetallicReflectanceOptions(this, expression);
     }
 
-    public compileGridMaterialOptions(expression: ts.Expression): string[] {
-        return compileGridMaterialOptions(this, expression);
+    public reachGridMaterial(
+        call: ts.CallExpression,
+        options: ts.Expression | undefined,
+    ): ReachedGridMaterial {
+        return reachGridMaterial(this, call, options);
     }
 
     public compileClearCoatOptions(
@@ -4053,9 +4062,7 @@ class Compiler implements LoweringServices {
                                       parameter,
                                       false,
                                       false,
-                                      signature === "timestamp"
-                                          ? "double"
-                                          : "float",
+                                      frameCallbackParameterType(signature),
                                   ),
                               ],
                           },
@@ -4074,7 +4081,7 @@ class Compiler implements LoweringServices {
                 "void",
                 unwrapped,
                 parameter
-                    ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
+                    ? `[[maybe_unused]] ${frameCallbackParameterType(signature)} ${parameter}`
                     : "",
                 parameter ? [parameter] : [],
             );
@@ -4210,7 +4217,7 @@ class Compiler implements LoweringServices {
                 if (parameter && ts.isIdentifier(parameter.name)) {
                     this.registerNativeBindingType(
                         parameterCppName!,
-                        signature === "timestamp" ? "double" : "float",
+                        frameCallbackParameterType(signature),
                     );
                     this.bindings.defineVariable(parameter.name, {
                         kind: "number",
@@ -4256,11 +4263,9 @@ class Compiler implements LoweringServices {
         // would be a second answer to it.
         const cppParameter = parameterName
             ? `[[maybe_unused]] ` +
-              `${signature === "timestamp" ? "double" : "float"} ` +
+              `${frameCallbackParameterType(signature)} ` +
               `${parameterCppName}`
-            : signature === "timestamp"
-              ? "double"
-              : "float";
+            : frameCallbackParameterType(signature);
         const lambdaParameter =
             signature === "void" || signature === "interval"
                 ? ""
@@ -4383,7 +4388,7 @@ class Compiler implements LoweringServices {
                         parameter,
                         false,
                         false,
-                        signature === "timestamp" ? "double" : "float",
+                        frameCallbackParameterType(signature),
                     );
                 const stored = this.bindings.lookupOptional(identifier);
                 const parameters = stored?.nativeCallbackParameterTypes;
@@ -4423,7 +4428,7 @@ class Compiler implements LoweringServices {
                 previousPlatformEventCaptureFloor;
         }
         const lambdaParameter = parameter
-            ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
+            ? `[[maybe_unused]] ${frameCallbackParameterType(signature)} ${parameter}`
             : "";
         return this.renderSharedClosure(
             compiled,
@@ -5711,12 +5716,18 @@ class Compiler implements LoweringServices {
             return undefined;
         }
         const accessor = owner.recordGetters?.[expression.name.text];
-        if (accessor) {
-            return this.compileRecordGetter(owner, accessor);
-        }
-        const property = owner.recordProperties?.[expression.name.text];
-        if (property) {
-            return property;
+        const member = accessor
+            ? this.compileRecordGetter(owner, accessor)
+            : owner.recordProperties?.[expression.name.text];
+        if (member) {
+            // A link of an optional chain carries the chain's presence.
+            return ts.isOptionalChain(expression)
+                ? this.propertyAccess.propertyWithOwnerPresence(
+                      owner,
+                      member,
+                      expression,
+                  )
+                : member;
         }
         // A property the record was built without reads as `undefined`
         // when its type declares it optional: `{ b: 2 } as { a?: number }`

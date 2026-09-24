@@ -27,6 +27,7 @@
  * generation with the pinned source location.
  */
 import ts from "typescript";
+import { declaredSymbol, resolvedSymbol } from "../compiler/symbols.js";
 import { posix } from "node:path";
 import {
     cppIdentifier,
@@ -665,7 +666,8 @@ export class PinnedRecordModel {
                         ts.isTypeAliasDeclaration(statement)) &&
                     statement.name.text === name
                 ) {
-                    const symbol = this.checker.getSymbolAtLocation(
+                    const symbol = declaredSymbol(
+                        this.checker,
                         statement.name,
                     )!;
                     return {
@@ -1066,9 +1068,7 @@ export class PinnedRecordModel {
 
     /** The declaration a reference names, through import aliases. */
     public declarationOf(node: ts.Node): ts.Declaration | undefined {
-        let symbol = this.checker.getSymbolAtLocation(node);
-        if (symbol && symbol.flags & ts.SymbolFlags.Alias)
-            symbol = this.checker.getAliasedSymbol(symbol);
+        const symbol = resolvedSymbol(this.checker, node);
         return symbol?.valueDeclaration ?? symbol?.declarations?.[0];
     }
 
@@ -1461,7 +1461,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         storage: RecordShape,
         cpp?: string,
     ): string {
-        const symbol = this.checker.getSymbolAtLocation(name);
+        const symbol = declaredSymbol(this.checker, name);
         if (!symbol) return this.refuse(name, "Pinned local has no symbol.");
         let chosen = cpp ?? cppIdentifier(name.text);
         const visible = (candidate: string) =>
@@ -1602,7 +1602,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 : left;
         }
         if (ts.isIdentifier(node)) {
-            const symbol = this.checker.getSymbolAtLocation(node);
+            const symbol = declaredSymbol(this.checker, node);
             const local = symbol ? this.locals.get(symbol) : undefined;
             if (local) return local.storage;
             const declaration =
@@ -1890,11 +1890,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private identifier(node: ts.Identifier): string | undefined {
         if (node.text === "undefined") return undefined;
         // `{ data }` names the property; its value is the local `data`.
-        const symbol =
-            ts.isShorthandPropertyAssignment(node.parent) &&
-            node.parent.name === node
-                ? this.checker.getShorthandAssignmentValueSymbol(node.parent)
-                : this.checker.getSymbolAtLocation(node);
+        const symbol = declaredSymbol(this.checker, node);
         const local = symbol ? this.locals.get(symbol) : undefined;
         if (local) return this.narrowed(local.cpp, local.storage, node);
         const declaration = this.model.declarationOf(node);
@@ -2485,7 +2481,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return `${this.model.qualified(entry)}(${this.arguments(node, declaration)})`;
         }
         if (ts.isIdentifier(callee)) {
-            const symbol = this.checker.getSymbolAtLocation(callee);
+            const symbol = declaredSymbol(this.checker, callee);
             const local = symbol ? this.locals.get(symbol) : undefined;
             const storage = local?.storage;
             if (local && storage?.kind === "function") {
@@ -2971,7 +2967,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private place(target: ts.Expression): Place {
         const node = this.skipParentheses(target);
         if (ts.isIdentifier(node)) {
-            const symbol = this.checker.getSymbolAtLocation(node);
+            const symbol = declaredSymbol(this.checker, node);
             const local = symbol ? this.locals.get(symbol) : undefined;
             if (local)
                 return {
@@ -3095,7 +3091,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const thrown = this.skipParentheses(statement.expression);
             if (
                 ts.isIdentifier(thrown) &&
-                this.checker.getSymbolAtLocation(thrown) === this.catchVariable
+                declaredSymbol(this.checker, thrown) === this.catchVariable
             )
                 return [`${indent}throw;`];
         }
@@ -3538,7 +3534,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const previous = this.catchVariable;
         this.catchVariable =
             variable && ts.isIdentifier(variable.name)
-                ? this.checker.getSymbolAtLocation(variable.name)
+                ? declaredSymbol(this.checker, variable.name)
                 : undefined;
         try {
             if (variable && ts.isIdentifier(variable.name)) {
@@ -3547,7 +3543,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     clause.block,
                     (node): node is ts.Identifier =>
                         ts.isIdentifier(node) &&
-                        this.checker.getSymbolAtLocation(node) === symbol,
+                        declaredSymbol(this.checker, node) === symbol,
                 );
                 if (reads.some((read) => !ts.isThrowStatement(read.parent)))
                     return this.refuse(

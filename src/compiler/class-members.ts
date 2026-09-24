@@ -367,14 +367,12 @@ export function staticClassMember(
     name: ts.MemberName,
 ): { table: ClassMemberTable; name: string } | undefined {
     if (!ts.isIdentifier(owner)) return undefined;
-    const member = checker
-        .getSymbolAtLocation(name)
-        ?.declarations?.find(
-            (candidate): candidate is ts.ClassElement =>
-                ts.isClassElement(candidate) &&
-                ts.isClassDeclaration(candidate.parent) &&
-                isStaticMember(candidate),
-        );
+    const member = resolvedSymbol(checker, name)?.declarations?.find(
+        (candidate): candidate is ts.ClassElement =>
+            ts.isClassElement(candidate) &&
+            ts.isClassDeclaration(candidate.parent) &&
+            isStaticMember(candidate),
+    );
     if (!member || !ts.isClassDeclaration(member.parent)) return undefined;
     return {
         table: classMemberTable(checker, member.parent),

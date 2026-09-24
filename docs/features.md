@@ -216,8 +216,9 @@ own extent refresh.
 
 Ordinary device recovery retains CPU owners and rebuilds GPU resources. Setup must be unconditional
 before startup and observations require one scene. Failure callbacks expose `Error.message`. As
-upstream, a failed recovery does not re-arm; a later loss then refuses rather than continuing.
-Shared worker/offscreen recovery and engine render-function wrapping are unsupported.
+upstream, a failed recovery does not re-arm; a later loss then refuses rather than continuing. Only the
+scene strategy registers, so a loss with an active sprite, text, effect or frame-graph context refuses with
+the pin's own message. Shared worker/offscreen recovery and engine render-function wrapping are unsupported.
 `disposeEngine` preserves retirement, stop, surface and resource cleanup order, including device
 teardown after a disposer throws. It is independent of recovery. On Windows, application iteration
 stalls during the modal window move/resize loop.
@@ -312,7 +313,8 @@ Intensity and diffuse-color setters retain validation and unchanged-value behavi
 
 ### Clustered lights
 
-PBR clustered containers compose shaders at generation and update bins/data textures natively.
+PBR clustered containers compose shaders at generation. The container and light factories, the container's
+addition and its per-frame refresh are lowered from the pinned bodies; the refresh keys its camera by handle.
 
 ## Materials and material state
 

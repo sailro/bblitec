@@ -41,6 +41,7 @@ import {
     sdlMslSource,
     shaderStageSlots,
     computeShaderSlotMetadata,
+    stageLayoutBindings,
     type SdlUniformAdaptation,
 } from "./shader-bindings.js";
 import {
@@ -500,9 +501,15 @@ export function compileOfflineShaders(
                             : normalizeTintHlslBindings(hlsl);
                     const slots = shaderStageSlots(normalized);
                     tree.write(`${stage.stem}.hlsl`, `${normalized}${EOL}`);
+                    // A render stage's sidecar opens with the entry point
+                    // its module declared, so a backend creates the stage
+                    // from what the module says rather than restating it,
+                    // and closes with the module's own bind-group layout,
+                    // which WebGPU binds by where SDL_GPU binds by the
+                    // compacted registers.
                     tree.write(
                         `${stage.stem}.slots`,
-                        `${(vertex === "compute" ? computeShaderSlotMetadata(hlsl, normalized) : slots.map((slot) => `${slot.kind}${slot.index} ${slot.name}`)).join(EOL)}${EOL}`,
+                        `${(vertex === "compute" ? computeShaderSlotMetadata(hlsl, normalized) : [`@entry ${stage.entryPoint}`, ...slots.map((slot) => `${slot.kind}${slot.index} ${slot.name}`), ...stageLayoutBindings(wgsl)]).join(EOL)}${EOL}`,
                     );
                     tree.write(
                         `${stage.stem}.tint-reflection.txt`,

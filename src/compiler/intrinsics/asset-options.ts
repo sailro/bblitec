@@ -101,7 +101,9 @@ export function compileEnvironmentOptions(
         // size of our own produced a skybox large enough for the camera's
         // far plane to clip it, which shows as a straight-edged hole in
         // the background once the camera moves off the reference pose.
-        skyboxSize: skyboxSize ? context.compileNumber(skyboxSize) : "0.0f",
+        skyboxSize: skyboxSize
+            ? context.compileNumber(skyboxSize, "double")
+            : "0.0",
         brdfUrl:
             brdfUrl && !brdfPathCpp
                 ? context.compileStringLiteral(brdfUrl)
@@ -152,7 +154,7 @@ export function compileDdsEnvironmentBackgroundOptions(
             required("groundTextureUrl"),
         ),
         skyboxUrl: context.compileStringLiteral(required("skyboxUrl")),
-        skyboxSize: context.compileNumber(required("skyboxSize")),
+        skyboxSize: context.compileNumber(required("skyboxSize"), "double"),
         // The pin's own default, which is also what every `loadEnvironment`
         // background carries: `enableNoise = true` on both builders.
         enableNoise: compileOptionalStaticBoolean(
@@ -242,9 +244,11 @@ export function compileHdrEnvironmentOptions(
         faceSize,
         useCubemapSkybox,
         skipGround,
-        skyboxSize: skyboxSize ? context.compileNumber(skyboxSize) : "0.0f",
+        skyboxSize: skyboxSize
+            ? context.compileNumber(skyboxSize, "double")
+            : "0.0",
         skyboxPosition: skyboxPosition
-            ? context.compileVec3(skyboxPosition)
-            : "bbl::Vec3{}",
+            ? context.compileVec3(skyboxPosition, "double")
+            : "bbl::Vec3d{}",
     };
 }

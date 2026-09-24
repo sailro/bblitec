@@ -6,6 +6,7 @@
 // scene's native textGpu receipts are joined against these by
 // checks/plugins/scene275-receipts.mjs.
 (() => {
+    /** @type {GpuReceipts} */
     const receipts = {
         resources: [],
         writes: [],
@@ -16,7 +17,9 @@
     };
     window.__gpuReceipts = receipts;
     let nextId = 1;
+    /** @type {WeakMap<object, number>} */
     const ids = new WeakMap();
+    /** @param {object} object */
     const idOf = (object) => {
         let id = ids.get(object);
         if (id === undefined) {
@@ -25,10 +28,25 @@
         }
         return id;
     };
+    /**
+     * A JSON copy of a descriptor member.
+     * @param {unknown} value
+     * @returns {unknown}
+     */
     const plain = (value) => JSON.parse(JSON.stringify(value ?? null));
+    /**
+     * The bytes a write takes from `data`: dataOffset and size count elements
+     * of a typed array and bytes otherwise.
+     * @param {AllowSharedBufferSource} data
+     * @param {number | undefined} dataOffset
+     * @param {number | undefined} size
+     */
     const bytesOf = (data, dataOffset, size) => {
         if (ArrayBuffer.isView(data)) {
-            const element = data.BYTES_PER_ELEMENT ?? 1;
+            const element =
+                "BYTES_PER_ELEMENT" in data
+                    ? Number(data.BYTES_PER_ELEMENT)
+                    : 1;
             const offset = data.byteOffset + (dataOffset ?? 0) * element;
             const length =
                 size !== undefined
@@ -65,6 +83,7 @@
         if (desc.mappedAtCreation) {
             // A buffer filled through its creation mapping is uploaded when it
             // is unmapped; the mapped ranges are recorded as writes then.
+            /** @type {Array<{ offset: number, range: ArrayBuffer }>} */
             const ranges = [];
             const originalGetMappedRange = buffer.getMappedRange.bind(buffer);
             buffer.getMappedRange = function (offset, size) {
@@ -96,9 +115,14 @@
     const originalCreateTexture = device.createTexture;
     device.createTexture = function (desc) {
         const texture = originalCreateTexture.call(this, desc);
-        const size = Array.isArray(desc.size)
-            ? { width: desc.size[0], height: desc.size[1] ?? 1 }
-            : { width: desc.size.width, height: desc.size.height ?? 1 };
+        const [width, height = 1] = Array.isArray(desc.size)
+            ? desc.size
+            : [desc.size.width, desc.size.height];
+        if (width === undefined)
+            throw new TypeError(
+                "createTexture accepted a size without a width",
+            );
+        const size = { width, height };
         receipts.resources.push({
             id: idOf(texture),
             kind: "texture",
@@ -136,16 +160,16 @@
         receipts.groups.push({
             id: idOf(group),
             label: desc.label ?? "",
-            entries: Array.from(desc.entries, (entry) => ({
-                binding: entry.binding,
-                resource: idOf(entry.resource.buffer ?? entry.resource),
-                ...(entry.resource.buffer
+            entries: Array.from(desc.entries, ({ binding, resource }) =>
+                "buffer" in resource
                     ? {
-                          offset: entry.resource.offset ?? 0,
-                          size: entry.resource.size ?? null,
+                          binding,
+                          resource: idOf(resource.buffer),
+                          offset: resource.offset ?? 0,
+                          size: resource.size ?? null,
                       }
-                    : {}),
-            })),
+                    : { binding, resource: idOf(resource) },
+            ),
         });
         return group;
     };
@@ -197,6 +221,13 @@
         );
     };
     const originalWriteTexture = GPUQueue.prototype.writeTexture;
+    /**
+     * @this {GPUQueue}
+     * @param {GPUTexelCopyTextureInfo} destination
+     * @param {AllowSharedBufferSource} data
+     * @param {GPUTexelCopyBufferLayout} layout
+     * @param {GPUExtent3D | Iterable<number>} size
+     */
     GPUQueue.prototype.writeTexture = function (
         destination,
         data,
@@ -218,10 +249,18 @@
             bytes: bytes.length <= 1048576 ? bytes : null,
             byteLength: bytes.length,
         });
-        return originalWriteTexture.call(this, destination, data, layout, size);
+        // The same receiver and arguments, whichever overload they select.
+        Reflect.apply(originalWriteTexture, this, [
+            destination,
+            data,
+            layout,
+            size,
+        ]);
     };
 
+    /** @type {WeakMap<GPURenderPassEncoder | GPURenderBundleEncoder, GpuReceiptBinding>} */
     const bindings = new WeakMap();
+    /** @param {GPURenderPassEncoder | GPURenderBundleEncoder} encoder */
     const state = (encoder) => {
         let current = bindings.get(encoder);
         if (current === undefined) {
@@ -240,14 +279,21 @@
             return originalSetPipeline.call(this, pipeline);
         };
         const originalSetBindGroup = proto.setBindGroup;
+        /**
+         * @this {GPURenderPassEncoder | GPURenderBundleEncoder}
+         * @param {number} index
+         * @param {GPUBindGroup | null} group
+         * @param {unknown[]} rest the dynamic offsets, as a list or as a range of a Uint32Array
+         */
         proto.setBindGroup = function (index, group, ...rest) {
             state(this).groups[index] = group ? idOf(group) : null;
-            return originalSetBindGroup.call(this, index, group, ...rest);
+            Reflect.apply(originalSetBindGroup, this, [index, group, ...rest]);
         };
         const originalSetVertexBuffer = proto.setVertexBuffer;
         proto.setVertexBuffer = function (slot, buffer, offset, size) {
+            // A null buffer unbinds the slot.
             state(this).vertices[slot] = {
-                buffer: idOf(buffer),
+                buffer: buffer ? idOf(buffer) : null,
                 offset: offset ?? 0,
                 size: size ?? null,
             };
@@ -275,6 +321,11 @@
                 size,
             );
         };
+        /**
+         * @param {GPURenderPassEncoder | GPURenderBundleEncoder} encoder
+         * @param {"draw" | "drawIndexed"} method
+         * @param {number[]} args
+         */
         const record = (encoder, method, args) => {
             const current = state(encoder);
             receipts.draws.push({

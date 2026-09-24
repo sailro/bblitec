@@ -238,14 +238,15 @@ export class ClassLowerer {
         const owner = this.context.unwrap(access.expression);
         if (owner.kind === ts.SyntaxKind.ThisKeyword) {
             if (!this.context.activeThis()?.classStatics) return undefined;
-            const member = this.context.checker
-                .getSymbolAtLocation(access.name)
-                ?.declarations?.find(
-                    (candidate): candidate is ts.ClassElement =>
-                        ts.isClassElement(candidate) &&
-                        isStaticMember(candidate) &&
-                        ts.isClassDeclaration(candidate.parent),
-                );
+            const member = resolvedSymbol(
+                this.context.checker,
+                access,
+            )?.declarations?.find(
+                (candidate): candidate is ts.ClassElement =>
+                    ts.isClassElement(candidate) &&
+                    isStaticMember(candidate) &&
+                    ts.isClassDeclaration(candidate.parent),
+            );
             return member && ts.isClassDeclaration(member.parent)
                 ? { table: this.table(member.parent), name: access.name.text }
                 : undefined;
@@ -2663,14 +2664,15 @@ export class ClassLowerer {
     public storedSetterOwner(
         target: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const setter = this.context.checker
-            .getSymbolAtLocation(target.name)
-            ?.declarations?.some(
-                (declaration) =>
-                    ts.isSetAccessorDeclaration(declaration) &&
-                    ts.isClassDeclaration(declaration.parent) &&
-                    !declaration.getSourceFile().isDeclarationFile,
-            );
+        const setter = resolvedSymbol(
+            this.context.checker,
+            target,
+        )?.declarations?.some(
+            (declaration) =>
+                ts.isSetAccessorDeclaration(declaration) &&
+                ts.isClassDeclaration(declaration.parent) &&
+                !declaration.getSourceFile().isDeclarationFile,
+        );
         const stored =
             setter &&
             this.context.dataTypes.existingClassStruct(
@@ -2775,9 +2777,10 @@ export class ClassLowerer {
      */
     public compileBrandCheck(expression: ts.BinaryExpression): string {
         const name = expression.left as ts.PrivateIdentifier;
-        const member = this.context.checker
-            .getSymbolAtLocation(name)
-            ?.declarations?.find(ts.isClassElement);
+        const member = resolvedSymbol(
+            this.context.checker,
+            name,
+        )?.declarations?.find(ts.isClassElement);
         const owner = member?.parent;
         if (!member || !owner || !ts.isClassDeclaration(owner)) {
             this.context.fail(

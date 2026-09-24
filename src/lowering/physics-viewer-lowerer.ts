@@ -129,8 +129,9 @@ std::optional<MeshHandle> show_physics_body(const PhysicsViewerHandle& viewer, P
     Engine& engine = *physics_world_record(viewer->world).engine;
     const std::vector<float> positions(geometry.positions.begin(), geometry.positions.end());
     const std::vector<float> normals(positions.size());
-    const MeshHandle mesh = bind_scene_mesh_profile(engine,
-        create_mesh_from_data(engine, "physicsBodyDebug", positions, normals, lines, {}, {}, {}, {}), mesh_profile);
+    begin_scene_mesh_profile(engine, mesh_profile);
+    const MeshHandle mesh =
+        create_mesh_from_data(engine, "physicsBodyDebug", positions, normals, lines, {}, {}, {}, {});
     const MaterialHandle material = create_shader_material(engine, viewer->material_variant);
     ${recordAt("engine.meshes", "mesh")}.material = material;
     ${recordAt("engine.meshes", "mesh")}.pickable = false;

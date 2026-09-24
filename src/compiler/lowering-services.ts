@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type { ReachedGridMaterial } from "./grid-material.js";
 import type { AssetDecoderConfiguration } from "../asset-decoders.js";
 import type { CompiledRenderTargetOptions } from "./intrinsics/engine-options.js";
 import type {
@@ -263,7 +264,6 @@ export interface LoweringServices {
     compileMetallicReflectanceOptions(
         expression: ts.Expression,
     ): CompiledMetallicReflectanceOptions;
-    compileGridMaterialOptions(expression: ts.Expression): string[];
     compileClearCoatOptions(
         expression: ts.Expression,
     ): CompiledClearCoatOptions;
@@ -285,6 +285,10 @@ export interface LoweringServices {
             components: string[];
         }>;
     };
+    reachGridMaterial(
+        call: ts.CallExpression,
+        options: ts.Expression | undefined,
+    ): ReachedGridMaterial;
     reachLineMaterial(
         node: ts.Node,
         options: ReachedLineMaterial,

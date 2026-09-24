@@ -7,7 +7,7 @@
 // not have, so it refuses here, before anything is emitted.
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { aliasTarget, libraryGlobal } from "./symbols.js";
+import { libraryGlobal, resolvedSymbol } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 
 type Activation = ts.SignatureDeclaration;
@@ -219,11 +219,10 @@ export class PendingActivations {
                     parent.name === reference)
             )
                 return false;
-            const found = ts.isShorthandPropertyAssignment(parent)
-                ? this.checker.getShorthandAssignmentValueSymbol(parent)
-                : this.checker.getSymbolAtLocation(reference);
-            const declaration =
-                found && aliasTarget(this.checker, found).valueDeclaration;
+            const declaration = resolvedSymbol(
+                this.checker,
+                reference,
+            )?.valueDeclaration;
             const initializer =
                 declaration &&
                 (ts.isVariableDeclaration(declaration) ||

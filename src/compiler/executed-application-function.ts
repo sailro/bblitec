@@ -27,7 +27,12 @@ import { isDeepStrictEqual } from "node:util";
 import vm from "node:vm";
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { CompilerSymbols, declarationOrigin } from "./symbols.js";
+import {
+    aliasTarget,
+    CompilerSymbols,
+    declarationOrigin,
+    declaredSymbol,
+} from "./symbols.js";
 import { rootIdentifier } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
@@ -431,7 +436,9 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         root: ts.Node,
     ): boolean {
         const checker = this.context.checker;
-        const symbol = checker.getSymbolAtLocation(identifier);
+        // The binding in scope where the write is: its declaration, an
+        // import's own specifier included, is what lies outside `root`.
+        const symbol = declaredSymbol(checker, identifier);
         const declaration = symbol?.declarations?.[0];
         return (
             declaration !== undefined &&
@@ -448,9 +455,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         isTargetWalk: boolean,
     ): void {
         const checker = this.context.checker;
-        const symbol = ts.isShorthandPropertyAssignment(identifier.parent)
-            ? checker.getShorthandAssignmentValueSymbol(identifier.parent)
-            : checker.getSymbolAtLocation(identifier);
+        const symbol = declaredSymbol(checker, identifier);
         if (!symbol) {
             if (identifier.text === "undefined") return;
             this.context.fail(
@@ -538,7 +543,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             return;
         }
         const specifier = symbol.declarations?.find(ts.isImportSpecifier);
-        const imported = this.context.checker.getAliasedSymbol(symbol);
+        const imported = aliasTarget(this.context.checker, symbol);
         const declaration =
             imported.valueDeclaration ?? imported.declarations?.[0];
         const statement = declaration && moduleScopeStatement(declaration);

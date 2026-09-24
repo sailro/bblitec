@@ -252,33 +252,16 @@ PostProcessProgram build_post_process_program(State& state,
     program.extra_textures = extras;
     program.uniform_binding = info.uniform_binding;
     program.uniform_size = uniform_size;
-    program.shader = load_wgsl_module(state.device,
-                                      "postprocess-" + std::to_string(info.module_index) + ".frag");
-    std::vector<WGPUBindGroupLayoutEntry> entries;
-    WGPUBindGroupLayoutEntry sampler = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    sampler.binding = 0;
-    sampler.visibility = WGPUShaderStage_Fragment;
-    sampler.sampler.type = WGPUSamplerBindingType_Filtering;
-    entries.push_back(sampler);
-    for (std::size_t texture = 0; texture <= extras; ++texture) {
-        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entry.binding = 1u + static_cast<std::uint32_t>(texture);
-        entry.visibility = WGPUShaderStage_Fragment;
-        entry.texture.sampleType = WGPUTextureSampleType_Float;
-        entry.texture.viewDimension = WGPUTextureViewDimension_2D;
-        entries.push_back(entry);
-    }
-    if (uniform_size > 0) {
-        WGPUBindGroupLayoutEntry uniform = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        uniform.binding = info.uniform_binding;
-        uniform.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        uniform.buffer.type = WGPUBufferBindingType_Uniform;
-        entries.push_back(uniform);
-    }
-    WGPUBindGroupLayoutDescriptor group = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    group.entryCount = entries.size();
-    group.entries = entries.data();
-    program.group_layout = wgpuDeviceCreateBindGroupLayout(state.device, &group);
+    const std::string stem = "postprocess-" + std::to_string(info.module_index);
+    const std::string vertex_stem = stem + ".vert", fragment_stem = stem + ".frag";
+    program.shader = load_wgsl_module(state.device, fragment_stem);
+    // Group 0 as the module declares it: the source sampler and texture,
+    // the program's extra textures, and its uniform block when it has one.
+    const std::array<DawnLayoutStage, 2> stages{{
+        {vertex_stem, WGPUShaderStage_Vertex},
+        {fragment_stem, WGPUShaderStage_Fragment},
+    }};
+    program.group_layout = create_dawn_reflected_layout(state.device, stages, 0);
     WGPUPipelineLayoutDescriptor layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     layout.bindGroupLayoutCount = 1;
     layout.bindGroupLayouts = &program.group_layout;

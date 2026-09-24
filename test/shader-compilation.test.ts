@@ -30,6 +30,7 @@ import {
     sdlSpirvSource,
     sdlUniformSource,
     shaderStageSlots,
+    stageLayoutBindings,
 } from "../src/shader-bindings.js";
 import {
     readShaderComposition,
@@ -182,6 +183,60 @@ var<uniform> nmeShadowParams: Node;`;
             "params.frag",
         ),
         "var<storage, read> gp: Params;",
+    );
+});
+
+test("stage layout lines reflect every declared binding's bind-group layout shape", () => {
+    const wgsl = `struct U { v: vec4f };
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var<storage, read> values: array<f32>;
+@group(0) @binding(2) var<storage, read_write> results: array<f32>;
+@group(1) @binding(0) var color: texture_2d<f32>;
+@group(1) @binding(1) var colorSampler: sampler;
+@group(1) @binding(2) var data: texture_2d<f32>;
+@group(1) @binding(3) var cells: texture_2d<u32>;
+@group(1) @binding(4) var shadow: texture_depth_2d_array;
+@group(1) @binding(5) var shadowSampler: sampler_comparison;
+@group(1) @binding(6) var sky: texture_cube<f32>;
+@group(1) @binding(7) var samples: texture_multisampled_2d<f32>;
+@group(1) @binding(8) var unused: texture_2d<f32>;
+@group(2) @binding(0) var written: texture_storage_2d<rgba8unorm, write>;
+fn tint(t: texture_2d<f32>, s: sampler, uv: vec2f) -> vec4f { return textureSample(t, s, uv); }
+@fragment fn main(@builtin(position) p: vec4f) -> @location(0) vec4f {
+    let a = tint(color, colorSampler, p.xy);
+    let b = textureLoad(data, vec2i(0), 0);
+    let c = vec4f(textureLoad(cells, vec2i(0), 0));
+    let d = textureSampleCompare(shadow, shadowSampler, p.xy, 0, 0.5);
+    let e = textureGather(0, sky, colorSampler, vec3f(1.0));
+    let f = textureLoad(samples, vec2i(0), 0);
+    textureStore(written, vec2i(0), a);
+    results[0] = values[0];
+    return a + b + c + vec4f(d) + e + f + u.v;
+}`;
+    // A texture reaching a sampling builtin through a helper's parameter is
+    // filterable; one only loaded is not; a declared binding nothing reads
+    // is still listed, as its bind group carries it.
+    assert.deepEqual(stageLayoutBindings(wgsl), [
+        "@binding 0 0 uniform",
+        "@binding 0 1 storage read",
+        "@binding 0 2 storage read_write",
+        "@binding 1 0 texture float 2d single",
+        "@binding 1 1 sampler filtering",
+        "@binding 1 2 texture unfilterable-float 2d single",
+        "@binding 1 3 texture uint 2d single",
+        "@binding 1 4 texture depth 2d-array single",
+        "@binding 1 5 sampler comparison",
+        "@binding 1 6 texture float cube single",
+        "@binding 1 7 texture unfilterable-float 2d multisampled",
+        "@binding 1 8 texture unfilterable-float 2d single",
+        "@binding 2 0 storage-texture write-only rgba8unorm 2d",
+    ]);
+    assert.throws(
+        () =>
+            stageLayoutBindings(
+                "@group(0) @binding(0) var video: texture_external;",
+            ),
+        /texture_external, which no bind-group layout represents/,
     );
 });
 
@@ -911,10 +966,15 @@ process.stdout.write(JSON.stringify(compileOfflineShaders(${JSON.stringify({ rep
         assert.equal(refreshed.directoriesCompiled, 1);
         assert.equal(refreshed.tintCompiled, 1);
         assert.equal(refreshed.compiled, 1);
-        assert.match(
-            readFileSync(join(directory, "simple.frag.slots"), "utf8"),
-            /i0 values/,
+        const sidecar = readFileSync(
+            join(directory, "simple.frag.slots"),
+            "utf8",
         );
+        assert.match(sidecar, /i0 values/);
+        // The module's own layout closes the sidecar for WebGPU.
+        assert.match(sidecar, /^@binding 2 0 texture uint 2d single\r?$/m);
+        assert.match(sidecar, /^@binding 2 1 texture float 2d single\r?$/m);
+        assert.match(sidecar, /^@binding 2 2 sampler filtering\r?$/m);
         assert.notDeepEqual(
             readFileSync(join(directory, "simple.frag.dxil")),
             oldBinary,

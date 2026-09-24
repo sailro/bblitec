@@ -316,7 +316,7 @@ ${materialPublicationTransport()}
 // ${context.provenance(sceneModule, "addToScene")}
 void process_pbr_material_swaps(Scene& scene);
 bool pbr_mesh_list_contains(const std::vector<MeshHandle>& meshes, MeshHandle mesh) {
-    return std::any_of(meshes.begin(), meshes.end(), [mesh](MeshHandle value) { return value.value == mesh.value; });
+    return std::any_of(meshes.begin(), meshes.end(), [mesh](MeshHandle value) { return value == mesh; });
 }
 const MaterialRecord* pbr_mesh_material(const Scene& scene, MeshHandle mesh) {
     const auto material = ${recordAt("scene.engine->meshes", "mesh")}.material;
@@ -1590,7 +1590,7 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
     );
     return `struct SourceRuntimeGroupBuild { MeshHandle mesh; std::uint64_t builder; bool full; };
 double source_group_mesh_index(const std::vector<MeshHandle>& meshes, MeshHandle mesh) {
-    const auto found = std::find_if(meshes.begin(), meshes.end(), [mesh](MeshHandle candidate) {return candidate.value == mesh.value;});
+    const auto found = std::find_if(meshes.begin(), meshes.end(), [mesh](MeshHandle candidate) {return candidate == mesh;});
     return found == meshes.end() ? -1.0 : static_cast<double>(found - meshes.begin());
 }
 void queue_runtime_pbr_group(Scene& scene, MaterialHandle material, MeshHandle mesh, std::vector<SourceRuntimeGroupBuild>& pending) {

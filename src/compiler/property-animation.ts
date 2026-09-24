@@ -215,7 +215,7 @@ export class PropertyAnimationTargetLowerer {
             );
             return (
                 `bbl::PropertyAnimationTarget{` +
-                `bbl::PropertyAnimationTargetKind::callback, ` +
+                `bbl::PropertyAnimationTargetKind::callback, {}, ` +
                 `${identity}u, ${renderClosure(closure, `float ${argument}`)}}`
             );
         });
@@ -240,7 +240,7 @@ export class PropertyAnimationTargetLowerer {
             context.emit(`${fieldCpp} = static_cast<double>(${argument});`);
         });
         return (
-            `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, 0u, ` +
+            `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, {}, 0u, ` +
             `${renderClosure(closure, `float ${argument}`)}, ${identityCpp}, ${context.cppString(property)}}`
         );
     }

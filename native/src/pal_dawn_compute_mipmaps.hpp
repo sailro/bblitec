@@ -6,9 +6,8 @@ namespace bbl::pal {
 struct DawnComputeMipmapPipeline final : ComputeMipmapPipeline {
     DawnShaderModule shader;
     DawnSampler sampler;
-    DawnBindGroupLayout bindings;
-    DawnPipelineLayout layout;
     DawnRenderPipeline pipeline;
+    DawnBindGroupLayout bindings;
 };
 
 inline std::shared_ptr<ComputeMipmapPipeline>
@@ -26,26 +25,6 @@ create_dawn_compute_mipmap_pipeline(WGPUDevice device, const std::string& format
     sampler.magFilter = WGPUFilterMode_Linear;
     result->sampler =
         require_dawn_resource(wgpuDeviceCreateSampler(device, &sampler), "mipmap sampler");
-    WGPUBindGroupLayoutEntry entries[2] = {WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT,
-                                           WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT};
-    entries[0].binding = 0;
-    entries[0].visibility = WGPUShaderStage_Fragment;
-    entries[0].texture.sampleType = WGPUTextureSampleType_Float;
-    entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
-    entries[1].binding = 1;
-    entries[1].visibility = WGPUShaderStage_Fragment;
-    entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
-    WGPUBindGroupLayoutDescriptor bindings = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    bindings.entryCount = 2;
-    bindings.entries = entries;
-    result->bindings = require_dawn_resource(wgpuDeviceCreateBindGroupLayout(device, &bindings),
-                                             "mipmap bindings");
-    const WGPUBindGroupLayout group = result->bindings;
-    WGPUPipelineLayoutDescriptor layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    layout.bindGroupLayoutCount = 1;
-    layout.bindGroupLayouts = &group;
-    result->layout =
-        require_dawn_resource(wgpuDeviceCreatePipelineLayout(device, &layout), "mipmap layout");
     WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
     target.format = dawn_compute_texture_format(format);
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
@@ -53,14 +32,19 @@ create_dawn_compute_mipmap_pipeline(WGPUDevice device, const std::string& format
     fragment.entryPoint = {"fs", 2};
     fragment.targetCount = 1;
     fragment.targets = &target;
+    // Laid out by the module itself, as the device-level mip generator's
+    // blit is: the one pipeline per format is the only one its levels'
+    // groups are bound to, so the group layout is the one Dawn reflects
+    // off the pin's texture-and-sampler pair.
     WGPURenderPipelineDescriptor pipeline = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    pipeline.layout = result->layout;
     pipeline.vertex.module = result->shader;
     pipeline.vertex.entryPoint = {"vs", 2};
     pipeline.fragment = &fragment;
     pipeline.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     result->pipeline =
         require_dawn_resource(wgpuDeviceCreateRenderPipeline(device, &pipeline), "mipmap pipeline");
+    result->bindings = require_dawn_resource(
+        wgpuRenderPipelineGetBindGroupLayout(result->pipeline, 0), "mipmap bindings");
     return result;
 }
 
