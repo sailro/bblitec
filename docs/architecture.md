@@ -63,7 +63,8 @@ composition that needs distinct generation-time values or frame-yield continuati
 callbacks and coroutines retain separate invocation state. A body is emitted once per distinct
 generation-time argument (callback, record or closed scalar) when every effect it reaches has a native
 representation (`canShareFunctionBody`), including retained DOM/canvas calls, calls through function values
-and scene-node writes. A shared body lowers as runtime control flow and records no generation-owned
+and scene-node writes; a callback an operation invokes shares only closed effects (`reachesOnlyClosedEffects`).
+A shared body lowers as runtime control flow and records no generation-owned
 construction; a call its separate body cannot represent, or that would lose a static fact of an argument,
 specializes inline. Closure environments are named structs of numbered captures, one per shape. Concrete
 capture types place shared bodies in their owning source unit; unresolved capture types use templates.
