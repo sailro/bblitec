@@ -4,8 +4,10 @@ import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import type {
     PinnedBinding,
+    PinnedCallSpelling,
     PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
+import { nestedFunctionDeclaration } from "./pinned-function-lowerer.js";
 import {
     cameraPlatformStatement,
     cameraPointerDeltaBindings,
@@ -14,8 +16,6 @@ import { recordAt } from "../compiler/record-access.js";
 
 const configurableModule = "src/camera/configurable-free-camera-controls.ts";
 const freeModule = "src/camera/free-camera-controls.ts";
-
-type CallSpelling = (args: readonly string[]) => string;
 
 /** One pinned free-camera control factory and the names its closure uses. */
 interface FreeControlSource {
@@ -41,33 +41,6 @@ const configurableControl: FreeControlSource = {
     lastPosition: ["lastPointerX", "lastPointerY"],
 };
 
-/** A callback the pinned factory declares inside itself. */
-function nestedCallback(
-    context: LoweringContext,
-    control: FreeControlSource,
-    name: string,
-): { file: ts.SourceFile; callback: ts.FunctionDeclaration } {
-    const { file, declaration } = context.functionDeclaration(
-        control.modulePath,
-        control.symbol,
-    );
-    const callback = declaration.body!.statements.find(
-        (node): node is ts.FunctionDeclaration =>
-            ts.isFunctionDeclaration(node) &&
-            node.name?.text === name &&
-            !!node.body,
-    );
-    return {
-        file,
-        callback:
-            callback ??
-            context.contractError(
-                declaration,
-                `Expected camera control callback '${name}'.`,
-            ),
-    };
-}
-
 /**
  * The camera fields both free-camera factories read and write. Their
  * `_yaw`/`_pitch` and position components are accessors that version the
@@ -92,7 +65,7 @@ function freeCameraBindings(): Map<string, PinnedBinding> {
     return bindings;
 }
 
-function freeCameraCalls(): Map<string, CallSpelling> {
+function freeCameraCalls(): Map<string, PinnedCallSpelling> {
     const calls = pinnedNumericMathCalls();
     calls.set("keys.has", (args) => `pressed(${args.join(", ")})`);
     calls.set(
@@ -160,9 +133,14 @@ function lowerFreeUpdate(
     context: LoweringContext,
     control: FreeControlSource,
     state: ReadonlyMap<string, PinnedBinding>,
-    extraCalls: ReadonlyMap<string, CallSpelling> = new Map(),
+    extraCalls: ReadonlyMap<string, PinnedCallSpelling> = new Map(),
 ): string {
-    const { file, callback } = nestedCallback(context, control, "update");
+    const { file, declaration: callback } = nestedFunctionDeclaration(
+        context,
+        control.modulePath,
+        control.symbol,
+        "update",
+    );
     const bindings = freeCameraBindings();
     for (const [name, binding] of state) bindings.set(name, binding);
     const calls = freeCameraCalls();
@@ -188,7 +166,12 @@ function lowerFreePointer(
     state: ReadonlyMap<string, PinnedBinding>,
     dragging: PinnedBinding,
 ): string {
-    const { file, callback } = nestedCallback(context, control, name);
+    const { file, declaration: callback } = nestedFunctionDeclaration(
+        context,
+        control.modulePath,
+        control.symbol,
+        name,
+    );
     const bindings = freeCameraBindings();
     for (const [source, binding] of state) bindings.set(source, binding);
     bindings.set("isDragging", dragging);
@@ -412,7 +395,12 @@ export function lowerConfigurableCameraControls(
             )
         )
             context.contractError(
-                nestedCallback(context, configurableControl, name).callback,
+                nestedFunctionDeclaration(
+                    context,
+                    configurableControl.modulePath,
+                    configurableControl.symbol,
+                    name,
+                ).declaration,
                 `Configurable ${name} no longer matches attachFreeControl's.`,
             );
     }
