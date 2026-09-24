@@ -161,9 +161,6 @@ struct FileList {
 #if BBLITE_HAS_UI
 [[nodiscard]] inline UiElementRecord& browser_file_ui_element(Engine& engine,
                                                               UiElementHandle handle) {
-    if (handle.value >= engine.ui_elements.size()) {
-        throw std::runtime_error("Native browser-file UI handle is out of range.");
-    }
     return handle_at(engine.ui_elements, handle);
 }
 

@@ -3779,23 +3779,59 @@ template <typename Range> [[nodiscard]] inline double hypot_js(const Range& valu
 }
 
 /**
+ * `Math.max` (`Maximum`) or `Math.min` of two operands at ECMA-262's rules:
+ * NaN when either is NaN, and `-0` ordered below `+0`. Equal operands tie
+ * on their sign bits -- the maximum ANDs them (`+0` wins), the minimum ORs
+ * them (`-0` wins) -- and equal nonzero operands share every bit.
+ *
+ * The ordering is a select; NaN and ties are predicted branches, so a
+ * loop-carried fold (a running bound) waits on one compare-select per step
+ * rather than on the blends a fully branchless step chains, and no library
+ * `signbit` call spills the operands.
+ */
+template <bool Maximum, std::floating_point Number>
+[[nodiscard]] inline Number math_extreme_step(Number left, Number right) {
+    using Bits =
+        std::conditional_t<sizeof(Number) == sizeof(std::uint64_t), std::uint64_t, std::uint32_t>;
+    static_assert(sizeof(Bits) == sizeof(Number));
+    // A NaN is the one value unequal to itself; a sum with one is NaN.
+    if (left != left || right != right) [[unlikely]] {
+        return left + right;
+    }
+    if (left == right) [[unlikely]] {
+        const Bits left_bits = std::bit_cast<Bits>(left);
+        const Bits right_bits = std::bit_cast<Bits>(right);
+        return std::bit_cast<Number>(
+            static_cast<Bits>(Maximum ? left_bits & right_bits : left_bits | right_bits));
+    }
+    if constexpr (Maximum) {
+        return left > right ? left : right;
+    } else {
+        return left < right ? left : right;
+    }
+}
+
+/**
  * `Math.max` (`Maximum`) or `Math.min` over `values`, at ECMA-262's rules: a
  * NaN operand makes the result NaN, `-0` orders below `+0`, and an empty
  * list is -Infinity for the maximum and +Infinity for the minimum. None of
  * that is `std::max`/`std::min`'s, and a third argument to either is its
- * comparator. The result is one of the operands or that infinity, so it is
- * exact at the width it is computed in.
+ * comparator. The result is one of the operands, that infinity or NaN, so it
+ * is exact at the width it is computed in.
  */
 template <bool Maximum, typename Number, typename Range>
 [[nodiscard]] inline Number math_extreme_in(const Range& values) {
-    Number result = Maximum ? -std::numeric_limits<Number>::infinity()
-                            : std::numeric_limits<Number>::infinity();
-    for (const Number value : values) {
-        if (std::isnan(value))
-            return value;
-        if ((Maximum ? value > result : value < result) ||
-            (value == 0 && result == 0 && (Maximum ? !std::signbit(value) : std::signbit(value))))
-            result = value;
+    auto value = std::begin(values);
+    const auto end = std::end(values);
+    if (value == end) {
+        return Maximum ? -std::numeric_limits<Number>::infinity()
+                       : std::numeric_limits<Number>::infinity();
+    }
+    // Seeded with the first operand rather than the empty list's infinity,
+    // which would cost every call one more step.
+    Number result = static_cast<Number>(*value);
+    while (++value != end) {
+        result = math_extreme_step<Maximum>(result, static_cast<Number>(*value));
     }
     return result;
 }

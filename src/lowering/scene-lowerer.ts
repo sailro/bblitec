@@ -922,21 +922,7 @@ void set_mesh_transform_parent(
         record.parent.value >= engine.meshes.size()) {
         return;
     }
-    if (record.transform_parent.value < engine.transform_nodes.size()) {
-        std::vector<MeshHandle>& old_children =
-            ${recordAt("engine.transform_nodes", "record.transform_parent")}
-                .parented_meshes;
-        old_children.erase(
-            std::remove(old_children.begin(), old_children.end(), mesh),
-            old_children.end());
-    }
-    if (record.parent.value < engine.meshes.size()) {
-        std::vector<MeshHandle>& old_children =
-            ${recordAt("engine.meshes", "record.parent")}.parented_meshes;
-        old_children.erase(
-            std::remove(old_children.begin(), old_children.end(), mesh),
-            old_children.end());
-    }
+    unregister_from_parents(engine, record, mesh);
     record.parent = MeshHandle{};
     record.transform_parent = parent;
     mark_mesh_dirty(engine, mesh);
@@ -1314,14 +1300,6 @@ void apply_preserved_parent_local(
     mark_mesh_dirty(engine, child);
 }
 
-void unregister_parented_mesh(
-    std::vector<MeshHandle>& registry,
-    MeshHandle mesh) {
-    registry.erase(
-        std::remove(registry.begin(), registry.end(), mesh),
-        registry.end());
-}
-
 void require_acyclic_mesh_parent(
     const Engine& engine,
     MeshHandle child,
@@ -1366,16 +1344,7 @@ void set_mesh_transform_parent(
         record.transform_parent.value >= engine.transform_nodes.size()) {
         return;
     }
-    if (record.transform_parent.value < engine.transform_nodes.size()) {
-        unregister_parented_mesh(
-            ${recordAt("engine.transform_nodes", "record.transform_parent")}
-                .parented_meshes,
-            mesh);
-    }
-    if (record.parent.value < engine.meshes.size()) {
-        unregister_parented_mesh(
-            ${recordAt("engine.meshes", "record.parent")}.parented_meshes, mesh);
-    }
+    unregister_from_parents(engine, record, mesh);
     record.transform_parent = TransformNodeHandle{};
     record.parent = parent;
     mark_mesh_dirty(engine, mesh);

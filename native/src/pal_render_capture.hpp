@@ -932,9 +932,7 @@ inline void write_draw_uniforms(JsonWriter& json, const Scene& scene, const Engi
         // The transcribed StandardUniforms block is retired: the
         // draw path fills the pin's own 96-byte material mirror, so
         // the capture dumps the same bytes the same writer builds.
-        const MaterialRecord* material = draw.item.material.value < engine.materials.size()
-                                             ? &handle_at(engine.materials, draw.item.material)
-                                             : nullptr;
+        const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
         std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
         if (material && material->no_color) {
             features |= upstream::standard_no_color_output_flag;

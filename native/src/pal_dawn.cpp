@@ -4745,9 +4745,7 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
                                 WGPUBuffer uv_uniforms,
                                 [[maybe_unused]] WGPUBuffer uv_transform_uniforms) {
     const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-    const MaterialRecord* material = draw.item.material.value < engine.materials.size()
-                                         ? &handle_at(engine.materials, draw.item.material)
-                                         : nullptr;
+    const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
     const upstream::StandardVariantEntry& entry = upstream::standard_variants[variant];
     const upstream::MeshUniforms mesh_block = pinned_mesh_block(
         scene, engine, standard_draw_world(record, entry.uses_local_position, scene, engine),
@@ -4805,9 +4803,7 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
                 write_pinned_bone_texture(state, mesh, handle_at(engine.meshes, draw.item.mesh));
             }
 #endif
-            const MaterialRecord* material = draw.item.material.value < engine.materials.size()
-                                                 ? &handle_at(engine.materials, draw.item.material)
-                                                 : nullptr;
+            const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
             DawnDrawState& colour_state =
                 ensure_standard_draw_buffers(state, mesh, draw.item.material.value);
             DawnDrawState& draw_state =
@@ -7208,9 +7204,7 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
 
             const std::uint32_t current_cluster_base = cluster.id_start;
             const upstream::RenderItem& item = render_plan[mesh_index];
-            const MaterialRecord* material = item.material.value < engine.materials.size()
-                                                 ? &handle_at(engine.materials, item.material)
-                                                 : nullptr;
+            const MaterialRecord* material = handle_find(engine.materials, item.material);
             const bool double_sided = item.cull_mode == upstream::RenderCullMode::none;
             if (double_sided != (sided_mode == 1))
                 continue;
@@ -9571,9 +9565,7 @@ class DawnSceneRun {
         std::size_t profile_transformed_meshes = 0, profile_transformed_vertices = 0;
         bool topology_updated = false, capture_ready = false, frame_graph_presented = false;
         PixelViewport surface_extent{};
-        double aspect = 0;
-        std::array<float, 16> matrix{}, frame_view{}, frame_projection{};
-        std::array<float, 4> frame_camera_position{};
+        CameraPassMatrices frame_camera{};
         ShaderPassMatrices frame_pass_matrices{};
         const Scene* pass_scene = nullptr;
         std::vector<DawnMesh>* pass_meshes = nullptr;
@@ -9595,29 +9587,17 @@ class DawnSceneRun {
         return *frame_;
     }
 
-    /**
-     * The scene's active camera, read from the live `scene.camera` at each
-     * use as the pin reads it, or null when the scene has none. Without one
-     * the pin still runs the scene pass: it clears and draws, but writes no
-     * scene block (`_writePassSceneUBO` returns first, render-task-base.ts),
-     * so the pass draws through the zero block the frame starts with and
-     * nothing it projects reaches a fragment.
-     */
-    CameraRecord* active_camera() {
-        return data_.scene.camera.value < data_.engine.cameras.size()
-                   ? &handle_at(data_.engine.cameras, data_.scene.camera)
-                   : nullptr;
-    }
+    /** The run scene's `scene_camera`. */
+    CameraRecord* active_camera() { return scene_camera(data_.engine, data_.scene); }
 
     /**
      * The camera a registered layer's pass projects through: its own, or,
      * for a layer without one, the base scene's. Null when neither has one,
-     * which is the no-camera pass `active_camera` describes.
+     * which is the no-camera pass `scene_camera` describes.
      */
     CameraRecord* layer_camera(const Scene& layer) {
-        return layer.camera.value < data_.engine.cameras.size()
-                   ? &handle_at(data_.engine.cameras, layer.camera)
-                   : active_camera();
+        CameraRecord* const own = scene_camera(data_.engine, layer);
+        return own ? own : active_camera();
     }
 
     void rebuild_task_draw_lists() {
@@ -9663,7 +9643,7 @@ class DawnSceneRun {
         [[maybe_unused]] auto& width = data_.width;
         [[maybe_unused]] auto& height = data_.height;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
-        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& matrix = current_frame().frame_camera.view_projection;
         [[maybe_unused]] const auto& capture_ready = current_frame().capture_ready;
 
         if (capture_ready && !captures.render_capture_saved &&
@@ -9730,9 +9710,7 @@ class DawnSceneRun {
                                    .c_str());
                 }
                 const MaterialRecord* standard_material =
-                    draw.item.material.value < engine.materials.size()
-                        ? &handle_at(engine.materials, draw.item.material)
-                        : nullptr;
+                    handle_find(engine.materials, draw.item.material);
 #if BBLITE_STANDARD_SKELETON
                 if (upstream::standard_variant_skeleton(upstream::standard_variants[variant])) {
                     write_pinned_bone_texture(state, draw_mesh,
@@ -9847,9 +9825,7 @@ class DawnSceneRun {
 #endif
                     DawnDrawState& pinned_state = ensure_pinned_draw_bindings(
                         state, draw_mesh, draw.item.material.value, variant,
-                        draw.item.material.value < engine.materials.size()
-                            ? &handle_at(engine.materials, draw.item.material)
-                            : nullptr);
+                        handle_find(engine.materials, draw.item.material));
                     pinned_state.mirrored_vertices = conventions.mirrored_vertices;
                     write_pinned_draw_blocks(state, *pass_scene, engine, draw, variant, conventions,
                                              pinned_state.mesh_uniforms,
@@ -10445,11 +10421,12 @@ public:
             current_frame().profile_transformed_vertices;
         [[maybe_unused]] auto& topology_updated = current_frame().topology_updated;
         [[maybe_unused]] auto& surface_extent = current_frame().surface_extent;
-        [[maybe_unused]] auto& aspect = current_frame().aspect;
-        [[maybe_unused]] auto& matrix = current_frame().matrix;
-        [[maybe_unused]] auto& frame_view = current_frame().frame_view;
-        [[maybe_unused]] auto& frame_projection = current_frame().frame_projection;
-        [[maybe_unused]] auto& frame_camera_position = current_frame().frame_camera_position;
+        [[maybe_unused]] auto& frame_camera = current_frame().frame_camera;
+        [[maybe_unused]] const auto& aspect = frame_camera.aspect;
+        [[maybe_unused]] const auto& matrix = frame_camera.view_projection;
+        [[maybe_unused]] const auto& frame_view = frame_camera.view;
+        [[maybe_unused]] const auto& frame_projection = frame_camera.projection;
+        [[maybe_unused]] const auto& frame_camera_position = frame_camera.camera_position;
         [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
         [[maybe_unused]] auto& capture_ready = current_frame().capture_ready;
         [[maybe_unused]] auto& pass_scene = current_frame().pass_scene;
@@ -10769,28 +10746,14 @@ public:
             // `sortTransparentBindings` sorts only with a camera
             // (render-task-base.ts).
             upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, *camera);
-            // getEffectiveAspectRatio divides two JavaScript numbers, so
-            // the ratio reaches the projection writer in double. It is the
-            // pinned function itself: a camera carrying a viewport scales
-            // the target ratio by the viewport's own, and one without takes
-            // the pin's literal 1.
-            aspect =
-                upstream::effective_aspect_ratio(*camera, static_cast<double>(surface_extent.width),
-                                                 static_cast<double>(surface_extent.height));
-            matrix = upstream::build_view_projection(*camera, aspect);
-            // The frame's own two factors, built once. A shader material may
-            // declare either beside the product, the pin's splat UBO stores
-            // them separately, and the billboard sort reads the view. The
-            // projection is the pin's `getProjectionMatrix` -- the arm that
-            // branches on the camera -- rather than the perspective writer.
-            frame_view = upstream::build_view_matrix(upstream::camera_world_matrix(*camera));
-            frame_projection = upstream::build_scene_projection(*camera, aspect);
-            frame_camera_position = shader_camera_position(scene, engine, *camera);
         }
-        // Without a camera the matrices above keep the frame's zeros: the
-        // scene block the pin never writes (see `active_camera`).
-        frame_pass_matrices = {matrix.data(), &frame_view, &frame_projection};
-        frame_pass_matrices.camera_position = &frame_camera_position;
+        // The frame's product and its two factors, built once: a shader
+        // material may declare either factor beside the product, the pin's
+        // splat UBO stores them separately, and the billboard sort reads the
+        // view.
+        frame_camera = camera_pass_matrices(scene, engine, camera, surface_extent.width,
+                                            surface_extent.height);
+        frame_pass_matrices = frame_camera.pass();
 #if BBLITE_HAS_TEXT
         validate_text_scene(scene);
         state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
@@ -10969,29 +10932,14 @@ public:
             Scene* overlay_scene = engine.registered_scenes[layer + 1u].get();
             if (!overlay_scene)
                 continue;
-            // A layer without a camera keeps the zero pass matrices of the
-            // block the pin never writes for it.
-            std::array<float, 16> overlay_matrix{}, overlay_view{}, overlay_projection{};
-            std::array<float, 4> overlay_camera_position{};
-            if (const CameraRecord* overlay_camera = layer_camera(*overlay_scene)) {
-                // The layer's own effective aspect, as above: a viewport is
-                // the camera's, not the target's.
-                const PixelViewport overlay_surface_extent =
-                    scene_surface_extent(engine, *overlay_scene, width, height);
-                const double overlay_aspect = upstream::effective_aspect_ratio(
-                    *overlay_camera, static_cast<double>(overlay_surface_extent.width),
-                    static_cast<double>(overlay_surface_extent.height));
-                overlay_matrix = upstream::build_view_projection(*overlay_camera, overlay_aspect);
-                overlay_view =
-                    upstream::build_view_matrix(upstream::camera_world_matrix(*overlay_camera));
-                overlay_projection =
-                    upstream::build_scene_projection(*overlay_camera, overlay_aspect);
-                overlay_camera_position =
-                    shader_camera_position(*overlay_scene, engine, *overlay_camera);
-            }
-            ShaderPassMatrices overlay_pass_matrices{overlay_matrix.data(), &overlay_view,
-                                                     &overlay_projection};
-            overlay_pass_matrices.camera_position = &overlay_camera_position;
+            // The layer's own effective aspect: a viewport is the camera's,
+            // not the target's.
+            const PixelViewport overlay_surface_extent =
+                scene_surface_extent(engine, *overlay_scene, width, height);
+            const CameraPassMatrices overlay_camera_pass =
+                camera_pass_matrices(*overlay_scene, engine, layer_camera(*overlay_scene),
+                                     overlay_surface_extent.width, overlay_surface_extent.height);
+            const ShaderPassMatrices overlay_pass_matrices = overlay_camera_pass.pass();
             pass_scene = overlay_scene;
             pass_meshes = &state.overlay_meshes[layer];
             write_material_uniforms(overlay_plans[layer].draw_lists.opaque, overlay_pass_matrices);
@@ -11080,9 +11028,6 @@ public:
                     graph_lights = state.overlay_frames[graph_layer - 1].lights_uniforms;
 #endif
                 for (const TaskHandle handle : graph_scene.tasks) {
-                    if (handle.value >= engine.frame_tasks.size()) {
-                        throw std::runtime_error("Scene frame task handle is invalid.");
-                    }
                     const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                     if (task.kind == FrameTaskKind::geometry) {
                         // A geometry task without a camera does not execute
@@ -11141,55 +11086,28 @@ public:
                     if (task.kind != FrameTaskKind::render)
                         continue;
                     DawnRenderTask& render_task = handle_at(state.render_tasks, handle);
-                    if (task.render.target.value >= engine.render_targets.size()) {
-                        throw std::runtime_error("Render task target is invalid.");
-                    }
                     const RenderTargetRecord& target_record =
                         handle_at(engine.render_targets, task.render.target);
                     const DawnRenderTarget& target =
                         handle_at(state.render_targets, task.render.target);
-                    // `cfg.cam ?? scene.camera`; null is a pass the pin runs
-                    // without writing its scene block (see `active_camera`).
                     const CameraRecord* const task_camera =
-                        task.render.has_camera && task.render.camera.value < engine.cameras.size()
-                            ? &handle_at(engine.cameras, task.render.camera)
-                            : graph_camera;
+                        render_task_camera(engine, task, graph_camera);
+                    // `_writePassSceneUBO` folds the camera's own viewport into
+                    // whichever extent the task was configured for -- the
+                    // canvas or the target.
+                    const bool canvas_extent = task.render.canvas_size;
+                    CameraPassMatrices task_camera_pass = camera_pass_matrices(
+                        graph_scene, engine, task_camera,
+                        canvas_extent ? graph_extent.width : static_cast<double>(target.width),
+                        canvas_extent ? graph_extent.height : static_cast<double>(target.height));
                     // A shadow task renders from the light, not from a
-                    // camera: the generator's own matrices replace both of
-                    // these below, so building and uploading a camera
-                    // view-projection first would be a dead pass over the
-                    // camera basis and a dead 64-byte write.
+                    // camera: the generator's own matrices replace the product
+                    // below, which stays the zero matrix and is never uploaded.
                     const bool shadow_task = task.render.shadow_generator.value != invalid_handle;
-                    double task_aspect = 0.0;
-                    std::array<float, 16> task_matrix{}, task_view{}, task_projection{};
-                    std::array<float, 4> task_camera_position{};
-                    if (task_camera) {
-                        // `_writePassSceneUBO` folds the camera's own viewport
-                        // into whichever extent the task was configured for --
-                        // the canvas or the target.
-                        task_aspect =
-                            task.render.canvas_size
-                                ? upstream::effective_aspect_ratio(
-                                      *task_camera, static_cast<double>(graph_extent.width),
-                                      static_cast<double>(graph_extent.height))
-                                : upstream::effective_aspect_ratio(
-                                      *task_camera, static_cast<double>(target.width),
-                                      static_cast<double>(target.height));
-                        if (!shadow_task)
-                            task_matrix =
-                                upstream::build_view_projection(*task_camera, task_aspect);
-                        // The task's own two factors, beside its product, for a
-                        // shader material that declares one.
-                        task_view = upstream::build_view_matrix(
-                            upstream::camera_world_matrix(*task_camera));
-                        task_projection =
-                            upstream::build_scene_projection(*task_camera, task_aspect);
-                        task_camera_position =
-                            shader_camera_position(graph_scene, engine, *task_camera);
-                    }
-                    ShaderPassMatrices task_pass_matrices{task_matrix.data(), &task_view,
-                                                          &task_projection};
-                    task_pass_matrices.camera_position = &task_camera_position;
+                    if (shadow_task)
+                        task_camera_pass.view_projection = {};
+                    const std::array<float, 16>& task_matrix = task_camera_pass.view_projection;
+                    const ShaderPassMatrices task_pass_matrices = task_camera_pass.pass();
                     if (!shadow_task && task_camera) {
                         wgpuQueueWriteBuffer(state.queue, render_task.view_projection, 0,
                                              task_matrix.data(), 64);
@@ -11227,7 +11145,7 @@ public:
                                              caster_view_projection.data(), 64);
                         ShaderPassMatrices caster_pass_matrices{caster_view_projection.data(),
                                                                 &caster_view, nullptr};
-                        caster_pass_matrices.camera_position = &task_camera_position;
+                        caster_pass_matrices.camera_position = &task_camera_pass.camera_position;
                         const std::size_t generator_index = task.render.shadow_generator.value;
                         const bool later_cascade = generator_index < wrote_caster_blocks.size() &&
                                                    wrote_caster_blocks[generator_index];
@@ -11248,7 +11166,7 @@ public:
                     // It used to be written only for a task the scene gave its
                     // own camera, on the reading that a second camera is the
                     // only thing that moves the view-projection. It is not: the
-                    // matrix is built from `task_aspect`, and that comes from
+                    // matrix is built from the task's aspect, and that comes from
                     // the task's TARGET. A task rendering the scene camera into
                     // a target the canvas's shape does not share -- scene 187
                     // renders into half the canvas width -- then drew through
@@ -11287,8 +11205,8 @@ public:
                             wgpuQueueWriteBuffer(state.queue, render_task.skybox_matrix, 0, &skybox,
                                                  sizeof(skybox));
                         } else if (task_camera) {
-                            const auto skybox =
-                                upstream::build_skybox_view_projection(*task_camera, task_aspect);
+                            const auto skybox = upstream::build_skybox_view_projection(
+                                *task_camera, task_camera_pass.aspect);
                             wgpuQueueWriteBuffer(state.queue, render_task.skybox_matrix, 0,
                                                  skybox.data(), sizeof(skybox));
                         }
@@ -11490,9 +11408,7 @@ public:
                     const std::size_t variant = standard_state.group_key / 2;
                     if (!standard_state.group) {
                         const MaterialRecord* standard_material =
-                            draw.item.material.value < engine.materials.size()
-                                ? &handle_at(engine.materials, draw.item.material)
-                                : nullptr;
+                            handle_find(engine.materials, draw.item.material);
                         standard_state.group = build_standard_draw_group(
                             state, mesh, standard_material, variant, standard_state.mesh_uniforms,
                             standard_state.material_uniforms, standard_state.uv_uniforms,
@@ -11531,9 +11447,7 @@ public:
                                        .c_str());
                     }
                     const MaterialRecord* node_material =
-                        draw.item.material.value < engine.materials.size()
-                            ? &handle_at(engine.materials, draw.item.material)
-                            : nullptr;
+                        handle_find(engine.materials, draw.item.material);
                     // Which of the graph's two compiled views: an ESM caster
                     // view carries the bit its own factory set.
                     const bool node_caster =
@@ -11706,9 +11620,7 @@ public:
                         continue;
                     }
                     const MaterialRecord* material =
-                        draw.item.material.value < engine.materials.size()
-                            ? &handle_at(engine.materials, draw.item.material)
-                            : nullptr;
+                        handle_find(engine.materials, draw.item.material);
                     if (!transmission_copied && transmissive_draw_material(material)) {
                         // The pinned mid-pass break: grab the scene
                         // color from the preserved multisampled
@@ -12005,9 +11917,6 @@ public:
                     return dawn_render_target_texture(state, engine, reference.target,
                                                       reference.depth_only);
                 }
-                if (reference.task.value >= engine.frame_tasks.size()) {
-                    throw std::runtime_error("Frame graph source task handle is invalid.");
-                }
                 const FrameTaskRecord& source_task = handle_at(engine.frame_tasks, reference.task);
                 if (source_task.kind != FrameTaskKind::geometry) {
                     throw std::runtime_error("Frame graph source task is not geometry.");
@@ -12070,9 +11979,6 @@ public:
                         &graph_scene);
 #endif
                     for (const TaskHandle handle : graph_scene.tasks) {
-                        if (handle.value >= engine.frame_tasks.size()) {
-                            throw std::runtime_error("Scene frame task handle is invalid.");
-                        }
                         FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                         if (task.execution_enabled == false)
                             continue;
@@ -12099,9 +12005,6 @@ public:
                         }
 #endif
                         if (task.kind == FrameTaskKind::render) {
-                            if (task.render.target.value >= engine.render_targets.size()) {
-                                throw std::runtime_error("Render task target is invalid.");
-                            }
                             const RenderTargetRecord& target_record =
                                 handle_at(engine.render_targets, task.render.target);
                             DawnRenderTarget& target =
@@ -12122,9 +12025,7 @@ public:
                             CameraRecord* source_camera =
                                 task.render.has_camera
                                     ? &handle_at(engine.cameras, task.render.camera)
-                                : task.source_scene->camera.value < engine.cameras.size()
-                                    ? &handle_at(engine.cameras, task.source_scene->camera)
-                                    : nullptr;
+                                    : handle_find(engine.cameras, task.source_scene->camera);
                             validate_temporal_source(engine, task, source_camera,
                                                      render_task.draw_lists);
                             if (!source_camera && !camera) {
@@ -12149,25 +12050,17 @@ public:
                                                          render_task.pinned_scene_uniforms, 0, data,
                                                          bytes);
                                 });
-                            const double task_aspect =
-                                task.render.canvas_size
-                                    ? upstream::effective_aspect_ratio(
-                                          task_camera, graph_extent.width, graph_extent.height)
-                                    : upstream::effective_aspect_ratio(task_camera, target.width,
-                                                                       target.height);
-                            const auto task_matrix =
-                                upstream::build_view_projection(task_camera, task_aspect);
-                            const auto task_view = upstream::build_view_matrix(
-                                upstream::camera_world_matrix(task_camera));
-                            const auto task_projection =
-                                upstream::build_scene_projection(task_camera, task_aspect);
-                            const auto task_eye =
-                                shader_camera_position(graph_scene, engine, task_camera);
-                            ShaderPassMatrices matrices{task_matrix.data(), &task_view,
-                                                        &task_projection};
-                            matrices.camera_position = &task_eye;
+                            const bool canvas_extent = task.render.canvas_size;
+                            const CameraPassMatrices task_camera_pass = camera_pass_matrices(
+                                graph_scene, engine, &task_camera,
+                                canvas_extent ? graph_extent.width
+                                              : static_cast<double>(target.width),
+                                canvas_extent ? graph_extent.height
+                                              : static_cast<double>(target.height));
+                            const ShaderPassMatrices matrices = task_camera_pass.pass();
                             wgpuQueueWriteBuffer(state.queue, render_task.view_projection, 0,
-                                                 task_matrix.data(), sizeof(task_matrix));
+                                                 task_camera_pass.view_projection.data(),
+                                                 sizeof(task_camera_pass.view_projection));
                             write_material_uniforms(render_task.draw_lists.opaque, matrices);
                             write_material_uniforms(render_task.draw_lists.transparent, matrices);
                             if (source_camera)
@@ -12318,11 +12211,6 @@ public:
                                     for (const RenderTaskMesh& entry : task.render_meshes) {
                                         const auto material_handle =
                                             render_task_mesh_material(engine, entry);
-                                        if (material_handle.value >= engine.materials.size()) {
-                                            throw std::runtime_error(
-                                                "Depth task material override is "
-                                                "invalid.");
-                                        }
                                         const MaterialRecord& material =
                                             handle_at(engine.materials, material_handle);
                                         if (!material.no_color) {
@@ -12391,11 +12279,7 @@ public:
                             color_attachment.loadOp =
                                 task.render.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
                             color_attachment.storeOp = WGPUStoreOp_Store;
-                            // `cfg.clrColor ?? sc.clearColor`, the task's own scene
-                            // read live at the pass.
-                            const Color4 task_clear_color = task.render.clear_color
-                                                                ? *task.render.clear_color
-                                                                : task.source_scene->clear_color;
+                            const Color4 task_clear_color = render_task_clear_color(task);
                             color_attachment.clearValue = WGPUColor{
                                 task_clear_color.r,
                                 task_clear_color.g,
@@ -12963,9 +12847,7 @@ public:
                                         "Temporal source has no retained scene.");
                                 restore_temporal_source_buffer(state, source, gpu_source);
                                 CameraRecord* source_camera =
-                                    source.source_scene->camera.value < engine.cameras.size()
-                                        ? &handle_at(engine.cameras, source.source_scene->camera)
-                                        : nullptr;
+                                    handle_find(engine.cameras, source.source_scene->camera);
                                 [[maybe_unused]] const double draws =
                                     upstream::execute_taa_post_process(
                                         taa, task.post_process.passes.at(0).params[0],
