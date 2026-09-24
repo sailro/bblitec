@@ -1175,24 +1175,23 @@ inline WGPUBindGroupLayout create_dawn_reflected_layout(WGPUDevice device,
 }
 
 /**
- * A bind group over `layout`, the reflected layout of group `group`: each
- * binding its stages declare takes the resource `serve(name, entry)` fills
- * in for the name the module declares it under. A binding the site cannot
- * serve -- `serve` returns false -- refuses, naming it.
+ * A bind group over `layout`, whose entries `declared` lists: each binding
+ * takes the resource `serve(name, entry)` fills in for the name the module
+ * declares it under. A binding the site cannot serve -- `serve` returns
+ * false -- refuses, naming it.
  */
 template <typename Serve>
-WGPUBindGroup create_dawn_reflected_group(WGPUDevice device, WGPUBindGroupLayout layout,
-                                          std::span<const DawnLayoutStage> stages,
-                                          std::uint32_t group, Serve&& serve) {
+WGPUBindGroup create_dawn_named_group(WGPUDevice device, WGPUBindGroupLayout layout,
+                                      std::span<const DawnReflectedLayoutEntry> declared,
+                                      std::uint32_t group, Serve&& serve) {
     std::vector<WGPUBindGroupEntry> entries;
-    for (const DawnReflectedLayoutEntry& declared : dawn_reflected_layout(stages, group)) {
+    for (const DawnReflectedLayoutEntry& binding : declared) {
         WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        entry.binding = declared.entry.binding;
-        if (!serve(std::string_view(declared.name), entry)) {
+        entry.binding = binding.entry.binding;
+        if (!serve(std::string_view(binding.name), entry)) {
             dawn_error("@group(" + std::to_string(group) + ") @binding(" +
-                       std::to_string(declared.entry.binding) + ") '" + declared.name +
-                       "' is declared by " + std::string(stages.front().stem) +
-                       ", which this pass does not bind.");
+                       std::to_string(binding.entry.binding) + ") '" + binding.name +
+                       "' is declared by a module this pass does not bind it for.");
         }
         entries.push_back(entry);
     }
@@ -1204,6 +1203,15 @@ WGPUBindGroup create_dawn_reflected_group(WGPUDevice device, WGPUBindGroupLayout
     if (!bound)
         dawn_error("reflected bind group for @group(" + std::to_string(group) + ")");
     return bound;
+}
+
+/** `create_dawn_named_group` over what `stages` declare in group `group`. */
+template <typename Serve>
+WGPUBindGroup create_dawn_reflected_group(WGPUDevice device, WGPUBindGroupLayout layout,
+                                          std::span<const DawnLayoutStage> stages,
+                                          std::uint32_t group, Serve&& serve) {
+    const std::vector<DawnReflectedLayoutEntry> declared = dawn_reflected_layout(stages, group);
+    return create_dawn_named_group(device, layout, declared, group, std::forward<Serve>(serve));
 }
 
 /**

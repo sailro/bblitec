@@ -48,6 +48,7 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
         "using DawnSpriteLayer = FixtureRecord<DawnSpriteLayerResources>;",
         cppRecord(sdlBillboard, "struct BillboardResources {"),
         "using BillboardPass = BillboardResources;",
+        cppRecord(dawnBillboard, "struct DawnBillboardScene {"),
         cppRecord(dawnBillboard, "struct DawnBillboardResources {"),
         "using DawnBillboardPass = DawnBillboardResources;",
 

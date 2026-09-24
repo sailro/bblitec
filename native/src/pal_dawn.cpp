@@ -10162,6 +10162,19 @@ public:
                                                 caster_pass_matrices, later_cascade);
                     }
 #endif
+#if BBLITE_HAS_BILLBOARDS
+                    // The billboards a scene-stage task draws bind the task's own
+                    // pass block, as the pin binds each task's scene group: the
+                    // task's camera and matrices, as the SDL_GPU twin pushes.
+                    if (task.render.scene_stages && target_record.has_color && !shadow_task) {
+                        const upstream::SceneUniforms billboard_block = billboard_scene_block(
+                            graph_scene, engine, task_camera, task_matrix, task_camera_pass.view);
+                        for (DawnBillboardPass& billboard : state.billboard_passes) {
+                            write_dawn_billboard_task_scene(state.device, state.queue, billboard,
+                                                            handle.value, billboard_block);
+                        }
+                    }
+#endif
 #if BBLITE_PINNED_MATERIALS
                     // A colour task that is not a caster pass reads its OWN
                     // pass block, which is the rule the SDL_GPU backend states
@@ -10612,7 +10625,7 @@ public:
                     if (handle_at(engine.billboard_systems, billboard.system).depth_mode != mode) {
                         continue;
                     }
-                    record_dawn_billboard_pass(pass, engine, billboard);
+                    record_dawn_billboard_pass(pass, engine, billboard, billboard.frame_scene);
                 }
             };
 #endif
@@ -11246,7 +11259,9 @@ public:
                                             .depth_mode != mode) {
                                         continue;
                                     }
-                                    record_dawn_billboard_pass(task_pass, engine, billboard);
+                                    record_dawn_billboard_pass(
+                                        task_pass, engine, billboard,
+                                        dawn_billboard_task_scene(billboard, handle.value));
                                 }
                                 // The billboard pass has its own pipeline; a following
                                 // mesh list must not mistake the previously cached mesh

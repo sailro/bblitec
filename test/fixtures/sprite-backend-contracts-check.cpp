@@ -711,7 +711,7 @@ int main() {
     DawnBillboardPass dawn_billboard;
     dawn_billboard.system = {0};
     dawn_billboard.instances = capture::allocate(16);
-    dawn_billboard.scene_uniforms = capture::allocate(sizeof(bbl::upstream::SceneUniforms));
+    dawn_billboard.frame_scene.uniforms = capture::allocate(sizeof(bbl::upstream::SceneUniforms));
     dawn_billboard.system_uniforms = capture::allocate(16);
     dawn_billboard.fx_uniforms = capture::allocate(16);
     dawn_billboard.elapsed_ms = 4294967296.0;
