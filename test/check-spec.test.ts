@@ -372,7 +372,8 @@ test("every declared check names a registry scene or repository source, existing
             );
         }
     }
-    // The plugins directory carries nothing a check does not name.
+    // The plugins directory carries nothing a check does not name, beside
+    // the shared helpers and the init scripts' global declarations.
     const named = new Set(
         ids.flatMap((id) =>
             readCheckSpec(id).expect.flatMap((expectation) =>
@@ -391,7 +392,10 @@ test("every declared check names a registry scene or repository source, existing
     for (const name of readdirSync(resolve("checks", "plugins"))) {
         const path = resolve("checks", "plugins", name);
         assert.ok(
-            named.has(path) || initScripts.has(path) || name === "support.mjs",
+            named.has(path) ||
+                initScripts.has(path) ||
+                name === "support.mjs" ||
+                name === "browser-globals.d.ts",
             `checks/plugins/${name} is named by no check`,
         );
     }
