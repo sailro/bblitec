@@ -32,8 +32,11 @@
  * - `getClosestPoint`, `createNavCrowd`, `addAgent` and
  *   `getAgentPosition` are the same shape one level up: the wrapper
  *   surface is the PAL's, and what the pinned module adds on top — the
- *   fixed ±1 half-extents, the three `?? N` agent-parameter defaults,
- *   the `{0,0,0}` an absent agent reads as — is emitted here.
+ *   three `?? N` agent-parameter defaults, the `{0,0,0}` an absent agent
+ *   reads as — is emitted here. The query every build arm ends with is the
+ *   wrapper's `NavMeshQuery`: its node pool and default search box are
+ *   read from the installed package with the build defaults, and the
+ *   pinned module's own explicit search box is proved to be that box.
  */
 import ts from "typescript";
 import { readFileSync } from "node:fs";
@@ -42,25 +45,84 @@ import {
     LoweredSource,
     LoweringContext,
     numericValue,
+    propertyName,
     sharedPinnedContext,
     unwrapExpression,
     variableInitializer,
 } from "./context.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { pinnedOptionFallback } from "./pinned-option-defaults.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import { recordAt } from "../compiler/record-access.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
+const WRAPPER_CORE = "@recast-navigation/core/dist/index.mjs";
 
 /**
  * `recastConfigDefaults` from the installed `@recast-navigation/core`,
  * pinned exact in package.json.
  */
 function pinnedRecastConfigDefaults(): ReadonlyMap<string, number> {
-    return wrapperNumericDefaults(
-        "recastConfigDefaults",
-        "@recast-navigation/core/dist/index.mjs",
+    return wrapperNumericDefaults("recastConfigDefaults", WRAPPER_CORE);
+}
+
+/**
+ * `NavMeshQuery`'s own two defaults, from the installed core package: the
+ * `params?.maxNodes ?? <n>` its constructor initializes the Detour query
+ * with, and its `defaultQueryHalfExtents` field, the box every query that
+ * names none searches (`computePath`'s endpoints, a crowd agent's move
+ * target).
+ */
+function pinnedNavMeshQueryDefaults(): {
+    maxNodes: number;
+    halfExtents: readonly [number, number, number];
+} {
+    const file = wrapperModule(WRAPPER_CORE);
+    const query = file.statements.find(
+        (statement): statement is ts.ClassDeclaration =>
+            ts.isClassDeclaration(statement) &&
+            statement.name?.text === "NavMeshQuery",
     );
+    const extents = query?.members.find(
+        (member): member is ts.PropertyDeclaration =>
+            ts.isPropertyDeclaration(member) &&
+            propertyName(member.name) === "defaultQueryHalfExtents",
+    )?.initializer;
+    const constructor = query?.members.find(ts.isConstructorDeclaration);
+    if (!extents || !constructor) {
+        throw new Error(
+            `${WRAPPER_CORE} no longer declares NavMeshQuery with a ` +
+                "defaultQueryHalfExtents field and a constructor.",
+        );
+    }
+    const maxNodes = numericValue(
+        pinnedOptionFallback(sharedPinnedContext(), constructor, {
+            member: "maxNodes",
+        }),
+        file,
+    );
+    const label = "NavMeshQuery.defaultQueryHalfExtents";
+    return {
+        maxNodes,
+        halfExtents: vectorLanes(numericObject(extents, file, label), label),
+    };
+}
+
+/** An `{ x, y, z }` record's three numbers, refusing any other key set. */
+function vectorLanes(
+    lanes: ReadonlyMap<string, number>,
+    label: string,
+): readonly [number, number, number] {
+    const [x, y, z] = (["x", "y", "z"] as const).map((axis) => lanes.get(axis));
+    if (
+        lanes.size !== 3 ||
+        x === undefined ||
+        y === undefined ||
+        z === undefined
+    ) {
+        throw new Error(`${label} is no longer an { x, y, z } of numbers.`);
+    }
+    return [x, y, z];
 }
 
 /**
@@ -151,15 +213,19 @@ export function navigationBuildDefaultsDeclaration(): string {
                 "no longer defaults expectedLayersPerTile.",
         );
     }
+    const query = pinnedNavMeshQueryDefaults();
     const fields = [
         ...RECAST_CONFIG_FIELDS.map(
             ([key, field]) =>
                 `    .${field} = ${doubleLiteral(config.get(key)!)},`,
         ),
         `    .expected_layers_per_tile = ${doubleLiteral(expectedLayers)},`,
+        `    .query_max_nodes = ${doubleLiteral(query.maxNodes)},`,
+        `    .query_half_extents = {${query.halfExtents.map(doubleLiteral).join(", ")}},`,
     ];
     return `/**
- * \`recastConfigDefaults\` from @recast-navigation/core@${wrapperPackageVersion("@recast-navigation/core")} and
+ * \`recastConfigDefaults\` and \`NavMeshQuery\`'s \`maxNodes\` and
+ * \`defaultQueryHalfExtents\` from @recast-navigation/core@${wrapperPackageVersion("@recast-navigation/core")}, and
  * \`tileCacheGeneratorConfigDefaults.expectedLayersPerTile\` from
  * @recast-navigation/generators@${wrapperPackageVersion("@recast-navigation/generators")}, read from the installed packages.
  */
@@ -230,10 +296,12 @@ export function pinnedAgentParamDefaults(): readonly (readonly [
     return defaults;
 }
 
-function wrapperNumericDefaults(
-    variableName: string,
-    moduleSpecifier: string,
-): ReadonlyMap<string, number> {
+const wrapperModules = new Map<string, ts.SourceFile>();
+
+/** One installed `@recast-navigation` module's syntax tree, parsed once. */
+function wrapperModule(moduleSpecifier: string): ts.SourceFile {
+    const cached = wrapperModules.get(moduleSpecifier);
+    if (cached) return cached;
     const require = createRequire(import.meta.url);
     const modulePath = require.resolve(moduleSpecifier);
     const file = ts.createSourceFile(
@@ -242,12 +310,31 @@ function wrapperNumericDefaults(
         ts.ScriptTarget.Latest,
         true,
     );
-    const literal = unwrapExpression(variableInitializer(file, variableName));
+    wrapperModules.set(moduleSpecifier, file);
+    return file;
+}
+
+function wrapperNumericDefaults(
+    variableName: string,
+    moduleSpecifier: string,
+): ReadonlyMap<string, number> {
+    const file = wrapperModule(moduleSpecifier);
+    return numericObject(
+        variableInitializer(file, variableName),
+        file,
+        `${moduleSpecifier}'s ${variableName}`,
+    );
+}
+
+/** An object literal of plain numeric properties, by key. */
+function numericObject(
+    initializer: ts.Expression,
+    file: ts.SourceFile,
+    label: string,
+): ReadonlyMap<string, number> {
+    const literal = unwrapExpression(initializer);
     if (!ts.isObjectLiteralExpression(literal)) {
-        throw new Error(
-            `${moduleSpecifier} no longer declares ${variableName} as an ` +
-                "object literal.",
-        );
+        throw new Error(`${label} is no longer an object literal.`);
     }
     const defaults = new Map<string, number>();
     for (const property of literal.properties) {
@@ -261,9 +348,7 @@ function wrapperNumericDefaults(
             !ts.isPropertyAssignment(property) ||
             !ts.isIdentifier(property.name)
         ) {
-            throw new Error(
-                `${variableName} no longer holds plain numeric defaults.`,
-            );
+            throw new Error(`${label} no longer holds plain numeric defaults.`);
         }
         defaults.set(
             property.name.text,
@@ -426,7 +511,7 @@ export class NavigationLowerer {
             }
         }
 
-        // getClosestPoint: the fixed ±1 half-extents and the point read
+        // getClosestPoint: the pinned half-extents and the point read
         // straight off the result. The pin inspects no status here —
         // `findClosestPointWithin` is the arm that does — so the
         // emitted wrapper passes the PAL's point through the same way.
@@ -439,14 +524,30 @@ export class NavigationLowerer {
             "plugin._navMeshQuery.findClosestPoint(position, { halfExtents: _tmpHalfExtents })",
             "Closest-point query",
         );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                this.context.sourceFile(modulePath),
-                "_tmpHalfExtents",
-            ),
-            "{ x: 1, y: 1, z: 1 }",
-            "Closest-point half extents",
+        // The pinned module names its own box, `_tmpHalfExtents`, at every
+        // query it makes; the PAL searches the one box the wrapper's query
+        // defaults to, which is only the pin's while the two agree.
+        const navigationFile = this.context.sourceFile(modulePath);
+        const pinnedBox = this.context.variableInitializer(
+            navigationFile,
+            "_tmpHalfExtents",
         );
+        const pinnedExtents = vectorLanes(
+            numericObject(pinnedBox, navigationFile, "_tmpHalfExtents"),
+            "_tmpHalfExtents",
+        );
+        const wrapperExtents = pinnedNavMeshQueryDefaults().halfExtents;
+        if (
+            pinnedExtents.some((lane, index) => lane !== wrapperExtents[index])
+        ) {
+            this.context.contractError(
+                pinnedBox,
+                `The pinned navigation queries search [${pinnedExtents.join(", ")}] ` +
+                    "but NavMeshQuery.defaultQueryHalfExtents is " +
+                    `[${wrapperExtents.join(", ")}], the one box the PAL ` +
+                    "searches.",
+            );
+        }
         for (const lane of ["x", "y", "z"] as const) {
             this.context.expectShapeCount(
                 closestPoint,
@@ -500,7 +601,7 @@ export class NavigationLowerer {
         );
         for (const key of wrapperNumericDefaults(
             "crowdAgentParamsDefaults",
-            "@recast-navigation/core/dist/index.mjs",
+            WRAPPER_CORE,
         ).keys()) {
             if (!suppliedAgentKeys.has(key)) {
                 throw new Error(
@@ -854,7 +955,8 @@ NavRaycastResult nav_raycast(
 }
 
 // getClosestPoint: the PAL runs the wrapper's two-call query at the
-// pinned ±1 half-extents and the point is read straight off it. The pin
+// pinned half-extents, which generation proved are the wrapper's default
+// box, and the point is read straight off it. The pin
 // inspects no status — its own comment says a position with nothing
 // nearby returns an unspecified point — so the failure arm passes the
 // PAL's zeroed buffer through rather than inventing a signal the scene
@@ -874,7 +976,7 @@ Vec3d nav_closest_point(
 // findClosestPoint before handing them to the query, whose own
 // computePath then resolves a polygon for each again. Both steps are the
 // pin's, and the first is not redundant -- not because the half-extents
-// differ (both are the same +-1) but because findClosestPoint is
+// differ (generation proved both boxes the same) but because findClosestPoint is
 // findNearestPoly PLUS closestPointOnPoly, so it projects an endpoint
 // onto its polygon before the corridor search sees it. A failed query is
 // an EMPTY path here, which is what the pin returns when its own result
