@@ -373,39 +373,36 @@ export function pinnedMaterialVertex(
             isNumber(position.expression.right.arguments[1], 1),
         "homogeneous position transport",
     );
-    const direction = output("worldBitangent");
-    if (
-        direction.kind !== "member" ||
-        direction.member !== "xyz" ||
-        direction.expression.kind !== "binary" ||
-        direction.expression.operator !== "*" ||
-        !isPath(direction.expression.left, "mesh", "world") ||
-        direction.expression.right.kind !== "construct" ||
-        direction.expression.right.type !== "vec4<f32>" ||
-        direction.expression.right.arguments.length !== 2 ||
-        !isNumber(direction.expression.right.arguments[1], 0)
-    ) {
-        context.contractError(
-            declaration,
-            "Pinned shared vertex homogeneous direction transport changed.",
+    // The template's world outputs, each applied with `finalWorld` where
+    // the template writes `mesh.world` (its own `var finalWorld=mesh.world`,
+    // which the VW slot rewrites).
+    const clip = output("clipPos");
+    requireShape(
+        clip.kind === "binary" &&
+            clip.operator === "*" &&
+            isPath(clip.left, "scene", "viewProjection") &&
+            clip.right.kind === "binary" &&
+            clip.right.operator === "*" &&
+            isPath(clip.right.left, "mesh", "world"),
+        "world-space clip position",
+    );
+    for (const name of ["worldBitangent", "worldNormal", "worldTangent"]) {
+        const value = output(name);
+        requireShape(
+            value.kind === "member" &&
+                value.member === "xyz" &&
+                value.expression.kind === "binary" &&
+                value.expression.operator === "*" &&
+                isPath(value.expression.left, "mesh", "world") &&
+                value.expression.right.kind === "construct" &&
+                value.expression.right.type === "vec4<f32>" &&
+                value.expression.right.arguments.length === 2 &&
+                isNumber(value.expression.right.arguments[1], 0),
+            "homogeneous direction transport",
         );
     }
-    const directionProduct = direction.expression;
-    const directionVector = direction.expression.right;
-    const transformDirection = (
-        value: string,
-        world: ShaderExpression,
-    ): ShaderExpression => ({
-        ...direction,
-        expression: {
-            ...directionProduct,
-            left: world,
-            right: {
-                ...directionVector,
-                arguments: [path(value), directionVector.arguments[1]!],
-            },
-        },
-    });
+    // The local inputs the template reads, morphed in place below; the
+    // world outputs overwrite them once `finalWorld` is chosen.
     const statements: ShaderStatement[] = [
         {
             kind: "var",
@@ -418,16 +415,46 @@ export function pinnedMaterialVertex(
             name: "worldTangent",
             value: path("input", "tangent", "xyz"),
         },
-        // The shared transport retains its pre-morph bitangent independently.
-        {
-            kind: "var",
-            name: "worldBitangent",
-            value: bind(directionVector.arguments[0]!),
-        },
+        { kind: "var", name: "finalWorld", value: path("mesh", "world") },
     ];
     let helpers = "";
     let morphStructs = "";
     const origins = [context.provenance(templateModule, "createPbrTemplate")];
+    if (options.instancing) {
+        // This stage transports the instance world columns only; an
+        // instance colour rides the composed families, not this stage.
+        // The pin's own `finalWorld=mesh.world*instanceWorld` verbatim: a
+        // draw without a pool reads the identity instance stream, so this
+        // one product carries every draw's world in an instancing build.
+        const instance = parseWgslStatements(
+            fragmentText(
+                instanceModule,
+                "createThinInstanceFragment",
+                [false],
+                "_vertexSlots",
+                "VW",
+            ),
+        );
+        const last = instance.at(-1);
+        requireShape(
+            last?.kind === "assign" && isPath(last.target, "finalWorld"),
+            "instance world assignment",
+        );
+        const bindings = new Map<string, ShaderExpression>();
+        for (let column = 0; column < 4; ++column)
+            bindings.set(
+                `world${column}`,
+                path("input", `instanceColumn${column}`),
+            );
+        statements.push(
+            ...mapShaderStatements(instance, (expression) =>
+                substitutePath(expression, bindings),
+            ),
+        );
+        origins.push(
+            context.provenance(instanceModule, "createThinInstanceFragment"),
+        );
+    }
     if (options.deformation) {
         requireShape(morph && projectedMorph, "morph projection");
         const structs = fragmentText(
@@ -475,6 +502,11 @@ export function pinnedMaterialVertex(
         } else {
             deformation.push(...attributeMorph(projectedMorph));
         }
+        // The pin's skinning body, its closing
+        // `finalWorld=mesh.world*influence` included: the palette and the
+        // world multiply before any vertex does. Its world is the one the
+        // instance arm chose, which is `mesh.world` itself for a draw
+        // without a pool, so a draw taking one arm takes the pin's product.
         const skin = parseWgslStatements(
             builders.evaluate(
                 skeletonModule,
@@ -482,7 +514,7 @@ export function pinnedMaterialVertex(
                 new Map([["has8Bones", false]]),
             ),
         );
-        const last = skin.pop();
+        const last = skin.at(-1);
         requireShape(
             last?.kind === "assign" &&
                 isPath(last.target, "finalWorld") &&
@@ -491,12 +523,10 @@ export function pinnedMaterialVertex(
                 isPath(last.value.left, "mesh", "world"),
             "palette world",
         );
-        // The pin's influence sum stays ordered; its outer `mesh.world`
-        // applies with every draw's below.
-        skin.push({ kind: "let", name: "skin", value: last.value.right });
         const skinInputs = new Map([
             ["joints", path("input", "joints")],
             ["weights", path("input", "weights")],
+            ["mesh.world", path("finalWorld")],
         ]);
         deformation.push(
             ...mapShaderStatements(skin, (expression) => {
@@ -526,26 +556,6 @@ export function pinnedMaterialVertex(
                 return substitutePath(expression, skinInputs);
             }),
         );
-        deformation.push(
-            assign("worldPosition", bind(output("worldPos"), "skin")),
-            {
-                kind: "if",
-                condition: {
-                    kind: "binary",
-                    operator: "<",
-                    left: path("deformation", "options", "y"),
-                    right: { kind: "number", value: "0.5" },
-                },
-                statements: [
-                    assign("worldNormal", bind(output("worldNormal"), "skin")),
-                ],
-            },
-            assign("worldTangent", bind(output("worldTangent"), "skin")),
-            assign(
-                "worldBitangent",
-                transformDirection("worldBitangent", path("skin")),
-            ),
-        );
         statements.push({
             kind: "if",
             condition: {
@@ -571,93 +581,28 @@ export function pinnedMaterialVertex(
             context.provenance(morphModule, "createMorphFragment"),
         );
     }
-    if (options.instancing) {
-        // This stage transports the instance world columns only; an
-        // instance colour rides the composed families, not this stage.
-        const instance = parseWgslStatements(
-            fragmentText(
-                instanceModule,
-                "createThinInstanceFragment",
-                [false],
-                "_vertexSlots",
-                "VW",
-            ),
-        );
-        const last = instance.pop();
-        requireShape(
-            last?.kind === "assign" && isPath(last.target, "finalWorld"),
-            "instance world assignment",
-        );
-        // The pin's own `finalWorld` product, over the mesh block's world:
-        // a draw without a pool reads the identity instance stream, so this
-        // one product carries every draw's world in an instancing build.
-        instance.push({
+    // The clip position and the bitangent read the local position, normal
+    // and tangent, so they are written before those are. The clip position
+    // is the template's own `scene.viewProjection*worldPos4`: a palette
+    // whose weights do not sum to one exactly leaves `worldPos4.w` off one.
+    statements.push(
+        {
             kind: "let",
-            name: "instanceMatrix",
-            value: last.value,
-        });
-        const bindings = new Map<string, ShaderExpression>();
-        for (let column = 0; column < 4; ++column)
-            bindings.set(
-                `world${column}`,
-                path("input", `instanceColumn${column}`),
-            );
-        statements.push(
-            ...mapShaderStatements(instance, (expression) =>
-                substitutePath(expression, bindings),
-            ),
-            assign("worldPosition", bind(output("worldPos"), "instanceMatrix")),
-            ...["worldNormal", "worldTangent", "worldBitangent"].map((name) =>
-                assign(name, transformDirection(name, path("instanceMatrix"))),
-            ),
-        );
-        origins.push(
-            context.provenance(instanceModule, "createThinInstanceFragment"),
-        );
-    } else {
-        // The template's own `finalWorld = mesh.world` applications. A
-        // deformation build's skinning arm already took the template's
-        // normalized directions through the palette, so its world carries
-        // them as they stand; otherwise the template's own normalize runs
-        // here, once.
-        const world = path("mesh", "world");
-        statements.push(
-            assign("worldPosition", bind(output("worldPos"))),
-            ...(options.deformation
-                ? ["worldNormal", "worldTangent"].map((name) =>
-                      assign(name, transformDirection(name, world)),
-                  )
-                : [
-                      assign("worldNormal", bind(output("worldNormal"))),
-                      assign("worldTangent", bind(output("worldTangent"))),
-                  ]),
-            assign(
-                "worldBitangent",
-                transformDirection("worldBitangent", world),
-            ),
-        );
-    }
-    const clip = mapShaderExpression(output("clipPos"), (expression) => {
-        if (
-            expression.kind === "binary" &&
-            isPath(expression.left, "mesh", "world")
-        ) {
-            requireShape(
-                expression.operator === "*" &&
-                    expression.right.kind === "construct" &&
-                    expression.right.type === "vec4<f32>" &&
-                    expression.right.arguments.length === 2 &&
-                    isPath(expression.right.arguments[0]!, positionName) &&
-                    isNumber(expression.right.arguments[1], 1),
-                "world-space clip position",
-            );
-            return expression.right;
-        }
-        return expression;
-    });
+            name: "clipPosition",
+            value: bind(output("clipPos"), "finalWorld"),
+        },
+        {
+            kind: "let",
+            name: "worldBitangent",
+            value: bind(output("worldBitangent"), "finalWorld"),
+        },
+        assign("worldPosition", bind(output("worldPos"), "finalWorld")),
+        assign("worldNormal", bind(output("worldNormal"), "finalWorld")),
+        assign("worldTangent", bind(output("worldTangent"), "finalWorld")),
+    );
     statements.push(
         { kind: "var", name: "output", type: "VertexOutput" },
-        assign("output.position", bind(clip)),
+        assign("output.position", path("clipPosition")),
         assign("output.worldPosition", path("worldPosition")),
         assign("output.normal", path("worldNormal")),
         assign("output.tangent", {

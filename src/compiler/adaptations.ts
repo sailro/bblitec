@@ -726,7 +726,7 @@ export function compileAdaptations(
             sourceSemantics:
                 "Pinned material composers combine mesh worlds and optional skeleton, morph and instance resources in their vertex stages.",
             nativeSemantics:
-                "The shared diagnostic/depth/background stage projects those computations through typed shader IR onto pre-baked worlds and fixed PAL bindings. Enabled deformation uses four bone influences in a 64-matrix uniform palette and either two-target attributes or the pinned storage-morph payload. The attribute path retains tangent deltas and a pre-morph bitangent; colour materials keep their own pinned composers.",
+                "The shared diagnostic/depth stage projects those computations through typed shader IR onto the mesh block's world and fixed PAL bindings, multiplying the palette or instance world into it before any vertex as the pin's finalWorld does. Enabled deformation uses four bone influences in a 64-matrix uniform palette and either two-target attributes or the pinned storage-morph payload; the attribute path retains tangent deltas. A draw both skinned and pooled composes the instance world and then the palette, where the pin's last writer keeps the instance world alone; colour materials keep their own pinned composers.",
             risk: "medium",
             validation: [
                 "executed-pin vertex transport and arithmetic-drift tests",
