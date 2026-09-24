@@ -1,6 +1,6 @@
 {
   "scene": "scene149",
-  "notes": "Node geometry (PowerPlant): the browser observation records the camera, viewport, draw count and queue submissions after startup, after one pointer orbit gesture, and — since the pin's live resize throws Babylon error #84 and stops its RAF loop — a fresh startup of the unchanged module at 960x600. The native orbit must settle on the browser's camera, the seven geometry attachment tiles along the bottom must match, and the resized native frame is compared to the resized browser startup.",
+  "notes": "Node geometry (PowerPlant): the browser observation records the camera, viewport, draw count and queue submissions after startup, after one pointer orbit gesture, and — since the pin's live resize throws from buildResolvePath and stops its RAF loop — a fresh startup of the unchanged module at 960x600. The native orbit must settle on the browser's camera, the seven geometry attachment tiles along the bottom must match, and the resized native frame is compared to the resized browser startup.",
   "base": "adhoc",
   "timeoutMs": 90000,
   "phases": [
@@ -28,7 +28,7 @@
     "steps": [
       { "id": "initial", "screenshot": "canvas" },
       { "id": "orbit", "actions": [{ "drag": [640, 360, 760, 360] }], "settleFrames": 180, "screenshot": "canvas", "notes": "one movement avoids host scheduling changing the inertia cutoff between moves" },
-      { "id": "failed-resize", "actions": [{ "resize": [960, 600] }, { "style": "html,body,canvas{width:960px!important;height:600px!important}" }, { "frames": 30 }], "screenshot": "none", "notes": "the pin's resize throws Babylon error #84 and its RAF loop stops" },
+      { "id": "failed-resize", "actions": [{ "resize": [960, 600] }, { "style": "html,body,canvas{width:960px!important;height:600px!important}" }, { "frames": 30 }], "screenshot": "none", "notes": "the pin's resize throws from buildResolvePath and its RAF loop stops" },
       { "id": "idle-after-failure", "actions": [{ "frames": 30 }], "screenshot": "none" },
       { "id": "startup-960x600", "startup": { "viewport": [960, 600] }, "screenshot": "canvas", "state": false, "actions": [{ "evaluate": "(() => { const canvas = document.getElementById('renderCanvas'); return { viewport: { width: canvas.width, height: canvas.height }, draws: Number(canvas.dataset.drawCalls), materialCount: Number(canvas.dataset.materialCount) }; })()", "as": "startup" }] }
     ]

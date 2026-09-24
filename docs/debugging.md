@@ -88,9 +88,10 @@ unchanged no-query source. `observe.captureReady` selects the canvas dataset fla
 `captureFrames`. Results are in artifacts/check/<id>/. Use numeric checks where small missing objects
 could pass image gates.
 
-Scene149 browser live resize throws error #84; its resized reference uses unchanged-module startup at
-960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelUp/Down uses SDL packets, WheelUp/Down a browser notch.
-`<entry>*<n>` repeats entries. Recovery tapes include Dataset, GlobalCall and DeviceLoss.
+Scene149 browser live resize throws from the pin's buildResolvePath; its resized reference uses
+unchanged-module startup at 960x600. Input tape `-`/UiIdle@0:0 is idle; UiWheelUp/Down uses SDL
+packets, WheelUp/Down a browser notch. `<entry>*<n>` repeats entries. Recovery tapes include Dataset,
+GlobalCall and DeviceLoss.
 
 `memory` runs 6,000 frames and judges the samples after the warm-up third. It fails a working-set trend
 above `--max-slope-mb` (MB per 1,000 frames, default 2), occupied mesh records the scene does not draw
