@@ -5422,10 +5422,6 @@ class Compiler implements LoweringServices {
         return this.evaluator.resolveStaticExpression(expression, resolving);
     }
 
-    public lookupIdentifierValue(identifier: ts.Identifier): Value | undefined {
-        return this.bindings.lookupOptional(identifier);
-    }
-
     public compileTypedArrayArgument(
         expression: ts.Expression,
         kind: TypedArrayKind,

@@ -47,7 +47,6 @@ export interface AssetIntrinsicContext
             | "compileDdsEnvironmentBackgroundOptions"
             | "registerAsset"
             | "setAssetDecoderConfiguration"
-            | "lookupIdentifierValue"
             | "emitDiscardedValue"
             | "recordGltfContainerLoad"
             | "enableGltfCameras"

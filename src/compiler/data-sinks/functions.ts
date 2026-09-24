@@ -15,12 +15,12 @@ function expressionFunction(
         unwrapped.kind === ts.SyntaxKind.NullKeyword ||
         (ts.isIdentifier(unwrapped) &&
             unwrapped.text === "undefined" &&
-            !lowerer.context.lookupIdentifierValue(unwrapped))
+            !lowerer.context.bindings.lookupOptional(unwrapped))
     ) {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
     if (ts.isIdentifier(unwrapped)) {
-        const bound = lowerer.context.lookupIdentifierValue(unwrapped);
+        const bound = lowerer.context.bindings.lookupOptional(unwrapped);
         if (
             bound &&
             (bound.kind === "callback" ||

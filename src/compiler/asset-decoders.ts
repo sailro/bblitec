@@ -9,7 +9,7 @@ type Context = Pick<
     | "compileValue"
     | "emitDiscardedValue"
     | "unwrap"
-    | "lookupIdentifierValue"
+    | "bindings"
     | "resolveBundledAsset"
     | "setAssetDecoderConfiguration"
     | "fail"
@@ -72,7 +72,7 @@ export function compileAssetDecoderConfiguration(
         !(
             ts.isIdentifier(source) &&
             source.text === "undefined" &&
-            !context.lookupIdentifierValue(source)
+            !context.bindings.lookupOptional(source)
         )
     ) {
         const read = (

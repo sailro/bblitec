@@ -136,7 +136,6 @@ interface UiProjectionContext extends Pick<
     | "activeThis"
     | "assets"
     | "assetPayloads"
-    | "lookupIdentifierValue"
     | "allocateTemporaryCppName"
     | "sourceFile"
     | "sourceFiles"
@@ -4214,7 +4213,7 @@ export class UiProjection {
             ts.isStringLiteral(id) || ts.isNoSubstitutionTemplateLiteral(id)
                 ? id.text
                 : ts.isIdentifier(id)
-                  ? this.context.lookupIdentifierValue(id)?.staticString
+                  ? this.context.bindings.lookupOptional(id)?.staticString
                   : undefined;
         return text !== undefined && this.nativeHostUiTags().has(text);
     }

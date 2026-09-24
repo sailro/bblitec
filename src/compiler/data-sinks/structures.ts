@@ -47,7 +47,7 @@ function expressionEnum(
     // known string names its member just as the literal
     // written in place would.
     if (ts.isIdentifier(unwrapped)) {
-        const bound = lowerer.context.lookupIdentifierValue(unwrapped);
+        const bound = lowerer.context.bindings.lookupOptional(unwrapped);
         if (bound?.staticString !== undefined) {
             return lowerer.context.dataTypes.enumMemberCpp(
                 dataType,
@@ -96,7 +96,7 @@ function expressionStruct(
         (unwrapped.kind === ts.SyntaxKind.NullKeyword ||
             (ts.isIdentifier(unwrapped) &&
                 unwrapped.text === "undefined" &&
-                !lowerer.context.lookupIdentifierValue(unwrapped)))
+                !lowerer.context.bindings.lookupOptional(unwrapped)))
     ) {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }

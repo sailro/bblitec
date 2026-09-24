@@ -211,7 +211,6 @@ export interface DataLoweringContext
             | "compilePredicateWithValues"
             | "compileStoredDataFunction"
             | "compileSpriteAtlasRecord"
-            | "lookupIdentifierValue"
             | "resolveThisField"
             | "resolveRecordMember"
             | "resolveRecordValue"
@@ -339,7 +338,7 @@ export class DataLowerer {
         if (!ts.isIdentifier(left)) {
             return undefined;
         }
-        const scalar = this.context.lookupIdentifierValue(left);
+        const scalar = this.context.bindings.lookupOptional(left);
         if (scalar?.kind === "number") {
             return {
                 kind: "number",
@@ -548,7 +547,9 @@ export class DataLowerer {
                             (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
                             0 ||
                             (unwrapped.text === "undefined" &&
-                                !this.context.lookupIdentifierValue(unwrapped)))
+                                !this.context.bindings.lookupOptional(
+                                    unwrapped,
+                                )))
                     )) {
                         this.context.fail(
                             argument,
@@ -763,7 +764,7 @@ export class DataLowerer {
             this.context.unwrap(chain),
         );
         if (!node) return true;
-        const bound = this.context.lookupIdentifierValue(node);
+        const bound = this.context.bindings.lookupOptional(node);
         return (
             bound?.kind !== "scene" &&
             bound?.kind !== "engine" &&
@@ -803,7 +804,7 @@ export class DataLowerer {
             root = this.context.unwrap(root.expression);
         }
         const value = ts.isIdentifier(root)
-            ? this.context.lookupIdentifierValue(root)
+            ? this.context.bindings.lookupOptional(root)
             : root.kind === ts.SyntaxKind.ThisKeyword && thisField
               ? this.context.resolveThisField(thisField.name.text)
               : undefined;
@@ -823,7 +824,7 @@ export class DataLowerer {
             ? unwrapExpression(expression)
             : this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const bound = this.context.lookupIdentifierValue(unwrapped);
+            const bound = this.context.bindings.lookupOptional(unwrapped);
             if (bound?.kind !== "data" && bound?.kind !== "promise") {
                 // A module-level `const Record<Union, T> = { ... }` has no
                 // runtime local binding. Materialize its typed literal at
@@ -1720,7 +1721,7 @@ export class DataLowerer {
     private isStaticIndex(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const bound = this.context.lookupIdentifierValue(unwrapped);
+            const bound = this.context.bindings.lookupOptional(unwrapped);
             if (bound) {
                 return (
                     bound.kind === "number" && bound.staticNumber !== undefined
@@ -2135,7 +2136,7 @@ export class DataLowerer {
                 right.kind === ts.SyntaxKind.NullKeyword ||
                 (ts.isIdentifier(right) &&
                     right.text === "undefined" &&
-                    !this.context.lookupIdentifierValue(right))
+                    !this.context.bindings.lookupOptional(right))
             ) {
                 return {
                     kind: "data",
@@ -3845,7 +3846,7 @@ export class DataLowerer {
             unwrapped.kind === ts.SyntaxKind.NullKeyword ||
             (ts.isIdentifier(unwrapped) &&
                 unwrapped.text === "undefined" &&
-                !this.context.lookupIdentifierValue(unwrapped))
+                !this.context.bindings.lookupOptional(unwrapped))
         ) {
             return "nullptr";
         }
@@ -3907,7 +3908,7 @@ export class DataLowerer {
         }
         // A local constant binds as a compile-time tuple; a module-level
         // one is not bound at all and resolves through its initializer.
-        const bound = this.context.lookupIdentifierValue(unwrapped);
+        const bound = this.context.bindings.lookupOptional(unwrapped);
         if (bound && bound.kind !== "tuple") {
             return undefined;
         }
@@ -3996,7 +3997,7 @@ export class DataLowerer {
         // Entry-level static array constants are bound as compile-time
         // tuples; those still materialize. Any other binding is a runtime
         // local and never a static table.
-        const bound = this.context.lookupIdentifierValue(unwrapped);
+        const bound = this.context.bindings.lookupOptional(unwrapped);
         if (bound && bound.kind !== "tuple") {
             return undefined;
         }
@@ -4794,7 +4795,7 @@ export class DataLowerer {
             ts.isArrowFunction(callback) ||
             ts.isFunctionExpression(callback);
         const value = ts.isIdentifier(callback)
-            ? this.context.lookupIdentifierValue(callback)
+            ? this.context.bindings.lookupOptional(callback)
             : !local
               ? this.context.compileValue(callback)
               : undefined;
@@ -5183,7 +5184,7 @@ export class DataLowerer {
         call: ts.CallExpression,
         owner: ts.Identifier,
     ): Value | undefined {
-        if (this.context.lookupIdentifierValue(owner)) {
+        if (this.context.bindings.lookupOptional(owner)) {
             return undefined;
         }
         const ownerSymbol = this.context.checker.getSymbolAtLocation(owner);
@@ -6018,7 +6019,7 @@ export class DataLowerer {
             (unwrapped.right.kind === ts.SyntaxKind.NullKeyword ||
                 (ts.isIdentifier(unwrapped.right) &&
                     unwrapped.right.text === "undefined" &&
-                    !this.context.lookupIdentifierValue(unwrapped.right)))
+                    !this.context.bindings.lookupOptional(unwrapped.right)))
         ) {
             const left = this.context.unwrap(unwrapped.left);
             if (
@@ -7116,7 +7117,7 @@ export class DataLowerer {
         const target = this.context.unwrap(expression.expression);
         if (ts.isElementAccessExpression(target)) {
             const recordOwner = ts.isIdentifier(target.expression)
-                ? this.context.lookupIdentifierValue(target.expression)
+                ? this.context.bindings.lookupOptional(target.expression)
                 : undefined;
             const key = this.context.compileValue(target.argumentExpression);
             if (recordOwner?.kind === "record") {
@@ -7355,7 +7356,7 @@ export class DataLowerer {
             return undefined;
         const root = this.context.unwrap(left.expression);
         const represented = ts.isIdentifier(root)
-            ? this.context.lookupIdentifierValue(root)?.dataType
+            ? this.context.bindings.lookupOptional(root)?.dataType
             : undefined;
         if (
             represented?.kind !== "map" &&
@@ -7552,7 +7553,7 @@ export class DataLowerer {
         // A plain number, boolean or string local is a native scalar rather
         // than a data value; it stores the way its plain assignment does.
         const bound = ts.isIdentifier(left)
-            ? this.context.lookupIdentifierValue(left)
+            ? this.context.bindings.lookupOptional(left)
             : undefined;
         const target =
             bound &&
@@ -7641,7 +7642,7 @@ export class DataLowerer {
                     this.context.unwrap(chain),
                 );
                 const rootValue = root
-                    ? this.context.lookupIdentifierValue(root)
+                    ? this.context.bindings.lookupOptional(root)
                     : undefined;
                 if (rootValue) {
                     this.invalidateStaticElements(rootValue);
@@ -7734,7 +7735,7 @@ export class DataLowerer {
                 left.expression.expression,
             );
             const boundOwner = ts.isIdentifier(ownerExpression)
-                ? this.context.lookupIdentifierValue(ownerExpression)
+                ? this.context.bindings.lookupOptional(ownerExpression)
                 : ts.isPropertyAccessExpression(ownerExpression) &&
                     ownerExpression.expression.kind ===
                         ts.SyntaxKind.ThisKeyword
@@ -7772,7 +7773,7 @@ export class DataLowerer {
                 this.context.unwrap(chain),
             );
             if (root) {
-                const value = this.context.lookupIdentifierValue(root);
+                const value = this.context.bindings.lookupOptional(root);
                 if (value) this.invalidateStaticElements(value);
             }
         };
@@ -7813,7 +7814,7 @@ export class DataLowerer {
         }
         if (ts.isElementAccessExpression(left)) {
             const recordOwner = ts.isIdentifier(left.expression)
-                ? this.context.lookupIdentifierValue(left.expression)
+                ? this.context.bindings.lookupOptional(left.expression)
                 : undefined;
             if (recordOwner?.kind === "record") {
                 if (operator !== "=") {
@@ -7979,7 +7980,7 @@ export class DataLowerer {
             ) {
                 return;
             }
-            const root = this.context.lookupIdentifierValue(targetRoot);
+            const root = this.context.bindings.lookupOptional(targetRoot);
             if (root?.dataType?.kind === "struct" && root.recordProperties) {
                 // A direct write invalidates that field's static fact, not
                 // unrelated fields on the same object. The property snapshot
@@ -8193,7 +8194,7 @@ export class DataLowerer {
             names.some(
                 (name) =>
                     ts.isIdentifier(name) &&
-                    this.context.lookupIdentifierValue(name)
+                    this.context.bindings.lookupOptional(name)
                         ?.optionalStorageCpp,
             )
         )
@@ -8226,7 +8227,7 @@ export class DataLowerer {
                         node.kind === ts.SyntaxKind.NullKeyword ||
                         (ts.isIdentifier(node) &&
                             node.text === "undefined" &&
-                            !this.context.lookupIdentifierValue(node));
+                            !this.context.bindings.lookupOptional(node));
                     const compiled =
                         !elementType || absence
                             ? this.context.compileValue(element)
@@ -8506,7 +8507,7 @@ export class DataLowerer {
                 indexed ??
                 member ??
                 (ts.isIdentifier(name)
-                    ? this.context.lookupIdentifierValue(name)
+                    ? this.context.bindings.lookupOptional(name)
                     : this.compileDataPath(name, "write"));
             if (!target || target.freshData)
                 this.context.fail(
@@ -8581,7 +8582,7 @@ export class DataLowerer {
             const root = rootIdentifier(name, (node) =>
                 this.context.unwrap(node),
             );
-            const owner = root && this.context.lookupIdentifierValue(root);
+            const owner = root && this.context.bindings.lookupOptional(root);
             if (owner) this.context.bindings.invalidateRecordProperties(owner);
         }
     }
@@ -8774,7 +8775,7 @@ export class DataLowerer {
             const target =
                 this.compileDataPath(element, "write") ??
                 (ts.isIdentifier(element)
-                    ? this.context.lookupIdentifierValue(element)
+                    ? this.context.bindings.lookupOptional(element)
                     : undefined);
             if (!target || target.kind !== "number") {
                 this.context.fail(
@@ -8823,7 +8824,7 @@ export class DataLowerer {
         const rawTarget =
             this.compileDataPath(expression.operand, "write") ??
             (ts.isIdentifier(operand)
-                ? this.context.lookupIdentifierValue(operand)
+                ? this.context.bindings.lookupOptional(operand)
                 : undefined);
         const target = rawTarget
             ? this.narrowOptional(rawTarget, expression.operand)
@@ -8855,7 +8856,7 @@ export class DataLowerer {
         const target =
             this.compileDataPath(expression.operand, "write") ??
             (ts.isIdentifier(operand)
-                ? this.context.lookupIdentifierValue(operand)
+                ? this.context.bindings.lookupOptional(operand)
                 : undefined);
         if (target?.kind !== "number") {
             return undefined;
@@ -8887,7 +8888,7 @@ export class DataLowerer {
         const target =
             this.compileDataPath(expression.operand, "write") ??
             (ts.isIdentifier(operand)
-                ? this.context.lookupIdentifierValue(operand)
+                ? this.context.bindings.lookupOptional(operand)
                 : undefined);
         if (target?.kind !== "number") {
             return undefined;
@@ -9306,7 +9307,7 @@ export class DataLowerer {
         const loweredOptional = (operand: ts.Expression): Value | undefined => {
             const unwrapped = this.context.unwrap(operand);
             if (ts.isIdentifier(unwrapped)) {
-                const bound = this.context.lookupIdentifierValue(unwrapped);
+                const bound = this.context.bindings.lookupOptional(unwrapped);
                 return bound?.kind === "data" &&
                     optionalComparable(bound.dataType)
                     ? bound
@@ -10290,7 +10291,7 @@ export class DataLowerer {
             return this.context.cppString(unwrapped.text);
         }
         if (ts.isIdentifier(unwrapped)) {
-            const bound = this.context.lookupIdentifierValue(unwrapped);
+            const bound = this.context.bindings.lookupOptional(unwrapped);
             if (bound?.staticString !== undefined) {
                 return this.context.cppString(bound.staticString);
             }
@@ -10361,7 +10362,7 @@ export class DataLowerer {
             unwrapped.kind === ts.SyntaxKind.NullKeyword ||
             (ts.isIdentifier(unwrapped) &&
                 unwrapped.text === "undefined" &&
-                !this.context.lookupIdentifierValue(unwrapped))
+                !this.context.bindings.lookupOptional(unwrapped))
         ) {
             return "std::nullopt";
         }

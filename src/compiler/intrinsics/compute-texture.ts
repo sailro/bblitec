@@ -1,4 +1,3 @@
-import type { BindingScopes } from "../binding-scopes.js";
 import ts from "typescript";
 import type { LoweringServices } from "../lowering-services.js";
 import type { Value } from "../types.js";
@@ -29,9 +28,7 @@ export interface ComputeTextureIntrinsicContext
             | "compileBoolean"
             | "dataTypes"
             | "bindings"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 export function compileComputeTextureIntrinsic(
     context: ComputeTextureIntrinsicContext,

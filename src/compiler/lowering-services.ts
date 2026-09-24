@@ -460,7 +460,6 @@ export interface LoweringServices {
         expression: ts.Expression,
         resolving?: ReadonlySet<ts.Symbol>,
     ): ts.Expression;
-    lookupIdentifierValue(identifier: ts.Identifier): Value | undefined;
     compileTypedArrayArgument(
         expression: ts.Expression,
         kind: TypedArrayKind,

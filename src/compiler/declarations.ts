@@ -8,7 +8,6 @@ import {
     findAnalysisNodeWithState,
     someAnalysisNode,
 } from "./analysis-walk.js";
-import type { BindingScopes } from "./binding-scopes.js";
 import { isPrimitiveBrowserValue } from "./browser-erasure.js";
 import { CompileError } from "./compile-error.js";
 import { isNeverResized } from "./data-lowering.js";
@@ -118,7 +117,6 @@ interface DeclarationContext
             | "unwrap"
             | "withRecordScopes"
         > {
-    readonly bindings: BindingScopes;
     /** The engine the entry created, once it has. */
     readonly defaultEngineCpp: string | undefined;
     /** Declarations a storage demand retyped, by declaration. */

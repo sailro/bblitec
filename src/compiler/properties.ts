@@ -26,7 +26,6 @@ import { readPngDimensionsSync } from "./asset-bytes-sync.js";
 import {
     cameraVectorProperties,
     sceneNodeVectorProperties,
-    type BindingScopes,
 } from "./binding-scopes.js";
 import {
     browserDeploymentValue,
@@ -1760,7 +1759,6 @@ interface PropertyAccessContext
             | "unwrap"
             | "useNativeValue"
         > {
-    readonly bindings: BindingScopes;
     /** Bound only while lowering a platform visibility callback body. */
     readonly platformDocumentHiddenCpp: string | undefined;
     /** Platform owner for an entry that has no source-created engine. */

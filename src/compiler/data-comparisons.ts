@@ -44,7 +44,7 @@ export function dataUnionEquality(
         const node = lowerer.context.unwrap(expression);
         if (ts.isIdentifier(node))
             return (
-                lowerer.context.lookupIdentifierValue(node)?.dataType ??
+                lowerer.context.bindings.lookupOptional(node)?.dataType ??
                 lowerer.dataTypeAt(node)
             );
         if (ts.isElementAccessExpression(node)) {

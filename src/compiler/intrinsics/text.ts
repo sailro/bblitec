@@ -1,4 +1,3 @@
-import type { BindingScopes } from "../binding-scopes.js";
 import { EmissionSet, EmissionMap } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 /** Static shaping executes the pin; native text entities retain the resulting bytes. */
@@ -46,9 +45,7 @@ export interface TextIntrinsicContext
             | "recordTextAttachment"
             | "assertTextDisposal"
             | "noteTextSceneLifecycle"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 export function compileTextIntrinsic(
     context: TextIntrinsicContext,

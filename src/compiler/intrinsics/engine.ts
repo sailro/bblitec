@@ -1,4 +1,3 @@
-import type { BindingScopes } from "../binding-scopes.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { engineSampleCountCpp } from "../engine-samples.js";
@@ -50,9 +49,7 @@ export interface EngineIntrinsicContext
             | "propertyName"
             | "compileFrameCallback"
             | "compileVoidCallback"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 function reachRenderer(
     context: EngineIntrinsicContext,
