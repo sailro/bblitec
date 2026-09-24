@@ -873,13 +873,16 @@ function smokeRun(
     });
     // macOS selects the native host slice explicitly, even when the tools run
     // under Rosetta; the receipt names the architecture actually tested.
-    const architecture = process.arch === "arm64" ? "arm64" : "x64";
+    // Named as the receipt's `architectures` entries name the slices.
+    const architecture =
+        target.platform !== "darwin"
+            ? "x64"
+            : process.arch === "arm64"
+              ? "arm64"
+              : "x86_64";
     const [command, args] =
         target.platform === "darwin"
-            ? [
-                  "/usr/bin/arch",
-                  [architecture === "arm64" ? "-arm64" : "-x86_64", staged],
-              ]
+            ? ["/usr/bin/arch", [`-${architecture}`, staged]]
             : [staged, []];
     const result = spawnSync(command, args, {
         cwd: packageDirectory,

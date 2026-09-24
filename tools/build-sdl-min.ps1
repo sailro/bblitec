@@ -125,31 +125,35 @@ $sdlOptions = [ordered]@{
     SDL_RENDER = "OFF"
     SDL_VIDEO = "ON"
 }
-$configureArguments = @(
-    "-S", $source,
-    "-B", $build,
-    "-DCMAKE_BUILD_TYPE=MinSizeRel",
-    "-DCMAKE_INSTALL_PREFIX=$output"
-)
 # SDL's surface code is linked whole through its blitter tables. The engine
 # only converts decoded images (SDL_ConvertSurface, never blending): keep the
 # indexed and N-to-N converters SDL_image's formats reach and compile out the
 # blending, modulating and scaling blitters, RLE, YUV and SDL's own stb_image
 # loader (SDL_internal.h's lean switches; the generic converter remains).
+# SDL's targets drop /D flags given through CMAKE_C_FLAGS*, so the defines
+# reach them as compile definitions from a project include.
 $surfaceDefines = @("SDL_LEAN_AND_MEAN", "SDL_HAVE_BLIT_0", "SDL_HAVE_BLIT_1", "SDL_HAVE_BLIT_N", "SDL_DISABLE_STB")
+New-Item -ItemType Directory -Path $build -Force | Out-Null
+$surfaceInclude = Join-Path $build "bblite-surface-definitions.cmake"
+Set-ArtifactContent $surfaceInclude "add_compile_definitions($($surfaceDefines -join ' '))`n"
+$configureArguments = @(
+    "-S", $source,
+    "-B", $build,
+    "-DCMAKE_BUILD_TYPE=MinSizeRel",
+    "-DCMAKE_INSTALL_PREFIX=$output",
+    "-DCMAKE_PROJECT_SDL3_INCLUDE=$($surfaceInclude.Replace('\', '/'))"
+)
 if ($IsWindows) {
-    $defines = ($surfaceDefines | ForEach-Object { "/D$_" }) -join " "
     $configureArguments += @(
         '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>',
         '-DCMAKE_CXX_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw /Zc:inline',
-        "-DCMAKE_C_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw $defines"
+        '-DCMAKE_C_FLAGS_MINSIZEREL=/O1 /Ob1 /DNDEBUG /Gw'
     )
 } else {
-    $defines = ($surfaceDefines | ForEach-Object { "-D$_" }) -join " "
     $configureArguments += if ($IosSdk) { $iosArguments } else { @(Get-PosixCompilerArguments $MacArchitecture) }
     $configureArguments += @(
         "-G", "Ninja", "-DCMAKE_INSTALL_LIBDIR=lib",
-        "-DCMAKE_C_FLAGS_MINSIZEREL=-Os -DNDEBUG -ffunction-sections -fdata-sections $defines",
+        "-DCMAKE_C_FLAGS_MINSIZEREL=-Os -DNDEBUG -ffunction-sections -fdata-sections",
         "-DCMAKE_CXX_FLAGS_MINSIZEREL=-Os -DNDEBUG -ffunction-sections -fdata-sections"
     )
 }

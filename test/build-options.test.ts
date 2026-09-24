@@ -312,10 +312,14 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
         script,
         /\$surfaceDefines = @\("SDL_LEAN_AND_MEAN", "SDL_HAVE_BLIT_0", "SDL_HAVE_BLIT_1", "SDL_HAVE_BLIT_N", "SDL_DISABLE_STB"\)/,
     );
+    // SDL's targets drop /D flags from CMAKE_C_FLAGS*: the definitions reach
+    // them from a project include.
     assert.match(
         script,
-        /CMAKE_C_FLAGS_MINSIZEREL=\/O1 \/Ob1 \/DNDEBUG \/Gw \$defines/,
+        /add_compile_definitions\(\$\(\$surfaceDefines -join ' '\)\)/,
     );
+    assert.match(script, /"-DCMAKE_PROJECT_SDL3_INCLUDE=/);
+    assert.doesNotMatch(script, /\$defines/);
     assert.doesNotMatch(script, /yuv2rgb\/LICENSE|stb_image\.h"/);
     assert.doesNotMatch(script, /SDL_(MISC|LOCALE) =/);
     assert.match(script, /-notin @\("BOOL", "INTERNAL"\)/);
