@@ -10043,10 +10043,7 @@ class Compiler implements LoweringServices {
             return undefined;
         }
         const suffix = this.compileValue(path.templateSpans[0]!.expression);
-        if (
-            suffix.kind !== "string" &&
-            !(suffix.kind === "data" && suffix.dataType?.kind === "string")
-        ) {
+        if (!isStringValue(suffix)) {
             return undefined;
         }
         const url = new URL(path.head.text, "https://bblite.invalid/");
@@ -17148,9 +17145,7 @@ class Compiler implements LoweringServices {
                   ? "double"
                   : value.kind === "boolean"
                     ? "bool"
-                    : value.kind === "string" ||
-                        (value.kind === "data" &&
-                            value.dataType?.kind === "string")
+                    : isStringValue(value)
                       ? "std::string"
                       : parameter && !copiesHandle && !reboundParameter
                         ? "auto&&"

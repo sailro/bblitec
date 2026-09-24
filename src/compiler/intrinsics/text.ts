@@ -16,7 +16,7 @@ import {
     compileStaticNumber,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
-import type { Value } from "../types.js";
+import { isStringValue, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { pinnedHandleKind } from "../data-types.js";
 
@@ -589,10 +589,7 @@ function expectTextString(
     value: Value,
     node: ts.Node,
 ): void {
-    if (
-        value.kind !== "string" &&
-        !(value.kind === "data" && value.dataType?.kind === "string")
-    ) {
+    if (!isStringValue(value)) {
         context.fail(
             node,
             `Text content requires a string, received ${value.kind}.`,

@@ -1,5 +1,6 @@
 import {
     booleanValue,
+    isStringValue,
     nativeDataMetadata,
     staticStringValue,
     valueForKind,
@@ -9025,10 +9026,7 @@ export class DataLowerer {
             // and the empty string.
             return `${value.cpp}.truthy()`;
         }
-        if (
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (isStringValue(value)) {
             if (value.staticString !== undefined) {
                 return value.staticString.length === 0 ? "false" : "true";
             }
@@ -9680,10 +9678,7 @@ export class DataLowerer {
             rawValue?.kind === "data"
                 ? this.narrowOptional(rawValue, expression)
                 : rawValue;
-        if (
-            value?.kind === "string" ||
-            (value?.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (value && isStringValue(value)) {
             const dataType: DataType = {
                 kind: "vector",
                 element: { kind: "string" },
@@ -10308,11 +10303,7 @@ export class DataLowerer {
             ts.isElementAccessExpression(unwrapped)
         ) {
             const computed = this.context.compileValue(unwrapped);
-            if (
-                computed.kind === "string" ||
-                (computed.kind === "data" &&
-                    computed.dataType?.kind === "string")
-            ) {
+            if (isStringValue(computed)) {
                 return computed.cpp;
             }
         }

@@ -625,10 +625,7 @@ export class UiProjection {
             this.context.compileValue(expression),
             expression,
         );
-        if (
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (isStringValue(value)) {
             return value.cpp;
         }
         this.context.fail(
@@ -727,10 +724,7 @@ export class UiProjection {
         if (value.kind === "number") {
             return `bbl::js::number_to_string(${value.cpp})`;
         }
-        if (
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (isStringValue(value)) {
             return value.cpp;
         }
         this.context.fail(

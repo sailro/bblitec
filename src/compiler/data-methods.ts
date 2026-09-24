@@ -1,4 +1,8 @@
-import { nativeDataMetadata, withNativeMetadata } from "./types.js";
+import {
+    isStringValue,
+    nativeDataMetadata,
+    withNativeMetadata,
+} from "./types.js";
 // The data-container method knowledge: the method-name sets every
 // mutation walk consults, and the dispatcher that lowers a data-method
 // call (invoked through `DataLowerer.compileDataMethodCall`).
@@ -1233,11 +1237,7 @@ function compileArrayJoin(state: ArrayMethodState): Value {
     const separator = call.arguments[0]
         ? lowerer.context.compileValue(argumentAt(call, 0))
         : undefined;
-    if (
-        separator &&
-        separator.kind !== "string" &&
-        !(separator.kind === "data" && separator.dataType?.kind === "string")
-    ) {
+    if (separator && !isStringValue(separator)) {
         lowerer.context.fail(
             argumentAt(call, 0),
             "Array.join separator must be a string.",
@@ -2907,13 +2907,7 @@ function compileStringDataMethod(
                 dataType: { kind: "string" },
             };
         }
-        if (
-            replacementValue.kind !== "string" &&
-            !(
-                replacementValue.kind === "data" &&
-                replacementValue.dataType?.kind === "string"
-            )
-        ) {
+        if (!isStringValue(replacementValue)) {
             lowerer.context.fail(
                 argumentAt(call, 1),
                 "String.replace expects a string replacement.",
@@ -2948,13 +2942,7 @@ function compileStringDataMethod(
                 dataType: { kind: "boolean" },
             };
         }
-        if (
-            prefixValue.kind !== "string" &&
-            !(
-                prefixValue.kind === "data" &&
-                prefixValue.dataType?.kind === "string"
-            )
-        ) {
+        if (!isStringValue(prefixValue)) {
             lowerer.context.fail(
                 argumentAt(call, 0),
                 "String.startsWith expects a string argument.",

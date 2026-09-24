@@ -109,6 +109,7 @@ import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     booleanValue,
     commonResourceValue,
+    isStringValue,
     staticStringValue,
 } from "./types.js";
 
@@ -2049,13 +2050,10 @@ export class ExpressionLowerer {
         // shape a pick result's name takes -- is the same question. The
         // literal side widens, since `std::string` is the common type of
         // the emitted conditional either way.
-        const stringValued = (value: Value): boolean =>
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string");
         if (
             whenTrue.kind !== whenFalse.kind &&
-            stringValued(whenTrue) &&
-            stringValued(whenFalse)
+            isStringValue(whenTrue) &&
+            isStringValue(whenFalse)
         ) {
             // Only the literal side moves, and it carries nothing across:
             // spreading the other branch would hand each side the other's
@@ -2589,10 +2587,7 @@ export class ExpressionLowerer {
         if (isParseFloatCallee(callee, this.context)) {
             this.context.expectArgumentCount(call, 1, 1);
             const value = this.compileValue(argumentAt(call, 0));
-            if (
-                value.kind !== "string" &&
-                !(value.kind === "data" && value.dataType?.kind === "string")
-            ) {
+            if (!isStringValue(value)) {
                 this.context.fail(
                     argumentAt(call, 0),
                     "Reached parseFloat requires a string value.",
@@ -2608,10 +2603,7 @@ export class ExpressionLowerer {
         if (isNumberParserCallee(callee, this.context, "parseInt")) {
             this.context.expectArgumentCount(call, 1, 2);
             const value = this.compileValue(argumentAt(call, 0));
-            if (
-                value.kind !== "string" &&
-                !(value.kind === "data" && value.dataType?.kind === "string")
-            ) {
+            if (!isStringValue(value)) {
                 this.context.fail(
                     argumentAt(call, 0),
                     "Reached parseInt currently requires a string value.",
@@ -2729,10 +2721,7 @@ export class ExpressionLowerer {
                     dataType: { kind: "string" },
                 };
             }
-            if (
-                value.kind === "string" ||
-                (value.kind === "data" && value.dataType?.kind === "string")
-            ) {
+            if (isStringValue(value)) {
                 return {
                     kind: "data",
                     cpp: value.cpp,
@@ -2972,10 +2961,7 @@ export class ExpressionLowerer {
         }
         const value = this.compileValue(unwrapped);
         if (value.kind === "number") return value;
-        if (
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (isStringValue(value)) {
             this.context.reachJsData();
             return {
                 kind: "number",

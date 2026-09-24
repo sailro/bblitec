@@ -1,6 +1,6 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
-import type { Value } from "./types.js";
+import { isStringValue, type Value } from "./types.js";
 import { expressionMayRunCode } from "./syntax.js";
 import type { LibraryGlobal } from "./symbols.js";
 
@@ -264,11 +264,7 @@ export function thrownMessage(value: Value): Value | undefined {
     if (value.nativeError) {
         return value.recordProperties?.message;
     }
-    if (
-        value.staticString !== undefined ||
-        value.kind === "string" ||
-        (value.kind === "data" && value.dataType?.kind === "string")
-    ) {
+    if (value.staticString !== undefined || isStringValue(value)) {
         return value;
     }
     return undefined;

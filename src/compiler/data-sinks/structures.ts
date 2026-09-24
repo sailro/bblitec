@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import { dataTypesEqual, type DataType } from "../data-types.js";
-import type { Value } from "../types.js";
+import { isStringValue, type Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -179,10 +179,7 @@ function valueEnum(
             node,
         );
     }
-    if (
-        value.kind === "string" ||
-        (value.kind === "data" && value.dataType?.kind === "string")
-    ) {
+    if (isStringValue(value)) {
         return lowerer.context.dataTypes.enumFromStringCpp(
             dataType,
             value.cpp,

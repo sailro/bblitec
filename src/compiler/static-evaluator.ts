@@ -31,7 +31,7 @@ function objectIdentityCallArgument(
 }
 import { EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
-import type { Value } from "./types.js";
+import { isStringValue, type Value } from "./types.js";
 import type { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
 import { libraryGlobal, type LibraryGlobal } from "./symbols.js";
@@ -581,10 +581,7 @@ export class StaticEvaluator {
             const operator =
                 unwrapped.operator === ts.SyntaxKind.MinusToken ? "-" : "+";
             const operand = this.resolveValue(unwrapped.operand);
-            if (
-                operand.kind === "string" ||
-                (operand.kind === "data" && operand.dataType?.kind === "string")
-            ) {
+            if (isStringValue(operand)) {
                 this.onJsData();
                 const converted = `bbl::js::number_from_string(${operand.cpp})`;
                 return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;

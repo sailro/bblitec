@@ -8,7 +8,7 @@ import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { compileBakedMesh } from "../baked-mesh.js";
 
-import type { Value } from "../types.js";
+import { isStringValue, type Value } from "../types.js";
 import { handleCppType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -1304,10 +1304,7 @@ function compileCreateMeshFromData(
     // The record carries the pinned Mesh name; scene code finds
     // meshes by it.
     const name = context.compileValue(argumentAt(call, 1));
-    if (
-        name.kind !== "string" &&
-        !(name.kind === "data" && name.dataType?.kind === "string")
-    ) {
+    if (!isStringValue(name)) {
         context.fail(
             argumentAt(call, 1),
             `Mesh names must be strings, received ${name.kind}.`,
@@ -1880,10 +1877,7 @@ function compileCreateTransformNode(
     context.expectArgumentCount(call, 1, 11);
     const engine = context.requireDefaultEngine(call);
     const name = context.compileValue(argumentAt(call, 0));
-    if (
-        name.kind !== "string" &&
-        !(name.kind === "data" && name.dataType?.kind === "string")
-    ) {
+    if (!isStringValue(name)) {
         context.fail(
             argumentAt(call, 0),
             `TransformNode names must be strings, received ${name.kind}.`,

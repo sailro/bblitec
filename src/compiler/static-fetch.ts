@@ -12,7 +12,7 @@ import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
 import { deploymentUrl } from "./deployment.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
-import type { CompileAsset, Value } from "./types.js";
+import { isStringValue, type CompileAsset, type Value } from "./types.js";
 
 export interface StaticFetchContext extends Pick<
     LoweringServices,
@@ -136,13 +136,7 @@ function compileDynamicCandidateFetch(
     response = false,
 ): Value | undefined {
     const selected = context.compileValue(expression);
-    if (
-        selected.staticString !== undefined ||
-        !(
-            selected.kind === "string" ||
-            (selected.kind === "data" && selected.dataType?.kind === "string")
-        )
-    ) {
+    if (selected.staticString !== undefined || !isStringValue(selected)) {
         return undefined;
     }
     const discovered = context
@@ -384,10 +378,7 @@ function compileDynamicDirectoryFetch(
         suffix.staticString !== undefined
     )
         return undefined;
-    if (
-        suffix.kind !== "string" &&
-        !(suffix.kind === "data" && suffix.dataType?.kind === "string")
-    ) {
+    if (!isStringValue(suffix)) {
         return undefined;
     }
     const logicalBase = logicalPrefix.endsWith("/")

@@ -3,7 +3,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 
-import type { Value } from "./types.js";
+import { isStringValue, type Value } from "./types.js";
 
 /**
  * The bounded browser file surface is a host service, like Web Storage.  This
@@ -70,10 +70,7 @@ function blobPartCpp(
     expression: ts.Expression,
 ): string {
     const part = context.compileValue(expression);
-    if (
-        part.kind === "string" ||
-        (part.kind === "data" && part.dataType?.kind === "string")
-    ) {
+    if (isStringValue(part)) {
         return `bbl::js::blob_part_string(${part.cpp})`;
     }
     if (part.kind === "data" && part.dataType?.kind === "u8array") {

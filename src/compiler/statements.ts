@@ -767,9 +767,7 @@ export class StatementLowerer {
             }
             return;
         }
-        const stringSwitch =
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string");
+        const stringSwitch = isStringValue(value);
         const enumSwitch =
             value.kind === "data" && value.dataType?.kind === "enum";
         if (
@@ -1549,11 +1547,7 @@ export class StatementLowerer {
                 "A scene throws a new Error, a held Error value or a string.",
             );
         }
-        if (
-            value.staticString === undefined &&
-            value.kind !== "string" &&
-            !(value.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (value.staticString === undefined && !isStringValue(value)) {
             context.fail(thrown, "A thrown Error message must be a string.");
         }
         context.reachThrow();
