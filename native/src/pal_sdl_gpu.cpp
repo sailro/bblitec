@@ -6679,9 +6679,8 @@ class SdlSceneRun {
         bool capture_ready = false, capture_frame = false, capture_ids = false,
              capture_clusters = false;
         PixelViewport surface_extent{};
-        double aspect = 0;
-        std::array<float, 16> matrix{}, skybox_matrix{}, frame_view{}, frame_projection{};
-        std::array<float, 4> frame_camera_position{};
+        CameraPassMatrices frame_camera{};
+        std::array<float, 16> skybox_matrix{};
         ShaderPassMatrices frame_pass_matrices{};
         SDL_GPUTexture* capture_texture = nullptr;
         SDL_GPUTexture* visible_color = nullptr;
@@ -6738,7 +6737,7 @@ class SdlSceneRun {
         [[maybe_unused]] auto& state = data_.resources.state;
         [[maybe_unused]] auto& width = current_frame().width;
         [[maybe_unused]] auto& height = current_frame().height;
-        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& matrix = current_frame().frame_camera.view_projection;
         [[maybe_unused]] const auto& capture_ready = current_frame().capture_ready;
 
         if (capture_ready && !captures.render_capture_saved &&
@@ -8074,12 +8073,13 @@ public:
         [[maybe_unused]] auto& profile_transformed_vertices =
             current_frame().profile_transformed_vertices;
         [[maybe_unused]] auto& surface_extent = current_frame().surface_extent;
-        [[maybe_unused]] auto& aspect = current_frame().aspect;
-        [[maybe_unused]] auto& matrix = current_frame().matrix;
+        [[maybe_unused]] auto& frame_camera = current_frame().frame_camera;
+        [[maybe_unused]] const auto& aspect = frame_camera.aspect;
+        [[maybe_unused]] const auto& matrix = frame_camera.view_projection;
         [[maybe_unused]] auto& skybox_matrix = current_frame().skybox_matrix;
-        [[maybe_unused]] auto& frame_view = current_frame().frame_view;
-        [[maybe_unused]] auto& frame_projection = current_frame().frame_projection;
-        [[maybe_unused]] auto& frame_camera_position = current_frame().frame_camera_position;
+        [[maybe_unused]] const auto& frame_view = frame_camera.view;
+        [[maybe_unused]] const auto& frame_projection = frame_camera.projection;
+        [[maybe_unused]] const auto& frame_camera_position = frame_camera.camera_position;
         [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
         [[maybe_unused]] auto& capture_ready = current_frame().capture_ready;
         [[maybe_unused]] auto& capture_frame = current_frame().capture_frame;
@@ -8461,33 +8461,17 @@ public:
         capture_ids = capture_ready && !captures.id_buffer_saved && !id_buffer_path.empty();
         capture_clusters =
             capture_ready && !captures.cluster_buffer_saved && !cluster_buffer_path.empty();
-        // getEffectiveAspectRatio divides two JavaScript numbers,
-        // so the ratio reaches the projection writer in double. It
-        // is the pinned function itself: a camera carrying a
-        // viewport scales the target ratio by the viewport's own,
-        // and one without takes the pin's literal 1.
+        // The frame's product and its two factors, built once: a shader
+        // material may declare either factor beside the product, the pin's
+        // splat UBO stores them separately, and the billboard sort reads the
+        // view.
         surface_extent = scene_surface_extent(engine, scene, width, height);
+        frame_camera = camera_pass_matrices(scene, engine, camera, surface_extent.width,
+                                            surface_extent.height);
+        frame_pass_matrices = frame_camera.pass();
         if (camera) {
-            aspect =
-                upstream::effective_aspect_ratio(*camera, static_cast<double>(surface_extent.width),
-                                                 static_cast<double>(surface_extent.height));
-            matrix = upstream::build_view_projection(*camera, aspect);
             skybox_matrix = upstream::build_skybox_view_projection(*camera, aspect);
-            // The frame's own two factors, built once. Three consumers read
-            // them and each used to build its own: a shader material may
-            // declare either beside the product, the pin's splat UBO stores
-            // them separately, and the billboard sort reads the view. The
-            // projection is the pin's `getProjectionMatrix` -- the arm that
-            // branches on the camera -- rather than the perspective writer
-            // the skybox deliberately takes.
-            frame_view = upstream::build_view_matrix(upstream::camera_world_matrix(*camera));
-            frame_projection = upstream::build_scene_projection(*camera, aspect);
-            frame_camera_position = shader_camera_position(scene, engine, *camera);
         }
-        // Without a camera the matrices above keep the frame's zeros: the
-        // scene block the pin never writes (see `active_camera`).
-        frame_pass_matrices = {matrix.data(), &frame_view, &frame_projection};
-        frame_pass_matrices.camera_position = &frame_camera_position;
 #if BBLITE_HAS_TEXT
         validate_text_scene(scene);
         state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
@@ -8571,11 +8555,12 @@ public:
         [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
         [[maybe_unused]] auto& width = current_frame().width;
         [[maybe_unused]] auto& height = current_frame().height;
-        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& matrix = current_frame().frame_camera.view_projection;
         [[maybe_unused]] const auto& skybox_matrix = current_frame().skybox_matrix;
-        [[maybe_unused]] const auto& frame_view = current_frame().frame_view;
-        [[maybe_unused]] const auto& frame_projection = current_frame().frame_projection;
-        [[maybe_unused]] const auto& frame_camera_position = current_frame().frame_camera_position;
+        [[maybe_unused]] const auto& frame_view = current_frame().frame_camera.view;
+        [[maybe_unused]] const auto& frame_projection = current_frame().frame_camera.projection;
+        [[maybe_unused]] const auto& frame_camera_position =
+            current_frame().frame_camera.camera_position;
         [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
         [[maybe_unused]] const auto& capture_frame = current_frame().capture_frame;
         [[maybe_unused]] auto& swapchain = current_frame().swapchain;
@@ -8627,23 +8612,10 @@ public:
                     const CameraRecord* const graph_camera = layer_camera(graph_scene);
                     const PixelViewport graph_extent =
                         scene_surface_extent(engine, graph_scene, width, height);
-                    // A layer without a camera draws through the zero block
-                    // the pin never writes for it (see `active_camera`).
-                    std::array<float, 16> graph_matrix{}, graph_view{}, graph_projection{};
-                    std::array<float, 4> graph_eye{};
-                    if (graph_camera) {
-                        const double graph_aspect = upstream::effective_aspect_ratio(
-                            *graph_camera, graph_extent.width, graph_extent.height);
-                        graph_matrix = upstream::build_view_projection(*graph_camera, graph_aspect);
-                        graph_view = upstream::build_view_matrix(
-                            upstream::camera_world_matrix(*graph_camera));
-                        graph_projection =
-                            upstream::build_scene_projection(*graph_camera, graph_aspect);
-                        graph_eye = shader_camera_position(graph_scene, engine, *graph_camera);
-                    }
-                    ShaderPassMatrices graph_pass_matrices{graph_matrix.data(), &graph_view,
-                                                           &graph_projection};
-                    graph_pass_matrices.camera_position = &graph_eye;
+                    const CameraPassMatrices graph_camera_pass = camera_pass_matrices(
+                        graph_scene, engine, graph_camera, graph_extent.width, graph_extent.height);
+                    const std::array<float, 16>& graph_matrix = graph_camera_pass.view_projection;
+                    const ShaderPassMatrices graph_pass_matrices = graph_camera_pass.pass();
 #if BBLITE_SHADOW_RECEIVERS
                     update_shadow_generators(state, graph_scene, engine);
                     // CSM receiver-data callbacks can rewrite a shader storage
@@ -9512,45 +9484,30 @@ public:
                                                             graph_extent.height,
                                                             [](const float*, std::size_t) {});
 #endif
+                            // `_writePassSceneUBO` folds the camera's own
+                            // viewport into whichever extent the task was
+                            // configured for -- the canvas or the target.
+                            const bool canvas_extent = task.render.canvas_size;
+                            CameraPassMatrices task_camera_pass = camera_pass_matrices(
+                                graph_scene, engine, task_camera,
+                                canvas_extent ? graph_extent.width
+                                              : static_cast<double>(target.width),
+                                canvas_extent ? graph_extent.height
+                                              : static_cast<double>(target.height));
                             // A shadow task renders from the light, not from
                             // a camera: the generator's own matrices replace
-                            // both of these below, so building and pushing a
-                            // camera view-projection first would be a dead pass
-                            // over the camera basis and a dead push.
+                            // the product below, which stays the zero matrix
+                            // and is never pushed.
                             const bool shadow_task =
                                 task.render.shadow_generator.value != invalid_handle;
-                            double task_aspect = 0.0;
-                            std::array<float, 16> task_matrix{}, task_view{}, task_projection{};
-                            std::array<float, 4> task_camera_position{};
-                            if (task_camera) {
-                                // `_writePassSceneUBO` folds the camera's own
-                                // viewport into whichever extent the task was
-                                // configured for -- the canvas or the target.
-                                task_aspect =
-                                    task.render.canvas_size
-                                        ? upstream::effective_aspect_ratio(
-                                              *task_camera, static_cast<double>(graph_extent.width),
-                                              static_cast<double>(graph_extent.height))
-                                        : upstream::effective_aspect_ratio(
-                                              *task_camera, static_cast<double>(target.width),
-                                              static_cast<double>(target.height));
-                                if (!shadow_task)
-                                    task_matrix =
-                                        upstream::build_view_projection(*task_camera, task_aspect);
-                                // The task's own two factors, beside its product,
-                                // for a shader material that declares one. A shadow
-                                // task renders from the light instead and supplies
-                                // what the generator carries.
-                                task_view = upstream::build_view_matrix(
-                                    upstream::camera_world_matrix(*task_camera));
-                                task_projection =
-                                    upstream::build_scene_projection(*task_camera, task_aspect);
-                                task_camera_position =
-                                    shader_camera_position(graph_scene, engine, *task_camera);
-                            }
-                            ShaderPassMatrices task_pass_matrices{task_matrix.data(), &task_view,
-                                                                  &task_projection};
-                            task_pass_matrices.camera_position = &task_camera_position;
+                            if (shadow_task)
+                                task_camera_pass.view_projection = {};
+                            const std::array<float, 16>& task_matrix =
+                                task_camera_pass.view_projection;
+                            [[maybe_unused]] const std::array<float, 16>& task_view =
+                                task_camera_pass.view;
+                            const double task_aspect = task_camera_pass.aspect;
+                            const ShaderPassMatrices task_pass_matrices = task_camera_pass.pass();
                             if (!shadow_task) {
                                 SDL_PushGPUVertexUniformData(command, 0, task_matrix.data(),
                                                              sizeof(task_matrix));
@@ -9624,7 +9581,8 @@ public:
                                                              sizeof(caster_view_projection));
                                 ShaderPassMatrices caster_pass_matrices{
                                     caster_view_projection.data(), &caster_view, nullptr};
-                                caster_pass_matrices.camera_position = &task_camera_position;
+                                caster_pass_matrices.camera_position =
+                                    &task_camera_pass.camera_position;
                                 draw_scene(graph_scene, graph_meshes, shadow_pass, nullptr, nullptr,
                                            nullptr, nullptr, state.shader_shadow_pipelines,
                                            state.shader_shadow_pipelines, caster_view_projection,
@@ -9730,11 +9688,7 @@ public:
                             SDL_GPUColorTargetInfo target_info{};
                             target_info.texture =
                                 target_record.swapchain ? swapchain : target.color;
-                            // `cfg.clrColor ?? sc.clearColor`, the task's own scene
-                            // read live at the pass.
-                            const Color4 task_clear_color = task.render.clear_color
-                                                                ? *task.render.clear_color
-                                                                : task.source_scene->clear_color;
+                            const Color4 task_clear_color = render_task_clear_color(task);
                             target_info.clear_color = SDL_FColor{
                                 task_clear_color.r,
                                 task_clear_color.g,
@@ -9880,25 +9834,13 @@ public:
                                         layer_camera(utility);
                                     const CameraRecord* const utility_camera =
                                         own_utility_camera ? own_utility_camera : task_camera;
-                                    std::array<float, 16> utility_matrix{}, utility_view{},
-                                        utility_projection{};
-                                    std::array<float, 4> utility_eye{};
-                                    if (utility_camera) {
-                                        const double utility_aspect =
-                                            upstream::effective_aspect_ratio(
-                                                *utility_camera, target.width, target.height);
-                                        utility_matrix = upstream::build_view_projection(
-                                            *utility_camera, utility_aspect);
-                                        utility_view = upstream::build_view_matrix(
-                                            upstream::camera_world_matrix(*utility_camera));
-                                        utility_projection = upstream::build_scene_projection(
-                                            *utility_camera, utility_aspect);
-                                        utility_eye = shader_camera_position(utility, engine,
-                                                                             *utility_camera);
-                                    }
-                                    ShaderPassMatrices utility_matrices{
-                                        utility_matrix.data(), &utility_view, &utility_projection};
-                                    utility_matrices.camera_position = &utility_eye;
+                                    const CameraPassMatrices utility_camera_pass =
+                                        camera_pass_matrices(utility, engine, utility_camera,
+                                                             target.width, target.height);
+                                    const std::array<float, 16>& utility_matrix =
+                                        utility_camera_pass.view_projection;
+                                    const ShaderPassMatrices utility_matrices =
+                                        utility_camera_pass.pass();
                                     target_info.load_op = SDL_GPU_LOADOP_LOAD;
                                     if (task_depth_pointer)
                                         task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -11199,7 +11141,7 @@ public:
 #endif
         [[maybe_unused]] auto& width = current_frame().width;
         [[maybe_unused]] auto& height = current_frame().height;
-        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& matrix = current_frame().frame_camera.view_projection;
         [[maybe_unused]] const auto& capture_frame = current_frame().capture_frame;
         [[maybe_unused]] const auto& capture_ids = current_frame().capture_ids;
         [[maybe_unused]] const auto& capture_clusters = current_frame().capture_clusters;

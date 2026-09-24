@@ -5931,6 +5931,54 @@ inline std::array<float, 4> shader_camera_position(const Scene& scene, const Eng
 }
 
 /**
+ * One camera pass's matrices -- the effective aspect, the view-projection,
+ * its two factors and the eye -- built from one camera so a pass cannot mix
+ * two sources. A pass without a camera keeps the zeros of the scene block
+ * the pin never writes for it (see `scene_camera`).
+ */
+struct CameraPassMatrices {
+    double aspect = 0.0;
+    std::array<float, 16> view_projection{};
+    std::array<float, 16> view{};
+    std::array<float, 16> projection{};
+    std::array<float, 4> camera_position{};
+
+    /** The pass matrices a shader draw reads, pointing into this record. */
+    [[nodiscard]] ShaderPassMatrices pass() const {
+        ShaderPassMatrices matrices{view_projection.data(), &view, &projection};
+        matrices.camera_position = &camera_position;
+        return matrices;
+    }
+};
+
+/**
+ * `camera`'s pass over a `width` x `height` extent. The aspect is the
+ * pinned `getEffectiveAspectRatio`, a division of two JavaScript numbers
+ * that reaches the projection writers in double: a camera carrying a
+ * viewport scales the extent's ratio by the viewport's own. The projection
+ * is the pin's `getProjectionMatrix`, the arm that branches on the camera,
+ * rather than the perspective writer the skybox takes.
+ */
+inline CameraPassMatrices camera_pass_matrices(const Scene& scene, const Engine& engine,
+                                               const CameraRecord* camera, double width,
+                                               double height) {
+    CameraPassMatrices matrices;
+    if (!camera)
+        return matrices;
+    matrices.aspect = upstream::effective_aspect_ratio(*camera, width, height);
+    matrices.view_projection = upstream::build_view_projection(*camera, matrices.aspect);
+    matrices.view = upstream::build_view_matrix(upstream::camera_world_matrix(*camera));
+    matrices.projection = upstream::build_scene_projection(*camera, matrices.aspect);
+    matrices.camera_position = shader_camera_position(scene, engine, *camera);
+    return matrices;
+}
+
+/** A render task's clear colour, the pin's `cfg.clrColor ?? sc.clearColor`, read live at the pass. */
+inline Color4 render_task_clear_color(const FrameTaskRecord& task) {
+    return task.render.clear_color ? *task.render.clear_color : task.source_scene->clear_color;
+}
+
+/**
  * One custom-shader stage block: declared system matrices followed by the
  * reflected gathers from the material's flat value storage. These exact
  * floats feed SDL pushes, Dawn buffer writes and render capture.
