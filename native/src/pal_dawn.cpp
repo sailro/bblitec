@@ -569,6 +569,8 @@ struct DawnGeometryTask {
     DawnBuffer pinned_geometry_params;
     std::array<float, 16> previous_view_projection{};
     bool has_previous_view_projection = false;
+    /** The task's Standard renderables' previous worlds. */
+    PinnedVelocityHistory velocity;
     /** Set with the textures: another task binds this task's depth. */
     bool depth_borrowed = false;
 };
@@ -4502,13 +4504,20 @@ StandardRenderViews standard_render_views(DawnState& state, const Engine& engine
     };
 }
 
-/** Writes one Standard draw's pinned blocks for the frame. */
+/**
+ * Writes one Standard draw's pinned blocks for the frame; a geometry task's
+ * draw passes its velocity history, updated for the frame.
+ */
 void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                                 const upstream::RenderDrawCommand& draw, WGPUBuffer mesh_uniforms,
                                 WGPUBuffer material_uniforms, WGPUBuffer uv_uniforms,
-                                [[maybe_unused]] WGPUBuffer uv_transform_uniforms) {
+                                [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
+                                const PinnedVelocityHistory* velocity_history = nullptr) {
     const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
-    const upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
+    upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
+    if (velocity_history) {
+        write_pinned_velocity_tail(*velocity_history, draw.item.mesh, mesh_block);
+    }
     wgpuQueueWriteBuffer(state.queue, mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
     std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
     if (material && material->no_color) {
@@ -4567,14 +4576,13 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
                 ensure_standard_draw_buffers(state, mesh, draw.item.material.value);
             DawnDrawState& draw_state =
                 mesh.standard_geometry_states.try_emplace(variant, state).first->second;
-            // A LOCAL_POSITION variant's mesh block carries the node world
-            // where the colour pass's carries the identity over baked
-            // vertices, and every queue write lands before the frame's
+            // A geometry task's mesh block carries its own renderable's
+            // velocity tail, and every queue write lands before the frame's
             // submission — so a geometry variant cannot share the colour
-            // pass's mesh buffer without the last writer poisoning the
-            // other pass. Each geometry draw state owns its mesh block;
-            // the material and uv blocks are the same bytes in every pass
-            // and stay shared.
+            // pass's mesh buffer, or another task's, without the last writer
+            // poisoning the other pass. Each geometry draw state owns its
+            // mesh block; the material and uv blocks are the same bytes in
+            // every pass and stay shared.
             if (!draw_state.mesh_uniforms) {
                 WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
                 descriptor.size = sizeof(upstream::MeshUniforms);
@@ -4586,7 +4594,7 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
             }
             write_standard_draw_blocks(state, scene, engine, draw, draw_state.mesh_uniforms,
                                        colour_state.material_uniforms, colour_state.uv_uniforms,
-                                       colour_state.uv_transform_uniforms);
+                                       colour_state.uv_transform_uniforms, &geometry.velocity);
             if (!draw_state.group) {
                 draw_state.group = build_standard_draw_group(
                     state, mesh, material, variant, draw_state.mesh_uniforms,
@@ -10237,6 +10245,10 @@ public:
                         // each draw's mesh and material blocks against the MRT
                         // variant the selector table keys on this task.
                         write_pinned_geometry_task(
+                        update_pinned_velocity_frame(
+                            handle_at(state.geometry_tasks, handle).velocity, graph_scene, engine,
+                            (graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1])
+                                .items);
                             state, graph_scene, engine, task,
                             handle_at(state.geometry_tasks, handle),
                             handle_at(state.render_tasks, handle).draw_lists);

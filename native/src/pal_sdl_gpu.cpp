@@ -857,6 +857,8 @@ struct GpuGeometryTask {
     // shader compile demotes their gp block to a read-only storage
     // buffer and the encode uploads its contents here each frame.
     SDL_GPUBuffer* params = nullptr;
+    /** The task's Standard renderables' previous worlds. */
+    PinnedVelocityHistory velocity;
     /** Set with the textures: another task binds this task's depth. */
     bool depth_borrowed = false;
 };
@@ -3410,6 +3412,8 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
                            const std::vector<std::uint8_t>& pinned_lights,
                            const upstream::RenderDrawCommand& draw, const GpuMesh& mesh,
                            const MaterialRecord* material, std::size_t variant,
+                           // The geometry task's velocity history, updated for this frame.
+                           const PinnedVelocityHistory* velocity_history = nullptr,
                            // The feature word the selector already derived for this draw
                            // (`standard_variant_key`), passed through rather than re-derived.
                            std::uint32_t features, SDL_GPUGraphicsPipeline*& bound_pipeline,
@@ -3443,7 +3447,10 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
         bound_pipeline = variant_pipeline;
     }
     const MeshRecord& record = handle_at(engine.meshes, item.mesh);
-    const upstream::MeshUniforms pinned_mesh = pinned_mesh_block(scene, engine, item.mesh);
+    upstream::MeshUniforms pinned_mesh = pinned_mesh_block(scene, engine, item.mesh);
+    if (velocity_history) {
+        write_pinned_velocity_tail(*velocity_history, item.mesh, pinned_mesh);
+    }
     const upstream::StandardMaterialUniforms material_block =
         standard_material_block(material, features);
     const upstream::StandardUvTransformUniforms uv_block = standard_uv_block(material, features);
@@ -8402,6 +8409,10 @@ public:
                                                 // renders standard-Z.
                                                 [[maybe_unused]] const ShadowGeneratorRecord*
                                                     shadow_generator = nullptr,
+                                                // A geometry task's velocity
+                                                // history, updated for the frame.
+                                                [[maybe_unused]] const PinnedVelocityHistory*
+                                                    velocity_history,
                                                 [[maybe_unused]] bool draw_scene_billboard_stages =
                                                     false
 #if BBLITE_HAS_TAA
@@ -8596,7 +8607,8 @@ public:
                                         standard_variant, standard_key.features, bound_pipeline,
                                         geometry_task, geometry_params,
                                         material_render_textures(material, source_texture),
-                                        geometry_params_buffer, shadow_generator != nullptr
+                                        geometry_params_buffer, velocity_history,
+                                        shadow_generator != nullptr
 #if BBLITE_SHADOWS_ESM
                                         ,
                                         shadow_generator && shadow_generator->filter ==
@@ -8949,7 +8961,7 @@ public:
                                            state.shader_shadow_pipelines, caster_view_projection,
                                            task_camera, caster_pass_matrices,
                                            handle_at(task_draw_lists, handle), nullptr, nullptr,
-                                           nullptr, &generator);
+                                           nullptr, nullptr, &generator);
                                 shadow_pass.end();
 #if BBLITE_SHADOWS_ESM
                                 // `renderEsmShadowMap` blurs the map it just
@@ -9132,7 +9144,7 @@ public:
                             draw_scene(graph_scene, graph_meshes, nullptr, {}, {}, task_matrix,
                                        task_camera, task_pass_matrices,
                                        handle_at(task_draw_lists, handle), nullptr, nullptr,
-                                       nullptr, nullptr, false, &prepared.draws,
+                                       nullptr, nullptr, nullptr, false, &prepared.draws,
                                        task.scene_uniforms,
                                        task_sample_count(state, target_record.samples));
                             temporal_passes.emplace_back(std::move(prepared));
@@ -9169,7 +9181,7 @@ public:
                                 graph_scene, graph_meshes, task_pass, state.shader_pipelines,
                                 state.shader_a2c_pipelines, task_matrix, task_camera,
                                 task_pass_matrices, handle_at(task_draw_lists, handle), nullptr,
-                                nullptr, nullptr, nullptr, task.render.scene_stages
+                                nullptr, nullptr, nullptr, nullptr, task.render.scene_stages
 #if BBLITE_HAS_TAA
                                 ,
                                 nullptr, {}, {}
@@ -9233,7 +9245,7 @@ public:
                                                state.shader_pipelines, state.shader_a2c_pipelines,
                                                utility_matrix, utility_camera, utility_matrices,
                                                overlay_plans[layer].draw_lists, nullptr, nullptr,
-                                               nullptr);
+                                               nullptr, nullptr);
                                     utility_pass.end();
                                 }
                             }
@@ -9346,10 +9358,14 @@ public:
                             draw_scene(graph_scene, graph_meshes, task_pass, {}, {}, graph_matrix,
                                        graph_camera, graph_pass_matrices,
                                        handle_at(task_draw_lists, handle), &task, &geometry_params,
-                                       geometry.params);
+                                       geometry.params, &geometry.velocity);
 #if BBLITE_GEOMETRY_TASK_FAMILIES
                             // The previous view-projection is a property of the
                             // TASK, tracked only when a composed family reads it.
+#if BBLITE_STANDARD_VARIANTS > 0
+                            update_pinned_velocity_frame(geometry.velocity, graph_scene, engine,
+                                                         graph_plan.items);
+#endif
                             geometry.previous_view_projection = graph_matrix;
 #endif
                             task_pass.end();

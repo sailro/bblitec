@@ -63,6 +63,9 @@ Vertex buffers carry each geometry's source lanes; every family's mesh block car
 (eye-relative under floating origin), with fixed PAL bindings and a 64-matrix palette. A glTF primitive
 without NORMAL stands in for the derivative flat normal with its local face normal, signed by the
 loaded world's handedness; under a non-uniformly scaled node the stand-in leans with the world basis.
+A Standard geometry task keeps each renderable's previous world and writes velocity disabled on its
+first frame, as the pin does; a skinned Standard mesh in a LINEAR_VELOCITY task refuses, having no
+previous bone texture.
 SDL single-sample image processing samples texel centers. Single-sample transmission replaces
 MSAA averaging with mip-zero loads while retaining the source bilinear filter.
 

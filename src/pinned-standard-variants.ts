@@ -436,6 +436,7 @@ export async function composePinnedStandardVariant(
                 ESM_SHADOW_OUTPUT: number;
                 NO_COLOR_OUTPUT: number;
                 GEOMETRY_OUTPUT: number;
+                HAS_SKELETON: number;
             }>("material/standard/standard-flags.js"),
             importPinnedModule<{
                 MSH_HAS_SKELETON: number;
@@ -669,6 +670,21 @@ export async function composePinnedStandardVariant(
             (features & ~flags.MATERIAL_ALPHA_BLEND) |
             flags.GEOMETRY_OUTPUT |
             passFeatures;
+        // The composer's skeletal velocity arm (`hasSkeletonVelocity`)
+        // samples the previous frame's bone texture, which the pin's
+        // renderable keeps beside its previous world; neither backend keeps
+        // one.
+        if (
+            options.geometry.attachments.includes("LINEAR_VELOCITY") &&
+            (viewFeatures & flags.HAS_SKELETON) !== 0
+        ) {
+            refuseGeneration(
+                "renderer:geometry-output",
+                "A skinned Standard mesh in a LINEAR_VELOCITY geometry task " +
+                    "reads the previous frame's bone texture, which no " +
+                    "backend keeps.",
+            );
+        }
         const composed = geometry.composeStandardGeometryShader(
             viewFeatures,
             meshFeatures,
