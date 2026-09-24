@@ -7630,17 +7630,23 @@ export class DataLowerer {
         const nullish =
             expression.operatorToken.kind ===
             ts.SyntaxKind.QuestionQuestionEqualsToken;
-        if (nullish && (scalarKind || targetType?.kind !== "optional")) {
+        // An optional is present when engaged; a shared object is its
+        // reference, whose null is the binding's absent state.
+        const presence =
+            targetType?.kind === "optional"
+                ? `(${target.cpp}).has_value()`
+                : targetType?.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(targetType.name)
+                  ? this.referencePresence(target.cpp)
+                  : undefined;
+        if (nullish && (scalarKind || presence === undefined)) {
             // A non-nullable target never takes the right side.
             return;
         }
         if (nullish) {
             this.context.reachJsData();
         }
-        const guard = this.logicalAssignmentGuard(
-            expression,
-            `!(${target.cpp}).has_value()`,
-        );
+        const guard = this.logicalAssignmentGuard(expression, `!${presence}`);
         this.emitGuardedStore(guard, () => {
             const value =
                 scalarKind === "number"

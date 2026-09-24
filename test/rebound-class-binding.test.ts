@@ -46,6 +46,24 @@ const lazyInstance = `
     current.add(1);
     if (first === current || first.values.length !== 0 || current.values.length !== 1)
         throw new Error("rebound instance identity");
+    let pending: Mesh | null = null;
+    pending ??= new Mesh();
+    pending.add(5);
+    const kept = pending;
+    pending ??= new Mesh();
+    if (pending !== kept || pending.values.length !== 1)
+        throw new Error("nullish assignment on a class reference");
+    class Holder {
+        public selected: Mesh | null = null;
+        pick(mesh: Mesh): Mesh {
+            this.selected ??= mesh;
+            return this.selected;
+        }
+    }
+    const holder = new Holder();
+    const a = new Mesh();
+    if (holder.pick(a) !== a || holder.pick(new Mesh()) !== a)
+        throw new Error("nullish assignment on a class field");
 `;
 
 test("a rebound class binding stores a shared object", () => {
