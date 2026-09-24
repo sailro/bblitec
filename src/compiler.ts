@@ -806,6 +806,8 @@ class Compiler implements LoweringServices {
         NativeCaptureBinding
     >();
     private readonly nativeBindingTypes = new EmissionMap<string, string>();
+    /** Locals declared `const`: an environment borrows them as constant. */
+    private readonly constNativeBindings = new EmissionSet<string>();
     private readonly allocatedCppNames = new EmissionMap<string, number>();
     private readonly nativeTemporaries =
         new EmissionWeakSet<NativeCaptureBinding>();
@@ -6629,6 +6631,16 @@ class Compiler implements LoweringServices {
         return binding;
     }
 
+    /** A capture's native type, constant when its local is declared so. */
+    private nativeBindingCaptureType(name: string): string | undefined {
+        const type = this.nativeBindingTypes.get(name);
+        return type !== undefined &&
+            this.constNativeBindings.has(name) &&
+            !type.startsWith("const ")
+            ? `const ${type}`
+            : type;
+    }
+
     public registerNativeBindingType(name: string, cppType: string): void {
         if (
             cppIdentifierPattern.test(name) &&
@@ -6882,7 +6894,7 @@ class Compiler implements LoweringServices {
             this.allocateTemporaryCppName("environment"),
             this.nextNativeBindingSequence,
             byReference,
-            (binding) => this.nativeBindingTypes.get(binding.name),
+            (binding) => this.nativeBindingCaptureType(binding.name),
         );
         const allocationBoundary = this.temporaryIndex;
         this.managedCaptures.push(capture);
@@ -10056,6 +10068,8 @@ class Compiler implements LoweringServices {
         const code =
             typeof line === "string" ? line : renderNativeDeclaration(line);
         if (typeof line !== "string") {
+            if (line.type.startsWith("const "))
+                this.constNativeBindings.add(line.name);
             if (!/\bauto\b|\bdecltype\b/.test(line.type))
                 this.registerNativeBindingType(
                     line.name,
