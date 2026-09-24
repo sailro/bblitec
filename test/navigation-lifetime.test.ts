@@ -9,6 +9,7 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 import { navigationBuildPlanDeclarations } from "../src/lowering/navigation-build-plan.js";
+import { navigationLibraryHeader } from "../src/lowering/navigation-library.js";
 import { navigationQueryDefaultsDeclaration } from "../src/lowering/navigation-lowerer.js";
 import { pinnedHeader } from "../src/lowering/pinned-header.js";
 
@@ -37,6 +38,12 @@ function runNavigationFixture(name: string): string {
                 navigationBuildPlanDeclarations(["solo", "tileCache"]),
             ].join("\n"),
         ),
+    );
+    // The templates the PAL instantiates, where it includes them from.
+    mkdirSync(join(output, "bblite", "upstream"), { recursive: true });
+    writeFileSync(
+        join(output, "bblite", "upstream", "navigation_library.hpp"),
+        navigationLibraryHeader(true),
     );
     runNativeFixtureCompiler(tools!, [
         "/nologo",
@@ -128,6 +135,18 @@ test("navigation build plans are lowered from the recast-navigation packages", (
         /rcConfig\.tileSize = bbl::js::numeric_store_value<[^;]*>\(0\.0\);/,
     );
     assert.match(solo, /navMeshCreateParams\.buildBvTree = true;/);
+    // Core's setOffMeshConnections packs the scene's connections with the
+    // optional members' own defaults, and the generator calls it only when
+    // the scene gives a non-empty list.
+    assert.match(
+        solo,
+        /if \(!params\.off_mesh_connections\.empty\(\)\) \{\s*navMeshCreateParams\.offMeshConnections = set_off_mesh_connections\(params\.off_mesh_connections\);/,
+    );
+    assert.match(solo, /return bbl::pal::NavOffMeshPacking\{\};/);
+    assert.match(
+        solo,
+        /userIds\.push_back\(\(!connection\.user_id\.has_value\(\) \? \(1000\.0 \+ i\) : \(\*connection\.user_id\)\)\);/,
+    );
     const tile = navigationBuildPlanDeclarations(["tileCache"]);
     // The tile-cache arm's cfg always sets its own three, the pin's `?? N`
     // included.
@@ -143,4 +162,35 @@ test("navigation build plans are lowered from the recast-navigation packages", (
         /return bbl::pal::NavTileGrid\{tileWidth, tileHeight\};/,
     );
     assert.match(tile, /build\.linear_allocator_capacity = 32000\.0;/);
+});
+
+test("the wrapper JavaScript over Recast/Detour objects is lowered as templates", () => {
+    const library = navigationLibraryHeader(true);
+    // Core's navmesh walk: each wrapper accessor is the raw member it
+    // reads, and a null tile header is skipped as the wrapper's null.
+    assert.match(
+        library,
+        /template <typename NavMesh>\s*inline bbl::pal::NavMeshPositionsAndIndices get_nav_mesh_positions_and_indices\(/,
+    );
+    assert.match(
+        library,
+        /navMesh->getTile\(bbl::js::NumberArgument\{static_cast<double>\(tileIndex\)\}\)/,
+    );
+    assert.match(library, /if \(tileHeader == nullptr\) \{\s*continue;/);
+    assert.match(
+        library,
+        /indices\.push_back\(static_cast<double>\(tri\+\+\)\);/,
+    );
+    // The solo generator's normalization, over the glue's walkable area.
+    assert.match(
+        library,
+        /solo_nav_mesh_poly_areas_and_flags\(\s*PolyMesh\* polyMesh,\s*double walkableArea\)/,
+    );
+    assert.match(library, /polyMesh->areas\[[^\]]*\]\) == walkableArea\)/);
+    // The tile-cache default process, only where the scene has a cache.
+    assert.match(library, /inline void default_tile_cache_mesh_process\(/);
+    assert.doesNotMatch(
+        navigationLibraryHeader(false),
+        /default_tile_cache_mesh_process/,
+    );
 });
