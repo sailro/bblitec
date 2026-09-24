@@ -13,12 +13,13 @@ and performance.
 | FA-2 | high | Transmission activated from reach/asset ORs and emitted-literal comparisons; 5 skybox-only trees compiled the transmission path. | Define from the composed refraction/thickness arms and scene reach; `setPbrSkybox` no longer reaches it; unpinned `transmissive`/`subsurface` options refuse. | fixed |
 | FA-3 | med | The activation inventory re-derived 33 rows; 15 features had no reader, 8 claimed false readers. | Rows record the plan's reasons; a test checks every claimed reader. | fixed |
 | FA-4 | med | Asset conditions restated from the pinned registry; GLBs parsed ≥5 times. | Each document parsed once; lights from the executed plan; `staticModules` removed. Remaining: record triggered registry rows at packaging and read them in the specializer. | partial |
-| FA-5 | med | Macros have two owners and three guard styles with opposite defaults; no `-Wundef`. | Always define 0/1, `#if X` only, `-Wundef`//we4668. | open |
+| FA-5 | med | Macros have two owners and three guard styles with opposite defaults; no `-Wundef`. | One owner per macro (CMake for feature-keyed ones; `render_capabilities.hpp` in every tree for generator decisions), always 0/1; only `#if X` (native 560 `defined()` guards → 0; generated 2,094 → 0); `-Werror=undef` (clang-cl), `/we4668` (MSVC) on project units, which found two units reading a generator macro before its header. `BBLITE_HAS_SHADOWS` keys on the shadow generator list, checked by a test. | fixed |
 | FA-6 | med | Camera/light gizmo factories and morph-shadow bounds emitted without reach. | `gizmo:camera`/`gizmo:light` and `shadow:morph-bounds` gate emission and native records. | fixed |
 | FA-7 | low | `loadBabylon` reached `camera:free` with `loadCamera: false`. | Camera parser emitted only when cameras load. | fixed |
 | FA-8 | low | Activation records embedded absolute checkout paths. | Repository-relative POSIX paths. | fixed |
 | FA-9 | low | `ModelGeometry::morph_bounds` is compiled into every scene and cleared by every mesh builder. | `morph_bounds` and its release compile under `BBLITE_SHADOW_MORPH_BOUNDS`; builders clear it only when `shadow:morph-bounds` is reached. | fixed |
 | FA-10 | low | The transmission/thickness slot pair follows the renderer define, so a translucency-only scene compiles the grab machinery (scene26). | Key the slots on the composed arms. | open |
+| FA-11 | low | Native test fixtures compile with ad-hoc `/D` flags and harness defaults, without the undefined-macro check. | Derive fixture flags from the CMake table and add `/we4668`. | open |
 
 ## Re-derivation in TypeScript (RDT)
 
