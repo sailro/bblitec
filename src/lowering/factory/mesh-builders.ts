@@ -2483,7 +2483,6 @@ MeshHandle create_mesh_from_data(Engine& engine, const std::string& name,
     const std::vector<float>& colors) {
     MeshRecord mesh;
     mesh.name = name;
-    mesh.primitive = PrimitiveKind::gltf;
     mesh.geometry = upload_mesh_geometry_data(engine,positions,normals,indices,uvs,uvs2,tangents,colors);
     return store_mesh_record(engine, std::move(mesh));
 }
