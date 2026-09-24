@@ -61,6 +61,11 @@ import {
     lowerMat4DecomposeRotation,
 } from "./pinned-mat4-decompose.js";
 import { pinnedMeshOptionFlag } from "../pinned-mesh-defaults.js";
+import {
+    pinnedOptionFlag,
+    pinnedOptionNumber,
+    pinnedOptionTuple,
+} from "./pinned-option-defaults.js";
 import { pinnedPolyhedron } from "../pinned-polyhedra.js";
 import { lowerPointerDrag } from "./pointer-drag-lowerer.js";
 import {
@@ -1196,80 +1201,6 @@ export class GizmoLowerer {
         );
     }
 
-    /** The boolean form of `optionDefault`, for a `?? false` flag. */
-    private optionDefaultFlag(declaration: ts.Node, member: string): string {
-        let found: ts.Expression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
-            const coalesce = ts.isExpression(node)
-                ? this.context.nullishDefault(node)
-                : undefined;
-            if (
-                coalesce &&
-                ts.isPropertyAccessExpression(
-                    this.context.unwrapExpression(coalesce.left),
-                ) &&
-                (
-                    this.context.unwrapExpression(
-                        coalesce.left,
-                    ) as ts.PropertyAccessExpression
-                ).name.text === member
-            ) {
-                found = this.context.unwrapExpression(coalesce.right);
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration);
-        if (
-            !found ||
-            (found.kind !== ts.SyntaxKind.TrueKeyword &&
-                found.kind !== ts.SyntaxKind.FalseKeyword)
-        ) {
-            this.context.contractError(
-                declaration,
-                `Expected the pinned body to default '${member}' to a ` +
-                    "boolean literal through a nullish coalesce.",
-            );
-        }
-        return found.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false";
-    }
-
-    /** The right side of the pin's own `options.<member> ?? <default>`. */
-    private optionDefault(
-        declaration: ts.Node,
-        member: string,
-        file: ts.SourceFile,
-    ): number {
-        let found: ts.Expression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken &&
-                ts.isPropertyAccessExpression(
-                    this.context.unwrapExpression(node.left),
-                ) &&
-                (
-                    this.context.unwrapExpression(
-                        node.left,
-                    ) as ts.PropertyAccessExpression
-                ).name.text === member
-            ) {
-                found = node.right;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration);
-        return found
-            ? this.context.numericValue(found, file)
-            : this.context.contractError(
-                  declaration,
-                  `Expected the pinned body to default '${member}' ` +
-                      "through a nullish coalesce.",
-              );
-    }
-
     /** The three arguments of `<local>.<channel>.set(a, b, c)`. */
     private channel(
         scope: ts.Node | readonly ts.Node[],
@@ -2334,15 +2265,18 @@ ${body}
             AXIS_DRAG_MODULE,
             "createAxisDragGizmo",
         ).declaration;
-        const thickness = this.optionDefault(factory, "thickness", file);
-        const color = this.context
-            .numericTuple(
-                this.context.nullishDefault(
-                    this.context.variableInitializer(factory, "color"),
-                )!.right,
-                file,
-            )
-            .map((component) => this.context.doubleLiteral(component));
+        const thickness = pinnedOptionNumber(
+            this.context,
+            factory,
+            { member: "thickness" },
+            file,
+        );
+        const color = pinnedOptionTuple(
+            this.context,
+            factory,
+            { local: "color" },
+            file,
+        ).map((component) => this.context.doubleLiteral(component));
         const arrow = this.widgetLowerer(
             AXIS_DRAG_MODULE,
             new Map([["thickness", "thickness"]]),
@@ -2478,19 +2412,23 @@ ${
             AXIS_SCALE_MODULE,
             "createAxisScaleGizmo",
         ).declaration;
-        const thickness = this.optionDefault(factory, "thickness", file);
-        const uniformScalingDefault = this.optionDefaultFlag(
+        const thickness = pinnedOptionNumber(
+            this.context,
             factory,
-            "uniformScaling",
+            { member: "thickness" },
+            file,
         );
-        const color = this.context
-            .numericTuple(
-                this.context.nullishDefault(
-                    this.context.variableInitializer(factory, "color"),
-                )!.right,
-                file,
-            )
-            .map((component) => this.context.doubleLiteral(component));
+        const uniformScalingDefault = pinnedOptionFlag(this.context, factory, {
+            member: "uniformScaling",
+        })
+            ? "true"
+            : "false";
+        const color = pinnedOptionTuple(
+            this.context,
+            factory,
+            { local: "color" },
+            file,
+        ).map((component) => this.context.doubleLiteral(component));
         const arrow = this.widgetLowerer(
             AXIS_SCALE_MODULE,
             new Map([["thickness", "thickness"]]),
@@ -2694,14 +2632,12 @@ ${this.widgetPart(
             PLANE_DRAG_MODULE,
             "createPlaneDragGizmo",
         ).declaration;
-        const color = this.context
-            .numericTuple(
-                this.context.nullishDefault(
-                    this.context.variableInitializer(factory, "color"),
-                )!.right,
-                file,
-            )
-            .map((component) => this.context.doubleLiteral(component));
+        const color = pinnedOptionTuple(
+            this.context,
+            factory,
+            { local: "color" },
+            file,
+        ).map((component) => this.context.doubleLiteral(component));
         // The pin turns culling OFF on all three materials: the card is a
         // single quad and is looked at from both sides.
         if (
@@ -2794,16 +2730,24 @@ ${
             PLANE_ROTATION_MODULE,
             "createPlaneRotationGizmo",
         ).declaration;
-        const color = this.context
-            .numericTuple(
-                this.context.nullishDefault(
-                    this.context.variableInitializer(factory, "color"),
-                )!.right,
-                file,
-            )
-            .map((component) => this.context.doubleLiteral(component));
-        const thickness = this.optionDefault(factory, "thickness", file);
-        const tessellation = this.optionDefault(factory, "tessellation", file);
+        const color = pinnedOptionTuple(
+            this.context,
+            factory,
+            { local: "color" },
+            file,
+        ).map((component) => this.context.doubleLiteral(component));
+        const thickness = pinnedOptionNumber(
+            this.context,
+            factory,
+            { member: "thickness" },
+            file,
+        );
+        const tessellation = pinnedOptionNumber(
+            this.context,
+            factory,
+            { member: "tessellation" },
+            file,
+        );
         const lowerer = this.widgetLowerer(
             PLANE_ROTATION_MODULE,
             new Map([
@@ -2918,48 +2862,6 @@ ${
     /** Whether this scene reaches the bounding-box gizmo. */
     private reachesBoundingBox(): boolean {
         return this.features.includes("gizmo:bounding-box");
-    }
-
-    /**
-     * The right side of the pin's own `options.<member> ?? [a, b, c]`.
-     *
-     * The tuple twin of `optionDefault`, for the one option in this family
-     * whose default is a colour rather than a number.
-     */
-    private optionDefaultTuple(
-        declaration: ts.Node,
-        member: string,
-        file: ts.SourceFile,
-    ): readonly number[] {
-        let found: ts.Expression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken &&
-                ts.isPropertyAccessExpression(
-                    this.context.unwrapExpression(node.left),
-                ) &&
-                (
-                    this.context.unwrapExpression(
-                        node.left,
-                    ) as ts.PropertyAccessExpression
-                ).name.text === member
-            ) {
-                found = node.right;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration);
-        if (!found) {
-            this.context.contractError(
-                declaration,
-                `Expected the pinned body to default '${member}' ` +
-                    "through a nullish coalesce.",
-            );
-        }
-        return this.context.numericTuple(found, file);
     }
 
     /**
@@ -3510,29 +3412,17 @@ std::array<float, 16> bbox_mat4_from_quat(
         this.assertHidden(factory, "root");
 
         // ---- the options the pinned factory defaults through a `??` ----
-        const colorDefault = this.optionDefaultTuple(factory, "color", file);
-        if (colorDefault.length !== 3) {
-            this.context.contractError(
-                factory,
-                "Expected the pinned bounding-box colour default to have " +
-                    "three components.",
-            );
-        }
-        const edgeThicknessDefault = this.optionDefault(
+        const optionDefault = (member: string): number =>
+            pinnedOptionNumber(this.context, factory, { member }, file);
+        const colorDefault = pinnedOptionTuple(
+            this.context,
             factory,
-            "edgeThickness",
+            { member: "color" },
             file,
         );
-        const scaleBoxSizeDefault = this.optionDefault(
-            factory,
-            "scaleBoxSize",
-            file,
-        );
-        const rotationAnchorDefault = this.optionDefault(
-            factory,
-            "rotationAnchorSize",
-            file,
-        );
+        const edgeThicknessDefault = optionDefault("edgeThickness");
+        const scaleBoxSizeDefault = optionDefault("scaleBoxSize");
+        const rotationAnchorDefault = optionDefault("rotationAnchorSize");
         const constants = this.widgetLowerer(
             BOUNDING_BOX_MODULE,
             new Map([
@@ -4848,25 +4738,12 @@ void attach_bounding_box_gizmo_to_node(
             .join(", ");
         // `light.intensity = options?.lightIntensity ?? 2` -- the pin's own
         // default, read from the coalesce rather than restated.
-        let utilityIntensity: number | undefined;
-        this.context.hasNode(utility.declaration, (node) => {
-            if (!ts.isExpression(node)) return false;
-            const coalesce = this.context.nullishDefault(node);
-            if (coalesce && utilityIntensity === undefined) {
-                utilityIntensity = this.context.numericValue(
-                    coalesce.right,
-                    utilityFile,
-                );
-            }
-            return false;
-        });
-        if (utilityIntensity === undefined) {
-            this.context.contractError(
-                utility.declaration,
-                "Expected createUtilityLayer to default its light " +
-                    "intensity through a nullish coalesce.",
-            );
-        }
+        const utilityIntensity = pinnedOptionNumber(
+            this.context,
+            utility.declaration,
+            { member: "lightIntensity" },
+            utilityFile,
+        );
         const cameraFile = this.context.sourceFile(CAMERA_MODULE);
         const lightFile = this.context.sourceFile(LIGHT_MODULE);
         const bodyCalls = this.factoryCalls(

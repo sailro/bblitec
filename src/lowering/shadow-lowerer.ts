@@ -39,6 +39,11 @@ import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { lowerShadowEnabled } from "./shadow-enabled.js";
+import {
+    nullishFallback,
+    pinnedOptionDefaults,
+    pinnedOptionNumber,
+} from "./pinned-option-defaults.js";
 
 const baseModule = "src/shadow/shadow-base.ts";
 const spotModule = "src/shadow/pcf-spotlight-shadow-generator.ts";
@@ -52,45 +57,6 @@ const shadowTaskModule = "src/frame-graph/shadow-task.ts";
 
 /** The `<cmath>` names these bodies reach, from the shared pinned table. */
 const mathCalls = pinnedNumericMathCalls();
-
-/**
- * The `?? <literal>` default a pinned option read resolves to.
- *
- * Two spellings reach this: most factories bind a `const x = cfg.x ?? d`
- * local, while the CSM one packs a few straight into its config literal as
- * `_x: cfg.x ?? d`. Both are the same expression under a different parent,
- * so the reader takes the INITIALIZER and each caller says where it found
- * it.
- */
-function nullishDefaultValue(
-    context: LoweringContext,
-    initializer: ts.Expression,
-    label: string,
-    file: ts.SourceFile,
-): number {
-    const nullish = context.nullishDefault(initializer);
-    if (!nullish) {
-        return context.contractError(
-            initializer,
-            `Expected pinned '${label}' to resolve through '??'.`,
-        );
-    }
-    return context.numericValue(nullish.right, file);
-}
-
-function optionDefault(
-    context: LoweringContext,
-    declaration: ts.FunctionDeclaration,
-    local: string,
-    file: ts.SourceFile,
-): number {
-    return nullishDefaultValue(
-        context,
-        context.variableInitializer(declaration, local),
-        local,
-        file,
-    );
-}
 
 /**
  * The pin's own floating-origin offset, as the three scalars both matrix
@@ -551,28 +517,6 @@ function assertShadowUboLayout(context: LoweringContext): void {
     context.callExpression(declaration, "packMat4IntoF32");
 }
 
-/**
- * Every named local's `??` fallback in one pinned factory.
- *
- * The three generator factories resolve their options the same way -- one
- * `const x = cfg.x ?? <default>` per option -- so the read is stated once
- * and each family names only its own list.
- */
-function pinnedOptionDefaults<Name extends string>(
-    context: LoweringContext,
-    module: string,
-    factory: string,
-    names: readonly Name[],
-): Record<Name, number> {
-    const { file, declaration } = context.functionDeclaration(module, factory);
-    return Object.fromEntries(
-        names.map((name) => [
-            name,
-            optionDefault(context, declaration, name, file),
-        ]),
-    ) as Record<Name, number>;
-}
-
 /** The pinned ESM-directional defaults, each read from its own `??`. */
 export interface PinnedEsmDefaults {
     mapSize: number;
@@ -666,12 +610,16 @@ function csmDefaults(context: LoweringContext) {
     // A lane the factory packs straight into `csmCfg` rather than into a
     // local first: the same `cfg.x ?? default`, read off the property.
     const cfgDefault = (name: string): number =>
-        nullishDefaultValue(
-            context,
-            context.propertyInitializer(csmCfg, name),
-            name,
+        context.numericValue(
+            nullishFallback(
+                context,
+                context.propertyInitializer(csmCfg, name),
+                name,
+            ),
             file,
         );
+    const optionDefault = (local: string): number =>
+        pinnedOptionNumber(context, declaration, { local }, file);
     const stabilize = context.nullishDefault(
         context.propertyInitializer(csmCfg, "_stabilizeCascades"),
     )?.right;
@@ -703,7 +651,7 @@ function csmDefaults(context: LoweringContext) {
         "Omitted CSM world-space bias",
     );
     return {
-        mapSize: optionDefault(context, declaration, "mapSize", file),
+        mapSize: optionDefault("mapSize"),
         numCascades: fallback,
         // `Math.min(cfg.numCascades ?? 4, 4)`: the clamp is what fixes the
         // receiver block's `array<mat4x4, 4>` and the record's cascade
@@ -711,14 +659,9 @@ function csmDefaults(context: LoweringContext) {
         maxCascades: max,
         lambda: cfgDefault("_lambda"),
         cascadeBlendPercentage: cfgDefault("_cascadeBlendPercentage"),
-        bias: optionDefault(context, declaration, "bias", file),
-        darkness: optionDefault(context, declaration, "darkness", file),
-        frustumEdgeFalloff: optionDefault(
-            context,
-            declaration,
-            "frustumEdgeFalloff",
-            file,
-        ),
+        bias: optionDefault("bias"),
+        darkness: optionDefault("darkness"),
+        frustumEdgeFalloff: optionDefault("frustumEdgeFalloff"),
         stabilizeCascades: stabilize.kind === ts.SyntaxKind.TrueKeyword,
     };
 }
@@ -973,11 +916,13 @@ function pcfSpotDefaults(context: LoweringContext): PinnedPcfSpotDefaults {
     if (!ts.isConditionalExpression(fallback)) {
         return context.contractError(fallback, "Expected a conditional.");
     }
+    const optionDefault = (local: string): number =>
+        pinnedOptionNumber(context, declaration, { local }, file);
     return {
-        mapSize: optionDefault(context, declaration, "mapSize", file),
-        bias: optionDefault(context, declaration, "bias", file),
-        darkness: optionDefault(context, declaration, "darkness", file),
-        near: optionDefault(context, declaration, "near", file),
+        mapSize: optionDefault("mapSize"),
+        bias: optionDefault("bias"),
+        darkness: optionDefault("darkness"),
+        near: optionDefault("near"),
         far: context.numericValue(fallback.whenTrue, file),
     };
 }
