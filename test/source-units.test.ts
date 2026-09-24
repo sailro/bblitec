@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { renderSourceUnits } from "../src/compiler/source-units.js";
+import {
+    renderSourceUnits,
+    unitMaximumWeight,
+} from "../src/compiler/source-units.js";
 import {
     buildNativeFixture,
     nativeFixtureVcpkgRoot,
@@ -297,4 +300,47 @@ test("template placement follows transitive code references and ignores literals
         if (path !== first.path)
             assert.doesNotMatch(code, /template<typename T>/);
     }
+});
+
+test("a source over the unit budget compiles as parts while literal tables stay whole", () => {
+    const sum = (name: string) =>
+        `double ${name}(double a) { return ${"a + ".repeat(Math.ceil(unitMaximumWeight * 0.6))}a; }`;
+    const output = renderSourceUnits({
+        source: "entry.ts",
+        realm: undefined,
+        includes: "",
+        declarations: [
+            { scene: true, text: "double first(double a);" },
+            { scene: true, text: "double second(double a);" },
+            {
+                scene: true,
+                text: "extern const std::array<double, 30001> TABLE;",
+            },
+        ],
+        definitions: [
+            { source: "code.ts", definition: sum("first") },
+            { source: "code.ts", definition: sum("second") },
+            {
+                source: "data.ts",
+                definition: `const std::array<double, 30001> TABLE{${"1.0, ".repeat(30_000)}1.0};`,
+            },
+        ],
+        templates: [],
+        entry: "int main() { return bblscene::first(1.0) + bblscene::second(1.0) > bblscene::TABLE[0] ? 0 : 1; }",
+        cpp: "standalone",
+    });
+    assert.deepEqual(output.sourceUnits.map(({ path }) => path).sort(), [
+        "main.cpp",
+        "sources/code.cpp",
+        "sources/code.part1.cpp",
+        "sources/data.cpp",
+    ]);
+    assert.match(
+        output.files.get("sources/code.part1.cpp")!,
+        /double second\(double a\) \{/,
+    );
+    assert.doesNotMatch(
+        output.files.get("sources/code.part1.cpp")!,
+        /double first\(double a\) \{/,
+    );
 });

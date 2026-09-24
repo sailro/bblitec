@@ -88,6 +88,21 @@ test("typed captures name a concrete environment struct", () => {
     ]);
 });
 
+test("a captured resource with one native type names a concrete environment", () => {
+    const result = compileSource(`
+        import { createEngine, createSceneContext, onBeforeRender, createGpuPicker, disposePicker } from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const picker = createGpuPicker(scene);
+        onBeforeRender(scene, () => { disposePicker(picker); });
+    `);
+    assert.match(
+        result.cpp,
+        /struct bbl_environment_\w+ \{\n {4}std::reference_wrapper<bbl::GpuPickerHandle> capture0;/,
+    );
+    assert.doesNotMatch(result.cpp, /template<typename Environment>/);
+});
+
 test("a projected record callback captures only the field its body reads", () => {
     const result = compileSource(`
         import { createEngine, createSceneContext, onBeforeRender } from "@babylonjs/lite";

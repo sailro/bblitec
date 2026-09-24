@@ -80,7 +80,7 @@ export function sourceUnitStem(root: string, source: string): string {
  * further unit repeats the instantiations its code shares with the others,
  * so the budget keeps parts few. A definition larger than it is a unit alone.
  */
-export const unitMaximumWeight = 12_000;
+export const unitMaximumWeight = 24_000;
 
 function codeWeight(code: string): number {
     let identifiers = 0;
@@ -89,18 +89,36 @@ function codeWeight(code: string): number {
     return identifiers;
 }
 
-/** Splits a unit's pieces, in order, into parts of at most the unit budget. */
-function packUnitParts(pieces: readonly string[]): string[][] {
+/**
+ * Splits a unit's pieces, in order, into parts of at most the unit budget. A
+ * piece weighs its own code and the templates it is first in its part to
+ * reach, since each part instantiates those again.
+ */
+function packUnitParts(
+    pieces: readonly string[],
+    reachedTemplates: (code: string) => ReadonlySet<string>,
+    templateWeight: (name: string) => number,
+): string[][] {
     const parts: string[][] = [[]];
     let weight = 0;
+    let instantiated = new Set<string>();
     for (const piece of pieces) {
+        const reached = reachedTemplates(piece);
+        const weigh = (templates: Iterable<string>): number => {
+            let total = codeWeight(piece);
+            for (const name of templates) total += templateWeight(name);
+            return total;
+        };
+        const added = [...reached].filter((name) => !instantiated.has(name));
+        const pieceWeight = weigh(added);
         const current = parts.at(-1)!;
-        const pieceWeight = codeWeight(piece);
         if (current.length > 0 && weight + pieceWeight > unitMaximumWeight) {
             parts.push([piece]);
-            weight = pieceWeight;
+            instantiated = new Set(reached);
+            weight = weigh(reached);
         } else {
             current.push(piece);
+            for (const name of added) instantiated.add(name);
             weight += pieceWeight;
         }
     }
@@ -228,6 +246,28 @@ export function renderSourceUnits(options: {
         }
         group.definitions.push(definition.definition);
     }
+    const templates = new Map(
+        options.templates.map((definition) => [
+            definition.name,
+            {
+                identifiers: cppIdentifiers(definition.definition),
+                weight: codeWeight(definition.definition),
+            },
+        ]),
+    );
+    const reachedTemplates = (code: string): ReadonlySet<string> => {
+        const reached = new Set<string>();
+        const visit = (identifiers: ReadonlySet<string>): void => {
+            for (const identifier of identifiers) {
+                const definition = templates.get(identifier);
+                if (!definition || reached.has(identifier)) continue;
+                reached.add(identifier);
+                visit(definition.identifiers);
+            }
+        };
+        if (templates.size > 0) visit(cppIdentifiers(code));
+        return reached;
+    };
     const parts = [...groups].map(([key, group]) => ({
         key,
         source: group.source,
@@ -235,6 +275,8 @@ export function renderSourceUnits(options: {
             key === resolve(source)
                 ? [entry, ...group.definitions]
                 : group.definitions,
+            reachedTemplates,
+            (name) => templates.get(name)!.weight,
         ),
     }));
     if (parts.length === 1 && parts[0]!.pieces.length === 1) {
@@ -256,24 +298,8 @@ export function renderSourceUnits(options: {
     ]);
     const sourceUnits: SourceUnit[] = [];
     const declarationsFor = unitDeclarations(options.declarations);
-    const templates = new Map(
-        options.templates.map((definition) => [
-            definition.name,
-            cppIdentifiers(definition.definition),
-        ]),
-    );
     const requiredTemplates = (body: string): string => {
-        if (templates.size === 0) return "";
-        const reached = new Set<string>();
-        const visit = (identifiers: ReadonlySet<string>): void => {
-            for (const identifier of identifiers) {
-                const definition = templates.get(identifier);
-                if (!definition || reached.has(identifier)) continue;
-                reached.add(identifier);
-                visit(definition);
-            }
-        };
-        visit(cppIdentifiers(body));
+        const reached = reachedTemplates(body);
         return options.templates
             .filter(({ name }) => reached.has(name))
             .map(({ definition }) => definition)
