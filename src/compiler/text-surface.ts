@@ -49,7 +49,7 @@ interface TextSurfaceContext extends Pick<
     | "checker"
     | "unwrap"
     | "compileValue"
-    | "lookupOptional"
+    | "bindings"
     | "probeEmission"
     | "allocateTemporaryCppName"
     | "pinValueToTemporary"
@@ -248,7 +248,7 @@ function possibleTextOwner(
     // Resolving a record member may execute its getter. Type classification
     // must precede the one admitted owner evaluation below.
     const known = ts.isIdentifier(node)
-        ? context.lookupOptional(node)
+        ? context.bindings.lookupOptional(node)
         : undefined;
     if (known && textKinds.includes(known.kind)) return true;
     const type = context.checker.getTypeAtLocation(node);

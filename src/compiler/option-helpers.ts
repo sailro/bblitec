@@ -1,5 +1,6 @@
 import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
+import type { BindingLookup } from "./binding-scopes.js";
 // Shared option-lowering helpers.
 //
 // The option compilers agree on three small contracts: an options
@@ -53,13 +54,15 @@ export interface PositiveIntegerContext
     extends
         Pick<
             LoweringServices,
-            | "resolveStaticExpression"
-            | "lookup"
-            | "lookupOptional"
-            | "libraryGlobal"
-            | "fail"
+            "resolveStaticExpression" | "libraryGlobal" | "fail"
         >,
-        Partial<Pick<LoweringServices, "staticCanvasSize">> {}
+        Partial<Pick<LoweringServices, "staticCanvasSize">> {
+    /**
+     * The name lookups alone: a fold may narrow them. A context that also
+     * binds names redeclares the whole `BindingScopes`.
+     */
+    readonly bindings: BindingLookup;
+}
 
 export function compilePositiveInteger(
     context: PositiveIntegerContext,
@@ -70,9 +73,9 @@ export function compilePositiveInteger(
         ts.isPropertyAccessExpression(unwrapped) &&
         ts.isIdentifier(unwrapped.expression) &&
         unwrapped.name.text === "msaaSamples" &&
-        context.lookup(unwrapped.expression).kind === "engine"
+        context.bindings.lookup(unwrapped.expression).kind === "engine"
     ) {
-        const engine = context.lookup(unwrapped.expression);
+        const engine = context.bindings.lookup(unwrapped.expression);
         return engineSampleCountCpp(engine);
     }
     const value = compileStaticNumber(context, unwrapped, "A count");
@@ -411,7 +414,7 @@ export function staticNumberValue(
         if (global === "NaN") return NaN;
         // A miss, not a failure: one caller is an optional probe, and an
         // identifier this scope has no binding for is simply not a constant.
-        const value = context.lookupOptional(node);
+        const value = context.bindings.lookupOptional(node);
         // Writable inline parameters have native storage. Their call-site
         // metadata is only the initial value, not a proof about later reads.
         return value?.parameterBinding ? undefined : value?.staticNumber;
@@ -462,7 +465,7 @@ export function staticTupleElements(
     expression: ts.Expression,
 ): readonly Value[] | undefined {
     if (!ts.isIdentifier(expression)) return undefined;
-    const value = context.lookupOptional(expression);
+    const value = context.bindings.lookupOptional(expression);
     return (
         value?.tupleElements ??
         value?.staticElementsOwner?.staticElements ??

@@ -52,18 +52,14 @@ export interface NativeFunctionContext extends Pick<
     | "compileCondition"
     | "emitStatement"
     | "statementTerminatesAfterLowering"
-    | "defineVariable"
-    | "pushScope"
-    | "popScope"
+    | "bindings"
     | "allocateUserFunctionPrefix"
-    | "cppLocalName"
     | "captureEmittedLines"
     | "registerNativeFunction"
     | "registerNativeTemporary"
     | "registerNativeBinding"
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
-    | "invalidateRecordProperties"
     | "pinValueToTemporary"
     | "identifierIsRebound"
     | "beginNativeFunctionBody"
@@ -184,12 +180,14 @@ export function captureDataFunctionBody(
         beforeBody?: () => void;
     },
 ): { parameterDeclarations: string[]; lines: string[] } {
-    context.pushScope(context.allocateUserFunctionPrefix());
+    context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
         const parameterDeclarations = [
             ...(channels?.bindLeading?.() ?? []),
             ...parameters.map((parameter) => {
-                const cppName = context.cppLocalName(parameter.name.text);
+                const cppName = context.bindings.cppIdentifier(
+                    parameter.name.text,
+                );
                 const cppType = context.dataTypes.cppType(parameter.type);
                 context.registerNativeBindingType(
                     cppName,
@@ -197,7 +195,7 @@ export function captureDataFunctionBody(
                 );
                 if (parameter.borrowedWrapper)
                     context.registerNativeConstBinding(cppName, true);
-                context.defineVariable(parameter.name, {
+                context.bindings.defineVariable(parameter.name, {
                     ...context.dataLowerer.leafValue(cppName, parameter.type),
                     ...(parameter.readOnly ? { readOnly: true as const } : {}),
                 });
@@ -226,7 +224,9 @@ export function captureDataFunctionBody(
                                 !parameter.byReference,
                         )
                         .map((parameter) => ({
-                            cpp: context.cppLocalName(parameter.name.text),
+                            cpp: context.bindings.cppIdentifier(
+                                parameter.name.text,
+                            ),
                             declaration: parameter.name.parent.parent,
                         })),
                     () => context.captureEmittedLines(emitBody),
@@ -236,7 +236,7 @@ export function captureDataFunctionBody(
             context.endNativeFunctionBody();
         }
     } finally {
-        context.popScope();
+        context.bindings.popScope();
     }
 }
 
@@ -841,7 +841,7 @@ export class NativeFunctionLowerer {
             }
             this.context.dataLowerer.invalidateEscapingCollection(value);
             if (dataType.kind === "struct")
-                this.context.invalidateRecordProperties(value);
+                this.context.bindings.invalidateRecordProperties(value);
             return value.cpp;
         }
         // The sink materializes when the argument's type is not exactly
@@ -1737,7 +1737,7 @@ export class NativeFunctionLowerer {
                 {
                     bindLeading: () =>
                         signature.fields.map((field) => {
-                            const cppName = this.context.cppLocalName(
+                            const cppName = this.context.bindings.cppIdentifier(
                                 `this_${field.name}`,
                             );
                             this.context.registerNativeBinding(

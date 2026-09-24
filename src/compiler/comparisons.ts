@@ -114,7 +114,7 @@ export interface ComparisonContext extends Pick<
     | "dataTypes"
     | "compileValue"
     | "compilePropertyAccess"
-    | "lookupOptional"
+    | "bindings"
     | "probeEmission"
     | "fail"
 > {}
@@ -152,7 +152,7 @@ export function foldBooleanComparison(
         if (resolved.kind === ts.SyntaxKind.TrueKeyword) return "true";
         if (resolved.kind === ts.SyntaxKind.FalseKeyword) return "false";
         const value = ts.isIdentifier(resolved)
-            ? context.lookupOptional(resolved)
+            ? context.bindings.lookupOptional(resolved)
             : ts.isPropertyAccessExpression(resolved)
               ? context.compilePropertyAccess(resolved)
               : undefined;

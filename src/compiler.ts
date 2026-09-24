@@ -102,7 +102,7 @@ import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
 import { WindowProperties } from "./compiler/window-properties.js";
 import { writesUnobservedCanvasMetadata } from "./compiler/canvas-instrumentation.js";
 import { AsyncLowerer } from "./compiler/async.js";
-import { sourceLocation, syntaxKindName } from "./source-location.js";
+import { sourceLocation } from "./source-location.js";
 import {
     cppIdentifierPattern,
     doubleLiteral,
@@ -393,6 +393,10 @@ import {
     SceneManifestRecorder,
     type ResourceConstructionState,
 } from "./compiler/scene-manifest.js";
+import {
+    BindingScopes,
+    valueContainsPlatformEvent,
+} from "./compiler/binding-scopes.js";
 import { PlatformCalls } from "./compiler/platform-calls.js";
 import { UiProjection } from "./compiler/ui-projection.js";
 import { recordAt } from "./compiler/record-access.js";
@@ -734,6 +738,8 @@ class Compiler implements LoweringServices {
         new HandleCollections(this);
     /** The scene composition records this compilation projects into its manifest. */
     public readonly sceneManifest = new SceneManifestRecorder(this);
+    /** The lexical scope stack: every source name's current binding. */
+    public readonly bindings = new BindingScopes(this);
     private readonly statements = new StatementLowerer();
     public readonly userFunctions: UserFunctionLowerer;
     private readonly ui = new UiProjection(this);
@@ -813,12 +819,6 @@ class Compiler implements LoweringServices {
         ts.Expression
     >();
     private readonly sourceCppNames = new EmissionSet<string>();
-    private readonly transparentRebindingScopes = new EmissionWeakSet<
-        Map<ts.Symbol, VariableBinding>
-    >();
-    public readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>> =
-        emissionArray([new EmissionMap()]);
-    private readonly cppNamePrefixes: string[] = emissionArray([""]);
     private readonly features = new EmissionSet<Feature>(["core"]);
     private readonly featureSites = new EmissionMap<Feature, string>();
     public readonly assets = new EmissionMap<string, CompileAsset>();
@@ -995,8 +995,8 @@ class Compiler implements LoweringServices {
                     assertedNonNull,
                     expectedType,
                 ),
-            (identifier) => this.lookup(identifier),
-            (identifier) => this.lookupOptional(identifier),
+            (identifier) => this.bindings.lookup(identifier),
+            (identifier) => this.bindings.lookupOptional(identifier),
             (node, message, reason) => this.fail(node, message, reason),
             (expression) => this.unwrappedAwaitExpressions.add(expression.pos),
             () => this.reachJsData(),
@@ -1388,7 +1388,9 @@ class Compiler implements LoweringServices {
                     (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
                     ts.isIdentifier(node.name)
                 ) {
-                    this.sourceCppNames.add(this.cppIdentifier(node.name.text));
+                    this.sourceCppNames.add(
+                        this.bindings.cppIdentifier(node.name.text),
+                    );
                 }
             });
         for (const file of this.program.getSourceFiles()) {
@@ -1439,8 +1441,8 @@ class Compiler implements LoweringServices {
         }
 
         modules.forEach((file, index) => {
-            this.pushScope(`module${index}_`);
-            const moduleScope = this.variableScopes.at(-1)!;
+            this.bindings.pushScope(`module${index}_`);
+            const moduleScope = this.bindings.variableScopes.at(-1)!;
             try {
                 for (const statement of file.statements) {
                     if (isModuleInitializerStatement(statement)) {
@@ -1451,11 +1453,11 @@ class Compiler implements LoweringServices {
                 // Module bindings remain visible to imported functions after
                 // initialization, but their source names live under a module
                 // prefix so two files may both export (say) `values`.
-                const root = this.variableScopes[0]!;
+                const root = this.bindings.variableScopes[0]!;
                 for (const [symbol, binding] of moduleScope) {
                     root.set(symbol, binding);
                 }
-                this.popScope();
+                this.bindings.popScope();
             }
         });
     }
@@ -1515,7 +1517,7 @@ class Compiler implements LoweringServices {
         // Startup executes once, preserving construction metadata. Its locals
         // belong to the coroutine, so retained callbacks cannot borrow them as
         // entry-stack values after the initialization callback has returned.
-        this.pushScope(this.allocateUserFunctionPrefix());
+        this.bindings.pushScope(this.allocateUserFunctionPrefix());
         let closure: CapturedClosure;
         try {
             closure = this.withAsyncActivation(() =>
@@ -1532,7 +1534,7 @@ class Compiler implements LoweringServices {
                 }),
             );
         } finally {
-            this.popScope();
+            this.bindings.popScope();
         }
         this.emit(
             `static_cast<void>(${renderCoroutineInvocation(closure, "bbl::js::Promise<bbl::js::PromiseVoid>")});`,
@@ -2036,7 +2038,7 @@ class Compiler implements LoweringServices {
         return (
             this.sharedClosureSymbolsFor(
                 owner,
-                this.variableScopes.length !== 1 ||
+                this.bindings.variableScopes.length !== 1 ||
                     this.activeEmissionScope !== 0,
             )?.captured.has(symbol) ?? false
         );
@@ -2478,7 +2480,7 @@ class Compiler implements LoweringServices {
         return { captured, forwarded };
     }
 
-    private isSharedClosureScalar(kind: string): boolean {
+    public isSharedClosureScalar(kind: string): boolean {
         return (
             kind === "number" ||
             kind === "boolean" ||
@@ -2540,7 +2542,7 @@ class Compiler implements LoweringServices {
                 ?.declarations?.length &&
             ts.isIdentifier(declaration.name)
         ) {
-            const cpp = this.cppIdentifier(declaration.name.text);
+            const cpp = this.bindings.cppIdentifier(declaration.name.text);
             this.emit({
                 kind: "declaration",
                 type: "bbl::GpuTextureIdentity",
@@ -2548,7 +2550,7 @@ class Compiler implements LoweringServices {
                 initializer: "",
                 initialization: "direct",
             });
-            this.defineVariable(declaration.name, {
+            this.bindings.defineVariable(declaration.name, {
                 kind: "gpu-texture",
                 cpp,
                 dataType: { kind: "handle", handle: "gpu-texture" },
@@ -2579,20 +2581,20 @@ class Compiler implements LoweringServices {
                 declaration,
             );
         if (flattened) {
-            this.defineVariable(declaration.name, flattened);
+            this.bindings.defineVariable(declaration.name, flattened);
             return;
         }
         const declarationSymbol = this.symbols.valueSymbol(declaration.name);
         if (
             declarationSymbol &&
             this.hoistedCallbackBindings.has(declarationSymbol) &&
-            this.lookupOptional(declaration.name)
+            this.bindings.lookupOptional(declaration.name)
         ) {
             this.hoistedCallbackBindings.delete(declarationSymbol);
             return;
         }
         const sourceName = declaration.name.text;
-        const cppName = this.cppIdentifier(sourceName);
+        const cppName = this.bindings.cppIdentifier(sourceName);
         if (
             this.options.workers &&
             declaration.initializer &&
@@ -2625,7 +2627,7 @@ class Compiler implements LoweringServices {
                 cppName,
                 `std::shared_ptr<bbl::js::LexicalBinding<${this.dataTypes.cppType(type)}>>`,
             );
-            this.defineVariable(declaration.name, {
+            this.bindings.defineVariable(declaration.name, {
                 ...this.dataLowerer.leafValue(`${cppName}->get()`, type),
                 sharedStorageCpp: cppName,
                 nativeBinding: true,
@@ -2676,7 +2678,7 @@ class Compiler implements LoweringServices {
                               attributes: "[[maybe_unused]] ",
                           },
                 );
-                this.defineVariable(
+                this.bindings.defineVariable(
                     declaration.name,
                     valueForKind(resource.kind, {
                         cpp: sharedClosureStorage
@@ -2728,7 +2730,7 @@ class Compiler implements LoweringServices {
                 // compile-time record (a node-particle binding built inside
                 // a `try`) nothing native exists to declare here. The
                 // assignment decides; see `bindPendingLet`.
-                this.defineVariable(declaration.name, {
+                this.bindings.defineVariable(declaration.name, {
                     kind: "pending-let",
                     cpp: "",
                 });
@@ -2769,7 +2771,7 @@ class Compiler implements LoweringServices {
             if (dataType.kind !== "number" && dataType.kind !== "boolean") {
                 this.dataLowerer.registerLocal(boundCpp, "owned");
             }
-            this.defineVariable(declaration.name, {
+            this.bindings.defineVariable(declaration.name, {
                 ...this.dataLowerer.leafValue(boundCpp, dataType),
                 ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
             });
@@ -2832,14 +2834,14 @@ class Compiler implements LoweringServices {
                     name: cppName,
                     initializer: "bbl::js::random_function()",
                 });
-                this.defineVariable(declaration.name, {
+                this.bindings.defineVariable(declaration.name, {
                     kind: "callback",
                     cpp: cppName,
                     nativeCallbackParameterTypes: [],
                     nativeCallbackReturnType: { kind: "number" },
                 });
             } else {
-                this.defineVariable(declaration.name, {
+                this.bindings.defineVariable(declaration.name, {
                     kind: "js-random",
                     cpp: "",
                 });
@@ -2869,7 +2871,7 @@ class Compiler implements LoweringServices {
                           attributes: "[[maybe_unused]] ",
                       },
             );
-            this.defineVariable(
+            this.bindings.defineVariable(
                 declaration.name,
                 valueForKind(nullableResource.kind, {
                     cpp: sharedClosureStorage
@@ -2916,7 +2918,7 @@ class Compiler implements LoweringServices {
                 truthinessCpp: "true",
             };
             this.pendingHostUiLookups.push(value);
-            this.defineVariable(declaration.name, value);
+            this.bindings.defineVariable(declaration.name, value);
             return;
         }
 
@@ -2932,7 +2934,7 @@ class Compiler implements LoweringServices {
                 isPrimitiveBrowserValue(browserValue) &&
                 this.identifierIsRebound(declaration.name)
             )) {
-                this.defineVariable(declaration.name, {
+                this.bindings.defineVariable(declaration.name, {
                     kind: "browser",
                     cpp: "",
                     ...(browserValue ? { browserValue } : {}),
@@ -2947,7 +2949,7 @@ class Compiler implements LoweringServices {
         );
         if (engineCall && !this.options.workers) {
             const engine = this.compileEngineCreation(engineCall, cppName);
-            this.defineVariable(declaration.name, engine);
+            this.bindings.defineVariable(declaration.name, engine);
             return;
         }
 
@@ -3050,7 +3052,7 @@ class Compiler implements LoweringServices {
                           attributes: "[[maybe_unused]] ",
                       },
             );
-            this.defineVariable(declaration.name, {
+            this.bindings.defineVariable(declaration.name, {
                 ...value,
                 cpp: sharedClosureStorage ? `(**${cppName})` : `(*${cppName})`,
                 optionalFoundCpp: sharedClosureStorage
@@ -3086,7 +3088,7 @@ class Compiler implements LoweringServices {
             // binding exists so instrumentation can report it -- or, for a
             // live one, so its bridges can be named. A URL the bake driver
             // produces is likewise a generation-time name.
-            this.defineVariable(declaration.name, value);
+            this.bindings.defineVariable(declaration.name, value);
             return;
         }
         if (value.kind === "browser") {
@@ -3094,7 +3096,7 @@ class Compiler implements LoweringServices {
             // and return a browser handle. The call itself is not necessarily
             // recognizable as browser-only before inlining, but its resulting
             // binding is still a valid erased browser value.
-            this.defineVariable(declaration.name, value);
+            this.bindings.defineVariable(declaration.name, value);
             return;
         }
         if (value.kind === "engine") {
@@ -3107,7 +3109,7 @@ class Compiler implements LoweringServices {
                     "Reassigning an engine alias is not supported.",
                 );
             }
-            this.defineVariable(declaration.name, value);
+            this.bindings.defineVariable(declaration.name, value);
             return;
         }
         if (value.kind === "void") {
@@ -3117,7 +3119,7 @@ class Compiler implements LoweringServices {
             );
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
-            this.defineVariable(declaration.name, value);
+            this.bindings.defineVariable(declaration.name, value);
             if (value.kind === "record")
                 this.materializeAssignedRecordMethods(declaration.name, value);
             return;
@@ -3150,7 +3152,7 @@ class Compiler implements LoweringServices {
                     cppName,
                     narrowed.objectIdentityCpp,
                 );
-                this.defineVariable(declaration.name, {
+                this.bindings.defineVariable(declaration.name, {
                     ...nativeDataMetadata(narrowed),
                     kind: "data",
                     cpp: cppName,
@@ -3311,7 +3313,7 @@ class Compiler implements LoweringServices {
                           narrowed.dataType.inner,
                       )
                     : undefined;
-            this.defineVariable(
+            this.bindings.defineVariable(
                 declaration.name,
                 valueForKind(optionalHandle?.kind ?? "data", {
                     ...(optionalHandle ??
@@ -3497,7 +3499,7 @@ class Compiler implements LoweringServices {
             delete stored.staticString;
             delete stored.staticBoolean;
         }
-        this.defineVariable(declaration.name, stored);
+        this.bindings.defineVariable(declaration.name, stored);
     }
 
     private borrowsConstBinding(
@@ -3505,50 +3507,12 @@ class Compiler implements LoweringServices {
         value: Value,
     ): boolean {
         return (
-            this.isImmutableVariable(declaration) &&
+            this.bindings.isImmutableVariable(declaration) &&
             this.hasStableNativeBinding(value)
         );
     }
 
-    private isImmutableVariable(declaration: ts.Node | undefined): boolean {
-        let name: ts.Identifier | undefined;
-        if (declaration && ts.isBindingElement(declaration)) {
-            if (!ts.isIdentifier(declaration.name)) return false;
-            name = declaration.name;
-            let parent: ts.Node = declaration.parent;
-            while (
-                ts.isArrayBindingPattern(parent) ||
-                ts.isObjectBindingPattern(parent)
-            ) {
-                parent = parent.parent;
-            }
-            declaration = parent;
-        } else if (
-            declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            ts.isIdentifier(declaration.name)
-        ) {
-            name = declaration.name;
-        }
-        if (
-            declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            ts.isCatchClause(declaration.parent) &&
-            name !== undefined
-        )
-            return !this.identifierIsRebound(name);
-        return (
-            declaration !== undefined &&
-            ts.isVariableDeclaration(declaration) &&
-            declaration.initializer !== undefined &&
-            name !== undefined &&
-            ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
-            !this.identifierIsRebound(name)
-        );
-    }
-
-    private hasStableNativeBinding(value: Value): boolean {
+    public hasStableNativeBinding(value: Value): boolean {
         if (
             value.sharedStorageCpp ||
             value.borrowedData ||
@@ -3759,7 +3723,7 @@ class Compiler implements LoweringServices {
             true,
         );
         const storageCpp = storage.cpp;
-        this.defineVariable(name, {
+        this.bindings.defineVariable(name, {
             ...storage,
             nativeCallbackParameterTypes: parameterTypes,
         });
@@ -3790,7 +3754,7 @@ class Compiler implements LoweringServices {
             // a native std::function. Fill the forward slot from that value;
             // there is no source declaration left to specialize again.
             this.emit(`${forward.storageCpp} = ${value.cpp};`);
-            this.rebindVariable(name, {
+            this.bindings.rebindVariable(name, {
                 kind: "callback",
                 cpp: forward.storageCpp,
                 nativeCallbackParameterTypes: forward.parameterTypes,
@@ -3830,7 +3794,7 @@ class Compiler implements LoweringServices {
         this.emit(
             `${forward.storageCpp} = ${this.renderSharedClosure(compiled, "void", value.callbackDeclaration, parameters.join(", "), forward.parameterNames)};`,
         );
-        this.rebindVariable(name, {
+        this.bindings.rebindVariable(name, {
             kind: "callback",
             cpp: forward.storageCpp,
             nativeCallbackParameterTypes: forward.parameterTypes,
@@ -3927,7 +3891,10 @@ class Compiler implements LoweringServices {
                 );
                 value.callbackRecordOwner.runtimeCallbackIdentityCpp = identity;
             }
-            this.defineVariable(name, { ...value, callbackDeclaration: name });
+            this.bindings.defineVariable(name, {
+                ...value,
+                callbackDeclaration: name,
+            });
             return;
         }
         if (
@@ -3959,7 +3926,7 @@ class Compiler implements LoweringServices {
                 ...this.dataValue(`(*${cppName})`, type),
                 sharedStorageCpp: cppName,
             };
-            this.defineVariable(name, value);
+            this.bindings.defineVariable(name, value);
             // Suspended invocations retain the recursive cell through the same
             // traced environment used by stored async callbacks.
             const compiled = this.compileStoredDataFunction(callback, type);
@@ -4060,9 +4027,9 @@ class Compiler implements LoweringServices {
                 [enclosingBody],
             );
         if (escapes) {
-            this.refuseEscapingPlatformEventCapturesIn(
+            this.bindings.refuseEscapingPlatformEventCapturesIn(
                 callback,
-                this.variableScopes.length,
+                this.bindings.variableScopes.length,
             );
         }
         const storage = this.emitNativeCallbackStorage(
@@ -4070,7 +4037,7 @@ class Compiler implements LoweringServices {
             `${returnCpp}(${parameterTypes.join(", ")})`,
             escapes,
         );
-        this.defineVariable(name, {
+        this.bindings.defineVariable(name, {
             ...storage,
             callbackDeclaration: callback,
             nativeCallbackParameterTypes: parameters.map(
@@ -4227,7 +4194,7 @@ class Compiler implements LoweringServices {
         });
         const cpp = shared ? `(*${cppName})` : cppName;
         this.dataLowerer.registerLocal(cpp, "owned");
-        this.defineVariable(name, {
+        this.bindings.defineVariable(name, {
             ...this.dataLowerer.leafValue(cpp, type),
             ...(shared ? { sharedStorageCpp: cppName } : {}),
         });
@@ -4259,7 +4226,7 @@ class Compiler implements LoweringServices {
                     name: cppName,
                     initializer,
                 });
-                this.defineVariable(
+                this.bindings.defineVariable(
                     name,
                     this.dataLowerer.leafValue(cppName, type),
                 );
@@ -4320,7 +4287,7 @@ class Compiler implements LoweringServices {
                 name: cppName,
                 initializer: `bbl::js::make_gc_shared<${cppType}>(${initializerCpp})`,
             });
-            this.defineVariable(name, {
+            this.bindings.defineVariable(name, {
                 kind: "data",
                 cpp: `(*${cppName})`,
                 sharedStorageCpp: cppName,
@@ -4580,7 +4547,7 @@ class Compiler implements LoweringServices {
                 name: cppName,
                 initializer: `bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>()`,
             });
-            this.defineVariable(name, {
+            this.bindings.defineVariable(name, {
                 ...this.dataLowerer.leafValue(`(*${cppName})`, annotated),
                 sharedStorageCpp: cppName,
             });
@@ -4638,7 +4605,7 @@ class Compiler implements LoweringServices {
                 initializerBoundary,
             );
             const sourceValue = ts.isIdentifier(initializer)
-                ? this.lookupOptional(initializer)
+                ? this.bindings.lookupOptional(initializer)
                 : undefined;
             const stableOwnerAlias =
                 sourceValue !== undefined &&
@@ -4700,7 +4667,7 @@ class Compiler implements LoweringServices {
                 if (!ts.isShorthandPropertyAssignment(property)) {
                     continue;
                 }
-                const value = this.lookupOptional(property.name);
+                const value = this.bindings.lookupOptional(property.name);
                 if (
                     value &&
                     (value.staticNumber !== undefined ||
@@ -4781,9 +4748,9 @@ class Compiler implements LoweringServices {
                     )
                   : boundValue;
         if (selfReferentialBinding) {
-            this.rebindVariable(name, represented);
+            this.bindings.rebindVariable(name, represented);
         } else {
-            this.defineVariable(name, represented);
+            this.bindings.defineVariable(name, represented);
         }
         return true;
     }
@@ -5258,13 +5225,13 @@ class Compiler implements LoweringServices {
                     );
                 }
             }
-            this.bindLocalValue(element.name, stored);
+            this.bindings.bindLocalValue(element.name, stored);
         };
         if (value.kind === "tuple" && value.tupleElements) {
             const elements = value.tupleElements;
             bindings.forEach((element, index) => {
                 if (index === restIndex && restName) {
-                    this.bindLocalValue(
+                    this.bindings.bindLocalValue(
                         restName,
                         this.dataLowerer.arrayRestValue(value, index, restName),
                     );
@@ -5280,7 +5247,7 @@ class Compiler implements LoweringServices {
             this.emit(`const auto ${temporary} = ${value.cpp};`);
             bindings.forEach((element, index) => {
                 if (index === restIndex && restName) {
-                    this.bindLocalValue(
+                    this.bindings.bindLocalValue(
                         restName,
                         this.dataLowerer.arrayRestValue(
                             { ...value, cpp: temporary },
@@ -5325,7 +5292,7 @@ class Compiler implements LoweringServices {
             );
             bindings.forEach((element, index) => {
                 if (index === restIndex && restName) {
-                    this.bindLocalValue(
+                    this.bindings.bindLocalValue(
                         restName,
                         this.dataLowerer.arrayRestValue(
                             {
@@ -5366,7 +5333,7 @@ class Compiler implements LoweringServices {
                     return;
                 }
                 if (index === restIndex && restName) {
-                    this.bindLocalValue(
+                    this.bindings.bindLocalValue(
                         restName,
                         this.dataLowerer.arrayRestValue(
                             storedVector,
@@ -5417,15 +5384,18 @@ class Compiler implements LoweringServices {
     ): void {
         const value = this.dataLowerer.leafValue(initializer, type);
         if (this.mutableCapturedParameter(name, value)) {
-            this.bindParameterValue(name, value);
+            this.bindings.bindParameterValue(name, value);
             return;
         }
-        const cppName = this.cppIdentifier(name.text);
+        const cppName = this.bindings.cppIdentifier(name.text);
         this.reachJsData();
         this.emit(
             `${this.dataTypes.cppType(type)} ${cppName} = ${initializer};`,
         );
-        this.defineVariable(name, this.dataLowerer.leafValue(cppName, type));
+        this.bindings.defineVariable(
+            name,
+            this.dataLowerer.leafValue(cppName, type),
+        );
         this.dataLowerer.registerLocal(cppName, "copy");
     }
 
@@ -5500,7 +5470,7 @@ class Compiler implements LoweringServices {
                     );
                     continue;
                 }
-                const cppName = this.cppIdentifier(name.text);
+                const cppName = this.bindings.cppIdentifier(name.text);
                 // A default on a required field never applies: the field is
                 // never undefined, so the binding is the field itself.
                 const fieldCpp = storedFieldCpp;
@@ -5509,7 +5479,7 @@ class Compiler implements LoweringServices {
                     field.type,
                 );
                 if (this.mutableCapturedParameter(name, initialValue)) {
-                    this.bindParameterValue(name, initialValue);
+                    this.bindings.bindParameterValue(name, initialValue);
                     continue;
                 }
                 const aliases =
@@ -5544,7 +5514,7 @@ class Compiler implements LoweringServices {
                     fieldValue.collectionCardinality =
                         staticField.collectionCardinality;
                 }
-                this.defineVariable(name, fieldValue);
+                this.bindings.defineVariable(name, fieldValue);
                 if (aliases) {
                     this.dataLowerer.registerAlias(cppName, fieldCpp);
                 }
@@ -5587,7 +5557,7 @@ class Compiler implements LoweringServices {
                     name: cppName,
                     initializer: propertyValue.cpp,
                 });
-                this.defineVariable(name, {
+                this.bindings.defineVariable(name, {
                     ...propertyValue,
                     cpp: cppName,
                 });
@@ -5631,7 +5601,7 @@ class Compiler implements LoweringServices {
                 name: cppName,
                 initializer: propertyValue.cpp,
             });
-            this.defineVariable(name, {
+            this.bindings.defineVariable(name, {
                 ...propertyValue,
                 cpp: cppName,
             });
@@ -5682,7 +5652,7 @@ class Compiler implements LoweringServices {
                         ([key]) => !consumed.has(key),
                     ),
                 );
-                this.defineVariable(element.name, {
+                this.bindings.defineVariable(element.name, {
                     kind: "record",
                     cpp: "",
                     recordProperties: remaining,
@@ -5703,7 +5673,7 @@ class Compiler implements LoweringServices {
                 this.fail(element, `Record has no property '${property}'.`);
             }
             if (this.mutableCapturedParameter(name, propertyValue)) {
-                this.bindParameterValue(name, propertyValue);
+                this.bindings.bindParameterValue(name, propertyValue);
                 continue;
             }
             if (propertyValue.kind !== "number") {
@@ -5711,10 +5681,10 @@ class Compiler implements LoweringServices {
                 // their native expressions. Destructuring aliases the same
                 // value just as an ordinary identifier binding does; only a
                 // numeric property needs distinct mutable local storage.
-                this.defineVariable(name, propertyValue);
+                this.bindings.defineVariable(name, propertyValue);
                 continue;
             }
-            const cppName = this.cppIdentifier(name.text);
+            const cppName = this.bindings.cppIdentifier(name.text);
             this.emit({
                 kind: "declaration",
                 type: "double",
@@ -5722,7 +5692,7 @@ class Compiler implements LoweringServices {
                 initializer: propertyValue.cpp,
                 attributes: "[[maybe_unused]] ",
             });
-            this.defineVariable(name, {
+            this.bindings.defineVariable(name, {
                 kind: "number",
                 cpp: cppName,
                 ...(propertyValue.staticNumber === undefined
@@ -5794,7 +5764,7 @@ class Compiler implements LoweringServices {
         const left = destination && this.unwrap(destination);
         const binding =
             left && ts.isIdentifier(left)
-                ? this.lookupOptional(left)
+                ? this.bindings.lookupOptional(left)
                 : undefined;
         const previous = binding ?? target;
         const previousState =
@@ -5856,7 +5826,7 @@ class Compiler implements LoweringServices {
             taint(sourceState);
         }
         if (tainted) {
-            this.visitScopedValues((value) => {
+            this.bindings.visitScopedValues((value) => {
                 const state =
                     value.collectionCardinality ??
                     value.staticElementsOwner?.collectionCardinality;
@@ -5869,7 +5839,7 @@ class Compiler implements LoweringServices {
         }
         const owner = previous.staticElementsOwner ?? previous;
         if (owner === previous || owner === target)
-            this.invalidateStaticElements(previous, true);
+            this.bindings.invalidateStaticElements(previous, true);
         for (const value of new EmissionSet([target, previous])) {
             delete value.staticElements;
             delete value.staticElementsOwner;
@@ -6310,7 +6280,7 @@ class Compiler implements LoweringServices {
         if (!literal) {
             const unwrapped = this.unwrap(expression);
             return ts.isIdentifier(unwrapped)
-                ? this.lookupOptional(unwrapped)?.staticStrings
+                ? this.bindings.lookupOptional(unwrapped)?.staticStrings
                 : undefined;
         }
         const strings: string[] = [];
@@ -7999,7 +7969,7 @@ class Compiler implements LoweringServices {
                 if (this.isNativeUiValueExpression(argument)) return true;
                 const value = this.unwrap(argument);
                 const type = ts.isIdentifier(value)
-                    ? this.lookupOptional(value)?.dataType
+                    ? this.bindings.lookupOptional(value)?.dataType
                     : undefined;
                 return (
                     type?.kind === "vector" &&
@@ -8593,7 +8563,7 @@ class Compiler implements LoweringServices {
                 unwrapped.operatorToken.kind ===
                     ts.SyntaxKind.InstanceOfKeyword &&
                 ts.isIdentifier(unwrapped.right) &&
-                !this.lookupOptional(unwrapped.right)
+                !this.bindings.lookupOptional(unwrapped.right)
             ) {
                 const global = this.libraryGlobal(unwrapped.right) ?? "";
                 if (ERROR_CONSTRUCTORS.has(global)) {
@@ -8807,7 +8777,7 @@ class Compiler implements LoweringServices {
             return this.compileBoolean(unwrapped);
         }
         if (ts.isIdentifier(unwrapped)) {
-            const value = this.lookupOptional(unwrapped);
+            const value = this.bindings.lookupOptional(unwrapped);
             if (value) {
                 const dataCondition =
                     this.dataLowerer.conditionFromValue(value);
@@ -8944,7 +8914,7 @@ class Compiler implements LoweringServices {
         }
         if (ts.isIdentifier(unwrapped)) {
             if (signature === "void") {
-                const bound = this.lookupOptional(unwrapped);
+                const bound = this.bindings.lookupOptional(unwrapped);
                 if (
                     bound?.kind === "callback" &&
                     bound.cpp.length > 0 &&
@@ -9034,25 +9004,29 @@ class Compiler implements LoweringServices {
 
         // Everything the outermost frame callback pushes lives on its own
         // stack frame; a deferred body may not reach into it.
-        const previousFrameFloor = this.frameCallbackScopeFloor;
+        const previousFrameFloor = this.bindings.frameCallbackScopeFloor;
         if (this.frameCallbackDepth === 0) {
-            this.frameCallbackScopeFloor = this.variableScopes.length;
+            this.bindings.frameCallbackScopeFloor =
+                this.bindings.variableScopes.length;
         }
-        const previousDeferredScopes = this.deferredCaptureScopes;
+        const previousDeferredScopes = this.bindings.deferredCaptureScopes;
         const previousPlatformEventCaptureFloor =
-            this.escapingPlatformEventCaptureFloor;
+            this.bindings.escapingPlatformEventCaptureFloor;
         if (this.frameCallbackDepth > 0) {
-            this.escapingPlatformEventCaptureFloor = this.variableScopes.length;
+            this.bindings.escapingPlatformEventCaptureFloor =
+                this.bindings.variableScopes.length;
         }
-        this.refuseEscapingPlatformEventCapturesIn(unwrapped);
-        this.deferredCaptureScopes =
+        this.bindings.refuseEscapingPlatformEventCapturesIn(unwrapped);
+        this.bindings.deferredCaptureScopes =
             (signature === "void" || signature === "interval") &&
-            this.frameCallbackScopeFloor !== undefined
+            this.bindings.frameCallbackScopeFloor !== undefined
                 ? new EmissionSet(
-                      this.variableScopes.slice(this.frameCallbackScopeFloor),
+                      this.bindings.variableScopes.slice(
+                          this.bindings.frameCallbackScopeFloor,
+                      ),
                   )
                 : undefined;
-        this.pushScope(this.allocateBlockPrefix());
+        this.bindings.pushScope(this.allocateBlockPrefix());
         // This body is emitted into a real native callback lambda. A source
         // `return` therefore leaves that lambda directly, including when it
         // guards statements later in the callback; it is not an inlined
@@ -9071,7 +9045,7 @@ class Compiler implements LoweringServices {
                         parameterCppName!,
                         signature === "timestamp" ? "double" : "float",
                     );
-                    this.defineVariable(parameter.name, {
+                    this.bindings.defineVariable(parameter.name, {
                         kind: "number",
                         cpp: parameterCppName!,
                     });
@@ -9099,11 +9073,11 @@ class Compiler implements LoweringServices {
             );
         } finally {
             this.endNativeFunctionBody();
-            this.popScope();
-            this.deferredCaptureScopes = previousDeferredScopes;
-            this.escapingPlatformEventCaptureFloor =
+            this.bindings.popScope();
+            this.bindings.deferredCaptureScopes = previousDeferredScopes;
+            this.bindings.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
-            this.frameCallbackScopeFloor = previousFrameFloor;
+            this.bindings.frameCallbackScopeFloor = previousFrameFloor;
         }
         // A source callback may name its delta and then not reach it --
         // most often because a branch the scene's own query folds away was
@@ -9141,7 +9115,8 @@ class Compiler implements LoweringServices {
             ts.isPropertyAccessExpression(node) ||
             ts.isElementAccessExpression(node) ||
             (ts.isIdentifier(node) &&
-                this.lookupOptional(node)?.dataType?.kind === "function")
+                this.bindings.lookupOptional(node)?.dataType?.kind ===
+                    "function")
         )
             return this.dataLowerer.compileForSink(expression, {
                 kind: "function",
@@ -9209,20 +9184,21 @@ class Compiler implements LoweringServices {
             signature === "interval"
                 ? undefined
                 : this.allocateTemporaryCppName("frame_callback_value");
-        const previousDeferredScopes = this.deferredCaptureScopes;
+        const previousDeferredScopes = this.bindings.deferredCaptureScopes;
         const previousPlatformEventCaptureFloor =
-            this.escapingPlatformEventCaptureFloor;
+            this.bindings.escapingPlatformEventCaptureFloor;
         if (this.frameCallbackDepth > 0) {
-            this.escapingPlatformEventCaptureFloor = this.variableScopes.length;
+            this.bindings.escapingPlatformEventCaptureFloor =
+                this.bindings.variableScopes.length;
         }
-        this.refuseEscapingPlatformEventCapturesIn(identifier);
+        this.bindings.refuseEscapingPlatformEventCapturesIn(identifier);
         if (signature === "interval") {
-            this.deferredCaptureScopes =
-                this.frameCallbackScopeFloor === undefined
+            this.bindings.deferredCaptureScopes =
+                this.bindings.frameCallbackScopeFloor === undefined
                     ? undefined
                     : new EmissionSet(
-                          this.variableScopes.slice(
-                              this.frameCallbackScopeFloor,
+                          this.bindings.variableScopes.slice(
+                              this.bindings.frameCallbackScopeFloor,
                           ),
                       );
         }
@@ -9242,7 +9218,7 @@ class Compiler implements LoweringServices {
                         false,
                         signature === "timestamp" ? "double" : "float",
                     );
-                const stored = this.lookupOptional(identifier);
+                const stored = this.bindings.lookupOptional(identifier);
                 const parameters = stored?.nativeCallbackParameterTypes;
                 if (
                     stored?.kind === "callback" &&
@@ -9275,8 +9251,8 @@ class Compiler implements LoweringServices {
             );
         } finally {
             this.frameCallbackDepth -= 1;
-            this.deferredCaptureScopes = previousDeferredScopes;
-            this.escapingPlatformEventCaptureFloor =
+            this.bindings.deferredCaptureScopes = previousDeferredScopes;
+            this.bindings.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
         }
         const lambdaParameter = parameter
@@ -9653,7 +9629,7 @@ class Compiler implements LoweringServices {
     private isImportMetaUrl(expression: ts.Expression): boolean {
         const unwrapped = this.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const value = this.lookupOptional(unwrapped)?.browserValue;
+            const value = this.bindings.lookupOptional(unwrapped)?.browserValue;
             return value?.kind === "object" && value.moduleUrl === true;
         }
         return (
@@ -9983,7 +9959,7 @@ class Compiler implements LoweringServices {
     }
 
     public allocateBlockPrefix(): string {
-        return `${this.cppNamePrefixes.at(-1) ?? ""}block${this.temporaryIndex++}_`;
+        return `${this.bindings.cppNamePrefix}block${this.temporaryIndex++}_`;
     }
 
     public compileStaticString(expression: ts.Expression): string {
@@ -10316,7 +10292,7 @@ class Compiler implements LoweringServices {
     }
 
     public lookupIdentifierValue(identifier: ts.Identifier): Value | undefined {
-        return this.lookupOptional(identifier);
+        return this.bindings.lookupOptional(identifier);
     }
 
     public compileTypedArrayArgument(
@@ -10420,10 +10396,6 @@ class Compiler implements LoweringServices {
         return resolved && ts.isArrayLiteralExpression(resolved)
             ? resolved
             : undefined;
-    }
-
-    public cppLocalName(sourceName: string): string {
-        return this.cppIdentifier(sourceName);
     }
 
     public sourceFiles(): readonly ts.SourceFile[] {
@@ -10657,7 +10629,7 @@ class Compiler implements LoweringServices {
     public enterStaticIteration(statement: ts.IterationStatement): void {
         this.staticExpansionBudget.enter(statement);
         this.staticCallbackEvaluationIdentities.push(
-            this.variableScopes.at(-1)!,
+            this.bindings.variableScopes.at(-1)!,
         );
     }
 
@@ -10744,7 +10716,7 @@ class Compiler implements LoweringServices {
      * record property holding it is a method rather than a value.
      */
     public namesLocalFunction(identifier: ts.Identifier): boolean {
-        if (this.lookupOptional(identifier)) {
+        if (this.bindings.lookupOptional(identifier)) {
             // A bound value wins: a local shadowing a function name is
             // that local.
             return false;
@@ -10768,7 +10740,7 @@ class Compiler implements LoweringServices {
     ): Value | undefined {
         const ownerExpression = this.unwrap(expression.expression);
         const owner = ts.isIdentifier(ownerExpression)
-            ? this.lookupOptional(ownerExpression)
+            ? this.bindings.lookupOptional(ownerExpression)
             : ownerExpression.kind === ts.SyntaxKind.ThisKeyword
               ? this.activeThis()
               : ts.isPropertyAccessExpression(ownerExpression)
@@ -10801,7 +10773,7 @@ class Compiler implements LoweringServices {
     public resolveRecordValue(expression: ts.Expression): Value | undefined {
         const unwrapped = this.unwrap(expression);
         const value = ts.isIdentifier(unwrapped)
-            ? (this.lookupOptional(unwrapped) ??
+            ? (this.bindings.lookupOptional(unwrapped) ??
               compileWindowIdentity(this, unwrapped) ??
               browserEnvironmentValue(this, unwrapped))
             : unwrapped.kind === ts.SyntaxKind.ThisKeyword
@@ -10836,7 +10808,7 @@ class Compiler implements LoweringServices {
     > {
         const recordTypeArguments = this.dataTypes.captureTypeArguments();
         return {
-            recordScopes: [...this.variableScopes],
+            recordScopes: [...this.bindings.variableScopes],
             ...(recordTypeArguments ? { recordTypeArguments } : {}),
         };
     }
@@ -10861,11 +10833,11 @@ class Compiler implements LoweringServices {
         if (!owner.recordScopes && !owner.recordTypeArguments && !bindThis) {
             return work();
         }
-        const saved = [...this.variableScopes];
+        const saved = [...this.bindings.variableScopes];
         const previousThis = this.activeThis();
         if (owner.recordScopes) {
-            this.variableScopes.length = 0;
-            this.variableScopes.push(...owner.recordScopes);
+            this.bindings.variableScopes.length = 0;
+            this.bindings.variableScopes.push(...owner.recordScopes);
         }
         if (bindThis) {
             this.defineThis(owner);
@@ -10878,8 +10850,8 @@ class Compiler implements LoweringServices {
         } finally {
             this.defineThis(previousThis);
             if (owner.recordScopes) {
-                this.variableScopes.length = 0;
-                this.variableScopes.push(...saved);
+                this.bindings.variableScopes.length = 0;
+                this.bindings.variableScopes.push(...saved);
             }
         }
     }
@@ -10912,7 +10884,7 @@ class Compiler implements LoweringServices {
             );
         return this.withRecordScopes(owner, () => {
             if (leading.length)
-                this.pushScope(this.allocateUserFunctionPrefix());
+                this.bindings.pushScope(this.allocateUserFunctionPrefix());
             const previousThis = this.activeThis();
             // A getter's `this` is its receiver for both class instances and
             // object-literal accessors. The record may have crossed a return
@@ -10927,7 +10899,7 @@ class Compiler implements LoweringServices {
                 return { ...this.compileValue(expression), impure: true };
             } finally {
                 this.defineThis(previousThis);
-                if (leading.length) this.popScope();
+                if (leading.length) this.bindings.popScope();
             }
         });
     }
@@ -10953,7 +10925,7 @@ class Compiler implements LoweringServices {
             !(
                 ts.isIdentifier(unwrappedInitializer) &&
                 unwrappedInitializer.text === "undefined" &&
-                !this.lookupOptional(unwrappedInitializer)
+                !this.bindings.lookupOptional(unwrappedInitializer)
             )
         ) {
             this.refuseBorrowedPlatformEventEscape(
@@ -10981,7 +10953,7 @@ class Compiler implements LoweringServices {
                     ? `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>()`
                     : "{}",
             });
-            this.defineVariable(
+            this.bindings.defineVariable(
                 name,
                 valueForKind(nullableResource.kind, {
                     cpp: `(*${storage})`,
@@ -11000,7 +10972,7 @@ class Compiler implements LoweringServices {
         if (this.bindClassDataField(name, initializer, declared)) {
             return;
         }
-        this.bindLocalOrParameterValue(
+        this.bindings.bindLocalOrParameterValue(
             name,
             nullableInitializer ?? this.compileValue(initializer),
             false,
@@ -11059,7 +11031,7 @@ class Compiler implements LoweringServices {
             optionalStorageCpp: storage,
             ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
         });
-        this.defineVariable(name, value);
+        this.bindings.defineVariable(name, value);
         return value;
     }
 
@@ -11093,7 +11065,7 @@ class Compiler implements LoweringServices {
         const value = this.dataLowerer.leafValue(storage, dataType);
         value.nativeLvalue = true;
         if (sharedStorage) value.sharedStorageCpp = cppName;
-        this.defineVariable(name, value);
+        this.bindings.defineVariable(name, value);
         return value;
     }
 
@@ -11120,7 +11092,7 @@ class Compiler implements LoweringServices {
             optionalFoundCpp: optionalPresentCpp(cppName),
             optionalStorageCpp: cppName,
         });
-        this.defineVariable(name, value);
+        this.bindings.defineVariable(name, value);
         return value;
     }
 
@@ -11167,7 +11139,7 @@ class Compiler implements LoweringServices {
         const value = this.dataLowerer.leafValue(storage, dataType);
         value.nativeLvalue = true;
         if (sharedStorage) value.sharedStorageCpp = cppName;
-        this.defineVariable(name, value);
+        this.bindings.defineVariable(name, value);
         return value;
     }
 
@@ -11661,7 +11633,7 @@ class Compiler implements LoweringServices {
             allowReference,
             sequence: ++this.nextNativeBindingSequence,
             entryLifetime:
-                this.variableScopes.length === 1 &&
+                this.bindings.variableScopes.length === 1 &&
                 this.activeEmissionScope === 0 &&
                 !this.engineStartMark,
         };
@@ -11758,7 +11730,7 @@ class Compiler implements LoweringServices {
         return lines;
     }
 
-    private describeNativeValue(value: Value): void {
+    public describeNativeValue(value: Value): void {
         this.nativeStoredValues.add(value);
         const storage =
             value.sharedStorageCpp ??
@@ -11817,6 +11789,30 @@ class Compiler implements LoweringServices {
                 !["true", "false", "nullptr"].includes(companion)
             ) {
                 this.registerNativeBinding(companion, key === "engineCpp");
+            }
+        }
+    }
+
+    /** An immutable source binding's native storage and captures are const. */
+    public markImmutableNativeStorage(value: Value, immutable: boolean): void {
+        const binding = this.nativeBindings.get(value.cpp);
+        if (
+            binding &&
+            !value.sharedStorageCpp &&
+            !value.borrowedData &&
+            !value.runtimeIteration &&
+            immutable
+        ) {
+            this.nativeConstBindings.add(binding);
+        }
+        if (immutable && !value.sharedStorageCpp) {
+            for (const capture of value.nativeCaptures ?? [])
+                this.nativeConstBindings.add(capture);
+            for (const captures of Object.values(
+                value.nativeCompanionCaptures ?? {},
+            )) {
+                for (const capture of captures ?? [])
+                    this.nativeConstBindings.add(capture);
             }
         }
     }
@@ -12388,7 +12384,7 @@ class Compiler implements LoweringServices {
         this.temporalControlAttachment ??= node;
     }
 
-    private bindAudioMainBusStorage(value: Value): void {
+    public bindAudioMainBusStorage(value: Value): void {
         if (
             value.kind !== "audio-engine" ||
             (value.audioMainBusCpp === undefined &&
@@ -12427,7 +12423,7 @@ class Compiler implements LoweringServices {
         };
     }
 
-    private assignAudioMainBus(
+    public assignAudioMainBus(
         target: Value,
         value: Value | undefined,
         node: ts.Node,
@@ -12781,7 +12777,8 @@ class Compiler implements LoweringServices {
             itemCpp,
             element,
             template,
-            (identifier, value) => this.defineVariable(identifier, value),
+            (identifier, value) =>
+                this.bindings.defineVariable(identifier, value),
         );
     }
 
@@ -13231,7 +13228,7 @@ class Compiler implements LoweringServices {
         if (directlyDom) return true;
         const unwrapped = this.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const bound = this.lookupOptional(unwrapped);
+            const bound = this.bindings.lookupOptional(unwrapped);
             if (
                 bound &&
                 bound.kind !== "browser" &&
@@ -13304,7 +13301,8 @@ class Compiler implements LoweringServices {
                 ts.isPropertyAccessExpression(device) &&
                 device.name.text === "_device" &&
                 ts.isIdentifier(device.expression) &&
-                this.lookupOptional(device.expression)?.kind === "engine"
+                this.bindings.lookupOptional(device.expression)?.kind ===
+                    "engine"
             )
                 return false;
         }
@@ -13425,7 +13423,7 @@ class Compiler implements LoweringServices {
                         declaration.pos > before &&
                         ts.isIdentifier(declaration.name) &&
                         !isDeclaredInside(declaration, callback) &&
-                        !this.lookupOptional(declaration.name)
+                        !this.bindings.lookupOptional(declaration.name)
                     ) {
                         candidates.set(symbol, declaration);
                     }
@@ -13466,7 +13464,7 @@ class Compiler implements LoweringServices {
                     : undefined;
             });
         if (stored) {
-            this.refuseEscapingPlatformEventCapturesIn(callback);
+            this.bindings.refuseEscapingPlatformEventCapturesIn(callback);
             const snapshot = this.allocateTemporaryCppName("platform_callback");
             this.emit({
                 kind: "declaration",
@@ -13521,21 +13519,23 @@ class Compiler implements LoweringServices {
             };
         }
         const previousHidden = this.platformDocumentHiddenCpp;
-        const previousFrameFloor = this.frameCallbackScopeFloor;
+        const previousFrameFloor = this.bindings.frameCallbackScopeFloor;
         const previousPlatformEventCaptureFloor =
-            this.escapingPlatformEventCaptureFloor;
+            this.bindings.escapingPlatformEventCaptureFloor;
         if (this.frameCallbackDepth === 0) {
-            this.frameCallbackScopeFloor = this.variableScopes.length;
+            this.bindings.frameCallbackScopeFloor =
+                this.bindings.variableScopes.length;
         } else {
-            this.escapingPlatformEventCaptureFloor = this.variableScopes.length;
+            this.bindings.escapingPlatformEventCaptureFloor =
+                this.bindings.variableScopes.length;
         }
-        this.refuseEscapingPlatformEventCapturesIn(callback);
+        this.bindings.refuseEscapingPlatformEventCapturesIn(callback);
         // The scan above compares against the enclosing handler's live scope
         // chain. Callback records may restore the scope chain they closed over
         // while their own body is compiled, so that numeric floor cannot stay
         // active across the restore. Any callback created by this body performs
         // its own scan against the restored chain before it escapes.
-        this.escapingPlatformEventCaptureFloor =
+        this.bindings.escapingPlatformEventCaptureFloor =
             previousPlatformEventCaptureFloor;
         this.platformDocumentHiddenCpp = documentHiddenCpp;
         this.frameCallbackDepth += 1;
@@ -13557,7 +13557,7 @@ class Compiler implements LoweringServices {
                         | ts.ArrowFunction
                         | ts.FunctionExpression;
                     const bound = ts.isIdentifier(unwrapped)
-                        ? (this.lookupOptional(unwrapped) ??
+                        ? (this.bindings.lookupOptional(unwrapped) ??
                           (() => {
                               const declaration = tryResolveFunctionDeclaration(
                                   this.checker,
@@ -13654,8 +13654,8 @@ class Compiler implements LoweringServices {
         } finally {
             this.frameCallbackDepth -= 1;
             this.platformDocumentHiddenCpp = previousHidden;
-            this.frameCallbackScopeFloor = previousFrameFloor;
-            this.escapingPlatformEventCaptureFloor =
+            this.bindings.frameCallbackScopeFloor = previousFrameFloor;
+            this.bindings.escapingPlatformEventCaptureFloor =
                 previousPlatformEventCaptureFloor;
         }
         const cppParameter = parameter
@@ -13747,7 +13747,7 @@ class Compiler implements LoweringServices {
         const args = call.arguments.map((argument) =>
             this.compileValue(argument),
         );
-        this.pushScope(this.allocateBlockPrefix());
+        this.bindings.pushScope(this.allocateBlockPrefix());
         let condition: string;
         try {
             for (const [index, parameter] of declaration.parameters.entries()) {
@@ -13766,7 +13766,7 @@ class Compiler implements LoweringServices {
                         : undefined);
                 if (!argument)
                     this.fail(call, "Polling helper argument is missing.");
-                this.bindLocalValue(parameter.name, argument);
+                this.bindings.bindLocalValue(parameter.name, argument);
             }
             for (const statement of poll.setup) this.emitStatement(statement);
             let conditionCpp = "";
@@ -13778,7 +13778,7 @@ class Compiler implements LoweringServices {
                     ? conditionCpp
                     : `([&]() { ${lines.join(" ")} return ${conditionCpp}; }())`;
         } finally {
-            this.popScope();
+            this.bindings.popScope();
         }
         this.emitStartContinuationGate(call, condition);
         return true;
@@ -13886,7 +13886,7 @@ class Compiler implements LoweringServices {
                     "continuation is already running at frame boundaries.",
             );
         }
-        const bound = this.lookupOptional(target);
+        const bound = this.bindings.lookupOptional(target);
         if (!bound) {
             this.fail(
                 target,
@@ -14020,264 +14020,12 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
-    public lookupOptional(identifier: ts.MemberName): Value | undefined {
-        const symbol = this.symbols.valueSymbol(identifier);
-        if (!symbol) {
-            return undefined;
-        }
-        for (
-            let index = this.variableScopes.length - 1;
-            index >= 0;
-            index -= 1
-        ) {
-            const binding = this.variableScopes[index]!.get(symbol);
-            if (binding) {
-                // A deferred callback runs after the frame that created
-                // it has returned, so a name bound inside that frame is
-                // dead storage by then. The emitted lambda captures by
-                // reference, so this would compile clean and read freed
-                // memory; it refuses instead. Escaping captures of frame
-                // locals are not supported in general, and this is the
-                // one place the reached slice can walk into them.
-                this.refuseDeadDeferredCapture(
-                    identifier,
-                    index,
-                    binding.frameLocal === true,
-                );
-                this.refuseEscapingPlatformEventCapture(
-                    identifier,
-                    index,
-                    binding.value,
-                );
-                this.refusePoisonedRebind(identifier, binding);
-                this.useNativeValue(binding.value);
-                return binding.value;
-            }
-        }
-        return undefined;
-    }
-
-    /**
-     * A read of a handle a nested callback pointed somewhere else.
-     *
-     * The storage the outer name reads is the one that callback wrote, but
-     * whether it wrote is a run-time question -- so the identity this
-     * binding still carries describes the value only on one of the two
-     * paths. Composition is decided from that identity, so a wrong guess
-     * would stamp a material onto the wrong mesh with nothing to show for
-     * it; refusing is what makes the rebind safe to allow at all.
-     */
-    private refusePoisonedRebind(
-        identifier: ts.MemberName,
-        binding: VariableBinding,
-    ): void {
-        if (!binding.reboundInNestedScope) return;
-        this.fail(
-            identifier,
-            `'${identifier.text}' is read after a nested callback pointed ` +
-                "it at a different handle, so which one it names depends " +
-                "on whether that callback ran. Read it inside the callback, " +
-                "or keep the new handle in its own name.",
-        );
-    }
-
-    private refuseDeadDeferredCapture(
-        identifier: ts.MemberName,
-        scopeIndex: number,
-        frameLocal: boolean,
-    ): void {
-        // Worker-enabled callbacks own their captures, including shared cells
-        // for mutable bindings. Borrowed platform-event checks still apply.
-        if (this.options.workers) return;
-        if (
-            frameLocal &&
-            this.deferredCaptureScopes?.has(this.variableScopes[scopeIndex]!)
-        ) {
-            this.fail(
-                identifier,
-                `A deferred callback cannot name '${identifier.text}': ` +
-                    "it is bound inside the callback that queued the " +
-                    "timer, and that frame has returned by the time " +
-                    "the timer runs. Bind it outside the enclosing " +
-                    "callback.",
-            );
-        }
-    }
-
-    private refuseEscapingPlatformEventCapture(
-        identifier: ts.MemberName,
-        scopeIndex: number,
-        value: Value,
-        floor = this.escapingPlatformEventCaptureFloor,
-    ): void {
-        if (
-            floor !== undefined &&
-            scopeIndex < floor &&
-            this.valueContainsPlatformEvent(value)
-        ) {
-            this.fail(
-                identifier,
-                `An escaping callback cannot capture platform event value ` +
-                    `'${identifier.text}': the event is borrowed only while ` +
-                    "its current handler executes. Copy the specific owned " +
-                    "field needed by the later callback instead.",
-            );
-        }
-    }
-
-    private refuseEscapingPlatformEventCapturesIn(
-        node: ts.Node,
-        floor = this.escapingPlatformEventCaptureFloor ??
-            (this.returnFrames.at(-1)?.kind === "native"
-                ? this.variableScopes.length
-                : undefined),
-    ): void {
-        if (floor === undefined) return;
-        const roots: ts.Node[] = [node];
-        if (ts.isIdentifier(node)) {
-            const declaration =
-                this.symbols.valueSymbol(node)?.valueDeclaration;
-            if (declaration && ts.isFunctionLike(declaration)) {
-                roots.push(declaration);
-            } else if (
-                declaration &&
-                ts.isVariableDeclaration(declaration) &&
-                declaration.initializer &&
-                (ts.isArrowFunction(declaration.initializer) ||
-                    ts.isFunctionExpression(declaration.initializer))
-            ) {
-                roots.push(declaration.initializer);
-            }
-        }
-        const visitedSymbols = new EmissionSet<ts.Symbol>();
-        const visitedFunctions = new EmissionSet<ts.Node>();
-        const containingFunction = (
-            declaration: ts.Declaration | undefined,
-        ): ts.SignatureDeclaration | undefined => {
-            let current: ts.Node | undefined = declaration;
-            while (current) {
-                if (ts.isFunctionLike(current)) {
-                    return current;
-                }
-                current = current.parent;
-            }
-            return undefined;
-        };
-        const visit = (root: ts.Node): void => {
-            findAnalysisNodeWithState<ts.SignatureDeclaration | undefined>(
-                root,
-                undefined,
-                (current, active) => {
-                    const functionScope = ts.isFunctionLike(current)
-                        ? current
-                        : active;
-                    if (ts.isIdentifier(current)) {
-                        const symbol = this.symbols.valueSymbol(current);
-                        const declaration =
-                            symbol?.valueDeclaration ??
-                            symbol?.declarations?.[0];
-                        if (
-                            symbol &&
-                            containingFunction(declaration) !== functionScope &&
-                            !visitedSymbols.has(symbol)
-                        ) {
-                            visitedSymbols.add(symbol);
-                            for (
-                                let index = Math.min(
-                                    floor - 1,
-                                    this.variableScopes.length - 1,
-                                );
-                                index >= 0;
-                                index -= 1
-                            ) {
-                                const binding =
-                                    this.variableScopes[index]!.get(symbol);
-                                if (!binding) continue;
-                                this.refuseEscapingPlatformEventCapture(
-                                    current,
-                                    index,
-                                    binding.value,
-                                    floor,
-                                );
-                                break;
-                            }
-                        }
-                    }
-                    let calledDeclaration: ts.SignatureDeclaration | undefined;
-                    if (ts.isCallExpression(current)) {
-                        const declaration =
-                            this.checker.getResolvedSignature(
-                                current,
-                            )?.declaration;
-                        if (
-                            isSupportedFunction(declaration) &&
-                            declaration.body &&
-                            !visitedFunctions.has(declaration)
-                        ) {
-                            visitedFunctions.add(declaration);
-                            calledDeclaration = declaration;
-                        }
-                    }
-                    if (calledDeclaration) visit(calledDeclaration);
-                    return false;
-                },
-                (current, active) =>
-                    ts.isFunctionLike(current) ? current : active,
-            );
-        };
-        for (const root of roots) {
-            if (ts.isFunctionLike(root)) {
-                if (visitedFunctions.has(root)) continue;
-                visitedFunctions.add(root);
-            }
-            visit(root);
-        }
-    }
-
-    private valueContainsPlatformEvent(
-        value: Value,
-        seen = new EmissionSet<Value>(),
-    ): boolean {
-        if (seen.has(value)) return false;
-        seen.add(value);
-        if (
-            value.kind === "platform-keyboard-event" ||
-            value.kind === "platform-mouse-event" ||
-            value.nativeErrorEvent
-        ) {
-            return true;
-        }
-        if (
-            value.dataType &&
-            this.dataTypes.carriesBorrowedPlatformEvent(value.dataType)
-        ) {
-            return true;
-        }
-        const nested: Value[] = [
-            ...Object.values(value.recordProperties ?? {}),
-            ...(value.tupleElements ?? []),
-            ...(value.staticElements ?? []),
-            ...(value.nativeCallbackStaticArguments ?? []).filter(
-                (candidate): candidate is Value => candidate !== undefined,
-            ),
-        ];
-        if (value.staticElementsOwner) nested.push(value.staticElementsOwner);
-        if (value.callbackRecordOwner) nested.push(value.callbackRecordOwner);
-        if (value.sceneCamera) nested.push(value.sceneCamera);
-        for (const scope of value.recordScopes ?? []) {
-            for (const binding of scope.values()) nested.push(binding.value);
-        }
-        return nested.some((candidate) =>
-            this.valueContainsPlatformEvent(candidate, seen),
-        );
-    }
-
     public refuseBorrowedPlatformEventEscape(
         value: Value,
         node: ts.Node,
         destination: string,
     ): void {
-        if (!this.valueContainsPlatformEvent(value)) return;
+        if (!valueContainsPlatformEvent(this.dataTypes, value)) return;
         this.fail(
             node,
             `A borrowed platform event cannot escape its synchronous dispatch frame through ${destination}. Copy only owned scalar/string fields needed later.`,
@@ -14300,7 +14048,7 @@ class Compiler implements LoweringServices {
             return undefined;
         }
         const owner =
-            this.lookupOptional(expression.expression) ??
+            this.bindings.lookupOptional(expression.expression) ??
             (() => {
                 const resolved = this.resolveStaticExpression(
                     expression.expression,
@@ -14330,7 +14078,7 @@ class Compiler implements LoweringServices {
         // declared properties stay unreadable until this consults the
         // nested resolution `lookupRecordProperty` already implements.
         const owner = ts.isIdentifier(expression.expression)
-            ? this.lookupOptional(expression.expression)
+            ? this.bindings.lookupOptional(expression.expression)
             : undefined;
         if (!owner || owner.kind === "data" || owner.kind === "record") {
             return undefined;
@@ -14889,379 +14637,11 @@ class Compiler implements LoweringServices {
         return this.evaluator.unwrap(expression);
     }
 
-    /** The value symbol a name binds, or a failure naming it. */
-    private requireValueSymbol(identifier: ts.MemberName): ts.Symbol {
-        const symbol = this.symbols.valueSymbol(identifier);
-        if (!symbol) {
-            this.fail(
-                identifier,
-                `Unable to resolve variable '${identifier.text}'.`,
-            );
-        }
-        return symbol;
-    }
-
-    /** The innermost scope that binds a symbol, walked as `lookup` walks. */
-    private bindingScope(
-        symbol: ts.Symbol,
-    ): Map<ts.Symbol, VariableBinding> | undefined {
-        for (
-            let index = this.variableScopes.length - 1;
-            index >= 0;
-            index -= 1
-        ) {
-            const scope = this.variableScopes[index]!;
-            if (scope.has(symbol)) return scope;
-        }
-        return undefined;
-    }
-
-    public lookup(identifier: ts.Identifier): Value {
-        const symbol = this.symbols.valueSymbol(identifier);
-        if (!symbol) {
-            this.fail(
-                identifier,
-                `Unknown or unsupported variable '${identifier.text}'.`,
-            );
-        }
-        for (
-            let index = this.variableScopes.length - 1;
-            index >= 0;
-            index -= 1
-        ) {
-            const binding = this.variableScopes[index]!.get(symbol);
-            if (binding) {
-                this.refuseDeadDeferredCapture(
-                    identifier,
-                    index,
-                    binding.frameLocal === true,
-                );
-                this.refuseEscapingPlatformEventCapture(
-                    identifier,
-                    index,
-                    binding.value,
-                );
-                this.refusePoisonedRebind(identifier, binding);
-                this.useNativeValue(binding.value);
-                return binding.value;
-            }
-        }
-        this.fail(
-            identifier,
-            `Unknown or unsupported variable '${identifier.text}'.`,
-        );
-    }
-
-    /**
-     * Point a handle variable at a different handle of the same kind.
-     *
-     * A handle's C++ storage is one number, so the assignment itself is a
-     * copy -- but the value the compiler holds beside it carries generation
-     * identity (which scene mesh a material stamps, which slot a variant
-     * table is keyed by), and that identity moves with the assignment. So
-     * the binding is replaced, not just the storage.
-     *
-     * A rebind inside a nested callback rebinds only for the rest of that
-     * callback, because on the path where the callback never runs the outer
-     * variable still names what it always did. The outer binding is left
-     * POISONED rather than updated: its storage now holds a handle its
-     * identity does not describe, so the next outer read fails by name
-     * instead of stamping the wrong mesh.
-     */
-    /**
-     * The first assignment to a `let` declared without a type or an
-     * initializer: it binds the name to a compile-time record, in the
-     * scope that declared it.
-     *
-     * Only a record that exists at generation qualifies (`cpp` is empty),
-     * because a native value would have needed storage at the declaration.
-     * And only an assignment the declaring scope reaches unconditionally
-     * on the way to the name's later reads -- through blocks and `try`
-     * bodies, never a nested callback, branch or loop. A declaration inside
-     * a statically expanded loop has its own binding on every iteration.
-     */
-    public bindPendingLet(identifier: ts.Identifier, value: Value): void {
-        if (value.cpp !== "" || !isCompileTimeOnlyValue(value.kind)) {
-            this.fail(
-                identifier,
-                `Variable '${identifier.text}' needs a native data type ` +
-                    "before it can be assigned; only a compile-time record " +
-                    `(received ${value.kind}) can bind an untyped 'let'.`,
-            );
-        }
-        const symbol = this.requireValueSymbol(identifier);
-        const declaration = symbol.valueDeclaration;
-        const blockScoped =
-            declaration &&
-            ts.isVariableDeclaration(declaration) &&
-            ts.isVariableDeclarationList(declaration.parent) &&
-            (declaration.parent.flags & ts.NodeFlags.BlockScoped) !== 0;
-        const declaringScope = declaration
-            ? ts.findAncestor(
-                  declaration,
-                  (node) =>
-                      ts.isSourceFile(node) ||
-                      (blockScoped
-                          ? ts.isBlock(node)
-                          : ts.isFunctionLike(node)),
-              )
-            : undefined;
-        for (
-            let node: ts.Node | undefined = identifier.parent;
-            node && node !== declaringScope;
-            node = node.parent
-        ) {
-            if (
-                ts.isBlock(node) ||
-                ts.isTryStatement(node) ||
-                ts.isExpressionStatement(node) ||
-                ts.isBinaryExpression(node) ||
-                ts.isParenthesizedExpression(node) ||
-                ts.isSourceFile(node)
-            ) {
-                continue;
-            }
-            this.fail(
-                identifier,
-                `'${identifier.text}' is assigned inside a ${syntaxKindName(node.kind)}; ` +
-                    "an untyped 'let' binds only where its declaring scope reaches " +
-                    "the assignment unconditionally.",
-            );
-        }
-        const owner = this.bindingScope(symbol);
-        if (!owner) {
-            this.fail(
-                identifier,
-                `Unable to resolve variable '${identifier.text}'.`,
-            );
-        }
-        this.describeNativeValue(value);
-        owner.set(symbol, {
-            ...owner.get(symbol)!,
-            value: {
-                ...value,
-                // A successful generation-only binding is a present object,
-                // including when its annotation still admits undefined.
-                optionalFoundCpp:
-                    value.optionalFoundCpp ??
-                    (value.kind === "json-null" ? "false" : "true"),
-            },
-        });
-    }
-
-    public rebindVariable(identifier: ts.Identifier, value: Value): void {
-        const symbol = this.requireValueSymbol(identifier);
-        // The same innermost-first walk `lookup` takes, so a rebind and a
-        // read cannot disagree about which scope owns the name.
-        const owner = this.bindingScope(symbol);
-        if (!owner) {
-            this.fail(
-                identifier,
-                `Unable to resolve variable '${identifier.text}'.`,
-            );
-        }
-        const innermost = this.variableScopes.at(-1)!;
-        const binding = owner.get(symbol)!;
-        const destination: Value = { ...value, cpp: binding.value.cpp };
-        delete destination.ownedCpp;
-        delete destination.stableOwnerCpp;
-        delete destination.nativeOwnedRvalue;
-        for (const property of [
-            "sharedStorageCpp",
-            "optionalStorageCpp",
-        ] as const) {
-            const storage = binding.value[property];
-            if (storage === undefined) delete destination[property];
-            else destination[property] = storage;
-        }
-        if (binding.value.kind === "audio-engine") {
-            this.assignAudioMainBus(binding.value, value, identifier);
-            for (const property of [
-                "audioMainBusCpp",
-                "audioMainBusOwnerCpp",
-            ] as const) {
-                const storage = binding.value[property];
-                if (storage === undefined) delete destination[property];
-                else destination[property] = storage;
-            }
-            destination.nativeCompanionCaptures = {
-                ...destination.nativeCompanionCaptures,
-                audioMainBusCpp:
-                    binding.value.nativeCompanionCaptures?.audioMainBusCpp ??
-                    [],
-            };
-        }
-        this.describeNativeValue(destination);
-        const rebound = {
-            ...binding,
-            value: destination,
-        };
-        // Selected static branches run in the surrounding execution path.
-        // A callback, runtime branch or loop still separates handle metadata.
-        if (
-            owner === innermost ||
-            this.variableScopes
-                .slice(this.variableScopes.indexOf(owner) + 1)
-                .every((scope) => this.transparentRebindingScopes.has(scope))
-        ) {
-            owner.set(symbol, rebound);
-            return;
-        }
-        owner.set(symbol, {
-            ...binding,
-            reboundInNestedScope: true,
-        });
-        innermost.set(symbol, rebound);
-    }
-
-    public defineVariable(identifier: ts.MemberName, value: Value): void {
-        const immutable = this.isImmutableVariable(identifier.parent);
-        if (value.nativeOwnedRvalue) {
-            value = { ...value };
-            delete value.nativeOwnedRvalue;
-        }
-        if (
-            (value.ownedCpp !== undefined ||
-                value.stableOwnerCpp !== undefined) &&
-            cppIdentifierPattern.test(value.cpp)
-        ) {
-            value = { ...value };
-            delete value.ownedCpp;
-            delete value.stableOwnerCpp;
-        }
-        if (
-            immutable &&
-            !value.sharedStorageCpp &&
-            value.optionalStorageCpp !== undefined &&
-            cppIdentifierPattern.test(value.optionalStorageCpp)
-        ) {
-            value = {
-                ...value,
-                stableOwnerCpp: value.optionalStorageCpp,
-            };
-        }
-        if (
-            this.options.workers &&
-            value.kind === "engine" &&
-            value.optionalStorageCpp &&
-            !value.ownedEngineCpp
-        ) {
-            const ownedEngineCpp = value.cpp;
-            value = {
-                ...value,
-                ownedEngineCpp,
-                cpp: `(*${ownedEngineCpp})`,
-                engineCpp: `(*${ownedEngineCpp})`,
-            };
-        }
-        if (
-            value.kind === "data" &&
-            (value.dataType?.kind === "vector" ||
-                value.dataType?.kind === "map" ||
-                value.dataType?.kind === "set")
-        ) {
-            const owner = value.staticElementsOwner ?? value;
-            const declaration = identifier.parent;
-            const initializer =
-                ts.isVariableDeclaration(declaration) && declaration.initializer
-                    ? this.unwrap(declaration.initializer)
-                    : undefined;
-            const keyed = value.dataType.kind !== "vector";
-            const emptyKeys =
-                keyed &&
-                initializer &&
-                ((ts.isNewExpression(initializer) &&
-                    (initializer.arguments?.length ?? 0) === 0) ||
-                    (ts.isObjectLiteralExpression(initializer) &&
-                        initializer.properties.length === 0));
-            const count = emptyKeys
-                ? 0
-                : (owner.staticElements?.length ??
-                  (initializer &&
-                  ts.isArrayLiteralExpression(initializer) &&
-                  !initializer.elements.some(ts.isSpreadElement)
-                      ? initializer.elements.length
-                      : undefined));
-            value.collectionCardinality = owner.collectionCardinality ??
-                value.collectionCardinality ?? {
-                    kind: keyed ? "keyed" : "array",
-                    count,
-                    ...(emptyKeys
-                        ? { keys: new EmissionSet<string | number | boolean>() }
-                        : {}),
-                    createdIn: [...this.parameterizedResourceIterations],
-                    varyingIn: new EmissionSet(),
-                };
-            owner.collectionCardinality = value.collectionCardinality;
-            this.collectionCardinalities.add(value.collectionCardinality);
-        }
-        this.bindAudioMainBusStorage(value);
-        this.describeNativeValue(value);
-        const binding = this.nativeBindings.get(value.cpp);
-        if (
-            binding &&
-            !value.sharedStorageCpp &&
-            !value.borrowedData &&
-            !value.runtimeIteration &&
-            immutable
-        ) {
-            this.nativeConstBindings.add(binding);
-        }
-        if (immutable && !value.sharedStorageCpp) {
-            for (const capture of value.nativeCaptures ?? [])
-                this.nativeConstBindings.add(capture);
-            for (const captures of Object.values(
-                value.nativeCompanionCaptures ?? {},
-            )) {
-                for (const capture of captures ?? [])
-                    this.nativeConstBindings.add(capture);
-            }
-        }
-        const symbol = this.requireValueSymbol(identifier);
-        const scope = this.variableScopes.at(-1)!;
-        if (scope.has(symbol)) {
-            this.fail(
-                identifier,
-                `Variable shadowing is not supported for '${identifier.text}' in the same scope.`,
-            );
-        }
-        scope.set(symbol, {
-            name: identifier.text,
-            value,
-            ...(this.frameCallbackDepth > 0 ? { frameLocal: true } : {}),
-        });
-    }
-
-    public bindLocalValue(identifier: ts.Identifier, value: Value): void {
-        this.bindLocalOrParameterValue(identifier, value, false);
-    }
-
-    public bindCompileTimeValue(identifier: ts.Identifier, value: Value): void {
-        this.defineVariable(identifier, value);
-    }
-
-    public rebindCompileTimeValue(
-        identifier: ts.Identifier,
-        value: Value,
-    ): void {
-        this.describeNativeValue(value);
-        const symbol = this.requireValueSymbol(identifier);
-        const owner = this.bindingScope(symbol);
-        if (!owner) {
-            this.fail(
-                identifier,
-                `Unable to resolve variable '${identifier.text}'.`,
-            );
-        }
-        const binding = owner.get(symbol)!;
-        owner.set(symbol, { ...binding, value });
-    }
-
     public materializeStaticNativeValue(
         identifier: ts.Identifier,
         value: Value,
     ): Value {
-        const existing = this.lookupOptional(identifier);
+        const existing = this.bindings.lookupOptional(identifier);
         if (existing) return existing;
         const symbol = this.symbols.valueSymbol(identifier);
         if (!symbol) {
@@ -15270,10 +14650,10 @@ class Compiler implements LoweringServices {
                 `Unable to resolve variable '${identifier.text}'.`,
             );
         }
-        const cppName = this.cppIdentifier(identifier.text);
+        const cppName = this.bindings.cppIdentifier(identifier.text);
         this.staticNativeDeclarations.push(`auto ${cppName} = ${value.cpp};`);
         const stored = { ...value, cpp: cppName };
-        this.variableScopes[0]!.set(symbol, {
+        this.bindings.variableScopes[0]!.set(symbol, {
             name: identifier.text,
             value: stored,
         });
@@ -15281,7 +14661,7 @@ class Compiler implements LoweringServices {
     }
 
     /** Captured mutable parameters own their binding, not the caller's slot. */
-    private mutableCapturedParameter(
+    public mutableCapturedParameter(
         identifier: ts.Identifier,
         value: Value,
     ): boolean {
@@ -15306,31 +14686,11 @@ class Compiler implements LoweringServices {
         );
     }
 
-    public bindParameterValue(identifier: ts.Identifier, value: Value): void {
-        const narrowed =
-            value.kind === "data"
-                ? this.dataLowerer.narrowForDeclaration(value, identifier)
-                : value;
-        if (
-            narrowed.dataType?.kind === "struct" &&
-            this.identifierIsRebound(identifier)
-        ) {
-            this.dataTypes.markStoredObjectReferences(narrowed.dataType);
-        }
-        this.bindLocalOrParameterValue(
-            identifier,
-            narrowed,
-            true,
-            undefined,
-            this.mutableCapturedParameter(identifier, narrowed),
-        );
-    }
-
     public bindClassParameterValue(
         identifier: ts.Identifier,
         argument: ts.Expression,
     ): void {
-        this.bindParameterValue(
+        this.bindings.bindParameterValue(
             identifier,
             this.compileClassParameterValue(identifier, argument),
         );
@@ -15389,7 +14749,7 @@ class Compiler implements LoweringServices {
                 ? receivingDeclaration.name
                 : undefined;
         const receivingSymbol =
-            receivingName && !this.lookupOptional(receivingName)
+            receivingName && !this.bindings.lookupOptional(receivingName)
                 ? this.symbols.valueSymbol(receivingName)
                 : undefined;
         if (
@@ -15421,7 +14781,7 @@ class Compiler implements LoweringServices {
         if (dataType.kind === "function") {
             const unwrappedCallback = this.unwrap(argument);
             const bound = ts.isIdentifier(unwrappedCallback)
-                ? this.lookupOptional(unwrappedCallback)
+                ? this.bindings.lookupOptional(unwrappedCallback)
                 : undefined;
             const declaration =
                 !bound && ts.isIdentifier(unwrappedCallback)
@@ -15553,7 +14913,9 @@ class Compiler implements LoweringServices {
             const resolved =
                 value.callbackDeclaration &&
                 ts.isIdentifier(value.callbackDeclaration)
-                    ? (this.lookupOptional(value.callbackDeclaration) ?? value)
+                    ? (this.bindings.lookupOptional(
+                          value.callbackDeclaration,
+                      ) ?? value)
                     : value;
             if (resolved.callbackDeclaration && !resolved.callbackRecordOwner) {
                 return {
@@ -16391,9 +15753,9 @@ class Compiler implements LoweringServices {
                 });
                 dataType = { ...dataType, identity: true };
             }
-            this.refuseEscapingPlatformEventCapturesIn(
+            this.bindings.refuseEscapingPlatformEventCapturesIn(
                 expression,
-                this.variableScopes.length,
+                this.bindings.variableScopes.length,
             );
             const cpp = this.userFunctions.compileStoredDataFunction(
                 this,
@@ -16501,7 +15863,9 @@ class Compiler implements LoweringServices {
             cppName: callbackName,
             eventName,
             node: expression,
-            scopes: this.variableScopes.map((scope) => new EmissionMap(scope)),
+            scopes: this.bindings.variableScopes.map(
+                (scope) => new EmissionMap(scope),
+            ),
         });
         return (
             `[&](const ${infoType}& ${eventName}) { ` +
@@ -16514,9 +15878,9 @@ class Compiler implements LoweringServices {
         if (this.deferredPhysicsCallbacks.length === 0) return;
         const emitted: string[] = [];
         for (const deferred of this.deferredPhysicsCallbacks) {
-            const savedScopes = [...this.variableScopes];
-            this.variableScopes.length = 0;
-            this.variableScopes.push(...deferred.scopes);
+            const savedScopes = [...this.bindings.variableScopes];
+            this.bindings.variableScopes.length = 0;
+            this.bindings.variableScopes.push(...deferred.scopes);
             const event = deferred.eventName;
             const info = physicsEventInfoValue(deferred.event, event);
             const previousDepth = this.frameCallbackDepth;
@@ -16543,8 +15907,8 @@ class Compiler implements LoweringServices {
                 );
             } finally {
                 this.frameCallbackDepth = previousDepth;
-                this.variableScopes.length = 0;
-                this.variableScopes.push(...savedScopes);
+                this.bindings.variableScopes.length = 0;
+                this.bindings.variableScopes.push(...savedScopes);
             }
         }
         const insertion = this.engineStartMark?.index ?? this.body.length;
@@ -16552,262 +15916,52 @@ class Compiler implements LoweringServices {
         this.deferredPhysicsCallbacks.length = 0;
     }
 
-    private bindLocalOrParameterValue(
+    /** A declared collection's cardinality, shared with the aliases of its elements. */
+    public trackCollectionCardinality(
         identifier: ts.MemberName,
         value: Value,
-        parameter: boolean,
-        explicitCppName?: string,
-        sharedStorage = false,
     ): void {
-        this.useNativeValue(value);
-        // A parameter the function never rebinds keeps its argument as the
-        // binding; a private name is never a parameter.
-        const readOnlyParameter =
-            parameter &&
-            ts.isIdentifier(identifier) &&
-            ts.isParameter(identifier.parent) &&
-            isSupportedFunction(identifier.parent.parent) &&
-            parameterIsReadOnly(
-                this.checker,
-                identifier.parent.parent,
-                identifier,
-            );
-        if (value.kind === "void") {
-            this.fail(
-                identifier,
-                `Variable '${identifier.text}' cannot receive void.`,
-            );
-        }
-        if (value.kind === "browser") {
-            this.defineVariable(identifier, value);
-            return;
-        }
-        if (value.kind === "engine" && value.ownedEngineCpp) {
-            // Escaping callbacks copy their tuple storage. Retain the owner,
-            // then dereference it at each use instead of copying an Engine& alias.
-            this.defineVariable(
-                identifier,
-                this.pinValueToTemporary(value, "engine"),
-            );
-            return;
-        }
-        if (value.uiRoot) {
-            // document.body is a compile-time mount sentinel. Its inlined
-            // parameter must retain that identity rather than materializing
-            // a nonexistent native DOM handle.
-            this.defineVariable(identifier, value);
-            return;
-        }
-        if (
-            (value.kind === "string" && (!parameter || readOnlyParameter)) ||
-            value.kind === "callback" ||
-            isCompileTimeOnlyValue(value.kind)
-        ) {
-            this.defineVariable(identifier, value);
-            return;
-        }
-        const cppName = explicitCppName ?? this.cppIdentifier(identifier.text);
-        const reference = value.kind === "engine" || value.kind === "scene";
-        const copiesHandle =
-            parameter &&
-            (this.dataLowerer.dataTypeAt(identifier)?.kind === "handle" ||
-                isHandleKind(value.kind));
-        const reboundParameter =
-            parameter &&
-            ts.isIdentifier(identifier) &&
-            (this.identifierIsRebound(identifier) ||
-                (this.isSharedClosureScalar(
-                    value.dataType?.kind ?? value.kind,
-                ) &&
-                    !readOnlyParameter));
-        const referenceValue =
-            value.kind !== "number" && value.kind !== "boolean";
-        const stableNativeBinding =
-            referenceValue && this.hasStableNativeBinding(value);
-        const borrowsImmutableBinding =
-            !sharedStorage &&
-            stableNativeBinding &&
-            (parameter
-                ? !reboundParameter
-                : this.isImmutableVariable(identifier.parent));
-        if (!parameter && borrowsImmutableBinding && value.nativeError) {
-            // Error properties already read the owned exception. An immutable
-            // source name can share that binding without an unused native alias.
-            this.defineVariable(identifier, value);
-            return;
-        }
-        const platformEvent =
-            value.kind === "platform-keyboard-event" ||
-            value.kind === "platform-mouse-event";
-        const nativeType = platformEvent
-            ? "const auto&"
-            : reference
-              ? "auto&"
-              : borrowsImmutableBinding
-                ? "auto&"
-                : value.kind === "number"
-                  ? "double"
-                  : value.kind === "boolean"
-                    ? "bool"
-                    : isStringValue(value)
-                      ? "std::string"
-                      : parameter && !copiesHandle && !reboundParameter
-                        ? "auto&&"
-                        : "auto";
-        const ownsTemporaryArgument =
-            parameter &&
-            !sharedStorage &&
-            !reboundParameter &&
-            nativeType === "auto&&" &&
-            value.nativeOwnedRvalue === true;
-        let initializerCpp =
-            value.kind === "number" && value.staticNumber !== undefined
-                ? numberConstantValue(value.staticNumber).cpp
-                : value.cpp;
-        if (
-            !sharedStorage &&
-            !borrowsImmutableBinding &&
-            referenceValue &&
-            !reference &&
-            (stableNativeBinding || (parameter && value.nativeLvalue))
-        ) {
-            this.reachJsData();
-            initializerCpp = `bbl::js::snapshot_value(${initializerCpp})`;
-        }
-        if (sharedStorage) {
-            if (isHandleKind(value.kind)) {
-                const cppType = this.dataTypes.cppType({
-                    kind: "handle",
-                    handle: value.kind,
-                });
-                this.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_shared<${cppType}>(${initializerCpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
-            } else {
-                this.emit({
-                    kind: "declaration",
-                    type: "auto",
-                    name: cppName,
-                    initializer: `bbl::js::make_gc_cell(${initializerCpp})`,
-                    attributes: "[[maybe_unused]] ",
-                });
-            }
-        } else {
-            this.emit({
-                kind: "declaration",
-                type: nativeType,
-                name: cppName,
-                initializer: initializerCpp,
-                attributes: "[[maybe_unused]] ",
-            });
-        }
-        const storedCpp = sharedStorage ? `(*${cppName})` : cppName;
-        const constantParameter =
-            readOnlyParameter &&
-            ((value.kind === "number" && value.staticNumber !== undefined) ||
-                (value.kind === "string" && value.staticString !== undefined) ||
-                (value.kind === "boolean" &&
-                    value.staticBoolean !== undefined)) &&
-            !value.parameterBinding;
-        const stored: Value = {
-            ...value,
-            cpp: storedCpp,
-            ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
-            ...(parameter ? { parameterBinding: !constantParameter } : {}),
-            ...(!parameter ? { nativeBinding: true } : {}),
-            ...(parameter && value.staticElements
-                ? {
-                      staticElementsOwner: value.staticElementsOwner ?? value,
-                  }
-                : {}),
-        };
-        delete stored.nativeOwnedRvalue;
-        if (!sharedStorage) delete stored.sharedStorageCpp;
         if (
             value.kind === "data" &&
-            value.dataType?.kind === "struct" &&
-            this.dataTypes.isReferenceStruct(value.dataType.name)
+            (value.dataType?.kind === "vector" ||
+                value.dataType?.kind === "map" ||
+                value.dataType?.kind === "set")
         ) {
-            stored.objectIdentityCpp = `${storedCpp}.get()`;
-            stored.optionalFoundCpp = `static_cast<bool>(${storedCpp})`;
-            stored.truthinessCpp = stored.optionalFoundCpp;
+            const owner = value.staticElementsOwner ?? value;
+            const declaration = identifier.parent;
+            const initializer =
+                ts.isVariableDeclaration(declaration) && declaration.initializer
+                    ? this.unwrap(declaration.initializer)
+                    : undefined;
+            const keyed = value.dataType.kind !== "vector";
+            const emptyKeys =
+                keyed &&
+                initializer &&
+                ((ts.isNewExpression(initializer) &&
+                    (initializer.arguments?.length ?? 0) === 0) ||
+                    (ts.isObjectLiteralExpression(initializer) &&
+                        initializer.properties.length === 0));
+            const count = emptyKeys
+                ? 0
+                : (owner.staticElements?.length ??
+                  (initializer &&
+                  ts.isArrayLiteralExpression(initializer) &&
+                  !initializer.elements.some(ts.isSpreadElement)
+                      ? initializer.elements.length
+                      : undefined));
+            value.collectionCardinality = owner.collectionCardinality ??
+                value.collectionCardinality ?? {
+                    kind: keyed ? "keyed" : "array",
+                    count,
+                    ...(emptyKeys
+                        ? { keys: new EmissionSet<string | number | boolean>() }
+                        : {}),
+                    createdIn: [...this.parameterizedResourceIterations],
+                    varyingIn: new EmissionSet(),
+                };
+            owner.collectionCardinality = value.collectionCardinality;
+            this.collectionCardinalities.add(value.collectionCardinality);
         }
-        if (value.kind === "animation-clip") {
-            stored.animationFrameRate = `${storedCpp}.frame_rate`;
-            stored.animationDuration = `${storedCpp}.duration`;
-        }
-        this.defineVariable(identifier, stored);
-        if (
-            parameter &&
-            !sharedStorage &&
-            !reboundParameter &&
-            (borrowsImmutableBinding ||
-                ownsTemporaryArgument ||
-                (copiesHandle && !reference) ||
-                nativeType === "std::string")
-        ) {
-            this.registerNativeConstBinding(cppName);
-        }
-    }
-
-    /** Visit bindings and the generation facts nested inside their values. */
-    private visitScopedValues(visitor: (value: Value) => void): void {
-        const seen = new EmissionSet<Value>();
-        const visit = (value: Value): void => {
-            if (seen.has(value)) return;
-            seen.add(value);
-            const nested = [
-                ...Object.values(value.recordProperties ?? {}),
-                ...(value.staticElements ?? []),
-                ...(value.tupleElements ?? []),
-            ];
-            visitor(value);
-            for (const child of nested) visit(child);
-        };
-        for (const scope of this.variableScopes) {
-            for (const binding of scope.values()) visit(binding.value);
-        }
-    }
-
-    /** Invalidate one native array's complete snapshot through all aliases. */
-    public invalidateStaticElements(
-        value: Value,
-        preserveCardinality = false,
-    ): void {
-        const owner = value.staticElementsOwner ?? value;
-        const elements = owner.staticElements ?? value.staticElements;
-        const cardinality =
-            owner.collectionCardinality ?? value.collectionCardinality;
-        if (cardinality && !preserveCardinality) {
-            cardinality.count = undefined;
-            delete cardinality.keys;
-        }
-        const invalidate = (candidate: Value): void => {
-            if (
-                candidate === value ||
-                candidate === owner ||
-                candidate.staticElementsOwner === owner ||
-                (cardinality !== undefined &&
-                    candidate.collectionCardinality === cardinality) ||
-                (elements !== undefined &&
-                    candidate.staticElements === elements)
-            ) {
-                if (owner.runtimeElementTemplate) {
-                    candidate.runtimeElementTemplate =
-                        owner.runtimeElementTemplate;
-                }
-                if (cardinality) candidate.collectionCardinality = cardinality;
-                delete candidate.staticElements;
-                delete candidate.staticElementsOwner;
-            }
-        };
-        this.visitScopedValues(invalidate);
-        invalidate(value);
-        invalidate(owner);
     }
 
     /** Read carried facts only; accessors and runtime expressions are not evaluated. */
@@ -16815,7 +15969,7 @@ class Compiler implements LoweringServices {
         expression: ts.Expression,
     ): Value | undefined {
         const node = this.unwrap(expression);
-        if (ts.isIdentifier(node)) return this.lookupOptional(node);
+        if (ts.isIdentifier(node)) return this.bindings.lookupOptional(node);
         if (node.kind === ts.SyntaxKind.ThisKeyword) return this.activeThis();
         if (ts.isPropertyAccessExpression(node)) {
             const owner = this.knownValueWithoutEvaluation(node.expression);
@@ -17000,55 +16154,6 @@ class Compiler implements LoweringServices {
         }
     }
 
-    /** Invalidate one native map/object snapshot through all shared aliases. */
-    public invalidateRecordProperties(value: Value): void {
-        const properties = value.recordProperties;
-        if (!properties) return;
-        const invalidate = (candidate: Value): void => {
-            if (candidate.recordProperties === properties) {
-                delete candidate.recordProperties;
-            }
-        };
-        this.visitScopedValues(invalidate);
-        invalidate(value);
-    }
-
-    /**
-     * The scope depth the outermost enclosing frame callback started at.
-     *
-     * Everything at or above it lives on that callback's own stack frame.
-     * A deferred (`setTimeout`) callback runs AFTER that frame has
-     * returned, so naming one of those locals would emit a reference to
-     * dead storage -- which is why `deferredCaptureScopes` refuses it.
-     */
-    private frameCallbackScopeFloor: number | undefined;
-
-    /** Expired frame scopes, tracked by identity across lexical scope restoration. */
-    private deferredCaptureScopes:
-        ReadonlySet<Map<ts.Symbol, VariableBinding>> | undefined;
-
-    /**
-     * Scope depth at which a nested persistent callback begins. Platform event
-     * objects are borrowed from the dispatch stack, so only bindings introduced
-     * at or below this callback may refer to one.
-     */
-    private escapingPlatformEventCaptureFloor: number | undefined;
-
-    public pushScope(cppPrefix: string, propagateRebindings = false): void {
-        const scope = new EmissionMap<ts.Symbol, VariableBinding>();
-        if (propagateRebindings) this.transparentRebindingScopes.add(scope);
-        this.variableScopes.push(scope);
-        this.cppNamePrefixes.push(cppPrefix);
-    }
-
-    public popScope(): void {
-        if (this.variableScopes.length === 1) {
-            throw new Error("Cannot pop the compiler root scope.");
-        }
-        this.variableScopes.pop();
-        this.cppNamePrefixes.pop();
-    }
-
     public expectKind(value: Value, kind: ValueKind, node: ts.Node): void {
         if (value.kind !== kind) {
             this.fail(node, `Expected ${kind}, received ${value.kind}.`);
@@ -17144,44 +16249,6 @@ class Compiler implements LoweringServices {
             });
         }
         return this.requireDefaultEngine(node);
-    }
-
-    /**
-     * Runs `work` with an inlined function's parameters bound in a scope of
-     * its own -- the same binding the user-function inliner performs before
-     * it lowers a body, exposed for the folds that read a body instead.
-     *
-     * A `MaterialPlugin` returned by a local factory closes over the
-     * arguments, so folding its members means resolving the factory's
-     * parameter names to what the call site passed; nothing else about the
-     * body is entered.
-     *
-     * The scope takes an allocated prefix, exactly as every other inliner's
-     * does. A binding still DECLARES a native local, so an empty prefix
-     * spells one `v_<parameter>` per call: two calls of one factory would
-     * redefine it, and a parameter sharing a name with a scene local would
-     * collide with that local's own declaration.
-     */
-    public withBoundParameters<T>(
-        parameters: readonly {
-            name: ts.Identifier;
-            value: Value;
-            compileTime?: boolean;
-        }[],
-        work: () => T,
-    ): T {
-        if (parameters.length === 0) return work();
-        this.pushScope(this.allocateBlockPrefix());
-        try {
-            for (const parameter of parameters) {
-                if (parameter.compileTime)
-                    this.bindCompileTimeValue(parameter.name, parameter.value);
-                else this.bindParameterValue(parameter.name, parameter.value);
-            }
-            return work();
-        } finally {
-            this.popScope();
-        }
     }
 
     /** Whether `enablePbrLightmap()` has registered the extension yet. */
@@ -17377,11 +16444,6 @@ class Compiler implements LoweringServices {
                 `Expected ${expected} arguments, received ${call.arguments.length}.`,
             );
         }
-    }
-
-    public cppIdentifier(sourceName: string): string {
-        const prefix = this.cppNamePrefixes.at(-1) ?? "";
-        return `v_${prefix}${sanitizeCppIdentifier(sourceName)}`;
     }
 
     public cppString(value: string): string {
@@ -17879,7 +16941,7 @@ class Compiler implements LoweringServices {
 
     public functionEmissionScope(): import("./compiler/function-specializations.js").FunctionEmissionScope {
         return {
-            lexical: this.variableScopes.at(-1)!,
+            lexical: this.bindings.variableScopes.at(-1)!,
             emission: this.activeEmissionScope,
             block: this.emissionBlocks.at(-1)!,
             continuation: this.engineStartMark?.index ?? -1,

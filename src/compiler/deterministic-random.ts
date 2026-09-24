@@ -50,7 +50,7 @@ export interface DeterministicRandomContext extends Pick<
     LoweringServices,
     | "libraryGlobal"
     | "sceneManifest"
-    | "lookup"
+    | "bindings"
     | "compileForDataSink"
     | "emit"
     | "fail"
@@ -271,7 +271,7 @@ export function emitDeterministicRandomInstall(
             );
         }
         const saved = ts.isIdentifier(expression.right)
-            ? context.lookup(expression.right)
+            ? context.bindings.lookup(expression.right)
             : undefined;
         const callback =
             saved?.kind === "js-random"
@@ -289,7 +289,7 @@ export function emitDeterministicRandomInstall(
     // after this point draws from the browser's own again.
     if (
         ts.isIdentifier(expression.right) &&
-        context.lookup(expression.right).kind === "js-random"
+        context.bindings.lookup(expression.right).kind === "js-random"
     ) {
         context.sceneManifest.reachedNodeParticles.steps.push({
             op: "random-restore",

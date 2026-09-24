@@ -118,7 +118,7 @@ export function emitFrozenParticleSheetAssignment(
         (result !== undefined &&
             (!ts.isIdentifier(result) ||
                 result.text !== "undefined" ||
-                context.lookupOptional(result)))
+                context.bindings.lookupOptional(result)))
     ) {
         context.fail(
             update,

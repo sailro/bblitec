@@ -16,7 +16,7 @@ interface NodeInputContext extends Pick<
     | "checker"
     | "unwrap"
     | "compileValue"
-    | "lookupOptional"
+    | "bindings"
     | "allocateTemporaryCppName"
     | "emit"
     | "dataLowerer"
@@ -78,7 +78,7 @@ function isInput(
     const node = context.unwrap(expression);
     if (
         ts.isIdentifier(node) &&
-        context.lookupOptional(node)?.kind === "node-input"
+        context.bindings.lookupOptional(node)?.kind === "node-input"
     )
         return true;
     return (

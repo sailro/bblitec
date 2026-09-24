@@ -236,11 +236,11 @@ export function staticColor3Value(
 
 /** The three static channels of a bound compile-time 3-tuple, if it is one. */
 function staticTupleChannels(
-    context: Pick<PositiveIntegerContext, "lookupOptional">,
+    context: Pick<PositiveIntegerContext, "bindings">,
     node: ts.Expression,
 ): readonly [number, number, number] | undefined {
     if (!ts.isIdentifier(node)) return undefined;
-    const bound = context.lookupOptional(node);
+    const bound = context.bindings.lookupOptional(node);
     if (bound?.kind !== "tuple" || bound.tupleElements?.length !== 3) {
         return undefined;
     }
@@ -727,7 +727,7 @@ function compilePbrBaseColorFactor(
     };
     if (
         ts.isIdentifier(expression) &&
-        context.lookupOptional(expression)?.kind === "tuple"
+        context.bindings.lookupOptional(expression)?.kind === "tuple"
     ) {
         context.fail(
             expression,
@@ -807,7 +807,7 @@ function optionalRecordOption(
     if (
         ts.isIdentifier(resolved) &&
         resolved.text === "undefined" &&
-        !context.lookupOptional(resolved)
+        !context.bindings.lookupOptional(resolved)
     ) {
         return undefined;
     }
@@ -815,7 +815,7 @@ function optionalRecordOption(
         ts.isPropertyAccessExpression(resolved) &&
         ts.isIdentifier(resolved.expression)
     ) {
-        const owner = context.lookupOptional(resolved.expression);
+        const owner = context.bindings.lookupOptional(resolved.expression);
         if (owner?.kind === "record") {
             return owner.recordProperties?.[resolved.name.text];
         }

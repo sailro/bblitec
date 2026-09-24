@@ -44,7 +44,6 @@ import type {
     FrameCallbackSignature,
     Value,
     ValueKind,
-    VariableBinding,
 } from "./types.js";
 import type {
     CapturedClosure,
@@ -58,6 +57,7 @@ import type {
 } from "./resource-loops.js";
 import type { ClassLowerer } from "./classes.js";
 import type { SceneManifestRecorder } from "./scene-manifest.js";
+import type { BindingScopes } from "./binding-scopes.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -115,6 +115,7 @@ export interface LoweringServices {
     readonly evaluator: StaticEvaluator;
     readonly handleCollections: HandleCollections;
     readonly sceneManifest: SceneManifestRecorder;
+    readonly bindings: BindingScopes;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
@@ -125,7 +126,6 @@ export interface LoweringServices {
     voxelFileStorageReached: boolean;
     readonly browserTextureFunctions: Set<string>;
     readonly canvasReadbackFunctions: Set<string>;
-    readonly variableScopes: Array<Map<ts.Symbol, VariableBinding>>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
     readonly assets: Map<string, CompileAsset>;
     setAssetDecoderConfiguration(
@@ -477,7 +477,6 @@ export interface LoweringServices {
     probeStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined;
-    cppLocalName(sourceName: string): string;
     sourceFiles(): readonly ts.SourceFile[];
     reachThrow(): void;
     emitDataVectorOfStructs(
@@ -792,7 +791,6 @@ export interface LoweringServices {
     moduleFunctionDeclaration(
         identifier: ts.Identifier,
     ): ts.FunctionDeclaration | undefined;
-    lookupOptional(identifier: ts.MemberName): Value | undefined;
     refuseBorrowedPlatformEventEscape(
         value: Value,
         node: ts.Node,
@@ -806,20 +804,12 @@ export interface LoweringServices {
         expression: ts.PropertyAccessExpression,
     ): Value | undefined;
     unwrap(expression: ts.Expression): ts.Expression;
-    lookup(identifier: ts.Identifier): Value;
-    bindPendingLet(identifier: ts.Identifier, value: Value): void;
-    rebindVariable(identifier: ts.Identifier, value: Value): void;
-    defineVariable(identifier: ts.Identifier, value: Value): void;
-    bindLocalValue(identifier: ts.Identifier, value: Value): void;
     /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
     catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean;
-    bindCompileTimeValue(identifier: ts.Identifier, value: Value): void;
-    rebindCompileTimeValue(identifier: ts.Identifier, value: Value): void;
     materializeStaticNativeValue(
         identifier: ts.Identifier,
         value: Value,
     ): Value;
-    bindParameterValue(identifier: ts.Identifier, value: Value): void;
     bindClassParameterValue(
         identifier: ts.Identifier,
         argument: ts.Expression,
@@ -880,16 +870,12 @@ export interface LoweringServices {
     compilePhysicsCollisionCallback(expression: ts.Expression): string;
     compilePhysicsTriggerCallback(expression: ts.Expression): string;
     compilePhysicsCharacterCallback(expression: ts.Expression): string;
-    invalidateStaticElements(value: Value, preserveCardinality?: boolean): void;
     knownValueWithoutEvaluation(expression: ts.Expression): Value | undefined;
     knownCollectionCardinality(expression: ts.Expression): number | undefined;
     runtimeCollectionCardinality(expression: ts.Expression): number | undefined;
     recordArrayPush(value: Value, added: number | undefined): boolean;
     recordCollectionKey(value: Value, key: Value, removed?: boolean): void;
     recordCollectionClear(value: Value): void;
-    invalidateRecordProperties(value: Value): void;
-    pushScope(cppPrefix: string, propagateRebindings?: boolean): void;
-    popScope(): void;
     expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
     expectShaderVariant(value: Value, variant: string, node: ts.Node): void;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
@@ -898,14 +884,6 @@ export interface LoweringServices {
     audioSessionCpp(): string;
     requireDefaultEngine(node: ts.Node): string;
     requirePresentationHost(node: ts.Node): string;
-    withBoundParameters<T>(
-        parameters: readonly {
-            name: ts.Identifier;
-            value: Value;
-            compileTime?: boolean;
-        }[],
-        work: () => T,
-    ): T;
     pbrLightmapEnabled(): boolean;
     reachFeature(feature: Feature, site?: ts.Node | string): void;
     gltfAlreadyLoaded(): boolean;

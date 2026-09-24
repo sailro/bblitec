@@ -1319,7 +1319,7 @@ function compileArraySort(state: ArrayMethodState): Value {
         `std::stable_sort(${result}.begin(), ${result}.end(), [&](const auto& ${left}, const auto& ${right}) {`,
     );
     lowerer.context.increaseIndent();
-    lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
+    lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     try {
         lowerer.context.enterRuntimeIteration();
         try {
@@ -1371,7 +1371,7 @@ function compileArraySort(state: ArrayMethodState): Value {
             lowerer.context.leaveRuntimeIteration();
         }
     } finally {
-        lowerer.context.popScope();
+        lowerer.context.bindings.popScope();
         lowerer.context.decreaseIndent();
     }
     lowerer.context.emit("});");
@@ -1600,7 +1600,7 @@ function compileArrayReduce(state: ArrayMethodState): Value {
         `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
     );
     lowerer.context.increaseIndent();
-    lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
+    lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     try {
         lowerer.context.enterRuntimeIteration();
         try {
@@ -1657,7 +1657,7 @@ function compileArrayReduce(state: ArrayMethodState): Value {
             lowerer.context.leaveRuntimeIteration();
         }
     } finally {
-        lowerer.context.popScope();
+        lowerer.context.bindings.popScope();
         lowerer.context.decreaseIndent();
     }
     lowerer.context.emit("}");
@@ -2288,7 +2288,7 @@ function compileMapDataMethod(
         }
         lowerer.context.recordCollectionClear(narrowed);
         if (lowerer.context.isInRuntimeControlFlow()) {
-            lowerer.context.invalidateRecordProperties(narrowed);
+            lowerer.context.bindings.invalidateRecordProperties(narrowed);
         } else if (narrowed.recordProperties) {
             for (const key of Object.keys(narrowed.recordProperties)) {
                 delete narrowed.recordProperties[key];
@@ -2326,11 +2326,11 @@ function compileMapDataMethod(
         if (method === "delete") {
             lowerer.context.recordCollectionKey(narrowed, keyValue, true);
             if (lowerer.context.isInRuntimeControlFlow()) {
-                lowerer.context.invalidateRecordProperties(narrowed);
+                lowerer.context.bindings.invalidateRecordProperties(narrowed);
             } else if (staticKey !== undefined && narrowed.recordProperties) {
                 delete narrowed.recordProperties[staticKey];
             } else if (staticKey === undefined) {
-                lowerer.context.invalidateRecordProperties(narrowed);
+                lowerer.context.bindings.invalidateRecordProperties(narrowed);
             }
             return {
                 kind: "boolean",
@@ -2437,11 +2437,11 @@ function compileMapDataMethod(
                 ? String(keyValue.staticNumber)
                 : undefined);
         if (lowerer.context.isInRuntimeControlFlow()) {
-            lowerer.context.invalidateRecordProperties(narrowed);
+            lowerer.context.bindings.invalidateRecordProperties(narrowed);
         } else if (staticKey !== undefined && narrowed.recordProperties) {
             narrowed.recordProperties[staticKey] = assignedValue;
         } else if (staticKey === undefined) {
-            lowerer.context.invalidateRecordProperties(narrowed);
+            lowerer.context.bindings.invalidateRecordProperties(narrowed);
         }
         return {
             kind: "data",

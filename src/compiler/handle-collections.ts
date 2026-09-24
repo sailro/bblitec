@@ -66,9 +66,7 @@ interface HandleCollectionLoopContext extends Pick<
     | "emit"
     | "increaseIndent"
     | "decreaseIndent"
-    | "pushScope"
-    | "popScope"
-    | "bindLocalValue"
+    | "bindings"
 > {}
 
 /**
@@ -104,14 +102,14 @@ export function emitHandleCollectionLoop<
         `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
     );
     context.increaseIndent();
-    context.pushScope(context.allocateBlockPrefix());
+    context.bindings.pushScope(context.allocateBlockPrefix());
     try {
         const value = valueForKind(target.elementKind, {
             cpp: item,
             engineCpp: target.engineCpp,
             ...(extraBinding ?? {}),
         });
-        context.bindLocalValue(
+        context.bindings.bindLocalValue(
             binding,
             target.elementTemplate
                 ? withNativeMetadata(value, target.elementTemplate)
@@ -119,7 +117,7 @@ export function emitHandleCollectionLoop<
         );
         emitBody(context);
     } finally {
-        context.popScope();
+        context.bindings.popScope();
         context.decreaseIndent();
     }
     context.emit("}");
@@ -375,8 +373,7 @@ interface HandleCollectionsContext
             | "compileCondition"
             | "compileStringLiteral"
             | "cppString"
-            | "lookup"
-            | "lookupOptional"
+            | "bindings"
             | "resolveStaticExpression"
             | "probeStaticArrayLiteral"
             | "requireEngine"
@@ -458,10 +455,10 @@ export class HandleCollections {
             parameter: declaration.parameters[0]!.name.getText(),
             body: `{ ${proof.helpers.map((helper) => helper.getText()).join("\n")} ${declaration.body!.statements.map((statement) => statement.getText()).join("\n")} }`,
         });
-        this.context.pushScope(this.context.allocateBlockPrefix());
+        this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         try {
             this.context.emitStatement(proof.mapStatement);
-            const map = this.context.lookup(proof.map);
+            const map = this.context.bindings.lookup(proof.map);
             if (
                 map.dataType?.kind !== "map" ||
                 map.dataType.key.kind !== "string" ||
@@ -479,19 +476,19 @@ export class HandleCollections {
                 walk,
                 proof.child,
                 (context) => {
-                    const child = context.lookup(proof.child);
-                    context.bindLocalValue(proof.ownerName, {
+                    const child = context.bindings.lookup(proof.child);
+                    context.bindings.bindLocalValue(proof.ownerName, {
                         kind: "string",
                         cpp: `${recordAt(`${target.engineCpp}.meshes`, child.cpp)}.scene_node_name`,
                         dataType: { kind: "string" },
                     });
-                    context.bindLocalValue(proof.output, map);
+                    context.bindings.bindLocalValue(proof.output, map);
                     context.emitStatement(proof.collect);
                 },
             );
             return { ...map, engineCpp: target.engineCpp };
         } finally {
-            this.context.popScope();
+            this.context.bindings.popScope();
         }
     }
 
@@ -615,7 +612,7 @@ export class HandleCollections {
         if (!ts.isIdentifier(unwrapped)) {
             return undefined;
         }
-        const value = this.context.lookupOptional(unwrapped);
+        const value = this.context.bindings.lookupOptional(unwrapped);
         return value?.kind === "handle-collection" && value.handleCollection
             ? value
             : undefined;
@@ -1346,7 +1343,7 @@ export class HandleCollections {
     ): readonly Value[] | undefined {
         const unwrapped = this.context.unwrap(expression);
         const value = ts.isIdentifier(unwrapped)
-            ? this.context.lookupOptional(unwrapped)
+            ? this.context.bindings.lookupOptional(unwrapped)
             : ts.isCallExpression(unwrapped) ||
                 ts.isPropertyAccessExpression(unwrapped) ||
                 ts.isElementAccessExpression(unwrapped) ||
@@ -1536,7 +1533,7 @@ export class HandleCollections {
         if (callee.name.text !== "push") return undefined;
         const owner = this.context.unwrap(callee.expression);
         if (!ts.isIdentifier(owner)) return undefined;
-        const tuple = this.context.lookupOptional(owner);
+        const tuple = this.context.bindings.lookupOptional(owner);
         if (tuple?.kind !== "tuple" || !tuple.tupleElements) {
             return undefined;
         }
@@ -1707,16 +1704,19 @@ export class HandleCollections {
             truthinessCpp: "true",
             engineCpp: context.requireEngine(owner, collection),
         };
-        context.pushScope(context.allocateBlockPrefix());
+        context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            context.bindLocalValue(predicate.parameters[0]!.name, root);
+            context.bindings.bindLocalValue(
+                predicate.parameters[0]!.name,
+                root,
+            );
             if (context.compileCondition(predicate.body) !== "true")
                 return context.fail(
                     predicate.body,
                     "Entity search beyond the synthetic glTF root requires a represented heterogeneous entity collection.",
                 );
         } finally {
-            context.popScope();
+            context.bindings.popScope();
         }
         return root;
     }
@@ -1806,7 +1806,7 @@ export class HandleCollections {
                     context.emit(`if (${selected.optionalFoundCpp}) {`);
                     context.increaseIndent();
                 }
-                context.bindLocalValue(predicateParameter, selected);
+                context.bindings.bindLocalValue(predicateParameter, selected);
                 const test = context.compileCondition(
                     predicate.body as ts.Expression,
                 );
@@ -2146,7 +2146,7 @@ export class HandleCollections {
             target,
             predicateParameter,
             (context) => {
-                const item = context.lookup(predicateParameter).cpp;
+                const item = context.bindings.lookup(predicateParameter).cpp;
                 const test = context.compileCondition(
                     predicate.body as ts.Expression,
                 );
@@ -2251,7 +2251,7 @@ export class HandleCollections {
             return resolved.text;
         }
         if (ts.isIdentifier(resolved)) {
-            const value = this.context.lookupOptional(resolved);
+            const value = this.context.bindings.lookupOptional(resolved);
             return value?.kind === "string" ? value.staticString : undefined;
         }
         return undefined;
@@ -2470,7 +2470,7 @@ export class HandleCollections {
     private lookupHandleOperand(expression: ts.Expression): Value | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const value = this.context.lookupOptional(unwrapped);
+            const value = this.context.bindings.lookupOptional(unwrapped);
             if (value) {
                 return handleKinds.includes(value.kind) &&
                     value.animationGroupSource !== "property"

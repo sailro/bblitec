@@ -1,3 +1,4 @@
+import type { BindingScopes } from "../binding-scopes.js";
 import type { LoweringServices } from "../lowering-services.js";
 // The node-particle family records graph builds and source lifecycle calls.
 // Frozen systems execute the pin during generation, preserving V8-dependent
@@ -67,7 +68,7 @@ export interface ParticleIntrinsicContext
             | "sceneManifest"
             | "requireDefaultEngine"
             | "compileStaticString"
-            | "lookupOptional"
+            | "bindings"
             | "reachJsRandom"
             | "expectObjectLiteral"
             | "objectProperty"
@@ -75,7 +76,9 @@ export interface ParticleIntrinsicContext
             | "allocateTemporaryCppName"
             | "compileForDataSink"
             | "compileNumber"
-        > {}
+        > {
+    readonly bindings: BindingScopes;
+}
 
 /** The four builders the corpus reaches, by their own export names. */
 const builders: Readonly<Record<string, NodeParticleBuilder>> = {
@@ -125,7 +128,7 @@ function graphSource(
     const args = (document.call?.arguments ?? []).map((argument, index) => {
         const unwrapped = context.unwrap(argument);
         const bound = ts.isIdentifier(unwrapped)
-            ? context.lookupOptional(unwrapped)
+            ? context.bindings.lookupOptional(unwrapped)
             : undefined;
         if (bound?.kind === "executed-url" && bound.executedUrl) {
             urlArguments.push({ index, ...bound.executedUrl });
@@ -568,7 +571,7 @@ export function compileParticleIntrinsic(
                         "withNodeParticleEmitterProvider"
                         ? context.compileValue(optionsArgument)
                         : ts.isIdentifier(providerCall)
-                          ? context.lookupOptional(providerCall)
+                          ? context.bindings.lookupOptional(providerCall)
                           : undefined;
                 provider = providerOptions?.nodeParticleProvider;
                 const options =

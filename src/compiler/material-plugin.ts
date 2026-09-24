@@ -39,7 +39,7 @@ export interface MaterialPluginContext extends Pick<
     | "probeStaticArrayLiteral"
     | "compileStaticString"
     | "compileValue"
-    | "withBoundParameters"
+    | "bindings"
     | "withRecordScopes"
     | "compileStoredDataFunction"
     | "dataLowerer"
@@ -498,7 +498,7 @@ function foldMaterialPlugin(
 ): FoldedMaterialPlugin {
     const site = pluginObjectSite(context, expression);
     const fold = () =>
-        context.withBoundParameters(site.bindings, () =>
+        context.bindings.withBoundParameters(site.bindings, () =>
             foldPluginObject(
                 context,
                 expression,
@@ -1224,7 +1224,7 @@ function foldTexturePushes(
                     });
                     // This fold accepts only pushes of existing texture
                     // identities; no runtime iteration binding is needed.
-                    context.withBoundParameters(
+                    context.bindings.withBoundParameters(
                         [{ name, value, compileTime: true }],
                         () =>
                             walk(

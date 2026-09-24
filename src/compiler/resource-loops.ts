@@ -61,7 +61,7 @@ function resolvedLoopCallee(
         Partial<
             Pick<
                 ResourceLoopContext,
-                "lookupOptional" | "knownValueWithoutEvaluation"
+                "bindings" | "knownValueWithoutEvaluation"
             >
         >,
     call: ts.CallExpression | ts.NewExpression,
@@ -70,7 +70,7 @@ function resolvedLoopCallee(
     const value =
         context.knownValueWithoutEvaluation?.(callee) ??
         (ts.isIdentifier(callee)
-            ? context.lookupOptional?.(callee)
+            ? context.bindings?.lookupOptional(callee)
             : undefined);
     const owner = ts.isPropertyAccessExpression(callee)
         ? context.knownValueWithoutEvaluation?.(callee.expression)
@@ -855,11 +855,13 @@ export function parameterizedResourceLoop(
     const staticContext: PositiveIntegerContext = {
         resolveStaticExpression: resolve,
         libraryGlobal: (expression) => context.libraryGlobal(expression),
-        lookup: (identifier) => context.lookup(identifier),
-        lookupOptional: (identifier) =>
-            indices.has(context.symbols.valueSymbol(identifier)!)
-                ? undefined
-                : context.lookupOptional(identifier),
+        bindings: {
+            lookup: (identifier) => context.bindings.lookup(identifier),
+            lookupOptional: (identifier) =>
+                indices.has(context.symbols.valueSymbol(identifier)!)
+                    ? undefined
+                    : context.bindings.lookupOptional(identifier),
+        },
         fail: (node, message) => context.fail(node, message),
     };
     const boundValue = (expression: ts.Expression): number | undefined => {
@@ -881,7 +883,9 @@ export function parameterizedResourceLoop(
             if (!symbol || seen.has(symbol)) return false;
             if (indices.has(symbol) || rebound.has(symbol)) return false;
             const bound = bindings.get(symbol);
-            const value = bound ? undefined : context.lookupOptional(node);
+            const value = bound
+                ? undefined
+                : context.bindings.lookupOptional(node);
             if (
                 value?.kind === "engine" ||
                 value?.kind === "scene" ||
@@ -909,7 +913,7 @@ export function parameterizedResourceLoop(
                     new EmissionSet([...seen, symbol]),
                 );
             }
-            return context.lookupOptional(node) !== undefined;
+            return context.bindings.lookupOptional(node) !== undefined;
         }
         if (ts.isPropertyAccessExpression(node)) {
             return invariant(node.expression, seen);
@@ -972,7 +976,7 @@ export function parameterizedResourceLoop(
             return effect ? undefined : expression.elements.length;
         }
         const value = ts.isIdentifier(expression)
-            ? context.lookupOptional(expression)
+            ? context.bindings.lookupOptional(expression)
             : undefined;
         if (
             value?.collectionCardinality ||
@@ -1046,7 +1050,8 @@ export function parameterizedResourceLoop(
                               context.symbols.valueSymbol(condition)!,
                           ) &&
                           !mutated.has(context.symbols.valueSymbol(condition)!)
-                        ? context.lookupOptional(condition)?.staticBoolean
+                        ? context.bindings.lookupOptional(condition)
+                              ?.staticBoolean
                         : undefined;
             if (fixed !== undefined) {
                 const selected = ts.isIfStatement(node)

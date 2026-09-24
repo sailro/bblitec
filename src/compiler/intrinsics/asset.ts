@@ -59,7 +59,7 @@ export interface AssetIntrinsicContext
             | "cppString"
             | "objectProperty"
             | "compileBoolean"
-            | "lookupOptional"
+            | "bindings"
             | "staticAssetUrlCandidates"
             | "reachJsData"
             | "probeEmission"

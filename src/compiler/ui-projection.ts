@@ -163,7 +163,7 @@ interface UiProjectionContext extends Pick<
     | "libraryGlobal"
     | "isInFrameCallback"
     | "isInRuntimeControlFlow"
-    | "lookupOptional"
+    | "bindings"
     | "options"
     | "pinValueToTemporary"
     | "probeEmission"
@@ -363,7 +363,7 @@ export class UiProjection {
             );
         };
         if (ts.isIdentifier(owner)) {
-            return asElement(this.context.lookupOptional(owner));
+            return asElement(this.context.bindings.lookupOptional(owner));
         }
         if (
             ts.isPropertyAccessExpression(owner) &&
@@ -593,7 +593,10 @@ export class UiProjection {
             );
         }
         if (ts.isIdentifier(value)) {
-            return this.context.lookupOptional(value)?.kind === "ui-element";
+            return (
+                this.context.bindings.lookupOptional(value)?.kind ===
+                "ui-element"
+            );
         }
         if (ts.isPropertyAccessExpression(value)) {
             return this.uiElementMetadata(value) !== undefined;

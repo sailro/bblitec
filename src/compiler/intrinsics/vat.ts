@@ -17,7 +17,7 @@ interface VatMethodContext extends Pick<
     | "requireEngine"
     | "reachFeature"
     | "unwrap"
-    | "lookupOptional"
+    | "bindings"
     | "expectArgumentCount"
     | "fail"
 > {}
@@ -155,7 +155,7 @@ export function compileVatMethodCall(
 ): Value | undefined {
     const receiverExpression = context.unwrap(callee.expression);
     if (!ts.isIdentifier(receiverExpression)) return undefined;
-    const receiver = context.lookupOptional(receiverExpression);
+    const receiver = context.bindings.lookupOptional(receiverExpression);
     if (!receiver || receiver.kind !== "vat-handle") return undefined;
     const method = callee.name.text;
     if (!["play", "update", "setInstances"].includes(method)) {

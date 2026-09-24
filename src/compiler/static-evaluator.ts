@@ -1455,9 +1455,12 @@ export class StaticEvaluator {
                 libraryGlobal: this.libraryGlobal,
                 resolveStaticExpression: (value: ts.Expression) =>
                     this.resolveStaticExpression(value),
-                lookup: (identifier: ts.Identifier) => this.lookup(identifier),
-                lookupOptional: (identifier: ts.Identifier) =>
-                    this.lookupOptional(identifier),
+                bindings: {
+                    lookup: (identifier: ts.Identifier) =>
+                        this.lookup(identifier),
+                    lookupOptional: (identifier: ts.Identifier) =>
+                        this.lookupOptional(identifier),
+                },
                 fail: (node: ts.Node, message: string): never =>
                     this.fail(node, message),
             },

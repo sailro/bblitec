@@ -180,8 +180,7 @@ export interface DataLoweringContext
             | "takeNativeTemporary"
             | "registerSharedNativeFunction"
             | "checker"
-            | "lookup"
-            | "lookupOptional"
+            | "bindings"
             | "dataTypes"
             | "classLowerer"
             | "compileValue"
@@ -205,8 +204,6 @@ export interface DataLoweringContext
             | "allocateTemporaryCppName"
             | "increaseIndent"
             | "decreaseIndent"
-            | "pushScope"
-            | "popScope"
             | "allocateBlockPrefix"
             | "compileCallbackWithValues"
             | "captureManagedClosureLines"
@@ -224,12 +221,10 @@ export interface DataLoweringContext
             | "isInRuntimeControlFlow"
             | "enterRuntimeIteration"
             | "leaveRuntimeIteration"
-            | "invalidateStaticElements"
             | "recordArrayPush"
             | "knownCollectionCardinality"
             | "recordCollectionKey"
             | "recordCollectionClear"
-            | "invalidateRecordProperties"
             | "reachJsData"
             | "reachJson"
             | "reachFeature"
@@ -4135,7 +4130,7 @@ export class DataLowerer {
         const item = this.context.allocateTemporaryCppName("array_from_item");
         const element = range.element;
         const lines = this.context.captureEmittedLines(() => {
-            this.context.pushScope(this.context.allocateBlockPrefix());
+            this.context.bindings.pushScope(this.context.allocateBlockPrefix());
             this.context.enterRuntimeControlFlow();
             this.context.enterRuntimeIteration();
             try {
@@ -4167,7 +4162,7 @@ export class DataLowerer {
             } finally {
                 this.context.leaveRuntimeIteration();
                 this.context.leaveRuntimeControlFlow();
-                this.context.popScope();
+                this.context.bindings.popScope();
             }
         });
         this.context.emit(`for (auto ${item} : ${source}) {`);
@@ -4349,7 +4344,7 @@ export class DataLowerer {
             `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
         );
         this.context.increaseIndent();
-        this.context.pushScope(this.context.allocateBlockPrefix());
+        this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         this.context.enterRuntimeIteration();
         try {
             const arguments_: Value[] = [
@@ -4375,7 +4370,7 @@ export class DataLowerer {
             this.context.emit(`${output}.push_back(${value});`);
         } finally {
             this.context.leaveRuntimeIteration();
-            this.context.popScope();
+            this.context.bindings.popScope();
             this.context.decreaseIndent();
         }
         this.context.emit("}");
@@ -4905,7 +4900,7 @@ export class DataLowerer {
             `for (std::size_t ${index} = 0; ${index} < ${bound}; ++${index}) {`,
         );
         this.context.increaseIndent();
-        this.context.pushScope(this.context.allocateBlockPrefix());
+        this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         const indexCapture = this.context.registerNativeBinding(
             index,
             false,
@@ -5010,7 +5005,7 @@ export class DataLowerer {
                 this.context.leaveRuntimeControlFlow();
             }
         } finally {
-            this.context.popScope();
+            this.context.bindings.popScope();
             this.context.decreaseIndent();
         }
         this.context.emit("}");
@@ -5036,7 +5031,10 @@ export class DataLowerer {
         value: Value,
         preserveCardinality = false,
     ): void {
-        this.context.invalidateStaticElements(value, preserveCardinality);
+        this.context.bindings.invalidateStaticElements(
+            value,
+            preserveCardinality,
+        );
     }
 
     /** A retained mutable alias can invalidate both an array snapshot and its length. */
@@ -5562,7 +5560,7 @@ export class DataLowerer {
                     unwrapped.expression.expression.expression.expression,
                 )
             ) {
-                const imageData = this.context.lookupOptional(
+                const imageData = this.context.bindings.lookupOptional(
                     unwrapped.expression.expression.expression.expression,
                 );
                 const pixels = imageData?.recordProperties?.data;
@@ -7151,7 +7149,7 @@ export class DataLowerer {
                 this.context.emit(
                     `static_cast<void>(${narrowed.cpp}.erase(${keyCpp}));`,
                 );
-                this.context.invalidateRecordProperties(narrowed);
+                this.context.bindings.invalidateRecordProperties(narrowed);
                 return;
             }
         }
@@ -7420,7 +7418,7 @@ export class DataLowerer {
                 entry.dataType.value,
             );
             this.context.emit(`${entry.owner.cpp}.set(${key}, ${value});`);
-            this.context.invalidateRecordProperties(entry.owner);
+            this.context.bindings.invalidateRecordProperties(entry.owner);
         });
     }
 
@@ -7637,7 +7635,7 @@ export class DataLowerer {
                     : undefined;
                 if (rootValue) {
                     this.invalidateStaticElements(rootValue);
-                    this.context.invalidateRecordProperties(rootValue);
+                    this.context.bindings.invalidateRecordProperties(rootValue);
                 }
             }
         });
@@ -7903,7 +7901,7 @@ export class DataLowerer {
                     // This write may execute zero or many times. The source
                     // value still mutates natively, but its complete
                     // generation snapshot no longer exists on every path.
-                    this.context.invalidateRecordProperties(narrowed);
+                    this.context.bindings.invalidateRecordProperties(narrowed);
                 } else if (
                     keyValue.staticString !== undefined &&
                     narrowed.recordProperties !== undefined
@@ -7921,7 +7919,7 @@ export class DataLowerer {
                 } else if (keyValue.staticString === undefined) {
                     // A dynamic key means no finite property snapshot is
                     // complete enough for a generation-time consumer.
-                    this.context.invalidateRecordProperties(narrowed);
+                    this.context.bindings.invalidateRecordProperties(narrowed);
                 }
                 this.context.emit(`${narrowed.cpp}.set(${key}, ${value});`);
                 return true;
@@ -7947,7 +7945,7 @@ export class DataLowerer {
                 this.context.emit(
                     `${entry.owner.cpp}.set(${entry.keyCpp}, ${value});`,
                 );
-                this.context.invalidateRecordProperties(entry.owner);
+                this.context.bindings.invalidateRecordProperties(entry.owner);
                 return true;
             }
         }
@@ -8569,12 +8567,12 @@ export class DataLowerer {
                     : `${slot} = ${target.dataStore ? typedArrayStoreExpression(target.dataStore, cpp) : cpp};`,
             );
             this.invalidateStaticElements(target);
-            this.context.invalidateRecordProperties(target);
+            this.context.bindings.invalidateRecordProperties(target);
             const root = rootIdentifier(name, (node) =>
                 this.context.unwrap(node),
             );
             const owner = root && this.context.lookupIdentifierValue(root);
-            if (owner) this.context.invalidateRecordProperties(owner);
+            if (owner) this.context.bindings.invalidateRecordProperties(owner);
         }
     }
 
@@ -9137,7 +9135,7 @@ export class DataLowerer {
             if (!ts.isIdentifier(candidate)) {
                 return false;
             }
-            const bound = this.context.lookupOptional(candidate);
+            const bound = this.context.bindings.lookupOptional(candidate);
             return (
                 bound?.kind === "json-null" ||
                 (candidate.text === "undefined" && bound === undefined)

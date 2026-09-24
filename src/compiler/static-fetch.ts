@@ -22,7 +22,7 @@ export interface StaticFetchContext extends Pick<
     | "compileStringLiteral"
     | "staticAssetUrlCandidates"
     | "cppString"
-    | "lookupOptional"
+    | "bindings"
     | "libraryGlobal"
     | "registerAsset"
     | "reachJsData"
@@ -69,7 +69,7 @@ export function compileStaticFetch(
         );
     if (dynamic) return dynamic;
     if (ts.isIdentifier(url)) {
-        const bound = context.lookupOptional(url);
+        const bound = context.bindings.lookupOptional(url);
         if (bound && bound.staticString === undefined) {
             context.fail(
                 url,

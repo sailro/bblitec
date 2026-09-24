@@ -502,11 +502,10 @@ export interface AssignmentContext
             | "hasRegisteredScene"
             | "boundPixelsTextures"
             | "resolveStaticExpression"
-            | "lookupOptional"
+            | "bindings"
             | "resolveThisField"
             | "resolveRecordValue"
             | "compileRecordSetter"
-            | "lookup"
             | "compileValue"
             | "compileForDataSink"
             | "bindClassDataField"
@@ -542,7 +541,6 @@ export interface AssignmentContext
             | "probeStaticArrayLiteral"
             | "staticStringElements"
             | "compileStaticString"
-            | "withBoundParameters"
             | "withRecordScopes"
             | "compileStoredDataFunction"
             | "cppString"
@@ -1008,7 +1006,7 @@ function emitWriteOnlyNumberExpandoAssignment(
 
     const ownerExpression = context.unwrap(assertedOwner);
     if (!ts.isIdentifier(ownerExpression)) return false;
-    const owner = context.lookup(ownerExpression);
+    const owner = context.bindings.lookup(ownerExpression);
     if (owner.kind !== "mesh") return false;
 
     // This is an expando only when the type before the assertion did not expose
@@ -1093,7 +1091,7 @@ function emitBridgeOriginWrite(
     const owner =
         context.resolveRecordValue(origin.expression) ??
         (originIdentifier
-            ? context.lookupOptional(originIdentifier)
+            ? context.bindings.lookupOptional(originIdentifier)
             : undefined);
     if (owner?.kind !== "node-particle-2d-bridge") return false;
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
@@ -1149,7 +1147,7 @@ export function emitPropertyAssignment(
     const operator = assignmentOperator(context, expression);
     const left = expression.left;
     const regexpOwner = ts.isIdentifier(left.expression)
-        ? (context.lookupOptional(left.expression) ??
+        ? (context.bindings.lookupOptional(left.expression) ??
           (context.checker.getTypeAtLocation(left.expression).symbol?.name ===
           "RegExp"
               ? context.compileValue(left.expression)
@@ -1203,9 +1201,8 @@ export function emitPropertyAssignment(
             left.expression.kind === ts.SyntaxKind.ThisKeyword
                 ? context.resolveThisField(left.name.text)
                 : ts.isIdentifier(left.expression)
-                  ? context.lookupOptional(left.expression)?.recordProperties?.[
-                        left.name.text
-                    ]
+                  ? context.bindings.lookupOptional(left.expression)
+                        ?.recordProperties?.[left.name.text]
                   : undefined;
         if (
             existing &&
@@ -1398,7 +1395,7 @@ export function emitPropertyAssignment(
             context,
             expression,
             left,
-            context.lookup(left.expression),
+            context.bindings.lookup(left.expression),
         )
     ) {
         return;
@@ -1409,7 +1406,7 @@ export function emitPropertyAssignment(
             context,
             expression,
             left,
-            context.lookup(left.expression),
+            context.bindings.lookup(left.expression),
         )
     ) {
         return;
@@ -1419,7 +1416,7 @@ export function emitPropertyAssignment(
         left.expression.name.text === "dataset" &&
         ts.isIdentifier(left.expression.expression)
     ) {
-        const target = context.lookup(left.expression.expression);
+        const target = context.bindings.lookup(left.expression.expression);
         if (target.kind === "browser") {
             context.eraseBrowserInstrumentation(expression.pos);
             return;
@@ -1430,7 +1427,7 @@ export function emitPropertyAssignment(
         left.expression.name.text === "imageProcessing" &&
         ts.isIdentifier(left.expression.expression)
     ) {
-        const scene = context.lookup(left.expression.expression);
+        const scene = context.bindings.lookup(left.expression.expression);
         context.expectKind(scene, "scene", left.expression.expression);
         const property = left.name.text;
         if (
@@ -1500,7 +1497,7 @@ export function emitPropertyAssignment(
         left.expression.name.text === "camera" &&
         ts.isIdentifier(left.expression.expression)
     ) {
-        const scene = context.lookup(left.expression.expression);
+        const scene = context.bindings.lookup(left.expression.expression);
         context.expectKind(scene, "scene", left.expression.expression);
         const property = left.name.text;
         if (property === "viewport") {
@@ -2345,7 +2342,7 @@ function emitTargetPropertyAssignment(
     // it can through a local. Compile the complete owner path so the same
     // assignment table serves both spellings.
     const target = ts.isIdentifier(targetExpression)
-        ? context.lookup(targetExpression)
+        ? context.bindings.lookup(targetExpression)
         : context.compileValue(targetExpression);
     const property = left.name.text;
     if (
@@ -2620,7 +2617,8 @@ function emitTargetPropertyAssignment(
                         context.checker.getTypeAtLocation(expression.right),
                     )) ||
                 (ts.isIdentifier(expression.right) &&
-                    context.lookupOptional(expression.right)?.kind === "tuple");
+                    context.bindings.lookupOptional(expression.right)?.kind ===
+                        "tuple");
             // A `{ r, g, b }` object falls through to `compileColor3`,
             // which refuses it: the pin's `diffuseColor` is a number tuple.
             if (legacyTuple) {
@@ -2826,7 +2824,7 @@ function emitLocalMatrixAssignment(
         if (
             !ts.isIdentifier(value) ||
             value.text !== "undefined" ||
-            context.lookupOptional(value)
+            context.bindings.lookupOptional(value)
         ) {
             context.fail(
                 expression.right,

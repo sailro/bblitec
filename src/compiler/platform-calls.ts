@@ -111,7 +111,7 @@ interface PlatformCallContext
             | "isInFrameCallback"
             | "isNativeHostUiLookup"
             | "isPrimaryCanvas2DContextCall"
-            | "lookupOptional"
+            | "bindings"
             | "objectProperty"
             | "options"
             | "pinValueToTemporary"
@@ -330,7 +330,7 @@ export class PlatformCalls {
             callee.name.text === "stopImmediatePropagation"
         ) {
             const platformEvent = ts.isIdentifier(receiver)
-                ? this.context.lookupOptional(receiver)
+                ? this.context.bindings.lookupOptional(receiver)
                 : ts.isPropertyAccessExpression(receiver) ||
                     ts.isElementAccessExpression(receiver)
                   ? this.context.compileValue(receiver)
@@ -474,7 +474,7 @@ export class PlatformCalls {
         this.context.expectArgumentCount(call, 1, 1);
         const argument = this.context.unwrap(argumentAt(call, 0));
         const stored = ts.isIdentifier(argument)
-            ? this.context.lookupOptional(argument)
+            ? this.context.bindings.lookupOptional(argument)
             : undefined;
         // A materialized callback retains its own requeue operation, including
         // conditional schedules and synchronous priming calls.

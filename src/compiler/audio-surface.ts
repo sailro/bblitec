@@ -21,7 +21,7 @@ interface AudioReceiverContext
         PropertyContext,
         Pick<
             LoweringServices,
-            | "lookupOptional"
+            | "bindings"
             | "resolveThisField"
             | "compileValue"
             | "unwrap"
@@ -269,7 +269,7 @@ function resolveAudioReceiver(
         return AUDIO_KINDS.has(narrowed.kind) ? narrowed : undefined;
     };
     if (ts.isIdentifier(node)) {
-        const bound = context.lookupOptional(node);
+        const bound = context.bindings.lookupOptional(node);
         return bound && AUDIO_KINDS.has(bound.kind)
             ? bound
             : narrowedAudioData(bound);

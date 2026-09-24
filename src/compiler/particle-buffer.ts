@@ -198,7 +198,7 @@ function bufferOwner(
 ): BufferIdentity | undefined {
     const unwrapped = context.unwrap(expression);
     if (ts.isIdentifier(unwrapped)) {
-        const value = context.lookupOptional(unwrapped);
+        const value = context.bindings.lookupOptional(unwrapped);
         return value?.kind === "node-particle-buffer"
             ? identity(value)
             : undefined;
@@ -210,7 +210,7 @@ function bufferOwner(
     ) {
         return undefined;
     }
-    const owner = context.lookupOptional(unwrapped.expression);
+    const owner = context.bindings.lookupOptional(unwrapped.expression);
     if (
         owner?.kind !== "node-particle-system" ||
         owner.nodeParticleSetIndex === undefined ||
@@ -234,7 +234,7 @@ export function emitParticleBufferWrite(
     if (!ts.isElementAccessExpression(left)) return false;
     const column = context.unwrap(left.expression);
     const alias = ts.isIdentifier(column)
-        ? context.lookupOptional(column)
+        ? context.bindings.lookupOptional(column)
         : undefined;
     const owner =
         alias?.kind === "node-particle-column"

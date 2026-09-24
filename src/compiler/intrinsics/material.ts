@@ -1,3 +1,4 @@
+import type { BindingScopes } from "../binding-scopes.js";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     compileCreateStorageBuffer,
@@ -89,7 +90,9 @@ export interface MaterialIntrinsicContext
             | "compileShaderUniformComponents"
             | "cppString"
             | "fail"
-        > {}
+        > {
+    readonly bindings: BindingScopes;
+}
 
 function compileStorageBufferData(
     context: MaterialIntrinsicContext,
@@ -273,7 +276,7 @@ function foldedLightmapMeshWalk(
         !ts.isPropertyAccessExpression(subject) ||
         subject.name.text !== "meshes" ||
         !ts.isIdentifier(subject.expression) ||
-        context.lookupOptional(subject.expression)?.kind !== "scene"
+        context.bindings.lookupOptional(subject.expression)?.kind !== "scene"
     ) {
         context.fail(
             walk.expression,

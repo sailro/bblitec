@@ -12,7 +12,7 @@ interface CameraWriteContext extends Pick<
     | "compileValue"
     | "resolveRecordValue"
     | "resolveRecordMember"
-    | "lookupOptional"
+    | "bindings"
     | "requireEngine"
     | "allocateTemporaryCppName"
     | "emit"
@@ -21,12 +21,12 @@ interface CameraWriteContext extends Pick<
 export function isCameraExpression(
     context: Pick<
         CameraWriteContext,
-        "checker" | "lookupOptional" | "resolveRecordMember"
+        "checker" | "bindings" | "resolveRecordMember"
     >,
     expression: ts.Expression,
 ): boolean {
     const value = ts.isIdentifier(expression)
-        ? context.lookupOptional(expression)
+        ? context.bindings.lookupOptional(expression)
         : ts.isPropertyAccessExpression(expression)
           ? context.resolveRecordMember(expression)
           : undefined;

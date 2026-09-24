@@ -37,7 +37,7 @@ interface AsyncContext extends Pick<
     | "emit"
     | "emitDiscardedValue"
     | "unwrap"
-    | "lookupOptional"
+    | "bindings"
     | "libraryGlobal"
     | "isBrowserOnlyLocalCall"
     | "isBrowserOnlyExpression"
@@ -924,7 +924,8 @@ export class AsyncLowerer {
             evaluated ||
             !inline ||
             (ts.isIdentifier(inline) &&
-                context.lookupOptional(inline)?.dataType?.kind === "function")
+                context.bindings.lookupOptional(inline)?.dataType?.kind ===
+                    "function")
         ) {
             const value = evaluated ?? context.compileValue(callback);
             const type =

@@ -13,7 +13,7 @@ export interface WorkerLoweringContext extends Pick<
     | "dataTypes"
     | "unwrap"
     | "libraryGlobal"
-    | "lookupOptional"
+    | "bindings"
     | "compileValue"
     | "compileFrameCallback"
     | "reachFeature"
@@ -269,7 +269,7 @@ export function isNativeWorkerExpression(
         return true;
     const root = rootIdentifier(node, (inner) => context.unwrap(inner));
     if (!root) return false;
-    const bound = context.lookupOptional(root);
+    const bound = context.bindings.lookupOptional(root);
     if (bound?.hostFunction) return true;
     if (bound?.kind.startsWith("worker") || bound?.kind === "offscreen-canvas")
         return true;
@@ -307,7 +307,7 @@ export function compileWorkerValue(
         const global = context.libraryGlobal(unwrapped);
         return global === "self" || global === "globalThis"
             ? { kind: "worker-scope", cpp: realm }
-            : context.lookupOptional(unwrapped);
+            : context.bindings.lookupOptional(unwrapped);
     };
     if (ts.isIdentifier(node) && context.libraryGlobal(node) === "self") {
         if (!context.options.workers.namespace)

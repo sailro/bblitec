@@ -40,7 +40,7 @@ interface JsonBridgeContext extends Pick<
     | "fail"
     | "expectArgumentCount"
     | "libraryGlobal"
-    | "lookupOptional"
+    | "bindings"
     | "compileValue"
     | "compileNumber"
     | "compileCondition"
@@ -183,7 +183,7 @@ function compileStringify(
             unwrapped.kind === ts.SyntaxKind.NullKeyword ||
             (ts.isIdentifier(unwrapped) &&
                 unwrapped.text === "undefined" &&
-                !context.lookupOptional(unwrapped));
+                !context.bindings.lookupOptional(unwrapped));
         if (!isNothing) {
             context.fail(
                 replacer,
@@ -296,12 +296,12 @@ export function compileJsonCall(
  * strategies -- ask this first.
  */
 export function isJsonRootedExpression(
-    context: Pick<JsonBridgeContext, "unwrap" | "lookupOptional">,
+    context: Pick<JsonBridgeContext, "unwrap" | "bindings">,
     expression: ts.Expression,
 ): boolean {
     const unwrapped = context.unwrap(expression);
     if (ts.isIdentifier(unwrapped)) {
-        return isJsonValue(context.lookupOptional(unwrapped));
+        return isJsonValue(context.bindings.lookupOptional(unwrapped));
     }
     if (
         ts.isPropertyAccessExpression(unwrapped) ||
@@ -309,7 +309,7 @@ export function isJsonRootedExpression(
     ) {
         const owner = context.unwrap(unwrapped.expression);
         const type = ts.isIdentifier(owner)
-            ? context.lookupOptional(owner)?.dataType
+            ? context.bindings.lookupOptional(owner)?.dataType
             : undefined;
         if (type?.kind === "map" && type.value.kind === "json") return true;
         return isJsonRootedExpression(context, unwrapped.expression);
@@ -322,7 +322,7 @@ export function isJsonRootedExpression(
 export function hasDynamicObjectSpread(
     context: Pick<
         JsonBridgeContext,
-        "unwrap" | "lookupOptional" | "checker" | "dataTypes"
+        "unwrap" | "bindings" | "checker" | "dataTypes"
     >,
     literal: ts.ObjectLiteralExpression,
 ): boolean {
@@ -354,7 +354,7 @@ export function compileJsonRead(
 ): Value | undefined {
     const unwrapped = context.unwrap(expression);
     if (ts.isIdentifier(unwrapped)) {
-        const bound = context.lookupOptional(unwrapped);
+        const bound = context.bindings.lookupOptional(unwrapped);
         return isJsonValue(bound) ? bound : undefined;
     }
     if (ts.isPropertyAccessExpression(unwrapped)) {

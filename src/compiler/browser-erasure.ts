@@ -102,7 +102,7 @@ export interface BrowserErasureContext extends Pick<
     | "unwrap"
     | "canvasSizeProperty"
     | "isCanvasElement"
-    | "lookupOptional"
+    | "bindings"
     | "resolveThisField"
     | "libraryGlobal"
     | "isBrowserDomValue"
@@ -611,7 +611,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
-            this.context.lookupOptional(unwrapped.expression)
+            this.context.bindings.lookupOptional(unwrapped.expression)
                 ?.recordProperties?.[unwrapped.name.text]
         ) {
             // A native record may retain a DOM-declared structural type at
@@ -645,7 +645,7 @@ export class BrowserErasure {
             ) {
                 return true;
             }
-            const value = this.context.lookupOptional(unwrapped);
+            const value = this.context.bindings.lookupOptional(unwrapped);
             const bound = value?.kind;
             // A FROZEN pure-2D particle binding has no native counterpart
             // and the corpus only reports it, so a read of one erases
@@ -844,7 +844,7 @@ export class BrowserErasure {
                 return { kind: "ui-element", cpp: "" };
             }
             if (ts.isIdentifier(unwrapped)) {
-                return this.context.lookupOptional(unwrapped);
+                return this.context.bindings.lookupOptional(unwrapped);
             }
             if (
                 ts.isPropertyAccessExpression(unwrapped) &&
@@ -1024,7 +1024,7 @@ export class BrowserErasure {
                 // corresponds to the browser reference at DPR 1.
                 return { kind: "number", value: 1 };
             }
-            const bound = this.context.lookupOptional(unwrapped);
+            const bound = this.context.bindings.lookupOptional(unwrapped);
             if (bound !== undefined) {
                 if (bound.browserValue !== undefined) return bound.browserValue;
                 if (bound.kind === "json-null") return { kind: "null" };

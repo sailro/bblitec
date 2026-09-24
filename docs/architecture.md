@@ -37,7 +37,8 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `module-initializers.ts` | Ordered initialization and shared mutable bindings |
 | `scene-manifest.ts`, `scene-materials.ts` | Scene composition records and their `manifest.json` projection |
 | `emission-transaction.ts` | Rollback on declined or failed lowering |
-| `analysis-walk.ts`, `lowering-services.ts` | Shared traversal, scope and compiler interface |
+| `binding-scopes.ts` | Lexical scopes: name bindings, rebinds and capture refusals |
+| `analysis-walk.ts`, `lowering-services.ts` | Shared traversal and compiler interface |
 | `ui-projection.ts`, `platform-calls.ts` | Retained UI and platform calls |
 
 Dynamic storage demands replay emission against the same parsed program. Earlier aliases and

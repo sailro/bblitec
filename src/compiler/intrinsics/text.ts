@@ -473,7 +473,7 @@ export function compileTextIntrinsic(
     if (color && !omitted(context, color)) {
         const node = context.resolveStaticExpression(color);
         const retained = ts.isIdentifier(node)
-            ? context.lookupOptional(node)
+            ? context.bindings.lookupOptional(node)
             : undefined;
         if (retained) {
             const elements = retained.staticElements ?? retained.tupleElements;
@@ -790,6 +790,6 @@ function omitted(
     return (
         ts.isIdentifier(node) &&
         node.text === "undefined" &&
-        !context.lookupOptional(node)
+        !context.bindings.lookupOptional(node)
     );
 }
