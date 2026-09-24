@@ -12,6 +12,7 @@ export interface AdaptationContext extends Pick<
     | "erasedBrowserInstrumentation"
     | "unwrappedAwaitExpressions"
     | "jsDataReached"
+    | "fileReaderReached"
     | "dataTypes"
     | "options"
     | "jsRandomReached"
@@ -276,6 +277,21 @@ export function compileAdaptations(
             validation: [
                 "synchronous promise compiler and native execution fixture",
                 "pending-activation refusal tests",
+            ],
+        });
+    }
+    if (context.fileReaderReached) {
+        adaptations.push({
+            id: "synchronous-file-reader",
+            category: "platform",
+            sourceSemantics:
+                "FileReader.readAsText reads asynchronously and dispatches load or error as a later task.",
+            nativeSemantics:
+                "The read completes inside readAsText: the bytes are decoded by byte order mark (UTF-8 otherwise) and load or error runs before the call returns. Handlers assigned after the read starts refuse at generation.",
+            risk: "low",
+            validation: [
+                "native FileReader Blob-decoding fixture",
+                "native File read and error contract check",
             ],
         });
     }

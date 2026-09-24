@@ -70,6 +70,7 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "data",
     "file",
     "file-list",
+    "file-reader",
     "object-url",
     "static-fetch-response",
     "platform-keyboard-event",

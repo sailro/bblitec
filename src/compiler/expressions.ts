@@ -239,6 +239,7 @@ export interface ExpressionContext
             | "hoistForwardCallbackBindings"
             | "reachJson"
             | "reachLocalStorage"
+            | "reachFileReader"
             | "compileAnimationFrameCall"
             | "compileBrowserGeneratedString"
             | "reachFeature"

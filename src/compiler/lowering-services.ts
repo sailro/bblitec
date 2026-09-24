@@ -137,6 +137,7 @@ export interface LoweringServices {
     readonly classLowerer: ClassLowerer;
     readonly nativeFunctions: NativeFunctionLowerer;
     jsDataReached: boolean;
+    fileReaderReached: boolean;
     jsRandomReached: boolean;
     voxelFileStorageReached: boolean;
     readonly browserTextureFunctions: Set<string>;
@@ -489,6 +490,7 @@ export interface LoweringServices {
     reachJsData(): void;
     constructsLocalClass(expression: ts.NewExpression): boolean;
     reachJson(): void;
+    reachFileReader(): void;
     reachLocalStorage(): void;
     compileVoxelFileCall(
         call: ts.CallExpression,

@@ -29,6 +29,7 @@ export interface BrowserFileContext extends Pick<
     | "requireDefaultEngine"
     | "reachFeature"
     | "reachJsData"
+    | "reachFileReader"
     | "fail"
 > {}
 
@@ -143,11 +144,23 @@ function blobType(
     return type.toLowerCase();
 }
 
-/** `new Blob(parts, options)` for the reached string/byte-part slice. */
+/** `new Blob(parts, options)` for the reached string/byte-part slice, and `new FileReader()`. */
 export function compileBrowserFileConstructor(
     context: BrowserFileContext,
     expression: ts.NewExpression,
 ): Value | undefined {
+    if (isDefaultGlobal(context, expression.expression, "FileReader")) {
+        if ((expression.arguments ?? []).length !== 0)
+            context.fail(expression, "FileReader takes no arguments.");
+        context.reachFeature("browser:file", expression);
+        context.reachJsData();
+        context.reachFileReader();
+        return {
+            kind: "file-reader",
+            cpp: "bbl::js::FileReader{}",
+            truthinessCpp: "true",
+        };
+    }
     if (!isDefaultGlobal(context, expression.expression, "Blob")) {
         return undefined;
     }
@@ -236,6 +249,13 @@ export function compileBrowserFileCall(
         ? context.bindings.lookupOptional(receiver)
         : undefined;
     const receiverType = context.checker.getTypeAtLocation(receiver);
+    if (boundReceiver?.kind === "file-reader")
+        return compileFileReaderCall(context, call, callee, boundReceiver);
+    if (receiverType.getSymbol()?.getName() === "FileReader")
+        context.fail(
+            receiver,
+            "A FileReader is read through the local binding its constructor initializes.",
+        );
     const receiverMayBeFile =
         boundReceiver?.kind === "file" ||
         receiverType.getSymbol()?.getName() === "File" ||
@@ -270,6 +290,87 @@ export function compileBrowserFileCall(
         impure: true,
         freshData: true,
     };
+}
+
+/**
+ * `reader.readAsText(fileOrBlob)`. The native read completes inside the
+ * call (`bbl::js::FileReader`), so the handlers it runs are the ones
+ * assigned before it; a later assignment refuses.
+ */
+function compileFileReaderCall(
+    context: BrowserFileContext,
+    call: ts.CallExpression,
+    callee: ts.PropertyAccessExpression,
+    reader: Value,
+): Value {
+    if (callee.name.text !== "readAsText")
+        context.fail(
+            callee.name,
+            `FileReader method '${callee.name.text}' is not lowered; only readAsText is supported.`,
+        );
+    context.expectArgumentCount(call, 1, 1);
+    const source = context.compileValue(argumentAt(call, 0));
+    reader.fileReaderStarted = true;
+    if (source.kind === "file") {
+        const engine = context.requireEngine(source, call);
+        return {
+            kind: "void",
+            cpp: `${reader.cpp}.read_as_text(${engine}, ${source.cpp})`,
+        };
+    }
+    if (source.kind === "blob")
+        return {
+            kind: "void",
+            cpp: `${reader.cpp}.read_as_text(${source.cpp})`,
+        };
+    return context.fail(
+        argumentAt(call, 0),
+        "FileReader.readAsText reads a selected File or a Blob.",
+    );
+}
+
+/**
+ * `reader.onload = handler` and `reader.onerror = handler`, before the
+ * read starts. Every other FileReader property write refuses.
+ */
+export function emitBrowserFileAssignment(
+    context: Pick<
+        LoweringServices,
+        "bindings" | "unwrap" | "compilePlatformCallback" | "emit" | "fail"
+    >,
+    expression: ts.BinaryExpression,
+    left: ts.PropertyAccessExpression,
+): boolean {
+    const receiver = context.unwrap(left.expression);
+    const reader = ts.isIdentifier(receiver)
+        ? context.bindings.lookupOptional(receiver)
+        : undefined;
+    if (reader?.kind !== "file-reader") return false;
+    const property = left.name.text;
+    if (
+        (property !== "onload" && property !== "onerror") ||
+        expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+    )
+        context.fail(
+            left,
+            `FileReader property '${property}' is not written natively; assign onload or onerror.`,
+        );
+    if (reader.fileReaderStarted)
+        context.fail(
+            expression,
+            "FileReader handlers are assigned before readAsText; the native read completes inside the call.",
+        );
+    // The handler runs inside readAsText, like a listener its dispatch calls.
+    const handler = context.compilePlatformCallback(
+        expression.right,
+        undefined,
+        [],
+        undefined,
+        true,
+        false,
+    );
+    context.emit(`${reader.cpp}.set_${property}(${handler.cpp});`);
+    return true;
 }
 
 /**
@@ -318,13 +419,27 @@ export function compileBrowserFileElementAccess(
     };
 }
 
-/** Property reads on Blob/FileList values. */
+/** Property reads on Blob/FileList/FileReader values. */
 export function compileBrowserFileProperty(
     context: BrowserFileContext,
     owner: Value,
     expression: ts.PropertyAccessExpression,
 ): Value | undefined {
     const property = expression.name.text;
+    if (owner.kind === "file-reader") {
+        // Only readAsText is lowered, so a result is text or null.
+        if (property !== "result")
+            context.fail(
+                expression.name,
+                `FileReader property '${property}' is not lowered; result is supported.`,
+            );
+        return {
+            kind: "data",
+            cpp: `${owner.cpp}.result()`,
+            dataType: { kind: "optional", inner: { kind: "string" } },
+            readOnly: true,
+        };
+    }
     if (owner.kind === "ui-element" && property === "files") {
         if (owner.uiTag !== "input") {
             context.fail(
@@ -446,7 +561,8 @@ export function isNativeBrowserFileExpression(
     const value = context.unwrap(expression);
     if (
         ts.isNewExpression(value) &&
-        isDefaultGlobal(context, value.expression, "Blob")
+        (isDefaultGlobal(context, value.expression, "Blob") ||
+            isDefaultGlobal(context, value.expression, "FileReader"))
     ) {
         return true;
     }

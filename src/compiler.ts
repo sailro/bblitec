@@ -731,6 +731,7 @@ class Compiler implements LoweringServices {
     private readonly collectionCardinalities =
         new EmissionSet<CollectionCardinality>();
     public jsDataReached = false;
+    public fileReaderReached = false;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     public imageDecodeReached = false;
     public jsRandomReached = false;
@@ -5669,6 +5670,10 @@ class Compiler implements LoweringServices {
     public reachVoxelFileStorage(site: ts.Node): void {
         this.voxelFileStorageReached = true;
         this.reachFeature("browser:file", site);
+    }
+
+    public reachFileReader(): void {
+        this.fileReaderReached = true;
     }
 
     public reachJson(): void {

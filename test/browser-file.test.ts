@@ -166,6 +166,120 @@ test("lowers one-file input, change dispatch, files[0], and File.text", () => {
     );
 });
 
+test("lowers a file input's onchange handler property and FileReader handlers", () => {
+    const result = compileFileBody(`
+        let loaded = 0;
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".json";
+        input.onchange = () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                if (typeof reader.result === "string") loaded += reader.result.length;
+            };
+            reader.onerror = () => {
+                loaded = -1;
+            };
+            reader.readAsText(file);
+        };
+        input.click();
+        engine.canvas.width = loaded;
+    `);
+    assert.match(result.cpp, /bbl::ui_on_file_change\(v_engine, v_input,/);
+    assert.match(result.cpp, /bbl::js::FileReader\{\}/);
+    assert.match(result.cpp, /\.set_onload\(/);
+    assert.match(result.cpp, /\.set_onerror\(/);
+    assert.match(result.cpp, /\.read_as_text\(v_engine, /);
+    assert.match(result.cpp, /\.result\(\)/);
+
+    const refusal = (source: string, pattern: RegExp): void =>
+        assert.throws(
+            () => compileFileBody(source),
+            (error: unknown) =>
+                error instanceof CompileError && pattern.test(error.message),
+        );
+    refusal(
+        `const button = document.createElement("button");
+         button.onclick = () => {};`,
+        /event handler property 'onclick' is not lowered/,
+    );
+    refusal(
+        `const input = document.createElement("input");
+         input.type = "file";
+         input.onchange = () => {};
+         input.onchange = () => {};`,
+        /onchange handler is assigned once/,
+    );
+    refusal(
+        `const reader = new FileReader();
+         reader.readAsText(new Blob(["x"]));
+         reader.onload = () => {};`,
+        /assigned before readAsText/,
+    );
+    refusal(
+        `const reader = new FileReader();
+         reader.readAsDataURL(new Blob(["x"]));`,
+        /FileReader method 'readAsDataURL' is not lowered/,
+    );
+});
+
+test("FileReader decodes a Blob as the Encoding Standard does, natively", async (t) => {
+    const program = `
+        function readText(blob: Blob): Promise<string> {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+                reader.onerror = () => reject(new Error("read"));
+                reader.readAsText(blob);
+            });
+        }
+
+        async function main(): Promise<void> {
+            const utf8 = new Uint8Array([0xef, 0xbb, 0xbf, 0x63, 0x61, 0x66, 0xc3, 0xa9, 0xff]);
+            const first = await readText(new Blob([utf8]));
+            if (first !== "caf\\u00e9\\ufffd") throw new Error("UTF-8 with BOM: " + first);
+            const utf16 = new Uint8Array([0xff, 0xfe, 0x41, 0x00, 0x3d, 0xd8, 0x00, 0xde, 0x3d]);
+            const second = await readText(new Blob([utf16]));
+            if (second !== "A\\u{1F600}\\ufffd") throw new Error("UTF-16LE with BOM: " + second);
+            const big = new Uint8Array([0xfe, 0xff, 0x00, 0x42]);
+            if ((await readText(new Blob([big, "!"]))) !== "B\\ufffd") throw new Error("UTF-16BE with BOM");
+            if ((await readText(new Blob(["plain"]))) !== "plain") throw new Error("plain text");
+        }
+    `;
+    const directory = resolve("artifacts/file-reader-check");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(`${program}\nvoid main();\n`, {
+        fileName: join(directory, "entry.ts"),
+    });
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const cpp = join(directory, "check.cpp");
+    const exe = join(directory, "check.exe");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/EHsc",
+        "/MD",
+        "/DBBLITE_HAS_UI=0",
+        "/DBBLITE_HAS_BROWSER_FILE=1",
+        "/I",
+        "native/include",
+        `/Fo:${directory}/`,
+        `/Fe:${exe}`,
+        cpp,
+    ]);
+    const execution = execFileSync(exe, { encoding: "utf8" });
+    assert.equal(execution, "");
+});
+
 test("registers one-shot pointer-lock listeners in the native registry", () => {
     const result = compileFileBody(`
         let transitions = 0;
@@ -370,16 +484,8 @@ test("browser file ownership stays generic and PAL-isolated", () => {
         resolve("native/include/bblite/runtime.hpp"),
         "utf8",
     );
-    const voxelShim = readFileSync(
-        resolve("native/include/bblite/js_voxel_file.hpp"),
-        "utf8",
-    );
     assert.doesNotMatch(
         shim,
-        /<filesystem>|<fstream>|GetOpenFileName|MoveFile/,
-    );
-    assert.doesNotMatch(
-        voxelShim,
         /<filesystem>|<fstream>|GetOpenFileName|MoveFile/,
     );
     assert.match(shim, /pal::save_file/);

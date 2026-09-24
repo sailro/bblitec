@@ -1279,6 +1279,8 @@ export type ValueKind =
     | "file-list"
     /** A shared opaque handle to immutable bytes returned by the host picker. */
     | "file"
+    /** A FileReader: its handlers and the text of its last read. */
+    | "file-reader"
     /** A DOM element created by reached scene code and owned by the native UI IR. */
     | "ui-element"
     | "callback"
@@ -1937,6 +1939,10 @@ export interface ValueFields {
     uiCanvasContext?: true;
     /** A retained input whose source assigned the static type "file". */
     uiFileInput?: true;
+    /** The file input's `onchange` handler property has been assigned. */
+    uiFileChangeHandler?: true;
+    /** The FileReader bound here has started a read. */
+    fileReaderStarted?: true;
     /**
      * Exact members held by a native array at this point in the source walk.
      * Runtime storage preserves JavaScript array semantics while this complete
