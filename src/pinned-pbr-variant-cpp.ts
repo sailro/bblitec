@@ -44,6 +44,7 @@ import {
     type WgslTypeShape,
 } from "./wgsl-layout.js";
 import { pinnedLightModeCpp } from "./pinned-light-mode.js";
+import { pinnedSceneLayoutCpp } from "./pinned-scene-layout.js";
 import { materialShadowReceiverCpp } from "./lowering/material-shadow-receiver.js";
 import type { LoweringContext } from "./lowering/context.js";
 import {
@@ -1501,7 +1502,7 @@ struct PinnedShadowBinding {
 
 ${pinnedLightModeCpp()}
 ${materialShadowReceiverCpp(context)}
-
+${pinnedSceneLayoutCpp()}
 } // namespace bbl::upstream
 `;
 }

@@ -41,10 +41,11 @@ on a worker thread; SDL waits for submission fences. Promise reactions stay on t
 - Each render stage's `.slots` sidecar opens with `@entry <entry point>` and ends with
   `@binding <group> <binding> <resource>` lines Tint reflects from every binding its module
   declares (the module Dawn compiles, before any SDL uniform adaptation). Dawn lays sprite,
-  billboard, picking, splat and post-process groups out from them, adding only the site's binding
-  model: dynamic offsets and formats that do not filter. Composed material, effect, text,
-  screen-space and compute layouts come from generated pin descriptor tables; single-pipeline
-  runtime modules use Dawn's reflected layout.
+  billboard, picking, splat, post-process, ID-diagnostic and retained-UI groups out from them,
+  adding only the site's binding model: dynamic offsets and formats that do not filter. The
+  per-pass scene group follows the pin's `getSceneBindGroupLayout`, recorded at generation.
+  Composed material, effect, text, screen-space and compute layouts come from generated pin
+  descriptor tables; single-pipeline runtime modules use Dawn's reflected layout.
 - SDL integer texture loads occupy storage-texture slots. Vulkan binds a sampled texture and its
   sampler as one combined image sampler, which Tint's image and sampler both address at the
   texture's binding; integer and multisampled loads are sampled images after them.

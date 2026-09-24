@@ -2815,16 +2815,19 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
 // itself, so the sizes here are those structs rather than numbers chosen at this
 // layer. Texture pairs start at binding 3 because the mesh and material blocks
 // take 0 and 1, which is the pin's numbering and not a convention of ours.
-// Group 0: the per-pass scene block, then the lights array. One layout for
-// every variant, because the pin declares the same two bindings in all of them.
+// Group 0: the per-pass scene group, laid out as the pin's own
+// `getSceneBindGroupLayout` creates it -- the scene block, then the lights --
+// from the rows generation recorded off that call. One layout for every
+// variant, because the pin binds the same group under all of them.
 WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state) {
     return state.layouts.group(state.device, {DawnLayoutFamily::frame}, [] {
-        // The scene block is read by both stages; the pin's vertex template
-        // takes its viewProjection from the same struct the fragment reads.
-        return std::vector{
-            uniform_layout_entry(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment),
-            uniform_layout_entry(1, WGPUShaderStage_Fragment),
-        };
+        std::vector<WGPUBindGroupLayoutEntry> entries;
+        for (const upstream::PinnedSceneLayoutEntry& row : upstream::pinned_scene_layout) {
+            entries.push_back(uniform_layout_entry(
+                row.binding, (row.vertex ? WGPUShaderStage_Vertex : WGPUShaderStage_None) |
+                                 (row.fragment ? WGPUShaderStage_Fragment : WGPUShaderStage_None)));
+        }
+        return entries;
     });
 }
 

@@ -327,7 +327,7 @@ import {
 } from "./pinned-utility-passes.js";
 import type { PinnedBackgroundArm } from "./pinned-background-modules.js";
 import { pinnedBackgroundsHeader } from "./lowering/pinned-background-lowerer.js";
-import { uiFilterFragmentWgsl } from "./shader-builtins-ui.js";
+import { uiDrawWgsl, uiFilterFragmentWgsl } from "./shader-builtins-ui.js";
 
 /**
  * What a scene reached, as the emitters need to see it. Named once
@@ -1288,6 +1288,23 @@ class GeneratedSourceWriter {
                     data: uiFilterFragmentWgsl(),
                 },
             );
+        }
+        // The retained-UI draw module, one file with three entry points: the
+        // textured fragment's stem carries it. Every consumer of the UI
+        // recorder draws through it -- a scene's documents and a Window's.
+        if (
+            features.includes("ui:rml") ||
+            features.includes("platform:window")
+        ) {
+            composedShaders.push({
+                output: "upstream/shaders/ui-texture.frag.native.wgsl",
+                data: uiDrawWgsl(),
+                entryPoint: "fs_texture",
+                alsoStages: [
+                    { stem: "ui-color.frag", entryPoint: "fs_color" },
+                    { stem: "ui.vert", entryPoint: "vs" },
+                ],
+            });
         }
         if (
             features.includes("text:renderable") ||
