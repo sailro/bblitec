@@ -59,10 +59,11 @@ the installed handler or rethrow. Local catches remain active. This differs from
 PBR/Standard, nodes, plugins, sprites and effects use their pinned composers/builders. Composition
 failure cannot select a substitute shader. Assertions around a transcription do not prove equivalence.
 
-Vertex buffers carry each geometry's source lanes; every family's mesh block carries `mesh.worldMatrix`
-(eye-relative under floating origin), with fixed PAL bindings and a 64-matrix palette. A glTF primitive
-without NORMAL stands in for the derivative flat normal with its local face normal, signed by the
-loaded world's handedness; under a non-uniformly scaled node the stand-in leans with the world basis.
+Vertex buffers carry each geometry's source lanes, a glTF primitive without NORMAL carrying the smooth
+normals the pin generates for it; every family's mesh block carries `mesh.worldMatrix` (eye-relative
+under floating origin), with fixed PAL bindings and a 64-matrix palette. A Standard geometry task keeps
+each renderable's previous world and writes velocity disabled on its first frame, as the pin does; a
+skinned Standard mesh in a LINEAR_VELOCITY task refuses, having no previous bone texture.
 SDL single-sample image processing samples texel centers. Single-sample transmission replaces
 MSAA averaging with mip-zero loads while retaining the source bilinear filter.
 
@@ -73,7 +74,8 @@ steps by an integer and is written and captured nowhere else counts in 64 bits a
 Matrix order, layout and rounding are
 part of the contract. Signed-zero byte differences can remain despite numeric equality. GLTF light
 scalars/colors use float storage, clamping oversized ranges; spot-angle math remains double until its
-uniform store. Imported cameras retain double fields and source Float32 matrices.
+uniform store. Imported cameras retain double fields and source Float32 matrices. A loaded glTF node's
+rotation, scaling and raw `matrix` are stored at float width where the pin holds JavaScript numbers.
 
 ### The reference pose
 

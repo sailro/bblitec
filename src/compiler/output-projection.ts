@@ -368,6 +368,9 @@ const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
         "compute:uniform-buffer",
     ],
     "compute:one-shot": ["compute:task"],
+    // A scene that writes SceneNode transforms loads each glTF asset with
+    // its node hierarchy, which the transform-node records carry.
+    "scene:node-transforms": ["mesh:transform-node"],
 };
 
 export function impliedFeatures(feature: Feature): readonly Feature[] {

@@ -1147,11 +1147,35 @@ function compileSetParent(
     context.expectArgumentCount(call, 2, 2);
     const child = context.compileValue(argumentAt(call, 0));
     const parent = context.compileValue(argumentAt(call, 1));
-    if (child.kind !== "mesh" && child.kind !== "asset-root") {
+    if (
+        child.kind !== "mesh" &&
+        child.kind !== "asset-root" &&
+        child.kind !== "transform-node"
+    ) {
         context.fail(
             argumentAt(call, 0),
-            `setParent's reached scene-graph slice accepts a Mesh or imported root, received ${child.kind}.`,
+            `setParent's reached scene-graph slice accepts a Mesh, TransformNode or imported root, received ${child.kind}.`,
         );
+    }
+    if (child.kind === "transform-node") {
+        // A transform node hangs only under another one here.
+        if (parent.kind !== "transform-node" && parent.kind !== "json-null") {
+            context.fail(
+                argumentAt(call, 1),
+                `setParent of a TransformNode accepts a TransformNode or null parent, received ${parent.kind}.`,
+            );
+        }
+        if (parent.kind !== "json-null") {
+            context.expectSameEngine(child, parent, call);
+        }
+        context.reachFeature("mesh:parenting", call);
+        return {
+            kind: "void",
+            cpp:
+                `bbl::reparent_transform_node(` +
+                `${context.requireEngine(child, call)}, ${child.cpp}, ` +
+                `${parent.kind === "json-null" ? `${handleCppType("transform-node")}{}` : parent.cpp})`,
+        };
     }
     if (
         parent.kind !== "mesh" &&

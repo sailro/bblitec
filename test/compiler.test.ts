@@ -95,7 +95,6 @@ test("compiles the Babylon Lite primitives example", () => {
             "plain-data-value-model",
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
-            "guarded-cpu-vertex-normalization",
             "shared-material-vertex-transport",
         ],
     );
@@ -15402,7 +15401,6 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
             "compile-time-asset-materialization",
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
-            "guarded-cpu-vertex-normalization",
             "shared-material-vertex-transport",
         ],
     );

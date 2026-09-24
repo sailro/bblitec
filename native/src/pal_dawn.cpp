@@ -569,6 +569,8 @@ struct DawnGeometryTask {
     DawnBuffer pinned_geometry_params;
     std::array<float, 16> previous_view_projection{};
     bool has_previous_view_projection = false;
+    /** The task's Standard renderables' previous worlds. */
+    PinnedVelocityHistory velocity;
     /** Set with the textures: another task binds this task's depth. */
     bool depth_borrowed = false;
 };
@@ -2746,40 +2748,43 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
 }
 
 #if BBLITE_GPU_DEFORMATION
-constexpr std::uint32_t base_vertex_attribute_count = 16;
+constexpr std::uint32_t base_vertex_attribute_count = 14;
 #else
-constexpr std::uint32_t base_vertex_attribute_count = 8;
+constexpr std::uint32_t base_vertex_attribute_count = 6;
 #endif
 
-// The GpuVertex attribute table shared by mesh, skybox, and ground
-// pipelines; deformation appends joints/weights/morph deltas at
-// locations 8-15 exactly like the SDL backend.
+// The GpuVertex attribute table the shared material stage's `VertexInput`
+// declares, at its locations; deformation appends joints/weights/morph
+// deltas at locations 8-15 exactly like the SDL backend.
 void fill_base_vertex_attributes(WGPUVertexAttribute* attributes) {
+    std::uint32_t next = 0;
     const auto attribute = [&](std::uint32_t location, WGPUVertexFormat format,
                                std::uint64_t offset) {
-        attributes[location] = WGPU_VERTEX_ATTRIBUTE_INIT;
-        attributes[location].format = format;
-        attributes[location].offset = offset;
-        attributes[location].shaderLocation = location;
+        WGPUVertexAttribute& entry = attributes[next++];
+        entry = WGPU_VERTEX_ATTRIBUTE_INIT;
+        entry.format = format;
+        entry.offset = offset;
+        entry.shaderLocation = location;
     };
-    attribute(0, WGPUVertexFormat_Float32x3, 0);
-    attribute(1, WGPUVertexFormat_Float32x3, 12);
-    attribute(2, WGPUVertexFormat_Float32x4, 24);
-    attribute(3, WGPUVertexFormat_Float32x2, 40);
-    attribute(4, WGPUVertexFormat_Float32x3, 48);
-    attribute(5, WGPUVertexFormat_Float32x2, 60);
-    attribute(6, WGPUVertexFormat_Float32x4, 68);
-    attribute(7, WGPUVertexFormat_Float32x3, 84);
+    attribute(0, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, position));
+    attribute(1, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, normal));
+    attribute(2, WGPUVertexFormat_Float32x4, offsetof(GpuVertex, tangent));
+    attribute(3, WGPUVertexFormat_Float32x2, offsetof(GpuVertex, uv));
+    attribute(5, WGPUVertexFormat_Float32x2, offsetof(GpuVertex, uv2));
+    attribute(6, WGPUVertexFormat_Float32x4, offsetof(GpuVertex, color));
 #if BBLITE_GPU_DEFORMATION
-    attribute(8, WGPUVertexFormat_Float32x4, 96);
-    attribute(9, WGPUVertexFormat_Float32x4, 112);
-    attribute(10, WGPUVertexFormat_Float32x3, 128);
-    attribute(11, WGPUVertexFormat_Float32x3, 140);
-    attribute(12, WGPUVertexFormat_Float32x3, 152);
-    attribute(13, WGPUVertexFormat_Float32x3, 164);
-    attribute(14, WGPUVertexFormat_Float32x3, 176);
-    attribute(15, WGPUVertexFormat_Float32x3, 188);
+    attribute(8, WGPUVertexFormat_Float32x4, offsetof(GpuVertex, joints));
+    attribute(9, WGPUVertexFormat_Float32x4, offsetof(GpuVertex, weights));
+    attribute(10, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_position_0));
+    attribute(11, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_position_1));
+    attribute(12, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_normal_0));
+    attribute(13, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_normal_1));
+    attribute(14, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_tangent_0));
+    attribute(15, WGPUVertexFormat_Float32x3, offsetof(GpuVertex, morph_tangent_1));
 #endif
+    if (next != base_vertex_attribute_count) {
+        dawn_error("The shared stage's vertex table lost a lane.");
+    }
 }
 
 struct PipelineKindTraits {
@@ -4502,13 +4507,20 @@ StandardRenderViews standard_render_views(DawnState& state, const Engine& engine
     };
 }
 
-/** Writes one Standard draw's pinned blocks for the frame. */
+/**
+ * Writes one Standard draw's pinned blocks for the frame; a geometry task's
+ * draw passes its velocity history, updated for the frame.
+ */
 void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                                 const upstream::RenderDrawCommand& draw, WGPUBuffer mesh_uniforms,
                                 WGPUBuffer material_uniforms, WGPUBuffer uv_uniforms,
-                                [[maybe_unused]] WGPUBuffer uv_transform_uniforms) {
+                                [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
+                                const PinnedVelocityHistory* velocity_history = nullptr) {
     const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
-    const upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
+    upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
+    if (velocity_history) {
+        write_pinned_velocity_tail(*velocity_history, draw.item.mesh, mesh_block);
+    }
     wgpuQueueWriteBuffer(state.queue, mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
     std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
     if (material && material->no_color) {
@@ -4567,14 +4579,13 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
                 ensure_standard_draw_buffers(state, mesh, draw.item.material.value);
             DawnDrawState& draw_state =
                 mesh.standard_geometry_states.try_emplace(variant, state).first->second;
-            // A LOCAL_POSITION variant's mesh block carries the node world
-            // where the colour pass's carries the identity over baked
-            // vertices, and every queue write lands before the frame's
+            // A geometry task's mesh block carries its own renderable's
+            // velocity tail, and every queue write lands before the frame's
             // submission — so a geometry variant cannot share the colour
-            // pass's mesh buffer without the last writer poisoning the
-            // other pass. Each geometry draw state owns its mesh block;
-            // the material and uv blocks are the same bytes in every pass
-            // and stay shared.
+            // pass's mesh buffer, or another task's, without the last writer
+            // poisoning the other pass. Each geometry draw state owns its
+            // mesh block; the material and uv blocks are the same bytes in
+            // every pass and stay shared.
             if (!draw_state.mesh_uniforms) {
                 WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
                 descriptor.size = sizeof(upstream::MeshUniforms);
@@ -4586,7 +4597,7 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
             }
             write_standard_draw_blocks(state, scene, engine, draw, draw_state.mesh_uniforms,
                                        colour_state.material_uniforms, colour_state.uv_uniforms,
-                                       colour_state.uv_transform_uniforms);
+                                       colour_state.uv_transform_uniforms, &geometry.velocity);
             if (!draw_state.group) {
                 draw_state.group = build_standard_draw_group(
                     state, mesh, material, variant, draw_state.mesh_uniforms,
@@ -4954,10 +4965,8 @@ struct VariantVertexAttributes {
  * across the vertex stream and the two instance-stepped ones.
  */
 bool append_variant_attribute(std::string_view name, std::uint32_t location,
-                              bool uses_local_position, VariantVertexAttributes& inputs,
-                              bool uses_local_normal = false) {
-    const PinnedVertexInput input =
-        pinned_vertex_input(name, uses_local_position, uses_local_normal);
+                              VariantVertexAttributes& inputs) {
+    const PinnedVertexInput input = pinned_vertex_input(name);
     if (!input.mapped)
         return false;
     WGPUVertexAttribute attribute = WGPU_VERTEX_ATTRIBUTE_INIT;
@@ -5150,8 +5159,7 @@ pinned_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderP
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::PbrVariantAttribute& input =
             upstream::pbr_variant_attributes[entry.first_attribute + index];
-        if (!append_variant_attribute(input.name, input.location, entry.uses_local_position,
-                                      inputs)) {
+        if (!append_variant_attribute(input.name, input.location, inputs)) {
             dawn_error((std::string("pinned variant declares an unmapped vertex ") + "input '" +
                         std::string(input.name) + "'.")
                            .c_str());
@@ -5275,8 +5283,7 @@ WGPURenderPipeline standard_variant_pipeline(
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::StandardVariantAttribute& input =
             upstream::standard_variant_attributes[entry.first_attribute + index];
-        if (!append_variant_attribute(input.name, input.location, entry.uses_local_position,
-                                      inputs)) {
+        if (!append_variant_attribute(input.name, input.location, inputs)) {
             dawn_error((std::string("standard variant declares an unmapped vertex ") + "input '" +
                         std::string(input.name) + "'.")
                            .c_str());
@@ -5542,9 +5549,7 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
     for (std::size_t index = 0; index < view.attribute_count; ++index) {
         const upstream::NodeVariantAttribute& input =
             upstream::node_variant_attributes[view.first_attribute + index];
-        if (!append_variant_attribute(input.name, input.location,
-                                      node_uses_local_attributes(geometry_variant), inputs,
-                                      node_uses_local_attributes(geometry_variant))) {
+        if (!append_variant_attribute(input.name, input.location, inputs)) {
             dawn_error((std::string("node variant declares an unmapped vertex ") + "input '" +
                         std::string(input.name) + "'.")
                            .c_str());
@@ -5629,7 +5634,6 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
         receipt.id = state.node_capture.allocate(pipeline, "node-pipeline");
         receipt.variant = static_cast<std::uint32_t>(variant);
         receipt.geometry_variant = geometry_view ? static_cast<int>(geometry_variant) : -1;
-        receipt.uses_local_attributes = node_uses_local_attributes(geometry_variant);
         receipt.color_target_count = static_cast<std::uint32_t>(fragment.targetCount);
         receipt.samples = descriptor.multisample.count;
         receipt.topology = descriptor.primitive.topology == WGPUPrimitiveTopology_TriangleList
@@ -9926,8 +9930,7 @@ public:
                 }
 #if BBLITE_GPU_DEFORMATION
                 if (mesh_world_item) {
-                    const DeformationUniforms deformation = build_deformation_uniforms(
-                        mesh, engine.geometries[item.geometry].flat_normals);
+                    const DeformationUniforms deformation = build_deformation_uniforms(mesh);
                     wgpuQueueWriteBuffer(state.queue, dawn_mesh.deformation_uniforms, 0,
                                          &deformation, sizeof(deformation));
                 }
@@ -10242,6 +10245,10 @@ public:
                             handle_at(state.render_tasks, handle).draw_lists);
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
+                        update_pinned_velocity_frame(
+                            handle_at(state.geometry_tasks, handle).velocity, graph_scene, engine,
+                            (graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1])
+                                .items);
                         write_standard_geometry_task(
                             state, graph_scene, engine, task,
                             handle_at(state.geometry_tasks, handle),

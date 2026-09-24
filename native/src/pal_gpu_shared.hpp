@@ -754,6 +754,80 @@ struct PinnedGeometryParams {
     std::array<float, 4> cameraNearFar{};
 };
 
+/**
+ * A geometry task's Standard renderables' velocity state
+ * (`standard-geometry-renderable.ts`), one per mesh slot.
+ *
+ * The pin builds one renderable per bound mesh. It packs the mesh's world
+ * as `previousWorld` when built and starts with `velocityReady` false; each
+ * frame's update writes the mesh block from that snapshot and flag, then
+ * snapshots the current world and sets the flag, so a renderable's first
+ * frame writes `velocityEnabled` 0 and the composed vertex's previous clip
+ * falls back to the current one. The task rebuilds every renderable when
+ * the scene's renderable version moves (`rebuildBoundMeshes`), which here is
+ * the scene's `render_topology_version`, and a slot a new mesh reuses is a
+ * new renderable. The composed velocity arm and its block tail belong to the
+ * Standard geometry output alone, so the history is written for nothing
+ * else. Unguarded because the geometry encode names it in both backends
+ * whatever the variant count.
+ */
+struct PinnedVelocityHistory {
+    struct Renderable {
+        MeshHandle mesh{};
+        /** The pin's `previousWorld` snapshot and `velocityReady`. */
+        std::array<float, 16> previous_world{};
+        bool velocity_ready = false;
+        /**
+         * The history frame this renderable last updated in and what that
+         * update wrote: the pin updates each bound renderable once a frame,
+         * before any draw, so every draw of the mesh in the frame binds the
+         * same block.
+         */
+        std::uint64_t updated_frame = 0;
+        std::array<float, 16> written_previous_world{};
+        float written_velocity_enabled = 0.0f;
+    };
+    std::uint64_t frame = 0;
+    std::uint64_t topology_version = 0;
+    std::vector<Renderable> renderables;
+};
+
+/** Opens a task frame; a moved renderable version rebuilds every renderable. */
+inline void begin_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& scene) {
+    if (history.frame == 0 || history.topology_version != scene.render_topology_version) {
+        history.renderables.clear();
+        history.topology_version = scene.render_topology_version;
+    }
+    ++history.frame;
+}
+
+/**
+ * The renderable's update for this frame, run once however many draws the
+ * mesh has: builds the renderable on its first frame, then writes the
+ * snapshot and flag and snapshots `world`.
+ */
+inline const PinnedVelocityHistory::Renderable&
+update_pinned_velocity(PinnedVelocityHistory& history, MeshHandle mesh,
+                       const std::array<float, 16>& world) {
+    if (history.renderables.size() <= mesh.value) {
+        history.renderables.resize(static_cast<std::size_t>(mesh.value) + 1u);
+    }
+    PinnedVelocityHistory::Renderable& renderable = history.renderables[mesh.value];
+    if (!(renderable.mesh == mesh)) {
+        renderable = {};
+        renderable.mesh = mesh;
+        renderable.previous_world = world;
+    }
+    if (renderable.updated_frame != history.frame) {
+        renderable.written_previous_world = renderable.previous_world;
+        renderable.written_velocity_enabled = renderable.velocity_ready ? 1.0f : 0.0f;
+        renderable.previous_world = world;
+        renderable.velocity_ready = true;
+        renderable.updated_frame = history.frame;
+    }
+    return renderable;
+}
+
 // Where the per-instance streams sit in the shared attribute table both
 // backends bind against. The matrix columns take the four lanes after the
 // vertex attributes, and the RGBA stream a material with
@@ -768,10 +842,8 @@ struct GpuVertex {
     float normal[3];
     float tangent[4];
     float uv[2];
-    float local_position[3];
     float uv2[2];
     float color[4];
-    float local_normal[3];
 #if BBLITE_GPU_DEFORMATION
     float joints[4];
     float weights[4];
@@ -791,11 +863,11 @@ struct GpuVertex {
 #endif
 };
 #if BBLITE_GPU_DEFORMATION && (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON)
-static_assert(sizeof(GpuVertex) == 216);
+static_assert(sizeof(GpuVertex) == 192);
 #elif BBLITE_GPU_DEFORMATION
-static_assert(sizeof(GpuVertex) == 200);
+static_assert(sizeof(GpuVertex) == 176);
 #else
-static_assert(sizeof(GpuVertex) == 96);
+static_assert(sizeof(GpuVertex) == 72);
 #endif
 
 /**
@@ -1071,7 +1143,7 @@ struct DeformationUniforms {
     float options[4]{};
 };
 
-inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh, bool flat_normals) {
+inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh) {
     DeformationUniforms result;
     for (std::array<float, 16>& matrix : result.bone_matrices) {
         matrix[0] = 1.0f;
@@ -1096,15 +1168,9 @@ inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh, bo
     }
     std::copy(mesh.morph_weights.begin(), mesh.morph_weights.end(), result.morph_weights);
     result.options[0] = 1.0f;
-    result.options[1] = flat_normals ? 1.0f : 0.0f;
     return result;
 }
 #endif
-
-// `transform_position`/`transform_direction` — the pin's own vertex-stage
-// world multiplies — moved to the always-emitted
-// `upstream/pinned_world_transform.hpp`, where both geometry loaders share
-// the same single emission.
 
 #if BBLITE_HAS_PICKING
 // GPU picking's backend-independent half. The arithmetic -- the pointer
@@ -1489,9 +1555,8 @@ private:
  * these bytes -- it reaches the vertex stage through the mesh block
  * (`mesh_block_world`) -- so a transform-only change uploads nothing.
  *
- * The two `local_*` lanes repeat the position and the normal for the
- * geometry arms that name them; the morph lanes carry the geometry's first
- * two targets for the vertex-attribute morph transport.
+ * The morph lanes carry the geometry's first two targets for the
+ * vertex-attribute morph transport.
  */
 inline std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
                                                 [[maybe_unused]] const MeshRecord& mesh) {
@@ -1513,10 +1578,8 @@ inline std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
             {vertex.normal.x, vertex.normal.y, vertex.normal.z},
             {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
             {vertex.uv.x, vertex.uv.y},
-            {vertex.position.x, vertex.position.y, vertex.position.z},
             {vertex.uv2.x, vertex.uv2.y},
             {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
-            {vertex.normal.x, vertex.normal.y, vertex.normal.z},
 #if BBLITE_GPU_DEFORMATION
             {
                 static_cast<float>(vertex.joints[0]),
@@ -1957,45 +2020,7 @@ inline std::optional<std::array<float, 16>> shader_world_view(const std::array<f
     return view ? std::optional<std::array<float, 16>>{upstream::matrix_product(*view, world)}
                 : std::nullopt;
 }
-
-/**
- * One background-plan vertex (the skybox and ground quads) in GpuVertex
- * layout: the local-normal lane mirrors the normal, and the local-position
- * lane and every deformation lane stay zero. Both backends upload the plan quads from this one
- * packing, so the vertex bytes cannot differ between them.
- */
 #endif
-
-inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
-    return GpuVertex{
-        {vertex.position.x, vertex.position.y, vertex.position.z},
-        {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-        {
-            vertex.tangent.x,
-            vertex.tangent.y,
-            vertex.tangent.z,
-            vertex.tangent.w,
-        },
-        {vertex.uv.x, vertex.uv.y},
-        {}, // local position
-        {vertex.uv2.x, vertex.uv2.y},
-        {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
-        {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-#if BBLITE_GPU_DEFORMATION
-        {}, // joints
-        {}, // weights
-        {}, // morph position 0
-        {}, // morph position 1
-        {}, // morph normal 0
-        {}, // morph normal 1
-        {}, // morph tangent 0
-        {}, // morph tangent 1
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
-        {}, // integer joint indices
-#endif
-#endif
-    };
-}
 
 /**
  * Whether a live pool has outgrown the instance buffers its registration
@@ -2051,13 +2076,10 @@ struct PinnedVertexInput {
 };
 
 /**
- * Resolve one declared input. `local_position` is the arm a LOCAL_POSITION
- * geometry variant takes: its varying reads the raw attribute, so the draw
- * binds the vertex's local lanes and its mesh block carries the real node
- * world.
+ * Resolve one declared input onto the vertex's own lanes, which hold the
+ * geometry's local values for every family and view.
  */
-inline PinnedVertexInput pinned_vertex_input(std::string_view name, bool uses_local_position,
-                                             bool uses_local_normal = false) {
+inline PinnedVertexInput pinned_vertex_input(std::string_view name) {
     const auto at = [](VertexInputLane lane, std::size_t offset) {
         return PinnedVertexInput{
             lane,
@@ -2067,12 +2089,10 @@ inline PinnedVertexInput pinned_vertex_input(std::string_view name, bool uses_lo
         };
     };
     if (name == "position") {
-        return at(VertexInputLane::float3, uses_local_position ? offsetof(GpuVertex, local_position)
-                                                               : offsetof(GpuVertex, position));
+        return at(VertexInputLane::float3, offsetof(GpuVertex, position));
     }
     if (name == "normal") {
-        return at(VertexInputLane::float3, uses_local_normal ? offsetof(GpuVertex, local_normal)
-                                                             : offsetof(GpuVertex, normal));
+        return at(VertexInputLane::float3, offsetof(GpuVertex, normal));
     }
     if (name == "tangent") {
         return at(VertexInputLane::float4, offsetof(GpuVertex, tangent));
@@ -2300,20 +2320,6 @@ inline constexpr bool node_slot_is_caster(std::size_t) { return false; }
  *  outside the guard because every node draw site names it, and checked
  *  against the generated spelling where that exists. */
 inline constexpr std::size_t no_node_geometry_variant = npos;
-
-inline bool node_uses_local_attributes(std::size_t geometry_variant) {
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-    if (geometry_variant == no_node_geometry_variant)
-        return false;
-    if (geometry_variant >= upstream::node_geometry_variants.size()) {
-        throw std::out_of_range("Invalid node geometry view.");
-    }
-    return true;
-#else
-    (void)geometry_variant;
-    return false;
-#endif
-}
 
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
 static_assert(no_node_geometry_variant == upstream::node_no_geometry_variant,
@@ -3009,23 +3015,56 @@ inline upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine
     upstream::MeshUniforms block{};
     block.world = mesh_block_world(scene, engine, handle_at(engine.meshes, mesh));
     pinned_mesh_light_selection(scene, engine, mesh, block);
-    // The velocity geometry arm's tail. No previous world is tracked, so
-    // the previous world is the world itself and the flag stays on: the
-    // composed vertex then measures camera motion alone, which is what the
-    // pin's tracked previous clip reduces to for a mesh that did not move.
-    // The generic lambda makes the access dependent: outside a template,
-    // both `if constexpr` branches must compile, and most scenes' mirrored
-    // MeshUniforms carries no velocity tail.
+    return block;
+}
+
+/**
+ * A geometry task's pre-draw update (`geometry-renderer-task.ts` executes
+ * every bound renderable's `update` before its first draw): each Standard
+ * mesh of the layer's plan, the hidden ones included, because the pin
+ * reads visibility only at the draw.
+ */
+inline void update_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& scene,
+                                         const Engine& engine,
+                                         const std::vector<upstream::RenderItem>& items) {
+    begin_pinned_velocity_frame(history, scene);
+    for (const upstream::RenderItem& source : items) {
+        const upstream::RenderItem item =
+            upstream::bind_render_item(source, engine, source.material);
+        if (item.material_kind != upstream::RenderMaterialKind::standard) {
+            continue;
+        }
+        update_pinned_velocity(
+            history, item.mesh,
+            mesh_block_world(scene, engine, handle_at(engine.meshes, item.mesh)));
+    }
+}
+
+/**
+ * The Standard geometry output's block tail (`standard-geometry-renderable.ts`
+ * `_baseUpdate`): what this frame's update wrote for the mesh. The generic
+ * lambda makes the access dependent: outside a template both `if constexpr`
+ * branches must compile, and most scenes' mirrored MeshUniforms carries no
+ * velocity tail.
+ */
+inline void write_pinned_velocity_tail(const PinnedVelocityHistory& history, MeshHandle mesh,
+                                       upstream::MeshUniforms& block) {
     [&](auto& dependent) {
         if constexpr (requires {
                           dependent.previousWorld;
                           dependent.velocityEnabled;
                       }) {
-            dependent.previousWorld = block.world;
-            dependent.velocityEnabled = 1.0f;
+            if (mesh.value >= history.renderables.size() ||
+                !(history.renderables[mesh.value].mesh == mesh) ||
+                history.renderables[mesh.value].updated_frame != history.frame) {
+                throw std::logic_error("A geometry task drew a Standard mesh its frame's "
+                                       "velocity update did not reach.");
+            }
+            const PinnedVelocityHistory::Renderable& renderable = history.renderables[mesh.value];
+            dependent.previousWorld = renderable.written_previous_world;
+            dependent.velocityEnabled = renderable.written_velocity_enabled;
         }
     }(block);
-    return block;
 }
 #endif
 
