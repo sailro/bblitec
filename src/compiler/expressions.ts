@@ -229,7 +229,6 @@ export interface ExpressionContext
             | "compilePixelsTextureUpload"
             | "compileStaticFetch"
             | "compileSynchronousPromise"
-            | "compileVoxelFileCall"
             | "compileBrowserTextureFunctionCall"
             | "compileExecutedUrlFunctionCall"
             | "compileStaticFetchMethod"
@@ -2834,10 +2833,6 @@ export class ExpressionLowerer {
         );
         if (compressedJson) {
             return compressedJson;
-        }
-        const voxelFile = this.context.compileVoxelFileCall(call, callee);
-        if (voxelFile) {
-            return voxelFile;
         }
         const staticResult = this.context.userFunctions.tryCompileStaticResult(
             this.context,

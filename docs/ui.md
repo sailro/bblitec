@@ -86,8 +86,12 @@ dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending
 
 Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
 snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB
-live cap and per-file limits. Completion may occur before click returns. Multiple files/directories,
-unsupported accept values, arbitrary source paths and file-input type transitions refuse.
+live cap and per-file limits. Completion may occur before click returns. A file input's `onchange`
+property registers its change handler once; other event-handler properties refuse. FileReader reads a
+File or Blob as text inside `readAsText`, decoding by byte order mark (UTF-8 otherwise), with handlers
+assigned before the read. `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker` are absent.
+Multiple files/directories, unsupported accept values, arbitrary source paths, file-input type
+transitions and other FileReader reads refuse.
 
 iOS uses UIKit Files with local storage and security-scoped imports; other platforms use SDL dialogs.
 [Publication semantics](fidelity.md#semantic-contract) differ between direct paths and file providers.

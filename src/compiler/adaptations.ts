@@ -16,7 +16,6 @@ export interface AdaptationContext extends Pick<
     | "dataTypes"
     | "options"
     | "jsRandomReached"
-    | "voxelFileStorageReached"
     | "browserTextureFunctions"
     | "canvasReadbackFunctions"
     | "assets"
@@ -249,22 +248,6 @@ export function compileAdaptations(
             ],
         });
     }
-    if (context.voxelFileStorageReached) {
-        adaptations.push({
-            id: "native-voxel-file-dialog",
-            category: "browser-erasure",
-            sourceSemantics:
-                "Voxel Sandbox opens browser save/open pickers and falls back to a download or hidden file input.",
-            nativeSemantics:
-                "Ctrl+S and Ctrl+O open the host save/open dialog and write or read the same JSON payload, with world.voxelsave.json as the suggested name.",
-            risk: "medium",
-            validation: [
-                "voxel file-boundary compiler test",
-                "native SaveData JSON round-trip",
-                "non-interactive file-dialog path override",
-            ],
-        });
-    }
     if (context.options.pendingActivations) {
         adaptations.push({
             id: "synchronous-constructed-promise",
@@ -309,7 +292,7 @@ export function compileAdaptations(
             ],
         });
     }
-    if (features.includes("browser:file") && !context.voxelFileStorageReached) {
+    if (features.includes("browser:file")) {
         adaptations.push({
             id: "native-browser-file-bridge",
             category: "platform",

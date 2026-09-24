@@ -736,7 +736,6 @@ class Compiler implements LoweringServices {
     public imageDecodeReached = false;
     public jsRandomReached = false;
     private audioSessionReached = false;
-    public voxelFileStorageReached = false;
     /**
      * The bounded canvas-owning functions this compilation executed at
      * generation, by name. It is the fidelity adaptation's reach test: the
@@ -1184,18 +1183,6 @@ class Compiler implements LoweringServices {
         }
         const visit = (root: ts.Node): void =>
             forEachAnalysisNode(root, (node) => {
-                if (
-                    ts.isCallExpression(node) &&
-                    ts.isIdentifier(node.expression)
-                ) {
-                    // The file adapter stores both its input and result as object
-                    // references. Fix that representation before earlier literals.
-                    const file = this.voxelFileContract(node, node.expression);
-                    if (file?.dataType)
-                        this.dataTypes.markStoredObjectReferences(
-                            file.dataType,
-                        );
-                }
                 const target = retainedNativeMutationTarget(this.symbols, node);
                 if (target) {
                     const targetType = this.checker.getTypeAtLocation(target);
@@ -5667,11 +5654,6 @@ class Compiler implements LoweringServices {
         return this.classLowerer.resolveClass(expression) !== undefined;
     }
 
-    public reachVoxelFileStorage(site: ts.Node): void {
-        this.voxelFileStorageReached = true;
-        this.reachFeature("browser:file", site);
-    }
-
     public reachFileReader(): void {
         this.fileReaderReached = true;
     }
@@ -5682,82 +5664,6 @@ class Compiler implements LoweringServices {
 
     public reachLocalStorage(): void {
         this.reachFeature("storage:local");
-    }
-
-    private voxelFileContract(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ):
-        | {
-              name: "saveToFile" | "loadFromFile";
-              dataType: DataType | undefined;
-          }
-        | undefined {
-        const declaration = tryResolveFunctionDeclaration(this.checker, callee);
-        const name =
-            declaration?.name && ts.isIdentifier(declaration.name)
-                ? declaration.name.text
-                : undefined;
-        if (name !== "saveToFile" && name !== "loadFromFile") {
-            return undefined;
-        }
-        if (!declaration) {
-            return undefined;
-        }
-        const fileName = declaration
-            .getSourceFile()
-            .fileName.replace(/\\/g, "/");
-        if (!/\/demos\/minecraft\/save-load\.(?:ts|js)$/i.test(fileName)) {
-            return undefined;
-        }
-        const parameter = declaration.parameters[0];
-        const signature = this.checker.getResolvedSignature(call);
-        const type =
-            name === "saveToFile"
-                ? parameter && this.checker.getTypeAtLocation(parameter)
-                : signature &&
-                  this.checker.getAwaitedType(
-                      this.checker.getReturnTypeOfSignature(signature),
-                  );
-        return {
-            name,
-            dataType: type ? this.dataTypes.fromTsType(type, call) : undefined,
-        };
-    }
-
-    /** Native host-file-dialog adapter for the pinned voxel save/load module. */
-    public compileVoxelFileCall(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ): Value | undefined {
-        const contract = this.voxelFileContract(call, callee);
-        if (!contract) return undefined;
-        const { name, dataType } = contract;
-        if (!dataType) {
-            this.fail(
-                call,
-                "Voxel file calls require a SaveData record or nullable load result.",
-            );
-        }
-        const stored = this.dataTypes.markStoredObjectReferences(dataType);
-        this.reachVoxelFileStorage(call);
-        this.reachJsData();
-        if (name === "saveToFile") {
-            this.expectArgumentCount(call, 1, 1);
-            return {
-                kind: "boolean",
-                cpp:
-                    `bbl::js::save_voxel_world(${this.requireDefaultEngine(call)}, ` +
-                    `${this.dataLowerer.compileForSink(argumentAt(call, 0), stored)})`,
-                dataType: { kind: "boolean" },
-            };
-        }
-        this.expectArgumentCount(call, 0, 0);
-        return this.dataValue(
-            `bbl::js::load_voxel_world<${this.dataTypes.cppType(stored)}>` +
-                `(${this.requireDefaultEngine(call)})`,
-            stored,
-        );
     }
 
     public reachImageDecode(): void {
@@ -10759,7 +10665,6 @@ class Compiler implements LoweringServices {
                 this.dataTypes.renderPreamble(!!this.options.workers),
             nativeFunctions: this.nativeDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
-            voxelFileStorageReached: this.voxelFileStorageReached,
             ...(physicsDebugConstructionBody
                 ? { physicsDebugConstructionBody }
                 : {}),

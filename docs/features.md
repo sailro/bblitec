@@ -56,7 +56,7 @@ percentage. See [collection commands](development.md#api-coverage) and, for one 
 | Classes | Fields, methods, accessors, generics, retained callbacks, receiver-preserving structural views, private names for fields, methods and accessors, rebound class-typed locals (`let c: C \| null = null; c = new C()`) | Inheritance, private brand checks (`#x in value`), static blocks, mutable statics; an uninitialized `let c: C \| undefined`; unsupported field storage |
 | Closures | Shared mutable cells, function identity, optional calls, escaping recursive groups | Captures need owned representations; events cannot escape dispatch |
 | Data | Typed/nullable records, discriminated and mixed unions, arrays, tuples, dictionaries, Map/Set, JSON | Optional own-property presence; earlier class instances; mutation through erased native records/arrays; storage ambiguities; dynamic `typeof` values in inferred string-literal fields; recursive record/function initializers without matching owned layouts |
-| Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations | Custom thenables; general async iteration |
+| Async | Realm-owned promises, async functions/methods/IIFEs, early returns, loops, retained activations; outside a realm, constructed promises whose resolving functions escape into callbacks | Custom thenables; general async iteration; outside a realm a constructed promise is awaited or returned where it is created, and a call that can await one still pending is awaited, returned or a statement (not stored or a callback) |
 | Workers | Local module scripts, isolated module state, cloning of records, arrays, numeric tuples, Date, Map, Set, ArrayBuffer, typed arrays and DataView with cycles/aliases (views of one buffer share its copy), timers, errors, close/terminate | Classic/runtime-selected scripts; incompatible rendering products; messages carrying class instances, Errors, mixed unions, dynamic JSON, functions, promises, iterators or platform objects refuse; SharedArrayBuffer/Atomics; listener options other than static `once`; WorkerGlobalScope error listeners and worker-scope rejection dispatch |
 | Worker graphics | OffscreenCanvas transfer, independent scene owners, shared Window presentation | Transfer lists admit OffscreenCanvas only |
 
@@ -95,9 +95,11 @@ Arbitrary rejection values, heterogeneous race results and unrepresented aggrega
 `all` excludes literal spreads, other iterables and stored void/value-only arrays. `allSettled` excludes
 literal spreads and other iterables. Async collection callbacks start synchronously and retain
 suspension; predicate promises are truthy.
-Timers/microtasks need no engine. RAF needs a Window repaint source. Unhandled rejections are reported
-in a subsequent task after microtasks. MessageChannel and runtime compression streams refuse; gzip/base64
-JSON decoded through `DecompressionStream` folds at generation.
+Outside a realm the executor runs in place and an await reads the settlement; one still pending ends the
+awaiting activation ([fidelity](fidelity.md#semantic-contract)). Timers/microtasks need no engine. RAF
+needs a Window repaint source. Unhandled rejections are reported in a subsequent task after microtasks.
+MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded through
+`DecompressionStream` folds at generation.
 
 ### Core TypeScript library
 
@@ -113,7 +115,7 @@ JSON decoded through `DecompressionStream` folds at generation.
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options | Option getters and non-string locale entries refuse |
 | Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs; Object.assign targets records, object literals and structs, other targets refuse |
-| JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers and cyclic serialization refuse |
+| JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission; a parsed document stored as a record reads its members into it; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers and cyclic serialization refuse; a stored document reads number, boolean, string, string-literal-union, array, optional and record members, and one of another type throws TypeError |
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone | No explicit locale/options, formatting or broader fields |
 | URLSearchParams | String constructor, get/has/set/toString, duplicate order, decoding and form encoding; mutation retains object identity and invalidates deployment-query folds | Append/delete/sort, iteration and other constructors refuse |

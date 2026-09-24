@@ -139,7 +139,6 @@ export interface LoweringServices {
     jsDataReached: boolean;
     fileReaderReached: boolean;
     jsRandomReached: boolean;
-    voxelFileStorageReached: boolean;
     readonly browserTextureFunctions: Set<string>;
     readonly canvasReadbackFunctions: Set<string>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
@@ -492,10 +491,6 @@ export interface LoweringServices {
     reachJson(): void;
     reachFileReader(): void;
     reachLocalStorage(): void;
-    compileVoxelFileCall(
-        call: ts.CallExpression,
-        callee: ts.Identifier,
-    ): Value | undefined;
     reachImageDecode(): void;
     snapshotAliasState(): Map<string, string>;
     restoreAliasState(snapshot: Map<string, string>): void;

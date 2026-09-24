@@ -541,8 +541,6 @@ interface MainCppProjection {
     renderDataPreamble: () => DataPreamble;
     nativeFunctions: readonly NativeFunctionDefinition[];
     staticNativeDeclarations: readonly string[];
-    /** Whether the scene reaches the voxel save/load file boundary. */
-    voxelFileStorageReached: boolean;
     /** The emitted entry-body lines; the render marks unused locals in place. */
     body: string[];
     /** The admitted entry statements before the sole top-level startEngine. */
@@ -561,7 +559,6 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         renderDataPreamble,
         nativeFunctions,
         staticNativeDeclarations,
-        voxelFileStorageReached,
         body,
     } = projection;
     const nativeFunctionPrototypes = nativeFunctions.flatMap((fn) =>
@@ -703,9 +700,6 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("browser:file")
             ? "#include <bblite/js_file.hpp>\n"
-            : "") +
-        (voxelFileStorageReached
-            ? "#include <bblite/js_voxel_file.hpp>\n"
             : "");
     // A composite's factory is generated, so the scene calls it by a name
     // only its own generated header declares; a screen-space task's is the
