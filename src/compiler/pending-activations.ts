@@ -116,7 +116,11 @@ function chainedCall(expression: ts.Expression): ts.CallExpression | undefined {
 export class PendingActivations {
     /** @unjournaled Filled by the constructor from the program; never written after. */
     private readonly suspending = new Set<Activation>();
-    /** Each use that needs a pending promise value, by the node lowering reaches first. */
+    /**
+     * Each use that needs a pending promise value, by the node lowering
+     * reaches first. @unjournaled Filled by the constructor from the program;
+     * never written after.
+     */
     private readonly misuses = new Map<
         ts.Node,
         { site: ts.Node; message: string }
