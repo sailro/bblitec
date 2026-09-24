@@ -47,7 +47,11 @@ import {
     PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import {
+    jsBitwiseCall,
+    PINNED_BITWISE_ASSIGNMENT_OPERATORS,
+    pinnedNumericMathCalls,
+} from "./pinned-operators.js";
 import { isPinnedErrorCall } from "./pinned-error.js";
 import { cppCondition } from "../cpp-expressions.js";
 import type { PinnedTypedProgram } from "./pinned-typed-program.js";
@@ -82,6 +86,7 @@ export type RecordShape =
           readonly value: RecordShape;
       }
     | { readonly kind: "weakmap"; readonly value: RecordShape }
+    | { readonly kind: "weakset" }
     | { readonly kind: "typed"; readonly element: "f32" | "u32" | "u8" }
     | {
           readonly kind: "function";
@@ -98,6 +103,11 @@ export interface MemberSpec {
     readonly field?: string;
     /** A read that is not a field of the owner (a library handle's getter). */
     readonly access?: (owner: string) => string;
+    /**
+     * A function member's call, when it is not a call of the member's
+     * value (a platform object's method the runtime spells itself).
+     */
+    readonly call?: (owner: string, args: readonly string[]) => string;
 }
 
 /** One pinned record type and its native struct. */
@@ -122,6 +132,12 @@ export interface RecordSpec {
     readonly omit?: ReadonlyMap<string, string>;
     /** Members the port spells or types itself. */
     readonly members?: ReadonlyMap<string, MemberSpec>;
+    /**
+     * Records whose members this one has too, which its struct inherits:
+     * the pin passes it where one of those is expected (`ensureStyleGpu`
+     * takes any record with a style buffer).
+     */
+    readonly bases?: readonly string[];
 }
 
 /** A platform call a lowered body makes, by the pinned declaration it replaces. */
@@ -151,6 +167,23 @@ export interface RecordSchema {
      * an adapter's dropped argument fails.
      */
     readonly omittedLocals?: ReadonlyMap<string, string>;
+    /**
+     * Platform constants a pinned read folds to, keyed by the global that
+     * declares them and the member (`GPUBufferUsage.VERTEX`), however the
+     * pin reaches it (`BU.VERTEX` snapshots the same global).
+     */
+    readonly constants?: ReadonlyMap<string, number>;
+    /**
+     * Types the pin declares in modules the source maps do not carry
+     * (type-only modules erase to nothing), by the name the pin spells.
+     */
+    readonly unresolved?: ReadonlyMap<string, RecordShape>;
+    /**
+     * The functions native callers name (`module#name`), which live in
+     * `bbl`; every other lowered function lives in its module's detail
+     * namespace. Without it, a pinned export is a native export.
+     */
+    readonly exported?: ReadonlySet<string>;
 }
 
 interface ResolvedMember {
@@ -158,6 +191,9 @@ interface ResolvedMember {
     readonly field: string;
     readonly shape: RecordShape;
     readonly access: (owner: string) => string;
+    readonly call?: (owner: string, args: readonly string[]) => string;
+    /** The record whose struct declares the field (a base's, when inherited). */
+    readonly declaredBy: string;
 }
 
 interface ResolvedRecord {
@@ -174,12 +210,18 @@ interface LoweredFunction {
     readonly namespace: string;
 }
 
-/** A pinned module-scope `let` the lowered bodies read or write. */
+/**
+ * A pinned module-scope `let` the lowered bodies read or write, or a
+ * module `const` bound to an object the pin constructs once
+ * (`const _mvpScratch = new Float32Array(16)`).
+ */
 interface ModuleVariable {
     readonly declaration: ts.VariableDeclaration;
     readonly cpp: string;
     readonly namespace: string;
     readonly shape: RecordShape;
+    /** The constructed initial value; absent state starts empty. */
+    readonly initializer?: string;
 }
 
 const nullishFlags =
@@ -278,6 +320,44 @@ export class PinnedRecordModel {
         return record;
     }
 
+    /**
+     * The native form of a declaration's type: the checked type, or, when a
+     * type-only module the source maps do not carry left it unresolved, the
+     * shape the schema gives the name the pin spells.
+     */
+    public declaredShape(type: ts.Type, declaration: ts.Node): RecordShape {
+        const unresolved = this.unresolvedShape(type, declaration);
+        return unresolved ?? this.shapeOf(type, declaration);
+    }
+
+    /** The schema's shape for an unresolved annotation (`Mat4Storage`). */
+    public unresolvedShape(
+        type: ts.Type,
+        declaration: ts.Node,
+    ): RecordShape | undefined {
+        if (!(type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)))
+            return undefined;
+        const annotation =
+            ts.isParameter(declaration) ||
+            ts.isVariableDeclaration(declaration) ||
+            ts.isPropertySignature(declaration) ||
+            ts.isPropertyDeclaration(declaration) ||
+            ts.isFunctionDeclaration(declaration) ||
+            ts.isMethodSignature(declaration) ||
+            ts.isAsExpression(declaration)
+                ? declaration.type
+                : undefined;
+        const name =
+            annotation &&
+            ts.isTypeReferenceNode(annotation) &&
+            ts.isIdentifier(annotation.typeName)
+                ? annotation.typeName.text
+                : undefined;
+        return name === undefined
+            ? undefined
+            : this.schema.unresolved?.get(name);
+    }
+
     /** The native form of a checked pinned type. */
     public shapeOf(type: ts.Type, site: ts.Node): RecordShape {
         const anonymous = this.anonymous.get(type);
@@ -355,6 +435,7 @@ export class PinnedRecordModel {
                     kind: "weakmap",
                     value: this.shapeOf(argumentsOf()[1]!, site),
                 };
+            if (name === "WeakSet") return { kind: "weakset" };
             if (name === "Float32Array")
                 return { kind: "typed", element: "f32" };
             if (name === "Uint32Array")
@@ -502,7 +583,9 @@ export class PinnedRecordModel {
             case "void":
                 return "void";
             case "object":
-                return "std::shared_ptr<bbl::pinned::PlainObject>";
+                // Any shared object, compared by identity: a fresh `{}` or
+                // a record the pin passes as `object`.
+                return "std::shared_ptr<const void>";
             case "buffer":
                 return "bbl::js::ArrayBuffer";
             case "native":
@@ -524,6 +607,8 @@ export class PinnedRecordModel {
                 return `bbl::js::Map<${this.cppType(shape.key)}, ${this.cppType(shape.value)}>`;
             case "weakmap":
                 return `bbl::js::WeakMap<${this.cppType(shape.value)}>`;
+            case "weakset":
+                return "bbl::js::WeakMap<bool>";
             case "typed":
                 return `bbl::js::TypedArray<${{ f32: "float", u32: "std::uint32_t", u8: "std::uint8_t" }[shape.element]}>`;
             case "function":
@@ -619,6 +704,8 @@ export class PinnedRecordModel {
                         spec.reference
                             ? `${owner}->${field}`
                             : `${owner}.${field}`),
+                ...(override?.call ? { call: override.call } : {}),
+                declaredBy: spec.pinned[0]!,
             });
         };
         if (spec.native) {
@@ -650,7 +737,7 @@ export class PinnedRecordModel {
                 const override = spec.members?.get(name);
                 const shape =
                     override?.shape ??
-                    this.shapeOf(
+                    this.declaredShape(
                         this.checker.getTypeOfSymbolAtLocation(property, site),
                         property.valueDeclaration ?? site,
                     );
@@ -690,6 +777,20 @@ export class PinnedRecordModel {
                     site,
                     `Pinned record member '${name}' is not declared.`,
                 );
+        for (const base of spec.bases ?? []) {
+            for (const inherited of this.record(base).members().values()) {
+                const own = members.get(inherited.name);
+                if (
+                    !own ||
+                    this.cppType(own.shape) !== this.cppType(inherited.shape)
+                )
+                    this.fail(
+                        site,
+                        `Pinned record ${spec.pinned[0]!} does not have ${base}'s member '${inherited.name}'.`,
+                    );
+                members.set(inherited.name, inherited);
+            }
+        }
         // Two pinned members may spell one native field (`runs` and
         // `_runs`): the underscored one keeps a trailing underscore.
         const fields = new Map<string, string>();
@@ -933,14 +1034,18 @@ export class PinnedRecordModel {
             const spec = record.spec;
             if (spec.native) continue;
             const { site } = this.recordSource(spec);
+            const bases = (spec.bases ?? []).map(
+                (base) => `bbl::${this.record(base).spec.cpp}`,
+            );
             lines.push(
                 `// ${this.context.provenance(modulePathOf(site.getSourceFile()), spec.returnOf?.split("#")[1] ?? spec.pinned[0]!)}`,
-                `struct ${spec.cpp} {`,
+                `struct ${spec.cpp}${bases.length ? ` : ${bases.join(", ")}` : ""} {`,
             );
             for (const member of record.members().values())
-                lines.push(
-                    `    ${this.cppType(member.shape)} ${member.field}${memberInitializer(member.shape)};`,
-                );
+                if (member.declaredBy === spec.pinned[0])
+                    lines.push(
+                        `    ${this.cppType(member.shape)} ${member.field}${memberInitializer(member.shape)};`,
+                    );
             lines.push("};");
         }
         return lines.join("\n");
@@ -993,7 +1098,11 @@ export class PinnedRecordModel {
             name,
             declaration,
             cpp: cppIdentifier(pinnedSnakeCase(name)),
-            namespace: isExported(declaration)
+            namespace: (
+                this.schema.exported
+                    ? this.schema.exported.has(`${module}#${name}`)
+                    : isExported(declaration)
+            )
                 ? "bbl"
                 : detailNamespace(module),
         };
@@ -1006,24 +1115,33 @@ export class PinnedRecordModel {
         return `${entry.namespace}::${entry.cpp}`;
     }
 
-    /** Register a pinned module-scope `let` a body reads or writes. */
-    public variable(declaration: ts.VariableDeclaration): ModuleVariable {
+    /**
+     * Register a pinned module-scope `let` a body reads or writes, or a
+     * `const` holding a constructed object; `initialize` lowers its
+     * initializer as the variable's shape.
+     */
+    public variable(
+        declaration: ts.VariableDeclaration,
+        initialize?: (shape: RecordShape) => string,
+    ): ModuleVariable {
         const existing = this.variables.get(declaration);
         if (existing) return existing;
         if (!ts.isIdentifier(declaration.name))
             return this.fail(declaration, "Pinned module state needs a name.");
         const statement = declaration.parent.parent;
         const module = modulePathOf(declaration.getSourceFile());
+        const shape = this.declaredShape(
+            this.checker.getTypeAtLocation(declaration.name),
+            declaration,
+        );
         const entry: ModuleVariable = {
             declaration,
             cpp: cppIdentifier(pinnedSnakeCase(declaration.name.text)),
             // Realm state sits in its own namespace, so no lowered local of
             // the same name hides it.
             namespace: `${isExported(statement) ? "bbl" : detailNamespace(module)}::realm`,
-            shape: this.shapeOf(
-                this.checker.getTypeAtLocation(declaration.name),
-                declaration,
-            ),
+            shape,
+            ...(initialize ? { initializer: initialize(shape) } : {}),
         };
         this.variables.set(declaration, entry);
         return entry;
@@ -1041,7 +1159,7 @@ export class PinnedRecordModel {
                     parameter,
                     "Pinned default parameters are not lowered.",
                 );
-            const shape = this.shapeOf(
+            const shape = this.declaredShape(
                 this.checker.getTypeAtLocation(parameter.name),
                 parameter,
             );
@@ -1055,7 +1173,7 @@ export class PinnedRecordModel {
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         if (!signature)
             return this.fail(declaration, "Pinned function has no signature.");
-        return this.shapeOf(
+        return this.declaredShape(
             this.checker.getReturnTypeOfSignature(signature),
             declaration,
         );
@@ -1111,17 +1229,20 @@ export class PinnedRecordModel {
                 (variable) => variable.namespace,
                 (variable) => {
                     const initializer = variable.declaration.initializer;
-                    const value =
-                        !initializer ||
-                        initializer.kind === ts.SyntaxKind.NullKeyword ||
-                        (ts.isIdentifier(initializer) &&
-                            initializer.text === "undefined")
-                            ? ""
-                            : this.fail(
-                                  initializer,
-                                  "Pinned module state starts from null or undefined only.",
-                              );
-                    return `// ${this.context.provenance(modulePathOf(variable.declaration.getSourceFile()), variable.declaration.name.getText(), "realm state")}\ninline thread_local ${this.cppType(variable.shape)} ${variable.cpp}${value}{};`;
+                    if (
+                        variable.initializer === undefined &&
+                        initializer &&
+                        initializer.kind !== ts.SyntaxKind.NullKeyword &&
+                        !(
+                            ts.isIdentifier(initializer) &&
+                            initializer.text === "undefined"
+                        )
+                    )
+                        this.fail(
+                            initializer,
+                            "Pinned module state starts from null or undefined only.",
+                        );
+                    return `// ${this.context.provenance(modulePathOf(variable.declaration.getSourceFile()), variable.declaration.name.getText(), "realm state")}\ninline thread_local ${this.cppType(variable.shape)} ${variable.cpp}${variable.initializer !== undefined ? ` = ${variable.initializer}` : "{}"};`;
                 },
             ),
             grouped(
@@ -1223,7 +1344,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 this.refuse(name, "Pinned destructured parameter.");
             this.declare(
                 name,
-                model.shapeOf(model.checker.getTypeAtLocation(name), parameter),
+                model.declaredShape(
+                    model.checker.getTypeAtLocation(name),
+                    parameter,
+                ),
                 cppIdentifier(name.text),
             );
         }
@@ -1285,6 +1409,38 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             )
                 return true;
         return false;
+    }
+
+    /**
+     * The value an adapted callee receives for one parameter: the argument,
+     * or the parameter's declared default, or its absence.
+     */
+    private adapterArgument(node: ts.CallExpression, index: number): string {
+        const argument = node.arguments[index];
+        const callee = this.skipParentheses(node.expression);
+        const declaration = this.model.declarationOf(
+            ts.isPropertyAccessExpression(callee) ? callee.name : callee,
+        );
+        const parameter =
+            declaration && ts.isFunctionDeclaration(declaration)
+                ? declaration.parameters[index]
+                : undefined;
+        if (!parameter) {
+            if (!argument)
+                return this.refuse(
+                    node,
+                    `Pinned adapter argument ${index} is absent.`,
+                );
+            return this.value(argument);
+        }
+        const shape = this.model.declaredShape(
+            this.checker.getTypeAtLocation(parameter.name),
+            parameter,
+        );
+        if (argument) return this.convert(argument, shape);
+        if (parameter.initializer)
+            return this.convert(parameter.initializer, shape);
+        return this.model.absent(optionalOf(shape), parameter);
     }
 
     /** The platform adapter standing in for a pinned call, if one does. */
@@ -1430,8 +1586,28 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
      * storage the port chose is then the value's shape.
      */
     private structuralShape(node: ts.Node): RecordShape | undefined {
-        if (ts.isParenthesizedExpression(node))
+        if (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node))
             return this.structuralShape(node.expression);
+        if (ts.isAsExpression(node))
+            return (
+                this.model.unresolvedShape(this.typeAt(node), node) ??
+                this.structuralShape(node.expression)
+            );
+        if (ts.isElementAccessExpression(node)) {
+            const owner = this.stripOptional(this.shapeAt(node.expression));
+            if (owner.kind === "typed") return { kind: "number" };
+            if (owner.kind === "array") return owner.element;
+            return undefined;
+        }
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            const left = this.structuralShape(node.left);
+            return left && this.isAbsentLiteral(node.right)
+                ? optionalOf(this.stripOptional(left))
+                : left;
+        }
         if (ts.isIdentifier(node)) {
             const symbol = this.checker.getSymbolAtLocation(node);
             const local = symbol ? this.locals.get(symbol) : undefined;
@@ -1471,6 +1647,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 this.shapeAt(node.expression.expression),
             );
             const name = node.expression.name.text;
+            if (receiver.kind === "record") {
+                const member = this.model.member(
+                    receiver.name,
+                    name,
+                    node.expression,
+                );
+                if (member.shape.kind === "function")
+                    return member.shape.result;
+            }
             if (
                 (receiver.kind === "map" || receiver.kind === "weakmap") &&
                 name === "get"
@@ -1503,7 +1688,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 return this.coerce(value, from.value, to.value, site) === value
                     ? value
                     : this.refuse(site, "Pinned optional conversion.");
-            return `${this.cpp(to)}(${this.coerce(value, from, to.value, site)})`;
+            const inner = this.coerce(value, from, to.value, site);
+            // A handle is its own optional.
+            return nullableByRepresentation(to.value, this.model)
+                ? inner
+                : `${this.cpp(to)}(${inner})`;
         }
         if (from.kind === "optional") {
             const present = nullableByRepresentation(from.value, this.model)
@@ -1525,9 +1714,33 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         }
         if (to.kind === "native" || to.kind === "function")
             return `${this.cpp(to)}(${value})`;
+        // A record passed where one of its bases is expected is that base.
+        if (
+            to.kind === "record" &&
+            from.kind === "record" &&
+            this.derives(from.name, to.name)
+        )
+            return `${this.cpp(to)}(${value})`;
+        // A shared record passed as `object` keeps its identity.
+        if (
+            to.kind === "object" &&
+            from.kind === "record" &&
+            this.model.record(from.name).spec.reference
+        )
+            return `${this.cpp(to)}(${value})`;
         return this.refuse(
             site,
             `Pinned value of native type ${this.cpp(from)} cannot become ${this.cpp(to)}.`,
+        );
+    }
+
+    /** Whether record `name` inherits `base`. */
+    private derives(name: string, base: string): boolean {
+        const bases = this.model.record(name).spec.bases ?? [];
+        return bases.some(
+            (candidate) =>
+                this.model.recordKey(candidate) ===
+                    this.model.recordKey(base) || this.derives(candidate, base),
         );
     }
 
@@ -1693,13 +1906,38 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (local) return this.narrowed(local.cpp, local.storage, node);
         const declaration = this.model.declarationOf(node);
         if (!declaration) return undefined;
+        // The ES library's numeric globals.
+        if (declaration.getSourceFile().isDeclarationFile) {
+            if (node.text === "NaN")
+                return "std::numeric_limits<double>::quiet_NaN()";
+            if (node.text === "Infinity")
+                return "std::numeric_limits<double>::infinity()";
+        }
         if (ts.isFunctionDeclaration(declaration))
             return this.functionReference(node, declaration);
         if (
             ts.isVariableDeclaration(declaration) &&
-            ts.isSourceFile(declaration.parent.parent.parent)
+            ts.isSourceFile(declaration.parent.parent.parent) &&
+            !declaration.getSourceFile().isDeclarationFile
         ) {
             if (declaration.parent.flags & ts.NodeFlags.Const) {
+                // A constant bound to an object the pin constructs once
+                // (a scratch matrix) is one object for the realm.
+                if (
+                    declaration.initializer &&
+                    ts.isNewExpression(
+                        this.skipParentheses(declaration.initializer),
+                    )
+                ) {
+                    const variable = this.model.variable(declaration, (shape) =>
+                        this.convert(declaration.initializer!, shape),
+                    );
+                    return this.narrowed(
+                        this.model.qualified(variable),
+                        variable.shape,
+                        node,
+                    );
+                }
                 // A module constant is the pin's own value, lowered where
                 // it is read; a number keeps the numeric lowerer's fold.
                 if (declaration.getSourceFile() === this.source) {
@@ -1857,8 +2095,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (
             kind === ts.SyntaxKind.PlusToken &&
             this.shapeAt(node).kind === "string"
-        )
-            return `bbl::js::concat(${this.value(node.left)}, ${this.value(node.right)})`;
+        ) {
+            const part = (operand: ts.Expression): string => {
+                const value = this.value(operand);
+                if (this.stripOptional(this.shapeAt(operand)).kind === "number")
+                    return `bbl::js::NumberPart(${value})`;
+                return ts.isStringLiteral(this.skipParentheses(operand))
+                    ? `std::string_view(${value})`
+                    : value;
+            };
+            return `bbl::js::concat(${part(node.left)}, ${part(node.right)})`;
+        }
         return undefined;
     }
 
@@ -1935,6 +2182,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
 
     /** `left ?? right` as a value of shape `to`. */
     private nullish(node: ts.BinaryExpression, to: RecordShape): string {
+        const leftShape = this.shapeAt(node.left);
+        // A left side that is never absent is the whole value.
+        if (
+            leftShape.kind !== "optional" &&
+            !nullableByRepresentation(leftShape, this.model)
+        )
+            return this.convert(node.left, to);
         const left = this.optionalValue(node.left);
         const result = this.cpp(to);
         return `bbl::pinned::nullish<${result}>(${left}, [&]() -> ${result} { return ${this.convert(node.right, to)}; })`;
@@ -1968,6 +2222,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.optionalChain(node);
         const name = node.name.text;
         const owner = node.expression;
+        const constant = this.constant(node);
+        if (constant !== undefined) return doubleLiteral(constant);
         if (ts.isIdentifier(owner) && owner.text === "Number") {
             if (name === "POSITIVE_INFINITY")
                 return "std::numeric_limits<double>::infinity()";
@@ -2013,6 +2269,23 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             node,
             `Pinned member '${name}' has no native reading.`,
         );
+    }
+
+    /**
+     * A platform constant (`GPUBufferUsage.VERTEX`, or `BU.VERTEX` over
+     * the same global), by the global declaration its member belongs to.
+     */
+    private constant(node: ts.PropertyAccessExpression): number | undefined {
+        const constants = this.model.schema.constants;
+        if (!constants) return undefined;
+        const declaration = this.model.declarationOf(node.name);
+        if (!declaration || !ts.isPropertySignature(declaration))
+            return undefined;
+        let holder: ts.Node = declaration.parent;
+        while (holder && !ts.isVariableDeclaration(holder))
+            holder = holder.parent;
+        if (!holder || !ts.isIdentifier(holder.name)) return undefined;
+        return constants.get(`${holder.name.text}.${node.name.text}`);
     }
 
     /** An owner's value with any optional it carries proven present. */
@@ -2169,6 +2442,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (ts.isIdentifier(unwrapped)) return true;
         if (ts.isPropertyAccessExpression(unwrapped))
             return this.pure(unwrapped.expression);
+        if (ts.isElementAccessExpression(unwrapped))
+            return (
+                this.pure(unwrapped.expression) &&
+                (ts.isNumericLiteral(unwrapped.argumentExpression) ||
+                    this.pure(unwrapped.argumentExpression))
+            );
         return false;
     }
 
@@ -2189,7 +2468,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const adapter = this.adapterOf(node);
         if (adapter) {
             const spelled = adapter.cpp(
-                (index) => this.value(node.arguments[index]!),
+                (index) => this.adapterArgument(node, index),
                 node,
                 (name) => this.localNamed(name, node),
             );
@@ -2215,8 +2494,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (ts.isIdentifier(callee)) {
             const symbol = this.checker.getSymbolAtLocation(callee);
             const local = symbol ? this.locals.get(symbol) : undefined;
-            if (local && local.storage.kind === "function")
-                return `${local.cpp}(${node.arguments.map((argument, index) => this.convert(argument, (local.storage as { parameters: readonly RecordShape[] }).parameters[index]!)).join(", ")})`;
+            const storage = local?.storage;
+            if (local && storage?.kind === "function") {
+                const { parameters } = storage;
+                return `${local.cpp}(${node.arguments.map((argument, index) => this.convert(argument, parameters[index]!)).join(", ")})`;
+            }
         }
         return this.refuse(
             node,
@@ -2234,7 +2516,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return node.arguments
             .map((argument, index) => {
                 const parameter = declaration.parameters[index]!;
-                const shape = this.model.shapeOf(
+                const shape = this.model.declaredShape(
                     this.checker.getTypeAtLocation(parameter.name),
                     parameter,
                 );
@@ -2331,6 +2613,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         return `bbl::js::typed_array_subarray(${receiver()}, ${node.arguments[0] ? this.value(node.arguments[0]) : "0.0"}, ${node.arguments[1] ? this.value(node.arguments[1]) : "std::numeric_limits<double>::infinity()"})`;
                     case "copyWithin":
                         return `bbl::js::array_copy_within(${receiver()}, ${args().join(", ")})`;
+                    case "fill":
+                        if (node.arguments.length !== 1)
+                            return this.refuse(
+                                node,
+                                "Pinned typed fill of a range.",
+                            );
+                        return `bbl::pinned::typed_fill(${receiver()}, ${this.value(node.arguments[0]!)})`;
                     default:
                         break;
                 }
@@ -2379,10 +2668,29 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 const member = this.model.member(shape.name, name, callee);
                 if (member.shape.kind === "function") {
                     const parameters = member.shape.parameters;
-                    return `${member.access(receiver())}(${args(parameters).join(", ")})`;
+                    if (node.arguments.length > parameters.length)
+                        return this.refuse(
+                            node,
+                            "Pinned method call passes extra arguments.",
+                        );
+                    return member.call
+                        ? member.call(receiver(), args(parameters))
+                        : `${member.access(receiver())}(${args(parameters).join(", ")})`;
                 }
                 break;
             }
+            case "weakset":
+                switch (name) {
+                    case "add":
+                        return `bbl::pinned::weak_set(${receiver()}, ${this.value(node.arguments[0]!)}, true)`;
+                    case "has":
+                        return `bbl::pinned::weak_has(${receiver()}, ${this.value(node.arguments[0]!)})`;
+                    case "delete":
+                        return `bbl::pinned::weak_delete(${receiver()}, ${this.value(node.arguments[0]!)})`;
+                    default:
+                        break;
+                }
+                break;
             case "native": {
                 const native = shape.methods?.get(name);
                 if (native) return native(receiver(), args());
@@ -2475,8 +2783,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             // literal, so dropping it drops no evaluation.
             if (this.model.record(record).spec.omit?.has(name)) {
                 if (
-                    !ts.isPropertyAssignment(property) ||
-                    !ts.isStringLiteral(property.initializer)
+                    !ts.isMethodDeclaration(property) &&
+                    !(
+                        ts.isPropertyAssignment(property) &&
+                        this.inert(property.initializer)
+                    )
                 )
                     return this.refuse(
                         property,
@@ -2494,6 +2805,31 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         });
     }
 
+    /** A literal, or a module constant bound to one: dropping it drops nothing. */
+    private inert(node: ts.Expression): boolean {
+        const unwrapped = this.skipParentheses(node);
+        if (
+            ts.isStringLiteral(unwrapped) ||
+            ts.isNumericLiteral(unwrapped) ||
+            unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
+            unwrapped.kind === ts.SyntaxKind.FalseKeyword
+        )
+            return true;
+        if (!ts.isIdentifier(unwrapped)) return false;
+        const declaration = this.model.declarationOf(unwrapped);
+        return (
+            declaration !== undefined &&
+            ts.isVariableDeclaration(declaration) &&
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            declaration.initializer !== undefined &&
+            this.inert(
+                ts.isAsExpression(declaration.initializer)
+                    ? declaration.initializer.expression
+                    : declaration.initializer,
+            )
+        );
+    }
+
     // ── Constructions ───────────────────────────────────────────────────
 
     private objectLiteral(
@@ -2508,6 +2844,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     "Pinned identity object with members.",
                 );
             return "std::make_shared<bbl::pinned::PlainObject>()";
+        }
+        if (shape.kind === "variant") {
+            const records = shape.members.filter(
+                (member) => member.kind === "record",
+            );
+            if (records.length !== 1)
+                return this.refuse(
+                    node,
+                    `Pinned object literal as ${this.cpp(to)} names no single record.`,
+                );
+            return `${this.cpp(shape)}(${this.objectLiteral(node, records[0]!)})`;
         }
         if (shape.kind !== "record")
             return this.refuse(
@@ -2555,6 +2902,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const args = node.arguments ?? [];
         const shape = this.stripOptional(to);
         switch (name) {
+            case "WeakSet":
+                if (shape.kind !== "weakset" || args.length !== 0)
+                    return this.refuse(node, "Pinned new WeakSet.");
+                return `${this.cpp(shape)}{}`;
             case "Map":
             case "Set":
             case "WeakMap":
@@ -2603,6 +2954,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 if (shape.kind !== "typed" || args.length !== 1)
                     return this.refuse(node, `Pinned new ${name}.`);
                 const argument = args[0]!;
+                const literal = this.skipParentheses(argument);
+                if (ts.isArrayLiteralExpression(literal))
+                    return `${this.cpp(shape)}{${literal.elements
+                        .map(
+                            (element) =>
+                                `static_cast<${{ f32: "float", u32: "std::uint32_t", u8: "std::uint8_t" }[shape.element]}>(${this.convert(element, { kind: "number" })})`,
+                        )
+                        .join(", ")}}`;
                 const argumentShape = this.shapeAt(argument);
                 if (argumentShape.kind === "buffer")
                     return `${this.cpp(shape)}(${this.value(argument)})`;
@@ -2783,6 +3142,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         declaration: ts.VariableDeclaration,
         indent: string,
     ): string[] {
+        if (ts.isObjectBindingPattern(declaration.name))
+            return this.destructured(declaration, declaration.name, indent);
         if (!ts.isIdentifier(declaration.name))
             return this.refuse(
                 declaration,
@@ -2791,9 +3152,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (this.omittedReason(declaration.name)) return [];
         const declared = this.checker.getTypeAtLocation(declaration.name);
         const storage =
+            this.model.unresolvedShape(declared, declaration) ??
             (this.containsAny(declared) && declaration.initializer
                 ? this.structuralShape(declaration.initializer)
-                : undefined) ?? this.model.shapeOf(declared, declaration);
+                : undefined) ??
+            this.model.shapeOf(declared, declaration);
         const initializer = declaration.initializer;
         const value = initializer
             ? this.convert(initializer, storage)
@@ -2804,6 +3167,60 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return [
             `${indent}${this.mayBeUnread(declaration.name) ? "[[maybe_unused]] " : ""}${this.cpp(storage)} ${cpp} = ${value};`,
         ];
+    }
+
+    /** `const { _a: a, b } = value`: the value once, then each named member. */
+    private destructured(
+        declaration: ts.VariableDeclaration,
+        pattern: ts.ObjectBindingPattern,
+        indent: string,
+    ): string[] {
+        const initializer = declaration.initializer;
+        if (!initializer)
+            return this.refuse(
+                declaration,
+                "Pinned destructuring needs a value.",
+            );
+        const shape = this.stripOptional(this.shapeAt(initializer));
+        if (shape.kind !== "record")
+            return this.refuse(
+                initializer,
+                "Pinned destructuring of a non-record.",
+            );
+        const source = this.temporary("destructured");
+        const lines = [
+            `${indent}${this.cpp(shape)} ${source} = ${this.convert(initializer, shape)};`,
+        ];
+        for (const element of pattern.elements) {
+            const property = element.propertyName ?? element.name;
+            if (
+                element.dotDotDotToken ||
+                element.initializer ||
+                !ts.isIdentifier(element.name) ||
+                !(ts.isIdentifier(property) || ts.isStringLiteral(property))
+            )
+                return this.refuse(element, "Pinned destructuring element.");
+            const member = this.model.member(
+                shape.name,
+                property.text,
+                element,
+            );
+            const storage = this.model.declaredShape(
+                this.checker.getTypeAtLocation(element.name),
+                element,
+            );
+            const value = this.coerce(
+                member.access(source),
+                member.shape,
+                storage,
+                element,
+            );
+            const cpp = this.declare(element.name, storage);
+            lines.push(
+                `${indent}${this.mayBeUnread(element.name) ? "[[maybe_unused]] " : ""}${this.cpp(storage)} ${cpp} = ${value};`,
+            );
+        }
+        return lines;
     }
 
     private expressionLines(
@@ -2830,7 +3247,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const adapter = this.adapterOf(expression);
             if (adapter)
                 return adapter.cpp(
-                    (index) => this.value(expression.arguments[index]!),
+                    (index) => this.adapterArgument(expression, index),
                     expression,
                     (name) => this.localNamed(name, expression),
                 );
@@ -2868,6 +3285,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 [ts.SyntaxKind.AsteriskEqualsToken, "*="],
                 [ts.SyntaxKind.SlashEqualsToken, "/="],
             ]).get(kind);
+            // `r <<= 1` stores `r << 1` through the shared JavaScript helper.
+            const bitwise = PINNED_BITWISE_ASSIGNMENT_OPERATORS.get(kind);
+            if (bitwise !== undefined) {
+                const place = this.numericPlace(expression.left);
+                return `${place} = static_cast<double>(${jsBitwiseCall(bitwise, place, this.value(expression.right))})`;
+            }
             if (compound)
                 return `${this.numericPlace(expression.left)} ${compound} ${this.value(expression.right)}`;
         }
