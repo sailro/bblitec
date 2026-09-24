@@ -1,4 +1,4 @@
-import { float32Literal, floatLiteral } from "../cpp-literals.js";
+import { float32Literal } from "../cpp-literals.js";
 
 /**
  * A constant typed-array table stored in its array's own element type.
@@ -67,48 +67,14 @@ function literalValue(text: string): number | undefined {
     return match ? Number(match[1] ?? match[2]) : undefined;
 }
 
-const float32Bits = new Float32Array(1);
-const float32Word = new Uint32Array(float32Bits.buffer);
-
-/** The float32 adjacent to `value` (itself a float32) on the side of `toward`. */
-function adjacentFloat32(value: number, toward: number): number {
-    float32Bits[0] = value;
-    // Magnitude grows with the stored word for both signs, so the step
-    // direction depends on whether `toward` is further from zero.
-    const away = Math.abs(toward) > Math.abs(value);
-    float32Word[0] = float32Word[0]! + (away ? 1 : -1);
-    return float32Bits[0];
-}
-
-/**
- * Whether `decimal` (a double) lies exactly halfway between two float32s.
- *
- * `float32Literal` proves its decimal rounds to the float through a double;
- * a C++ `f` literal rounds the decimal once, straight to float. The two can
- * disagree only when the intermediate double is exactly such a midpoint:
- * any other double lies strictly on the decimal's own side of every
- * midpoint, because the midpoints are themselves doubles.
- */
-function isFloat32Midpoint(decimal: number): boolean {
-    const nearest = Math.fround(decimal);
-    if (nearest === decimal || !Number.isFinite(nearest)) return false;
-    const other = adjacentFloat32(nearest, decimal);
-    return Math.abs(decimal - nearest) === Math.abs(other - decimal);
-}
-
 /**
  * The shortest `float` literal that a C++ compiler reads back as exactly
  * the float32 `value`, or undefined where no finite float names it.
  */
 export function float32TableLiteral(value: number): string | undefined {
-    const stored = Math.fround(value);
-    if (!Number.isFinite(stored)) return undefined;
-    const literal = float32Literal(stored);
-    // `floatLiteral` spells the float's exact double value, which is never
-    // near a midpoint and so always parses back to the same float.
-    return isFloat32Midpoint(Number(literal.slice(0, -1)))
-        ? floatLiteral(stored)
-        : literal;
+    return Number.isFinite(Math.fround(value))
+        ? float32Literal(value)
+        : undefined;
 }
 
 /**
