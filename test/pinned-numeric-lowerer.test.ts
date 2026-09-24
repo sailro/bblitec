@@ -43,6 +43,7 @@ function lower(
             | "vec3Literal"
             | "returnValue"
             | "recordTypes"
+            | "expression"
         >
     > = {},
 ): string {
@@ -64,6 +65,7 @@ function lower(
         ...(extra.vec3Literal ? { vec3Literal: extra.vec3Literal } : {}),
         ...(extra.returnValue ? { returnValue: extra.returnValue } : {}),
         ...(extra.recordTypes ? { recordTypes: extra.recordTypes } : {}),
+        ...(extra.expression ? { expression: extra.expression } : {}),
     });
     // The statement list, as a lowered body is: a statement after one that
     // definitely returns is not translated.
@@ -473,7 +475,7 @@ test("typeof a statically absent value is its absence's, not its stand-in's", ()
                 'let result = 0; if (typeof hook === "undefined") { result = 1; }',
                 [["hook", absentBinding()]],
             ),
-        /Unsupported pinned typeof test: typeof hook === "undefined"/,
+        /Unsupported pinned expression: typeof hook\./,
     );
 });
 
@@ -521,7 +523,30 @@ test("typeof a value absent at run time tests its presence", () => {
                     ],
                 ],
             ),
-        /Unsupported pinned typeof test: typeof weight === "undefined"/,
+        /Unsupported pinned expression: typeof weight\./,
+    );
+});
+
+test("a typeof test the binding leaves open lowers through the caller's spelling", () => {
+    // `_resolveComputeStorageTextureSampleType`'s guard: `format` is a
+    // native string the binding does not type, and the caller spells its
+    // `typeof` itself.
+    const cpp = lower(
+        'let result = 0; if (typeof format !== "string") { result = 1; }',
+        [["format", { cpp: "format", type: "opaque" }]],
+        {
+            expression: (node) =>
+                ts.isStringLiteral(node)
+                    ? `std::string_view{"${node.text}"}`
+                    : ts.isTypeOfExpression(node) &&
+                        node.expression.getText() === "format"
+                      ? 'std::string_view{"string"}'
+                      : undefined,
+        },
+    );
+    assert.match(
+        cpp,
+        /if \(std::string_view\{"string"\} != std::string_view\{"string"\}\) \{\s*result = 1\.0;/,
     );
 });
 
