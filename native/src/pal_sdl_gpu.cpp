@@ -8301,11 +8301,6 @@ public:
             prune_shared_shader_material_textures(state);
             prune_shared_composed_material_textures(state);
         }
-        sync_plan_meshes(render_plan, state.meshes);
-        for (std::size_t layer = 0;
-             layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
-            sync_plan_meshes(overlay_plans[layer], state.overlay_meshes[layer]);
-        }
         bool topology_updated = overlays_updated;
         if (scene.render_topology_version != synced_render_topology_version) {
             const std::size_t previous_item_count = render_plan.items.size();
@@ -8365,6 +8360,13 @@ public:
             rebuild_task_draw_lists();
         }
         synced_draw_list_epoch = engine.draw_list_epoch;
+        // After the rebuild, as on Dawn: the previous plan can still list a
+        // mesh this frame retired, whose slot a new mesh may already hold.
+        sync_plan_meshes(render_plan, state.meshes);
+        for (std::size_t layer = 0;
+             layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
+            sync_plan_meshes(overlay_plans[layer], state.overlay_meshes[layer]);
+        }
         sync_shader_storage_buffers(state, engine, frame_buffer_uploads);
         frame_buffer_uploads.submit();
         uploaded = cpu_profile ? monotonic_milliseconds() : 0.0;
