@@ -1651,7 +1651,13 @@ export class PinnedNumericLowerer {
             const isBoolean =
                 initializer.kind === ts.SyntaxKind.TrueKeyword ||
                 initializer.kind === ts.SyntaxKind.FalseKeyword;
-            const value = this.expression(source);
+            // A number copied from a counted loop's `std::int64_t` index
+            // converts explicitly, as a store of one does.
+            const value =
+                ts.isIdentifier(initializer) &&
+                this.scope.bindings.get(initializer.text)?.type === "index"
+                    ? `static_cast<double>(${this.expression(source)})`
+                    : this.expression(source);
             this.scope.bindings.set(name, {
                 cpp,
                 type: isBoolean ? "bool" : "scalar",
