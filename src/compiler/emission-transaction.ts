@@ -97,9 +97,23 @@ export class EmissionTransaction {
     }
 }
 
+function sameDescriptor(
+    current: PropertyDescriptor,
+    captured: PropertyDescriptor,
+): boolean {
+    return (
+        current.enumerable === captured.enumerable &&
+        current.configurable === captured.configurable &&
+        ("value" in captured
+            ? current.writable === captured.writable &&
+              Object.is(current.value, captured.value)
+            : current.get === captured.get && current.set === captured.set)
+    );
+}
+
 /**
  * Restore an object's own properties to a snapshot, key order included:
- * iteration order is output order.
+ * iteration order is output order. Unchanged properties are left alone.
  */
 function restoreProperties(
     target: object,
@@ -107,13 +121,23 @@ function restoreProperties(
     descriptors: readonly PropertyDescriptor[],
 ): void {
     const current = Reflect.ownKeys(target);
-    if (
+    const reordered =
         current.length !== keys.length ||
-        current.some((key, index) => key !== keys[index])
-    )
+        current.some((key, index) => key !== keys[index]);
+    if (reordered)
         for (const key of current) Reflect.deleteProperty(target, key);
-    for (let index = 0; index < keys.length; ++index)
-        Reflect.defineProperty(target, keys[index]!, descriptors[index]!);
+    for (let index = 0; index < keys.length; ++index) {
+        const key = keys[index]!,
+            descriptor = descriptors[index]!;
+        if (
+            reordered ||
+            !sameDescriptor(
+                Reflect.getOwnPropertyDescriptor(target, key)!,
+                descriptor,
+            )
+        )
+            Reflect.defineProperty(target, key, descriptor);
+    }
 }
 
 function snapshotProperties(target: object): Undo {
