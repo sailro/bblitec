@@ -44,6 +44,12 @@ import {
     type OfflineShaderStage,
 } from "./shader-composition.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
+import { findRepositoryRoot } from "./repository-root.js";
+import {
+    tintToolBuildCommand,
+    tintToolMismatch,
+    tintToolSourceDigest,
+} from "./tint-tool.js";
 import { repositoryModuleClosure } from "./bake-cache.js";
 
 /**
@@ -129,6 +135,11 @@ function sha256(value: string): string {
 
 function digestUpper(path: string): string {
     return contentDigest(path).toUpperCase();
+}
+
+/** The checkout this compiler runs from, whose tool sources bblite-tint must record. */
+function compilerRepositoryRoot(): string {
+    return findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
 }
 
 function shaderCompilerIdentity(): string {
@@ -312,16 +323,38 @@ export function compileOfflineShaders(
             ? tools.bbliteTint
             : undefined;
     const tintHash = tint ? digestUpper(tint) : "";
+    // A tool built from other sources than this compiler's checkout writes
+    // that checkout's products (another sidecar format, say): the first
+    // stage that needs it refuses it instead.
+    let tintVerified = false;
+    const requireTint = (): string => {
+        if (!tint)
+            throw new Error(
+                `Reached WGSL requires the bblite-tint built from this checkout's tools/tint-sdl; run ${tintToolBuildCommand} or set BBLITE_TINT_PATH.`,
+            );
+        if (!tintVerified) {
+            const mismatch = tintToolMismatch(tint, compilerRepositoryRoot());
+            if (mismatch !== undefined)
+                throw new Error(
+                    `The bblite-tint at ${tint} is not this checkout's: ${mismatch}. Run ${tintToolBuildCommand}.`,
+                );
+            tintVerified = true;
+        }
+        return tint;
+    };
     const dxcHash = needsDxc && tools.dxc ? digestUpper(tools.dxc) : "";
     const implementationHash = shaderCompilerIdentity();
     const pinPath = join(root, "upstream", "tint.json");
     const pinHash = existsSync(pinPath) ? contentDigest(pinPath) : "missing";
+    // The checkout's tool sources too: a directory compiled before they
+    // changed is not current, and recompiling it verifies the tool.
     const sharedInput = hashEntries([
         target,
         compilerHash,
         tintHash,
         implementationHash,
         pinHash,
+        tintToolSourceDigest(compilerRepositoryRoot()),
     ]);
     const cacheRoot = join(root, "artifacts", "shader-cache");
     mkdirSync(cacheRoot, { recursive: true });
@@ -383,10 +416,7 @@ export function compileOfflineShaders(
                 throw new Error(
                     `${source} is not declared in composition.json.`,
                 );
-            if (!tint)
-                throw new Error(
-                    "Reached WGSL requires bblite-tint; run tools/build-tint.ps1 or set BBLITE_TINT_PATH.",
-                );
+            const tool = requireTint();
             let wgsl: string | undefined;
             let uniformAdaptation: SdlUniformAdaptation | undefined;
             for (const stage of sourceStages) {
@@ -430,7 +460,7 @@ export function compileOfflineShaders(
                 });
                 const compile = (input: string) =>
                     runCompiler(
-                        tint,
+                        tool,
                         [
                             input,
                             "--display-name",

@@ -20,13 +20,12 @@ import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import test from "node:test";
 import { captureIsCurrent } from "../src/capture-instrumented.js";
+import { findPinnedTint } from "../src/tint-tool.js";
 
 // Compiled to `dist/test/`, so the repository root is two levels up.
 const root = resolve(import.meta.dirname, "..", "..");
 const generated = resolve(root, "generated");
-const tint =
-    process.env["TINT_PATH"] ??
-    resolve(root, "artifacts", "tools", "tint", "tint.exe");
+const tint = process.env["TINT_PATH"] ?? findPinnedTint(root) ?? "";
 
 function composedStages(): string[] {
     if (!existsSync(generated)) return [];

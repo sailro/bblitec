@@ -253,7 +253,7 @@ and performance.
 | TL-28 | low | `patch-inventory`'s regex breaks when CMake wraps a warning line in a long worktree path. | The configure test collapses CMake's output whitespace and matches each refusal whole, with its directory and record path; it passes from 48 checkout path lengths (15–62). | fixed |
 | TL-29 | low | `scene-command process` help says it runs parity and the published-status check; it compiles, builds shaders and builds. | The `process` entry always said compile, compile shaders and build (a line filter paired it with `validate`'s summary); `help <command>` and `<command> --help` print one entry, and a test pins what `process` and `validate` say. | fixed |
 | TL-30 | low | Android packages of Dawn builds lost `Dawn-provenance.json` when the notices moved to `package-notices.ts`. | The Android notice set carries it again for Dawn builds. | fixed |
-| TL-31 | med | Nothing detects a stale `bblite-tint`: a tool that no longer matches `tools/tint-sdl` silently writes an old sidecar format every checkout shares. | Record the wrapper's source hash in its provenance and refuse a mismatch in `compile-shaders`. | open |
+| TL-31 | med | Nothing detects a stale `bblite-tint`: a tool that no longer matches `tools/tint-sdl` silently writes an old sidecar format every checkout shares. | `tools/build-tint.ps1` records every source a build reads by path and SHA-256 in the tool's `provenance.json` and builds each source set into its own `artifacts/tools/tint/<identity>`; discovery uses only the build recording the checkout's own sources, `compile-shaders` refuses any other tool (`BBLITE_TINT_PATH` included), and the sources' digest keys the shader checkpoints. | fixed |
 
 ## Building (BD)
 
