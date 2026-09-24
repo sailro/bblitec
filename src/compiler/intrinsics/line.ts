@@ -81,7 +81,7 @@ export function compileLineIntrinsic(
 ): Value | undefined {
     switch (importedName) {
         case "createLineMaterial": {
-            context.recordSceneMaterialSlot();
+            context.sceneManifest.recordSceneMaterialSlot();
             context.expectArgumentCount(call, 0, 1);
             const engine = context.requireDefaultEngine(call);
             const options = call.arguments[0]
@@ -168,7 +168,7 @@ export function compileLineIntrinsic(
                 materialCpp =
                     `bbl::create_shader_material(${engine.cpp}, ` +
                     `${variant.id}u)`;
-                context.recordSceneMaterialSlot();
+                context.sceneManifest.recordSceneMaterialSlot();
             }
             const permutation = context.lineMaterialPermutation(
                 variantName,
@@ -188,7 +188,7 @@ export function compileLineIntrinsic(
                     "createLineSystem requires material.useVertexColor to match the line color-buffer layout.",
                 );
             }
-            context.recordSceneMesh("from-data", {
+            context.sceneManifest.recordSceneMesh("from-data", {
                 hasUv2: false,
                 hasTangents: false,
                 hasColors: colors !== undefined,

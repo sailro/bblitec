@@ -71,7 +71,7 @@ export interface StatementLoweringContext extends Pick<
     | "checker"
     | "symbols"
     | "dataTypes"
-    | "reachedNodeParticles"
+    | "sceneManifest"
     | "handleCollections"
     | "constructsLocalClass"
     | "lookupOptional"

@@ -79,8 +79,7 @@ export interface PhysicsIntrinsicContext
             | "emit"
             | "resolveStaticExpression"
             | "reachPhysicsViewerMaterial"
-            | "recordRuntimeMeshProfile"
-            | "recordSceneMeshMaterial"
+            | "sceneManifest"
         > {}
 
 /**
@@ -963,13 +962,13 @@ function compileShowPhysicsBody(
             argumentAt(call, 0),
             "Physics viewer material must retain its construction-known variant.",
         );
-    const profile = context.recordSceneMesh("from-data", {
+    const profile = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
     });
-    context.recordRuntimeMeshProfile(profile);
-    context.recordSceneMeshMaterial(profile, {
+    context.sceneManifest.recordRuntimeMeshProfile(profile);
+    context.sceneManifest.recordSceneMeshMaterial(profile, {
         pbrMaterial: null,
         nodeMaterial: null,
         standardMaterial: false,

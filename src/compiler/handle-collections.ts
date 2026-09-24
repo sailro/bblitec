@@ -359,13 +359,12 @@ interface HandleCollectionsContext
         Pick<
             LoweringServices,
             | "guardStaticConstructionRead"
-            | "meshWalks"
+            | "sceneManifest"
             | "checker"
             | "symbols"
             | "dataTypes"
             | "options"
             | "assetPayloads"
-            | "reachedNodeParticles"
             | "unwrap"
             | "importedName"
             | "fail"
@@ -384,7 +383,6 @@ interface HandleCollectionsContext
             | "expectKind"
             | "expectSameEngine"
             | "expectArgumentCount"
-            | "addSceneLight"
         > {}
 
 /**
@@ -829,10 +827,11 @@ export class HandleCollections {
         if (owner.asset?.kind !== "gltf" && owner.asset?.kind !== "babylon")
             return target;
         const key = JSON.stringify(walk);
-        let index = this.context.meshWalks.findIndex(
+        let index = this.context.sceneManifest.meshWalks.findIndex(
             (candidate) => JSON.stringify(candidate) === key,
         );
-        if (index < 0) index = this.context.meshWalks.push(walk) - 1;
+        if (index < 0)
+            index = this.context.sceneManifest.meshWalks.push(walk) - 1;
         const demanded = (owner.asset.meshWalks ??= []);
         if (!demanded.includes(index)) demanded.push(index);
         return {
@@ -1430,7 +1429,7 @@ export class HandleCollections {
                 "A scene light is missing its generated light kind.",
             );
         }
-        this.context.addSceneLight(scene, light, light.lightKind);
+        this.context.sceneManifest.addSceneLight(scene, light, light.lightKind);
         return {
             kind: "void",
             cpp: `bbl::add_to_scene(${scene.cpp}, ${light.cpp})`,
@@ -1479,10 +1478,12 @@ export class HandleCollections {
             );
         }
         if (
-            this.context.reachedNodeParticles.sets[set.nodeParticleSetIndex]
-                ?.native ||
-            this.context.reachedNodeParticles.sets[system.nodeParticleSetIndex]
-                ?.native
+            this.context.sceneManifest.reachedNodeParticles.sets[
+                set.nodeParticleSetIndex
+            ]?.native ||
+            this.context.sceneManifest.reachedNodeParticles.sets[
+                system.nodeParticleSetIndex
+            ]?.native
         ) {
             this.context.fail(
                 call,
@@ -1490,7 +1491,7 @@ export class HandleCollections {
             );
         }
         if (
-            this.context.reachedNodeParticles.buffers.some(
+            this.context.sceneManifest.reachedNodeParticles.buffers.some(
                 (buffer) =>
                     buffer.set === set.nodeParticleSetIndex ||
                     buffer.set === system.nodeParticleSetIndex,
@@ -1501,7 +1502,7 @@ export class HandleCollections {
                 "System-list composition cannot follow native frozen particle buffer reads or sprite-sheet assignment; pushed systems share their original buffer identity.",
             );
         }
-        this.context.reachedNodeParticles.steps.push({
+        this.context.sceneManifest.reachedNodeParticles.steps.push({
             op: "push-system",
             set: set.nodeParticleSetIndex,
             fromSet: system.nodeParticleSetIndex,

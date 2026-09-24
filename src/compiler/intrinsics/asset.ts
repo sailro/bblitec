@@ -67,7 +67,7 @@ export interface AssetIntrinsicContext
             | "fail"
             | "resolveStaticExpression"
             | "expectStaticArrayLiteral"
-            | "recordSplatFragments"
+            | "sceneManifest"
             | "assetMeshCollection"
         > {}
 
@@ -273,7 +273,7 @@ function compileLoadSplat(
     const source = context.compileStringLiteral(argumentAt(call, 1));
     const asset = context.registerAsset(source, "splat");
     if (call.arguments.length === 3) {
-        context.recordSplatFragments(
+        context.sceneManifest.recordSplatFragments(
             compileSplatFragments(context, call),
             call,
         );

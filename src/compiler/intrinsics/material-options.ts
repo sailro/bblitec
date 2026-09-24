@@ -73,9 +73,7 @@ export interface MaterialOptionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
-            | "scenePbrMaterials"
-            | "currentGltfAssetCount"
-            | "recordSceneMaterialSlot"
+            | "sceneManifest"
             | "compileValue"
             | "compileForDataSink"
             | "noteMaterialColorRead"
@@ -641,9 +639,9 @@ export function compilePbrMaterialOptions(
     // ARE the material record its feature derivation reads. Scalar options
     // are static; an array with runtime contents carries presence separately.
     const sceneMaterialIndex =
-        context.scenePbrMaterials.push({
-            materialsBefore: context.recordSceneMaterialSlot(),
-            gltfAssetsBefore: context.currentGltfAssetCount(),
+        context.sceneManifest.scenePbrMaterials.push({
+            materialsBefore: context.sceneManifest.recordSceneMaterialSlot(),
+            gltfAssetsBefore: context.sceneManifest.currentGltfAssetCount(),
             hasBaseColorTexture: true,
             hasOrmTexture: true,
             ...(baseColorFactor?.value

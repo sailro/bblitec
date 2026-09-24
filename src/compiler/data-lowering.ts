@@ -194,7 +194,7 @@ export interface DataLoweringContext
             | "cppString"
             | "propertyName"
             | "recordDataAssignmentMetadata"
-            | "recordDataLightSlot"
+            | "sceneManifest"
             | "declaredDataProperty"
             | "readResolvedProperty"
             | "resolveStaticExpression"

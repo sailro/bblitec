@@ -163,7 +163,7 @@ test("the compiler delegates intrinsic families and feature lowering", () => {
         "adaptations",
         "assets",
         "output-projection",
-        "scene-materials",
+        "scene-manifest",
         "module-initializers",
         "sprite-atlas-record",
     ])

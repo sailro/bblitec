@@ -1,6 +1,5 @@
 import type ts from "typescript";
 import type { AssetDecoderConfiguration } from "../asset-decoders.js";
-import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { CompiledRenderTargetOptions } from "./intrinsics/engine-options.js";
 import type {
     CompiledAnisotropyOptions,
@@ -39,37 +38,14 @@ import type {
 import type {
     CompileAsset,
     DefaultRenderTaskEmission,
-    CompiledNodeMaterial,
-    CompiledNodeParticles,
-    CompiledShaderProgram,
-    CompiledComputeProgram,
     Feature,
     GeometryOutputTaskManifest,
-    LightKind,
-    PostProcessCompositeManifest,
-    PostProcessTaskManifest,
-    ScreenSpaceTaskManifest,
     ResolvedCompileOptions,
-    SceneMeshNamePredicate,
-    ShadowCasterMeshManifest,
-    ShadowGeneratorManifest,
-    ScenePbrClearCoatManifest,
-    ScenePbrAnisotropyManifest,
-    ScenePbrIridescenceManifest,
-    ScenePbrLightmapManifest,
-    ScenePbrMaterialManifest,
-    ScenePbrMetallicReflectanceManifest,
-    ScenePbrSheenManifest,
-    ScenePbrSubsurfaceManifest,
-    SplatFragmentManifest,
-    SpriteCustomShaderManifest,
-    EffectManifest,
     FrameCallbackSignature,
     Value,
     ValueKind,
     VariableBinding,
 } from "./types.js";
-import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type {
     CapturedClosure,
     NativeCaptureBinding,
@@ -80,9 +56,8 @@ import type {
     ParameterizedResourceLoop,
     ResourceLoop,
 } from "./resource-loops.js";
-import type { ClusteredContainerState } from "./types.js";
 import type { ClassLowerer } from "./classes.js";
-import type { CompiledTextData } from "../pinned-text-data.js";
+import type { SceneManifestRecorder } from "./scene-manifest.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -139,6 +114,7 @@ export interface LoweringServices {
     readonly symbols: CompilerSymbols;
     readonly evaluator: StaticEvaluator;
     readonly handleCollections: HandleCollections;
+    readonly sceneManifest: SceneManifestRecorder;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
@@ -157,20 +133,10 @@ export interface LoweringServices {
         node: ts.Node,
     ): void;
     readonly assetPayloads: Map<string, string>;
-    readonly reachedTextData: CompiledTextData[];
-    readonly reachedComputePrograms: CompiledComputeProgram[];
-    readonly reachedShaderPrograms: CompiledShaderProgram[];
-    readonly reachedNodeMaterials: CompiledNodeMaterial[];
-    readonly meshWalks: CompiledMeshWalk[];
-    readonly reachedNodeParticles: CompiledNodeParticles;
     readonly boundPixelsTextures: Set<string>;
     readonly erasedBrowserExpressions: Set<number>;
     readonly erasedBrowserInstrumentation: Set<number>;
     readonly unwrappedAwaitExpressions: Set<number>;
-    readonly geometryOutputTasks: GeometryOutputTaskManifest[];
-    readonly postProcessTasks: PostProcessTaskManifest[];
-    readonly postProcessComposites: PostProcessCompositeManifest[];
-    readonly screenSpaceTasks: ScreenSpaceTaskManifest[];
     readonly localCubemapState: {
         maxCandidates?: number;
     };
@@ -327,7 +293,6 @@ export interface LoweringServices {
         name: string;
         id: number;
     };
-    recordRuntimeMeshProfile(index: number): void;
     guardStaticConstructionRead(operation: string): void;
     reachLinearDepthMaterial(
         node: ts.Node,
@@ -340,8 +305,6 @@ export interface LoweringServices {
         name: string,
         node: ts.Node,
     ): LineMaterialPermutation | undefined;
-    recordEffect(effect: EffectManifest): number;
-    selectToneMapping(name: string, node: ts.Node): void;
     compileNodeMaterialOptions(
         snippetExpression: ts.Expression,
         optionsExpression: ts.Expression | undefined,
@@ -935,25 +898,6 @@ export interface LoweringServices {
     audioSessionCpp(): string;
     requireDefaultEngine(node: ts.Node): string;
     requirePresentationHost(node: ts.Node): string;
-    get scenePbrMaterials(): ScenePbrMaterialManifest[];
-    recordScenePbrNoColorView(sourceIndex: number | undefined): number;
-    recordSceneMaterialSlot(): number;
-    currentGltfAssetCount(): number;
-    recordScenePbrUnlit(index: number | undefined): void;
-    recordScenePbrSkybox(index: number | undefined): void;
-    recordScenePbrGammaAlbedo(index: number | undefined): void;
-    recordScenePbrShadowOnly(
-        index: number | undefined,
-        options: NonNullable<ScenePbrMaterialManifest["shadowOnly"]>,
-    ): void;
-    recordScenePbrPlugins(
-        plugins: readonly MaterialPluginManifest[],
-        index: number | undefined,
-    ): void;
-    recordStandardMaterialPlugins(
-        plugins: readonly MaterialPluginManifest[],
-        material: NonNullable<Value["standardMaterialInput"]>,
-    ): number;
     withBoundParameters<T>(
         parameters: readonly {
             name: ts.Identifier;
@@ -962,117 +906,7 @@ export interface LoweringServices {
         }[],
         work: () => T,
     ): T;
-    recordScenePbrSheen(
-        sheen: ScenePbrSheenManifest,
-        index: number | undefined,
-    ): void;
-    recordScenePbrClearCoat(
-        clearCoat: ScenePbrClearCoatManifest,
-        index: number | undefined,
-    ): void;
-    recordScenePbrEmissive(
-        color: readonly [number, number, number] | undefined,
-        index: number | undefined,
-    ): void;
-    recordScenePbrIridescence(
-        iridescence: ScenePbrIridescenceManifest,
-        index: number | undefined,
-    ): void;
-    recordScenePbrLightmap(
-        lightmap: ScenePbrLightmapManifest,
-        index: number | undefined,
-    ): void;
     pbrLightmapEnabled(): boolean;
-    recordAssetSceneLightmap(
-        meshNamePredicate: SceneMeshNamePredicate,
-        lightmap: ScenePbrLightmapManifest,
-        node: ts.Node,
-    ): void;
-    recordScenePbrSubsurface(
-        subsurface: ScenePbrSubsurfaceManifest,
-        index: number | undefined,
-    ): void;
-    recordScenePbrAnisotropy(
-        anisotropy: ScenePbrAnisotropyManifest,
-        index: number | undefined,
-    ): void;
-    recordScenePbrMetallicReflectance(
-        reflectance: ScenePbrMetallicReflectanceManifest,
-        index: number | undefined,
-    ): void;
-    recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
-    recordPureSpriteVertex(): void;
-    spriteCustomShaders(): readonly SpriteCustomShaderManifest[];
-    recordSpriteCustomShader(shader: SpriteCustomShaderManifest): void;
-    recordSplatFragments(
-        fragments: readonly SplatFragmentManifest[],
-        node: ts.Node,
-    ): void;
-    recordShadowGenerator(
-        entry: Omit<ShadowGeneratorManifest, "casters"> & {
-            lightIdentity?: NonNullable<Value["lightIdentity"]>;
-        },
-    ): number;
-    recordDataLightSlot(value: Value, index: number): void;
-    shadowGeneratorLight(
-        index: number,
-        node: ts.Node,
-    ): {
-        lightIndex: number;
-    };
-    recordThinInstanceColorMesh(sceneMeshIndex: number | undefined): void;
-    recordSceneMeshMaterial(
-        meshIndex: number,
-        material: {
-            pbrMaterial: number | null;
-            nodeMaterial: number | null;
-            standardMaterial: boolean;
-            standardMaterialPluginIndex?: number | undefined;
-            sceneShaderVariant?: string | undefined;
-            sceneShaderVariants?: readonly string[] | undefined;
-        },
-    ): void;
-    recordUnknownSceneMeshMaterial(materialIndex: number): void;
-    recordUnknownSceneMaterialAssignment(): void;
-    recordUnknownStandardMeshMaterial(): void;
-    recordSceneMeshAssetPbrMaterial(meshIndex: number): void;
-    recordSceneMeshDeformation(
-        meshIndex: number,
-        property: "skinned" | "morphTargets",
-        site: ts.Node,
-    ): void;
-    recordShadowCasters(
-        generatorIndex: number,
-        casters: readonly ShadowCasterMeshManifest[],
-    ): void;
-    recordDynamicShadowCasters(generatorIndex: number): void;
-    recordDynamicShadowCastersForUnknownGenerator(): void;
-    esmGeneratorOrdinal(): number;
-    recordShadowReceiver(sceneMeshIndex: number): void;
-    recordDynamicShadowReceivers(): void;
-    recordSceneMeshId(meshCpp: string, id: string, node: ts.Node): void;
-    resolveSceneMeshIds(ids: readonly string[], node: ts.Node): string[];
-    addSceneLight(scene: Value, light: Value, kind: LightKind): void;
-    addDynamicSceneLight(): void;
-    removeSceneLight(scene: Value, light: Value): void;
-    recordToneMappingEnabledMutation(): void;
-    recordThinInstanceMesh(sceneMeshIndex: number | undefined): void;
-    meshHasThinInstancePool(owner: Value): boolean;
-    recordThinInstanceGpuCulling(sceneMeshIndex: number | undefined): void;
-    meshMayHaveThinInstanceGpuCulling(owner: Value): boolean;
-    recordSceneMesh(
-        kind: string,
-        streams?: {
-            hasUv2: boolean;
-            hasTangents: boolean;
-            hasColors: boolean;
-            runtimeStreams?: true;
-        },
-    ): number;
-    reachClusteredContainer(
-        state: ClusteredContainerState,
-        node: ts.Node,
-    ): void;
     reachFeature(feature: Feature, site?: ts.Node | string): void;
     gltfAlreadyLoaded(): boolean;
     compileSceneRegistration(scene: Value, node: ts.Node): string;
@@ -1083,14 +917,6 @@ export interface LoweringServices {
     importedName(identifier: ts.Identifier): string | undefined;
     requiresStaticIteration(statement: ts.Statement): boolean;
     eraseBrowserInstrumentation(position: number): void;
-    recordGeometryOutputTask(manifest: GeometryOutputTaskManifest): void;
-    recordCopyTask(name: string): void;
-    recordPostProcessTask(manifest: PostProcessTaskManifest): void;
-    recordPostProcessComposite(
-        manifest: PostProcessCompositeManifest,
-        site: ts.Node,
-    ): void;
-    recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void;
     expectArgumentCount(
         call: ts.CallExpression,
         minimum: number,

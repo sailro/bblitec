@@ -29,11 +29,7 @@ export interface ShadowIntrinsicContext
             | "requireEngine"
             | "ensureDefaultRenderTask"
             | "fail"
-            | "recordShadowGenerator"
-            | "recordShadowCasters"
-            | "recordDynamicShadowCasters"
-            | "recordDynamicShadowCastersForUnknownGenerator"
-            | "esmGeneratorOrdinal"
+            | "sceneManifest"
         > {}
 
 /**
@@ -360,9 +356,10 @@ function compileShadowGeneratorFactory(
     if (spec.kind === "esm-directional") {
         // The row this generator's recorded resources sit at, which is
         // generation's answer rather than an option the scene passes.
-        resolved["esmIndex"] = `${context.esmGeneratorOrdinal()}u`;
+        resolved["esmIndex"] =
+            `${context.sceneManifest.esmGeneratorOrdinal()}u`;
     }
-    const index = context.recordShadowGenerator({
+    const index = context.sceneManifest.recordShadowGenerator({
         kind: spec.kind,
         // The generator may precede addToScene, but an unresolved slot must
         // never alias the valid first light. addSceneLight patches this
@@ -543,9 +540,11 @@ export function compileShadowIntrinsic(
                 // itself be runtime-built (Break Meshes fills allPieces in a
                 // native loop), and later registrations filter that list.
                 if (generatorIndex === undefined) {
-                    context.recordDynamicShadowCastersForUnknownGenerator();
+                    context.sceneManifest.recordDynamicShadowCastersForUnknownGenerator();
                 } else {
-                    context.recordDynamicShadowCasters(generatorIndex);
+                    context.sceneManifest.recordDynamicShadowCasters(
+                        generatorIndex,
+                    );
                 }
                 context.reachFeature("material:no-color-view", call);
                 return {
@@ -581,11 +580,16 @@ export function compileShadowIntrinsic(
                 );
             }
             if (generatorIndex === undefined) {
-                context.recordDynamicShadowCastersForUnknownGenerator();
+                context.sceneManifest.recordDynamicShadowCastersForUnknownGenerator();
             } else {
-                context.recordShadowCasters(generatorIndex, casters);
+                context.sceneManifest.recordShadowCasters(
+                    generatorIndex,
+                    casters,
+                );
                 if (hasDynamicCaster) {
-                    context.recordDynamicShadowCasters(generatorIndex);
+                    context.sceneManifest.recordDynamicShadowCasters(
+                        generatorIndex,
+                    );
                 }
             }
             // The caster pass draws each mesh through its material's own

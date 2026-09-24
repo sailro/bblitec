@@ -1,4 +1,3 @@
-import type { CompiledComputeProgram } from "./compiler/types.js";
 import {
     assetRootMutationStates,
     isStringValue,
@@ -74,7 +73,6 @@ import {
     readNodeInputProperty,
 } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
-import type { CompiledMeshWalk } from "./gltf-mesh-walks.js";
 import {
     compileWorkerApplication,
     usesWorkers,
@@ -232,11 +230,9 @@ import { liftWgslModuleConstant } from "./shader-ir.js";
 import {
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
-    reachedShaderProgram,
     resolveShaderStorageBufferSlot,
     resolveShaderTextureSlot,
     resolveShaderUniform,
-    shaderThinInstanceLanes,
 } from "./compiler/shader-material.js";
 import { DataLowerer, isNeverResized } from "./compiler/data-lowering.js";
 import {
@@ -336,7 +332,6 @@ import {
     isStoringDataCall,
     mutatingArrayMethods,
 } from "./compiler/data-methods.js";
-import type { MaterialPluginManifest } from "./pinned-material-plugins.js";
 import {
     ClosureCaptures,
     nativeCompanionKeys,
@@ -358,39 +353,16 @@ import {
 } from "./compiler/resource-loops.js";
 import { StaticExpansionBudget } from "./compiler/static-expansion.js";
 import type {
-    ClusteredContainerState,
     CollectionCardinality,
     CompileAsset,
     CompileOptions,
     CompileResult,
-    CompiledNodeMaterial,
-    CompiledNodeParticles,
-    CompiledShaderProgram,
     DefaultRenderTaskEmission,
-    EffectManifest,
     Feature,
     FrameCallbackSignature,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
-    LightKind,
-    PostProcessCompositeManifest,
-    PostProcessTaskManifest,
     ResolvedCompileOptions,
-    SceneMeshManifest,
-    SceneMeshNamePredicate,
-    ScenePbrAnisotropyManifest,
-    ScenePbrClearCoatManifest,
-    ScenePbrIridescenceManifest,
-    ScenePbrLightmapManifest,
-    ScenePbrMaterialManifest,
-    ScenePbrMetallicReflectanceManifest,
-    ScenePbrSheenManifest,
-    ScenePbrSubsurfaceManifest,
-    ScreenSpaceTaskManifest,
-    ShadowCasterMeshManifest,
-    ShadowGeneratorManifest,
-    SplatFragmentManifest,
-    SpriteCustomShaderManifest,
     Value,
     ValueKind,
     VariableBinding,
@@ -401,13 +373,10 @@ import {
     rejectClassStaticBlocks,
     staticClassMember,
 } from "./compiler/classes.js";
-import { shaderMaterialPrograms } from "./shader-material-programs.js";
 import {
     assertDeterministicRandomUnreached,
     isDeterministicRandomRead,
 } from "./compiler/deterministic-random.js";
-import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
-import type { CompiledTextData } from "./pinned-text-data.js";
 import { readFrozenParticleProperty } from "./compiler/particle-buffer.js";
 import { readCharacterProperty } from "./compiler/intrinsics/character-controller.js";
 import {
@@ -420,7 +389,10 @@ import {
     projectFeatures,
     renderMainCpp,
 } from "./compiler/output-projection.js";
-import { SceneMaterialRecorder } from "./compiler/scene-materials.js";
+import {
+    SceneManifestRecorder,
+    type ResourceConstructionState,
+} from "./compiler/scene-manifest.js";
 import { PlatformCalls } from "./compiler/platform-calls.js";
 import { UiProjection } from "./compiler/ui-projection.js";
 import { recordAt } from "./compiler/record-access.js";
@@ -448,10 +420,6 @@ export type {
 interface CanvasSizeProperty {
     axis: "width" | "height";
     client: boolean;
-}
-interface ResourceConstructionState {
-    counters: number[];
-    lightIdentities: NonNullable<Value["lightIdentity"]>[];
 }
 interface ResourceConstructionCheckpoint {
     state: ResourceConstructionState;
@@ -764,6 +732,8 @@ class Compiler implements LoweringServices {
     /** The handle-collection concept: every collection operation. */
     public readonly handleCollections: HandleCollections =
         new HandleCollections(this);
+    /** The scene composition records this compilation projects into its manifest. */
+    public readonly sceneManifest = new SceneManifestRecorder(this);
     private readonly statements = new StatementLowerer();
     public readonly userFunctions: UserFunctionLowerer;
     private readonly ui = new UiProjection(this);
@@ -850,8 +820,6 @@ class Compiler implements LoweringServices {
         emissionArray([new EmissionMap()]);
     private readonly cppNamePrefixes: string[] = emissionArray([""]);
     private readonly features = new EmissionSet<Feature>(["core"]);
-    /** The clustered container this scene added, if it added one. */
-    private clusteredContainer: ClusteredContainerState | undefined;
     private readonly featureSites = new EmissionMap<Feature, string>();
     public readonly assets = new EmissionMap<string, CompileAsset>();
     public readonly assetPayloads = new EmissionMap<string, string>();
@@ -860,25 +828,8 @@ class Compiler implements LoweringServices {
         AssetDecoderConfiguration
     >();
     private readonly decoderBootstrapDepths: number[] = emissionArray([]);
-    public readonly reachedTextData: CompiledTextData[] = emissionArray([]);
     /** The source-keyed record for the most recent `loadGltf` call. */
     private lastGltfContainerAsset: CompileAsset | undefined;
-    public readonly reachedComputePrograms: CompiledComputeProgram[] =
-        emissionArray([]);
-    public readonly reachedShaderPrograms: CompiledShaderProgram[] =
-        emissionArray([]);
-    public readonly reachedNodeMaterials: CompiledNodeMaterial[] =
-        emissionArray([]);
-    public readonly meshWalks: CompiledMeshWalk[] = emissionArray([]);
-    public readonly reachedNodeParticles: CompiledNodeParticles = {
-        sets: [],
-        steps: [],
-        billboards: [],
-        registrations: [],
-        textures: [],
-        sprite2d: [],
-        buffers: [],
-    };
     /**
      * Pixels-texture locals already handed to a material slot.
      *
@@ -889,9 +840,6 @@ class Compiler implements LoweringServices {
      * hold across scopes.
      */
     public readonly boundPixelsTextures = new EmissionSet<string>();
-    /** The pinned tone-mapping export the scene selected, if any. */
-    private selectedToneMapping: string | undefined;
-    private readonly reachedEffects_: EffectManifest[] = emissionArray([]);
     private thisInstance: Value | undefined;
     private readonly classInstances = new EmissionMap<
         Value,
@@ -952,14 +900,6 @@ class Compiler implements LoweringServices {
     public readonly erasedBrowserExpressions = new EmissionSet<number>();
     public readonly erasedBrowserInstrumentation = new EmissionSet<number>();
     public readonly unwrappedAwaitExpressions = new EmissionSet<number>();
-    public readonly geometryOutputTasks: GeometryOutputTaskManifest[] =
-        emissionArray([]);
-    private readonly copyTasks: string[] = emissionArray([]);
-    public readonly postProcessTasks: PostProcessTaskManifest[] = emissionArray(
-        [],
-    );
-    public readonly postProcessComposites: PostProcessCompositeManifest[] =
-        emissionArray([]);
     private readonly untrackedTaaCameraWrites: Array<{
         node: ts.Node;
         reason: string;
@@ -985,94 +925,9 @@ class Compiler implements LoweringServices {
         Value["sceneTopologyState"]
     > = emissionArray([]);
     private temporalControlAttachment: ts.Node | undefined;
-    public readonly screenSpaceTasks: ScreenSpaceTaskManifest[] = emissionArray(
-        [],
-    );
-    private readonly sceneMaterials = new SceneMaterialRecorder();
     public readonly localCubemapState: { maxCandidates?: number } = {};
-    private readonly sceneMaterialGltfAssetsBefore: number[] = emissionArray(
-        [],
-    );
-    private readonly sceneMeshes: SceneMeshManifest[] = emissionArray([]);
-    private readonly shadowGenerators: Array<
-        Omit<ShadowGeneratorManifest, "casters"> & {
-            casters: ShadowCasterMeshManifest[];
-            lightIdentity?: NonNullable<Value["lightIdentity"]>;
-        }
-    > = emissionArray([]);
-    private readonly shadowReceiverMeshes = new EmissionSet<number>();
-    private dynamicShadowReceivers = false;
-    /**
-     * `mesh.id`, by the handle spelling the write named, and the meshes each
-     * id names.
-     *
-     * `Mesh.id` is not `SceneNode.name`: the pin declares it separately as
-     * the unique id a source file carries, and `src/render/lights-ubo.ts`
-     * `affectsMesh` is its only reader. So the string is a join key rather
-     * than record state, and the join folds here exactly as the `.babylon`
-     * loader folds its own `mesh_records_by_id` — an id names a LIST,
-     * because nothing upstream enforces uniqueness.
-     */
-    private readonly sceneMeshesById = new EmissionMap<string, string[]>();
-    /** The id each mesh handle currently carries, so a rewrite is visible. */
-    private readonly sceneMeshIdByHandle = new EmissionMap<string, string>();
-    /** Every id an emitted light include set has already resolved against. */
-    private readonly resolvedLightMeshIds = new EmissionSet<string>();
     /** `constArrayIsWritten` answers, by binding: the scan walks a file. */
     private readonly writtenConstArrays = new EmissionMap<ts.Symbol, boolean>();
-    /** The active lights and kinds, kept in one receiver-binding order. */
-    private readonly sceneLights: Array<{
-        identity: NonNullable<Value["lightIdentity"]>;
-        kind: LightKind;
-    }> = emissionArray([]);
-    /** Scene topology survives value reconstruction through record fields. */
-    private readonly sceneTopologyStates = new EmissionMap<
-        string,
-        NonNullable<Value["sceneTopologyState"]>
-    >();
-    private dynamicSceneLights = false;
-    private mutableToneMappingEnabled = false;
-    private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
-        emissionArray([]);
-    /**
-     * The splat shader plugins one `loadSplat` call passed, in its order.
-     * Undefined until a call records one, so an empty list stays
-     * distinguishable from no list at all.
-     */
-    private sceneSplatFragments: SplatFragmentManifest[] | undefined;
-    /**
-     * Which material each scene-code mesh ended up carrying.
-     *
-     * A caster's material is a LAZY task input upstream --
-     * `setShadowTaskCasterMeshes` stores the mesh list and
-     * `getEsmShadowView(mesh.material, ...)` reads the material when the
-     * pass builds -- so a scene may name its casters before assigning
-     * their materials, and scene 65 does exactly that. Recorded per mesh
-     * here and joined to the casters when the manifest is built.
-     */
-    private readonly sceneMeshMaterials = new EmissionMap<
-        number,
-        { pbrMaterial: number | null; nodeMaterial: number | null }
-    >();
-    /** Every reachable assignment, rather than only the final assignment the
-     *  lazy shadow view needs. This closes each PBR material over the meshes
-     *  it can actually draw on. */
-    private readonly scenePbrMaterialMeshes = new EmissionMap<
-        number,
-        Set<number>
-    >();
-    private readonly scenePbrMaterialsWithUnknownMesh =
-        new EmissionSet<number>();
-    private unknownSceneMaterialAssignment = false;
-    private standardMaterialUnknownMesh = false;
-    private readonly runtimeMaterialProfiles = new EmissionSet<number>();
-    private runtimeMeshProfileCount = 0;
-    private readonly runtimeShaderProfiles = new EmissionSet<number>();
-    private readonly runtimeNodeProfiles = new EmissionSet<number>();
-    private reachedPlainSpriteLayer = false;
-    /** A standalone SpriteRenderer needs the pure-2D vertex permutation. */
-    private reachedPureSpriteVertex = false;
-    private reachedPlainBillboardSystem = false;
     public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
     /** Platform owner for an entry that has no source-created Babylon engine. */
@@ -1181,8 +1036,8 @@ class Compiler implements LoweringServices {
                 );
         }
         if (
-            this.reachedNodeMaterials.length > 0 &&
-            this.geometryOutputTasks.length > 0 &&
+            this.sceneManifest.reachedNodeMaterials.length > 0 &&
+            this.sceneManifest.geometryOutputTasks.length > 0 &&
             this.features.has("loader:gltf")
         ) {
             const boundary = this.deferredAdmissionFailures.find(
@@ -1258,7 +1113,7 @@ class Compiler implements LoweringServices {
                 );
         }
         if (
-            this.postProcessComposites.some(
+            this.sceneManifest.postProcessComposites.some(
                 (composite) =>
                     composite.intrinsic === "createTaaPostProcessTask",
             )
@@ -1274,9 +1129,10 @@ class Compiler implements LoweringServices {
             );
             if (admission) this.fail(admission.node, admission.message);
         }
+        const particles = this.sceneManifest.reachedNodeParticles;
         if (
-            this.reachedNodeParticles.nativeProvider &&
-            !this.reachedNodeParticles.sets.some((set) => set.native)
+            particles.nativeProvider &&
+            !particles.sets.some((set) => set.native)
         ) {
             this.fail(
                 this.sourceFile,
@@ -1288,19 +1144,7 @@ class Compiler implements LoweringServices {
             this.jsRandomReached,
             this.sourceFile,
         );
-        if (this.unknownSceneMaterialAssignment) {
-            if (this.features.has("material:standard")) {
-                for (const mesh of this.sceneMeshes)
-                    mesh.standardMaterial = true;
-            }
-            // A runtime material choice can make an otherwise-known caster
-            // PBR. Its views must use the existing unknown-caster product.
-            for (const generator of this.shadowGenerators)
-                generator.dynamicCasters = true;
-        }
-        // After the whole entry, because the mesh a shader material ends up
-        // on is what decides its instanced form and either may come first.
-        this.settleShaderThinInstances();
+        this.sceneManifest.settle();
 
         // After every feature has settled: retained UI must land on a frame
         // loop that presents it (NA-26).
@@ -1331,9 +1175,7 @@ class Compiler implements LoweringServices {
             cppFiles: application.files,
             cmake,
             assetPayloads: this.assetPayloads,
-            ...(this.reachedNodeParticles.sets.length > 0
-                ? { nodeParticles: this.reachedNodeParticles }
-                : {}),
+            ...(particles.sets.length > 0 ? { nodeParticles: particles } : {}),
             manifest: {
                 source: this.options.fileName,
                 // The compiler's half of the reached-file list is the
@@ -1355,122 +1197,9 @@ class Compiler implements LoweringServices {
                               this.assetDecoders.get("configuration")!,
                       }
                     : {}),
-                ...(this.reachedComputePrograms.length
-                    ? { computePrograms: this.reachedComputePrograms }
-                    : {}),
-                shaderVariants: this.reachedShaderPrograms.map(
-                    ({ name }) => name,
+                ...this.sceneManifest.manifestRecords(
+                    compileAdaptations(this, features),
                 ),
-                customShaderPrograms: this.reachedShaderPrograms.filter(
-                    ({ name }) =>
-                        !shaderMaterialPrograms.some(
-                            (predeclared) => predeclared.name === name,
-                        ),
-                ),
-                nodeMaterials: this.reachedNodeMaterials,
-                ...(this.meshWalks.length ? { meshWalks: this.meshWalks } : {}),
-                ...(this.reachedTextData.length > 0
-                    ? { textData: this.reachedTextData }
-                    : {}),
-                ...(this.reachedNodeParticles.sets.length > 0
-                    ? {
-                          nodeParticles: nodeParticleManifest(
-                              this.reachedNodeParticles,
-                          ),
-                      }
-                    : {}),
-                ...(this.selectedToneMapping
-                    ? { toneMapping: this.selectedToneMapping }
-                    : {}),
-                geometryOutputTasks: this.geometryOutputTasks,
-                ...(this.copyTasks.length > 0
-                    ? { copyTasks: this.copyTasks }
-                    : {}),
-                postProcessTasks: this.postProcessTasks,
-                postProcessComposites: this.postProcessComposites,
-                screenSpaceTasks: this.screenSpaceTasks,
-                adaptations: compileAdaptations(this, features),
-                scenePbrMaterials: this.scenePbrMaterials.map(
-                    (material, index) => ({
-                        ...material,
-                        sceneMeshIndices: [
-                            ...(this.scenePbrMaterialMeshes.get(index) ?? []),
-                        ].sort((left, right) => left - right),
-                        ...(this.unknownSceneMaterialAssignment ||
-                        this.scenePbrMaterialsWithUnknownMesh.has(index)
-                            ? { unknownSceneMesh: true as const }
-                            : {}),
-                    }),
-                ),
-                standardMaterialPlugins:
-                    this.sceneMaterials.standardMaterialPlugins,
-                standardMaterialPluginInputs:
-                    this.sceneMaterials.standardMaterialPluginInputs,
-                ...(this.standardMaterialUnknownMesh ||
-                (this.unknownSceneMaterialAssignment &&
-                    this.features.has("material:standard"))
-                    ? { standardMaterialUnknownMesh: true as const }
-                    : {}),
-                sceneMaterialCount: this.sceneMaterials.count,
-                sceneMaterialGltfAssetsBefore:
-                    this.sceneMaterialGltfAssetsBefore,
-                ...(this.runtimeMaterialProfiles.size > 0
-                    ? {
-                          runtimeMaterialProfiles: [
-                              ...this.runtimeMaterialProfiles,
-                          ],
-                      }
-                    : {}),
-                sceneMeshes: this.sceneMeshes,
-                sceneLightKinds: this.sceneLights.map(({ kind }) => kind),
-                dynamicSceneLights: this.dynamicSceneLights,
-                mutableToneMappingEnabled: this.mutableToneMappingEnabled,
-                ...(this.clusteredContainer
-                    ? {
-                          clusteredLights: {
-                              hasSpots: this.clusteredContainer.hasSpots,
-                          },
-                      }
-                    : {}),
-                shadowGenerators: this.shadowGenerators.map(
-                    (generator, index) => {
-                        const lightIndex =
-                            generator.lightIndex >= 0
-                                ? generator.lightIndex
-                                : this.dynamicShadowLightIndex(index);
-                        if (lightIndex === undefined) {
-                            throw new Error(
-                                "A shadow generator's light was never added to the scene.",
-                            );
-                        }
-                        const { lightIdentity, ...manifest } = generator;
-                        void lightIdentity;
-                        return {
-                            ...manifest,
-                            lightIndex,
-                            // The caster's material as the mesh finally carried
-                            // it, which is what the pin's lazy view lookup reads.
-                            casters: generator.casters.map((caster) => ({
-                                meshIndex: caster.meshIndex,
-                                pbrMaterial: null,
-                                nodeMaterial: null,
-                                ...(this.sceneMeshMaterials.get(
-                                    caster.meshIndex,
-                                ) ?? {}),
-                            })),
-                        };
-                    },
-                ),
-                shadowReceiverMeshes: [...this.shadowReceiverMeshes].sort(
-                    (left, right) => left - right,
-                ),
-                dynamicShadowReceivers: this.dynamicShadowReceivers,
-                splatFragments: this.sceneSplatFragments ?? [],
-                spriteCustomShaders: this.sceneSpriteCustomShaders,
-                effects: this.reachedEffects_,
-                pureSpriteVertex: this.reachedPureSpriteVertex,
-                plainSpriteLayer: this.reachedPlainSpriteLayer,
-                plainBillboardSystem: this.reachedPlainBillboardSystem,
             },
         };
     }
@@ -3093,7 +2822,7 @@ class Compiler implements LoweringServices {
         // function itself rather than a value, so it emits nothing and the
         // binding exists for the restore assignment to recognize.
         if (isDeterministicRandomRead(this, declaration.initializer)) {
-            const native = this.reachedNodeParticles.sets.some(
+            const native = this.sceneManifest.reachedNodeParticles.sets.some(
                 (set) => set.native,
             );
             if (native) {
@@ -7656,7 +7385,7 @@ class Compiler implements LoweringServices {
             );
         }
         if (
-            this.runtimeMaterialProfiles.size > 0 &&
+            this.sceneManifest.hasRuntimeMaterialProfiles() &&
             (importedName === "createPbrMaterial" ||
                 importedName === "loadGltf")
         ) {
@@ -7679,9 +7408,7 @@ class Compiler implements LoweringServices {
         const profile =
             runtimeProfileConstructionIntrinsics.has(importedName) &&
             this.isRuntimeResourceConstruction();
-        const firstMaterial = this.sceneMaterials.count;
-        const firstShader = this.reachedShaderPrograms.length;
-        const firstNode = this.reachedNodeMaterials.length;
+        const mark = this.sceneManifest.compositionMark();
         const value = compileRegisteredIntrinsic(this, importedName, call);
         if (
             value &&
@@ -7696,30 +7423,10 @@ class Compiler implements LoweringServices {
             this.reachedRenderContextRegistrations.add(importedName);
         }
         if (!profile || !value) return value;
-        for (
-            let index = firstMaterial;
-            index < this.sceneMaterials.count;
-            ++index
-        ) {
-            this.runtimeMaterialProfiles.add(index);
-        }
-        for (
-            let index = firstShader;
-            index < this.reachedShaderPrograms.length;
-            ++index
-        ) {
-            this.runtimeShaderProfiles.add(index);
-        }
-        for (
-            let index = firstNode;
-            index < this.reachedNodeMaterials.length;
-            ++index
-        ) {
-            this.runtimeNodeProfiles.add(index);
-        }
+        this.sceneManifest.recordRuntimeProfiles(mark);
         if (value.kind === "mesh" && value.sceneMeshIndex !== undefined) {
             const index = value.sceneMeshIndex;
-            this.recordRuntimeMeshProfile(index);
+            this.sceneManifest.recordRuntimeMeshProfile(index);
             value.sceneMeshProfileIndex = index;
             delete value.sceneMeshIndex;
             value.cpp = `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
@@ -7810,7 +7517,7 @@ class Compiler implements LoweringServices {
         const count = this.compileNumber(argumentAt(call, 2));
         this.reachFeature("mesh:thin-instances", call);
         this.reachFeature("mesh:thin-instances-dynamic", call);
-        this.recordThinInstanceMesh(mesh.sceneMeshIndex);
+        this.sceneManifest.recordThinInstanceMesh(mesh.sceneMeshIndex);
         return {
             kind: "void",
             cpp:
@@ -8093,12 +7800,6 @@ class Compiler implements LoweringServices {
         return reachPhysicsViewerMaterialProgram(this, node, color);
     }
 
-    public recordRuntimeMeshProfile(index: number): void {
-        if (this.sceneMeshes[index]!.runtimeInstances) return;
-        this.sceneMeshes[index]!.runtimeInstances = true;
-        ++this.runtimeMeshProfileCount;
-    }
-
     public guardStaticConstructionRead(operation: string): void {
         if (this.features.has("physics:viewer"))
             this.emit(
@@ -8121,23 +7822,6 @@ class Compiler implements LoweringServices {
         return lineMaterialPermutation(this, name, node);
     }
 
-    /** Records one effect descriptor and returns its index in reach order. */
-    public recordEffect(effect: EffectManifest): number {
-        return this.reachedEffects_.push(effect) - 1;
-    }
-
-    public selectToneMapping(name: string, node: ts.Node): void {
-        if (this.selectedToneMapping && this.selectedToneMapping !== name) {
-            this.fail(
-                node,
-                "A scene selects one tone mapping; the composed arms are " +
-                    `closed at generation and '${this.selectedToneMapping}' ` +
-                    "was already selected.",
-            );
-        }
-        this.selectedToneMapping = name;
-    }
-
     public compileNodeMaterialOptions(
         snippetExpression: ts.Expression,
         optionsExpression: ts.Expression | undefined,
@@ -8147,13 +7831,6 @@ class Compiler implements LoweringServices {
             snippetExpression,
             optionsExpression,
         );
-    }
-
-    public reachedShaderProgram(
-        name: string,
-        node: ts.Node,
-    ): CompiledShaderProgram {
-        return reachedShaderProgram(this, name, node);
     }
 
     public resolveShaderUniform(
@@ -11024,8 +10701,7 @@ class Compiler implements LoweringServices {
         emitBody: () => void,
     ): void {
         if (iterations === 0) return;
-        const firstMesh = this.sceneMeshes.length;
-        const firstMaterial = this.sceneMaterials.count;
+        const mark = this.sceneManifest.compositionMark();
         this.parameterizedResourceIterations.push({
             statement,
             iterations,
@@ -11037,42 +10713,16 @@ class Compiler implements LoweringServices {
         } finally {
             this.parameterizedResourceIterations.pop();
         }
-        const meshes = this.sceneMeshes.slice(firstMesh);
-        const materials =
-            this.sceneMaterialGltfAssetsBefore.slice(firstMaterial);
-        if (meshes.length === 0 && materials.length === 0) return;
-        const totalMeshes = firstMesh + meshes.length * iterations;
-        const totalMaterials = firstMaterial + materials.length * iterations;
-        this.staticExpansionBudget.checkComposition(
-            statement,
-            totalMeshes,
-            totalMaterials,
+        this.sceneManifest.repeatComposition(
+            mark,
+            iterations,
+            (totalMeshes, totalMaterials) =>
+                this.staticExpansionBudget.checkComposition(
+                    statement,
+                    totalMeshes,
+                    totalMaterials,
+                ),
         );
-        for (let iteration = 1; iteration < iterations; ++iteration) {
-            for (const [offset, mesh] of meshes.entries()) {
-                const source = firstMesh + offset;
-                const index = this.sceneMeshes.length;
-                this.sceneMeshes.push({ ...mesh });
-                const material = this.sceneMeshMaterials.get(source);
-                if (material) {
-                    this.recordSceneMeshMaterial(index, {
-                        ...material,
-                        standardMaterial: mesh.standardMaterial === true,
-                        standardMaterialPluginIndex:
-                            mesh.standardMaterialPluginIndex,
-                        sceneShaderVariant: mesh.shaderVariant,
-                        sceneShaderVariants: mesh.shaderVariants,
-                    });
-                }
-                if (this.shadowReceiverMeshes.has(source)) {
-                    this.shadowReceiverMeshes.add(index);
-                }
-            }
-            for (const loadCount of materials) {
-                this.sceneMaterialGltfAssetsBefore.push(loadCount);
-                this.sceneMaterials.recordSceneMaterialSlot();
-            }
-        }
     }
 
     public callbackEvaluationIdentity(): object | undefined {
@@ -12311,45 +11961,9 @@ class Compiler implements LoweringServices {
         this.validateResourceLoopReturn(this.returnFrames.pop());
     }
 
-    /**
-     * Feature/fact writes such as thin-instance updates are not construction.
-     * Only changes to generation-owned ordinals or baked work make a helper's
-     * runtime return invalidate the surrounding static iteration count.
-     */
-    private resourceConstructionState(): ResourceConstructionState {
-        return {
-            counters: [
-                this.sceneMeshes.length - this.runtimeMeshProfileCount,
-                this.sceneMaterials.count - this.runtimeMaterialProfiles.size,
-                this.shadowGenerators.length,
-                // Packaged files are deduplicated inputs, not runtime allocation
-                // ordinals. Closed-directory discovery can happen inside a loop.
-                this.currentGltfAssetCount(),
-                this.reachedShaderPrograms.length -
-                    this.runtimeShaderProfiles.size,
-                this.reachedNodeMaterials.length -
-                    this.runtimeNodeProfiles.size,
-                this.reachedEffects_.length,
-                this.geometryOutputTasks.length,
-                this.postProcessTasks.length,
-                this.postProcessComposites.length,
-                this.sceneSpriteCustomShaders.length,
-                this.reachedNodeParticles.steps.length,
-                this.reachedNodeParticles.registrations.length,
-                this.reachedNodeParticles.textures.length,
-                this.reachedNodeParticles.sprite2d.length,
-                // Construction/bake entries are append-only during lowering.
-                // Their counts detect changes without rehashing immutable graphs.
-                this.reachedNodeParticles.sets.length,
-                this.reachedNodeParticles.billboards.length,
-            ],
-            lightIdentities: this.sceneLights.map(({ identity }) => identity),
-        };
-    }
-
     private checkpointResourceConstruction(): ResourceConstructionCheckpoint {
         const checkpoint = {
-            state: this.resourceConstructionState(),
+            state: this.sceneManifest.constructionState(),
             callbackDepth: this.frameCallbackDepth,
         };
         this.resourceConstructionCheckpoints.add(checkpoint);
@@ -12360,7 +11974,7 @@ class Compiler implements LoweringServices {
     private excludeDeferredResourceConstruction(
         before: ResourceConstructionCheckpoint,
     ): void {
-        const after = this.resourceConstructionState();
+        const after = this.sceneManifest.constructionState();
         const removed = new EmissionSet(
             before.state.lightIdentities.filter(
                 (value) => !after.lightIdentities.includes(value),
@@ -12402,7 +12016,7 @@ class Compiler implements LoweringServices {
         const guard = frame && this.resourceLoopReturns.get(frame);
         if (!guard) return;
         this.resourceConstructionCheckpoints.delete(guard.checkpoint);
-        const state = this.resourceConstructionState();
+        const state = this.sceneManifest.constructionState();
         if (!resourceConstructionStatesEqual(state, guard.checkpoint.state)) {
             this.fail(
                 guard.condition,
@@ -13068,7 +12682,7 @@ class Compiler implements LoweringServices {
         } finally {
             this.resourceConstructionCheckpoints.delete(checkpoint);
         }
-        const after = this.resourceConstructionState();
+        const after = this.sceneManifest.constructionState();
         if (!resourceConstructionStatesEqual(checkpoint.state, after)) {
             this.fail(
                 statement,
@@ -17533,68 +17147,6 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The scene-material manifest recorders live in
-     * `compiler/scene-materials.ts`; the context surface the material
-     * intrinsics stamp through delegates to one recorder instance, so
-     * its callers keep one context object.
-     */
-    public get scenePbrMaterials(): ScenePbrMaterialManifest[] {
-        return this.sceneMaterials.scenePbrMaterials;
-    }
-
-    public recordScenePbrNoColorView(sourceIndex: number | undefined): number {
-        this.sceneMaterialGltfAssetsBefore.push(this.currentGltfAssetCount());
-        return this.sceneMaterials.recordScenePbrNoColorView(sourceIndex);
-    }
-
-    public recordSceneMaterialSlot(): number {
-        this.sceneMaterialGltfAssetsBefore.push(this.currentGltfAssetCount());
-        return this.sceneMaterials.recordSceneMaterialSlot();
-    }
-
-    public currentGltfAssetCount(): number {
-        return [...this.assets.values()]
-            .filter((asset) => asset.kind === "gltf")
-            .reduce((count, asset) => count + (asset.containerCount ?? 0), 0);
-    }
-
-    public recordScenePbrUnlit(index: number | undefined): void {
-        this.sceneMaterials.recordScenePbrUnlit(index);
-    }
-
-    public recordScenePbrSkybox(index: number | undefined): void {
-        this.sceneMaterials.recordScenePbrSkybox(index);
-    }
-
-    public recordScenePbrGammaAlbedo(index: number | undefined): void {
-        this.sceneMaterials.recordScenePbrGammaAlbedo(index);
-    }
-
-    public recordScenePbrShadowOnly(
-        index: number | undefined,
-        options: NonNullable<ScenePbrMaterialManifest["shadowOnly"]>,
-    ): void {
-        this.sceneMaterials.recordScenePbrShadowOnly(index, options);
-    }
-
-    public recordScenePbrPlugins(
-        plugins: readonly MaterialPluginManifest[],
-        index: number | undefined,
-    ): void {
-        this.sceneMaterials.recordScenePbrPlugins(plugins, index);
-    }
-
-    public recordStandardMaterialPlugins(
-        plugins: readonly MaterialPluginManifest[],
-        material: NonNullable<Value["standardMaterialInput"]>,
-    ): number {
-        return this.sceneMaterials.recordStandardMaterialPlugins(
-            plugins,
-            material,
-        );
-    }
-
-    /**
      * Runs `work` with an inlined function's parameters bound in a scope of
      * its own -- the same binding the user-function inliner performs before
      * it lowers a body, exposed for the folds that read a body instead.
@@ -17632,669 +17184,9 @@ class Compiler implements LoweringServices {
         }
     }
 
-    public recordScenePbrSheen(
-        sheen: ScenePbrSheenManifest,
-        index: number | undefined,
-    ): void {
-        this.sceneMaterials.recordScenePbrSheen(sheen, index);
-    }
-
-    public recordScenePbrClearCoat(
-        clearCoat: ScenePbrClearCoatManifest,
-        index: number | undefined,
-    ): void {
-        this.sceneMaterials.recordScenePbrClearCoat(clearCoat, index);
-    }
-
-    public recordScenePbrEmissive(
-        color: readonly [number, number, number] | undefined,
-        index: number | undefined,
-    ): void {
-        this.sceneMaterials.recordScenePbrEmissive(color, index);
-    }
-
-    public recordScenePbrIridescence(
-        iridescence: ScenePbrIridescenceManifest,
-        index: number | undefined,
-    ): void {
-        this.sceneMaterials.recordScenePbrIridescence(iridescence, index);
-    }
-
-    public recordScenePbrLightmap(
-        lightmap: ScenePbrLightmapManifest,
-        index: number | undefined,
-    ): void {
-        this.sceneMaterials.recordScenePbrLightmap(lightmap, index);
-    }
-
     /** Whether `enablePbrLightmap()` has registered the extension yet. */
     public pbrLightmapEnabled(): boolean {
         return this.features.has("material:lightmap");
-    }
-
-    /**
-     * Records the `setPbrLightmap` a scene applied to a loaded container's
-     * materials, with the mesh-name filter the walk selected them by.
-     *
-     * `sceneUnlit` beside this is container-wide; a lightmap is not. PBR
-     * composition is settled per material at generation, and the reached
-     * walk stamps only the meshes whose name passes its own filter — so
-     * what is kept is that filter, for the DOCUMENT to evaluate against
-     * its own renderables. Nothing here reads a name.
-     */
-    public recordAssetSceneLightmap(
-        meshNamePredicate: SceneMeshNamePredicate,
-        lightmap: ScenePbrLightmapManifest,
-        node: ts.Node,
-    ): void {
-        // `scene.meshes` is walked live, so what generation folds is the
-        // scene's mesh membership at this point in the program. A
-        // scene-code mesh already created could be in that list under a
-        // name generation does not carry, and a second container could be
-        // in or out of it depending on where its `addToScene` sits —
-        // neither is represented, so both refuse rather than stamping a
-        // set the run-time loop will not reproduce.
-        const containers = [...this.assets.values()].filter(
-            (candidate) => candidate.kind === "gltf",
-        );
-        if (
-            containers.length !== 1 ||
-            (containers[0]!.containerCount ?? 0) > 1
-        ) {
-            this.fail(
-                node,
-                "A lightmap walk over `scene.meshes` folds against exactly " +
-                    "one loaded glTF container: with several, which of them " +
-                    "the walk has reached depends on where each " +
-                    "`addToScene` sits, which generation does not model.",
-            );
-        }
-        if (this.sceneMeshes.length > 0) {
-            this.fail(
-                node,
-                "A lightmap walk over `scene.meshes` runs before the scene " +
-                    "creates any mesh of its own: generation carries no name " +
-                    "for a scene-code mesh, so it could not tell whether the " +
-                    "filter selects one.",
-            );
-        }
-        const asset = containers[0]!;
-        const existing = asset.sceneLightmap;
-        if (
-            existing &&
-            JSON.stringify(existing) !==
-                JSON.stringify({ meshNamePredicate, options: lightmap })
-        ) {
-            this.fail(
-                node,
-                "setPbrLightmap already stamped this container's materials " +
-                    "differently; each material composes one lightmap arm, " +
-                    "so a second selection would need the blend and the UV " +
-                    "set to be per-material record reads.",
-            );
-        }
-        asset.sceneLightmap = { meshNamePredicate, options: lightmap };
-    }
-
-    public recordScenePbrSubsurface(
-        subsurface: ScenePbrSubsurfaceManifest,
-        index: number | undefined,
-    ): void {
-        this.sceneMaterials.recordScenePbrSubsurface(subsurface, index);
-    }
-
-    public recordScenePbrAnisotropy(
-        anisotropy: ScenePbrAnisotropyManifest,
-        index: number | undefined,
-    ): void {
-        this.sceneMaterials.recordScenePbrAnisotropy(anisotropy, index);
-    }
-
-    public recordScenePbrMetallicReflectance(
-        reflectance: ScenePbrMetallicReflectanceManifest,
-        index: number | undefined,
-    ): void {
-        this.sceneMaterials.recordScenePbrMetallicReflectance(
-            reflectance,
-            index,
-        );
-    }
-
-    /** One layer or system built without a custom shader, so with the stock program. */
-    public recordPlainSpriteProgram(family: "sprite" | "billboard"): void {
-        if (family === "sprite") this.reachedPlainSpriteLayer = true;
-        else this.reachedPlainBillboardSystem = true;
-    }
-
-    public recordPureSpriteVertex(): void {
-        this.reachedPureSpriteVertex = true;
-    }
-
-    public spriteCustomShaders(): readonly SpriteCustomShaderManifest[] {
-        return this.sceneSpriteCustomShaders;
-    }
-
-    /** One custom-shader descriptor, in the pin's own `_key` order. */
-    public recordSpriteCustomShader(shader: SpriteCustomShaderManifest): void {
-        this.sceneSpriteCustomShaders.push(shader);
-    }
-
-    /**
-     * The shader plugins one `loadSplat` call passed.
-     *
-     * Upstream keys its module cache by the plugin ids, so two clouds
-     * loaded with different lists compile different modules; this port
-     * deploys one splat stage pair, so a second differing list refuses
-     * rather than drawing both clouds through the first one's.
-     */
-    public recordSplatFragments(
-        fragments: readonly SplatFragmentManifest[],
-        node: ts.Node,
-    ): void {
-        if (!this.sceneSplatFragments) {
-            this.sceneSplatFragments = [...fragments];
-            return;
-        }
-        if (
-            JSON.stringify(this.sceneSplatFragments) !==
-            JSON.stringify(fragments)
-        ) {
-            this.fail(
-                node,
-                "A second loadSplat with a different shader-fragment list " +
-                    "is not lowered: the generated splat stages are one " +
-                    "composed module per scene.",
-            );
-        }
-    }
-
-    /**
-     * Records one shadow generator, returning its reach index.
-     *
-     * Its casters arrive separately, through `recordShadowCasterMaterials`:
-     * the pin keeps them as a lazy task input rather than on the generator,
-     * and `setShadowTaskCasterMeshes` is the call that names them.
-     */
-    public recordShadowGenerator(
-        entry: Omit<ShadowGeneratorManifest, "casters"> & {
-            lightIdentity?: NonNullable<Value["lightIdentity"]>;
-        },
-    ): number {
-        this.shadowGenerators.push({ ...entry, casters: [] });
-        return this.shadowGenerators.length - 1;
-    }
-
-    private dynamicShadowLightIndex(index: number): number | undefined {
-        const candidates =
-            this.shadowGenerators[index]?.lightIdentity?.dataCollectionIndices;
-        return candidates?.size === 1 ? [...candidates][0] : undefined;
-    }
-
-    /** Preserve a light's position when a compile-time tuple becomes data. */
-    public recordDataLightSlot(value: Value, index: number): void {
-        if (!value.lightIdentity) return;
-        const slots =
-            value.lightIdentity.dataCollectionIndices ??
-            new EmissionSet<number>();
-        slots.add(index);
-        value.lightIdentity.dataCollectionIndices = slots;
-    }
-
-    /**
-     * The filter and light slot one recorded generator was built with.
-     *
-     * A node material names its generators rather than its lights, and the
-     * pin reads only `_shadowType` off each one -- so this is the pair the
-     * composition needs, resolved through the record the factory made.
-     */
-    public shadowGeneratorLight(
-        index: number,
-        node: ts.Node,
-    ): { lightIndex: number } {
-        const generator = this.shadowGenerators[index];
-        if (!generator) {
-            this.fail(node, `Shadow generator ${index} was never recorded.`);
-        }
-        if (generator.lightIndex < 0) {
-            this.fail(
-                node,
-                "A node material's shadow generator light must be added to the scene before the material is parsed.",
-            );
-        }
-        return { lightIndex: generator.lightIndex };
-    }
-
-    /** Records that a mesh carries the per-instance RGBA stream. */
-    public recordThinInstanceColorMesh(
-        sceneMeshIndex: number | undefined,
-    ): void {
-        if (sceneMeshIndex === undefined) {
-            // A handle selected from a runtime pool has lost its one static
-            // scene index, but it can only name a mesh that already owns a
-            // thin-instance pool. Keep every such row's coloured arm; the
-            // runtime key still selects it only after colors are attached.
-            for (const mesh of this.sceneMeshes) {
-                if (mesh.thinInstances) {
-                    mesh.thinInstanceColors = true;
-                }
-            }
-            return;
-        }
-        const mesh = this.sceneMeshes[sceneMeshIndex];
-        if (mesh) mesh.thinInstanceColors = true;
-    }
-
-    /**
-     * Settles each scene-local shader program's instanced form.
-     *
-     * The pin builds the instanced pipeline from the MESH -- `hasColor` is
-     * `!!ti.colors && material._tic != 0`, and this port refuses the `_tic`
-     * key, so the mesh decides outright -- and it builds one pipeline per
-     * renderable, keyed `"" + +hasColor`. This port bakes one variant into
-     * the material record instead, so the lanes are settled once, after the
-     * entry, from the pairs recorded on the way through.
-     */
-    private settleShaderThinInstances(): void {
-        for (const [variant, colors] of shaderThinInstanceLanes(
-            this.sceneMeshes,
-            (message) => this.failAtFile(message),
-        )) {
-            const program = this.reachedShaderProgram(variant, this.sourceFile);
-            program.useThinInstances = true;
-            if (colors) program.useThinInstanceColors = true;
-        }
-    }
-
-    /** Which material a scene-code mesh was assigned, by its mesh index. */
-    public recordSceneMeshMaterial(
-        meshIndex: number,
-        material: {
-            pbrMaterial: number | null;
-            nodeMaterial: number | null;
-            standardMaterial: boolean;
-            standardMaterialPluginIndex?: number | undefined;
-            sceneShaderVariant?: string | undefined;
-            sceneShaderVariants?: readonly string[] | undefined;
-        },
-    ): void {
-        this.sceneMeshMaterials.set(meshIndex, {
-            pbrMaterial: material.pbrMaterial,
-            nodeMaterial: material.nodeMaterial,
-        });
-        if (material.standardMaterial) {
-            const mesh = this.sceneMeshes[meshIndex];
-            if (mesh) {
-                mesh.standardMaterial = true;
-                if (material.standardMaterialPluginIndex !== undefined) {
-                    mesh.standardMaterialPluginIndex =
-                        material.standardMaterialPluginIndex;
-                }
-            }
-        }
-        const shaderMesh = this.sceneMeshes[meshIndex];
-        if (shaderMesh) {
-            if (this.isInRuntimeControlFlow()) {
-                const variants = new EmissionSet([
-                    ...(shaderMesh.shaderVariant === undefined
-                        ? []
-                        : [shaderMesh.shaderVariant]),
-                    ...(shaderMesh.shaderVariants ?? []),
-                    ...(material.sceneShaderVariant === undefined
-                        ? []
-                        : [material.sceneShaderVariant]),
-                    ...(material.sceneShaderVariants ?? []),
-                ]);
-                delete shaderMesh.shaderVariant;
-                if (variants.size > 0)
-                    shaderMesh.shaderVariants = [...variants].sort();
-            } else {
-                if (material.sceneShaderVariant === undefined)
-                    delete shaderMesh.shaderVariant;
-                else shaderMesh.shaderVariant = material.sceneShaderVariant;
-                if (material.sceneShaderVariants === undefined)
-                    delete shaderMesh.shaderVariants;
-                else shaderMesh.shaderVariants = material.sceneShaderVariants;
-            }
-        }
-        if (material.pbrMaterial !== null) {
-            const meshes =
-                this.scenePbrMaterialMeshes.get(material.pbrMaterial) ??
-                new EmissionSet<number>();
-            meshes.add(meshIndex);
-            this.scenePbrMaterialMeshes.set(material.pbrMaterial, meshes);
-        }
-    }
-
-    /** A material assignment reached a mesh handle not tied to one static
-     *  scene-mesh row (for example an imported collection element). */
-    public recordUnknownSceneMeshMaterial(materialIndex: number): void {
-        this.scenePbrMaterialsWithUnknownMesh.add(materialIndex);
-    }
-
-    public recordUnknownSceneMaterialAssignment(): void {
-        this.unknownSceneMaterialAssignment = true;
-    }
-
-    public recordUnknownStandardMeshMaterial(): void {
-        this.standardMaterialUnknownMesh = true;
-    }
-
-    public recordSceneMeshAssetPbrMaterial(meshIndex: number): void {
-        const mesh = this.sceneMeshes[meshIndex];
-        if (!mesh) {
-            throw new Error(
-                `Scene mesh ${meshIndex} was not recorded before its asset material assignment.`,
-            );
-        }
-        mesh.assetPbrMaterial = true;
-    }
-
-    /**
-     * A definite skeleton or morph attachment on a scene-code mesh.
-     *
-     * The pin's `_computeMeshFeatures` reads these mesh properties for
-     * the material variant key. Record them beside the scene-created
-     * mesh's streams so composition executes that same predicate.
-     */
-    public recordSceneMeshDeformation(
-        meshIndex: number,
-        property: "skinned" | "morphTargets",
-        site: ts.Node,
-    ): void {
-        const mesh = this.sceneMeshes[meshIndex];
-        if (!mesh) {
-            throw new Error(
-                `Scene mesh ${meshIndex} was not recorded before its ${property} assignment.`,
-            );
-        }
-        if (property === "morphTargets" && mesh.morphTargets) {
-            this.fail(
-                site,
-                "Replacing a direct morph target attachment is not supported; " +
-                    "updates to detached morph resources require independent storage.",
-            );
-        }
-        mesh[property] = true;
-    }
-
-    public recordShadowCasters(
-        generatorIndex: number,
-        casters: readonly ShadowCasterMeshManifest[],
-    ): void {
-        const generator = this.shadowGenerators[generatorIndex];
-        if (!generator) {
-            throw new Error(
-                `Shadow generator ${generatorIndex} was never recorded.`,
-            );
-        }
-        generator.casters = [...casters];
-    }
-
-    public recordDynamicShadowCasters(generatorIndex: number): void {
-        const generator = this.shadowGenerators[generatorIndex];
-        if (!generator) {
-            throw new Error(
-                `Shadow generator ${generatorIndex} was never recorded.`,
-            );
-        }
-        generator.dynamicCasters = true;
-    }
-
-    /** A runtime-selected generator may denote any reached generator. */
-    public recordDynamicShadowCastersForUnknownGenerator(): void {
-        for (const generator of this.shadowGenerators) {
-            generator.dynamicCasters = true;
-        }
-    }
-
-    /**
-     * Which resource row the NEXT ESM generator takes.
-     *
-     * Generation composes one row per ESM factory call, in reach order, so
-     * the ordinal is settled here rather than counted again at run time.
-     */
-    public esmGeneratorOrdinal(): number {
-        return this.shadowGenerators.filter(
-            (generator) => generator.kind === "esm-directional",
-        ).length;
-    }
-
-    /** `mesh.receiveShadows = true`, by scene-mesh index. */
-    public recordShadowReceiver(sceneMeshIndex: number): void {
-        this.shadowReceiverMeshes.add(sceneMeshIndex);
-    }
-
-    public recordDynamicShadowReceivers(): void {
-        this.dynamicShadowReceivers = true;
-    }
-
-    /**
-     * `mesh.id = "..."`, by the handle spelling the write named.
-     *
-     * Nothing is emitted: the pin's only reader of `Mesh.id` is
-     * `affectsMesh`, whose join `resolveSceneMeshIds` folds, so the string
-     * has no run-time reader to store it for. A write that would make an
-     * ALREADY-emitted include set stale refuses instead, because the fold
-     * cannot revisit a statement it has written.
-     */
-    public recordSceneMeshId(meshCpp: string, id: string, node: ts.Node): void {
-        const previous = this.sceneMeshIdByHandle.get(meshCpp);
-        if (previous === id) return;
-        const stale = this.resolvedLightMeshIds.has(id)
-            ? id
-            : previous !== undefined && this.resolvedLightMeshIds.has(previous)
-              ? previous
-              : undefined;
-        if (stale !== undefined) {
-            this.fail(
-                node,
-                `Mesh id "${stale}" already resolved a light's ` +
-                    "includedOnlyMeshIds, so this write would change a " +
-                    "selection generation has emitted. Assign every " +
-                    "mesh id before restricting a light by it.",
-            );
-        }
-        if (previous !== undefined) {
-            const bound = this.sceneMeshesById.get(previous);
-            const at = bound?.indexOf(meshCpp) ?? -1;
-            if (bound && at >= 0) bound.splice(at, 1);
-        }
-        this.sceneMeshIdByHandle.set(meshCpp, id);
-        const meshes = this.sceneMeshesById.get(id);
-        if (meshes) {
-            if (!meshes.includes(meshCpp)) meshes.push(meshCpp);
-        } else {
-            this.sceneMeshesById.set(id, [meshCpp]);
-        }
-    }
-
-    /**
-     * The meshes a light's `includedOnlyMeshIds` set names, as handle
-     * spellings, in the Set's own insertion order.
-     *
-     * The pin gates on the SET being non-empty (`included?.size`), not on
-     * what it resolves to, so an id no mesh carries would light nothing at
-     * all — a state an index vector cannot express, since an empty one is
-     * how the record says "every mesh". That id refuses here rather than
-     * silently taking the other arm.
-     */
-    public resolveSceneMeshIds(
-        ids: readonly string[],
-        node: ts.Node,
-    ): string[] {
-        const meshes: string[] = [];
-        for (const id of new EmissionSet(ids)) {
-            const bound = this.sceneMeshesById.get(id);
-            if (!bound || bound.length === 0) {
-                this.fail(
-                    node,
-                    `No mesh carries the id "${id}". A light include ` +
-                        "set naming an id no mesh has lights nothing " +
-                        "upstream, which the folded per-mesh index list " +
-                        "cannot express.",
-                );
-            }
-            this.resolvedLightMeshIds.add(id);
-            for (const mesh of bound) {
-                if (!meshes.includes(mesh)) meshes.push(mesh);
-            }
-        }
-        return meshes;
-    }
-
-    /** Place a light in the current scene topology and bind its generators. */
-    public addSceneLight(scene: Value, light: Value, kind: LightKind): void {
-        const identity = light.lightIdentity;
-        if (!identity) {
-            throw new Error("A scene light is missing its compiler identity.");
-        }
-        const topology = scene.sceneTopologyState ??
-            this.sceneTopologyStates.get(scene.cpp) ?? { lights: [] };
-        scene.sceneTopologyState = topology;
-        this.sceneTopologyStates.set(scene.cpp, topology);
-        const index = topology.lights.length;
-        topology.lights.push({ identity, kind });
-        this.sceneLights.push({ identity, kind });
-        if (
-            identity.sceneLightIndex !== undefined &&
-            identity.sceneLightIndex !== index
-        ) {
-            throw new Error(
-                "A shadow-casting light occupies different light slots across scenes; " +
-                    "scene-specific receiver variants are not lowered.",
-            );
-        }
-        identity.sceneLightIndex = index;
-        if (identity.shadowGeneratorIndex !== undefined) {
-            const generator =
-                this.shadowGenerators[identity.shadowGeneratorIndex];
-            if (generator) generator.lightIndex = index;
-        }
-        if (this.frameCallbackDepth > 0 || this.engineHasStarted()) {
-            this.dynamicSceneLights = true;
-        }
-    }
-
-    /** A light recovered from native data has no single AOT kind/identity. */
-    public addDynamicSceneLight(): void {
-        this.dynamicSceneLights = true;
-    }
-
-    /** Remove a light and compact the slots exactly as Array.splice does. */
-    public removeSceneLight(scene: Value, light: Value): void {
-        const identity = light.lightIdentity;
-        if (!identity) return;
-        const topology = scene.sceneTopologyState ??
-            this.sceneTopologyStates.get(scene.cpp) ?? { lights: [] };
-        scene.sceneTopologyState = topology;
-        this.sceneTopologyStates.set(scene.cpp, topology);
-        const index = topology.lights.findIndex(
-            (entry) => entry.identity === identity,
-        );
-        if (index < 0) return;
-        topology.lights.splice(index, 1);
-        const globalIndex = this.sceneLights.findIndex(
-            (entry) => entry.identity === identity,
-        );
-        if (globalIndex >= 0) this.sceneLights.splice(globalIndex, 1);
-        delete identity.sceneLightIndex;
-        for (let slot = index; slot < topology.lights.length; slot++) {
-            const moved = topology.lights[slot]!.identity;
-            moved.sceneLightIndex = slot;
-            if (moved.shadowGeneratorIndex !== undefined) {
-                const generator =
-                    this.shadowGenerators[moved.shadowGeneratorIndex];
-                if (generator) generator.lightIndex = slot;
-            }
-        }
-        if (this.frameCallbackDepth > 0 || this.engineHasStarted()) {
-            this.dynamicSceneLights = true;
-        }
-    }
-
-    /** A tone-mapping enable write can occur after environment loading, and
-     *  callback writes can alternate it at run time. */
-    public recordToneMappingEnabledMutation(): void {
-        this.mutableToneMappingEnabled = true;
-    }
-
-    /** Records the exact mesh on which a thin-instance pool exists. */
-    public recordThinInstanceMesh(sceneMeshIndex: number | undefined): void {
-        if (sceneMeshIndex === undefined) return;
-        const mesh = this.sceneMeshes[sceneMeshIndex];
-        if (!mesh) return;
-        if (this.frameCallbackDepth > 0 && mesh.thinInstances !== "always") {
-            mesh.thinInstances = "possible";
-        } else {
-            mesh.thinInstances = "always";
-        }
-    }
-
-    /**
-     * Whether a `mesh.thinInstances` read on this value can stand.
-     *
-     * A mesh whose scene identity generation resolved is answered from what
-     * it recorded, so a source reading the pool of a mesh that never binds
-     * one is refused at its own line. A mesh that arrives as a runtime
-     * handle -- read out of plain data, indexed out of a collection -- has
-     * no compile-time identity to ask about, so the question is the
-     * runtime's: the emitted read raises the pin's own non-null failure.
-     */
-    public meshHasThinInstancePool(owner: Value): boolean {
-        return (
-            owner.sceneMeshIndex === undefined ||
-            this.sceneMeshes[owner.sceneMeshIndex]?.thinInstances !== undefined
-        );
-    }
-
-    /**
-     * Records that this mesh reached an `enableThinInstanceGpuCulling` that
-     * can leave the pin's `_gpuCullingEnabled` set.
-     */
-    public recordThinInstanceGpuCulling(
-        sceneMeshIndex: number | undefined,
-    ): void {
-        if (sceneMeshIndex === undefined) return;
-        const mesh = this.sceneMeshes[sceneMeshIndex];
-        if (!mesh) return;
-        mesh.thinInstanceGpuCulling = true;
-    }
-
-    /**
-     * Whether a statically-`false` culling opt-in on this value still has
-     * something to say.
-     *
-     * `_gpuCullingEnabled` starts false, so a `false` call is the pin's own
-     * idempotent early return unless an enabling call already ran on the
-     * same mesh — which is a question about this mesh's own state, answered
-     * from what it recorded during the same single deterministic walk that
-     * records its pool. A mesh with no compile-time identity has no such
-     * state to read, so the call stands and the runtime decides.
-     */
-    public meshMayHaveThinInstanceGpuCulling(owner: Value): boolean {
-        return (
-            owner.sceneMeshIndex === undefined ||
-            this.sceneMeshes[owner.sceneMeshIndex]?.thinInstanceGpuCulling ===
-                true
-        );
-    }
-
-    /** Records a scene-code mesh creation for the per-renderable variant key. */
-    public recordSceneMesh(
-        kind: string,
-        streams?: {
-            hasUv2: boolean;
-            hasTangents: boolean;
-            hasColors: boolean;
-            runtimeStreams?: true;
-        },
-    ): number {
-        this.sceneMeshes.push({
-            kind,
-            gltfAssetsBefore: this.currentGltfAssetCount(),
-            ...(streams ?? {}),
-        });
-        return this.sceneMeshes.length - 1;
     }
 
     /**
@@ -18307,32 +17199,7 @@ class Compiler implements LoweringServices {
      * recorded site. Files are named the way `fail` names them: the
      * entry file by its option name, an imported file by its program
      * name.
-     */
-    /**
-     * Records that this scene composes the clustered light fragment.
      *
-     * Only `hasSpots` reaches composition -- it decides which of the pin's
-     * two extensions detects a material, and with it the data layout the
-     * fragment reads -- so that is what travels to the compose pipeline.
-     */
-    public reachClusteredContainer(
-        state: ClusteredContainerState,
-        node: ts.Node,
-    ): void {
-        if (
-            this.clusteredContainer &&
-            this.clusteredContainer.hasSpots !== state.hasSpots
-        ) {
-            this.fail(
-                node,
-                "Two clustered light containers disagree about spot " +
-                    "lights: the composed fragment carries one data layout.",
-            );
-        }
-        this.clusteredContainer = state;
-    }
-
-    /**
      * `site` is the scene-source node that reached the feature, or — for a
      * feature an audited companion file reaches with no call in the scene
      * to name — the already-formatted location of that file.
@@ -18492,49 +17359,6 @@ class Compiler implements LoweringServices {
 
     public eraseBrowserInstrumentation(position: number): void {
         this.erasedBrowserInstrumentation.add(position);
-    }
-
-    public recordGeometryOutputTask(
-        manifest: GeometryOutputTaskManifest,
-    ): void {
-        this.geometryOutputTasks.push(manifest);
-    }
-
-    public recordCopyTask(name: string): void {
-        this.copyTasks.push(name);
-    }
-
-    public recordPostProcessTask(manifest: PostProcessTaskManifest): void {
-        this.postProcessTasks.push(manifest);
-    }
-
-    public recordPostProcessComposite(
-        manifest: PostProcessCompositeManifest,
-        site: ts.Node,
-    ): void {
-        if (
-            manifest.intrinsic === "createTaaPostProcessTask" &&
-            (this.frameCallbackDepth > 0 || this.engineStartMark !== undefined)
-        ) {
-            this.fail(
-                site,
-                "TAA task creation after frame execution is not lowered; its source must retain scene UBO history from its first frame.",
-            );
-        }
-        if (
-            manifest.intrinsic === "createTaaPostProcessTask" &&
-            this.temporalSceneRegistration
-        ) {
-            this.fail(
-                site,
-                "TAA tasks must be constructed and attached before initial scene registration; later task record epochs are not lowered.",
-            );
-        }
-        this.postProcessComposites.push(manifest);
-    }
-
-    public recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void {
-        this.screenSpaceTasks.push(manifest);
     }
 
     public expectArgumentCount(
@@ -19136,13 +17960,14 @@ class Compiler implements LoweringServices {
             features,
             jsDataReached: this.jsDataReached,
             imageDecodeReached: this.imageDecodeReached,
-            runtimeMeshProfiles: this.runtimeMeshProfileCount > 0,
+            runtimeMeshProfiles: this.sceneManifest.hasRuntimeMeshProfiles(),
             jsRandomReached: this.jsRandomReached,
             audioSessionReached: this.audioSessionReached,
             continuationStorageReached: this.continuationStorageReached,
             throwReached: this.throwReached,
-            postProcessCompositeCount: this.postProcessComposites.length,
-            screenSpaceTaskCount: this.screenSpaceTasks.length,
+            postProcessCompositeCount:
+                this.sceneManifest.postProcessComposites.length,
+            screenSpaceTaskCount: this.sceneManifest.screenSpaceTasks.length,
             renderDataPreamble: () =>
                 this.dataTypes.renderPreamble(!!this.options.workers),
             nativeFunctions: this.nativeDefinitions,

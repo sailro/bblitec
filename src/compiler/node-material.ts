@@ -69,7 +69,7 @@ export interface NodeMaterialContext
         Pick<
             LoweringServices,
             | "checker"
-            | "reachedNodeMaterials"
+            | "sceneManifest"
             | "expectObjectLiteral"
             | "objectProperty"
             | "resolveStaticExpression"
@@ -78,7 +78,6 @@ export interface NodeMaterialContext
             | "knownValueWithoutEvaluation"
             | "expectKind"
             | "expectStaticArrayLiteral"
-            | "shadowGeneratorLight"
         > {}
 
 /** One entry of a call's `textures`, under the binding name it is keyed by. */
@@ -468,7 +467,7 @@ export function compileNodeMaterialOptions(
     // live on the compiler rather than here, and module-level state in a
     // compiler outlives the compile.
     const key = nodeMaterialKey(material);
-    const existing = context.reachedNodeMaterials.findIndex(
+    const existing = context.sceneManifest.reachedNodeMaterials.findIndex(
         (candidate) => nodeMaterialKey(candidate) === key,
     );
     if (existing >= 0) {
@@ -476,9 +475,9 @@ export function compileNodeMaterialOptions(
         // shared even when callers initialize different subsets of its slots.
         return { index: existing, textures };
     }
-    context.reachedNodeMaterials.push(material);
+    context.sceneManifest.reachedNodeMaterials.push(material);
     return {
-        index: context.reachedNodeMaterials.length - 1,
+        index: context.sceneManifest.reachedNodeMaterials.length - 1,
         textures,
     };
 }
@@ -529,7 +528,7 @@ function compileShadowLights(
                     "filter factory returned.",
             );
         }
-        const generator = context.shadowGeneratorLight(
+        const generator = context.sceneManifest.shadowGeneratorLight(
             value.shadowGeneratorIndex,
             element,
         );

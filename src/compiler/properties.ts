@@ -1435,7 +1435,7 @@ export interface PropertyContext extends Pick<
     | "reachJsData"
     | "noteMaterialColorRead"
     | "fail"
-    | "meshHasThinInstancePool"
+    | "sceneManifest"
     | "dataValue"
 > {}
 
@@ -1497,7 +1497,7 @@ export function readProperty(
     }
     if (
         rule.requiresThinInstancePool &&
-        !context.meshHasThinInstancePool(owner)
+        !context.sceneManifest.meshHasThinInstancePool(owner)
     ) {
         context.fail(
             expression,

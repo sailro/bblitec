@@ -80,7 +80,7 @@ export interface ShaderMaterialContext
         StaticBooleanContext,
         Pick<
             LoweringServices,
-            | "reachedShaderPrograms"
+            | "sceneManifest"
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
             | "objectProperty"
@@ -320,7 +320,7 @@ export function compileShaderMaterialOptions(
                   .replace(/[^A-Za-z0-9]+/g, "-")
                   .replace(/^-+|-+$/g, "")
                   .toLowerCase()
-            : `scene-shader-${context.reachedShaderPrograms.length}`;
+            : `scene-shader-${context.sceneManifest.reachedShaderPrograms.length}`;
     if (slug.length === 0) {
         context.fail(
             nameNode,
@@ -774,21 +774,21 @@ function reachShaderProgram(
     const identity = ({ name: _name, ...candidate }: CompiledShaderProgram) =>
         JSON.stringify(candidate);
     const programIdentity = identity(program);
-    const existing = context.reachedShaderPrograms.findIndex(
+    const existing = context.sceneManifest.reachedShaderPrograms.findIndex(
         (candidate) =>
             candidate.name === program.name ||
             identity(candidate) === programIdentity,
     );
     if (existing >= 0) {
         return {
-            name: context.reachedShaderPrograms[existing]!.name,
+            name: context.sceneManifest.reachedShaderPrograms[existing]!.name,
             id: existing,
         };
     }
-    context.reachedShaderPrograms.push(program);
+    context.sceneManifest.reachedShaderPrograms.push(program);
     return {
         name: program.name,
-        id: context.reachedShaderPrograms.length - 1,
+        id: context.sceneManifest.reachedShaderPrograms.length - 1,
     };
 }
 
@@ -810,7 +810,7 @@ export function reachFoldedShaderProgram(
     family: string,
     compose: () => CompiledShaderProgram,
 ): { name: string; id: number } {
-    const reached = context.reachedShaderPrograms.findIndex(
+    const reached = context.sceneManifest.reachedShaderPrograms.findIndex(
         (candidate) => candidate.name === name,
     );
     if (reached >= 0) {
@@ -831,23 +831,6 @@ export function reachFoldedShaderProgram(
     return reachShaderProgram(context, program);
 }
 
-export function reachedShaderProgram(
-    context: ShaderMaterialContext,
-    name: string,
-    node: ts.Node,
-): CompiledShaderProgram {
-    const program = context.reachedShaderPrograms.find(
-        (candidate) => candidate.name === name,
-    );
-    if (!program) {
-        context.fail(
-            node,
-            `Shader variant '${name}' was not created in this scene.`,
-        );
-    }
-    return program;
-}
-
 export function resolveShaderUniform(
     context: ShaderMaterialContext,
     material: Value,
@@ -860,8 +843,7 @@ export function resolveShaderUniform(
             "Shader uniform writes require a shader material.",
         );
     }
-    const program = reachedShaderProgram(
-        context,
+    const program = context.sceneManifest.reachedShaderProgram(
         material.shaderVariant,
         nameExpression,
     );
@@ -899,8 +881,7 @@ export function resolveShaderTextureSlot(
             "Shader texture writes require a shader material.",
         );
     }
-    const program = reachedShaderProgram(
-        context,
+    const program = context.sceneManifest.reachedShaderProgram(
         material.shaderVariant,
         nameExpression,
     );
@@ -926,8 +907,7 @@ export function resolveShaderStorageBufferSlot(
             "Shader storage-buffer writes require a shader material.",
         );
     }
-    const program = reachedShaderProgram(
-        context,
+    const program = context.sceneManifest.reachedShaderProgram(
         material.shaderVariant,
         nameExpression,
     );

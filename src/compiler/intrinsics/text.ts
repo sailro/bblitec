@@ -26,7 +26,7 @@ export interface TextIntrinsicContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
-            | "reachedTextData"
+            | "sceneManifest"
             | "options"
             | "assetPayloads"
             | "registerAsset"
@@ -462,7 +462,7 @@ export function compileTextIntrinsic(
     // after that helper was lowered. Keep later owners eligible for live input.
     const live =
         textValue.staticString === undefined ||
-        context.reachedTextData.some((row) => row.layout.live);
+        context.sceneManifest.reachedTextData.some((row) => row.layout.live);
     const layout: StaticTextLayout = {
         fontSizePx,
         text: textValue.staticString ?? "",
@@ -564,7 +564,7 @@ export function compileTextIntrinsic(
             font.textFont!.bytes,
             layout,
             font.textFont!.source,
-            context.reachedTextData.length,
+            context.sceneManifest.reachedTextData.length,
         );
     } catch (error) {
         context.fail(
@@ -572,7 +572,7 @@ export function compileTextIntrinsic(
             `Pinned text materialization failed: ${String(error)}`,
         );
     }
-    context.reachedTextData.push(row);
+    context.sceneManifest.reachedTextData.push(row);
     context.reachFeature("text:data", call);
     if (layout.live) context.reachFeature("text:layout", call);
     return {
@@ -598,7 +598,7 @@ function expectTextString(
 }
 
 export function promoteLiveTextData(context: TextIntrinsicContext): void {
-    for (const row of context.reachedTextData) {
+    for (const row of context.sceneManifest.reachedTextData) {
         if (row.layout.live) continue;
         const payload =
             context.assetPayloads.get(row.font.source) ?? row.font.source;

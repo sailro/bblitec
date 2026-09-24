@@ -28,7 +28,7 @@ interface ParticleBufferContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
-            | "reachedNodeParticles"
+            | "sceneManifest"
             | "unwrap"
             | "libraryGlobal"
             | "isRuntimeResourceConstruction"
@@ -37,12 +37,12 @@ interface ParticleBufferContext
 type BufferIdentity = { set: number; system: number };
 
 export function frozenParticleBuffer(
-    context: Pick<ParticleBufferContext, "reachedNodeParticles" | "fail">,
+    context: Pick<ParticleBufferContext, "sceneManifest" | "fail">,
     owner: BufferIdentity,
     node: ts.Node,
 ): NodeParticleFrozenBufferRequest {
     if (
-        context.reachedNodeParticles.steps.some(
+        context.sceneManifest.reachedNodeParticles.steps.some(
             (step) =>
                 step.op === "push-system" &&
                 (step.set === owner.set || step.fromSet === owner.set),
@@ -53,12 +53,12 @@ export function frozenParticleBuffer(
             "Native frozen particle buffer reads and sprite sheets cannot be combined with system-list composition; pushed systems share their original buffer identity.",
         );
     }
-    const previous = context.reachedNodeParticles.buffers.find(
+    const previous = context.sceneManifest.reachedNodeParticles.buffers.find(
         (entry) => entry.set === owner.set && entry.system === owner.system,
     );
     if (previous) return previous;
     const request: NodeParticleFrozenBufferRequest = { ...owner, columns: [] };
-    context.reachedNodeParticles.buffers.push(request);
+    context.sceneManifest.reachedNodeParticles.buffers.push(request);
     return request;
 }
 
@@ -66,12 +66,12 @@ export function frozenParticleBuffer(
 export function requireParticleBakeWritable(
     context: Pick<
         ParticleBufferContext,
-        "reachedNodeParticles" | "fail" | "isRuntimeResourceConstruction"
+        "sceneManifest" | "fail" | "isRuntimeResourceConstruction"
     >,
     owner: BufferIdentity,
     node: ts.Node,
 ): void {
-    const program = context.reachedNodeParticles;
+    const program = context.sceneManifest.reachedNodeParticles;
     if (program.sets[owner.set]?.native) {
         context.fail(
             node,
@@ -112,7 +112,7 @@ function identity(value: Value | undefined): BufferIdentity | undefined {
 }
 
 export function readFrozenParticleProperty(
-    context: Pick<ParticleBufferContext, "reachedNodeParticles" | "fail">,
+    context: Pick<ParticleBufferContext, "sceneManifest" | "fail">,
     owner: Value,
     name: string,
     node: ts.Node,
@@ -127,7 +127,7 @@ export function readFrozenParticleProperty(
         owner.kind !== "node-particle-column"
     )
         return undefined;
-    if (context.reachedNodeParticles.sets[buffer.set]?.native) {
+    if (context.sceneManifest.reachedNodeParticles.sets[buffer.set]?.native) {
         if (
             owner.kind === "node-particle-buffer" &&
             (name === "alive" || name === "capacity")
@@ -174,7 +174,7 @@ export function readFrozenParticleProperty(
 }
 
 export function readFrozenParticleElement(
-    context: Pick<ParticleBufferContext, "reachedNodeParticles" | "fail">,
+    context: Pick<ParticleBufferContext, "sceneManifest" | "fail">,
     owner: Value,
     indexCpp: string,
     node: ts.Node,
@@ -275,7 +275,7 @@ export function emitParticleBufferWrite(
                 "at generation.",
         );
     }
-    context.reachedNodeParticles.steps.push({
+    context.sceneManifest.reachedNodeParticles.steps.push({
         op: "buffer-write",
         set: owner.set,
         system: owner.system,
@@ -305,13 +305,14 @@ export function emitParticleAliveGuard(
     }
     const owner = bufferOwner(context, left.expression);
     if (!owner) return false;
-    if (context.reachedNodeParticles.sets[owner.set]?.native) return false;
+    if (context.sceneManifest.reachedNodeParticles.sets[owner.set]?.native)
+        return false;
     if (
         context.isRuntimeResourceConstruction() ||
-        context.reachedNodeParticles.sprite2d.some(
+        context.sceneManifest.reachedNodeParticles.sprite2d.some(
             (entry) => entry.set === owner.set,
         ) ||
-        context.reachedNodeParticles.buffers.some(
+        context.sceneManifest.reachedNodeParticles.buffers.some(
             (entry) =>
                 entry.set === owner.set &&
                 entry.system === owner.system &&
@@ -353,7 +354,7 @@ export function emitParticleAliveGuard(
             "A particle live-count guard carries no else branch.",
         );
     }
-    context.reachedNodeParticles.steps.push({
+    context.sceneManifest.reachedNodeParticles.steps.push({
         op: "expect-alive",
         set: owner.set,
         system: owner.system,

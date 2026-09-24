@@ -18,7 +18,7 @@ export interface LocalCubemapIntrinsicContext
             LoweringServices,
             | "options"
             | "localCubemapState"
-            | "scenePbrMaterials"
+            | "sceneManifest"
             | "registerAsset"
             | "expectSameEngine"
             | "engineHasStarted"
@@ -199,7 +199,9 @@ export function compileLocalCubemapIntrinsic(
                 "Local environments currently require a statically known scene PBR material.",
             );
         const material =
-            context.scenePbrMaterials[first.scenePbrMaterialIndex]!;
+            context.sceneManifest.scenePbrMaterials[
+                first.scenePbrMaterialIndex
+            ]!;
         if (name === "clearPbrLocalEnvironment") {
             delete material.localCubemapCandidates;
             return {

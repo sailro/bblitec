@@ -39,9 +39,7 @@ export interface SceneIntrinsicContext
             | "emit"
             | "markEngineStart"
             | "compileAsyncEngineStart"
-            | "addSceneLight"
-            | "addDynamicSceneLight"
-            | "removeSceneLight"
+            | "sceneManifest"
             | "requireEngine"
             | "ensureDefaultRenderTask"
             | "compileSceneRegistration"
@@ -107,13 +105,17 @@ export function compileSceneIntrinsic(
             // patched to the slot here.
             if (resource.kind === "light") {
                 if (resource.lightKind && resource.lightIdentity) {
-                    context.addSceneLight(scene, resource, resource.lightKind);
+                    context.sceneManifest.addSceneLight(
+                        scene,
+                        resource,
+                        resource.lightKind,
+                    );
                 } else {
                     // A light read from native data has the runtime handle
                     // but no single generation-time identity/kind. The
                     // pipeline therefore composes its dynamic light arms;
                     // the runtime add keeps the handle's actual kind/order.
-                    context.addDynamicSceneLight();
+                    context.sceneManifest.addDynamicSceneLight();
                 }
             }
             // A container's entity takes the pin's entity walk alone: its
@@ -152,7 +154,7 @@ export function compileSceneIntrinsic(
             }
             context.expectSameEngine(scene, resource, call);
             if (resource.kind === "light") {
-                context.removeSceneLight(scene, resource);
+                context.sceneManifest.removeSceneLight(scene, resource);
             }
             context.reachFeature("scene:remove", call);
             return {

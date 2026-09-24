@@ -48,10 +48,7 @@ export interface SpriteIntrinsicContext
             | "allocateTemporaryCppName"
             | "bindDataTuple"
             | "compileSpriteAtlas"
-            | "recordPlainSpriteProgram"
-            | "recordPureSpriteVertex"
-            | "spriteCustomShaders"
-            | "recordSpriteCustomShader"
+            | "sceneManifest"
             | "emit"
             | "propertyName"
             | "fail"
@@ -173,7 +170,7 @@ function customShaderOption(
 ): { program: string; textures: string; textureNames: string } {
     const named = property(options, "customShader");
     if (!named) {
-        context.recordPlainSpriteProgram(family);
+        context.sceneManifest.recordPlainSpriteProgram(family);
         return { program: "0u", textures: "{}", textureNames: "{}" };
     }
     if (named.kind !== `${family}-custom-shader`) {
@@ -1706,7 +1703,7 @@ function compileCreateSprite2DCustomShader(
     const family =
         importedName === "createSprite2DCustomShader" ? "sprite" : "billboard";
     const extraNames = extras.map(({ name }) => name);
-    const familyShaders = context
+    const familyShaders = context.sceneManifest
         .spriteCustomShaders()
         .filter((entry) => entry.family === family);
     const existingIndex = familyShaders.findIndex(
@@ -1735,7 +1732,7 @@ function compileCreateSprite2DCustomShader(
         call,
     );
     if (existingIndex < 0) {
-        context.recordSpriteCustomShader({
+        context.sceneManifest.recordSpriteCustomShader({
             family,
             fragment: fragment.staticString,
             extraTextures: extraNames,
@@ -1906,7 +1903,7 @@ function compileCreateSpriteRenderer(
     const clearValue = tupleClearValue(context, options, call);
     context.reachFeature("sprite:2d", call);
     context.reachFeature("renderer:sprite", call);
-    context.recordPureSpriteVertex();
+    context.sceneManifest.recordPureSpriteVertex();
     return {
         kind: "sprite-renderer",
         cpp:

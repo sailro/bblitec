@@ -49,7 +49,7 @@ import { transpileForBrowser } from "../typescript-transpile.js";
 export interface DeterministicRandomContext extends Pick<
     LoweringServices,
     | "libraryGlobal"
-    | "reachedNodeParticles"
+    | "sceneManifest"
     | "lookup"
     | "compileForDataSink"
     | "emit"
@@ -255,8 +255,16 @@ export function emitDeterministicRandomInstall(
             "Math.random is replaced by an arrow function or not at all.",
         );
     }
-    if (context.reachedNodeParticles.sets.some((set) => set.native)) {
-        if (context.reachedNodeParticles.sets.some((set) => !set.native)) {
+    if (
+        context.sceneManifest.reachedNodeParticles.sets.some(
+            (set) => set.native,
+        )
+    ) {
+        if (
+            context.sceneManifest.reachedNodeParticles.sets.some(
+                (set) => !set.native,
+            )
+        ) {
             context.fail(
                 expression,
                 "A Math.random override cannot span native and generation-only particle systems.",
@@ -283,7 +291,9 @@ export function emitDeterministicRandomInstall(
         ts.isIdentifier(expression.right) &&
         context.lookup(expression.right).kind === "js-random"
     ) {
-        context.reachedNodeParticles.steps.push({ op: "random-restore" });
+        context.sceneManifest.reachedNodeParticles.steps.push({
+            op: "random-restore",
+        });
         return true;
     }
     // `Math.random = makeSeed()`: the generator comes from a module-level
@@ -320,7 +330,7 @@ export function emitDeterministicRandomInstall(
             }
             return argument.getText();
         });
-        context.reachedNodeParticles.steps.push({
+        context.sceneManifest.reachedNodeParticles.steps.push({
             op: "random",
             declarations: [
                 ...capturedDeclarations(context, factory, checker),
@@ -341,7 +351,7 @@ export function emitDeterministicRandomInstall(
                 "module-level factory returning one, or not at all.",
         );
     }
-    if (context.reachedNodeParticles.sets.length === 0) {
+    if (context.sceneManifest.reachedNodeParticles.sets.length === 0) {
         context.fail(
             expression,
             "Math.random is replaceable only as the deterministic seed of a " +
@@ -357,7 +367,7 @@ export function emitDeterministicRandomInstall(
         );
     }
     refuseTypeSyntax(context, arrow);
-    context.reachedNodeParticles.steps.push({
+    context.sceneManifest.reachedNodeParticles.steps.push({
         op: "random",
         declarations: capturedDeclarations(context, arrow, checker),
         arrow: arrow.getText(),
@@ -378,7 +388,7 @@ export function assertDeterministicRandomUnreached(
     jsRandomReached: boolean,
     site: ts.Node,
 ): void {
-    const installed = context.reachedNodeParticles.steps.some(
+    const installed = context.sceneManifest.reachedNodeParticles.steps.some(
         (step) => step.op === "random",
     );
     if (installed && jsRandomReached) {

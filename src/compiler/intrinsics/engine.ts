@@ -42,13 +42,7 @@ export interface EngineIntrinsicContext
             | "compileRenderTaskOptions"
             | "compileGeometryTaskOptions"
             | "compileCopyTaskOptions"
-            | "recordGeometryOutputTask"
-            | "recordPostProcessTask"
-            | "recordPostProcessComposite"
-            | "recordScreenSpaceTask"
-            | "postProcessTasks"
-            | "postProcessComposites"
-            | "screenSpaceTasks"
+            | "sceneManifest"
             | "compileSceneDefaultRenderTask"
             | "expectObjectLiteral"
             | "objectProperty"
@@ -393,7 +387,7 @@ export function compileEngineIntrinsic(
             const compiled = context.compileGeometryTaskOptions(
                 argumentAt(call, 0),
             );
-            context.recordGeometryOutputTask(compiled.manifest);
+            context.sceneManifest.recordGeometryOutputTask(compiled.manifest);
             reachRenderer(context, call);
             return {
                 kind: "task",
@@ -496,9 +490,9 @@ function compileScreenSpaceIntrinsic(
         context,
         importedName,
         argumentAt(call, 0),
-        context.screenSpaceTasks.length,
+        context.sceneManifest.screenSpaceTasks.length,
     );
-    context.recordScreenSpaceTask(compiled.manifest);
+    context.sceneManifest.recordScreenSpaceTask(compiled.manifest);
     return {
         kind: "task",
         cpp:
@@ -542,9 +536,9 @@ function compilePostProcessIntrinsic(
             context,
             importedName,
             argumentAt(call, 0),
-            context.postProcessComposites.length,
+            context.sceneManifest.postProcessComposites.length,
         );
-        context.recordPostProcessComposite(built.manifest, call);
+        context.sceneManifest.recordPostProcessComposite(built.manifest, call);
         for (const task of built.sourceTasks) {
             context.expectSameEngine(engine, task, call);
         }
@@ -561,9 +555,9 @@ function compilePostProcessIntrinsic(
         context,
         importedName,
         argumentAt(call, 0),
-        context.postProcessTasks.length,
+        context.sceneManifest.postProcessTasks.length,
     );
-    context.recordPostProcessTask(compiled.manifest);
+    context.sceneManifest.recordPostProcessTask(compiled.manifest);
     return {
         kind: "task",
         cpp: `bbl::create_post_process_task(${engine.cpp}, ${compiled.cpp})`,
