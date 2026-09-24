@@ -278,7 +278,8 @@ OwnedSdlPipeline create_sprite_layer_pipeline(Resource*, const Sprite2DLayerReco
     ++capture::pipelines;
     return {capture::resource()};
 }
-std::array<Resource*, 4> create_dawn_sprite_layer_layouts(Resource*, Uint32, std::size_t) {
+std::array<Resource*, 4> create_dawn_sprite_layer_layouts(Resource*, const SpriteLayerPipelinePlan&,
+                                                          Uint32) {
     return {capture::resource(), capture::resource(), capture::resource(), capture::resource()};
 }
 Resource* create_dawn_sprite_layer_pipeline(Resource*, const std::array<Resource*, 4>&,
