@@ -6,6 +6,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { textRecordModel } from "./text-records.js";
 
 const module = "src/text/text-renderer.ts";
 const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
@@ -117,15 +118,6 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
     private factories(): string {
         const c: LoweringContext = this.context;
         c.assertFunctionBodyShape(
-            c.functionDeclaration(module, "createTextLayer").declaration,
-            `{return {
-            _kind:"text-layer",data,positionPx:{x:options?.positionPx?.x??0,y:options?.positionPx?.y??0},
-            rotationRad:options?.rotationRad??0,scale:options?.scale??1,order:options?.order??0,
-            opacity:options?.opacity??1,coverageGamma:options?.coverageGamma??1,visible:options?.visible??true,_version:0
-        };}`,
-            "Text layer native option defaults",
-        );
-        c.assertFunctionBodyShape(
             c.functionDeclaration(module, "createTextRenderer").declaration,
             `{
             const canvas=surface.canvas;
@@ -142,27 +134,21 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
             "{registerRenderingContext(tr._surface,tr);}",
             "Text renderer context registration",
         );
-        const position = c.functionDeclaration(module, "setTextLayerPosition");
+        // The layer record and its options are the pin's; the factory's
+        // option defaults are its own `??` operands.
+        const records = textRecordModel(c);
+        const layers = records.lower([
+            records.functionDeclaration(module, "createTextLayer"),
+            records.functionDeclaration(module, "setTextLayerPosition"),
+        ]);
 
-        return `inline TextLayer create_text_layer(TextData data,const TextLayerOptions& options={}) {
-    auto layer=std::make_shared<TextLayerState>();
-    static_cast<TextLayerOptions&>(*layer)=options;layer->data=std::move(data);return layer;
-}
+        return `${records.structs(["TextLayerOptions"])}
+${layers.declarations}
+${layers.definitions}
 inline void text_write_position_px(TextLayerState& layer,int axis,double value) {
     if(axis==0)layer.position_px.x=value;
     else if(axis==1)layer.position_px.y=value;
     else throw std::out_of_range("Text layer position component");
-}
-inline void set_text_layer_position(TextLayerState& layer,double x,double y) {
-${lowerPinnedBody(position.file, position.declaration.body!.statements, {
-    bindings: new Map([
-        ...this.layerBindings(),
-        ["layer._version", scalar("layer.version")],
-        ["x", scalar("x")],
-        ["y", scalar("y")],
-    ]),
-    calls: new Map(),
-})}
 }
 inline TextRenderer create_text_renderer(Engine& engine,const TextRendererOptions& options) {
     auto renderer=std::make_shared<TextRendererState>();renderer->engine=&engine;
@@ -656,10 +642,7 @@ ${lowerPinnedBody(file, statements.slice(boundary), {
             ["cached._atlasVersion", scalar("cached->atlas_version")],
             ["cached._curveSetId", opaque("cached->curve_set_id")],
             ["atlasGpu._uploadedVersion", scalar("atlasGpu.uploaded_version")],
-            [
-                "g._curveSetId",
-                opaque("data.payload->atlases.at(g.atlas_index).curve_set_id"),
-            ],
+            ["g._curveSetId", opaque("g->curve_set_id")],
             [
                 "lg._bindGroupCache.length",
                 scalar("static_cast<double>(gpu.bind_group_cache.size())"),
@@ -733,7 +716,7 @@ ${lowerPinnedBody(file, statements.slice(0, boundary), {
                         "Standalone text atlas result changed.",
                     );
                 return [
-                    `${indent}auto atlas_result=ensure_text_atlas(data.payload->atlases.at(g.atlas_index),data.atlas_gpu.at(g.atlas_index),gpu.device_identity,ops);`,
+                    `${indent}auto atlas_result=ensure_text_atlas(*g->curve_set->atlas,gpu.device_identity,ops);`,
                     `${indent}const auto& atlasGpu=*atlas_result.gpu;`,
                 ];
             }
@@ -786,7 +769,7 @@ ${lowerPinnedBody(file, statements.slice(0, boundary), {
                 const start = lowerer.expression(initial.arguments[0]!),
                     end = lowerer.expression(initial.arguments[1]!);
                 return [
-                    `${indent}const auto view=text_byte_range(data.payload->instances.bytes,(${start})*4.0,((${end})-(${start}))*4.0);`,
+                    `${indent}const auto view=text_byte_range(data.instances,(${start})*4.0,((${end})-(${start}))*4.0);`,
                 ];
             }
         }
@@ -837,7 +820,7 @@ ${lowerPinnedBody(file, statements.slice(0, boundary), {
                 );
                 return [
                     `${indent}if(gpu.bind_group_cache.size()<=static_cast<std::size_t>(i))gpu.bind_group_cache.resize(static_cast<std::size_t>(i)+1);`,
-                    `${indent}gpu.bind_group_cache[static_cast<std::size_t>(i)]=std::make_shared<TextLayerBindGroup>(TextLayerBindGroup{ops.create_bind_group(gpu,atlasGpu,layout),atlasGpu.uploaded_version,data.payload->atlases.at(g.atlas_index).curve_set_id});`,
+                    `${indent}gpu.bind_group_cache[static_cast<std::size_t>(i)]=std::make_shared<TextLayerBindGroup>(TextLayerBindGroup{ops.create_bind_group(gpu,atlasGpu,layout),atlasGpu.uploaded_version,g->curve_set_id});`,
                 ];
             }
         }
@@ -1053,13 +1036,10 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
                 "data._groups.length",
                 scalar("static_cast<double>(data.groups.size())"),
             ],
-            ["g._slotCount", scalar("static_cast<double>(g.slot_count)")],
-            ["g._slotStart", scalar("static_cast<double>(g.slot_start)")],
-            ["g._groupKey", opaque("g.group_key")],
-            [
-                "g._curveSetId",
-                opaque("data.payload->atlases.at(g.atlas_index).curve_set_id"),
-            ],
+            ["g._slotCount", scalar("g->slot_count")],
+            ["g._slotStart", scalar("g->slot_start")],
+            ["g._groupKey", opaque("g->group_key")],
+            ["g._curveSetId", opaque("g->curve_set_id")],
             ["base", opaque("base")],
             ["bound", opaque("bound")],
             ["p", opaque("p")],
@@ -1263,6 +1243,7 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
         return `#pragma once
 #include <bblite/text_renderer.hpp>
 #include <bblite/upstream_text_gpu.hpp>
+#include <bblite/upstream_text_records.hpp>
 namespace bbl {
 template<std::size_t N> std::span<const std::uint8_t> text_layer_bytes(const std::array<float,N>& values) {
     return {reinterpret_cast<const std::uint8_t*>(values.data()),values.size()*sizeof(float)};

@@ -24,7 +24,7 @@ export class TextGpuLowerer {
 
     public header(): string {
         return `#pragma once
-#include <bblite/text.hpp>
+#include <bblite/upstream_text_records.hpp>
 #include <bblite/js_data.hpp>
 #include <algorithm>
 #include <cmath>
@@ -38,12 +38,17 @@ inline std::size_t text_resource_size(double value) {
         throw std::runtime_error("Text resource extent is outside native integer storage.");
     return static_cast<std::size_t>(value);
 }
-inline std::span<const std::uint8_t> text_byte_range(const std::vector<std::uint8_t>& bytes,
+// The pin uploads a typed array's own bytes (view.buffer at view.byteOffset).
+template<class T> std::span<const std::uint8_t> text_byte_range(const js::TypedArray<T>& values,
     double offset, double length) {
     const auto start = text_resource_size(offset), count = text_resource_size(length);
-    if (start > bytes.size() || count > bytes.size() - start)
-        throw std::runtime_error("Text upload exceeds its retained payload.");
-    return std::span<const std::uint8_t>(bytes).subspan(start, count);
+    if (start > values.byte_length() || count > values.byte_length() - start)
+        throw std::runtime_error("Text upload exceeds its typed array.");
+    const auto buffer = values.buffer();
+    return {buffer.data() + values.byte_offset() + start, count};
+}
+template<class T> std::span<const std::uint8_t> text_byte_range(const js::TypedArray<T>& values) {
+    return text_byte_range(values, 0, static_cast<double>(values.byte_length()));
 }
 ${this.targetKey()}
 ${this.rows()}
@@ -134,7 +139,7 @@ ${this.draw()}
                 const owner = range === "data._groups" ? "data" : "(*r.data)";
                 return {
                     range: `${owner}.groups`,
-                    bindings: this.groupBindings(element, owner),
+                    bindings: this.groupBindings(element),
                 };
             },
             ...(adapter
@@ -173,28 +178,23 @@ ${this.draw()}
         );
     }
 
-    private groupBindings(
-        name: string,
-        data: string,
-    ): Map<string, PinnedBinding> {
+    private groupBindings(name: string): Map<string, PinnedBinding> {
         return new Map([
-            [`${name}._slotCount`, extent(`${name}.slot_count`)],
-            [`${name}._slotStart`, extent(`${name}.slot_start`)],
+            [`${name}._slotCount`, scalar(`${name}->slot_count`)],
+            [`${name}._slotStart`, scalar(`${name}->slot_start`)],
             [
                 `${name}._bindGroup`,
                 {
-                    ...opaque(`${name}.bind_group`),
-                    absentCpp: `!${name}.bind_group`,
+                    ...opaque(`${name}->bind_group`),
+                    absentCpp: `!${name}->bind_group`,
                 },
             ],
-            [`${name}._bindGroupVersion`, scalar(`${name}.bind_group_version`)],
             [
-                `${name}._curveSetId`,
-                opaque(
-                    `${data}.payload->atlases.at(${name}.atlas_index).curve_set_id`,
-                ),
+                `${name}._bindGroupVersion`,
+                scalar(`${name}->bind_group_version`),
             ],
-            [`${name}._groupKey`, opaque(`${name}.group_key`)],
+            [`${name}._curveSetId`, opaque(`${name}->curve_set_id`)],
+            [`${name}._groupKey`, opaque(`${name}->group_key`)],
         ]);
     }
 
@@ -405,10 +405,7 @@ ${body}\n}`;
             ...this.gpuBindings(),
             ["data._styleCount", extent("data.style_count")],
             ["data._styleVersion", scalar("data.style_version")],
-            [
-                "data._styles.byteLength",
-                extent("data.payload->styles.capacity_bytes"),
-            ],
+            ["data._styles.byteLength", extent("data.styles.byte_length()")],
             ["device", opaque("device_identity")],
             ["gpu", opaque("gpu")],
         ]);
@@ -463,7 +460,7 @@ ${body}\n}`;
                         "Text style upload range",
                     );
                     return [
-                        `${indent}ops.write_renderable_buffer(gpu, TextBufferKind::styles, 0, text_byte_range(data.payload->styles.bytes, 0, ${lowerer.expression(expression.arguments[4]!)}));`,
+                        `${indent}ops.write_renderable_buffer(gpu, TextBufferKind::styles, 0, text_byte_range(data.styles, 0, ${lowerer.expression(expression.arguments[4]!)}));`,
                     ];
                 }
                 return undefined;
@@ -735,13 +732,19 @@ template<class Ops> void create_text_atlas_metadata(TextAtlasGpuState& gpu, doub
             ...this.atlasBindings(),
             ["gpu", { ...opaque("gpu"), absentCpp: "!gpu" }],
             ["device", opaque("device_identity")],
-            ["atlas._curveTexelsUsed", extent("atlas.curves.used_texels")],
-            ["atlas._bandTexelsUsed", extent("atlas.bands.used_texels")],
-            ["atlas._slotCount", extent("atlas.metadata.count")],
+            ["atlas._curveTexelsUsed", scalar("atlas.curve_texels_used")],
+            ["atlas._bandTexelsUsed", scalar("atlas.band_texels_used")],
+            ["atlas._slotCount", scalar("atlas.slot_count")],
             ["atlas._version", scalar("atlas.version")],
-            ["atlas._gpu", opaque("state")],
-            ["atlas._curveTexData", opaque("atlas.curves.bytes")],
-            ["atlas._bandTexData", opaque("atlas.bands.bytes")],
+            ["atlas._gpu", opaque("atlas.gpu")],
+            [
+                "atlas._curveTexData",
+                opaque("text_byte_range(atlas.curve_tex_data)"),
+            ],
+            [
+                "atlas._bandTexData",
+                opaque("text_byte_range(atlas.band_tex_data)"),
+            ],
         ]);
         const calls = new Map<string, (args: readonly string[]) => string>([
             [
@@ -783,7 +786,7 @@ template<class Ops> void create_text_atlas_metadata(TextAtlasGpuState& gpu, doub
                             "atlas._gpu",
                             "Text atlas retained GPU alias",
                         );
-                        return [`${indent}auto gpu = state;`];
+                        return [`${indent}auto gpu = atlas.gpu;`];
                     }
                     if (declaration.name.getText() === "meta") {
                         c.assertExpressionShape(
@@ -857,14 +860,14 @@ template<class Ops> void create_text_atlas_metadata(TextAtlasGpuState& gpu, doub
                         "Text metadata upload range",
                     );
                     return [
-                        `${indent}ops.write_atlas_metadata(*gpu, text_byte_range(atlas.metadata.bytes, 0, ${lowerer.expression(expression.arguments[4]!)}));`,
+                        `${indent}ops.write_atlas_metadata(*gpu, text_byte_range(atlas.meta_data, 0, ${lowerer.expression(expression.arguments[4]!)}));`,
                     ];
                 }
                 return undefined;
             },
         );
-        return `template<class Ops> TextAtlasGpuResult ensure_text_atlas(const TextAtlas& atlas,
-    std::shared_ptr<TextAtlasGpuState>& state, const void* device_identity, Ops& ops) {\n${body}\n}`;
+        return `template<class Ops> TextAtlasGpuResult ensure_text_atlas(SharedAtlas& atlas,
+    const void* device_identity, Ops& ops) {\n${body}\n}`;
     }
     private renderable(): string {
         const c: LoweringContext = this.context;
@@ -974,7 +977,7 @@ template<class Ops> void create_text_atlas_metadata(TextAtlasGpuState& gpu, doub
                         "g._bindGroup = null",
                         "Text pipeline cache invalidation",
                     );
-                    return [`${indent}g.bind_group.reset();`];
+                    return [`${indent}g->bind_group.reset();`];
                 }
                 return undefined;
             },
@@ -1055,7 +1058,7 @@ template<class Ops> std::shared_ptr<TextGpuState> ensure_text_gpu(TextRenderable
                                 "Text atlas result destructuring changed.",
                             );
                         return [
-                            `${indent}auto atlas_result = ensure_text_atlas(data.payload->atlases.at(g.atlas_index), data.atlas_gpu.at(g.atlas_index), gpu.device_identity, ops);`,
+                            `${indent}auto atlas_result = ensure_text_atlas(*g->curve_set->atlas, gpu.device_identity, ops);`,
                             `${indent}const auto& atlasGpu = *atlas_result.gpu;`,
                         ];
                     }
@@ -1101,7 +1104,7 @@ template<class Ops> std::shared_ptr<TextGpuState> ensure_text_gpu(TextRenderable
                         const first = lowerer.expression(call.arguments[0]!),
                             last = lowerer.expression(call.arguments[1]!);
                         return [
-                            `${indent}const auto view = text_byte_range(data.payload->instances.bytes, (${first}) * 4.0, ((${last}) - (${first})) * 4.0);`,
+                            `${indent}const auto view = text_byte_range(data.instances, (${first}) * 4.0, ((${last}) - (${first})) * 4.0);`,
                         ];
                     }
                 }
@@ -1137,7 +1140,7 @@ template<class Ops> std::shared_ptr<TextGpuState> ensure_text_gpu(TextRenderable
                         "Text group resource identities and binding order",
                     );
                     return [
-                        `${indent}g.bind_group = ops.create_bind_group(gpu, atlasGpu, layout);`,
+                        `${indent}g->bind_group = ops.create_bind_group(gpu, atlasGpu, layout);`,
                     ];
                 }
                 if (ts.isCallExpression(expression)) {
@@ -1287,7 +1290,7 @@ template<class Ops> std::shared_ptr<TextGpuState> ensure_text_gpu(TextRenderable
                             "pass.setBindGroup(0, g._bindGroup)",
                             "Text group binding",
                         );
-                        return [`${indent}ops.set_bind_group(g.bind_group);`];
+                        return [`${indent}ops.set_bind_group(g->bind_group);`];
                     }
                 }
                 return undefined;

@@ -71,9 +71,36 @@ export function check(context) {
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
     const manifest = readManifest(context);
-    const live = manifest.textData?.[0]?.live;
-    assert(live, "the manifest carries no live text data");
-    const ids = new Map(live.glyphSlots.map((slot, id) => [slot, id]));
+    // The packaged repertoire is the pin's GlyphStorage graph: its atlas's
+    // `_glyphSlots` map names each glyph id's atlas slot.
+    const storage = manifest.textData?.[0]?.repertoire?.storage;
+    assert(storage, "the manifest carries no packaged text repertoire");
+    const atlas = storage.records.find(
+        (record) => record.name === "SharedAtlas",
+    );
+    assert(atlas, "the packaged repertoire has an atlas");
+    const slots = atlas.fields._glyphSlots;
+    assert(
+        slots !== null && typeof slots === "object" && "container" in slots,
+        "the atlas's _glyphSlots is a container",
+    );
+    const container = storage.containers[slots.container];
+    assert(container?.kind === "map", "the atlas's _glyphSlots is a map");
+    /** @type {Map<number, number>} */
+    const ids = new Map(
+        container.entries.map(([id, slot]) => {
+            assert(
+                slot !== null && typeof slot === "object" && "value" in slot,
+                "a glyph slot is a record value",
+            );
+            const index = slot.value._index;
+            assert(
+                typeof index === "number" && typeof id === "number",
+                "a glyph slot pairs a numeric id with a numeric index",
+            );
+            return [index, id];
+        }),
+    );
     const options = /** @type {Options} */ (context.options);
     const { background, gates } = options;
     /** @type {Record<string, { glyphs: number, fullMad: number, foregroundMad: number }>} */

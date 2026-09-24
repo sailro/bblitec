@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
 import { TextLayoutLowerer } from "../src/lowering/text-layout-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
@@ -24,15 +25,20 @@ test("native live layout matches the pinned shaper and layout over editing, wrap
         return;
     }
     const directory = resolve("artifacts/test-text-layout");
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(resolve(directory, "bblite"), { recursive: true });
     const bytes = readAssetBytesSync(
         `${pinnedLabPublicUrl()}fonts/Inter.ttf`,
         resolve(directory, "source.ts"),
     );
     writeFileSync(resolve(directory, "font.ttf"), bytes);
+    const context = new LoweringContext();
+    writeFileSync(
+        resolve(directory, "bblite/upstream_text_records.hpp"),
+        textRecordsHeader(context),
+    );
     writeFileSync(
         resolve(directory, "layout.hpp"),
-        new TextLayoutLowerer(new LoweringContext()).header(),
+        new TextLayoutLowerer(context).header(),
     );
     const { createFontFromBuffer } = await importPinnedModule<{
         createFontFromBuffer(this: void, bytes: ArrayBuffer): unknown;
@@ -108,7 +114,7 @@ int main() {
     ${cases
         .map(
             (input) => `{
-        const auto result = bbl::layout_text(*font, ${stringLiteral(input.text)}, 48, {${input.maxWidth}, ${input.lineHeight}, ${stringLiteral(input.align)}, ${input.letterSpacing}, ${input.tabSize}});
+        const auto result = bbl::layout_text(*font, ${stringLiteral(input.text)}, 48, bbl::TextLayoutOptions{${input.maxWidth}, ${input.lineHeight}, ${stringLiteral(input.align)}, ${input.letterSpacing}, ${input.tabSize}});
         std::vector<double> row{result.width,result.height,result.pixels_per_font_unit};
         for (const auto& glyph : result.glyphs) { row.push_back(glyph.glyph_id); row.push_back(glyph.x); row.push_back(glyph.y); }
         output.push_back(row);
@@ -127,6 +133,7 @@ int main() {
         "/WX",
         "/fp:strict",
         `/I${resolve("native/include")}`,
+        `/I${directory}`,
         `/I${resolve(nativeFixtureVcpkgRoot, "include")}`,
         `/I${resolve(nativeFixtureVcpkgRoot, "include/harfbuzz")}`,
         source,

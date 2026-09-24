@@ -2,6 +2,7 @@
 
 #include <bblite/runtime.hpp>
 #include <array>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <span>
@@ -11,36 +12,20 @@
 
 namespace bbl {
 
-// Packed instance words include integer bit fields. They stay bytes across the
-// generation/runtime boundary, including when identical assets share storage.
-struct TextStream {
-    std::vector<std::uint8_t> bytes;
-    std::size_t count = 0;
-    std::size_t stride_bytes = 0;
-    std::size_t capacity_bytes = 0;
-};
-struct TextAtlasTexture {
-    std::vector<std::uint8_t> bytes;
-    std::size_t width = 0;
-    std::size_t height = 0;
-    std::size_t used_texels = 0;
-};
-struct TextAtlas {
-    std::string curve_set_id;
-    double version = 0;
-    TextAtlasTexture curves;
-    TextAtlasTexture bands;
-    TextStream metadata;
-};
-struct TextStyleGroupToken {};
+/**
+ * The pin's draw-group key (`CurveSetId | object`): a curve-set id, or an
+ * object a styling feature interned, compared by identity. The two never
+ * compare equal, as a string and an object never are.
+ */
 struct TextGroupKey {
     std::string curve_set_id;
-    std::shared_ptr<TextStyleGroupToken> variant;
+    std::shared_ptr<const void> object;
     TextGroupKey() = default;
     TextGroupKey(std::string id) : curve_set_id(std::move(id)) {}
     TextGroupKey(const char* id) : curve_set_id(id) {}
+    template <class T> TextGroupKey(std::shared_ptr<T> interned) : object(std::move(interned)) {}
     bool operator==(const TextGroupKey&) const = default;
-    bool operator==(const std::string& id) const { return !variant && curve_set_id == id; }
+    bool operator==(const std::string& id) const { return !object && curve_set_id == id; }
 };
 /**
  * `setFontWeightOffset` installed its style seam on this realm. Written by
@@ -49,29 +34,7 @@ struct TextGroupKey {
  * its own.
  */
 inline thread_local bool text_weight_installed = false;
-struct TextDrawGroup {
-    std::size_t atlas_index = 0;
-    TextGroupKey group_key;
-    std::size_t slot_start = 0;
-    std::size_t slot_count = 0;
-    std::size_t live_count = 0;
-    // The pin owns this cache on TextData, shared by all its renderables.
-    mutable std::shared_ptr<void> bind_group;
-    mutable double bind_group_version = -1;
-};
-struct TextDataPayload {
-    double width = 0;
-    double height = 0;
-    double version = 0;
-    double style_version = 0;
-    double layout_version = 0;
-    std::size_t dirty_start = 0;
-    std::size_t dirty_end = 0;
-    TextStream instances;
-    TextStream styles;
-    std::vector<TextAtlas> atlases;
-    std::vector<TextDrawGroup> groups;
-};
+/** The pin's `SharedAtlasGpu`: the backend's leases for one atlas. */
 struct TextAtlasGpuState {
     std::function<void()> destroy_curves;
     std::function<void()> destroy_bands;
@@ -83,24 +46,14 @@ struct TextAtlasGpuState {
     double metadata_capacity = 0;
     double uploaded_version = -1;
 };
-struct TextDataState {
-    std::shared_ptr<TextDataPayload> payload;
-    std::shared_ptr<struct TextLiveData> live;
-    std::vector<TextDrawGroup> groups;
-    std::size_t instance_count = 0;
-    std::size_t style_count = 0;
-    double version = 0;
-    double style_version = 0;
-    double layout_version = 0;
-    std::size_t dirty_start = 0;
-    std::size_t dirty_end = 0;
-    // DefaultTextData owns its atlas storage. Disposing just TextData leaves it.
-    std::vector<std::shared_ptr<TextAtlasGpuState>> atlas_gpu;
-};
+// The pin's text records are emitted from its own declarations
+// (`upstream_text_records.hpp`); these are their handles.
+struct TextDataState;
 using TextData = std::shared_ptr<TextDataState>;
-struct TextRunState;
-using TextRun = std::shared_ptr<TextRunState>;
+struct GlyphRun;
+using TextRun = std::shared_ptr<GlyphRun>;
 using TextRunRef = std::variant<double, TextRun>;
+struct TextLayoutFont;
 
 struct TextQuaternion {
     double x = 0, y = 0, z = 0, w = 1;
@@ -179,3 +132,10 @@ struct TextCameraInput {
 using TextUniformWrite = std::function<void(std::size_t, std::span<const std::uint8_t>)>;
 
 } // namespace bbl
+
+template <> struct std::hash<bbl::TextGroupKey> {
+    std::size_t operator()(const bbl::TextGroupKey& key) const noexcept {
+        return std::hash<std::string>{}(key.curve_set_id) ^
+               (std::hash<const void*>{}(key.object.get()) << 1);
+    }
+};

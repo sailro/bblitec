@@ -39,6 +39,7 @@ std::shared_ptr<TextLayoutFont> create_text_layout_font(std::span<const std::uin
     result->backend = std::move(owner);
     result->units_per_em = upem;
     result->space_glyph = space;
+    result->num_glyphs = glyphs;
     return result;
 }
 

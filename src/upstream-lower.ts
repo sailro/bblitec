@@ -15,7 +15,11 @@ import {
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { TextLowerer } from "./lowering/text-lowerer.js";
 import { TextLayoutLowerer } from "./lowering/text-layout-lowerer.js";
-import { TextDataUpdateLowerer } from "./lowering/text-data-update-lowerer.js";
+import {
+    compiledTextDataSource,
+    TextDataUpdateLowerer,
+    textRecordsHeader,
+} from "./lowering/text-data-update-lowerer.js";
 import { TextGpuLowerer } from "./lowering/text-gpu-lowerer.js";
 import { TextRendererLowerer } from "./lowering/text-renderer-lowerer.js";
 import { TextWeightLowerer } from "./lowering/text-weight-lowerer.js";
@@ -26,7 +30,6 @@ import {
     textPipelineHeader,
     textPipelineStem,
 } from "./pinned-text-pipeline-cpp.js";
-import { stringLiteral as cppStringLiteral } from "./cpp-literals.js";
 import { GeospatialCameraLowerer } from "./lowering/geospatial-camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
@@ -1811,10 +1814,13 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         generated: { modulePath: string; symbolName: string }[],
     ): void {
         if (features.includes("text:data")) {
-            const text = new TextLowerer(context);
+            this.tree.write(
+                "upstream/include/bblite/upstream_text_records.hpp",
+                textRecordsHeader(context),
+            );
             this.tree.write(
                 "upstream/include/bblite/upstream_text.hpp",
-                text.header(),
+                new TextLowerer(context).header(),
             );
             if (features.includes("text:layout")) {
                 this.tree.write(
@@ -1837,19 +1843,11 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     modulePath: "src/text/default-text-data.ts",
                     symbolName: "createDefaultTextData",
                     header: "#pragma once\n#include <bblite/text.hpp>\nnamespace bbl { TextData create_compiled_text_data(std::uint32_t index); }\n",
-                    source:
-                        "#include <bblite/upstream_text.hpp>\n#include <bblite/pal.hpp>\n" +
-                        (features.includes("text:layout")
-                            ? "#include <bblite/upstream_text_update.hpp>\n"
-                            : "") +
-                        "namespace bbl {\nTextData create_compiled_text_data(std::uint32_t index) {\n    switch (index) {\n" +
-                        (options.textData ?? [])
-                            .map(
-                                (row) =>
-                                    `    case ${row.id}: return ${text.dataExpression(row, (blob) => `bbl::pal::read_binary_file(bbl::asset_path(${cppStringLiteral(blob.assetOutput)}))`)};`,
-                            )
-                            .join("\n") +
-                        '\n    default: throw std::out_of_range("Compiled text data index");\n    }\n}\n}\n',
+                    source: compiledTextDataSource(
+                        context,
+                        options.textData ?? [],
+                        features.includes("text:layout"),
+                    ),
                 },
                 generated,
                 "upstream/include/bblite/upstream/text_data.hpp",

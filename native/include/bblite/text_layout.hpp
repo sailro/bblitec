@@ -1,24 +1,28 @@
 #pragma once
 #include <bblite/text.hpp>
-#include <bblite/js_data.hpp>
 #include <cstdint>
+#include <functional>
+#include <memory>
+#include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace bbl {
+struct GlyphStorage;
+/**
+ * The pin's `Font`: HarfBuzz stands in for the text shaper at run time, and
+ * the facts the shaper answered at generation (the family's curve-set id,
+ * the packaged glyph repertoire) travel with it.
+ */
 struct TextLayoutFont {
     std::shared_ptr<void> backend;
     double units_per_em = 0;
     double space_glyph = 0;
-};
-// `layoutText`'s options. Live text data and `layout_text`'s default argument
-// construct them without source options, so the members carry the pin's
-// defaults.
-struct TextLayoutOptions {
-    double max_width = std::numeric_limits<double>::infinity();
-    double line_height = 1.2;
-    std::string align = "left";
-    double letter_spacing = 0;
-    double tab_size = 4;
+    double num_glyphs = 0;
+    std::string curve_set_id;
+    /** A fresh `GlyphStorage` holding every outline of the font, packed at generation. */
+    std::function<std::shared_ptr<GlyphStorage>()> packaged_storage;
 };
 struct TextShapeInfo {
     double glyph_id = 0, codepoint = 0, cluster = 0;
@@ -29,31 +33,6 @@ struct TextShapePosition {
 struct TextShapeOutput {
     std::vector<TextShapeInfo> infos;
     std::vector<TextShapePosition> positions;
-};
-struct TextPlacedGlyph {
-    double glyph_id = 0, x = 0, y = 0;
-};
-struct TextLayoutResult {
-    std::vector<TextPlacedGlyph> glyphs;
-    double pixels_per_font_unit = 0, width = 0, height = 0;
-};
-struct TextRunState {
-    TextLayoutResult layout;
-    js::Tuple<4> color{1, 1, 1, 1};
-    double weight = 0;
-};
-struct TextLiveData {
-    std::shared_ptr<TextLayoutFont> font;
-    double font_size = 0;
-    std::string initial_text;
-    TextLayoutOptions options;
-    std::vector<double> glyph_slots, slots, free_slots;
-    std::vector<float> instances, styles;
-    std::array<double, 4> color{1, 1, 1, 1};
-    double style_param = 0;
-    double instance_count = 0, style_count = 0, slot_count = 0;
-    double version = 0, style_version = 0, layout_version = 0, dirty_start = 0, dirty_end = 0;
-    std::shared_ptr<std::vector<TextRun>> runs = std::make_shared<std::vector<TextRun>>();
 };
 namespace pal {
 std::shared_ptr<TextLayoutFont> create_text_layout_font(std::span<const std::uint8_t> bytes);

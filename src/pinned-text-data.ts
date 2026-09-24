@@ -1,4 +1,11 @@
-/** Executes the pin's font/shaper and transports its immutable initial text buffers. */
+/**
+ * Executes the pin's font, shaper and text data at generation and transports
+ * the records it built.
+ *
+ * Static text crosses as the pin's own `DefaultTextData`; live text crosses
+ * as the font's packaged repertoire (a `GlyphStorage` holding every outline),
+ * from which the native `createDefaultTextData` builds each text at run time.
+ */
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 import ts from "typescript";
@@ -8,6 +15,11 @@ import {
     importPinnedModule,
     readPinnedLibraryModule,
 } from "./pinned-shader-composer.js";
+import {
+    transportGraph,
+    type TransportedGraph,
+    type TransportSchema,
+} from "./pinned-record-transport.js";
 import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 import { readUpstreamPin } from "./upstream-source.js";
 
@@ -38,49 +50,6 @@ export interface TextFontSource {
     sha256: string;
 }
 
-interface TextAtlas<Blob> {
-    curveSetId: string;
-    version: number;
-    /** Full padded CPU rows, distinct from the used texel range. */
-    curves: { width: number; height: number; usedTexels: number; bytes: Blob };
-    bands: { width: number; height: number; usedTexels: number; bytes: Blob };
-    metadata: {
-        count: number;
-        strideBytes: number;
-        capacityBytes: number;
-        bytes: Blob;
-    };
-}
-
-/** Capacity fields describe pin CPU storage, not later GPU allocation sizes. */
-interface TextStorage<Blob> {
-    live?: { glyphSlots: number[]; slots: number[]; freeSlots: number[] };
-    width: number;
-    height: number;
-    versions: { data: number; style: number; layout: number };
-    dirtyRange: { start: number; end: number };
-    instances: {
-        count: number;
-        strideBytes: number;
-        capacityBytes: number;
-        bytes: Blob;
-    };
-    styles: {
-        count: number;
-        strideBytes: number;
-        capacityBytes: number;
-        bytes: Blob;
-    };
-    atlases: TextAtlas<Blob>[];
-    groups: {
-        atlasIndex: number;
-        groupKey: string;
-        slotStart: number;
-        slotCount: number;
-        liveCount: number;
-    }[];
-}
-
 export interface TextProvenance {
     pin: { package: string; version: string; sourceVersion: string };
     modules: { path: string; sha256: string }[];
@@ -88,16 +57,25 @@ export interface TextProvenance {
     argumentsSha256: string;
 }
 
-export interface CompiledTextData extends TextStorage<TextBlob> {
+/** What the pin built, before its buffers are packaged. */
+export interface BakedText {
+    /** Static text: the pin's `DefaultTextData`. */
+    data?: TransportedGraph;
+    /** Live text: the font's family curve-set id and packaged repertoire. */
+    repertoire?: { curveSetId: string; storage: TransportedGraph };
+    provenance: TextProvenance;
+}
+
+export interface CompiledTextData {
     /** Construction identity; identical payloads never merge source objects. */
     id: number;
     font: TextFontSource;
     layout: StaticTextLayout;
     provenance: TextProvenance;
-}
-
-export interface BakedTextData extends TextStorage<string> {
-    provenance: TextProvenance;
+    data?: TransportedGraph;
+    repertoire?: { curveSetId: string; storage: TransportedGraph };
+    /** The transported buffers of `data` or `repertoire.storage`, packaged. */
+    buffers: TextBlob[];
 }
 
 export function textSha256(bytes: string | Uint8Array): string {
@@ -144,10 +122,11 @@ function textModuleClosure(
 export function materializePinnedText(
     fontBytes: Uint8Array,
     layout?: StaticTextLayout,
-): BakedTextData | undefined {
+    schema?: TransportSchema,
+): BakedText | undefined {
     const modules = textModuleClosure(layout !== undefined);
     const request = JSON.stringify(
-        { font: Buffer.from(fontBytes).toString("base64"), layout },
+        { font: Buffer.from(fontBytes).toString("base64"), layout, schema },
         (_key, value: unknown) => {
             if (
                 typeof value === "number" &&
@@ -163,7 +142,7 @@ export function materializePinnedText(
     const result = cachedBakeSync(
         {
             kind: "pinned-text-data",
-            version: "2",
+            version: "3",
             module: moduleIdentity(import.meta.url),
             browser: false,
             parameters: {
@@ -183,17 +162,18 @@ export function materializePinnedText(
                     script: `import { readFileSync } from 'node:fs';
 import { executePinnedText } from ${JSON.stringify(import.meta.url)};
 const request = JSON.parse(readFileSync(0, 'utf8'));
-console.log(JSON.stringify(await executePinnedText(Buffer.from(request.font, 'base64'), request.layout)));`,
+console.log(JSON.stringify(await executePinnedText(Buffer.from(request.font, 'base64'), request.layout, request.schema)));`,
                 }),
             ),
     );
-    const storage = JSON.parse(
-        Buffer.from(result).toString("utf8"),
-    ) as TextStorage<string> | null;
-    if (!storage) return undefined;
+    const baked = JSON.parse(Buffer.from(result).toString("utf8")) as Omit<
+        BakedText,
+        "provenance"
+    > | null;
+    if (!baked) return undefined;
     const pin = readUpstreamPin();
     return {
-        ...storage,
+        ...baked,
         provenance: {
             pin: {
                 package: pin.package,
@@ -209,22 +189,12 @@ console.log(JSON.stringify(await executePinnedText(Buffer.from(request.font, 'ba
     };
 }
 
-interface PinnedAtlas {
-    _glyphSlots: Map<number, { _index: number }>;
-    _version: number;
-    _curveTexData: Float32Array;
-    _curveTexelsUsed: number;
-    _bandTexData: Float32Array;
-    _bandTexelsUsed: number;
-    _metaData: Float32Array;
-    _slotCount: number;
-}
-
 /** Exported only for the generation child; no shaper or allocator logic is reproduced. */
 export async function executePinnedText(
     fontBytes: Uint8Array,
     layout?: StaticTextLayout,
-): Promise<TextStorage<string> | null> {
+    schema?: TransportSchema,
+): Promise<Omit<BakedText, "provenance"> | null> {
     const { createFontFromBuffer } = await importPinnedModule<{
         createFontFromBuffer(
             this: void,
@@ -232,7 +202,7 @@ export async function executePinnedText(
         ): { _font: { numGlyphs: number } };
     }>("text/font.js");
     const font = createFontFromBuffer(Uint8Array.from(fontBytes).buffer);
-    if (!layout) return null;
+    if (!layout || !schema) return null;
     const { createDefaultTextData } = await importPinnedModule<{
         createDefaultTextData(
             this: void,
@@ -241,173 +211,58 @@ export async function executePinnedText(
             text: string,
             color?: readonly number[],
             options?: StaticTextLayout["options"],
-        ): {
-            width: number;
-            height: number;
-            _version: number;
-            _styleVersion: number;
-            _layoutVersion: number;
-            _dirtyStart: number;
-            _dirtyEnd: number;
-            _instances: Float32Array;
-            _instanceCount: number;
-            _styles: Float32Array;
-            _styleCount: number;
-            _storage: unknown;
-            _curveSetId: string;
-            runs: object[];
-            _runRecords: Map<object, { _slots: number[] }>;
-            _groups: {
-                _curveSetId: string;
-                _curveSet: { _atlas: PinnedAtlas };
-                _groupKey: unknown;
-                _slotStart: number;
-                _slotCount: number;
-                _liveCount: number;
-                _freeSlots: number[];
-            }[];
-        };
+        ): { _storage: unknown; _curveSetId: string };
     }>("text/default-text-data.js");
-    const constants = await importPinnedModule<{
-        TEXT_INSTANCE_BYTES: number;
-        TEXT_STYLE_BYTES: number;
-    }>("text/text-data.js");
-    const atlasConstants = await importPinnedModule<{
-        TEX_WIDTH: number;
-        GLYPH_METADATA_FLOATS: number;
-    }>("text/glyph-storage.js");
-    const data = createDefaultTextData(
-        font,
-        layout.fontSizePx,
-        layout.text,
-        layout.color,
-        layout.options,
-    );
-    let live: TextStorage<string>["live"];
-    if (layout.live) {
-        const { extractGlyphCurves } = await importPinnedModule<{
-            extractGlyphCurves(
-                this: void,
-                font: unknown,
-                ids: Set<number>,
-                curves: Map<number, unknown>,
-            ): void;
-        }>("text/glyph-extraction.js");
-        const { updateGlyphStorage } = await importPinnedModule<{
-            updateGlyphStorage(
-                this: void,
-                storage: unknown,
-                id: string,
-                curves: Map<number, unknown>,
-            ): void;
-        }>("text/glyph-storage.js");
-        const ids = new Set(
-            Array.from({ length: font._font.numGlyphs }, (_, id) => id),
+    if (!layout.live) {
+        const data = createDefaultTextData(
+            font,
+            layout.fontSizePx,
+            layout.text,
+            layout.color,
+            layout.options,
         );
-        const curves = new Map<number, unknown>();
-        extractGlyphCurves(font, ids, curves);
-        updateGlyphStorage(data._storage, data._curveSetId, curves);
-        const group = data._groups[0];
-        if (!group || data._groups.length !== 1 || data.runs.length !== 1)
-            throw new Error(
-                "Default text live storage requires its single initial run/group.",
-            );
-        live = {
-            glyphSlots: Array.from(
-                { length: font._font.numGlyphs },
-                (_, id) =>
-                    group._curveSet._atlas._glyphSlots.get(id)?._index ?? -1,
-            ),
-            slots: data._runRecords.get(data.runs[0]!)!._slots,
-            freeSlots: group._freeSlots,
-        };
-    }
-    if (
-        ![data.width, data.height].every(
-            (value) => Number.isFinite(value) && !Object.is(value, -0),
-        )
-    ) {
-        throw new Error(
-            "Pinned text dimensions must be finite and not negative zero for static materialization.",
-        );
-    }
-    const bytes = (array: Float32Array, length = array.byteLength): string =>
-        Buffer.from(array.buffer, array.byteOffset, length).toString("base64");
-    const stream = (
-        array: Float32Array,
-        count: number,
-        strideBytes: number,
-    ) => ({
-        count,
-        strideBytes,
-        capacityBytes: array.byteLength,
-        bytes: bytes(array, count * strideBytes),
-    });
-    const texture = (array: Float32Array, usedTexels: number) => ({
-        width: atlasConstants.TEX_WIDTH,
-        height: array.length / (atlasConstants.TEX_WIDTH * 4),
-        usedTexels,
-        bytes: bytes(array),
-    });
-    const atlases: TextAtlas<string>[] = [];
-    const indices = new Map<PinnedAtlas, number>();
-    const groups = data._groups.map((group) => {
-        if (
-            typeof group._groupKey !== "string" ||
-            group._groupKey !== group._curveSetId
-        ) {
-            throw new Error(
-                "Static default text data cannot materialize styled draw-group identities.",
-            );
-        }
-        const atlas = group._curveSet._atlas;
-        let atlasIndex = indices.get(atlas);
-        if (atlasIndex === undefined) {
-            atlasIndex = atlases.length;
-            indices.set(atlas, atlasIndex);
-            atlases.push({
-                curveSetId: group._curveSetId,
-                version: atlas._version,
-                curves: texture(atlas._curveTexData, atlas._curveTexelsUsed),
-                bands: texture(atlas._bandTexData, atlas._bandTexelsUsed),
-                metadata: stream(
-                    atlas._metaData,
-                    atlas._slotCount,
-                    atlasConstants.GLYPH_METADATA_FLOATS *
-                        Float32Array.BYTES_PER_ELEMENT,
-                ),
-            });
-        }
         return {
-            atlasIndex,
-            groupKey: group._groupKey,
-            slotStart: group._slotStart,
-            slotCount: group._slotCount,
-            liveCount: group._liveCount,
+            data: transportGraph(
+                data,
+                { kind: "record", name: "DefaultTextData" },
+                schema,
+            ),
         };
-    });
+    }
+    // The packaged repertoire: the storage an empty text owns, with every
+    // glyph the font carries extracted into it by the pin's own extractor.
+    const { extractGlyphCurves } = await importPinnedModule<{
+        extractGlyphCurves(
+            this: void,
+            font: unknown,
+            ids: Set<number>,
+            curves: Map<number, unknown>,
+        ): void;
+    }>("text/glyph-extraction.js");
+    const { updateGlyphStorage } = await importPinnedModule<{
+        updateGlyphStorage(
+            this: void,
+            storage: unknown,
+            id: string,
+            curves: Map<number, unknown>,
+        ): void;
+    }>("text/glyph-storage.js");
+    const data = createDefaultTextData(font, layout.fontSizePx, "");
+    const curves = new Map<number, unknown>();
+    extractGlyphCurves(
+        font,
+        new Set(Array.from({ length: font._font.numGlyphs }, (_, id) => id)),
+        curves,
+    );
+    updateGlyphStorage(data._storage, data._curveSetId, curves);
     return {
-        width: data.width,
-        height: data.height,
-        versions: {
-            data: data._version,
-            style: data._styleVersion,
-            layout: data._layoutVersion,
+        repertoire: {
+            curveSetId: data._curveSetId,
+            storage: transportGraph(
+                data._storage,
+                { kind: "record", name: "GlyphStorage" },
+                schema,
+            ),
         },
-        dirtyRange: { start: data._dirtyStart, end: data._dirtyEnd },
-        // The third instance word is packed u32. Copy its bytes, never its JS float value.
-        instances: stream(
-            data._instances,
-            data._instanceCount,
-            constants.TEXT_INSTANCE_BYTES,
-        ),
-        styles: stream(
-            data._styles,
-            data._styleCount,
-            constants.TEXT_STYLE_BYTES,
-        ),
-        atlases,
-        groups,
-        ...(live ? { live } : {}),
     };
 }
