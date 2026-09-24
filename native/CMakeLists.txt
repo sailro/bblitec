@@ -382,7 +382,7 @@ endif()
 # features, 0 otherwise -- so a `#if` over it never meets an undefined
 # name, and the activation table below reads as the table it is. The
 # macros the generator decides live in the generated
-# render_capabilities.hpp, written 0 or 1 in every tree; no macro has both
+# render_capabilities.hpp, written in every tree; no macro has both
 # owners. Every test is a plain `#if X`, and the undefined-macro diagnostic
 # (the warning options below) makes a missing definition a compile error.
 function(bblite_feature_define macro)
