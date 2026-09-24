@@ -592,8 +592,11 @@ let observationCount = 0;
  * `release` removes it. An observer whose shim outlives the call keeps the
  * hook; a stand-in that runs once releases it.
  */
-export function installPinnedImportHook<Arguments extends unknown[]>(
-    callback: (...args: Arguments) => void,
+export function installPinnedImportHook<
+    Arguments extends unknown[],
+    Result = void,
+>(
+    callback: (...args: Arguments) => Result,
 ): { hook: string; release: () => void } {
     const hook = `__bblitecPinnedImport${observationCount++}`;
     const globals = globalThis as Record<string, unknown>;
