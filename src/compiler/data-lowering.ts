@@ -5871,6 +5871,28 @@ export class DataLowerer {
         return `bbl::js::${prefix}_array_from(bblscene::${name})`;
     }
 
+    /**
+     * A namespace-scope table of string pairs, emitted once per distinct
+     * content and named here. Its entries are immutable literals, so any
+     * realm reads it without owning a JS object on another thread.
+     */
+    public stringPairTable(
+        preferredName: string,
+        pairs: readonly (readonly [string, string])[],
+        source: ts.Node,
+    ): string {
+        const entryType = "std::pair<std::string_view, std::string_view>";
+        return `bblscene::${this.context.dataTypes.registerSharedConstantArray(
+            preferredName,
+            entryType,
+            pairs.map(
+                ([first, second]) =>
+                    `${entryType}{${this.context.cppString(first)}, ${this.context.cppString(second)}}`,
+            ),
+            source,
+        )}`;
+    }
+
     private compileDataViewNew(
         expression: ts.NewExpression,
     ): Value | undefined {
