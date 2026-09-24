@@ -801,8 +801,8 @@ struct ClusteredLightContainer {
     double vertical_tiles = 0.0;
     double z_slices = 0.0;
     /** The pin's two light lists, each in creation order. */
-    std::vector<ClusteredLight> point_lights;
-    std::vector<ClusteredLight> spot_lights;
+    std::vector<ClusteredLight> point_lights{};
+    std::vector<ClusteredLight> spot_lights{};
     /** `_spotSupport`: installed by the first spot light. */
     bool has_spots = false;
     /** `_version`: bumped by every light the factories add. */
@@ -820,9 +820,9 @@ struct ClusteredLightContainer {
     std::uint32_t mask_rows = 1;
 
     /** The three data-texture payloads and the params block. */
-    std::vector<float> light_data;
-    std::vector<std::uint32_t> slice_data;
-    std::vector<std::uint32_t> mask_data;
+    std::vector<float> light_data{};
+    std::vector<std::uint32_t> slice_data{};
+    std::vector<std::uint32_t> mask_data{};
     /** Six u32 lanes and two f32 ones: the pin's ArrayBuffer(32), both ways. */
     std::array<std::uint32_t, 8> params{};
 
@@ -831,13 +831,16 @@ struct ClusteredLightContainer {
      * last `writeDataTexture`, and a count of the params block's
      * `writeBuffer`s (its creation's initial write among them).
      */
-    ClusteredTextureWrite light_write;
-    ClusteredTextureWrite slice_write;
-    ClusteredTextureWrite mask_write;
+    ClusteredTextureWrite light_write{};
+    ClusteredTextureWrite slice_write{};
+    ClusteredTextureWrite mask_write{};
     std::uint64_t params_write = 0;
 
-    /** The locals `buildClusteredLightGpuState`'s refresh closes over. */
-    std::shared_ptr<ClusteredRefreshState> refresh;
+    /**
+     * The scene's updater: the locals `buildClusteredLightGpuState`'s
+     * refresh closes over, installed once the build returned.
+     */
+    std::shared_ptr<ClusteredRefreshState> refresh{};
 };
 
 /**

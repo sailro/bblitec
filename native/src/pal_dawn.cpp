@@ -10214,7 +10214,7 @@ public:
         // (render-task-base.ts, clustered.ts).
         if (ClusteredLightContainer* clustered =
                 upstream::clustered_container(engine, scene.clustered_lights)) {
-            upload_dawn_clustered(state.device, state.queue, *clustered, camera,
+            upload_dawn_clustered(state.device, state.queue, engine, *clustered, scene.camera,
                                   static_cast<double>(surface_extent.width),
                                   static_cast<double>(surface_extent.height), state.clustered);
         }

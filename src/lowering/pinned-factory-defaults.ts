@@ -9,8 +9,7 @@
  * naming the option.
  */
 import ts from "typescript";
-import { sharedUpstreamStore } from "../upstream-source.js";
-import { LoweringContext } from "./context.js";
+import { sharedPinnedContext } from "./context.js";
 import {
     nullishFallback,
     pinnedOptionFallback,
@@ -20,14 +19,6 @@ import {
     type PinnedOptionSite,
 } from "./pinned-option-defaults.js";
 
-let shared: LoweringContext | undefined;
-
-/** The one reader every factory's defaults are folded through. */
-function pinnedSource(): LoweringContext {
-    shared ??= new LoweringContext(sharedUpstreamStore());
-    return shared;
-}
-
 /** Memoize one factory's defaults per process, as the pin is fixed. */
 function once<T>(read: () => T): () => T {
     let value: T | undefined;
@@ -36,7 +27,7 @@ function once<T>(read: () => T): () => T {
 
 /** One pinned factory's declaration and the typed readers over its `??`s. */
 function factory(module: string, symbol: string) {
-    const context = pinnedSource();
+    const context = sharedPinnedContext();
     const { file, declaration } = context.functionDeclaration(module, symbol);
     return {
         context,
@@ -196,27 +187,5 @@ export const spriteAtlasPackDefaults = once(() => {
         srcX: packer.number({ member: "srcX" }),
         srcY: packer.number({ member: "srcY" }),
         pivot: packer.pair({ member: "pivot" }),
-    };
-});
-
-/** The clustered light factories' defaults, each its own factory's. */
-export const clusteredLightDefaults = once(() => {
-    const module = "src/light/clustered.ts";
-    const container = factory(module, "createClusteredLightContainer");
-    const point = factory(module, "createClusteredPointLight");
-    const spot = factory(module, "createClusteredSpotLight");
-    return {
-        horizontalTiles: container.number({ member: "horizontalTiles" }),
-        verticalTiles: container.number({ member: "verticalTiles" }),
-        zSlices: container.number({ member: "zSlices" }),
-        point: {
-            range: point.number({ member: "range" }),
-            intensity: point.number({ member: "intensity" }),
-        },
-        spot: {
-            range: spot.number({ member: "range" }),
-            intensity: spot.number({ member: "intensity" }),
-            angle: spot.number({ member: "angle" }),
-        },
     };
 });

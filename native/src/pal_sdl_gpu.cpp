@@ -8303,7 +8303,7 @@ public:
         // without a camera (render-task-base.ts, clustered.ts).
         if (ClusteredLightContainer* clustered =
                 upstream::clustered_container(engine, scene.clustered_lights)) {
-            upload_clustered_lights(state.device, *clustered, camera,
+            upload_clustered_lights(state.device, engine, *clustered, scene.camera,
                                     static_cast<double>(surface_extent.width),
                                     static_cast<double>(surface_extent.height), state.clustered);
         }

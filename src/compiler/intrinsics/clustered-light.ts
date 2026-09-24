@@ -26,8 +26,8 @@ import { argumentAt } from "../syntax.js";
 import type { ClusteredContainerState, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { validateObjectProperties } from "../option-helpers.js";
-import { doubleLiteral } from "../../cpp-literals.js";
-import { clusteredLightDefaults } from "../../lowering/pinned-factory-defaults.js";
+import { clusteredOptionFields } from "../../lowering/clustered-light-lowerer.js";
+import { sharedPinnedContext } from "../../lowering/context.js";
 
 export interface ClusteredLightIntrinsicContext
     extends
@@ -60,10 +60,48 @@ export const runtimeOnlyClusteredLightIntrinsics: readonly string[] = [
     "createClusteredSpotLight",
 ];
 
-/** The pinned option names each factory reads, refusing anything else. */
-const containerOptions = ["horizontalTiles", "verticalTiles", "zSlices"];
-const pointOptions = ["position", "diffuse", "range", "intensity"];
-const spotOptions = [...pointOptions, "direction", "angle"];
+/**
+ * One factory's options as the native struct the lowered factory takes:
+ * each option the scene named, in the pin's own interface order, and the
+ * rest absent so the factory's own `??` resolves them. An option the
+ * interface does not declare refuses, and a required one left out refuses.
+ */
+function optionsCpp(
+    context: ClusteredLightIntrinsicContext,
+    literal: ts.ObjectLiteralExpression | undefined,
+    interfaceName: string,
+    what: string,
+    at: ts.Node,
+): string {
+    const fields = clusteredOptionFields(sharedPinnedContext(), interfaceName);
+    if (literal) {
+        validateOptions(
+            context,
+            literal,
+            fields.map((field) => field.name),
+            what,
+        );
+    }
+    const named = fields.flatMap((field) => {
+        const property = literal
+            ? context.objectProperty(literal, field.name)
+            : undefined;
+        if (!property) {
+            if (!field.optional) {
+                context.fail(literal ?? at, `${what} requires ${field.name}.`);
+            }
+            return [];
+        }
+        return [
+            `.${field.name} = ${
+                field.kind === "vec3"
+                    ? context.compileVec3(property, "double")
+                    : context.compileNumber(property, "double")
+            }`,
+        ];
+    });
+    return `bbl::${interfaceName}{${named.join(", ")}}`;
+}
 
 /** The shared refusal, phrased the way every other factory phrases it. */
 function validateOptions(
@@ -115,53 +153,31 @@ function appendLight(
     }
     const engine = context.requireDefaultEngine(call);
     const literal = context.expectObjectLiteral(argumentAt(call, 1));
-    validateOptions(
-        context,
-        literal,
-        spot ? spotOptions : pointOptions,
-        spot ? "createClusteredSpotLight" : "createClusteredPointLight",
-    );
-    const required = (name: string): ts.Expression => {
-        const property = context.objectProperty(literal, name);
-        if (!property) {
-            context.fail(literal, `A clustered light requires ${name}.`);
-        }
-        return property;
-    };
-    const range = context.objectProperty(literal, "range");
-    const intensity = context.objectProperty(literal, "intensity");
-    // Each `??` is resolved where the pin resolves it, from that factory's
-    // own default, so nothing downstream restates one.
-    const defaults = spot
-        ? clusteredLightDefaults().spot
-        : clusteredLightDefaults().point;
-    const number = (value: ts.Expression | undefined, fallback: number) =>
-        value
-            ? context.compileNumber(value, "double")
-            : doubleLiteral(fallback);
-    const arguments_ = [
-        engine,
-        container.cpp,
-        context.compileVec3(required("position"), "double"),
-        context.compileVec3(required("diffuse"), "double"),
-        number(range, defaults.range),
-        number(intensity, defaults.intensity),
-    ];
+    // Each `??` is resolved by the lowered factory itself, from the pin's
+    // own default, so the call site names only what the scene named.
+    const options = spot
+        ? optionsCpp(
+              context,
+              literal,
+              "ClusteredSpotLightOptions",
+              "createClusteredSpotLight",
+              call,
+          )
+        : optionsCpp(
+              context,
+              literal,
+              "ClusteredPointLightOptions",
+              "createClusteredPointLight",
+              call,
+          );
     if (spot) {
-        arguments_.push(
-            context.compileVec3(required("direction"), "double"),
-            number(
-                context.objectProperty(literal, "angle"),
-                clusteredLightDefaults().spot.angle,
-            ),
-        );
         writable(container.state).hasSpots = true;
     }
     return {
         kind: "clustered-light",
         cpp:
             `bbl::create_clustered_${spot ? "spot" : "point"}_light(` +
-            `${arguments_.join(", ")})`,
+            `${engine}, ${container.cpp}, ${options})`,
         requiresExplicitDiscard: true,
     };
 }
@@ -175,38 +191,23 @@ export function compileClusteredLightIntrinsic(
         case "createClusteredLightContainer": {
             context.expectArgumentCount(call, 0, 1);
             const engine = context.requireDefaultEngine(call);
-            // The pin's own `??` defaults; its `| 0` truncation and
-            // `Math.max(1, …)` clamp happen where it applies them, in
-            // `buildClusteredLightGpuState`, so the values travel unclamped.
-            const defaults = clusteredLightDefaults();
-            const tiles = [
-                defaults.horizontalTiles,
-                defaults.verticalTiles,
-                defaults.zSlices,
-            ].map(doubleLiteral);
-            if (call.arguments[0]) {
-                const literal = context.expectObjectLiteral(call.arguments[0]);
-                validateOptions(
-                    context,
-                    literal,
-                    containerOptions,
-                    "createClusteredLightContainer",
-                );
-                containerOptions.forEach((name, index) => {
-                    const property = context.objectProperty(literal, name);
-                    if (property) {
-                        tiles[index] = context.compileNumber(
-                            property,
-                            "double",
-                        );
-                    }
-                });
-            }
+            // The pin's own `??` defaults resolve in the lowered factory,
+            // and its `| 0` truncation and `Math.max(1, …)` clamp where it
+            // applies them, in `buildClusteredLightGpuState`.
+            const options = optionsCpp(
+                context,
+                call.arguments[0]
+                    ? context.expectObjectLiteral(call.arguments[0])
+                    : undefined,
+                "ClusteredLightContainerOptions",
+                "createClusteredLightContainer",
+                call,
+            );
             return {
                 kind: "clustered-light-container",
                 cpp:
                     `bbl::create_clustered_light_container(` +
-                    `${engine}, ${tiles.join(", ")})`,
+                    `${engine}, ${options})`,
                 clusteredContainerState: { hasSpots: false, frozen: false },
             };
         }
