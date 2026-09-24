@@ -4675,13 +4675,6 @@ inline SpriteDirtyRange resolve_sprite_dirty_range(const Sprite2DLayerRecord& la
             needs_full_upload ? layer.count : std::min(layer.dirty_sprite_end, layer.count)};
 }
 
-/** Stamp the shared range consumed once a copy has uploaded it. */
-inline void mark_sprite_dirty_range_consumed(Sprite2DLayerRecord& layer) {
-    layer.dirty_sprite_reset_version = layer.version;
-    layer.dirty_sprite_begin = invalid_handle;
-    layer.dirty_sprite_end = 0u;
-}
-
 /**
  * The rows an instance copy transfers, once the optional Y-sort extension
  * has had its say.
@@ -4693,16 +4686,25 @@ inline void mark_sprite_dirty_range_consumed(Sprite2DLayerRecord& layer) {
  * same offsets and differ only in the write call.
  */
 inline SpriteInstanceUpload resolve_sprite_instance_upload(Engine& engine,
-                                                           Sprite2DLayerRecord& layer,
-                                                           std::uint32_t dirty_begin,
-                                                           std::uint32_t dirty_end) {
-    // Asked unconditionally, exactly as the pin asks it: the hook itself
-    // answers for a layer that never enabled the extension, so there is one
-    // fallback rather than one here and another inside it.
-    if (engine.sprite_y_sort_hook.stage) {
-        return engine.sprite_y_sort_hook.stage(layer, dirty_begin, dirty_end);
+                                                           Sprite2DLayerRecord& layer, bool uploaded,
+                                                           std::uint64_t uploaded_version) {
+    // The pin's `uploadedVersion`: this buffer's stamp, or -1 where it holds
+    // none of the current rows -- a fresh buffer, or one whose stamp
+    // predates the last consumption of the shared range.
+    const bool stale = !uploaded || uploaded_version < layer.dirty_sprite_reset_version;
+    if (engine.sprite_y_sort_hook.upload) {
+        if (auto ordered = engine.sprite_y_sort_hook.upload(
+                layer, stale ? -1.0 : static_cast<double>(uploaded_version))) {
+            return *ordered;
+        }
     }
-    return {layer.instance_data.data(), dirty_begin, dirty_end};
+    const auto [dirty_begin, dirty_end] = resolve_sprite_dirty_range(layer, uploaded, uploaded_version);
+    if (dirty_end <= dirty_begin)
+        return {};
+    const std::size_t stride_bytes = layer.instance_floats_per_sprite * sizeof(float);
+    const std::size_t offset = static_cast<std::size_t>(dirty_begin) * stride_bytes;
+    return {reinterpret_cast<const std::uint8_t*>(layer.instance_data.data()), offset, offset,
+            static_cast<std::size_t>(dirty_end - dirty_begin) * stride_bytes};
 }
 
 /**

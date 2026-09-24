@@ -15780,7 +15780,7 @@ test("lowers the Sprite2D handle and Y-sort entry points", () => {
     assert.ok(result.manifest.features.includes("sprite:2d-y-sort"));
     assert.match(
         result.cpp,
-        /bbl::enable_sprite_2d_y_sort\(\w+, \w+, static_cast<double>\(3\.0\)\)/,
+        /bbl::enable_sprite_2d_y_sort\(\w+, \w+, std::optional<double>\{static_cast<double>\(3\.0\)\}\)/,
     );
     assert.match(
         result.cpp,

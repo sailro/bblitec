@@ -6167,7 +6167,7 @@ void update_sprite_2d_id(Engine& engine, Sprite2DLayerHandle layer, std::uint32_
  * also what the state's own live reads are keyed by here.
  */
 Sprite2DLayerHandle enable_sprite_2d_y_sort(Engine& engine, Sprite2DLayerHandle layer,
-                                            double default_bias);
+                                            std::optional<double> default_bias);
 bool sprite_2d_y_sort_enabled(const Engine& engine, Sprite2DLayerHandle layer);
 void set_sprite_2d_y_sort_bias_id(Engine& engine, Sprite2DLayerHandle layer,
                                   std::uint32_t sprite_id, double bias);

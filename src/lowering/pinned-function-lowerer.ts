@@ -574,6 +574,8 @@ export function lowerPinnedFunction(
          */
         leadingParameters?: readonly string[];
         trailingParameters?: readonly string[];
+        /** See `PinnedNumericScope.statement`. */
+        statement?: PinnedNumericScope["statement"];
         /** See `PinnedNumericScope.indexedCall`. */
         indexedCall?: PinnedNumericScope["indexedCall"];
         /** See `PinnedNumericScope.callShapes`. */
@@ -793,6 +795,7 @@ export function lowerPinnedFunctionParts(
             ? { recordLiteral: options.recordLiteral }
             : {}),
         ...(options.forOf ? { forOf: options.forOf } : {}),
+        ...(options.statement ? { statement: options.statement } : {}),
         ...(options.returns === "void"
             ? {}
             : {

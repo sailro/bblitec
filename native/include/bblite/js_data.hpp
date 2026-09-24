@@ -3756,6 +3756,16 @@ inline void typed_array_set(TypedArray<T>& target, const TypedArray<T>& source, 
                  source_bytes.data() + source.byte_offset(), source.size() * sizeof(T));
 }
 
+/** The same `set`, over the owned storage a lowered pinned body keeps a typed array in. */
+template <typename T>
+inline void typed_array_set(std::vector<T>& target, const std::vector<T>& source, double offset) {
+    const auto start = array_index(offset);
+    if (start > target.size() || source.size() > target.size() - start) [[unlikely]] {
+        throw std::runtime_error("TypedArray set does not fit the target array.");
+    }
+    std::copy(source.begin(), source.end(), target.begin() + static_cast<std::ptrdiff_t>(start));
+}
+
 /**
  * `Math.hypot`, as the plain root of the sum of squares.
  *

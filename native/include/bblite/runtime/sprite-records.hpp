@@ -72,17 +72,28 @@ struct Sprite2DLayerRecord {
 };
 
 /**
- * The rows one instance upload copies, already in the order the GPU reads.
- *
- * `data` is the base of the buffer the copy reads from -- the layer's own
- * canonical instance floats, or the Y-sort module's packed staging buffer --
- * and the half-open `[begin, end)` are slots in THAT buffer, so the two
- * backends' write calls differ in nothing but the API they call.
+ * Stamp the layer's shared dirty range consumed: `layer._dirtyMin = 0;
+ * layer._dirtyMax = 0` at this port's sentinel, recording the version a later
+ * copy compares its own stamp against.
+ */
+inline void mark_sprite_dirty_range_consumed(Sprite2DLayerRecord& layer) {
+    layer.dirty_sprite_reset_version = layer.version;
+    layer.dirty_sprite_begin = invalid_handle;
+    layer.dirty_sprite_end = 0u;
+}
+
+/**
+ * One instance upload, as the pin's own `device.queue.writeBuffer(buffer,
+ * bufferOffset, data, dataOffset, size)` spells it: `source` is the base of
+ * the array the copy reads -- the layer's canonical instance floats, or the
+ * Y-sort module's packed staging array -- and the three byte counts are that
+ * call's own, so the two backends' writes differ only in the API they call.
  */
 struct SpriteInstanceUpload {
-    const float* data = nullptr;
-    std::uint32_t begin = 0;
-    std::uint32_t end = 0;
+    const std::uint8_t* source = nullptr;
+    std::size_t source_offset = 0;
+    std::size_t destination_offset = 0;
+    std::size_t size = 0;
 };
 
 /**
@@ -96,8 +107,12 @@ struct SpriteInstanceUpload {
  * logical-order path, exactly as the pin's `_getSprite2DYSortHook()?.` does.
  */
 struct Sprite2DYSortHook {
-    /** `uploadSorted`'s staging half: pack the rows this copy uploads. */
-    std::function<SpriteInstanceUpload(Sprite2DLayerRecord&, std::uint32_t, std::uint32_t)> stage;
+    /**
+     * `uploadSorted`: the packed rows this copy transfers, or null for a
+     * layer the extension does not sort. The second argument is the copy's
+     * own `uploadedVersion`, `-1` for a buffer holding none of the rows.
+     */
+    std::function<std::optional<SpriteInstanceUpload>(Sprite2DLayerRecord&, double)> upload;
     /** `getDrawOrder`: draw slot -> logical slot, or null when disabled. */
     std::function<const std::uint32_t*(const Sprite2DLayerRecord&)> draw_order;
 };

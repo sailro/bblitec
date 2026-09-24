@@ -652,22 +652,14 @@ inline void upload_dawn_sprite_layer(WGPUDevice device, WGPUQueue queue, Engine&
         }
     }
     if (!gpu.uploaded || gpu.uploaded_version != layer.version) {
-        // The shared derivation (`resolve_sprite_dirty_range`) answers
-        // which rows this copy uploads; only the write call is Dawn's.
-        const auto [dirty_begin, dirty_end] =
-            resolve_sprite_dirty_range(layer, gpu.uploaded, gpu.uploaded_version);
-        // A Y-sorted layer stages its packed GPU-order rows here and hands
-        // back the draw slots this copy transfers; every other layer gets
-        // its own canonical rows back unchanged.
+        // The shared derivation (`resolve_sprite_instance_upload`) answers
+        // which bytes this copy writes, Y-sorted or canonical; only the
+        // write call is Dawn's.
         const SpriteInstanceUpload transfer =
-            resolve_sprite_instance_upload(engine, layer, dirty_begin, dirty_end);
-        if (transfer.begin < transfer.end) {
-            const std::size_t stride_bytes = layer.instance_floats_per_sprite * sizeof(float);
-            wgpuQueueWriteBuffer(
-                queue, gpu.instances, static_cast<std::uint64_t>(transfer.begin) * stride_bytes,
-                transfer.data +
-                    static_cast<std::size_t>(transfer.begin) * layer.instance_floats_per_sprite,
-                static_cast<std::size_t>(transfer.end - transfer.begin) * stride_bytes);
+            resolve_sprite_instance_upload(engine, layer, gpu.uploaded, gpu.uploaded_version);
+        if (transfer.size > 0) {
+            wgpuQueueWriteBuffer(queue, gpu.instances, transfer.destination_offset,
+                                 transfer.source + transfer.source_offset, transfer.size);
             mark_sprite_dirty_range_consumed(layer);
         }
         gpu.uploaded = true;
