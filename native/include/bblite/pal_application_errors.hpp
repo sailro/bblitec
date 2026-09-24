@@ -22,8 +22,10 @@ public:
         loop_.on_unhandled_rejection([this](std::exception_ptr error) { report(true, error); });
     }
     ~ApplicationErrors() {
-        loop_.on_error({});
-        loop_.on_unhandled_rejection({});
+        run_teardown("ApplicationErrors teardown", [this] {
+            loop_.on_error({});
+            loop_.on_unhandled_rejection({});
+        });
     }
     void add(bool rejection, std::uint64_t identity, Callback callback, bool once) {
         listeners(rejection).add(identity, std::move(callback), once);

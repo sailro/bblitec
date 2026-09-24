@@ -1,9 +1,10 @@
 #pragma once
 
+#include <bblite/teardown.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdio>
 #include <deque>
 #include <exception>
 #include <list>
@@ -411,8 +412,7 @@ struct CollectOnExit {
         } catch (const std::bad_alloc&) {
             return;
         } catch (const std::exception& error) {
-            std::fprintf(stderr, "Babylon Lite native error: %s\n", error.what());
-            std::terminate();
+            terminate_after("cycle collection at exit", error.what());
         }
     }
 };

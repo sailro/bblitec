@@ -223,7 +223,7 @@ create_dawn_splat_pipeline(WGPUDevice device, WGPUBindGroupLayout frame_layout,
 
     // Two streams, as the pinned descriptor declares them: the unit quad per
     // vertex, and the sorted splat index per instance.
-    WGPUVertexAttribute corner{};
+    WGPUVertexAttribute corner = WGPU_VERTEX_ATTRIBUTE_INIT;
     corner.shaderLocation = 0;
     corner.offset = 0;
     corner.format = WGPUVertexFormat_Float32x2;
@@ -233,7 +233,7 @@ create_dawn_splat_pipeline(WGPUDevice device, WGPUBindGroupLayout frame_layout,
     quad_layout.attributeCount = 1;
     quad_layout.attributes = &corner;
 
-    WGPUVertexAttribute index{};
+    WGPUVertexAttribute index = WGPU_VERTEX_ATTRIBUTE_INIT;
     index.shaderLocation = 1;
     index.offset = 0;
     index.format = WGPUVertexFormat_Float32;

@@ -6694,6 +6694,13 @@ class SdlSceneRun {
     };
     std::optional<Frame> frame_;
 
+    /** The frame `prepare` opened; every later stage records into it. */
+    Frame& current_frame() {
+        if (!frame_)
+            throw std::logic_error("SDL_GPU scene stage ran outside an acquired frame.");
+        return *frame_;
+    }
+
     void rebuild_task_draw_lists() {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
@@ -6730,10 +6737,10 @@ class SdlSceneRun {
         [[maybe_unused]] auto& render_plan = data_.render_plan;
         [[maybe_unused]] auto& state = data_.resources.state;
         [[maybe_unused]] auto& camera = *data_.camera;
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] const auto& matrix = frame_->matrix;
-        [[maybe_unused]] const auto& capture_ready = frame_->capture_ready;
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& capture_ready = current_frame().capture_ready;
 
         if (capture_ready && !captures.render_capture_saved &&
             !frame_options.render_capture_path.empty()) {
@@ -7865,9 +7872,9 @@ public:
 #if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen_target = *data_.offscreen_target;
 #endif
-        [[maybe_unused]] auto& start = frame_->start;
+        [[maybe_unused]] auto& start = current_frame().start;
 #if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_texture = frame_->offscreen_texture;
+        [[maybe_unused]] auto& offscreen_texture = current_frame().offscreen_texture;
 #endif
         const auto camera_pointer_hook = [&](const SDL_Event& event) {
             if (hidden_test_pass && !is_replayed_ui_event(event))
@@ -7922,7 +7929,7 @@ public:
                 offscreen_target.acquire(static_cast<Uint32>(engine.options.width),
                                          static_cast<Uint32>(engine.options.height), *offscreen);
             if (!offscreen_texture) {
-                frame_->yield_when_skipped = true;
+                current_frame().yield_when_skipped = true;
                 return FramePreparation::skip;
             }
         }
@@ -7938,13 +7945,13 @@ public:
 #if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen = data_.offscreen;
 #endif
-        [[maybe_unused]] auto& acquired = frame_->acquired;
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] auto& swapchain = frame_->swapchain;
-        [[maybe_unused]] auto& command = frame_->command;
+        [[maybe_unused]] auto& acquired = current_frame().acquired;
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] auto& swapchain = current_frame().swapchain;
+        [[maybe_unused]] auto& command = current_frame().command;
 #if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_texture = frame_->offscreen_texture;
+        [[maybe_unused]] auto& offscreen_texture = current_frame().offscreen_texture;
 #endif
         command = SdlGpuCommand{SDL_AcquireGPUCommandBuffer(state.device)};
         if (!command)
@@ -7986,11 +7993,11 @@ public:
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         [[maybe_unused]] auto& ui_runtime = data_.resources.ui_runtime;
 #endif
-        [[maybe_unused]] auto& delta_ms = frame_->delta_ms;
-        [[maybe_unused]] auto& updated = frame_->updated;
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] auto& command = frame_->command;
+        [[maybe_unused]] auto& delta_ms = current_frame().delta_ms;
+        [[maybe_unused]] auto& updated = current_frame().updated;
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] auto& command = current_frame().command;
         delta_ms = advance_frame(engine, scene, frame_clock, frame_options.frame_delta_ms);
         // A before-render callback can replace the scene (for example,
         // leaving Attract mode with Escape). Its old plan and material
@@ -8060,24 +8067,26 @@ public:
         [[maybe_unused]] auto& pinned_instance_scratch = data_.pinned_instance_scratch;
 #endif
         [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
-        [[maybe_unused]] const auto& delta_ms = frame_->delta_ms;
-        [[maybe_unused]] auto& uploaded = frame_->uploaded;
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] auto& profile_transformed_meshes = frame_->profile_transformed_meshes;
-        [[maybe_unused]] auto& profile_transformed_vertices = frame_->profile_transformed_vertices;
-        [[maybe_unused]] auto& surface_extent = frame_->surface_extent;
-        [[maybe_unused]] auto& aspect = frame_->aspect;
-        [[maybe_unused]] auto& matrix = frame_->matrix;
-        [[maybe_unused]] auto& skybox_matrix = frame_->skybox_matrix;
-        [[maybe_unused]] auto& frame_view = frame_->frame_view;
-        [[maybe_unused]] auto& frame_projection = frame_->frame_projection;
-        [[maybe_unused]] auto& frame_camera_position = frame_->frame_camera_position;
-        [[maybe_unused]] auto& frame_pass_matrices = frame_->frame_pass_matrices;
-        [[maybe_unused]] auto& capture_ready = frame_->capture_ready;
-        [[maybe_unused]] auto& capture_frame = frame_->capture_frame;
-        [[maybe_unused]] auto& capture_ids = frame_->capture_ids;
-        [[maybe_unused]] auto& capture_clusters = frame_->capture_clusters;
+        [[maybe_unused]] const auto& delta_ms = current_frame().delta_ms;
+        [[maybe_unused]] auto& uploaded = current_frame().uploaded;
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] auto& profile_transformed_meshes =
+            current_frame().profile_transformed_meshes;
+        [[maybe_unused]] auto& profile_transformed_vertices =
+            current_frame().profile_transformed_vertices;
+        [[maybe_unused]] auto& surface_extent = current_frame().surface_extent;
+        [[maybe_unused]] auto& aspect = current_frame().aspect;
+        [[maybe_unused]] auto& matrix = current_frame().matrix;
+        [[maybe_unused]] auto& skybox_matrix = current_frame().skybox_matrix;
+        [[maybe_unused]] auto& frame_view = current_frame().frame_view;
+        [[maybe_unused]] auto& frame_projection = current_frame().frame_projection;
+        [[maybe_unused]] auto& frame_camera_position = current_frame().frame_camera_position;
+        [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
+        [[maybe_unused]] auto& capture_ready = current_frame().capture_ready;
+        [[maybe_unused]] auto& capture_frame = current_frame().capture_frame;
+        [[maybe_unused]] auto& capture_ids = current_frame().capture_ids;
+        [[maybe_unused]] auto& capture_clusters = current_frame().capture_clusters;
         profile_transformed_meshes = 0;
         profile_transformed_vertices = 0;
         trace_dynamic_frame(engine, delta_ms, frame);
@@ -8547,19 +8556,19 @@ public:
         [[maybe_unused]] auto& text_ops = *data_.text_ops;
 #endif
         [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] const auto& matrix = frame_->matrix;
-        [[maybe_unused]] const auto& skybox_matrix = frame_->skybox_matrix;
-        [[maybe_unused]] const auto& frame_view = frame_->frame_view;
-        [[maybe_unused]] const auto& frame_projection = frame_->frame_projection;
-        [[maybe_unused]] const auto& frame_camera_position = frame_->frame_camera_position;
-        [[maybe_unused]] auto& frame_pass_matrices = frame_->frame_pass_matrices;
-        [[maybe_unused]] const auto& capture_frame = frame_->capture_frame;
-        [[maybe_unused]] auto& swapchain = frame_->swapchain;
-        [[maybe_unused]] auto& command = frame_->command;
-        [[maybe_unused]] auto& capture_texture = frame_->capture_texture;
-        [[maybe_unused]] auto& visible_color = frame_->visible_color;
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& skybox_matrix = current_frame().skybox_matrix;
+        [[maybe_unused]] const auto& frame_view = current_frame().frame_view;
+        [[maybe_unused]] const auto& frame_projection = current_frame().frame_projection;
+        [[maybe_unused]] const auto& frame_camera_position = current_frame().frame_camera_position;
+        [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
+        [[maybe_unused]] const auto& capture_frame = current_frame().capture_frame;
+        [[maybe_unused]] auto& swapchain = current_frame().swapchain;
+        [[maybe_unused]] auto& command = current_frame().command;
+        [[maybe_unused]] auto& capture_texture = current_frame().capture_texture;
+        [[maybe_unused]] auto& visible_color = current_frame().visible_color;
 #if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
         SdlGpuCommand surface_command{nullptr};
         if (compute_frame_prefix_deferred(engine)) {
@@ -8569,13 +8578,13 @@ public:
                 gpu_error("SDL_AcquireGPUCommandBuffer shadow prefix");
         }
 #endif
-        frame_->graph = !scene.tasks.empty();
+        current_frame().graph = !scene.tasks.empty();
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-        frame_->ui_frame = &record_ui_rml_frame(*data_.resources.ui_runtime, width, height);
-        frame_->present_swapchain = swapchain;
+        current_frame().ui_frame = &record_ui_rml_frame(*data_.resources.ui_runtime, width, height);
+        current_frame().present_swapchain = swapchain;
         swapchain = state.ui_readable_surface.target(
             state.device, swapchain, swapchain_format, width, height,
-            ui_frame_reads_target(*frame_->ui_frame) &&
+            ui_frame_reads_target(*current_frame().ui_frame) &&
                 !(capture_frame && data_.frame_options.capture_ui));
 #endif
         if (!engine.render_targets.empty()) {
@@ -8584,7 +8593,7 @@ public:
 #endif
                 create_frame_graph_textures(state, engine, swapchain_format, width, height);
         }
-        if (frame_->graph) {
+        if (current_frame().graph) {
             capture_texture = nullptr;
 #if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
             // Queue occurrences, preserving task aliases and cross-scene order.
@@ -11118,8 +11127,9 @@ public:
 
     void present_readable_surface() {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
-        UiSdlReadableSurface::present(frame_->command, frame_->swapchain, frame_->present_swapchain,
-                                      frame_->width, frame_->height);
+        UiSdlReadableSurface::present(current_frame().command, current_frame().swapchain,
+                                      current_frame().present_swapchain, current_frame().width,
+                                      current_frame().height);
 #endif
     }
 
@@ -11143,17 +11153,17 @@ public:
 #if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen_target = *data_.offscreen_target;
 #endif
-        [[maybe_unused]] auto& width = frame_->width;
-        [[maybe_unused]] auto& height = frame_->height;
-        [[maybe_unused]] const auto& matrix = frame_->matrix;
-        [[maybe_unused]] const auto& capture_frame = frame_->capture_frame;
-        [[maybe_unused]] const auto& capture_ids = frame_->capture_ids;
-        [[maybe_unused]] const auto& capture_clusters = frame_->capture_clusters;
-        [[maybe_unused]] auto& swapchain = frame_->swapchain;
-        [[maybe_unused]] auto& command = frame_->command;
-        [[maybe_unused]] auto& capture_texture = frame_->capture_texture;
-        [[maybe_unused]] auto& visible_color = frame_->visible_color;
-        if (frame_->graph) {
+        [[maybe_unused]] auto& width = current_frame().width;
+        [[maybe_unused]] auto& height = current_frame().height;
+        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& capture_frame = current_frame().capture_frame;
+        [[maybe_unused]] const auto& capture_ids = current_frame().capture_ids;
+        [[maybe_unused]] const auto& capture_clusters = current_frame().capture_clusters;
+        [[maybe_unused]] auto& swapchain = current_frame().swapchain;
+        [[maybe_unused]] auto& command = current_frame().command;
+        [[maybe_unused]] auto& capture_texture = current_frame().capture_texture;
+        [[maybe_unused]] auto& visible_color = current_frame().visible_color;
+        if (current_frame().graph) {
             if (capture_texture == state.color && capture_texture) {
                 SDL_GPUBlitInfo present{};
                 present.source = SDL_GPUBlitRegion{state.color, 0, 0, 0, 0, width, height};
@@ -11168,7 +11178,8 @@ public:
                 throw std::runtime_error("Frame graph did not present a native UI target.");
             }
             render_sprite_ui_sdl_frame(state.device, command, ui_target, swapchain_format, state.ui,
-                                       *frame_->ui_frame, nullptr, nullptr, state.sample_count);
+                                       *current_frame().ui_frame, nullptr, nullptr,
+                                       state.sample_count);
             if (ui_target != swapchain) {
                 // The graph presented before the overlay was recorded.
                 // Present the same composite that the explicit UI
@@ -11205,7 +11216,7 @@ public:
                 // Render the UI into the readback texture, then present that
                 // exact result below.
                 render_sprite_ui_sdl_frame(state.device, command, visible_color, swapchain_format,
-                                           state.ui, *frame_->ui_frame, nullptr, nullptr,
+                                           state.ui, *current_frame().ui_frame, nullptr, nullptr,
                                            state.sample_count);
             }
 #endif
@@ -11224,7 +11235,7 @@ public:
                 // `visible_color` but still draws it over the presented
                 // swapchain.
                 render_sprite_ui_sdl_frame(state.device, command, swapchain, swapchain_format,
-                                           state.ui, *frame_->ui_frame, nullptr, nullptr,
+                                           state.ui, *current_frame().ui_frame, nullptr, nullptr,
                                            state.sample_count);
             }
 #endif
@@ -11292,12 +11303,14 @@ public:
         [[maybe_unused]] auto& samples = data_.samples_ms;
         [[maybe_unused]] const auto benchmark = data_.frame_options.benchmarking();
         [[maybe_unused]] const auto warmup = data_.frame_options.benchmark_warmup();
-        [[maybe_unused]] const auto& start = frame_->start;
-        [[maybe_unused]] const auto& updated = frame_->updated;
-        [[maybe_unused]] const auto& uploaded = frame_->uploaded;
-        [[maybe_unused]] const auto& acquired = frame_->acquired;
-        [[maybe_unused]] auto& profile_transformed_meshes = frame_->profile_transformed_meshes;
-        [[maybe_unused]] auto& profile_transformed_vertices = frame_->profile_transformed_vertices;
+        [[maybe_unused]] const auto& start = current_frame().start;
+        [[maybe_unused]] const auto& updated = current_frame().updated;
+        [[maybe_unused]] const auto& uploaded = current_frame().uploaded;
+        [[maybe_unused]] const auto& acquired = current_frame().acquired;
+        [[maybe_unused]] auto& profile_transformed_meshes =
+            current_frame().profile_transformed_meshes;
+        [[maybe_unused]] auto& profile_transformed_vertices =
+            current_frame().profile_transformed_vertices;
         finish_frame(engine);
         ++frame;
         const double end = monotonic_milliseconds();

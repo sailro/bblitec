@@ -383,7 +383,7 @@ private:
             dawn_error("billboard pick pipeline layout");
         }
 
-        std::array<WGPUVertexAttribute, billboard_pick_attributes> attributes{};
+        auto attributes = vertex_attribute_array<billboard_pick_attributes>();
         for (std::size_t index = 0; index < attributes.size(); ++index) {
             const upstream::BillboardInstanceAttribute& row =
                 upstream::billboard_instance_attributes[index];

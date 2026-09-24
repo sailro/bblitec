@@ -15,12 +15,22 @@ template <typename Resource, auto Release> struct SdlGpuDeleter {
     void operator()(Resource* resource) const noexcept { Release(device, resource); }
 };
 
-inline std::mutex sdl_shader_inputs_mutex;
-inline std::map<SDL_GPUShader*, std::map<Uint32, Uint32>> sdl_shader_inputs;
+/** The SPIR-V vertex-input remap of each compacted vertex shader. */
+struct SdlShaderInputs {
+    std::mutex mutex;
+    std::map<SDL_GPUShader*, std::map<Uint32, Uint32>> layouts;
+};
+/** Built on first use: a container may allocate, which a namespace-scope
+ *  instance would do during static initialization, where nothing can catch. */
+inline SdlShaderInputs& sdl_shader_inputs() {
+    static SdlShaderInputs inputs;
+    return inputs;
+}
 inline void release_sdl_shader(SDL_GPUDevice* device, SDL_GPUShader* shader) {
     {
-        const std::lock_guard lock(sdl_shader_inputs_mutex);
-        sdl_shader_inputs.erase(shader);
+        auto& inputs = sdl_shader_inputs();
+        const std::lock_guard lock(inputs.mutex);
+        inputs.layouts.erase(shader);
     }
     SDL_ReleaseGPUShader(device, shader);
 }
@@ -33,9 +43,10 @@ create_sdl_graphics_pipeline(SDL_GPUDevice* device,
     auto info = *source;
     std::vector<SDL_GPUVertexAttribute> attributes;
     {
-        const std::lock_guard lock(sdl_shader_inputs_mutex);
-        if (const auto layout = sdl_shader_inputs.find(info.vertex_shader);
-            layout != sdl_shader_inputs.end()) {
+        auto& inputs = sdl_shader_inputs();
+        const std::lock_guard lock(inputs.mutex);
+        if (const auto layout = inputs.layouts.find(info.vertex_shader);
+            layout != inputs.layouts.end()) {
             attributes.reserve(layout->second.size());
             for (Uint32 i = 0; i < info.vertex_input_state.num_vertex_attributes; ++i) {
                 auto attribute = info.vertex_input_state.vertex_attributes[i];

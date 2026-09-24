@@ -2966,7 +2966,7 @@ constexpr std::uint32_t base_vertex_attribute_count = 8;
 void fill_base_vertex_attributes(WGPUVertexAttribute* attributes) {
     const auto attribute = [&](std::uint32_t location, WGPUVertexFormat format,
                                std::uint64_t offset) {
-        attributes[location] = WGPUVertexAttribute{};
+        attributes[location] = WGPU_VERTEX_ATTRIBUTE_INIT;
         attributes[location].format = format;
         attributes[location].offset = offset;
         attributes[location].shaderLocation = location;
@@ -5038,7 +5038,7 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     const upstream::ShaderVariantInfo* shader_info =
         traits.shader ? &upstream::shader_variant_info(shader_variant) : nullptr;
 
-    std::array<WGPUVertexAttribute, base_vertex_attribute_count> attributes{};
+    auto attributes = vertex_attribute_array<base_vertex_attribute_count>();
     fill_base_vertex_attributes(attributes.data());
     std::array<WGPUVertexBufferLayout, vertex_streams.size()> vertex_layouts{};
     vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
@@ -5048,7 +5048,7 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
 #if BBLITE_GPU_INSTANCING
     // Per-instance world-matrix columns at locations 16-19, exactly
     // like the SDL backend's second vertex buffer.
-    std::array<WGPUVertexAttribute, 4> instance_attributes{};
+    auto instance_attributes = vertex_attribute_array<4>();
     for (std::uint32_t column = 0; column < 4; ++column) {
         instance_attributes[column].format = WGPUVertexFormat_Float32x4;
         instance_attributes[column].offset = column * 16;
@@ -5068,7 +5068,7 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
     // Only a material that declares the lane widens its layout, exactly as
     // the SDL backend widens that one pipeline: every other pipeline keeps
     // the layout it had, so no draw of theirs owes the slot a buffer.
-    WGPUVertexAttribute instance_color_attribute{};
+    WGPUVertexAttribute instance_color_attribute = WGPU_VERTEX_ATTRIBUTE_INIT;
     instance_color_attribute.format = WGPUVertexFormat_Float32x4;
     instance_color_attribute.offset = 0;
     instance_color_attribute.shaderLocation = instance_color_location;
@@ -5210,7 +5210,7 @@ bool append_variant_attribute(std::string_view name, std::uint32_t location,
         pinned_vertex_input(name, uses_local_position, uses_local_normal);
     if (!input.mapped)
         return false;
-    WGPUVertexAttribute attribute{};
+    WGPUVertexAttribute attribute = WGPU_VERTEX_ATTRIBUTE_INIT;
     attribute.shaderLocation = location;
     attribute.offset = input.offset;
     switch (input.lane) {
@@ -6293,7 +6293,7 @@ WGPURenderPipeline depth_only_pipeline_for(DawnState& state, bool double_sided,
     if (!state.depth_only_module) {
         state.depth_only_module = load_wgsl_module(state, "depth-only.frag");
     }
-    std::array<WGPUVertexAttribute, base_vertex_attribute_count> attributes{};
+    auto attributes = vertex_attribute_array<base_vertex_attribute_count>();
     fill_base_vertex_attributes(attributes.data());
     WGPUVertexBufferLayout vertex_layout{};
     vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
@@ -7007,7 +7007,7 @@ WGPURenderPipeline create_diagnostic_pipeline(DawnState& state, WGPUShaderModule
                                               bool double_sided, std::uint32_t samples,
                                               const WGPUTextureFormat* color_formats,
                                               std::uint32_t color_count) {
-    std::array<WGPUVertexAttribute, base_vertex_attribute_count> attributes{};
+    auto attributes = vertex_attribute_array<base_vertex_attribute_count>();
     fill_base_vertex_attributes(attributes.data());
     std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
     vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
@@ -7015,7 +7015,7 @@ WGPURenderPipeline create_diagnostic_pipeline(DawnState& state, WGPUShaderModule
     vertex_layouts[0].attributeCount = attributes.size();
     vertex_layouts[0].attributes = attributes.data();
 #if BBLITE_GPU_INSTANCING
-    std::array<WGPUVertexAttribute, 4> instance_attributes{};
+    auto instance_attributes = vertex_attribute_array<4>();
     for (std::uint32_t column = 0; column < 4; ++column) {
         instance_attributes[column].format = WGPUVertexFormat_Float32x4;
         instance_attributes[column].offset = column * 16;
@@ -7786,7 +7786,7 @@ inline WGPURenderPipeline create_dawn_pick_mesh_pipeline(
 
     // The renderer's interleaved stream read at its own pitch: the pin
     // binds a position-only buffer, and these are the same numbers.
-    std::array<WGPUVertexAttribute, 3> attributes{};
+    auto attributes = vertex_attribute_array<3>();
     attributes[0].shaderLocation = 0;
     attributes[0].offset = 0;
     attributes[0].format = WGPUVertexFormat_Float32x3;
@@ -7909,7 +7909,7 @@ inline WGPURenderPipeline create_dawn_pick_cloud_pipeline(WGPUDevice device,
     if (!pipeline_layout)
         dawn_error("cloud pick pipeline layout");
 
-    WGPUVertexAttribute corner{};
+    WGPUVertexAttribute corner = WGPU_VERTEX_ATTRIBUTE_INIT;
     corner.shaderLocation = 0;
     corner.offset = 0;
     corner.format = WGPUVertexFormat_Float32x2;
@@ -7919,7 +7919,7 @@ inline WGPURenderPipeline create_dawn_pick_cloud_pipeline(WGPUDevice device,
     quad_layout.attributeCount = 1;
     quad_layout.attributes = &corner;
 
-    WGPUVertexAttribute index{};
+    WGPUVertexAttribute index = WGPU_VERTEX_ATTRIBUTE_INIT;
     index.shaderLocation = 1;
     index.offset = 0;
     index.format = WGPUVertexFormat_Float32;
@@ -8169,7 +8169,7 @@ void initialize_dawn_environment(DawnState& state, const Scene& scene, bool use_
             skybox_view = state.skybox_texture_view;
         }
 
-        std::array<WGPUVertexAttribute, base_vertex_attribute_count> attributes{};
+        auto attributes = vertex_attribute_array<base_vertex_attribute_count>();
         fill_base_vertex_attributes(attributes.data());
         std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
         vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
@@ -8177,7 +8177,7 @@ void initialize_dawn_environment(DawnState& state, const Scene& scene, bool use_
         vertex_layouts[0].attributeCount = attributes.size();
         vertex_layouts[0].attributes = attributes.data();
 #if BBLITE_GPU_INSTANCING
-        std::array<WGPUVertexAttribute, 4> instance_attributes{};
+        auto instance_attributes = vertex_attribute_array<4>();
         for (std::uint32_t column = 0; column < 4; ++column) {
             instance_attributes[column].format = WGPUVertexFormat_Float32x4;
             instance_attributes[column].offset = column * 16;
@@ -8191,7 +8191,7 @@ void initialize_dawn_environment(DawnState& state, const Scene& scene, bool use_
 #else
         constexpr std::uint32_t skybox_vertex_buffer_count = 1;
 #endif
-        WGPUVertexAttribute dds_position_attribute{};
+        WGPUVertexAttribute dds_position_attribute = WGPU_VERTEX_ATTRIBUTE_INIT;
         dds_position_attribute.format = WGPUVertexFormat_Float32x3;
         dds_position_attribute.offset = 0;
         dds_position_attribute.shaderLocation = 0;
@@ -8309,7 +8309,7 @@ void initialize_dawn_environment(DawnState& state, const Scene& scene, bool use_
             create_buffer(state, WGPUBufferUsage_Uniform, nullptr,
                           (sizeof(upstream::SolidSkyboxUniforms) + 15) & ~15ull);
 
-        WGPUVertexAttribute position_attribute{};
+        WGPUVertexAttribute position_attribute = WGPU_VERTEX_ATTRIBUTE_INIT;
         position_attribute.format = WGPUVertexFormat_Float32x3;
         position_attribute.offset = 0;
         position_attribute.shaderLocation = 0;
@@ -8406,7 +8406,7 @@ void initialize_dawn_environment(DawnState& state, const Scene& scene, bool use_
         state.image_skybox_texture_view =
             create_dawn_texture_view(state.image_skybox_texture, &view_descriptor);
 
-        WGPUVertexAttribute position_attribute{};
+        WGPUVertexAttribute position_attribute = WGPU_VERTEX_ATTRIBUTE_INIT;
         position_attribute.format = WGPUVertexFormat_Float32x3;
         position_attribute.offset = 0;
         position_attribute.shaderLocation = 0;
@@ -8509,7 +8509,7 @@ void initialize_dawn_environment(DawnState& state, const Scene& scene, bool use_
                                                        false, {255, 255, 255, 255}, ground_mips);
         state.ground_texture_view = create_dawn_texture_view(state.ground_texture, nullptr);
 
-        std::array<WGPUVertexAttribute, base_vertex_attribute_count> attributes{};
+        auto attributes = vertex_attribute_array<base_vertex_attribute_count>();
         fill_base_vertex_attributes(attributes.data());
         std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
         vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
@@ -8517,7 +8517,7 @@ void initialize_dawn_environment(DawnState& state, const Scene& scene, bool use_
         vertex_layouts[0].attributeCount = attributes.size();
         vertex_layouts[0].attributes = attributes.data();
 #if BBLITE_GPU_INSTANCING
-        std::array<WGPUVertexAttribute, 4> instance_attributes{};
+        auto instance_attributes = vertex_attribute_array<4>();
         for (std::uint32_t column = 0; column < 4; ++column) {
             instance_attributes[column].format = WGPUVertexFormat_Float32x4;
             instance_attributes[column].offset = column * 16;
@@ -9590,6 +9590,13 @@ class DawnSceneRun {
     };
     std::optional<Frame> frame_;
 
+    /** The frame `prepare` opened; every later stage records into it. */
+    Frame& current_frame() {
+        if (!frame_)
+            throw std::logic_error("Dawn scene stage ran outside an acquired frame.");
+        return *frame_;
+    }
+
     void rebuild_task_draw_lists() {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& state = data_.state;
@@ -9634,8 +9641,8 @@ class DawnSceneRun {
         [[maybe_unused]] auto& height = data_.height;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
         [[maybe_unused]] auto& camera = *data_.camera;
-        [[maybe_unused]] const auto& matrix = frame_->matrix;
-        [[maybe_unused]] const auto& capture_ready = frame_->capture_ready;
+        [[maybe_unused]] const auto& matrix = current_frame().matrix;
+        [[maybe_unused]] const auto& capture_ready = current_frame().capture_ready;
 
         if (capture_ready && !captures.render_capture_saved &&
             !frame_options.render_capture_path.empty()) {
@@ -9664,10 +9671,10 @@ class DawnSceneRun {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& state = data_.state;
         [[maybe_unused]] auto& shader_block_scratch = data_.shader_block_scratch;
-        [[maybe_unused]] auto& pass_scene = frame_->pass_scene;
-        [[maybe_unused]] auto& pass_meshes = frame_->pass_meshes;
+        [[maybe_unused]] auto& pass_scene = current_frame().pass_scene;
+        [[maybe_unused]] auto& pass_meshes = current_frame().pass_meshes;
 #if BBLITE_NODE_VARIANTS > 0
-        [[maybe_unused]] auto& node_mesh_blocks = frame_->node_mesh_blocks;
+        [[maybe_unused]] auto& node_mesh_blocks = current_frame().node_mesh_blocks;
 #endif
 
         for (const upstream::RenderDrawCommand& draw : list.commands) {
@@ -10267,7 +10274,7 @@ public:
         [[maybe_unused]] auto& offscreen_images = data_.offscreen_images;
 #endif
 #if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_image = frame_->offscreen_image;
+        [[maybe_unused]] auto& offscreen_image = current_frame().offscreen_image;
 #endif
         const auto camera_pointer_hook = [&](const SDL_Event& event) {
             if (hidden_test_pass && !is_replayed_ui_event(event))
@@ -10321,7 +10328,7 @@ public:
                                                                 w, h);
                 });
             if (!offscreen_image) {
-                frame_->yield_when_skipped = true;
+                current_frame().yield_when_skipped = true;
                 return FramePreparation::skip;
             }
         }
@@ -10350,9 +10357,9 @@ public:
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         [[maybe_unused]] auto& ui_runtime = data_.ui_runtime;
 #endif
-        [[maybe_unused]] auto& benchmark_start = frame_->benchmark_start;
-        [[maybe_unused]] auto& delta_ms = frame_->delta_ms;
-        [[maybe_unused]] auto& updated = frame_->updated;
+        [[maybe_unused]] auto& benchmark_start = current_frame().benchmark_start;
+        [[maybe_unused]] auto& delta_ms = current_frame().delta_ms;
+        [[maybe_unused]] auto& updated = current_frame().updated;
         benchmark_start = monotonic_milliseconds();
         // The frame trace, sprite passes and animated billboard passes
         // read the frame's own delta.
@@ -10407,24 +10414,26 @@ public:
 #if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
         [[maybe_unused]] auto& pinned_instance_scratch = data_.pinned_instance_scratch;
 #endif
-        [[maybe_unused]] const auto& delta_ms = frame_->delta_ms;
-        [[maybe_unused]] auto& uploaded = frame_->uploaded;
-        [[maybe_unused]] auto& written = frame_->written;
-        [[maybe_unused]] auto& profile_transformed_meshes = frame_->profile_transformed_meshes;
-        [[maybe_unused]] auto& profile_transformed_vertices = frame_->profile_transformed_vertices;
-        [[maybe_unused]] auto& topology_updated = frame_->topology_updated;
-        [[maybe_unused]] auto& surface_extent = frame_->surface_extent;
-        [[maybe_unused]] auto& aspect = frame_->aspect;
-        [[maybe_unused]] auto& matrix = frame_->matrix;
-        [[maybe_unused]] auto& frame_view = frame_->frame_view;
-        [[maybe_unused]] auto& frame_projection = frame_->frame_projection;
-        [[maybe_unused]] auto& frame_camera_position = frame_->frame_camera_position;
-        [[maybe_unused]] auto& frame_pass_matrices = frame_->frame_pass_matrices;
-        [[maybe_unused]] auto& capture_ready = frame_->capture_ready;
-        [[maybe_unused]] auto& pass_scene = frame_->pass_scene;
-        [[maybe_unused]] auto& pass_meshes = frame_->pass_meshes;
+        [[maybe_unused]] const auto& delta_ms = current_frame().delta_ms;
+        [[maybe_unused]] auto& uploaded = current_frame().uploaded;
+        [[maybe_unused]] auto& written = current_frame().written;
+        [[maybe_unused]] auto& profile_transformed_meshes =
+            current_frame().profile_transformed_meshes;
+        [[maybe_unused]] auto& profile_transformed_vertices =
+            current_frame().profile_transformed_vertices;
+        [[maybe_unused]] auto& topology_updated = current_frame().topology_updated;
+        [[maybe_unused]] auto& surface_extent = current_frame().surface_extent;
+        [[maybe_unused]] auto& aspect = current_frame().aspect;
+        [[maybe_unused]] auto& matrix = current_frame().matrix;
+        [[maybe_unused]] auto& frame_view = current_frame().frame_view;
+        [[maybe_unused]] auto& frame_projection = current_frame().frame_projection;
+        [[maybe_unused]] auto& frame_camera_position = current_frame().frame_camera_position;
+        [[maybe_unused]] auto& frame_pass_matrices = current_frame().frame_pass_matrices;
+        [[maybe_unused]] auto& capture_ready = current_frame().capture_ready;
+        [[maybe_unused]] auto& pass_scene = current_frame().pass_scene;
+        [[maybe_unused]] auto& pass_meshes = current_frame().pass_meshes;
 #if BBLITE_NODE_VARIANTS > 0
-        [[maybe_unused]] auto& node_mesh_blocks = frame_->node_mesh_blocks;
+        [[maybe_unused]] auto& node_mesh_blocks = current_frame().node_mesh_blocks;
 #endif
         profile_transformed_meshes = 0;
         profile_transformed_vertices = 0;
@@ -11264,12 +11273,12 @@ public:
     bool acquire() {
         [[maybe_unused]] auto& cpu_profile = data_.cpu_profile;
         [[maybe_unused]] auto& state = data_.state;
-        [[maybe_unused]] auto& acquired = frame_->acquired;
-        [[maybe_unused]] auto& surface_texture = frame_->surface_texture;
-        [[maybe_unused]] auto& surface = frame_->surface;
-        [[maybe_unused]] auto& surface_view = frame_->surface_view;
+        [[maybe_unused]] auto& acquired = current_frame().acquired;
+        [[maybe_unused]] auto& surface_texture = current_frame().surface_texture;
+        [[maybe_unused]] auto& surface = current_frame().surface;
+        [[maybe_unused]] auto& surface_view = current_frame().surface_view;
 #if BBLITE_OFFSCREEN_SURFACES
-        [[maybe_unused]] auto& offscreen_image = frame_->offscreen_image;
+        [[maybe_unused]] auto& offscreen_image = current_frame().offscreen_image;
 #endif
 #if BBLITE_OFFSCREEN_SURFACES
         if (offscreen_image) {
@@ -11305,13 +11314,13 @@ public:
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
         [[maybe_unused]] auto& text_ops = *data_.text_ops;
 #endif
-        [[maybe_unused]] auto& pass_scene = frame_->pass_scene;
-        [[maybe_unused]] auto& pass_meshes = frame_->pass_meshes;
-        [[maybe_unused]] auto& surface_texture = frame_->surface_texture;
-        [[maybe_unused]] auto& surface_view = frame_->surface_view;
-        [[maybe_unused]] auto& encoder = frame_->encoder;
-        [[maybe_unused]] auto& capture_source = frame_->capture_source;
-        [[maybe_unused]] auto& frame_graph_presented = frame_->frame_graph_presented;
+        [[maybe_unused]] auto& pass_scene = current_frame().pass_scene;
+        [[maybe_unused]] auto& pass_meshes = current_frame().pass_meshes;
+        [[maybe_unused]] auto& surface_texture = current_frame().surface_texture;
+        [[maybe_unused]] auto& surface_view = current_frame().surface_view;
+        [[maybe_unused]] auto& encoder = current_frame().encoder;
+        [[maybe_unused]] auto& capture_source = current_frame().capture_source;
+        [[maybe_unused]] auto& frame_graph_presented = current_frame().frame_graph_presented;
         encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
 #if defined(BBLITE_COMPUTE_FRAME_GRAPH) && BBLITE_COMPUTE_FRAME_GRAPH
         DawnCommandEncoder surface_encoder;
@@ -13167,14 +13176,14 @@ public:
 #if BBLITE_OFFSCREEN_SURFACES
         [[maybe_unused]] auto& offscreen_images = data_.offscreen_images;
 #endif
-        [[maybe_unused]] const auto& benchmark_start = frame_->benchmark_start;
-        [[maybe_unused]] const auto& capture_ready = frame_->capture_ready;
-        [[maybe_unused]] auto& surface_texture = frame_->surface_texture;
-        [[maybe_unused]] auto& surface = frame_->surface;
-        [[maybe_unused]] auto& surface_view = frame_->surface_view;
-        [[maybe_unused]] auto& encoder = frame_->encoder;
-        [[maybe_unused]] auto& capture_source = frame_->capture_source;
-        [[maybe_unused]] auto& frame_graph_presented = frame_->frame_graph_presented;
+        [[maybe_unused]] const auto& benchmark_start = current_frame().benchmark_start;
+        [[maybe_unused]] const auto& capture_ready = current_frame().capture_ready;
+        [[maybe_unused]] auto& surface_texture = current_frame().surface_texture;
+        [[maybe_unused]] auto& surface = current_frame().surface;
+        [[maybe_unused]] auto& surface_view = current_frame().surface_view;
+        [[maybe_unused]] auto& encoder = current_frame().encoder;
+        [[maybe_unused]] auto& capture_source = current_frame().capture_source;
+        [[maybe_unused]] auto& frame_graph_presented = current_frame().frame_graph_presented;
         const bool capture_frame =
             capture_ready && !captures.screenshot_saved && !screenshot_path.empty();
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
@@ -13351,13 +13360,15 @@ public:
         [[maybe_unused]] auto& scene = data_.scene;
         [[maybe_unused]] auto& state = data_.state;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
-        [[maybe_unused]] const auto& benchmark_start = frame_->benchmark_start;
-        [[maybe_unused]] const auto& updated = frame_->updated;
-        [[maybe_unused]] const auto& uploaded = frame_->uploaded;
-        [[maybe_unused]] const auto& written = frame_->written;
-        [[maybe_unused]] const auto& acquired = frame_->acquired;
-        [[maybe_unused]] auto& profile_transformed_meshes = frame_->profile_transformed_meshes;
-        [[maybe_unused]] auto& profile_transformed_vertices = frame_->profile_transformed_vertices;
+        [[maybe_unused]] const auto& benchmark_start = current_frame().benchmark_start;
+        [[maybe_unused]] const auto& updated = current_frame().updated;
+        [[maybe_unused]] const auto& uploaded = current_frame().uploaded;
+        [[maybe_unused]] const auto& written = current_frame().written;
+        [[maybe_unused]] const auto& acquired = current_frame().acquired;
+        [[maybe_unused]] auto& profile_transformed_meshes =
+            current_frame().profile_transformed_meshes;
+        [[maybe_unused]] auto& profile_transformed_vertices =
+            current_frame().profile_transformed_vertices;
         finish_frame(engine);
         ++frame;
         // Profile-only too: this backend's benchmark sample above reads its

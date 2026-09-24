@@ -4,6 +4,7 @@
 #include <bblite/runtime.hpp>
 #include <bblite/pal_offscreen.hpp>
 #include <cmath>
+#include <cstdio>
 #include <SDL3/SDL.h>
 #ifdef __ANDROID__
 #include <jni.h>
@@ -21,19 +22,22 @@ class SdlWindowRun;
 // backend-neutral Engine record; nested runs restore their caller's context.
 inline thread_local SdlWindowRun* active_window_run = nullptr;
 
+// stdio, not iostream: the window destructor reports through here and must
+// not reach a stream that can be configured to throw.
 inline void trace_run_window(const char* action, SDL_Window* window) {
     if (!runtime_trace_enabled())
         return;
     int x = 0, y = 0, width = 0, height = 0;
     SDL_GetWindowPosition(window, &x, &y);
     SDL_GetWindowSize(window, &width, &height);
-    std::cerr << "[bblite trace] window " << action << " id=" << SDL_GetWindowID(window)
+    std::fprintf(stderr, "[bblite trace] window %s id=%u", action,
+                 static_cast<unsigned>(SDL_GetWindowID(window)));
 #ifdef _WIN32
-              << " native="
-              << SDL_GetPointerProperty(SDL_GetWindowProperties(window),
-                                        SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr)
+    std::fprintf(stderr, " native=%p",
+                 SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                        SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
 #endif
-              << " position=" << x << ',' << y << " size=" << width << 'x' << height << '\n';
+    std::fprintf(stderr, " position=%d,%d size=%dx%d\n", x, y, width, height);
 }
 
 inline void configure_run_surface(const EngineOptions& options) {

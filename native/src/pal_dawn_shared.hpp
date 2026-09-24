@@ -54,6 +54,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <SDL3/SDL.h>
@@ -89,6 +90,19 @@ inline WGPUBlendState blend_state_from(const BlendFactors& factors) {
 }
 
 inline WGPUStringView string_view(const char* text) { return WGPUStringView{text, WGPU_STRLEN}; }
+
+/**
+ * `Count` vertex attributes, each starting from WGPU_VERTEX_ATTRIBUTE_INIT
+ * rather than `{}`: WGPUVertexFormat has no zero enumerator, so only the
+ * header's own initializer spells the unset format. Callers assign every
+ * attribute before a layout reads it.
+ */
+template <std::size_t Count> std::array<WGPUVertexAttribute, Count> vertex_attribute_array() {
+    return []<std::size_t... Index>(std::index_sequence<Index...>) {
+        return std::array<WGPUVertexAttribute, Count>{
+            {(static_cast<void>(Index), WGPU_VERTEX_ATTRIBUTE_INIT)...}};
+    }(std::make_index_sequence<Count>{});
+}
 
 [[noreturn]] inline void dawn_error(const std::string& message) {
     throw GpuTransportError("Dawn backend: " + message);
@@ -738,11 +752,13 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
         WGPUFeatureName_TextureCompressionBC, WGPUFeatureName_TextureCompressionASTC,
         WGPUFeatureName_TimestampQuery,
     };
-    std::array<WGPUFeatureName, optional_features.size() + 1> device_features{};
-    std::size_t device_feature_count = 0;
+    // Only requested features are listed: WGPUFeatureName has no zero
+    // enumerator to pad a fixed array with.
+    std::vector<WGPUFeatureName> device_features;
+    device_features.reserve(optional_features.size() + 1);
     for (const WGPUFeatureName feature : optional_features) {
         if (wgpuAdapterHasFeature(state.adapter, feature)) {
-            device_features[device_feature_count++] = feature;
+            device_features.push_back(feature);
         }
     }
 #if BBLITE_OFFSCREEN_SURFACES
@@ -752,10 +768,10 @@ inline void create_dawn_device(const EngineOptions& engine_options, const Device
         if (!wgpuAdapterHasFeature(state.adapter, WGPUFeatureName_ImplicitDeviceSynchronization)) {
             dawn_error("adapter lacks implicit device synchronization for offscreen producers.");
         }
-        device_features[device_feature_count++] = WGPUFeatureName_ImplicitDeviceSynchronization;
+        device_features.push_back(WGPUFeatureName_ImplicitDeviceSynchronization);
     }
 #endif
-    device_descriptor.requiredFeatureCount = device_feature_count;
+    device_descriptor.requiredFeatureCount = device_features.size();
     device_descriptor.requiredFeatures = device_features.data();
     WGPULimits required_limits = WGPU_LIMITS_INIT;
     bool needs_limits = false;

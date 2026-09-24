@@ -1548,16 +1548,16 @@ struct PbrMaterialOptions {
 struct GridMaterialOptions {
     Color3 main_color;
     Color3 line_color;
-    float grid_ratio;
+    float grid_ratio{};
     Vec3 grid_offset;
-    float major_unit_frequency;
-    float minor_unit_visibility;
-    float opacity;
-    float visibility;
-    bool antialias;
-    bool pre_multiply_alpha;
-    bool use_max_line;
-    bool back_face_culling;
+    float major_unit_frequency{};
+    float minor_unit_visibility{};
+    float opacity{};
+    float visibility{};
+    bool antialias{};
+    bool pre_multiply_alpha{};
+    bool use_max_line{};
+    bool back_face_culling{};
 };
 
 enum class TextureFilter {
@@ -4887,13 +4887,14 @@ struct FrameGraphContext {
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(updates); }
 };
 
-// No member defaults: generation fills every field from the pin's own
-// factory defaults, so a second copy here could only drift. (The same
-// holds for SphereOptions and TorusOptions below.)
+// No factory defaults: generation fills every field from the pin's own
+// factory defaults, so a second copy here could only drift; the scalars
+// only value-initialize. (The same holds for SphereOptions and TorusOptions
+// below.)
 struct GroundOptions {
-    double width;
-    double height;
-    std::uint32_t subdivisions;
+    double width{};
+    double height{};
+    std::uint32_t subdivisions{};
     Vec2 uv_scale;
 };
 
@@ -5715,19 +5716,19 @@ struct PcfDirectionalShadowOptions {
  */
 #if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
 struct CsmDirectionalShadowOptions {
-    // No initialisers, for the reason above: every field is written from
-    // the factory's own `??`.
-    std::uint32_t map_size;
-    std::uint32_t csm_num_cascades;
-    double csm_lambda;
-    double csm_cascade_blend_percentage;
+    // No factory defaults, for the reason above: every field is written
+    // from the factory's own `??`; the scalars only value-initialize.
+    std::uint32_t map_size{};
+    std::uint32_t csm_num_cascades{};
+    double csm_lambda{};
+    double csm_cascade_blend_percentage{};
     /** `cfg.shadowMaxZ ?? null`, resolved against the camera's far plane. */
     std::optional<double> csm_shadow_max_z;
-    double bias;
-    double darkness;
-    double frustum_edge_falloff;
+    double bias{};
+    double darkness{};
+    double frustum_edge_falloff{};
     /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */
-    bool force_refresh_every_frame;
+    bool force_refresh_every_frame{};
 };
 #endif
 

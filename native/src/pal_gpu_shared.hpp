@@ -14,6 +14,7 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/teardown.hpp>
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
 #include <bblite/pal_offscreen.hpp>
 #endif
@@ -1867,13 +1868,17 @@ find_shared_shader_material_textures(const std::vector<std::unique_ptr<SharedTex
     return found == cache.end() ? nullptr : found->get();
 }
 
-/** Drops one mesh's reference to a backend-owned shared cache entry. */
+/**
+ * Drops one mesh's reference to a backend-owned shared cache entry. It runs
+ * on the noexcept mesh-release paths, so an underflow -- a broken ownership
+ * count -- ends the process naming itself instead of throwing.
+ */
 template <typename Shared>
-inline void release_shared_user(Shared*& shared, const char* underflow_message) {
+inline void release_shared_user(Shared*& shared, const char* underflow_message) noexcept {
     if (!shared)
         return;
     if (shared->users == 0) {
-        throw std::runtime_error(underflow_message);
+        terminate_after("release_shared_user", underflow_message);
     }
     --shared->users;
     shared = nullptr;
@@ -5405,10 +5410,10 @@ inline bool alpha_to_coverage_enabled(bool wants_a2c, std::uint32_t samples) {
  * rather than inheriting one.
  */
 struct RenderPipelineKindTraits {
-    upstream::RenderMaterialKind family;
-    bool transparent;
-    upstream::RenderCullMode cull;
-    bool clockwise_front_face;
+    upstream::RenderMaterialKind family{};
+    bool transparent{};
+    upstream::RenderCullMode cull{};
+    bool clockwise_front_face{};
     // The primitive the pipeline is built at. Only the glTF PBR kinds carry
     // anything but triangles, and each of those already fixes its cull mode
     // to none, exactly as `buildPrimitiveState` does -- so every other arm
