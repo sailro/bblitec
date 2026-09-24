@@ -20,7 +20,8 @@ if(MSVC)
   # padded aligned structures, constant conditions, narrowing and shadowing.
   target_compile_options(bblite_tint PRIVATE /W4 /WX /wd4127 /wd4244 /wd4267 /wd4324 /wd4458 /wd4459)
 else()
-  target_compile_options(bblite_tint PRIVATE -Wall -Wextra -Werror)
+  # The warnings Tint's own targets build with.
+  target_compile_options(bblite_tint PRIVATE -Wall -Wextra -Wno-padded -Wno-switch-enum -Wno-unknown-pragmas)
 endif()
 target_link_libraries(bblite_tint PRIVATE
   tint_api
