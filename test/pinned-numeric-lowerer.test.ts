@@ -473,7 +473,55 @@ test("typeof a statically absent value is its absence's, not its stand-in's", ()
                 'let result = 0; if (typeof hook === "undefined") { result = 1; }',
                 [["hook", absentBinding()]],
             ),
-        /Unsupported pinned expression: typeof hook/,
+        /Unsupported pinned typeof test: typeof hook === "undefined"/,
+    );
+});
+
+test("typeof a value absent at run time tests its presence", () => {
+    const cpp = lower(
+        'let result = 0; if (typeof positions === "object") { result = 1; } if (typeof positions === "undefined") { result = 2; } if (typeof positions === "number") { result = 3; } if (typeof weight !== "number") { result = 4; } if (typeof root === "object") { result = 5; } if (typeof option === "boolean") { result = 6; }',
+        [
+            [
+                "positions",
+                { cpp: "positions", type: "f32", absentCpp: "!has_positions" },
+            ],
+            ["weight", { cpp: "*weight", type: "scalar", nullish: "!weight" }],
+            [
+                "root",
+                {
+                    cpp: "root",
+                    type: "f32",
+                    absentCpp: "!root",
+                    absentValue: "null",
+                },
+            ],
+            ["option", { cpp: "option", type: "bool" }],
+        ],
+    );
+    // An `absentCpp` array is "object" when present and "undefined" when
+    // absent; a number is never "object"'s absence test.
+    assert.match(cpp, /if \(!\(!has_positions\)\) \{\s*result = 1\.0;/);
+    assert.match(cpp, /if \(!has_positions\) \{\s*result = 2\.0;/);
+    assert.doesNotMatch(cpp, /result = 3\.0/);
+    assert.match(cpp, /if \(!weight\) \{\s*result = 4\.0;/);
+    // A null absence is an "object" too, and a value never absent keeps
+    // its own type's name.
+    assert.match(cpp, /result = 5\.0;/);
+    assert.doesNotMatch(cpp, /if \([^)]*root/);
+    assert.match(cpp, /result = 6\.0;/);
+    // A `nullish` value's absence may be either, so "undefined" is open.
+    assert.throws(
+        () =>
+            lower(
+                'let result = 0; if (typeof weight === "undefined") { result = 1; }',
+                [
+                    [
+                        "weight",
+                        { cpp: "*weight", type: "scalar", nullish: "!weight" },
+                    ],
+                ],
+            ),
+        /Unsupported pinned typeof test: typeof weight === "undefined"/,
     );
 });
 
