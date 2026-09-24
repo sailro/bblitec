@@ -194,8 +194,15 @@ test(
         first[0] = 99;
         if (second[0] !== 0 || integers[0] !== 0) throw new Error("shared mutable literal storage");
     `);
+        // One table per element type: both Float32Arrays share the float
+        // table, and the Uint32Array stores its own converted elements.
         assert.equal(
-            result.cpp.match(/inline const std::array<double, 128>/g)?.length,
+            result.cpp.match(/inline const std::array<float, 128>/g)?.length,
+            1,
+        );
+        assert.equal(
+            result.cpp.match(/inline const std::array<std::uint32_t, 128>/g)
+                ?.length,
             1,
         );
         assert.equal(
