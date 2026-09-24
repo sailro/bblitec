@@ -307,12 +307,13 @@ int main(int argc, char** argv) try {
                                  {0, 1, 2, 0, 2, 3}};
     const NavMeshBuildParams params{};
     const NavBuildDefaults& defaults = bbl::upstream::navigation_build_defaults;
+    const NavSoloConfigStep solo = bbl::upstream::solo_nav_mesh_config;
     unsigned build_allocations = 0;
     {
         auto plugin = navigation_create_plugin();
-        navigation_create_solo_nav_mesh(plugin, ground, params, defaults);
+        navigation_create_solo_nav_mesh(plugin, ground, params, defaults, solo);
         allocation_count = 0;
-        navigation_create_solo_nav_mesh(plugin, ground, params, defaults);
+        navigation_create_solo_nav_mesh(plugin, ground, params, defaults, solo);
         build_allocations = allocation_count;
         require(build_allocations == 498, "pinned solo-floor allocation sequence changed");
         if (selection.empty() || selection == "queries")
@@ -336,7 +337,7 @@ int main(int argc, char** argv) try {
             std::fprintf(stderr, "failure %u\n", failure);
             bool failed = false;
             try {
-                navigation_create_solo_nav_mesh(plugin, ground, params, defaults);
+                navigation_create_solo_nav_mesh(plugin, ground, params, defaults, solo);
             } catch (const std::bad_alloc&) {
                 failed = true;
             } catch (const std::runtime_error& error) {

@@ -69,16 +69,18 @@ int main() try {
                                  {0, 1, 2, 0, 2, 3}};
     const NavMeshBuildParams params{};
     const NavBuildDefaults& defaults = bbl::upstream::navigation_build_defaults;
+    const NavSoloConfigStep solo = bbl::upstream::solo_nav_mesh_config;
+    const NavTileCacheConfigStep tile_cache = bbl::upstream::tile_cache_nav_mesh_config;
     {
         auto keep = navigation_create_plugin();
-        navigation_create_solo_nav_mesh(keep, ground, params, defaults);
+        navigation_create_solo_nav_mesh(keep, ground, params, defaults, solo);
         const auto stable_count = allocations.size();
         for (int iteration = 0; iteration < 100; ++iteration) {
             std::weak_ptr<NavigationPluginState> weak;
             {
                 auto plugin = navigation_create_plugin();
                 weak = plugin.ownership;
-                navigation_create_solo_nav_mesh(plugin, ground, params, defaults);
+                navigation_create_solo_nav_mesh(plugin, ground, params, defaults, solo);
                 auto crowd = navigation_create_crowd(plugin, 4, 0.5f);
                 const NavAgentParams agent_params{0.2f, 1.8f, 8, 3, 4, 8, 1, 0, 0, 0};
                 const int agent = navigation_add_agent(crowd, 0, 0, 0, agent_params);
@@ -98,7 +100,7 @@ int main() try {
                 "releasing another plugin invalidated the survivor");
         auto crowd = navigation_create_crowd(keep, 4, 0.5f);
         std::weak_ptr<NavigationMeshState> old_mesh = keep.ownership->mesh;
-        navigation_create_solo_nav_mesh(keep, ground, params, defaults);
+        navigation_create_solo_nav_mesh(keep, ground, params, defaults, solo);
         require(!old_mesh.expired(), "mesh rebuild invalidated an existing crowd");
         navigation_update_crowd(crowd, 0.1f);
         crowd = {};
@@ -107,7 +109,7 @@ int main() try {
         // Fail each PAL allocation in a solo build. A failed replacement
         // must release intermediates and preserve the previous query/mesh.
         boundary_allocations = 0;
-        navigation_create_solo_nav_mesh(keep, ground, params, defaults);
+        navigation_create_solo_nav_mesh(keep, ground, params, defaults, solo);
         const unsigned build_allocations = boundary_allocations;
         for (unsigned failure = 1; failure <= build_allocations; ++failure) {
             const auto before = allocations.size();
@@ -116,7 +118,7 @@ int main() try {
             fail_boundary = failure;
             bool failed = false;
             try {
-                navigation_create_solo_nav_mesh(keep, ground, params, defaults);
+                navigation_create_solo_nav_mesh(keep, ground, params, defaults, solo);
             } catch (const std::runtime_error&) {
                 failed = true;
             }
@@ -144,10 +146,11 @@ int main() try {
         NavMeshBuildParams tile_params;
         tile_params.max_obstacles = 8;
         tile_params.tile_size = 32;
-        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults);
+        tile_params.expected_layers_per_tile = 1;
+        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults, tile_cache);
         const auto obstacle = navigation_add_box_obstacle(plugin, {0, 0, 0}, {1, 2, 1}, 0);
         navigation_remove_obstacle(plugin, obstacle);
-        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults);
+        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults, tile_cache);
         bool refused = false;
         try {
             navigation_remove_obstacle(plugin, obstacle);
@@ -156,7 +159,7 @@ int main() try {
         }
         require(refused, "obstacle from a retired tile cache was accepted");
         boundary_allocations = 0;
-        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults);
+        navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults, tile_cache);
         const unsigned build_allocations = boundary_allocations;
         for (unsigned failure = 1; failure <= build_allocations; ++failure) {
             const auto before = allocations.size();
@@ -165,7 +168,8 @@ int main() try {
             fail_boundary = failure;
             bool failed = false;
             try {
-                navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults);
+                navigation_create_tile_cache_nav_mesh(plugin, ground, tile_params, defaults,
+                                                      tile_cache);
             } catch (const std::runtime_error&) {
                 failed = true;
             }
