@@ -42,6 +42,8 @@ test(
         writeFileSync(
             file,
             `#define BBLITE_SHADOWS_ESM 1
+#define BBLITE_STANDARD_SKELETON 0
+#define BBLITE_STANDARD_VERTEX_ALPHA 0
 #include <bblite/runtime.hpp>
 #include <cassert>
 namespace bbl::upstream {

@@ -19,8 +19,10 @@ import {
 import { isStringValue, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { pinnedHandleKind } from "../data-types.js";
-import { stringLiteral as cppStringLiteral } from "../../cpp-literals.js";
-import { pinnedSnakeCase } from "../../lowering/pinned-record-lowerer.js";
+import {
+    pinnedSnakeCase,
+    stringLiteral as cppStringLiteral,
+} from "../../cpp-literals.js";
 import type { TransportSchema } from "../../pinned-record-transport.js";
 import { LoweringContext } from "../../lowering/context.js";
 import { textRecordModel } from "../../lowering/text-records.js";

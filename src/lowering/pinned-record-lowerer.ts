@@ -27,9 +27,11 @@
  * generation with the pinned source location.
  */
 import ts from "typescript";
+import { posix } from "node:path";
 import {
     cppIdentifier,
     doubleLiteral,
+    pinnedSnakeCase,
     stringLiteral,
 } from "../cpp-literals.js";
 import type {
@@ -183,18 +185,9 @@ interface ModuleVariable {
 const nullishFlags =
     ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void;
 
-/** `_slotStart` -> `slot_start`, `instancesU32` -> `instances_u32`. */
-export function pinnedSnakeCase(name: string): string {
-    return name
-        .replace(/^_+/, "")
-        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-        .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-        .toLowerCase();
-}
-
 /** The native namespace of a module's internal functions. */
 function detailNamespace(module: string): string {
-    const stem = module.replace(/^.*\//, "").replace(/\.ts$/, "");
+    const stem = posix.basename(module, ".ts");
     return `bbl::${stem.replaceAll("-", "_")}_detail`;
 }
 

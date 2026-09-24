@@ -1,3 +1,4 @@
+#define BBLITE_NODE_GEOMETRY_VARIANTS 0
 #define SDL_STATIC_LIB
 #include "pal_sdl.cpp"
 namespace bbl::pal {

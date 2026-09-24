@@ -1,3 +1,4 @@
+#define BBLITE_SPLAT_SH 0
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/splat_geometry.hpp>
 #include <bblite/upstream/splat_sort.hpp>
