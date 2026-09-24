@@ -11312,7 +11312,6 @@ public:
                                     state.background_arm(*state.background_draws.ground);
                                 draw_dawn_background_arm(task_pass, arm,
                                                          render_task.pinned_frame_group);
-                                bound_pipeline = arm.pipeline;
                             }
 #endif
 #if BBLITE_HAS_BILLBOARDS
