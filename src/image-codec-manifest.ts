@@ -9,6 +9,8 @@ export interface ImageCodec {
     mimeType: string;
     extensions: readonly string[];
     signatures: readonly { offset: number; bytes: Buffer }[];
+    /** The notices a package linking the decoder owes: file name -> vcpkg port. */
+    licenses: Readonly<Record<string, string>>;
 }
 
 /** Image metadata belongs to the vcpkg feature that installs its decoder. */
@@ -29,6 +31,7 @@ export function parseImageCodecs(manifest: unknown): ImageCodec[] {
         const mimeType = metadata?.mimeType;
         const extensions: unknown = metadata?.extensions;
         const signatures: unknown = metadata?.signatures;
+        const licenses = asObject(metadata?.licenses);
         if (
             !/^[a-z][a-z0-9-]*$/.test(codec) ||
             typeof mimeType !== "string" ||
@@ -36,7 +39,9 @@ export function parseImageCodecs(manifest: unknown): ImageCodec[] {
             !Array.isArray(extensions) ||
             extensions.length === 0 ||
             !Array.isArray(signatures) ||
-            signatures.length === 0
+            signatures.length === 0 ||
+            !licenses ||
+            Object.keys(licenses).length === 0
         )
             return refuse();
         codecs.push({
@@ -64,6 +69,17 @@ export function parseImageCodecs(manifest: unknown): ImageCodec[] {
                     return refuse();
                 return { offset, bytes: Buffer.from(hex, "hex") };
             }),
+            licenses: Object.fromEntries(
+                Object.entries(licenses).map(([file, port]) => {
+                    if (
+                        !/^[A-Za-z0-9._-]+\.txt$/.test(file) ||
+                        typeof port !== "string" ||
+                        !/^[a-z0-9-]+$/.test(port)
+                    )
+                        return refuse();
+                    return [file, port];
+                }),
+            ),
         });
     }
     if (codecs.length === 0)

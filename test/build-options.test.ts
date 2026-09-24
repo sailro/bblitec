@@ -272,56 +272,6 @@ test("minimal mode has dedicated MSVC and clang-cl size flags", () => {
     assert.match(block, /INTERFACE -Os -ffunction-sections/);
 });
 
-test("shipping packages require the trimmed static build", () => {
-    const script = readFileSync("tools/package-demo.ps1", "utf8");
-    const patterns = script.slice(
-        script.indexOf("$shaderPatterns ="),
-        script.indexOf("$shaderFiles ="),
-    );
-    // The executable runs directly; packaging tests exercise the host shader
-    // payload selection. Windows retains its console for startup errors.
-    assert.doesNotMatch(
-        script.slice(0, script.indexOf("$smokeFrames")),
-        /SDL_GPU_DRIVER|run-\$Scene\.cmd|\.log/,
-    );
-    assert.match(script, /\$smokeStart\.Environment\["SDL_ASSERT"\] = "abort"/);
-    assert.match(script, /Double-click \$exeName/);
-    assert.match(patterns, /\*\.dxil/);
-    assert.match(script, /VCPKG_INSTALLED_DIR/);
-    assert.match(script, /BBLITE_MINSIZE/);
-    assert.match(script, /x64-windows-static/);
-    assert.match(script, /CMAKE_MSVC_RUNTIME_LIBRARY/);
-    assert.match(script, /MultiThreaded/);
-    assert.match(script, /single backend/);
-    assert.match(script, /generated scene id/);
-    assert.match(script, /IsPathRooted\(\$OutputRoot\)/);
-    assert.match(script, /if \(Test-Path \$assetSource\)/);
-    assert.doesNotMatch(script, /numbered scene id/);
-    assert.doesNotMatch(script, /run-\$Scene-dawn/);
-    // The staged package runs for a few frames and must exit cleanly
-    // before the archive is written.
-    const smoke = script.slice(
-        script.indexOf("$smokeFrames = 5"),
-        script.indexOf("Compress-Archive"),
-    );
-    assert.match(smoke, /Environment\["BBLITE_MAX_FRAMES"\] = "\$smokeFrames"/);
-    assert.match(smoke, /WorkingDirectory = \$packageDirectory/);
-    assert.match(smoke, /WaitForExit\(120000\)/);
-    assert.match(smoke, /\$smoke\.ExitCode -ne 0/);
-    // A failed start shows the program's own output, and a payload path the
-    // non-long-path-aware executable cannot open is refused before it runs.
-    assert.match(smoke, /RedirectStandardOutput = \$true/);
-    assert.match(smoke, /RedirectStandardError = \$true/);
-    assert.match(
-        smoke,
-        /exited with \$\(\$smoke\.ExitCode\)[^\n]*Output tail:/,
-    );
-    assert.match(
-        script.slice(0, script.indexOf("$smokeFrames = 5")),
-        /FullName\.Length -ge 260/,
-    );
-});
-
 test("the trimmed SDL build has a separate audio-capable variant", () => {
     const script = readFileSync("tools/build-sdl-min.ps1", "utf8");
     assert.match(script, /\[switch\]\$EnableAudio/);
@@ -675,13 +625,6 @@ test("minimal audio dependencies use a static runtime and ship their notices", (
         cmake,
         /LabSound\.lib"\s*"\$\{BBLITE_LABSOUND_DIR\}\/lib\/libnyquist\.lib/,
     );
-
-    const packager = readFileSync("tools/package-demo.ps1", "utf8");
-    assert.match(packager, /\$audioReached/);
-    assert.match(packager, /\$audioDecoded/);
-    assert.match(packager, /LabSound-LICENSE\.txt/);
-    assert.match(packager, /libnyquist-COPYING\.txt/);
-    assert.match(packager, /if \(\$audioCapture -or \$audioDecoded\)/);
 });
 
 test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () => {

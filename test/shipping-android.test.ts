@@ -191,14 +191,17 @@ test("Android packaging passes the requested target and keeps shared work serial
         ["--backend", "dawn"],
     ]);
     const args = mobilePackageArguments("android", "torus-states", values);
+    assert.equal(
+        args[args.indexOf("-File") + 1],
+        resolve("tools/package-android.ps1"),
+    );
     for (const [flag, expected] of [
-        ["-Platform", "android"],
         ["-Scene", "torus-states"],
         ["-Abi", "x86_64"],
         ["-Sdk", "C:/SDK with spaces"],
         ["-Device", "emulator-5554"],
         ["-Jobs", "3"],
-        ["-ExpectBackend", "DAWN"],
+        ["-Backend", "DAWN"],
     ]) {
         assert.equal(args[args.indexOf(flag!) + 1], expected);
     }
@@ -234,7 +237,7 @@ test("Android packaging passes the requested target and keeps shared work serial
         "torus-states",
         new Map(),
     );
-    assert.equal(defaults[defaults.indexOf("-ExpectBackend") + 1], "SDL_GPU");
+    assert.equal(defaults[defaults.indexOf("-Backend") + 1], "SDL_GPU");
     for (const backend of ["both", "vulkan", ""]) {
         assert.throws(
             () =>

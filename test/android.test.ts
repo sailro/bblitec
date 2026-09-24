@@ -279,7 +279,7 @@ test(
                 "-Command",
                 `
 $ErrorActionPreference = 'Stop'
-foreach ($file in @('tools/android.ps1', 'tools/package-android.ps1', 'tools/package-demo.ps1')) {
+foreach ($file in @('tools/android.ps1', 'tools/package-android.ps1')) {
     $tokens = $null; $errors = $null
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $file), [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw ($errors | Out-String) }
@@ -309,7 +309,7 @@ foreach ($file in @('tools/android.ps1', 'tools/package-android.ps1', 'tools/pac
             const args = jsonObject(plan[0]).args;
             assert.ok(Array.isArray(args));
             assert.equal(
-                args[args.indexOf("-ExpectBackend") + 1],
+                args[args.indexOf("-Backend") + 1],
                 backend.toUpperCase(),
             );
         }

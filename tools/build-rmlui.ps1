@@ -21,7 +21,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
-Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
 if ($AndroidAbi -and ($StaticRuntime -or $MinSize -or $MacArchitecture)) { throw 'Android cannot be combined with desktop target options.' }
 if ($AndroidAbi -and -not $FreetypeRoot) { throw 'Android requires -FreetypeRoot at the matching Android vcpkg triplet.' }
@@ -171,7 +170,7 @@ if (Test-Path $cachePath) {
         $cachedGenerator -ne "Ninja"
     }
     if (-not $generatorMatches) {
-        Assert-PackageChild $workspacePath $build
+        Assert-ContainedPath $workspacePath $build
         Remove-Item -LiteralPath $build -Recurse -Force
     }
 }

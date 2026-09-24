@@ -87,7 +87,7 @@ sdkmanager --sdk_root=$env:ANDROID_HOME "platform-tools" "platforms;android-35" 
 npm run android -- -Scene torus-states -Sdk C:/Dev/android-sdk -Device <serial> -Install
 npm run android -- -Scene torus-states -Backend DAWN -Sdk C:/Dev/android-sdk -Device <serial> -Smoke
 npm run android:sweep -- --sdk C:/Dev/android-sdk --device emulator-5554
-npm run package:demo -- -Platform android -Scene torus-states -ExpectBackend DAWN -Sdk C:/Dev/android-sdk -Device <serial>
+npm run package:demo -- --platform android --scene torus-states --backend dawn --sdk C:/Dev/android-sdk --device <serial>
 npm run demos:release -- --platform android --scene torus-states --backend dawn --sdk C:/Dev/android-sdk --device <serial>
 ```
 
@@ -333,7 +333,8 @@ npm run demos:release -- --output artifacts/releases
 Options: `--scene <id,id>`, `--workers N`, `--jobs N`, `--plan` (generates, then prints the plan). The workflow owns dependency installation,
 prepares reached static dependencies, and builds and packages application demos. Plans/logs live in
 `artifacts/shipping/`; receipts include bytes, hashes and startup results. Replaced packages go to
-`.replaced/`; `@previous/` is preserved.
+`.replaced/`; `@previous/` is preserved. Every platform stages, archives, publishes and credits its
+dependencies' notices through `src/package-output.ts` and `src/package-notices.ts`.
 
 | Platform | Shipping configuration |
 | --- | --- |
@@ -354,15 +355,15 @@ as do artifacts whose recorded source or patch set differs.
 `BBLITE_PCH` is off; capture options are explicit and disabled capture requests fail.
 
 ```powershell
-npm run package:demo -- -Scene <id> -BuildDirectory <dir>
+npm run package:demo -- --scene <id> --build-directory <dir>
 ```
 
-macOS packaging requires both slices via `-BuildDirectory <intel>` and `-Arm64BuildDirectory <arm>`;
+macOS packaging requires both slices via `--build-directory <intel>` and `--arm64-build-directory <arm>`;
 defaults are `native/build-<id>-min-sdl-x86_64` and `native/build-<id>-min-sdl-arm64`.
 Dependency builds accept `-MacArchitecture`; use matching vcpkg and CMAKE_OSX_ARCHITECTURES.
 
 ```sh
-npm run package:demo -- -Platform ios -Scene tetris -Jobs 3
+npm run package:demo -- --platform ios --scene tetris --jobs 3
 npm run demos:release -- --platform ios --scene tetris,platformer --jobs 3
 ```
 
