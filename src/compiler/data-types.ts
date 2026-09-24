@@ -48,6 +48,7 @@ import { classInstanceProperties } from "./class-properties.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
+import { optionalPresentCpp } from "./types.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -3483,7 +3484,7 @@ export class DataTypeRegistry {
                     );
                 if (omittable) {
                     lines.push(
-                        `    if (value.${field.name}.has_value()) {`,
+                        `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
                         `        writer.key(${key});`,
                         `        json_write(writer, *value.${field.name});`,
                         "    }",

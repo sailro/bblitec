@@ -110,6 +110,7 @@ import {
     booleanValue,
     commonResourceValue,
     isStringValue,
+    presenceCpp,
     staticStringValue,
 } from "./types.js";
 
@@ -1263,10 +1264,7 @@ export class ExpressionLowerer {
                 !checkedMayBeUndefined &&
                 operand.kind !== "record"
                     ? undefined
-                    : (operand.optionalFoundCpp ??
-                      (operand.dataType?.kind === "optional"
-                          ? `${operand.cpp}.has_value()`
-                          : undefined));
+                    : presenceCpp(operand);
             if (present !== undefined) {
                 return {
                     kind: "data",

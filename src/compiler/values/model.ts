@@ -58,6 +58,27 @@ export function withNativeMetadata(
     });
 }
 
+/** The native test that an optional expression holds a value. */
+export function optionalPresentCpp(cpp: string): string {
+    return `${cpp}.has_value()`;
+}
+
+/**
+ * Whether a nullable value is there, as a native test: the presence flag it
+ * carries (`optionalFoundCpp`), else the engagement of its optional
+ * storage; undefined for a value that cannot be absent. Presence only --
+ * JavaScript truthiness of a present but falsy value is the condition
+ * lowering's.
+ */
+export function presenceCpp(value: Value): string | undefined {
+    return (
+        value.optionalFoundCpp ??
+        (value.dataType?.kind === "optional"
+            ? optionalPresentCpp(value.cpp)
+            : undefined)
+    );
+}
+
 /** Native data views retain shared metadata, without generation-only payloads. */
 export function nativeDataMetadata(value: Value | undefined): ValueFields {
     if (!value) return { cpp: "" };

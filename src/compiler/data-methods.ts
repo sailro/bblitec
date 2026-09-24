@@ -1,6 +1,7 @@
 import {
     isStringValue,
     nativeDataMetadata,
+    optionalPresentCpp,
     withNativeMetadata,
 } from "./types.js";
 // The data-container method knowledge: the method-name sets every
@@ -854,7 +855,7 @@ function compileKnownDataMethod(
             });
             const record = optional ? `(*${receiver})` : receiver;
             const present = optional
-                ? `${receiver}.has_value()`
+                ? optionalPresentCpp(receiver)
                 : referenceReceiver
                   ? receiver
                   : undefined;
@@ -2354,7 +2355,7 @@ function compileMapDataMethod(
                     lowerer.leafValue(`(*${result})`, dataType.value),
                     known,
                 ),
-                optionalFoundCpp: `${result}.has_value()`,
+                optionalFoundCpp: optionalPresentCpp(result),
                 optionalStorageCpp: `${result}.to_optional()`,
             };
         }

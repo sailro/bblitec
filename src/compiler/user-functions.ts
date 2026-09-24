@@ -1,5 +1,6 @@
 import {
     commonResourceValue,
+    optionalPresentCpp,
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
@@ -3720,7 +3721,7 @@ export class UserFunctionLowerer {
                                 type.inner,
                             );
                             value = context.dataValue(
-                                `(${name}.has_value() ? *${name} : ${fallback})`,
+                                `(${optionalPresentCpp(name)} ? *${name} : ${fallback})`,
                                 type.inner,
                             );
                         }
@@ -4999,7 +5000,7 @@ export class UserFunctionLowerer {
         const cppType = context.dataTypes.cppType(type);
         const present =
             storage.kind === "optional"
-                ? `${input}.has_value()`
+                ? optionalPresentCpp(input)
                 : `static_cast<bool>(${input})`;
         const selected = storage.kind === "optional" ? `*${input}` : input;
         context.emit(

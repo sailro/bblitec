@@ -3,6 +3,8 @@ import {
     assetRootMutationStates,
     isStringValue,
     nativeDataMetadata,
+    optionalPresentCpp,
+    presenceCpp,
     valueForKind,
     withNativeMetadata,
 } from "./compiler/types.js";
@@ -2993,7 +2995,7 @@ class Compiler implements LoweringServices {
                             : {}),
                         optionalFoundCpp: sharedClosureStorage
                             ? `${cppName}->has_value()`
-                            : `${cppName}.has_value()`,
+                            : optionalPresentCpp(cppName),
                         ...(sharedClosureStorage
                             ? { sharedStorageCpp: cppName }
                             : {}),
@@ -3186,7 +3188,7 @@ class Compiler implements LoweringServices {
                         : {}),
                     optionalFoundCpp: sharedClosureStorage
                         ? `${cppName}->has_value()`
-                        : `${cppName}.has_value()`,
+                        : optionalPresentCpp(cppName),
                     ...(sharedClosureStorage
                         ? { sharedStorageCpp: cppName }
                         : {}),
@@ -3359,7 +3361,7 @@ class Compiler implements LoweringServices {
                 cpp: sharedClosureStorage ? `(**${cppName})` : `(*${cppName})`,
                 optionalFoundCpp: sharedClosureStorage
                     ? `${cppName}->has_value()`
-                    : `${cppName}.has_value()`,
+                    : optionalPresentCpp(cppName),
                 ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
                 optionalStorageCpp: sharedClosureStorage
                     ? `(*${cppName})`
@@ -3668,8 +3670,8 @@ class Compiler implements LoweringServices {
                     ...(optionalHandle
                         ? {
                               optionalStorageCpp: boundCpp,
-                              optionalFoundCpp: `${boundCpp}.has_value()`,
-                              truthinessCpp: `${boundCpp}.has_value()`,
+                              optionalFoundCpp: optionalPresentCpp(boundCpp),
+                              truthinessCpp: optionalPresentCpp(boundCpp),
                           }
                         : optionalFoundCpp
                           ? { optionalFoundCpp }
@@ -5800,7 +5802,7 @@ class Compiler implements LoweringServices {
                     this.bindCopiedDefault(
                         name,
                         field.type.inner,
-                        `${storedFieldCpp}.has_value() ? *${storedFieldCpp} : ${fallback}`,
+                        `${optionalPresentCpp(storedFieldCpp)} ? *${storedFieldCpp} : ${fallback}`,
                     );
                     continue;
                 }
@@ -11446,7 +11448,7 @@ class Compiler implements LoweringServices {
                     this.defaultEngineCpp
                         ? { engineCpp: this.defaultEngineCpp }
                         : {}),
-                    optionalFoundCpp: `${storage}.has_value()`,
+                    optionalFoundCpp: optionalPresentCpp(storage),
                     optionalStorageCpp: storage,
                     ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
                 }),
@@ -11511,7 +11513,7 @@ class Compiler implements LoweringServices {
             this.defaultEngineCpp
                 ? { engineCpp: this.defaultEngineCpp }
                 : {}),
-            optionalFoundCpp: `${storage}.has_value()`,
+            optionalFoundCpp: optionalPresentCpp(storage),
             optionalStorageCpp: storage,
             ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
         });
@@ -11573,7 +11575,7 @@ class Compiler implements LoweringServices {
             this.defaultEngineCpp
                 ? { engineCpp: this.defaultEngineCpp }
                 : {}),
-            optionalFoundCpp: `${cppName}.has_value()`,
+            optionalFoundCpp: optionalPresentCpp(cppName),
             optionalStorageCpp: cppName,
         });
         this.defineVariable(name, value);
@@ -12938,11 +12940,7 @@ class Compiler implements LoweringServices {
                   "An audio engine assignment requires its source main bus.",
               ))
             : "bbl::pal::AudioNodeHandle{}";
-        const present =
-            value?.optionalFoundCpp ??
-            (value?.dataType?.kind === "optional"
-                ? `${value.cpp}.has_value()`
-                : undefined);
+        const present = value && presenceCpp(value);
         this.emit(
             `${destination} = ${
                 present
@@ -12986,7 +12984,7 @@ class Compiler implements LoweringServices {
             value.dataType.inner.kind === "handle" &&
             value.dataType.inner.handle === target.kind
         ) {
-            this.emit(`if (${value.cpp}.has_value()) {`);
+            this.emit(`if (${optionalPresentCpp(value.cpp)}) {`);
             this.emit(`    ${storage} = *${value.cpp};`);
             this.emit("} else {");
             this.emit(`    ${storage}.reset();`);

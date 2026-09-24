@@ -1,4 +1,8 @@
-import { valueForKind, withNativeMetadata } from "./types.js";
+import {
+    optionalPresentCpp,
+    valueForKind,
+    withNativeMetadata,
+} from "./types.js";
 import {
     EmissionSet,
     EmissionMap,
@@ -512,7 +516,9 @@ export class ClassLowerer {
                             resourceValue
                                 ? {
                                       ...value,
-                                      truthinessCpp: `${target.optionalStorageCpp}.has_value()`,
+                                      truthinessCpp: optionalPresentCpp(
+                                          target.optionalStorageCpp!,
+                                      ),
                                   }
                                 : value,
                         );

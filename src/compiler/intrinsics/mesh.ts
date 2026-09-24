@@ -8,7 +8,7 @@ import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { compileBakedMesh } from "../baked-mesh.js";
 
-import { isStringValue, type Value } from "../types.js";
+import { isStringValue, optionalPresentCpp, type Value } from "../types.js";
 import { handleCppType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -1282,7 +1282,7 @@ function compileMeshOptionalStreams(
             context.reachJsData();
             return {
                 cpp:
-                    `(${value.cpp}.has_value() ? ${value.cpp}.value()` +
+                    `(${optionalPresentCpp(value.cpp)} ? ${value.cpp}.value()` +
                     ` : bbl::js::F32Array{})`,
                 present: undefined,
             };

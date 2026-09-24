@@ -1,6 +1,6 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
-import type { Value } from "./types.js";
+import { optionalPresentCpp, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { EmissionMap } from "./emission-transaction.js";
 import { declaredInDefaultLibrary } from "./symbols.js";
@@ -76,7 +76,7 @@ export class WindowProperties {
             );
         const cpp =
             field.type.kind === "optional"
-                ? `(${field.cpp}.has_value() ? *${field.cpp} : ${this.context.dataTypes.cppType(type)}{})`
+                ? `(${optionalPresentCpp(field.cpp)} ? *${field.cpp} : ${this.context.dataTypes.cppType(type)}{})`
                 : field.cpp;
         return this.context.dataLowerer.compileStoredCall(call, cpp, type);
     }

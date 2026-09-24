@@ -1,6 +1,6 @@
 import type ts from "typescript";
 import type { LoweringServices } from "../lowering-services.js";
-import type { Value } from "../types.js";
+import { optionalPresentCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { argumentAt } from "../syntax.js";
 import { isGpuBufferSourceType } from "./storage-buffer.js";
@@ -106,7 +106,7 @@ export function compileUniformBufferLabel(
                     "uniform_options",
                     optionsExpression,
                 );
-                context.emit(`if (${retained.cpp}.has_value()) {`);
+                context.emit(`if (${optionalPresentCpp(retained.cpp)}) {`);
                 write({
                     kind: "data",
                     dataType: options.dataType.inner,

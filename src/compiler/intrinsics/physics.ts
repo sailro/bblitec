@@ -43,7 +43,7 @@ import {
     staticJsonValue,
     type ObjectValidationContext,
 } from "../option-helpers.js";
-import type { Value } from "../types.js";
+import { optionalPresentCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     requiredObjectNumber,
@@ -215,7 +215,7 @@ function nullableShapeParameter(
             node!,
             "double",
         );
-        return `(${owner.cpp}.has_value() ? ${lane}{${vector}} : ${lane}{})`;
+        return `(${optionalPresentCpp(owner.cpp)} ? ${lane}{${vector}} : ${lane}{})`;
     }
     if (
         shape === "vec3" &&
@@ -421,7 +421,7 @@ function compileShapeParameters(
                 }
                 const present = optionalReference
                     ? `static_cast<bool>(${cpp})`
-                    : `${cpp}.has_value()`;
+                    : optionalPresentCpp(cpp);
                 context.emit(
                     `if (${present}) throw std::runtime_error("Physics shape rotation is not lowered.");`,
                 );
@@ -555,7 +555,7 @@ function compileImpulsePoint(
             condition.optionalFoundCpp ??
             (condition.kind === "data" &&
             condition.dataType?.kind === "optional"
-                ? `${condition.cpp}.has_value()`
+                ? optionalPresentCpp(condition.cpp)
                 : undefined);
         if (!present) {
             context.fail(

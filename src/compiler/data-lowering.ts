@@ -2,6 +2,7 @@ import {
     booleanValue,
     isStringValue,
     nativeDataMetadata,
+    optionalPresentCpp,
     staticStringValue,
     valueForKind,
     withNativeMetadata,
@@ -1130,7 +1131,7 @@ export class DataLowerer {
                       });
                       return { ...owner, cpp: temporary };
                   })();
-            present = `${selected.cpp}.has_value()`;
+            present = optionalPresentCpp(selected.cpp);
             presentOwner = withNativeMetadata(
                 this.leafValue(`(*${selected.cpp})`, owner.dataType.inner),
                 plainOwner,
@@ -2169,7 +2170,7 @@ export class DataLowerer {
                 return {
                     kind: "data",
                     cpp:
-                        `(${temp}.has_value() ? ${temp} : ` +
+                        `(${optionalPresentCpp(temp)} ? ${temp} : ` +
                         `${fallbackOptional})`,
                     dataType: resultType,
                 };
@@ -2207,7 +2208,7 @@ export class DataLowerer {
             // instead of a bare "data" every consumer would have to
             // special-case.
             const selected = this.leafValue(
-                `(${temp}.has_value() ? ${present} : ${fallback})`,
+                `(${optionalPresentCpp(temp)} ? ${present} : ${fallback})`,
                 resultType,
             );
             // The conditional materializes either branch as a new C++ value.
@@ -6892,7 +6893,7 @@ export class DataLowerer {
                         const sourceCpp = `${spread.cpp}${sourceMember}${sourceField.name}`;
                         if (sourceField.type.kind === "optional") {
                             this.context.emit(
-                                `if (${sourceCpp}.has_value()) {`,
+                                `if (${optionalPresentCpp(sourceCpp)}) {`,
                             );
                             this.context.increaseIndent();
                             this.context.emit(
@@ -7296,7 +7297,7 @@ export class DataLowerer {
             )
                 ? "->"
                 : ".";
-            return `${narrowed.cpp}${access}${field.name}.has_value()`;
+            return optionalPresentCpp(`${narrowed.cpp}${access}${field.name}`);
         }
         return this.context.fail(
             ownerNode,
@@ -7588,7 +7589,7 @@ export class DataLowerer {
         // reference, whose null is the binding's absent state.
         const presence =
             targetType?.kind === "optional"
-                ? `(${target.cpp}).has_value()`
+                ? optionalPresentCpp(`(${target.cpp})`)
                 : targetType?.kind === "struct" &&
                     this.context.dataTypes.isReferenceStruct(targetType.name)
                   ? this.referencePresence(target.cpp)
@@ -8711,9 +8712,9 @@ export class DataLowerer {
             cpp: saved,
             nativeCaptures: [this.context.registerNativeBinding(saved)],
         };
-        if (vector) absent ||= `!${saved}.has_value()`;
+        if (vector) absent ||= `!${optionalPresentCpp(saved)}`;
         else if (hasUndefined && item.dataType?.kind === "optional")
-            absent = `!${saved}.has_value()`;
+            absent = `!${optionalPresentCpp(saved)}`;
         if (vector?.element.kind === "struct" && hasUndefined)
             absent = `(${absent} || !${saved}.value())`;
         const present =
@@ -9070,7 +9071,7 @@ export class DataLowerer {
                 );
                 return `([](const auto& value) { return value.has_value() && *value != ${empty}; }(${value.cpp}))`;
             }
-            return `${value.cpp}.has_value()`;
+            return optionalPresentCpp(value.cpp);
         }
         if (
             value.kind === "data" &&
@@ -9226,8 +9227,8 @@ export class DataLowerer {
                 this.context.compileValue(nullSide);
             if (value?.kind === "data" && value.dataType?.kind === "optional") {
                 return negated
-                    ? `${value.cpp}.has_value()`
-                    : `!${value.cpp}.has_value()`;
+                    ? optionalPresentCpp(value.cpp)
+                    : `!${optionalPresentCpp(value.cpp)}`;
             }
             if (value?.dataType?.kind === "function") {
                 return `${negated ? "" : "!"}static_cast<bool>(${value.cpp})`;
@@ -9477,8 +9478,8 @@ export class DataLowerer {
                 false,
             );
             const equal =
-                `(${leftCpp}.has_value() == ${rightCpp}.has_value() && ` +
-                `(!${leftCpp}.has_value() || (*${leftCpp}) == (*${rightCpp})))`;
+                `(${optionalPresentCpp(leftCpp)} == ${optionalPresentCpp(rightCpp)} && ` +
+                `(!${optionalPresentCpp(leftCpp)} || (*${leftCpp}) == (*${rightCpp})))`;
             return negated ? `!${equal}` : equal;
         }
         if (optionalComparable(leftType)) {
@@ -9494,7 +9495,7 @@ export class DataLowerer {
             );
             const rightCpp = this.compileForSink(right, present.dataType);
             const equal =
-                `(${leftCpp}.has_value() && ` +
+                `(${optionalPresentCpp(leftCpp)} && ` +
                 `${present.cpp} == ${rightCpp})`;
             return negated ? `!${equal}` : equal;
         }
@@ -9511,7 +9512,7 @@ export class DataLowerer {
             );
             const leftCpp = this.compileForSink(left, present.dataType);
             const equal =
-                `(${rightCpp}.has_value() && ` +
+                `(${optionalPresentCpp(rightCpp)} && ` +
                 `${leftCpp} == ${present.cpp})`;
             return negated ? `!${equal}` : equal;
         }

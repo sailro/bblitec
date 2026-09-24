@@ -1,7 +1,7 @@
 import type ts from "typescript";
 import type { DataType } from "../data-types.js";
 import type { LoweringServices } from "../lowering-services.js";
-import type { Value } from "../types.js";
+import { optionalPresentCpp, type Value } from "../types.js";
 
 export interface RetainedOption {
     name: string;
@@ -72,7 +72,7 @@ export function emitPresentOption(
 ): void {
     let { cpp, type } = member;
     const guard =
-        type?.kind === "optional" ? `${cpp}.has_value()` : member.present;
+        type?.kind === "optional" ? optionalPresentCpp(cpp) : member.present;
     if (type?.kind === "optional") {
         cpp = `${cpp}.value()`;
         type = type.inner;

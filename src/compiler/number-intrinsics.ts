@@ -3,7 +3,7 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { ExpressionContext } from "./expressions.js";
 import type { LibraryGlobal } from "./symbols.js";
-import type { Value } from "./types.js";
+import { optionalPresentCpp, type Value } from "./types.js";
 
 const constants: ReadonlyMap<string, number> = new EmissionMap([
     ["MAX_SAFE_INTEGER", Number.MAX_SAFE_INTEGER],
@@ -83,7 +83,7 @@ export function compileNumberPredicate(
             initializer: value.cpp,
         });
         cpp = optionalNumeric
-            ? `(${argument}.has_value() && ${predicate.cpp}(*${argument}))`
+            ? `(${optionalPresentCpp(argument)} && ${predicate.cpp}(*${argument}))`
             : `(${argument}.is_number() && ${predicate.cpp}(${argument}.to_number()))`;
     } else if (numeric) cpp = `${predicate.cpp}(${value.cpp})`;
     else {

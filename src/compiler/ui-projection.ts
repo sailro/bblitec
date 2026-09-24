@@ -1,4 +1,4 @@
-import { isStringValue, valueForKind } from "./types.js";
+import { isStringValue, optionalPresentCpp, valueForKind } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import {
     emissionArray,
@@ -357,7 +357,7 @@ export class UiProjection {
                     cpp: `(*${value.cpp})`,
                     dataType: value.dataType.inner,
                     optionalFoundCpp:
-                        value.optionalFoundCpp ?? `${value.cpp}.has_value()`,
+                        value.optionalFoundCpp ?? optionalPresentCpp(value.cpp),
                     engineCpp: value.engineCpp ?? this.documentEngine(owner),
                 }),
             );

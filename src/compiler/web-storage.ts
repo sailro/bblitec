@@ -4,7 +4,7 @@ import ts from "typescript";
 
 import type { DataType } from "./data-types.js";
 import { declaredInDomLibrary } from "./symbols.js";
-import type { Value } from "./types.js";
+import { optionalPresentCpp, type Value } from "./types.js";
 
 /** The narrow slice of the expression context this lowering needs. */
 interface WebStorageContext extends Pick<
@@ -133,7 +133,7 @@ export function compileWebStorageCall(
         callback.cpp,
         callback.dataType,
         owner.dataType?.kind === "optional"
-            ? `${receiver}.has_value()`
+            ? optionalPresentCpp(receiver)
             : receiver,
     );
 }

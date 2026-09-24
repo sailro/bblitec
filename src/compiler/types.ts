@@ -6,6 +6,8 @@ import type { Value } from "./values/model.js";
 export type { Value } from "./values/model.js";
 export {
     nativeDataMetadata,
+    optionalPresentCpp,
+    presenceCpp,
     valueForKind,
     withNativeMetadata,
 } from "./values/model.js";

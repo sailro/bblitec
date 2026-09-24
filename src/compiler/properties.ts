@@ -1,4 +1,4 @@
-import { valueForKind } from "./types.js";
+import { optionalPresentCpp, valueForKind } from "./types.js";
 import type { LoweringServices } from "./lowering-services.js";
 // Property reads on the compiled surface.
 //
@@ -566,7 +566,8 @@ export const propertyRules: readonly PropertyRule[] = [
         value: "texture",
         textureStorage: "file",
         helper: "bbl::compute_storage_texture_sampled_texture",
-        optionalFound: (owner) => `(${owner})->sampled_texture.has_value()`,
+        optionalFound: (owner) =>
+            optionalPresentCpp(`(${owner})->sampled_texture`),
     },
     {
         owner: "compute-storage-texture",
