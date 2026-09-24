@@ -1,3 +1,5 @@
+#include <bblite/features/offscreen_surfaces.hpp>
+
 #include <SDL3/SDL.h>
 #include <cstdlib>
 #include <iostream>

@@ -58,6 +58,7 @@ import { pinnedHeader } from "./pinned-header.js";
 import { pinnedOptionFallback } from "./pinned-option-defaults.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import { recordAt } from "../compiler/record-access.js";
+import { featureMacroInclude } from "../feature-macros.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
@@ -719,6 +720,7 @@ Vec3d get_agent_position(
 `,
             ),
             source: `// ${this.context.provenance(modulePath, symbolName, "createNavigationPluginAsync, createDebugNavMeshGeometry, raycast")}
+#include <${featureMacroInclude("BBLITE_HAS_NAV_CROWD")}>
 #include <bblite/upstream/navigation.hpp>
 // The merge composes each caster's own world through the one emitted
 // composition every consumer reads, so a mesh that gained a transform-node

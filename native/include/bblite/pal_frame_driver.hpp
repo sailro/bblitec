@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/workers.hpp>
+
 #if BBLITE_WORKERS
 #include <bblite/js_data.hpp>
 #include <bblite/js_promise.hpp>

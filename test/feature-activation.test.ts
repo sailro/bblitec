@@ -13,6 +13,7 @@ import type { UpstreamEmitOptions } from "../src/upstream-lower.js";
 import type { Feature } from "../src/compiler/types.js";
 import { featureSources } from "../src/compiler/output-projection.js";
 import { generatedSourceRules } from "../src/generated-sources.js";
+import { featureMacrosOf } from "../src/feature-macros.js";
 import {
     featureActivationRows,
     inventoriedRuntimeFeatures,
@@ -307,9 +308,7 @@ function everythingOnInputs(): FeatureActivationInputs {
         }),
         activation: activationPlan({
             gpuDeformation: decided("a glTF asset carries animations"),
-            morphStorage: decided(
-                "a glTF primitive carries morph targets (maxMorphTargets > 0)",
-            ),
+            morphStorage: decided("a glTF asset runs the pinned morph feature"),
             gpuInstancing: decided("an asset uses EXT_mesh_gpu_instancing"),
             nodeVisibility: decided("an asset uses KHR_node_visibility"),
             linearImageProcessing: decided(
@@ -1179,18 +1178,13 @@ test("every claimed reader of a runtime feature reads it", () => {
         )
         .map((file) => readFileSync(file, "utf8"))
         .join("\n");
-    // A CMake rule over a family spells the feature as a prefix it
-    // completes per member (`"audio:decode-${codec_feature}"`).
-    const cmakePrefixes = [...cmake.matchAll(/"([a-z0-9:-]+)\$\{/g)].map(
-        (match) => match[1]!,
-    );
     const buildReads = (name: string): boolean =>
         (featureSources[name as Feature] ?? []).length > 0 ||
         generatedSourceRules.some((rule) =>
             rule.features.some((feature) => feature === name),
         ) ||
         cmake.includes(`"${name}"`) ||
-        cmakePrefixes.some((prefix) => name.startsWith(prefix));
+        featureMacrosOf(name).length > 0;
     const rows = featureActivationRows(everythingOnInputs()).filter(
         (row) => row.mechanism === "runtime-feature",
     );
@@ -1207,12 +1201,14 @@ test("every claimed reader of a runtime feature reads it", () => {
             const reads =
                 consumer === "inventory"
                     ? !read
-                    : consumer === "features.cmake" ||
-                        consumer === "vcpkg manifest"
-                      ? read
-                      : consumer === "fidelity.json"
-                        ? adaptations.includes(quoted)
-                        : readers.includes(quoted);
+                    : consumer === "feature macros"
+                      ? featureMacrosOf(row.name).length > 0
+                      : consumer === "features.cmake" ||
+                          consumer === "vcpkg manifest"
+                        ? read
+                        : consumer === "fidelity.json"
+                          ? adaptations.includes(quoted)
+                          : readers.includes(quoted);
             if (!reads) wrong.push(`${row.name} claims '${consumer}'`);
         }
     }

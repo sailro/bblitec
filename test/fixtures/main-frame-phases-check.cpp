@@ -1,6 +1,3 @@
-#define BBLITE_HAS_UI 0
-#define BBLITE_DEVICE_RECOVERY 0
-#define BBLITE_OFFSCREEN_SURFACES 1
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 #include "pal_sdl_gpu_commands.hpp"

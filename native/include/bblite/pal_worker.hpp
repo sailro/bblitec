@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/workers.hpp>
+
 #if !BBLITE_WORKERS
 #error Worker runtime requires BBLITE_WORKERS for isolated JavaScript state.
 #endif

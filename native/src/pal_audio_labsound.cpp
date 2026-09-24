@@ -15,6 +15,13 @@
  * lowered from the pinned TypeScript modules under `src/audio/`.
  */
 
+#include <bblite/features/has_audio_biquad_filter.hpp>
+#include <bblite/features/has_audio_buffer_source.hpp>
+#include <bblite/features/has_audio_decode_file.hpp>
+#include <bblite/features/has_audio_oscillator.hpp>
+#include <bblite/features/has_audio_stereo_panner.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/pal_audio.hpp>
 
 #include <bblite/pal.hpp>
@@ -47,7 +54,7 @@
 #if BBLITE_HAS_AUDIO_STEREO_PANNER
 #include "LabSound/core/StereoPannerNode.h"
 #endif
-#if BBLITE_HAS_AUDIO_CAPTURE
+#if BBLITE_AUDIO_CAPTURE
 #include "LabSound/extended/RecorderNode.h"
 #endif
 #if BBLITE_HAS_AUDIO_DECODE_FILE
@@ -174,7 +181,7 @@ struct ContextRecord {
      * `offlineRender` reuses one quantum-sized bus rather than
      * accumulating.
      */
-#if BBLITE_HAS_AUDIO_CAPTURE
+#if BBLITE_AUDIO_CAPTURE
     std::shared_ptr<lab::RecorderNode> recorder;
 #endif
     int channels = 2;
@@ -437,7 +444,7 @@ void retain_audio_completion(const AudioNodeHandle& node) {
  * string. With the variable set, every context the scene creates renders
  * offline, so the graph is identical and nothing runs in real time.
  */
-#if BBLITE_HAS_AUDIO_CAPTURE
+#if BBLITE_AUDIO_CAPTURE
 struct CaptureRequest {
     std::string path;
     double seconds = 1.0;
@@ -621,7 +628,7 @@ template <typename Node> AudioNodeHandle create_node(AudioContextHandle context)
 }
 
 /** Peak and RMS in one walk over the captured bus. */
-#if BBLITE_HAS_AUDIO_CAPTURE
+#if BBLITE_AUDIO_CAPTURE
 struct CaptureStats {
     int frames = 0;
     float peak = 0.0f;
@@ -697,7 +704,7 @@ CaptureStats measure(const lab::AudioBus& bus) {
 
 AudioContextHandle audio_create_context() {
     require_runtime_execution("audio device creation");
-#if BBLITE_HAS_AUDIO_CAPTURE
+#if BBLITE_AUDIO_CAPTURE
     const bool capture = capture_request().wanted();
 #else
     constexpr bool capture = false;
@@ -728,7 +735,7 @@ AudioContextHandle audio_create_context() {
 
     record.context = std::make_shared<lab::AudioContext>(capture, false);
 
-#if BBLITE_HAS_AUDIO_CAPTURE
+#if BBLITE_AUDIO_CAPTURE
     if (capture) {
         record.destination = std::make_shared<lab::AudioDestinationNode>(
             *record.context, std::make_shared<lab::AudioDevice_Null>(in_config, out_config));
@@ -761,7 +768,7 @@ AudioContextHandle audio_create_context() {
     // rather than accumulating, so the capture has to sit in the graph,
     // and a recorder with nothing connected is pulled with a null input
     // bus.
-#if BBLITE_HAS_AUDIO_CAPTURE
+#if BBLITE_AUDIO_CAPTURE
     auto destination_node = capture ? std::static_pointer_cast<lab::AudioNode>(record.recorder)
                                     : std::static_pointer_cast<lab::AudioNode>(record.destination);
 #else
@@ -1302,7 +1309,7 @@ void audio_param_cancel_scheduled_values(AudioParamHandle param, double time) {
 
 namespace {
 void render_audio_capture([[maybe_unused]] std::uint32_t id) noexcept {
-#if BBLITE_HAS_AUDIO_CAPTURE
+#if BBLITE_AUDIO_CAPTURE
     try {
         const CaptureRequest& request = capture_request();
         if (!request.wanted())

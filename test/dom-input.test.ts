@@ -95,5 +95,11 @@ test("generated DOM listeners receive retained SDL paths and control native defa
             ),
         /Compound retained text assignments/,
     );
-    runRmlUiFixture(t, "dom-input");
+    runRmlUiFixture(t, "dom-input", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+        },
+    });
 });

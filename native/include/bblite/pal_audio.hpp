@@ -63,6 +63,8 @@
  * measurable rather than audible.
  */
 
+#include <bblite/features/workers.hpp>
+
 #include <cstdint>
 #include <string>
 #include <bblite/js_data.hpp>

@@ -24,8 +24,8 @@ import type { Feature } from "./compiler/types.js";
  * drift. Two already had. Consumers that need the list rather than the
  * predicate — the generated-source rule, whose own row is an ANY over
  * features — take it from here, so the containment is structural. The
- * native build keys `BBLITE_HAS_SHADOWS`, which compiles the generator
- * records, on exactly this list (a test holds the CMake row equal to it).
+ * `BBLITE_HAS_SHADOWS` macro, which compiles the generator records, keys on
+ * exactly this list (`feature-macros.ts`).
  */
 export const shadowGeneratorFeatures: readonly Feature[] = [
     "shadow:pcf",

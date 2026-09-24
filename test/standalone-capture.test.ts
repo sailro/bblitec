@@ -126,6 +126,9 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
     runNativeFixtureCompiler(tools, [
         "/nologo",
         "/std:c++20",
+        "/DBBLITE_HAS_TEXT_RENDERER=0",
+        "/DBBLITE_HAS_UI=0",
+        "/DBBLITE_HAS_SPRITE_RENDERER=1",
         "/W4",
         "/WX",
         "/EHsc",

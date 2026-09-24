@@ -4,6 +4,8 @@
 // Blob and opaque handles live here; dialogs, selected-path reads, and atomic
 // writes stay behind pal.hpp. No source-supplied path enters this interface.
 
+#include <bblite/features/has_ui.hpp>
+
 #include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>

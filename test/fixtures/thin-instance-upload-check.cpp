@@ -1,7 +1,6 @@
 #define BBLITE_PBR_VARIANTS 1
 #define BBLITE_GPU_INSTANCING 1
 #define BBLITE_GPU_INSTANCE_COLORS 1
-#define BBLITE_HAS_PICKING 1
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <algorithm>

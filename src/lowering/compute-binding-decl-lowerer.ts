@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { stringLiteral } from "../cpp-literals.js";
+import { featureMacroInclude } from "../feature-macros.js";
 import {
     type LoweringContext,
     type LoweredSource,
@@ -392,6 +393,6 @@ export function lowerComputeBindingDecl(
         modulePath: "src/compute/compute-binding.ts",
         symbolName: "_createComputeBindingDecl",
         header: "",
-        source: `#include <bblite/pal_compute_binding.hpp>\n#if BBLITE_COMPUTE_BINDINGS\n#include <bblite/pal_compute_bindings.hpp>\n#endif\nnamespace bbl {\n${output.join("\n")}\n}\n`,
+        source: `#include <${featureMacroInclude("BBLITE_COMPUTE_BINDINGS")}>\n#include <bblite/pal_compute_binding.hpp>\n#if BBLITE_COMPUTE_BINDINGS\n#include <bblite/pal_compute_bindings.hpp>\n#endif\nnamespace bbl {\n${output.join("\n")}\n}\n`,
     };
 }

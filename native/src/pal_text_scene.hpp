@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/has_sprites.hpp>
+
 #include <bblite/upstream_text.hpp>
 #include <bblite/upstream_text_gpu.hpp>
 #include <bblite/upstream/camera_change_key.hpp>

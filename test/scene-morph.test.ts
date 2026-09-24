@@ -395,10 +395,10 @@ test(
         writeFileSync(
             source,
             `#define BBLITE_GPU_DEFORMATION 1
-#define BBLITE_HAS_PBR_RENDERER 1
 #define BBLITE_GPU_INSTANCING 0
 #define BBLITE_FLOATING_ORIGIN 0
 #define BBLITE_PBR_VARIANTS 1
+#define BBLITE_VAT 0
 #include <bblite/runtime.hpp>
 #include "pinned_matrix.hpp"
 #include "pinned_world_transform.hpp"
@@ -539,6 +539,7 @@ ${checks.join("\n")}
         runNativeFixtureCompiler(tools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_HAS_PBR_RENDERER=1",
             "/W4",
             "/WX",
             "/EHsc",

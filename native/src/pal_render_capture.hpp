@@ -20,6 +20,18 @@
 // receipts supplied by the PALs; their bytes are not rebuilt here.
 #pragma once
 
+#include <bblite/features/has_billboards.hpp>
+#include <bblite/features/has_canvas_renderer.hpp>
+#include <bblite/features/has_effect_renderer.hpp>
+#include <bblite/features/has_effect_task.hpp>
+#include <bblite/features/has_effect_wrapper.hpp>
+#include <bblite/features/has_frame_graph_renderer.hpp>
+#include <bblite/features/has_pbr_renderer.hpp>
+#include <bblite/features/has_splats.hpp>
+#include <bblite/features/has_sprite_renderer.hpp>
+#include <bblite/features/has_text.hpp>
+#include <bblite/features/has_text_renderer.hpp>
+
 #include <type_traits>
 
 #include <bblite/pal.hpp>

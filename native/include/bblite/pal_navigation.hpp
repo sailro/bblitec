@@ -25,6 +25,8 @@
  * translation unit.
  */
 
+#include <bblite/features/has_nav_tile_cache.hpp>
+
 #include <array>
 #include <cstdint>
 #include <memory>

@@ -16,6 +16,9 @@
 // reaches for, which the overlay port installs from that same commit
 // rather than leaving to a transcription here.
 
+#include <bblite/features/has_nav_crowd.hpp>
+#include <bblite/features/has_nav_tile_cache.hpp>
+
 #include <bblite/pal_navigation.hpp>
 #include "pal_handle_identity.hpp"
 

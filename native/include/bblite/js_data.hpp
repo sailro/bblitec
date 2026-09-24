@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/workers.hpp>
+
 #include <bblite/js_callback.hpp>
 #include <bblite/js_error.hpp>
 #include <bblite/dom_event_state.hpp>

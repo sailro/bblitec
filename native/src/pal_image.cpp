@@ -1,3 +1,5 @@
+#include <bblite/features/has_image_decoder.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <SDL3/SDL.h>

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/has_text_renderable.hpp>
+
 #include "pal_sdl_gpu_text_resources.hpp"
 #include "pal_text_pipeline.hpp"
 #if BBLITE_HAS_TEXT_RENDERABLE

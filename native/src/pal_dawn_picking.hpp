@@ -17,6 +17,9 @@
 // uniform buffer, bound at a dynamic offset the pass advances. SDL_GPU
 // pushes the same bytes per draw and needs no such buffer.
 
+#include <bblite/features/has_billboards.hpp>
+#include <bblite/features/has_detailed_picking.hpp>
+
 #include <bblite/runtime.hpp>
 
 #include "pal_dawn_shared.hpp"

@@ -8,6 +8,11 @@
 // present. This translation unit exists because a scene registering no
 // `SceneContext` generates no camera math and no render plan, so
 // `pal_dawn.cpp` cannot be compiled for it at all.
+#include <bblite/features/has_canvas_renderer.hpp>
+#include <bblite/features/has_sprite_renderer.hpp>
+#include <bblite/features/has_text_renderer.hpp>
+#include <bblite/features/has_ui.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>

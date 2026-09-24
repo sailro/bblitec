@@ -243,6 +243,7 @@ test(
         runNativeFixtureCompiler(nativeTools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_HAS_GAMEPAD=1",
             "/W4",
             "/WX",
             "/permissive-",

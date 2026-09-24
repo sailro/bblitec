@@ -160,6 +160,11 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", (t) 
     runNativeFixtureCompiler(tools, [
         "/nologo",
         "/std:c++20",
+        "/DBBLITE_WORKERS=1",
+        "/DBBLITE_OFFSCREEN_SURFACES=1",
+        "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
+        "/DBBLITE_HAS_AUDIO_DECODE_FILE=1",
+        "/DBBLITE_AUDIO_DECODE_WAV=1",
         "/W4",
         "/WX",
         "/EHsc",

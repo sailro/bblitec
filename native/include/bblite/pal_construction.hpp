@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/physics_viewer.hpp>
+
 #include <stdexcept>
 #include <string>
 

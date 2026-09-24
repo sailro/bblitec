@@ -3,6 +3,9 @@
 // scene code and of any one demo.
 #pragma once
 
+#include <bblite/features/has_gizmos.hpp>
+#include <bblite/features/has_sprites.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 

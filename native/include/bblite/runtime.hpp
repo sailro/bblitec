@@ -1,4 +1,20 @@
 #pragma once
+#include <bblite/features/has_animation.hpp>
+#include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/has_camera_gizmos.hpp>
+#include <bblite/features/has_gamepad.hpp>
+#include <bblite/features/has_gizmos.hpp>
+#include <bblite/features/has_light_gizmos.hpp>
+#include <bblite/features/has_picking.hpp>
+#include <bblite/features/has_shadows.hpp>
+#include <bblite/features/has_sprite_animation.hpp>
+#include <bblite/features/has_sprites.hpp>
+#include <bblite/features/has_text.hpp>
+#include <bblite/features/has_ui.hpp>
+#include <bblite/features/shadow_morph_bounds.hpp>
+#include <bblite/features/shadows_csm.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/checked_handles.hpp>
 #include <bblite/pal_audio_types.hpp>
 #include <bblite/pal_storage_buffer.hpp>

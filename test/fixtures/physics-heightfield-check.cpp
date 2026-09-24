@@ -1,4 +1,3 @@
-#define BBLITE_PHYSICS_VIEWER 1
 #include <bblite/runtime.hpp>
 #include "pal_physics_bullet.cpp"
 #include "physics.cpp"

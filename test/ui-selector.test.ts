@@ -161,7 +161,9 @@ test("generated selector chains share the rendered and private native cascades",
     assert.match(result.cpp, /UiSelectorRelation::Next/);
     assert.match(result.cpp, /UiSelectorTestKind::Equals/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
-    runRmlUiFixture(t, "ui-selector");
+    runRmlUiFixture(t, "ui-selector", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
 });
 
 test("conditional grid geometry retains authored selector relationships", () => {
