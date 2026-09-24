@@ -105,7 +105,7 @@ export interface StatementLoweringContext extends Pick<
     | "emitNativeThrow"
     | "meshTransformDirtyEntry"
     | "captureEmittedLines"
-    | "canShareFunctionBody"
+    | "reachesOnlyClosedEffects"
     | "useNativeValue"
     | "emitFinallyGuard"
     | "emitEngineFinally"
@@ -2607,7 +2607,7 @@ export class StatementLowerer {
                     element.kind !== kind || element.engineCpp !== engineCpp,
             ) ||
             this.bindsEnclosingLoop(statement.statement) ||
-            !context.canShareFunctionBody(statement.statement)
+            !context.reachesOnlyClosedEffects(statement.statement)
         )
             return false;
         const cppType =

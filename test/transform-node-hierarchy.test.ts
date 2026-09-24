@@ -38,11 +38,23 @@ test("compiles mixed TransformNode children in source insertion order", () => {
         addToScene(scene, first);
     `);
 
+    // `attach` is one shared body per shape; replay the entry's calls into it.
+    const hierarchyCallsIn = (body: string): string[] =>
+        [
+            ...body.matchAll(
+                /bbl::(set_mesh_transform_parent|set_transform_node_parent|push_transform_node_child)\([^;]+;/g,
+            ),
+        ].map((match) => match[1]!);
+    const bodies = new Map(
+        [
+            ...result.cpp.matchAll(
+                /\nvoid (bbl_recursive_fn\d+_group)\([^\n]*\) \{\n([\s\S]*?)\n\}/g,
+            ),
+        ].map((match) => [match[1]!, hierarchyCallsIn(match[2]!)]),
+    );
     const hierarchyCalls = [
-        ...result.cpp.matchAll(
-            /bbl::(set_mesh_transform_parent|set_transform_node_parent|push_transform_node_child)\([^;]+;/g,
-        ),
-    ].map((match) => match[1]);
+        ...result.cpp.matchAll(/bblscene::(bbl_recursive_fn\d+_group)\)\(\);/g),
+    ].flatMap((match) => bodies.get(match[1]!) ?? []);
     assert.deepEqual(hierarchyCalls, [
         "set_mesh_transform_parent",
         "push_transform_node_child",

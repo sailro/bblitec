@@ -289,6 +289,8 @@ import {
     parameterizedResourceLoop,
     requiresStaticDataIteration,
     canShareFunctionBody,
+    reachesOnlyClosedEffects,
+    reachesOpaqueCallee,
     sharedFunctionHasCallEffects,
     requiresStaticLoopIteration,
     runtimeProfileConstructionIntrinsics,
@@ -6397,6 +6399,9 @@ class Compiler implements LoweringServices {
      */
     private readonly staticRecordAccessors = new EmissionMap<string, string>();
 
+    /** Closure environment structs already registered, by name. */
+    private readonly environmentStructs = new EmissionSet<string>();
+
     /**
      * Identity of the C++ lexical scope currently receiving emitted lines.
      * Captured callback/IIFE bodies get their own identity so a lazily
@@ -6900,11 +6905,40 @@ class Compiler implements LoweringServices {
                 (this.allocatedCppNames.get(name) ?? 0) > allocationBoundary,
         );
         const environmentType = capture.environmentType;
+        const struct = capture.environmentStruct;
+        if (!this.environmentStructs.has(struct.name)) {
+            this.environmentStructs.add(struct.name);
+            this.registerNativeTemplate(
+                struct.name,
+                [...struct.lines],
+                struct.declaration,
+            );
+        }
+        // Enclosing names the body reads without its environment: bindings
+        // it did not capture, and other enclosing locals (a platform event
+        // parameter) it names unqualified.
+        const captured = new EmissionSet(capture.nativeCaptures);
+        const text = lines.join("\n");
+        const uncaptured = [...identifiers].filter((name) => {
+            const binding = this.nativeBindings.get(name);
+            if (binding)
+                return (
+                    binding.sequence <= capture.boundary &&
+                    !captured.has(binding)
+                );
+            const allocated = this.allocatedCppNames.get(name);
+            return (
+                allocated !== undefined &&
+                allocated <= allocationBoundary &&
+                new RegExp(`(?:^|[^:\\w])${name}\\b`).test(text)
+            );
+        });
         return {
             lines: [...capture.declarations, ...lines],
             environment: capture.environment,
             initializer: capture.initializer,
             ...(environmentType ? { environmentType } : {}),
+            ...(uncaptured.length > 0 ? { uncaptured } : {}),
             nativeCaptures: capture.nativeCaptures,
             localBindings: [
                 capture.environment,
@@ -7384,7 +7418,14 @@ class Compiler implements LoweringServices {
         );
         writable(value).audioMainBusCpp = shared ? `(*${name})` : name;
         writable(value).audioMainBusOwnerCpp = owner;
-        const binding = this.registerNativeBinding(name, false, !shared);
+        const binding = this.registerNativeBinding(
+            name,
+            false,
+            !shared,
+            shared
+                ? "std::shared_ptr<bbl::pal::AudioNodeHandle>"
+                : "bbl::pal::AudioNodeHandle",
+        );
         if (borrows) this.nativeConstBindings.add(binding);
         writable(value).nativeCompanionCaptures = {
             ...value.nativeCompanionCaptures,
@@ -7620,6 +7661,54 @@ class Compiler implements LoweringServices {
             body,
             this.definiteCollectionMutation(),
         );
+    }
+
+    public reachesOpaqueCallee(body: ts.Node): boolean {
+        return reachesOpaqueCallee(this, body);
+    }
+
+    public reachesOnlyClosedEffects(body: ts.Node): boolean {
+        return reachesOnlyClosedEffects(
+            this,
+            body,
+            this.definiteCollectionMutation(),
+        );
+    }
+
+    /**
+     * A body emitted once for every caller runs from any control flow, any
+     * number of times: its lowering sees runtime control flow and iteration,
+     * and it may not record a generation-owned construction.
+     */
+    public emitReusableNativeBody<T>(
+        declaration: ts.Node,
+        emitBody: () => T,
+    ): T {
+        this.enterRuntimeControlFlow();
+        this.enterRuntimeIteration();
+        try {
+            const checkpoint = this.checkpointResourceConstruction();
+            try {
+                const emitted = emitBody();
+                if (
+                    !resourceConstructionStatesEqual(
+                        checkpoint.state,
+                        this.sceneManifest.constructionState(),
+                    )
+                ) {
+                    this.fail(
+                        declaration,
+                        "A shared native body cannot record a generation-owned construction for every caller.",
+                    );
+                }
+                return emitted;
+            } finally {
+                this.resourceConstructionCheckpoints.delete(checkpoint);
+            }
+        } finally {
+            this.leaveRuntimeIteration();
+            this.leaveRuntimeControlFlow();
+        }
     }
 
     public canReplaySharedCallEffects(body: ts.Node): boolean {
