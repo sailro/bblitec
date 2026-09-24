@@ -829,16 +829,6 @@ struct ClusteredLightContainer {
     bool binned = false;
 };
 
-/**
- * Which producer's vertex convention a mesh record carries: `babylon` for
- * a .babylon loader mesh, `gltf` for the glTF loader's primitives and for
- * `createMeshFromData`, through which every procedural factory finishes.
- */
-enum class PrimitiveKind {
-    babylon,
-    gltf,
-};
-
 enum class CameraKind {
     arc_rotate,
     free,
@@ -1902,11 +1892,8 @@ struct LineSystemData {
 };
 
 /**
- * Which space a geometry's `vertices[].position` lane is already in.
- *
- * `PrimitiveKind` does not answer this — it names the producer's vertex
- * convention, and `createMeshFromData` records `gltf` while keeping local
- * vertices.
+ * Which space a geometry's `vertices[].position` lane is already in, and so
+ * whether its vertices went through the glTF loader's RH-to-LH mirror.
  * A consumer that needs each vertex's world position has to compose what
  * is missing, so the producer records what it baked:
  *
@@ -2110,7 +2097,14 @@ struct MeshRecord {
      * lookup checks this lane before the mesh's independently authored name.
      */
     std::string scene_node_name;
-    PrimitiveKind primitive = PrimitiveKind::gltf;
+    /**
+     * Whether the producer set the pin's `mesh.boundMin`/`boundMax`:
+     * `createMeshFromData` when its positions fold a finite box, the glTF
+     * loader for every primitive; a .babylon mesh carries neither. The box
+     * itself is the geometry's (`bounds_*`, or `world_bounds_*` for an
+     * animated glTF primitive); a scene's own writes ride the overrides.
+     */
+    bool has_bounds = false;
     // The pin holds a node's translation as three JavaScript numbers, and
     // at large-world coordinates the float32 ULP is half a unit -- enough
     // to move a silhouette before the eye-relative subtraction can recover
@@ -2379,11 +2373,10 @@ inline bool has_instance_colors(const MeshRecord& mesh) {
     return mesh.instance_color_source || !mesh.instance_colors.empty();
 }
 
-inline ModelVertex detached_imported_vertex(const MeshRecord& mesh, const ModelGeometry& geometry,
-                                            std::size_t index) {
+inline ModelVertex detached_imported_vertex(const ModelGeometry& geometry, std::size_t index) {
     ModelVertex vertex = geometry.bind_vertices.at(index);
     vertex.position = geometry.vertices.at(index).local_position;
-    if (mesh.primitive == PrimitiveKind::gltf) {
+    if (geometry.vertex_space != VertexSpace::local) {
         vertex.normal.x = -vertex.normal.x;
         vertex.tangent.x = -vertex.tangent.x;
         vertex.tangent.w = -vertex.tangent.w;

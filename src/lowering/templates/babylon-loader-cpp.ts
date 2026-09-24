@@ -329,7 +329,6 @@ std::size_t create_babylon_mesh(Engine& engine, std::vector<BabylonHierarchyNode
     std::uint32_t geometry, const upstream::TrsLanes& transform) {
     MeshRecord mesh;
     mesh.name = name;
-    mesh.primitive = PrimitiveKind::babylon;
     mesh.geometry = geometry;
     mesh.material = material;
     mesh.receives_shadows = receives_shadows;

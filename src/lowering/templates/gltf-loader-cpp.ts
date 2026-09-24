@@ -1465,6 +1465,8 @@ ${
             record.scene_node_name = string_or(node, "name");
             if (record.scene_node_name.empty()) {
                 record.scene_node_name = "gltf_node_" +
+            // load-gltf.ts sets boundMin/boundMax on every primitive.
+            record.has_bounds = true;
                     std::to_string(node_index);
             }
             record.name = required(planned, "name").as_string();

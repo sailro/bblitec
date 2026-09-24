@@ -2123,7 +2123,7 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
     MeshRecord record = ${recordAt("engine.meshes", "mesh")};
     if (!record.detached_imported_mesh && !engine.geometries.at(record.geometry).owned_packed_geometry) {
         const ModelGeometry& geometry = engine.geometries.at(record.geometry);
-        if ((record.primitive == PrimitiveKind::gltf && geometry.vertex_space != VertexSpace::world) ||
+        if (geometry.vertex_space == VertexSpace::mirrored_local ||
             geometry.bind_vertices.size() != geometry.vertices.size() || geometry.vertices.empty()) {
             throw std::runtime_error("Detached imported mesh clones require retained static local geometry.");
         }

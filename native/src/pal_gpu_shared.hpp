@@ -1666,9 +1666,9 @@ transformed_vertices(const Engine& engine, const ModelGeometry& geometry, const 
     std::vector<GpuVertex> result;
     result.reserve(source_vertices.size());
     for (std::size_t vertex_index = 0; vertex_index < source_vertices.size(); ++vertex_index) {
-        const ModelVertex detached_vertex =
-            mesh.detached_imported_mesh ? detached_imported_vertex(mesh, geometry, vertex_index)
-                                        : ModelVertex{};
+        const ModelVertex detached_vertex = mesh.detached_imported_mesh
+                                                ? detached_imported_vertex(geometry, vertex_index)
+                                                : ModelVertex{};
         const ModelVertex& vertex =
             mesh.detached_imported_mesh ? detached_vertex : source_vertices[vertex_index];
         const ModelVertex& normal_vertex = mesh.gpu_deformation && geometry.flat_normals
@@ -1806,7 +1806,6 @@ inline std::vector<GpuVertex> local_vertices(const Engine& engine, const ModelGe
     static const MeshRecord identity_transform{};
     if (source != nullptr && source->detached_imported_mesh) {
         MeshRecord detached_transform;
-        detached_transform.primitive = source->primitive;
         detached_transform.detached_imported_mesh = true;
         return transformed_vertices(engine, geometry, detached_transform);
     }
