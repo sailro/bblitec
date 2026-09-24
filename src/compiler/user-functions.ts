@@ -2133,9 +2133,7 @@ export class UserFunctionLowerer {
                         parameter.name,
                     )
                 )
-                    context.dataLowerer.invalidateEscapingCollection(
-                        evaluated,
-                    );
+                    context.dataLowerer.invalidateEscapingCollection(evaluated);
                 const borrowedReference = borrowsReferenceParameter(
                     context,
                     parameter.name,
