@@ -2888,6 +2888,7 @@ class Compiler implements LoweringServices {
         return this.asyncLowerer.compileSynchronousConstructor(node);
     }
 
+    /** @unjournaled A whole-program analysis of compiler inputs, built on first use. */
     private pendingActivationAnalysis: PendingActivations | undefined;
 
     /** Built once a reached constructed promise sets `pendingActivations`. */
@@ -10119,10 +10120,10 @@ class Compiler implements LoweringServices {
      */
     @journaled private accessor engineStartMark:
         | {
-              index: number;
-              engine: string;
-              node: ts.Node;
-              indentLevel: number;
+              readonly index: number;
+              readonly engine: string;
+              readonly node: ts.Node;
+              readonly indentLevel: number;
           }
         | undefined;
 

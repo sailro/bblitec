@@ -592,26 +592,26 @@ export interface ScenePbrMetallicReflectanceManifest {
 }
 
 export interface ScenePbrMaterialManifest {
-    localCubemapCandidates?: number;
+    readonly localCubemapCandidates?: number;
     /**
      * How many scene-code materials of any family the program had created
      * when this one was, so the runtime handle is
      * glTF-materials + this. Standard, grid and shader materials share the
      * same handle sequence.
      */
-    materialsBefore: number;
+    readonly materialsBefore: number;
     /** The source material slot for a no-colour/ESM view. */
-    sourceMaterialsBefore?: number;
+    readonly sourceMaterialsBefore?: number;
     /** Stamped by the pin's `setPbrUnlit`: `mat._unlit = true`. */
-    unlit?: boolean;
+    readonly unlit?: boolean;
     /** Stamped by the pin's `setPbrSkybox`: `mat._skyboxMode = true`. */
-    skyboxMode?: boolean;
+    readonly skyboxMode?: boolean;
     /** A `createPbrNoColorMaterialView` of the scene material before it:
      *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
      *  the depth-only render tasks. */
-    noColorView?: boolean;
+    readonly noColorView?: boolean;
     /** The ESM caster's view: the no-colour view's sibling bit. */
-    esmShadowView?: boolean;
+    readonly esmShadowView?: boolean;
     /**
      * The attribute sets this material's variants compose over, when they
      * are fewer than the scene's.
@@ -622,35 +622,35 @@ export interface ScenePbrMaterialManifest {
      * own caster and nowhere else, so composing it against the scene's
      * whole product deploys stage pairs no draw can select.
      */
-    meshFeatureSets?: readonly number[];
+    readonly meshFeatureSets?: readonly number[];
     /** Exact scene-mesh creation rows this material can be assigned to.
      *  Composition converts them to the pin's attribute masks. */
-    sceneMeshIndices?: readonly number[];
+    readonly sceneMeshIndices?: readonly number[];
     /** At least one assignment targets a mesh whose identity is not static,
      *  so the exact rows above cannot close the material's mesh space. */
-    unknownSceneMesh?: true;
+    readonly unknownSceneMesh?: true;
     /** Stamped by the pin's own setter shape: `mat._sheen = sheen`. */
-    sheen?: ScenePbrSheenManifest;
+    readonly sheen?: ScenePbrSheenManifest;
     /** Stamped by the pin's own setter shape: `mat._clearCoat = clearCoat`. */
-    clearCoat?: ScenePbrClearCoatManifest;
+    readonly clearCoat?: ScenePbrClearCoatManifest;
     /** Stamped by the pin's own setter shape: `mat._iridescence = iridescence`. */
-    iridescence?: ScenePbrIridescenceManifest;
+    readonly iridescence?: ScenePbrIridescenceManifest;
     /** Stamped by `setPbrLightmap`: the texture, its blend and its UV set. */
-    lightmap?: ScenePbrLightmapManifest;
+    readonly lightmap?: ScenePbrLightmapManifest;
     /** Stamped by `setPbrSubsurface`: `mat._subsurface = subsurface`. */
-    subsurface?: ScenePbrSubsurfaceManifest;
+    readonly subsurface?: ScenePbrSubsurfaceManifest;
     /** Stamped by the pin's own setter shape: `mat._anisotropy = anisotropy`. */
-    anisotropy?: ScenePbrAnisotropyManifest;
+    readonly anisotropy?: ScenePbrAnisotropyManifest;
     /** Stamped by the pin's `setPbrMetallicReflectance` setter. */
-    metallicReflectance?: ScenePbrMetallicReflectanceManifest;
+    readonly metallicReflectance?: ScenePbrMetallicReflectanceManifest;
     /**
      * Whether `setPbrEmissive` stamped the pin's `_emissiveColor` field. Its
      * presence is the composition input; the channel values remain runtime
      * data and need not be statically known.
      */
-    hasEmissiveColor?: true;
+    readonly hasEmissiveColor?: true;
     /** The exact linear RGB channels when generation can also settle them. */
-    emissiveColor?: readonly number[];
+    readonly emissiveColor?: readonly number[];
     /**
      * How many glTF assets the program had loaded when this material was
      * created. The runtime keys the variant table by material handle, which
@@ -658,31 +658,31 @@ export interface ScenePbrMaterialManifest {
      * appends to the assets' materials; one created before a load would
      * interleave, which no reached scene does.
      */
-    gltfAssetsBefore: number;
-    hasBaseColorTexture: boolean;
+    readonly gltfAssetsBefore: number;
+    readonly hasBaseColorTexture: boolean;
     /**
      * Present only when scene code authored the option. The pin composes the
      * base-color-factor UBO field from property presence, including when the
      * value happens to be neutral white.
      */
-    baseColorFactor?: readonly [number, number, number, number];
+    readonly baseColorFactor?: readonly [number, number, number, number];
     /** Present array whose contents remain runtime UBO data. */
-    baseColorFactorRuntime?: true;
-    hasOrmTexture: boolean;
-    metallicFactor: number;
-    roughnessFactor: number;
-    directIntensity: number;
-    environmentIntensity: number;
-    alpha: number;
+    readonly baseColorFactorRuntime?: true;
+    readonly hasOrmTexture: boolean;
+    readonly metallicFactor: number;
+    readonly roughnessFactor: number;
+    readonly directIntensity: number;
+    readonly environmentIntensity: number;
+    readonly alpha: number;
     /** Explicit `alphaBlend: true`; alpha below one is derived separately. */
-    alphaBlend?: true;
-    reflectance: number;
+    readonly alphaBlend?: true;
+    readonly reflectance: number;
     /** A non-default value for the pin's `occlusionStrength ?? 1.0`. */
-    occlusionStrength?: number;
+    readonly occlusionStrength?: number;
     /** A non-default internal `_metallicF0Factor ?? 1.0` creation value. */
-    metallicF0Factor?: number;
+    readonly metallicF0Factor?: number;
     /** The pin's opt-in geometric-normal derivative roughness floor. */
-    enableSpecularAA?: boolean;
+    readonly enableSpecularAA?: boolean;
     /**
      * Present only when the scene turned the pin's default-true
      * `usePhysicalLightFalloff` off, which is the shape `_writeMaterialData`
@@ -690,26 +690,26 @@ export interface ScenePbrMaterialManifest {
      * composes nothing, so it rides the manifest for the record rather than
      * for the composer.
      */
-    usePhysicalLightFalloff?: false;
+    readonly usePhysicalLightFalloff?: false;
     /**
      * `material.plugins = [...]`, folded. The pin's PBR bridge reads the
      * list off the material in its own `detect`, so the composed input
      * carries the plugins themselves rather than an index.
      */
-    plugins?: readonly MaterialPluginManifest[];
+    readonly plugins?: readonly MaterialPluginManifest[];
     /**
      * Stamped by the pin's `setPbrGammaAlbedo`: `mat._gammaAlbedo = true`,
      * which the gamma extension's `detect` turns into
      * `PBR_HAS_GAMMA_ALBEDO` and the base template's decode slot turns into
      * `pow(baseColorSample.rgb, 2.2)`.
      */
-    gammaAlbedo?: boolean;
-    shadowOnly?: {
+    readonly gammaAlbedo?: boolean;
+    readonly shadowOnly?: {
         color: readonly [number, number, number];
         opacity: number;
         falloff: number;
     };
-    doubleSided: boolean;
+    readonly doubleSided: boolean;
 }
 
 export interface CompiledComputeProgram {
@@ -724,22 +724,22 @@ export interface CompiledComputeProgram {
  * `createShaderMaterial` applies at creation.
  */
 export interface CompiledShaderProgram {
-    name: string;
-    vertexSource: string;
-    fragmentSource: string;
-    attributes: string[];
-    uniforms: string[];
-    uniformDefaults: CompiledShaderUniformDefault[];
+    readonly name: string;
+    readonly vertexSource: string;
+    readonly fragmentSource: string;
+    readonly attributes: string[];
+    readonly uniforms: string[];
+    readonly uniformDefaults: CompiledShaderUniformDefault[];
     /**
      * The `samplers` list: each name reaches WGSL as the pin's own
      * `<name>` / `<name>Sampler` texture-and-sampler pair, and
      * `setShaderTexture` binds by the index it has here.
      */
-    samplers: string[];
+    readonly samplers: string[];
     /** The normalized sampler shapes parallel to `samplers`. */
-    samplerDeclarations: CompiledShaderSampler[];
+    readonly samplerDeclarations: CompiledShaderSampler[];
     /** Read-only storage bindings in declaration order. */
-    storageBuffers: CompiledShaderStorageBuffer[];
+    readonly storageBuffers: CompiledShaderStorageBuffer[];
     /**
      * The `defines` map, normalized into the pin's own sorted
      * `ShaderDefine[]`. Each becomes a module-scope WGSL `const` in both
@@ -747,35 +747,35 @@ export interface CompiledShaderProgram {
      * rather than per-draw state: the pin keys its pipeline cache on the
      * define set too, and nothing at run time can change one.
      */
-    defines: CompiledShaderDefine[];
-    needAlphaBlending: boolean;
+    readonly defines: CompiledShaderDefine[];
+    readonly needAlphaBlending: boolean;
     /** The pin's fixed-function blend equation when alpha blending is enabled. */
-    blendMode: "alpha" | "additive";
-    needAlphaTesting: boolean;
-    backFaceCulling: boolean;
-    depthWrite: boolean;
+    readonly blendMode: "alpha" | "additive";
+    readonly needAlphaTesting: boolean;
+    readonly backFaceCulling: boolean;
+    readonly depthWrite: boolean;
     /** Explicit material compare; absent uses the pinned pass convention. */
-    depthCompare?: string;
+    readonly depthCompare?: string;
     /**
      * The pin's own `_topology`, absent where it resolves
      * `material._topology ?? "triangle-list"`. A line material is the one
      * reached program that names one, and it names the primitive the
      * pipeline is built at rather than anything about the program's text.
      */
-    topology?: "line-list";
+    readonly topology?: "line-list";
     /**
      * `useThinInstances`: the material draws through the mesh's
      * thin-instance matrices, which the pin's own thin-instance module
      * appends to its `VertexInput` as four lanes the vertex stage reads.
      */
-    useThinInstances?: boolean;
+    readonly useThinInstances?: boolean;
     /**
      * `useThinInstanceColors`: the material binds the mesh's per-instance
      * RGBA stream and its vertex stage reads `input.instanceColor`. Part of
      * the program's identity, because the attribute is declared in the
      * prelude the stage compiles against.
      */
-    useThinInstanceColors?: boolean;
+    readonly useThinInstanceColors?: boolean;
 }
 
 export interface CompiledShaderSampler {
@@ -928,10 +928,10 @@ export interface CompiledNodeParticles extends Omit<
     nativeProvider?: true;
     sets: NodeParticleSetRequest[];
     billboards: Array<{
-        set: number;
-        system: number;
+        readonly set: number;
+        readonly system: number;
         /** Whether a `syncParticleBillboard` already wrote this one. */
-        synced?: boolean;
+        readonly synced?: boolean;
     }>;
     registrations: NodeParticleRegistration[];
     /** Every `system.texture = ...` the scene wrote, in reach order. */
@@ -969,16 +969,16 @@ export interface HandleCollectionInfo {
 
 export interface CompileAsset {
     /** Decoder setup from the realm that loads this asset. */
-    assetDecoders?: AssetDecoderConfiguration;
+    readonly assetDecoders?: AssetDecoderConfiguration;
     /** Indices into CompileManifest.meshWalks demanded for this asset. */
-    meshWalks?: number[];
+    readonly meshWalks?: readonly number[];
     /** Texture-loading modes reached by this Babylon asset's call sites. */
-    babylonTextureModes?: boolean[];
+    readonly babylonTextureModes?: readonly boolean[];
     /** At least one definite load follows enableGltfCameras. */
-    gltfCameras?: boolean;
-    source: string;
-    output: string;
-    kind:
+    readonly gltfCameras?: boolean;
+    readonly source: string;
+    readonly output: string;
+    readonly kind:
         | "babylon"
         | "dds-environment"
         | "environment"
@@ -1012,14 +1012,14 @@ export interface CompileAsset {
         // the local payload synchronously through the PAL.
         | "binary"
         | "texture";
-    faceSize?: number;
+    readonly faceSize?: number;
     /**
      * The `KHR_materials_variants` name a scene's `selectVariant` chose on
      * this asset. One static selection is the reached shape, so generation
      * resolves which material each mapped primitive draws with instead of
      * carrying the pin's run-time variant table.
      */
-    selectedVariant?: string;
+    readonly selectedVariant?: string;
     /**
      * The `setPbrUnlit` a scene applied to this container's own materials,
      * with the optional linear-RGB tint it passed.
@@ -1030,7 +1030,7 @@ export interface CompileAsset {
      * accepted only over the container's whole flattened mesh list, which is
      * what makes the fact the container's rather than one material's.
      */
-    sceneUnlit?: { tint?: readonly [number, number, number] };
+    readonly sceneUnlit?: { tint?: readonly [number, number, number] };
     /**
      * The `setPbrLightmap` a scene applied to this container's loaded
      * materials from inside a mesh walk.
@@ -1042,7 +1042,7 @@ export interface CompileAsset {
      * pinned mesh name and the material it draws with — so the selection is
      * folded from the loop rather than guessed from the names.
      */
-    sceneLightmap?: {
+    readonly sceneLightmap?: {
         /** The walk's mesh-name filter, evaluated against the document. */
         meshNamePredicate: SceneMeshNamePredicate;
         /** Everything the pinned extension's `detect` reads. */
@@ -1056,7 +1056,7 @@ export interface CompileAsset {
      * therefore reaches both, which a per-container fact must refuse rather
      * than silently widen.
      */
-    containerCount?: number;
+    readonly containerCount?: number;
 }
 
 export type GeometryTextureTypeName =
@@ -1604,14 +1604,14 @@ export type ValueKind =
  * reads it there too.
  */
 export interface ClusteredContainerState {
-    hasSpots: boolean;
+    readonly hasSpots: boolean;
     /**
      * Set once `addClusteredLightContainer` has built the GPU state. A light
      * created after that point refuses, because the pin bakes both the light
      * capacity and the point-versus-spot layout there and its own refresh
      * throws rather than growing either.
      */
-    frozen: boolean;
+    readonly frozen: boolean;
 }
 
 export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
@@ -1790,8 +1790,8 @@ export function runtimeMeshValue(value: Value): Value {
 }
 
 export interface AssetRootState {
-    reparented: boolean;
-    alternatives?: readonly AssetRootState[];
+    readonly reparented: boolean;
+    readonly alternatives?: readonly AssetRootState[];
 }
 
 export function assetRootMutationStates(

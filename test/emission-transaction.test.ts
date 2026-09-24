@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
@@ -15,6 +16,7 @@ import {
     journaled,
     writable,
 } from "../src/compiler/emission-transaction.js";
+import { sourcePaths } from "./source-facts.js";
 
 class Counter {
     @journaled public accessor next = 0;
@@ -341,6 +343,141 @@ test("writable() refuses a journaled container", () => {
         );
         assert.throws(() => writable(new EmissionMap()), /journaled container/);
     });
+});
+
+/** A container a field can hold whose writes nothing journals. */
+function plainContainer(initializer: ts.Expression | undefined): boolean {
+    if (!initializer) return false;
+    if (
+        ts.isArrayLiteralExpression(initializer) ||
+        ts.isObjectLiteralExpression(initializer)
+    )
+        return true;
+    return (
+        ts.isNewExpression(initializer) &&
+        ts.isIdentifier(initializer.expression) &&
+        ["Array", "Map", "Set", "WeakMap", "WeakSet"].includes(
+            initializer.expression.text,
+        )
+    );
+}
+
+/** The reason a declaration gives in its `@unjournaled` tag, if it has one. */
+function unjournaledReason(node: ts.Node): string | undefined {
+    for (const tag of ts.getJSDocTags(node))
+        if (tag.tagName.text === "unjournaled")
+            return ts.getTextOfJSDocComment(tag.comment)?.trim() ?? "";
+    return undefined;
+}
+
+/** Whether `Object.assign`'s target is a writable() record or a fresh local. */
+function journaledAssignTarget(target: ts.Expression): boolean {
+    if (
+        ts.isCallExpression(target) &&
+        ts.isIdentifier(target.expression) &&
+        target.expression.text === "writable"
+    )
+        return true;
+    if (ts.isObjectLiteralExpression(target)) return true;
+    if (!ts.isIdentifier(target)) return false;
+    for (let scope: ts.Node = target; scope.parent; scope = scope.parent) {
+        if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue;
+        for (const statement of scope.statements) {
+            if (!ts.isVariableStatement(statement)) continue;
+            for (const declaration of statement.declarationList.declarations)
+                if (
+                    ts.isIdentifier(declaration.name) &&
+                    declaration.name.text === target.text
+                ) {
+                    const initializer = declaration.initializer;
+                    return (
+                        initializer !== undefined &&
+                        (ts.isObjectLiteralExpression(initializer) ||
+                            (ts.isCallExpression(initializer) &&
+                                initializer.expression.getText() ===
+                                    "Object.create"))
+                    );
+                }
+        }
+    }
+    return false;
+}
+
+test("compiler state escapes the journal only where it is declared @unjournaled", () => {
+    const violations: string[] = [];
+    const compilerSources = sourcePaths.filter(
+        (path) =>
+            (path === "src/compiler.ts" || path.startsWith("src/compiler/")) &&
+            path !== "src/compiler/emission-transaction.ts",
+    );
+    for (const path of compilerSources) {
+        const file = ts.createSourceFile(
+            path,
+            readFileSync(path, "utf8"),
+            ts.ScriptTarget.Latest,
+            true,
+        );
+        const site = (node: ts.Node, what: string): void => {
+            const { line } = file.getLineAndCharacterOfPosition(
+                node.getStart(file),
+            );
+            violations.push(`${path}:${line + 1} ${what}`);
+        };
+        const visit = (node: ts.Node): void => {
+            const modifiers = ts.canHaveModifiers(node)
+                ? (ts.getModifiers(node) ?? [])
+                : [];
+            const has = (kind: ts.SyntaxKind): boolean =>
+                modifiers.some((modifier) => modifier.kind === kind);
+            const reason = unjournaledReason(node);
+            if (reason === "") site(node, "@unjournaled without a reason");
+            if (
+                ts.isPropertyDeclaration(node) &&
+                !has(ts.SyntaxKind.StaticKeyword) &&
+                reason === undefined
+            ) {
+                const journaledField =
+                    has(ts.SyntaxKind.AccessorKeyword) &&
+                    (ts.getDecorators(node) ?? []).some(
+                        (decorator) =>
+                            ts.isIdentifier(decorator.expression) &&
+                            decorator.expression.text === "journaled",
+                    );
+                if (
+                    !journaledField &&
+                    (!has(ts.SyntaxKind.ReadonlyKeyword) ||
+                        plainContainer(node.initializer))
+                )
+                    site(node, node.name.getText(file));
+            }
+            if (
+                ts.isParameter(node) &&
+                ts.isConstructorDeclaration(node.parent) &&
+                (has(ts.SyntaxKind.PrivateKeyword) ||
+                    has(ts.SyntaxKind.ProtectedKeyword) ||
+                    has(ts.SyntaxKind.PublicKeyword)) &&
+                !has(ts.SyntaxKind.ReadonlyKeyword) &&
+                reason === undefined
+            )
+                site(node, node.name.getText(file));
+            if (
+                ts.isCallExpression(node) &&
+                node.expression.getText(file) === "Object.assign" &&
+                node.arguments[0] !== undefined &&
+                !journaledAssignTarget(node.arguments[0])
+            )
+                site(node, "Object.assign into an unjournaled target");
+            ts.forEachChild(node, visit);
+        };
+        visit(file);
+    }
+    assert.deepEqual(
+        violations,
+        [],
+        "A compiler class field is a @journaled accessor, a readonly journaled " +
+            "container, or declares @unjournaled with a reason; Object.assign " +
+            "writes a writable() record or a fresh local.",
+    );
 });
 
 test("a plain object written without writable() is not rolled back", () => {

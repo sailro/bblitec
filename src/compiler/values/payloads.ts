@@ -11,7 +11,10 @@ interface GenerationValuePayloads {
     "text-font": { textFont?: { source: TextFontSource; bytes: Uint8Array } };
     "csg-solid": { csgSolid?: CsgSolidPlan };
     "csg2-solid": {
-        csg2Solid?: { readonly plan: Csg2SolidPlan; disposed: boolean };
+        csg2Solid?: {
+            readonly plan: Csg2SolidPlan;
+            readonly disposed: boolean;
+        };
     };
     "executed-url": { executedUrl?: { module: string; exportName: string } };
     "animation-group-mask": {
