@@ -128,7 +128,7 @@ and performance.
 
 | ID | Sev | Finding | Resolution | Status |
 | --- | --- | --- | --- | --- |
-| GC-1 | high | Mesh/geometry records append-only (doom tape: 178 → 4,924). | Retired slots are reused under mesh-handle generations (doom 179 records for 178 entries; minecraft 474 for a 474 peak); the memory gate judges records against the scene's peak. Remaining: loader, hierarchy-listed and transform-node records keep their slots. | partial |
+| GC-1 | high | Mesh/geometry records append-only (doom tape: 178 → 4,924). | Retired slots are reused under mesh-handle generations (doom 179 records for 178 entries; minecraft 474 for a 474 peak); the memory gate judges occupied records against the meshes the scene draws (doom 178 for 178, tetris 46 for 46, minecraft 455 for 455). Remaining: loader, hierarchy-listed and transform-node records keep their slots. | partial |
 | GC-2 | high | The memory gate ran idle and watched only working set. | Gameplay tapes, record-growth and slope gates. | fixed |
 | GC-3 | med | `.clang-tidy` enabled 17 checks. | Analyzer groups, exception-escape and enum-init enabled and clean; maintained hits fixed. Remaining generated hits keep optional-access, throwing-static-init, member-init and empty-catch off. | partial |
 | GC-4 | med | Generated code indexes records directly (850 sites), so a handle kept past its mesh's retirement reaches the slot's next mesh. | Every generated access goes through `recordAt` → `bbl::handle_at` (registry: 24,699 direct sites → 0); bounds and the mesh generation are checked in every build (≤0.6% of a cold frame), so a retired mesh's handle throws. The check found an SDL_GPU sync of the previous plan after mesh retirement, now fixed. | fixed |
