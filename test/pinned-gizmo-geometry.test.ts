@@ -829,6 +829,13 @@ test(
         mkdirSync(output, { recursive: true });
         for (const [name, features] of [
             ["display", ["gizmo:camera", "gizmo:light"]],
+            // Each display half alone, an editing widget alone and the cage
+            // alone: every helper is emitted only beside a caller, which
+            // /W4 /WX holds to account in each combination.
+            ["camera", ["gizmo:camera"]],
+            ["light", ["gizmo:light"]],
+            ["editing", ["gizmo:axis-drag"]],
+            ["cage", ["gizmo:bounding-box"]],
             [
                 "bounds",
                 [
@@ -869,7 +876,7 @@ test(
 #include <bblite/js_data.hpp>
 #include <cmath>
 namespace bbl {
-${new GizmoLowerer(new GeometryContext())["mathHelpers"]()}
+${new GizmoLowerer(new GeometryContext(), ["gizmo:light"])["mathHelpers"]()}
 }
 `,
         );
