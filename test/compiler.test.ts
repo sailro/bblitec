@@ -15204,24 +15204,56 @@ test("compiles pinned scene 213 GridMaterial options", () => {
         fileName: "corpus/babylon-lite/lab/lite/src/lite/scene213.ts",
     });
 
-    assert.ok(result.manifest.features.includes("material:grid"));
+    // The pin's grid is a ShaderMaterial its factory builds from the
+    // options; generation ran that factory, so each grid is a reached
+    // shader program whose sources are the factory's own.
+    assert.ok(result.manifest.features.includes("material:shader"));
     assert.ok(result.manifest.features.includes("renderer:scene"));
-    assert.ok(
-        result.manifest.generatedSources.includes(
-            "upstream/src/material_grid.cpp",
-        ),
+    const grids = result.manifest.customShaderPrograms.filter(({ name }) =>
+        name.startsWith("grid-material-"),
     );
-    assert.match(result.cpp, /bbl::create_grid_material/);
-    assert.match(result.cpp, /bbl::GridMaterialOptions/);
-    assert.match(result.cpp, /0\.6f, 1\.0f, true, false, false, true/);
+    // Four materials, four option sets: antialiased, max-line,
+    // transparent and hard-cutoff.
+    assert.equal(grids.length, 4);
+    for (const grid of grids) {
+        assert.match(grid.fragmentSource, /fn gridIsOnLine\(/);
+        assert.deepEqual(grid.attributes, ["position", "normal"]);
+        assert.deepEqual(grid.uniforms.slice(0, 3), [
+            "world",
+            "view",
+            "projection",
+        ]);
+    }
+    const transparent = grids.filter(
+        ({ needAlphaBlending }) => needAlphaBlending,
+    );
+    assert.equal(transparent.length, 1);
+    assert.match(
+        transparent[0]!.fragmentSource,
+        /opacity=clamp\(grid,0\.08,shaderUniforms\.gridControl\.w\*grid\);/,
+    );
+    assert.equal(transparent[0]!.depthWrite, false);
+    // The factory's own computed values: Math.round over the frequency,
+    // normalized to float32 by the material.
     assert.match(
         result.cpp,
-        /5\.0f, 0\.5f, 1\.0f, 1\.0f, true, false, true, true/,
+        /bbl::set_shader_uniform_value\([^;]*0u, 0\.5f, 4\.0f, 0\.4f, 0\.6f\);/,
     );
-    assert.ok(
-        result.manifest.adaptations.some(
-            ({ id }) => id === "grid-tint-specialization",
-        ),
+    assert.match(result.cpp, /bbl::create_shader_material\(/);
+});
+
+test("refuses a GridMaterial option generation cannot fold", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                `import { createEngine, createGridMaterial } from "@babylonjs/lite";
+async function main() {
+    const engine = await createEngine(document.getElementById("c") as HTMLCanvasElement);
+    createGridMaterial({ gridRatio: Math.random() });
+}
+main();`,
+            ),
+        /GridMaterial option 'gridRatio' must be a static number/,
     );
 });
 

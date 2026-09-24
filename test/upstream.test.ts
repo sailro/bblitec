@@ -1213,7 +1213,6 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     const lowerer = new FactoryLowerer(new LoweringContext());
     const mesh = lowerer.lowerMeshFactories(["mesh:torus"]);
     const material = lowerer.lowerStandardMaterialFactory();
-    const grid = lowerer.lowerGridMaterialFactory();
     const shader = lowerer.lowerShaderMaterialFactory();
     assert.match(
         mesh.source,
@@ -1264,10 +1263,6 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     // same declaration as the six defaults beside it rather than left to
     // the record's own initializer.
     assert.match(material.source, /material\.alpha_cutoff = 0\.0f/);
-    assert.match(grid.source, /material\.grid_material = true/);
-    assert.match(grid.source, /std::round\(options\.major_unit_frequency\)/);
-    assert.match(grid.source, /options\.opacity < 1\.0f/);
-    assert.match(grid.source, /material\.grid_use_max_line/);
     assert.match(shader.source, /upstream::shader_variant_info\(variant\)/);
     assert.match(
         shader.source,
@@ -1815,7 +1810,6 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         lowered.source,
         /const ShaderVariantInfo& shader_variant_info\(std::uint32_t variant\)/,
     );
-    assert.match(lowered.source, /features\.grid_material/);
     assert.match(lowered.source, /features\.no_color_material/);
     assert.match(lowered.source, /std::stable_sort/);
     assert.match(lowered.source, /bind_render_item/);
@@ -1827,8 +1821,6 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         /material\.alpha_mode == MaterialAlphaMode::blend/,
     );
     assert.match(lowered.source, /material\.standard_material/);
-    assert.match(lowered.source, /material\.grid_material/);
-    assert.match(lowered.source, /RenderPipelineKind::grid_transparent_none/);
     assert.match(
         lowered.source,
         /RenderPipelineKind::pbr_opaque_none_clockwise/,
@@ -1844,18 +1836,9 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     );
     assert.match(lowered.source, /result\.normal_options\[0\] = 1\.0f/);
     assert.match(lowered.source, /result\.normal_options\[1\]/);
-    assert.match(lowered.source, /build_background_plan/);
-    assert.match(
-        lowered.source,
-        /result\.background_center = \{\s*0\.0f,\s*0\.0f,\s*0\.0f,/,
-    );
-    assert.match(lowered.source, /build_skybox_plan/);
-    assert.match(
-        lowered.source,
-        /const Vec3 center = environment\.skybox_uses_environment/,
-    );
-    assert.match(lowered.source, /: environment\.skybox_position;/);
-    assert.match(lowered.source, /build_skybox_view_projection/);
+    // The background arms are the pin's own, drawn from
+    // pinned_backgrounds.hpp; the plan builds none of them.
+    assert.doesNotMatch(lowered.source, /build_background_plan|build_skybox/);
     // preferred_sample_count moved to the always-emitted pinned_surface.hpp
     // so effect-only scenes carry it too; the plan defines it nowhere.
     assert.doesNotMatch(lowered.source, /preferred_sample_count/);
@@ -1971,10 +1954,7 @@ test("composes the thin-instance parent world from the pinned TRS formulas", () 
 test("emits only reached WGSL composition modules", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
     const shaders = lowerer.lowerShaders({
-        ground: false,
-        skybox: false,
         shaderPrograms: [],
-        gridMaterial: true,
         idDiagnostics: false,
         geometryOutputTasks: [],
     });
@@ -1982,39 +1962,8 @@ test("emits only reached WGSL composition modules", () => {
         .filter(({ output }) => output.endsWith(".wgsl"))
         .map(({ output }) => output);
     assert.ok(modules.includes("upstream/shaders/pbr.vert.native.wgsl"));
-    assert.ok(modules.includes("upstream/shaders/grid.vert.native.wgsl"));
-    assert.ok(modules.includes("upstream/shaders/grid.frag.native.wgsl"));
     assert.ok(!modules.some((output) => output.includes("standard")));
     assert.ok(!modules.some((output) => output.includes("background")));
-});
-
-test("generates portable GridMaterial shaders from pinned formulas", () => {
-    const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
-        ground: false,
-        skybox: false,
-        shaderPrograms: [],
-        gridMaterial: true,
-        idDiagnostics: false,
-        geometryOutputTasks: [],
-    });
-    const wgsl = shaders.find((shader) =>
-        shader.output.endsWith("grid.frag.native.wgsl"),
-    );
-    assert.match(String(wgsl?.data), /gridDynamicVisibility/);
-    assert.match(String(wgsl?.data), pinnedProvenance());
-    // The pin's own built statements, spelled as the template emits them.
-    assert.match(String(wgsl?.data), /cos\(fr\*PI\)/);
-    assert.match(String(wgsl?.data), /SQRT2\/4\.0/);
-    assert.match(String(wgsl?.data), /max\(max\(x,y\),z\)/);
-    assert.match(String(wgsl?.data), /dpdx\(position\)/);
-    assert.match(String(wgsl?.data), /shaderUniforms\.gridControl\.w\*grid/);
-    assert.ok(
-        !shaders.some(
-            (shader) =>
-                shader.output.includes("grid.") &&
-                /\.(?:hlsl|msl)$/.test(shader.output),
-        ),
-    );
 });
 
 test("generates typed geometry task records and PBR MRT shaders", () => {
@@ -2023,8 +1972,6 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
     ).lowerTaskRecords();
     const targets = new RenderTargetLowerer(new LoweringContext()).lower();
     const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
-        ground: false,
-        skybox: false,
         shaderPrograms: [],
         idDiagnostics: false,
         geometryOutputTasks: [
@@ -2088,8 +2035,6 @@ test("emits no transcribed standard fragments", () => {
     // (standard_variants.hpp + variant-std-* stages); the transcribed
     // standard.frag and per-task standard-geometry-*.frag are retired.
     const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
-        ground: false,
-        skybox: false,
         shaderPrograms: [],
         idDiagnostics: false,
         geometryOutputTasks: [
@@ -2119,8 +2064,6 @@ test("emits no transcribed standard fragments", () => {
 test("derives renderer deformation and instancing stages from the pinned fragments", () => {
     const context = new LoweringContext();
     const shaders = new RendererLowerer(context).lowerShaders({
-        ground: false,
-        skybox: false,
         shaderPrograms: [],
         idDiagnostics: false,
         geometryOutputTasks: [],
@@ -2146,8 +2089,6 @@ test("derives renderer deformation and instancing stages from the pinned fragmen
 test("emits only reached custom shader variants", () => {
     const lowerer = new RendererLowerer(new LoweringContext());
     const alphaCard = lowerer.lowerShaders({
-        ground: false,
-        skybox: false,
         shaderPrograms: reachedPrograms(["alpha-card"]),
         idDiagnostics: false,
         geometryOutputTasks: [],
@@ -2167,8 +2108,6 @@ test("emits only reached custom shader variants", () => {
     );
 
     const circularCutout = lowerer.lowerShaders({
-        ground: false,
-        skybox: false,
         shaderPrograms: reachedPrograms(["circular-cutout"]),
         idDiagnostics: false,
         geometryOutputTasks: [],

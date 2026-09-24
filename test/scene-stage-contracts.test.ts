@@ -54,7 +54,7 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
                     meshStart,
                 ) + "draw_list(draw_lists.transparent);".length;
             const skybox = encode.indexOf(
-                "draw_task_skyboxes(",
+                "draw_task_background(",
                 encode.indexOf("SdlRenderPass task_pass"),
             );
             const graphStart = encode.lastIndexOf(

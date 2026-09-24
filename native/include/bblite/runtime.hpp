@@ -79,7 +79,6 @@ inline constexpr std::uint32_t invalid_handle = std::numeric_limits<std::uint32_
 inline constexpr std::uint32_t material_family_pbr = 1u << 0;
 inline constexpr std::uint32_t material_family_standard = 1u << 1;
 inline constexpr std::uint32_t material_family_shader = 1u << 2;
-inline constexpr std::uint32_t material_family_grid = 1u << 3;
 
 struct Vec3 {
     float x = 0.0f;
@@ -1517,9 +1516,9 @@ struct SolidTexture {
 };
 
 // No initialisers: generation writes every field (`createPbrMaterial` as a
-// full designated literal, `createGridMaterial` as a full positional one),
-// including the default of each option the scene omits, so a default
-// written here would be a second copy of a pinned constant nothing checks.
+// full designated literal), including the default of each option the scene
+// omits, so a default written here would be a second copy of a pinned
+// constant nothing checks.
 // A field the emitter forgets is then a compile warning, not a silent value.
 struct PbrMaterialOptions {
     SolidTexture base_color;
@@ -1553,21 +1552,6 @@ struct PbrMaterialOptions {
     // Both arms are composed into every punctual fragment; this is the lane
     // that selects one (`_writeMaterialData`).
     bool use_physical_light_falloff;
-};
-
-struct GridMaterialOptions {
-    Color3 main_color;
-    Color3 line_color;
-    float grid_ratio{};
-    Vec3 grid_offset;
-    float major_unit_frequency{};
-    float minor_unit_visibility{};
-    float opacity{};
-    float visibility{};
-    bool antialias{};
-    bool pre_multiply_alpha{};
-    bool use_max_line{};
-    bool back_face_culling{};
 };
 
 enum class TextureFilter {
@@ -2779,7 +2763,6 @@ struct MaterialRecord {
     // family's table the material belongs to.
     bool node_material = false;
     std::shared_ptr<NodeMaterialInputsState> node_inputs;
-    bool grid_material = false;
     bool alpha_to_coverage = false;
     bool shader_alpha_testing = false;
     bool shader_depth_write = true;
@@ -2800,18 +2783,9 @@ struct MaterialRecord {
 #endif
     /** Optional shader material used only by this material's shadow pass. */
     MaterialHandle shadow_caster_material{};
-    Color3 grid_main_color{0.0f, 0.0f, 0.0f};
-    Color3 grid_line_color{0.0f, 0.5f, 0.5f};
-    // Written by `create_grid_material` from its full options literal.
-    Vec4 grid_control{};
-    Vec3 grid_offset{};
-    float grid_visibility = 1.0f;
-    bool grid_antialias = true;
-    bool grid_pre_multiply_alpha = false;
-    bool grid_use_max_line = false;
     // The mode the factory or loader authored: blend for a PBR `alphaBlend`
     // (the glTF BLEND arm, the shadow-only extension), a shader or node
-    // graph's own blending and a translucent grid; mask for a glTF MASK
+    // graph's own blending; mask for a glTF MASK
     // cutoff. The live alpha is not folded in: the renderer buckets PBR and
     // Standard draws from the pin's own `isTransparent` over it.
     MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
@@ -2901,8 +2875,6 @@ struct MaterialRecord {
 };
 
 inline std::uint32_t material_family_bit(const MaterialRecord& record) {
-    if (record.grid_material)
-        return material_family_grid;
     if (record.shader_material)
         return material_family_shader;
     if (record.standard_material)
@@ -4700,7 +4672,8 @@ struct EnvironmentState {
     TextureData ground_texture;
     TextureData skybox_texture;
     std::array<TextureData, 6> image_skybox_faces{};
-    float image_skybox_size = 0.0f;
+    // loadSkybox's own `size`, a JavaScript number the box builder reads.
+    double image_skybox_size = 0.0;
     bool has_image_skybox = false;
     bool has_ground = false;
     bool has_skybox = false;
@@ -4718,13 +4691,16 @@ struct EnvironmentState {
     // here. `loadEnvironment` never passes it; only
     // `addDdsEnvironmentBackground` does.
     bool enable_noise = true;
-    float ground_size = 15.0f;
-    float skybox_size = 20.0f;
+    // computeSceneSize's results, kept at the width the pin computes and
+    // hands the background builders in: the geometry and mesh-block writers
+    // round each once, at their own typed-array stores.
+    double ground_size = 15.0;
+    double skybox_size = 20.0;
     std::uint32_t skybox_width = 0;
     std::uint32_t skybox_mip_count = 0;
     std::uint32_t skybox_data_offset = 0;
-    Vec3 ground_position{};
-    Vec3 skybox_position{};
+    Vec3d ground_position{};
+    Vec3d skybox_position{};
     // The pin's own environmentPrimaryColor default literals
     // (load-env.ts: 0.08697355964132344, ..., 0.2122208331110881), stored
     // at the float32 precision the shader uniforms carry.
@@ -5468,7 +5444,6 @@ void add_dds_environment_background(Scene& scene, DdsEnvironmentBackgroundOption
 void load_hdr_environment(Scene& scene, HdrEnvironmentOptions options);
 void load_dds_environment(Scene& scene, DdsEnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
-MaterialHandle create_grid_material(Engine& engine, GridMaterialOptions options);
 MaterialHandle create_shader_material(Engine& engine, std::uint32_t variant);
 /**
  * One texture a scene handed `parseNodeMaterialFromSnippet` through its
@@ -6208,7 +6183,7 @@ std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<
 void set_mesh_material(Engine& engine, MeshHandle mesh, MaterialHandle material);
 void mark_mesh_renderable_dirty(Engine& engine, MeshHandle mesh);
 void set_pbr_gamma_albedo(Engine& engine, MaterialHandle material);
-void load_image_skybox(Scene& scene, std::array<std::string, 6> face_paths, float size);
+void load_image_skybox(Scene& scene, std::array<std::string, 6> face_paths, double size);
 void set_scene_fog(Scene& scene, float mode, float density, float start, float end, Color3 color);
 void set_scene_clip_plane(Scene& scene, Vec4 plane);
 void start_engine(Engine& engine);

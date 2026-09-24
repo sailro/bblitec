@@ -321,6 +321,8 @@ import {
     pinnedTransmissionModules,
     type PinnedUtilityModule,
 } from "./pinned-utility-passes.js";
+import type { PinnedBackgroundArm } from "./pinned-background-modules.js";
+import { pinnedBackgroundsHeader } from "./lowering/pinned-background-lowerer.js";
 import { uiFilterFragmentWgsl } from "./shader-builtins-ui.js";
 
 /**
@@ -449,6 +451,12 @@ export interface UpstreamEmitOptions {
      * was, which is what keeps a plugin-free splat scene byte-identical.
      */
     splatShaderModule?: string;
+    /**
+     * The pin's background arms this scene reached, as their factories built
+     * and drew them at generation (`composePinnedBackgroundModules`): the
+     * modules deploy whole and `pinned_backgrounds.hpp` carries the rest.
+     */
+    pinnedBackgrounds?: readonly PinnedBackgroundArm[];
     /**
      * The spherical-harmonic pipeline this scene's packaged cloud reached.
      *
@@ -788,6 +796,26 @@ function moduleEntryPoint(
         );
     }
     return entries[0]!.name;
+}
+
+/**
+ * One stage's module, deployed whole under its own stem: a pinned factory
+ * that hands WebGPU a separate module per stage deploys each at the stage
+ * its stem names, entering where the module declares it does.
+ */
+function pinnedStageShader(
+    stem: string,
+    stage: "vertex" | "fragment",
+    wgsl: string,
+    provenance: string,
+): ComposedShader {
+    return {
+        output: `upstream/shaders/${stem}.native.wgsl`,
+        data: `// ${provenance}
+${wgsl}`,
+        family: "pinnedModule",
+        entryPoint: moduleEntryPoint(wgsl, stage, stem),
+    };
 }
 
 /**
@@ -1381,9 +1409,6 @@ class GeneratedSourceWriter {
         emitReached("upstream/src/local_cubemap.cpp", () =>
             lowerLocalCubemap(context),
         );
-        emitReached("upstream/src/material_grid.cpp", () =>
-            factories.lowerGridMaterialFactory(),
-        );
         emitReached("upstream/src/texture_file.cpp", () =>
             factories.lowerFileTextureFactory(),
         );
@@ -1752,8 +1777,10 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // joins by appearing here.
 #define BBLITE_SHADOW_RECEIVERS \
     (BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS || BBLITE_NODE_SHADOWS)
-#define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
-#define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
+// The pin's background renderables, drawn from pinned_backgrounds.hpp's
+// arm table: the ground, the DDS, .env and solid skyboxes and the image
+// skybox a scene reached.
+#define BBLITE_PINNED_BACKGROUNDS ${(options.pinnedBackgrounds?.length ?? 0) > 0 ? 1 : 0}
 // The pin's TAA task: a composed post-process composite whose jitter,
 // history and scene-UBO blocks frame_graph_post_process.hpp carries.
 #define BBLITE_HAS_TAA ${
@@ -2702,8 +2729,6 @@ ${wgsl}`,
                     ),
                     fog: features.includes("renderer:fog"),
                     picking: features.includes("picking:gpu"),
-                    imageSkybox: features.includes("background:image-skybox"),
-                    solidSkybox: features.includes("background:solid-skybox"),
                     environmentRotation: options.imageBasedLighting,
                     gpuInstancing: options.gpuInstancing,
                     punctualLights: options.punctualLights,
@@ -2720,26 +2745,15 @@ ${wgsl}`,
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
-                    background:
-                        features.includes("background:ground") ||
-                        features.includes("background:skybox") ||
-                        features.includes("background:image-skybox") ||
-                        features.includes("background:solid-skybox"),
                     shaderPrograms: options.shaderPrograms,
                 }),
                 generated,
                 "upstream/include/bblite/upstream/renderer_plan.hpp",
             );
             const shaders = renderer.lowerShaders({
-                ground: features.includes("background:ground"),
-                skybox: features.includes("background:skybox"),
-                ddsEnvironment: features.includes("background:dds-environment"),
-                imageSkybox: features.includes("background:image-skybox"),
-                solidSkybox: features.includes("background:solid-skybox"),
                 transmission: transmission,
                 fog: features.includes("renderer:fog"),
                 shaderPrograms: options.shaderPrograms,
-                gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
                 geometryOutputTasks: options.geometryOutputTasks,
                 frameGraph: features.includes("renderer:geometry-output"),
@@ -2752,6 +2766,7 @@ ${wgsl}`,
             // blit -- so they take the default family. The pin's own
             // composed variants are pushed from their own sites below.
             composedShaders.push(...shaders);
+            this.emitPinnedBackgrounds(options, context, composedShaders);
             // The pin's utility passes, deployed like every other pinned
             // shader instead of living as C++ strings invisible to shader
             // provenance: the mip-generator blit for every renderer scene
@@ -3382,6 +3397,73 @@ ${shadow.blurFragmentWgsl}`,
         }
     }
 
+    /**
+     * The pin's background arms: each stage module deployed whole under its
+     * own stem, and the arm table with the lowered builders beside it. Two
+     * arms of one factory share their vertex module, which is the pin's
+     * same text.
+     */
+    private emitPinnedBackgrounds(
+        options: UpstreamEmitOptions,
+        context: LoweringContext,
+        composedShaders: ComposedShader[],
+    ): void {
+        const arms = options.pinnedBackgrounds ?? [];
+        if (arms.length === 0) return;
+        // Every arm binds the pin's scene group, whose block and lights
+        // mirrors a composed material family carries. A scene drawing a
+        // background with no composed family has no scene-block mirror.
+        if (
+            (options.pinnedVariants ?? []).length === 0 &&
+            (options.pinnedStandardVariants ?? []).length === 0 &&
+            (options.nodeVariants ?? []).length === 0
+        ) {
+            refuseGeneration(
+                arms[0]!.symbolName,
+                "A pinned background arm binds the pin's scene block, which " +
+                    "only a composed PBR, Standard or node material mirrors; " +
+                    "a scene drawing a background with none of them is not wired.",
+                options.featureSites,
+            );
+        }
+        const deployed = new Map<string, string>();
+        for (const arm of arms) {
+            const provenance = context.provenance(
+                arm.modulePath,
+                arm.symbolName,
+                "its own composed modules, executed at generation",
+            );
+            for (const [stage, module] of [
+                ["vertex", arm.vertex],
+                ["fragment", arm.fragment],
+            ] as const) {
+                const previous = deployed.get(module.stem);
+                if (previous !== undefined) {
+                    if (previous !== module.wgsl) {
+                        refuseGeneration(
+                            arm.symbolName,
+                            `Pinned ${arm.symbolName} composes two different ${module.stem} modules.`,
+                        );
+                    }
+                    continue;
+                }
+                deployed.set(module.stem, module.wgsl);
+                composedShaders.push(
+                    pinnedStageShader(
+                        module.stem,
+                        stage,
+                        module.wgsl,
+                        provenance,
+                    ),
+                );
+            }
+        }
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_backgrounds.hpp",
+            pinnedBackgroundsHeader(context, arms),
+        );
+    }
+
     private emitSharedVariantBindings(
         options: UpstreamEmitOptions,
         nodeVariantList: readonly NodeVariantManifestEntry[],
@@ -3390,7 +3472,8 @@ ${shadow.blurFragmentWgsl}`,
         if (
             (options.pinnedVariants ?? []).length > 0 ||
             (options.pinnedStandardVariants ?? []).length > 0 ||
-            nodeVariantList.length > 0
+            nodeVariantList.length > 0 ||
+            (options.pinnedBackgrounds ?? []).length > 0
         ) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_variant_bindings.hpp",

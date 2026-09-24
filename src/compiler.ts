@@ -130,7 +130,6 @@ import {
 import {
     compileAnisotropyOptions,
     compileClearCoatOptions,
-    compileGridMaterialOptions,
     compileIridescenceOptions,
     compileMetallicReflectanceOptions,
     compilePbrMaterialOptions,
@@ -178,6 +177,10 @@ import {
     type ReachedLineMaterial,
 } from "./compiler/line-material.js";
 import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
+import {
+    reachGridMaterial,
+    type ReachedGridMaterial,
+} from "./compiler/grid-material.js";
 import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
 import {
     PinnedShaderText,
@@ -3607,8 +3610,11 @@ class Compiler implements LoweringServices {
         return compileMetallicReflectanceOptions(this, expression);
     }
 
-    public compileGridMaterialOptions(expression: ts.Expression): string[] {
-        return compileGridMaterialOptions(this, expression);
+    public reachGridMaterial(
+        call: ts.CallExpression,
+        options: ts.Expression | undefined,
+    ): ReachedGridMaterial {
+        return reachGridMaterial(this, call, options);
     }
 
     public compileClearCoatOptions(

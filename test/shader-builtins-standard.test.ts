@@ -855,8 +855,6 @@ test("pin arithmetic changes flow through skinning, morphing, tangent frames and
 test("renderer specialization forwards the pinned lowering context instead of enforcing transcript markers", () => {
     const context = changed(skeletonModule, "*weights[1]", "*weights[1]*0.375");
     const shaders = new RendererLowerer(context).lowerShaders({
-        ground: false,
-        skybox: false,
         shaderPrograms: [],
         idDiagnostics: false,
         geometryOutputTasks: [],

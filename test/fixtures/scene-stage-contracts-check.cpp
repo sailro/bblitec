@@ -1,9 +1,11 @@
 #define BBLITE_HAS_SPRITE_RENDERER 1
 #define BBLITE_HAS_BILLBOARDS 1
+#define BBLITE_PINNED_BACKGROUNDS 1
 #include <bblite/runtime.hpp>
 #include "pal_sdl_gpu_commands.hpp"
 #include "pal_dawn_resources.hpp"
 #include <cassert>
+#include <optional>
 #include <tuple>
 
 struct SDL_GPUTexture {
@@ -66,6 +68,7 @@ extern "C" void wgpuRenderPassEncoderDrawIndexed(WGPURenderPassEncoder, uint32_t
 
 namespace bbl::upstream {
 enum class RenderStage { skybox, opaque, transparent, ground };
+enum class PinnedBackgroundArmKind { ground, hdr_skybox };
 // Image processing belongs to the generated shader contract, outside this attachment test.
 double inverse_image_processed_channel(double value, double, double, bool) { return value; }
 } // namespace bbl::upstream
@@ -73,6 +76,28 @@ namespace bbl::pal {
 enum class SkyboxLayer { solid, environment, image };
 constexpr std::array skybox_stage_order{SkyboxLayer::solid, SkyboxLayer::environment,
                                         SkyboxLayer::image};
+using BackgroundKind = std::optional<upstream::PinnedBackgroundArmKind>;
+// One environment skybox and, when asked for, a ground: the arms whose
+// place in the stage sequence the extracted passes decide.
+struct BackgroundDraws {
+    BackgroundKind ground = upstream::PinnedBackgroundArmKind::ground;
+    BackgroundKind skybox(SkyboxLayer layer) const {
+        return layer == SkyboxLayer::environment
+                   ? BackgroundKind{upstream::PinnedBackgroundArmKind::hdr_skybox}
+                   : std::nullopt;
+    }
+};
+void record_background(BackgroundKind kind) {
+    if (kind)
+        draws.push_back(*kind == upstream::PinnedBackgroundArmKind::ground ? "ground" : "skybox");
+}
+struct DawnBackgroundArm {
+    WGPURenderPipeline pipeline = nullptr;
+    upstream::PinnedBackgroundArmKind kind;
+};
+void draw_dawn_background_arm(WGPURenderPassEncoder, const DawnBackgroundArm& arm, WGPUBindGroup) {
+    record_background(arm.kind);
+}
 void record_scene_sprite_pass(SDL_GPUCommandBuffer*, SDL_GPURenderPass*, Engine&, int,
                               Sprite2DDepthMode mode, unsigned, unsigned) {
     draws.push_back(mode == Sprite2DDepthMode::test_write ? "sprite-opaque" : "sprite-transparent");
@@ -102,8 +127,7 @@ struct Stages {
     static void draw_render_list(int list) {
         draws.push_back(list == 1 ? "opaque" : "transparent");
     }
-    static void draw_skybox() { draws.push_back("skybox"); }
-    static void draw_ground() { draws.push_back("ground"); }
+    static void draw_background(BackgroundKind kind) { record_background(kind); }
     static void draw_billboards(BillboardDepthMode mode) {
         draws.push_back(mode == BillboardDepthMode::cutout ? "billboard-cutout"
                                                            : "billboard-transparent");
@@ -116,6 +140,7 @@ struct SdlStages : Stages {
         SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_4;
         SDL_GPUTexture* msaa_color;
         SDL_GPUTexture* color;
+        BackgroundDraws background_draws;
     } state;
     SDL_GPUTexture* swapchain = nullptr;
     SDL_GPUTexture* visible_color = nullptr;
@@ -135,6 +160,7 @@ struct DawnStages : Stages {
         int scene_sprite_pass = 0;
         std::vector<int> sprite_passes{10, 20, 30};
         std::vector<WGPUTextureView> sprite_render_texture_views;
+        BackgroundDraws background_draws;
     } state;
     WGPUTextureView surface_view = nullptr;
     WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
@@ -166,9 +192,8 @@ struct SdlGraph : Graph {
     };
     int task_pass = 0, graph_scene = 0, graph_meshes = 0;
     struct {
-        int grid_pipeline = 0, grid_double_sided_pipeline = 0, grid_transparent_pipeline = 0,
-            grid_transparent_double_sided_pipeline = 0, shader_pipelines = 0,
-            shader_a2c_pipelines = 0;
+        int shader_pipelines = 0, shader_a2c_pipelines = 0;
+        BackgroundDraws background_draws;
         SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
         SDL_GPUTextureFormat frame_color_format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
         SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
@@ -186,11 +211,8 @@ struct SdlGraph : Graph {
     }
     std::vector<int> task_draw_lists{1};
     MeshHandle handle{0};
-    bool ground = true;
-    static void draw_task_skyboxes(int, int, int, int) { draws.push_back("skybox"); }
-    void draw_task_ground(int, int, int) {
-        if (ground)
-            draws.push_back("ground");
+    static void draw_task_background(int, int, int, BackgroundKind kind) {
+        record_background(kind);
     }
     static void draw_task_billboards(int, BillboardDepthMode mode, int, int) {
         Graph::draw_task_billboards(mode);
@@ -225,11 +247,10 @@ struct DawnGraph : Graph {
         int view_projection = 0;
     } render_task;
     struct {
-        bool ground_enabled = true;
-        WGPURenderPipeline ground_pipeline = nullptr;
-        WGPUBindGroup ground_scene_group = nullptr, ground_texture_group = nullptr,
-                      ground_material_group = nullptr;
-        WGPUBuffer ground_vertices = nullptr, ground_indices = nullptr;
+        BackgroundDraws background_draws;
+        DawnBackgroundArm background_arm(upstream::PinnedBackgroundArmKind kind) const {
+            return {nullptr, kind};
+        }
     } state;
     static void draw_list_into(WGPURenderPassEncoder, int list, unsigned, WGPURenderPipeline&, bool,
                                WGPUBindGroup, bool, std::uint32_t, int, DawnTaskTarget formats) {
@@ -329,7 +350,8 @@ int main() {
             SdlGraph sdl_graph;
             DawnGraph dawn_graph;
             sdl_graph.task.render.scene_stages = dawn_graph.task.render.scene_stages = scene_stages;
-            sdl_graph.ground = dawn_graph.state.ground_enabled = ground;
+            sdl_graph.state.background_draws.ground = dawn_graph.state.background_draws.ground =
+                ground ? BackgroundKind{upstream::PinnedBackgroundArmKind::ground} : std::nullopt;
             std::vector<std::string> expected{"opaque"};
             if (scene_stages)
                 expected.push_back("billboard-cutout");

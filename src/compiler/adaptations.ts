@@ -737,22 +737,6 @@ export function compileAdaptations(
             ],
         });
     }
-    if (features.includes("material:grid")) {
-        adaptations.push({
-            id: "grid-tint-specialization",
-            category: "rendering",
-            sourceSemantics:
-                "Babylon Lite composes GridMaterial WGSL variants from antialias, max-line, transparency, premultiplication, and opacity-texture features, with world/view/projection system uniforms.",
-            nativeSemantics:
-                "The compiler emits one generated native WGSL program parameterized by the reached GridMaterial controls, uses the native view-projection matrix plus local position/normal attributes, and compiles it through pinned Tint.",
-            risk: "medium",
-            validation: [
-                "pinned GridMaterial formula marker tests",
-                "Tint binding reflection",
-                "scene 213 native/reference parity",
-            ],
-        });
-    }
     if (context.sceneManifest.reachedShaderPrograms.length > 0) {
         adaptations.push({
             id: "typed-reached-shader-variants",

@@ -7,7 +7,7 @@ import {
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import { floatLiteral } from "../../cpp-literals.js";
+import { float32Literal, floatLiteral } from "../../cpp-literals.js";
 import {
     compileLocalCubemapIntrinsic,
     type LocalCubemapIntrinsicContext,
@@ -72,7 +72,8 @@ export interface MaterialIntrinsicContext
             | "compileMetallicReflectanceOptions"
             | "allocateTemporaryCppName"
             | "emit"
-            | "compileGridMaterialOptions"
+            | "reachGridMaterial"
+            | "isRuntimeResourceConstruction"
             | "compileClearCoatOptions"
             | "compileIridescenceOptions"
             | "compileAnisotropyOptions"
@@ -660,34 +661,41 @@ function compileCreateGridMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    context.sceneManifest.recordSceneMaterialSlot();
+    // The pin's grid is a ShaderMaterial its factory builds from the
+    // options; generation runs that factory, and the material it built
+    // draws through the shader-material family like any other.
+    const materialSlot = context.sceneManifest.recordSceneMaterialSlot();
+    const runtimeProfile = context.isRuntimeResourceConstruction();
     context.expectArgumentCount(call, 0, 1);
     const engine = context.requireDefaultEngine(call);
-    const options = call.arguments[0]
-        ? context.compileGridMaterialOptions(call.arguments[0])
-        : [
-              "bbl::Color3{0.0f, 0.0f, 0.0f}",
-              "bbl::Color3{0.0f, 0.5f, 0.5f}",
-              "1.0f",
-              "bbl::Vec3{}",
-              "10.0f",
-              "0.33f",
-              "1.0f",
-              "1.0f",
-              "true",
-              "false",
-              "false",
-              "true",
-          ];
-    context.reachFeature("material:grid", call);
+    const grid = context.reachGridMaterial(call, call.arguments[0]);
+    context.reachFeature("material:shader", call);
     context.reachFeature("renderer:scene", call);
+    const creation = `bbl::create_shader_material(${engine}, ${grid.id}u)`;
+    const material = context.allocateTemporaryCppName("grid_material");
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: material,
+        initializer: runtimeProfile
+            ? creation
+            : `bbl::remember_scene_material(${engine}, ${materialSlot}u, ${creation})`,
+    });
+    // Each typed uniform carries the value the factory computed and the
+    // material normalized to float32.
+    for (const uniform of grid.uniforms) {
+        context.emit(
+            `bbl::set_shader_uniform_value(${engine}, ${material}, ` +
+                `${uniform.offset}u, ${uniform.values.map(float32Literal).join(", ")});`,
+        );
+    }
     return {
         kind: "material",
-        cpp:
-            `bbl::create_grid_material(${engine}, ` +
-            `bbl::GridMaterialOptions{` +
-            `${options.join(", ")}})`,
+        cpp: material,
         engineCpp: engine,
+        shaderVariant: grid.name,
+        sceneShaderVariant: grid.name,
+        ...(runtimeProfile ? {} : { sceneMaterialSlot: materialSlot }),
     };
 }
 

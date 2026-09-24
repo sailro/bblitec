@@ -318,7 +318,7 @@ test("environment sizing constants flow slot by slot", () => {
     // Each literal is tied to its parameter position in the pinned
     // computeSceneSize, then interpolated here: defaults, the diagonal
     // override, the two final scales, and the root composition.
-    assert.match(adapter.source, /ground_size = 15\.0f;/);
+    assert.match(adapter.source, /environment\.ground_size = 15\.0;/);
     assert.match(adapter.source, /options\.skybox_size : 20\.0f;/);
     assert.match(adapter.source, /double ground_size = 15\.0;/);
     assert.match(adapter.source, /\*camera\.upper_radius_limit \*\s*2\.0/);

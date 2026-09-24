@@ -2648,7 +2648,6 @@ export type Feature =
     | "material:tracking"
     | "material:emissive"
     | "material:no-color-view"
-    | "material:grid"
     | "material:node"
     | "material:node-inputs"
     | "material:shader"

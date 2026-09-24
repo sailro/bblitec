@@ -1558,7 +1558,7 @@ export function buildRenderDiff(
         findings.push(
             `${unmatchedPalettes.length} native bone-palette matrix(es) appear in no browser float-texture upload ` +
                 `(mirror map applied): ${unmatchedPalettes.map((entry) => entry.native).join(", ")}. ` +
-                "The two sides disagree on skinning state at this pose — BBLITE_DEFORMATION_DUMP prints the native palettes in full.",
+                "The two sides disagree on skinning state at this pose.",
         );
     }
     if (findings.length === 0) {

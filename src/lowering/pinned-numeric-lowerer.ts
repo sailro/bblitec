@@ -240,7 +240,7 @@ export interface PinnedBinding {
      */
     mutable?: true;
     /**
-     * `f32`/`u32`/`u8` are owned buffers whose stores round to that width;
+     * `f32`/`u32`/`u16`/`u8` are owned buffers whose stores round to that width;
      * `f32-view`/`u8-view` are read-only aliases over a byte buffer;
      * `f64-list` is a GROWABLE `number[]` the pin pushes onto, which holds
      * its elements at the pin's own double width until a `new F32(list)`
@@ -256,6 +256,7 @@ export interface PinnedBinding {
     type:
         | "f32"
         | "u32"
+        | "u16"
         | "u8"
         | "f32-view"
         | "u8-view"
@@ -1547,6 +1548,34 @@ export class PinnedNumericLowerer {
                     `std::array<float, ${values.length}> ${name}{${values.join(", ")}};`,
             };
         }
+        // An index table the pin states inline (`new U16([0, 2, 1, ...])`):
+        // each element is an integer constant, stored at the array's width.
+        const indexWidth =
+            constructor === "U16"
+                ? ({ type: "u16", element: "std::uint16_t" } as const)
+                : constructor === "U32"
+                  ? ({ type: "u32", element: "std::uint32_t" } as const)
+                  : undefined;
+        if (indexWidth && ts.isArrayLiteralExpression(argument)) {
+            const values = argument.elements.map((element) => {
+                const literal = unwrapExpression(element);
+                if (
+                    !ts.isNumericLiteral(literal) ||
+                    !Number.isInteger(Number(literal.text))
+                ) {
+                    this.fail(
+                        element,
+                        `a non-integer ${sourceConstructor} element`,
+                    );
+                }
+                return `${Number(literal.text)}u`;
+            });
+            return {
+                type: indexWidth.type,
+                declare: (name) =>
+                    `const std::array<${indexWidth.element}, ${values.length}> ${name}{${values.join(", ")}};`,
+            };
+        }
         // `new U8(buffer)` / `new F32(buffer)` re-view an existing byte
         // buffer; the same constructors over a COUNT allocate.
         const named = unwrapExpression(argument);
@@ -2151,9 +2180,12 @@ export class PinnedNumericLowerer {
             targets.push(target);
             value = unwrapExpression(value.right);
         }
-        // Literal fills cannot resize storage or rebind an owner during RHS evaluation.
+        // Literal and local fills cannot resize storage or rebind an owner
+        // during RHS evaluation; the assignment's value is the RHS itself,
+        // so every target stores the same local, not the previous store.
         if (
             !ts.isNumericLiteral(value) &&
+            !ts.isIdentifier(value) &&
             !(
                 ts.isPrefixUnaryExpression(value) &&
                 [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(

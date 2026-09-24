@@ -694,10 +694,6 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/pbr/no-color-view.ts",
         consumers: CMAKE,
     },
-    "material:grid": {
-        provenance: "src/material/grid/grid-material.ts",
-        consumers: CMAKE,
-    },
     "material:shader": {
         provenance: "src/material/shader/shader-material.ts",
         consumers: CMAKE,
@@ -1686,6 +1682,13 @@ function capabilityRows(
 ): FeatureActivationRow[] {
     const { specialization: spec, emit, features } = inputs;
     const has = (feature: Feature): boolean => features.includes(feature);
+    // The pin's background renderables, each drawn from pinned_backgrounds.hpp.
+    const backgroundFeatures: readonly Feature[] = [
+        "background:ground",
+        "background:skybox",
+        "background:solid-skybox",
+        "background:image-skybox",
+    ];
     const variantCount = (emit.pinnedVariants ?? []).length;
     const standardVariantCount = (emit.pinnedStandardVariants ?? []).length;
     // What the header will SAY, from the same record the emitter writes it
@@ -2326,31 +2329,15 @@ function capabilityRows(
             ["render_capabilities.hpp"],
         ),
         checkedRow(
-            "BBLITE_IMAGE_SKYBOX",
+            "BBLITE_PINNED_BACKGROUNDS",
             "capability",
-            has("background:image-skybox"),
-            [
-                [
-                    has("background:image-skybox"),
-                    "scene source reached background:image-skybox",
-                ],
-            ],
+            backgroundFeatures.some(has),
+            backgroundFeatures.map((feature): readonly [boolean, string] => [
+                has(feature),
+                `scene source reached ${feature}`,
+            ]),
             "not reached",
-            "src/loader-skybox/load-skybox.ts",
-            ["render_capabilities.hpp"],
-        ),
-        checkedRow(
-            "BBLITE_SOLID_SKYBOX",
-            "capability",
-            has("background:solid-skybox"),
-            [
-                [
-                    has("background:solid-skybox"),
-                    "scene source reached background:solid-skybox",
-                ],
-            ],
-            "not reached",
-            "src/material/pbr/background-solid-skybox.ts",
+            "src/loader-env/load-env.ts",
             ["render_capabilities.hpp"],
         ),
         checkedRow(

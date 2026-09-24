@@ -541,6 +541,8 @@ export async function importPinnedModuleFetching<T>(
     relativePath: string,
     fetchBytes: (url: string) => Uint8Array,
     redirects: ReadonlyMap<string, string> = new Map(),
+    /** Module-local symbols also exported, as `importPinnedModuleWithExports` takes them. */
+    extraExports: readonly string[] = [],
 ): Promise<{ module: T; release: () => void }> {
     const { hook, release } = installPinnedImportHook(
         (url: string, resolve: (response: Response) => void) => {
@@ -569,6 +571,9 @@ export async function importPinnedModuleFetching<T>(
         "const fetch = (url) => new Promise((resolve) => " +
             `globalThis[${JSON.stringify(hook)}](url, resolve));`,
         anchorPinnedSpecifiers(modulePath, redirects),
+        ...(extraExports.length
+            ? [`export { ${extraExports.join(", ")} };`]
+            : []),
     ].join("\n");
     return {
         module: (await import(javascriptModuleUrl(shadowed))) as T,
