@@ -3,7 +3,7 @@ import type { AssetDecoders } from "./asset-decoders.js";
 import { compressedTextureFormat } from "./compressed-texture-format.js";
 import { packageKtx1 } from "./compressed-texture-package.js";
 import { downloadCachedResource } from "./asset-download-cache.js";
-import { isDataUrl, parseDataUrl } from "./data-url.js";
+import { isDataUrl, javascriptModuleUrl, parseDataUrl } from "./data-url.js";
 import { dropExtension } from "./compressed-geometry.js";
 import { packageSourceAlbedoIdentities } from "./gltf-material-texture-identity.js";
 import { packageMeshWalks, type CompiledMeshWalk } from "./gltf-mesh-walks.js";
@@ -20,6 +20,7 @@ import {
 import {
     importPinnedModule,
     importPinnedModuleWithExports,
+    installPinnedImportHook,
 } from "./pinned-shader-composer.js";
 import { createRecordingDevice } from "./recording-device.js";
 import { dirname, extname, resolve } from "node:path";
@@ -29,39 +30,6 @@ const BASISU_EXTENSION = "KHR_texture_basisu";
 /** What a `.ktx2` image declares, and what its transcode packages as. */
 const KTX2_MIME = "image/ktx2";
 const KTX_MIME = compressedTextureFormat.mimeType;
-
-/**
- * Which material slots `gltf-ext-basisu.ts` redirects, and at which colour
- * space it uploads each.
- *
- * `prepareBasisuMaterials` strips exactly these textureInfos out of the
- * shared JSON and `applyMaterial` uploads them, so a `KHR_texture_basisu`
- * texture reached from anywhere else is not redirected at all upstream — it
- * would arrive at the core loader with no `source`. The sRGB column is the
- * argument each `uploadBasisuTexture` call passes, and the ORM pair is
- * `uploadOrmTexture`'s single-image arm; the composite arm is refused
- * separately because it decodes to RGBA through an OffscreenCanvas rather
- * than staying compressed. `KHR_materials_specular`'s two slots are refused
- * beside it, at the material walk below, for the same kind of reason: the pin
- * registers the reflectance extension from `setPbrMetallicReflectance`, so
- * resolving them away would change the material's shape rather than its
- * upload.
- */
-const basisuSlots: readonly {
-    owner: "material" | "pbrMetallicRoughness";
-    slot: string;
-    srgb: boolean;
-}[] = [
-    { owner: "pbrMetallicRoughness", slot: "baseColorTexture", srgb: true },
-    {
-        owner: "pbrMetallicRoughness",
-        slot: "metallicRoughnessTexture",
-        srgb: false,
-    },
-    { owner: "material", slot: "normalTexture", srgb: false },
-    { owner: "material", slot: "occlusionTexture", srgb: false },
-    { owner: "material", slot: "emissiveTexture", srgb: true },
-];
 
 function asRecord(value: unknown): JsonRecord {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -208,123 +176,201 @@ function imageMimeType(uri: string, contentType?: string): string {
     }
 }
 
+/** One upload `gltf-ext-basisu.ts` made: the image it read and its colour space. */
+interface BasisuUpload {
+    image: number;
+    srgb: boolean;
+}
+
 /**
- * Which images `KHR_texture_basisu` redirects a material slot to, and the
- * colour space each is uploaded at.
- *
- * Keyed by image index rather than texture index because the transcode is
- * per image: two textures naming one image are one bake. An image reached at
- * both colour spaces would need two containers under one index, which no
- * reached asset asks for, so it is refused by name instead of packaged
- * wrongly.
+ * One material's routing run, handed to the pin as its engine: the KTX2
+ * stand-in receives the engine with every upload, so concurrent packaging
+ * runs record into their own observation.
  */
-function basisuImageColorSpaces(
-    assetName: string,
-    document: JsonRecord,
-): Map<number, boolean> {
-    const textures = asRecords(document.textures);
-    const basisuSource = (textureIndex: number): number | undefined =>
-        asIndex(
-            asObject(
-                asObject(textures[textureIndex]?.extensions)?.[
-                    BASISU_EXTENSION
-                ],
-            )?.source,
+class BasisuObservation {
+    public readonly uploads: BasisuUpload[] = [];
+}
+
+/** Why the pinned extension took an arm this packager does not resolve. */
+class BasisuArmRefusal extends Error {}
+
+interface PinnedBasisuFeature {
+    id: string;
+    preMesh: (
+        json: JsonRecord,
+        binChunk: DataView,
+        baseUrl: string,
+    ) => Promise<unknown>;
+    applyMaterial: (
+        mat: JsonRecord,
+        ctx: JsonRecord,
+    ) => Promise<JsonRecord | null>;
+}
+
+let pinnedBasisuFeature: Promise<PinnedBasisuFeature> | undefined;
+
+/**
+ * `gltf-ext-basisu.ts`, executed with its two transport imports answered.
+ *
+ * The KTX2 loader is where the pin hands over an image's bytes and the
+ * colour space it wants, so its stand-in records that pair and returns a
+ * token texture; the bytes are a marker naming the image (see
+ * `basisuImageColorSpaces`). Its bitmap decoder is reached only by the composite
+ * ORM arm, and `set-metallic-reflectance.js` only by the specular arm --
+ * the two arms that do not end in a compressed upload of a core slot -- so
+ * both stand-ins refuse, naming what the pin does there.
+ */
+function loadPinnedBasisuFeature(): Promise<PinnedBasisuFeature> {
+    pinnedBasisuFeature ??= (async () => {
+        const { hook } = installPinnedImportHook(
+            (engine: unknown, image: number, srgb: boolean): void => {
+                if (!(engine instanceof BasisuObservation)) {
+                    throw new Error(
+                        "The pinned KTX2 upload reached a basisu routing run " +
+                            "with no observation.",
+                    );
+                }
+                engine.uploads.push({ image, srgb });
+            },
         );
-    const srgbByImage = new Map<number, boolean>();
-    const reachedTextures = new Set<number>();
-    for (const material of asRecords(document.materials)) {
-        const owners: Record<string, JsonRecord> = {
-            material,
-            pbrMetallicRoughness: asObject(material.pbrMetallicRoughness) ?? {},
-        };
-        const slotTexture = (owner: string, slot: string): number | undefined =>
-            asIndex(asObject(owners[owner]?.[slot])?.index);
-        const metallicRoughness = slotTexture(
-            "pbrMetallicRoughness",
-            "metallicRoughnessTexture",
+        const { hook: refuse } = installPinnedImportHook(
+            (what: string): never => {
+                throw new BasisuArmRefusal(what);
+            },
         );
-        const occlusion = slotTexture("material", "occlusionTexture");
-        // BOTH slots, not either: `stripBasisuTexture` fills a slot only
-        // when that slot uses the extension, and `uploadOrmTexture` takes
-        // its single-image arm unless both indices are present and differ.
-        // A material whose metallic-roughness is basisu and whose occlusion
-        // is an ordinary PNG never reaches the composite upstream, so
-        // refusing it here would refuse a document the pin loads.
+        const marker = "new DataView(buffer).getUint32(0, true)";
+        const ktx2 = javascriptModuleUrl(
+            `export async function uploadKtx2Texture2D(engine, buffer, sRGB) {
+    globalThis[${JSON.stringify(hook)}](engine, ${marker}, sRGB);
+    return { image: ${marker}, sRGB };
+}
+export async function decodeKtx2ImageBitmapFromBuffer() {
+    globalThis[${JSON.stringify(refuse)}]("composites separate occlusion and metallic-roughness images, which the pinned extension decodes to RGBA through an OffscreenCanvas rather than uploading compressed blocks");
+}`,
+        );
+        const reflectance = javascriptModuleUrl(
+            `export function setPbrMetallicReflectance() {
+    globalThis[${JSON.stringify(refuse)}]("reaches KHR_materials_specular textures, which the pinned extension uploads through setPbrMetallicReflectance rather than the core texture path");
+}`,
+        );
+        const module = await importPinnedModuleWithExports<{
+            default: PinnedBasisuFeature;
+        }>(
+            "loader-gltf/gltf-ext-basisu.js",
+            [],
+            new Map([
+                ["../texture/ktx2-loader.js", ktx2],
+                ["../material/pbr/set-metallic-reflectance.js", reflectance],
+            ]),
+        );
+        const feature = module.default;
         if (
-            metallicRoughness !== undefined &&
-            occlusion !== undefined &&
-            metallicRoughness !== occlusion &&
-            basisuSource(metallicRoughness) !== undefined &&
-            basisuSource(occlusion) !== undefined
+            feature?.id !== BASISU_EXTENSION ||
+            !feature.preMesh ||
+            !feature.applyMaterial
         ) {
             throw new Error(
-                `glTF ${assetName} composites separate ` +
-                    `${BASISU_EXTENSION} occlusion and metallic-roughness ` +
-                    "images, which the pinned extension decodes to RGBA " +
-                    "through an OffscreenCanvas rather than uploading " +
-                    "compressed blocks.",
+                "Pinned gltf-ext-basisu.js no longer exports a default " +
+                    `${BASISU_EXTENSION} feature with preMesh and applyMaterial.`,
             );
         }
-        // The two slots the extension also redirects and this packager does
-        // not resolve: `prepareBasisuMaterials` strips them out of the shared
-        // JSON before `gltf-ext-dielectric` runs, and `applyMaterial` then
-        // routes them through `setPbrMetallicReflectance` -- which is what
-        // registers the reflectance extension at all. Resolving them away
-        // would hand the core loader two ordinary textures and a material
-        // that never registers it, so they are refused by name.
-        const specular = asObject(
-            asObject(material.extensions)?.["KHR_materials_specular"],
+        return feature;
+    })();
+    return pinnedBasisuFeature;
+}
+
+/** Every textureInfo (an object carrying a numeric `index`) under `value`. */
+function textureInfos(
+    value: unknown,
+    path: readonly string[] = [],
+): Array<{ path: readonly string[]; info: JsonRecord }> {
+    const record = asObject(value);
+    if (!record) return [];
+    if (typeof record.index === "number") return [{ path, info: record }];
+    return Object.entries(record).flatMap(([key, child]) =>
+        textureInfos(child, [...path, key]),
+    );
+}
+
+/** The value at `path`, or undefined where any step is missing. */
+function valueAt(root: unknown, path: readonly string[]): unknown {
+    let value = root;
+    for (const key of path) value = asObject(value)?.[key];
+    return value;
+}
+
+/**
+ * Which images `KHR_texture_basisu` redirects a material slot to, and the
+ * colour space each is uploaded at -- read by running the pinned extension.
+ *
+ * Its `preMesh` strips every textureInfo it takes over out of the material
+ * JSON (`prepareBasisuMaterials`), and its `applyMaterial` uploads each at the
+ * colour space it chooses. Both run over a probe of the document: the
+ * material and texture JSON as authored, and each image replaced by a
+ * four-byte bufferView naming its own index, which is how an upload is
+ * traced back to the image the pin read. What this packager adds are the
+ * refusals of the documents where resolving the extension away would change
+ * the result: a textureInfo the pin deletes before the transform hook runs,
+ * a texCoord it does not forward, a strength it overrides, an image reached
+ * at both colour spaces, a basisu texture no redirected slot reaches.
+ */
+async function basisuImageColorSpaces(
+    assetName: string,
+    document: JsonRecord,
+): Promise<Map<number, boolean>> {
+    const textures = asRecords(document.textures);
+    const basisuSource = (
+        texture: JsonRecord | undefined,
+    ): number | undefined =>
+        asIndex(
+            asObject(asObject(texture?.extensions)?.[BASISU_EXTENSION])?.source,
         );
-        for (const slot of ["specularTexture", "specularColorTexture"]) {
-            const textureIndex = asIndex(asObject(specular?.[slot])?.index);
-            if (
-                textureIndex !== undefined &&
-                basisuSource(textureIndex) !== undefined
-            ) {
-                throw new Error(
-                    `glTF ${assetName} reaches ${BASISU_EXTENSION} through ` +
-                        `KHR_materials_specular's ${slot}, which the pinned ` +
-                        "extension uploads through " +
-                        "setPbrMetallicReflectance rather than the core " +
-                        "texture path.",
-                );
+    const srgbByImage = new Map<number, boolean>();
+    if (!textures.some((texture) => basisuSource(texture) !== undefined)) {
+        return srgbByImage;
+    }
+    const images = asRecords(document.images);
+    const markers = new DataView(
+        new ArrayBuffer(Math.max(images.length, 1) * 4),
+    );
+    images.forEach((_, index) => markers.setUint32(index * 4, index, true));
+    const authored = asRecords(structuredClone(document.materials ?? []));
+    const probe: JsonRecord = {
+        materials: structuredClone(document.materials ?? []),
+        textures: structuredClone(document.textures ?? []),
+        images: images.map((_, index) => ({ bufferView: index })),
+        bufferViews: images.map((_, index) => ({
+            buffer: 0,
+            byteOffset: index * 4,
+            byteLength: 4,
+        })),
+    };
+    const feature = await loadPinnedBasisuFeature();
+    await feature.preMesh(probe, markers, "");
+    const reachedTextures = new Set<number>();
+    for (const [index, material] of asRecords(probe.materials).entries()) {
+        const stripped = textureInfos(authored[index]).filter(
+            ({ path }) => valueAt(material, path) === undefined,
+        );
+        const observation = new BasisuObservation();
+        let out: JsonRecord | null;
+        try {
+            out = await feature.applyMaterial(
+                { _rawMatDef: material },
+                { _engine: observation },
+            );
+        } catch (error) {
+            if (error instanceof BasisuArmRefusal) {
+                throw new Error(`glTF ${assetName} ${error.message}.`, {
+                    cause: error,
+                });
             }
+            throw error;
         }
-        for (const { owner, slot, srgb } of basisuSlots) {
-            const textureIndex = slotTexture(owner, slot);
-            if (textureIndex === undefined) continue;
-            const source = basisuSource(textureIndex);
-            if (source === undefined) continue;
-            reachedTextures.add(textureIndex);
-            // Resolving the extension away hands these slots back to the
-            // CORE material mapper, and the pinned extension's own
-            // `applyMaterial` reads three of their inputs differently:
-            // it writes `occlusionStrength: 1.0` whatever the document
-            // authored, forwards `texCoord` for occlusion alone, and
-            // composes no `KHR_texture_transform` because
-            // `prepareBasisuMaterials` deleted the textureInfo before the
-            // core mapper could see it. A document using any of the three
-            // would render differently here and in the browser, so each
-            // refuses rather than resolving into a different answer.
-            const info = asObject(asObject(owners[owner])?.[slot]);
-            if (slot === "occlusionTexture" && info?.strength !== undefined) {
-                throw new Error(
-                    `glTF ${assetName} authors an occlusionTexture.strength ` +
-                        `beside ${BASISU_EXTENSION}, which the pinned ` +
-                        "extension overrides with 1.0 rather than reading.",
-                );
-            }
-            const texCoord = asIndex(info?.texCoord);
-            if (texCoord !== undefined && texCoord !== 0) {
-                throw new Error(
-                    `glTF ${assetName} reaches ${BASISU_EXTENSION} on ` +
-                        `${slot} at texCoord ${texCoord}; the pinned ` +
-                        "extension forwards a texCoord for occlusion alone " +
-                        "and passes none for the other slots.",
-                );
-            }
-            if (asObject(info?.extensions)?.["KHR_texture_transform"]) {
+        for (const { path, info } of stripped) {
+            const slot = path.at(-1) ?? "";
+            reachedTextures.add(asIndex(info.index) ?? -1);
+            if (asObject(info.extensions)?.["KHR_texture_transform"]) {
                 throw new Error(
                     `glTF ${assetName} carries KHR_texture_transform on a ` +
                         `${BASISU_EXTENSION} ${slot}; the pinned extension ` +
@@ -332,31 +378,53 @@ function basisuImageColorSpaces(
                         "runs, so upstream composes none.",
                 );
             }
-            const existing = srgbByImage.get(source);
+            // A texCoord the pin forwards is one its fragment carries under
+            // the slot's own name (`occlusionTexture` -> `occlusionTexCoord`).
+            const texCoord = asIndex(info.texCoord);
+            const forwarded =
+                slot.endsWith("Texture") &&
+                out?.[`${slot.slice(0, -"Texture".length)}TexCoord`] ===
+                    texCoord;
+            if (texCoord !== undefined && texCoord !== 0 && !forwarded) {
+                throw new Error(
+                    `glTF ${assetName} reaches ${BASISU_EXTENSION} on ` +
+                        `${slot} at texCoord ${texCoord}, which the pinned ` +
+                        "extension does not forward.",
+                );
+            }
+            if (info.strength !== undefined) {
+                throw new Error(
+                    `glTF ${assetName} authors a ${slot}.strength beside ` +
+                        `${BASISU_EXTENSION}, which the pinned extension ` +
+                        "overrides rather than reading.",
+                );
+            }
+        }
+        for (const { image, srgb } of observation.uploads) {
+            const existing = srgbByImage.get(image);
             if (existing !== undefined && existing !== srgb) {
                 throw new Error(
                     `glTF ${assetName} reaches ${BASISU_EXTENSION} image ` +
-                        `${source} at both colour spaces, which the pinned ` +
+                        `${image} at both colour spaces, which the pinned ` +
                         "loader transcodes twice under its `index:sRGB` " +
                         "cache key.",
                 );
             }
-            srgbByImage.set(source, srgb);
+            srgbByImage.set(image, srgb);
         }
     }
-    for (let textureIndex = 0; textureIndex < textures.length; ++textureIndex) {
+    textures.forEach((texture, index) => {
         if (
-            basisuSource(textureIndex) !== undefined &&
-            !reachedTextures.has(textureIndex)
+            basisuSource(texture) !== undefined &&
+            !reachedTextures.has(index)
         ) {
             throw new Error(
                 `glTF ${assetName} declares ${BASISU_EXTENSION} on texture ` +
-                    `${textureIndex}, which no slot the pinned extension ` +
-                    "redirects reaches, so upstream leaves it with no image " +
-                    "source.",
+                    `${index}, which no slot the pinned extension redirects ` +
+                    "reaches, so upstream leaves it with no image source.",
             );
         }
-    }
+    });
     return srgbByImage;
 }
 
@@ -711,7 +779,7 @@ export async function packageGltf(
 
     // Resolve KHR_texture_basisu to the pinned transcode and mip list.
     // Select colour spaces before replacing the embedded images.
-    const basisuColorSpaces = basisuImageColorSpaces(source, document);
+    const basisuColorSpaces = await basisuImageColorSpaces(source, document);
     const transcodedSamplers = new Map<number, number>();
     for (const [imageIndex, image] of asRecords(document.images).entries()) {
         if (typeof image.uri !== "string") {
