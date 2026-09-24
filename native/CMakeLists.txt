@@ -482,6 +482,27 @@ if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
 endif()
 
 if(BBLITE_GENERATED_SHADER_FILES)
+    # The runtime reads only its compiled renderers' shader formats: SDL_GPU
+    # the platform's offline binary plus the `.slots` sidecars naming each
+    # pinned variant's register order, Dawn the `.native.wgsl` text it
+    # compiles in-process. HLSL, reflection dumps, WGSL sources and tool
+    # manifests stay in the generated tree as development artifacts.
+    # `deployedShaderSuffixes` (src/build-stamp.ts) verifies the deployment
+    # by this table.
+    set(BBLITE_DEPLOYED_SHADER_SUFFIXES "")
+    if(BBLITE_BACKEND_SDL_GPU)
+        if(WIN32)
+            list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".dxil")
+        elseif(APPLE)
+            list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".msl")
+        else()
+            list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".spv")
+        endif()
+        list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".slots")
+    endif()
+    if(BBLITE_BACKEND_DAWN)
+        list(APPEND BBLITE_DEPLOYED_SHADER_SUFFIXES ".native.wgsl")
+    endif()
     # Deployed by a stamped target rather than POST_BUILD on the executable,
     # for the reason the asset target above records: a shader-only change
     # relinks nothing, so a POST_BUILD copy never fires and the measured run
@@ -491,16 +512,17 @@ if(BBLITE_GENERATED_SHADER_FILES)
     add_custom_command(
         OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders-deployed.stamp"
         COMMAND
-            "${CMAKE_COMMAND}" -E remove_directory
-            "$<TARGET_FILE_DIR:bblite_native>/shaders"
-        COMMAND
-            "${CMAKE_COMMAND}" -E copy_directory
-            "${BBLITE_BUILD_SHADER_DIR}"
-            "$<TARGET_FILE_DIR:bblite_native>/shaders"
+            "${CMAKE_COMMAND}"
+            "-DBBLITE_SOURCE=${BBLITE_BUILD_SHADER_DIR}"
+            "-DBBLITE_DESTINATION=$<TARGET_FILE_DIR:bblite_native>/shaders"
+            "-DBBLITE_SUFFIXES=${BBLITE_DEPLOYED_SHADER_SUFFIXES}"
+            -P "${BBLITE_NATIVE_ROOT}/deploy-shaders.cmake"
         COMMAND
             "${CMAKE_COMMAND}" -E touch
             "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders-deployed.stamp"
-        DEPENDS "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
+        DEPENDS
+            "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
+            "${BBLITE_NATIVE_ROOT}/deploy-shaders.cmake"
         VERBATIM
     )
     add_custom_target(
