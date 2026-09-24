@@ -886,5 +886,9 @@ export interface LoweringServices {
     isEntryBodyScope(): boolean;
     increaseIndent(): void;
     decreaseIndent(): void;
-    fail(node: ts.Node, message: string): never;
+    fail(
+        node: ts.Node,
+        message: string,
+        reason?: import("./compile-error.js").CompileError["reason"],
+    ): never;
 }

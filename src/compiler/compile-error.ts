@@ -23,7 +23,8 @@ export class CompileError extends Error {
         public readonly reason:
             | "unsupported"
             | "static-value-required"
-            | "entry-scope-required" = "unsupported",
+            | "entry-scope-required"
+            | "dynamic-storage-required" = "unsupported",
         subject?: ts.Node,
     ) {
         super(`${fileName}:${line}:${column}: ${message}`);

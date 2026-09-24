@@ -459,8 +459,12 @@ export class NativeFunctionLowerer {
             });
         } catch (error) {
             if (!(error instanceof CompileError)) throw error;
-            if (error.reason === "entry-scope-required") {
-                // The body reaches the entry's engine; the inliner keeps it.
+            if (
+                error.reason === "entry-scope-required" ||
+                error.reason === "dynamic-storage-required"
+            ) {
+                // The body reaches the entry's engine or stores a parsed
+                // document as a record; the inliner keeps both as they are.
                 this.signatures.delete(signature.declaration);
                 this.rejected.add(signature.declaration);
                 return undefined;
@@ -589,10 +593,12 @@ export class NativeFunctionLowerer {
         } catch (error) {
             if (
                 !(error instanceof CompileError) ||
-                error.reason !== "entry-scope-required"
+                (error.reason !== "entry-scope-required" &&
+                    error.reason !== "dynamic-storage-required")
             )
                 throw error;
-            // The body reaches the entry's engine; the class inliner keeps it.
+            // The body reaches the entry's engine or stores a parsed
+            // document as a record; the class inliner keeps both.
             this.methodSignatures.delete(signature.method);
             this.rejectedMethods.add(signature.method);
             return undefined;

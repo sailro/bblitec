@@ -30,7 +30,6 @@ Artifact paths are relative to `generated/<id>/`.
 | Object immutability | freeze/seal/preventExtensions return the original value without enforcing immutability |
 | Storage/files | Host preferences, native URL tokens, synchronized picker completion; FileReader loads inside readAsText |
 | Promises outside a realm | An await reads a constructed promise's settlement in place; one still pending ends the awaiting activation without its catch or finally blocks, resuming after the statement that discarded its promise, and a later settlement throws |
-| Typed JSON reads | A parsed document stored as a record is read member by member; a member of another type throws TypeError where JavaScript keeps it |
 | File publication | Direct destinations use atomic replacement; iOS stages a complete private snapshot and UIKit/file providers own export publication |
 | HTTP | WinHTTP/libcurl; system TLS, no cookie jar/CORS; buffered 32 MiB request/response cap |
 | HTTP timeout | Windows: 5 s without progress; libcurl: 5 s connect/30 s request |

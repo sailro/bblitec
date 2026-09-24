@@ -75,8 +75,8 @@ left-to-right target writes. Defaults requiring distinct null/undefined states r
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings and plain struct fields;
 nested/default/renamed struct bindings refuse.
 
-Dynamic JSON preserves actual fields and object identity through typed locals, arguments, conditionals
-and represented generic returns. Source-backed record ownership can trigger compiler replay, preserving
+Dynamic JSON preserves actual fields and object identity through typed locals, arguments, conditionals,
+represented generic returns and record-typed function returns. Source-backed record ownership can trigger compiler replay, preserving
 earlier aliases and initializer counts. Getters permit statements before a final return; early returns
 refuse.
 Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree.
@@ -115,7 +115,7 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options | Option getters and non-string locale entries refuse |
 | Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs; Object.assign targets records, object literals and structs, other targets refuse |
-| JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission; a parsed document stored as a record reads its members into it; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers and cyclic serialization refuse; a stored document reads number, boolean, string, string-literal-union, array, optional and record members, and one of another type throws TypeError |
+| JSON | Represented parse/stringify, actual dynamic fields, index-key order, undefined-property omission; a generation-time pass folds only when its result is a round-trip document, else it lowers as an ordinary call | Replacers and cyclic serialization refuse |
 | Dates | Current/numeric/copy construction, now/getTime/valueOf/setTime, UTC `toISOString` | No string/calendar constructors or broader methods |
 | Intl | Default DateTimeFormat and resolved time zone | No explicit locale/options, formatting or broader fields |
 | URLSearchParams | String constructor, get/has/set/toString, duplicate order, decoding and form encoding; mutation retains object identity and invalidates deployment-query folds | Append/delete/sort, iteration and other constructors refuse |
