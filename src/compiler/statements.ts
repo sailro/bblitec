@@ -49,7 +49,6 @@ import {
 import { emitStringAppend } from "./expressions.js";
 import { commonResourceValue, isStringValue } from "./types.js";
 import { enclosingLoopControl, firstReturn } from "./loop-control.js";
-import { rejectClassStaticBlocks } from "./classes.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -62,6 +61,7 @@ import { recordAt } from "./record-access.js";
 
 export interface StatementLoweringContext extends Pick<
     LoweringServices,
+    | "classLowerer"
     | "resolveRecordValue"
     | "noteCameraVectorSet"
     | "workerCheckpointCpp"
@@ -620,10 +620,10 @@ export class StatementLowerer {
         }
         if (ts.isClassDeclaration(statement)) {
             // Classes lower lazily too: construction expands the
-            // fields and each method inlines at its call site. Nothing
-            // is emitted here, so work the declaration itself runs
-            // refuses rather than vanishing.
-            rejectClassStaticBlocks(context, statement);
+            // fields and each method inlines at its call site. What the
+            // declaration itself runs -- static fields and blocks -- runs
+            // here.
+            context.classLowerer.emitDeclaration(statement);
             return;
         }
         context.fail(

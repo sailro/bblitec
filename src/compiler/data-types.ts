@@ -44,7 +44,11 @@ import {
 } from "./symbols.js";
 import { isNullable, nullability, presentMembers } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
-import { classInstanceProperties } from "./class-properties.js";
+import {
+    type ClassHierarchy,
+    classChain,
+    classInstanceProperties,
+} from "./class-members.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
@@ -284,7 +288,12 @@ export function propertyIsReadOnly(property: ts.Symbol): boolean {
 interface DataStructDefinition {
     name: string;
     fields: DataStructField[];
+    /** One struct for a class hierarchy: it stores which class each object is. */
+    classTag?: true;
 }
+
+/** The member a class hierarchy's shared struct keeps each object's class tag in. */
+export const classTagMember = "bbl_class_tag";
 
 /**
  * One local class with a demanded runtime representation.
@@ -620,6 +629,8 @@ export class DataTypeRegistry {
     public constructor(
         private readonly checker: ts.TypeChecker,
         private readonly fail: Fail,
+        /** Which local classes extend which, for class-backed structs and dispatch. */
+        public readonly classHierarchy: ClassHierarchy,
         private readonly asynchronous = false,
     ) {}
 
@@ -2336,6 +2347,9 @@ export class DataTypeRegistry {
             return undefined;
         }
         this.rejectUnsupportedRuntimeClass(declaration, node);
+        if (this.classHierarchy.inHierarchy(declaration)) {
+            return this.fromClassHierarchy(declaration, node);
+        }
         const name = this.uniqueName(
             sanitizeIdentifier(declaration.name?.text ?? "Instance"),
             this.structNames,
@@ -2348,6 +2362,93 @@ export class DataTypeRegistry {
             fields: this.classStructFields(declaration, type),
         });
         return { kind: "struct", name };
+    }
+
+    /**
+     * Mints the one reference struct every class of a hierarchy shares.
+     *
+     * A value typed as a base class can be an instance of any class under
+     * it, so the classes cannot each have a layout of their own: one struct,
+     * named after the root, holds the fields every class of the hierarchy
+     * declares, and a tag records which class an object is. A field two
+     * sibling classes both declare shares its slot, since one object is only
+     * ever one of them; a field an override restates is the base's slot.
+     */
+    private fromClassHierarchy(
+        declaration: ts.ClassDeclaration,
+        node: ts.Node,
+    ): DataType {
+        const root = this.classHierarchy.root(declaration);
+        const classes = this.classHierarchy.hierarchyClasses(root);
+        const typeOf = (member: ts.ClassDeclaration): ts.Type => {
+            const symbol = member.name
+                ? this.checker.getSymbolAtLocation(member.name)
+                : undefined;
+            if (!symbol || member.typeParameters?.length) {
+                this.fail(
+                    node,
+                    `Class '${member.name?.text ?? "?"}' of the hierarchy under ` +
+                        `'${root.name?.text ?? "?"}' is ${symbol ? "generic" : "unnamed"}; ` +
+                        "a stored instance of a hierarchy needs one layout per class.",
+                );
+            }
+            return this.checker.getDeclaredTypeOfSymbol(symbol);
+        };
+        const name = this.uniqueName(
+            sanitizeIdentifier(root.name?.text ?? "Instance"),
+            this.structNames,
+        );
+        const types = classes.map(typeOf);
+        for (const type of types) {
+            this.classStructNames.set(this.structIdentity(type), name);
+        }
+        this.classStructDeclarations.set(name, {
+            declaration: root,
+            type: types[0]!,
+        });
+        this.referenceStructNames.add(name);
+        const fields: DataStructField[] = [];
+        classes.forEach((member, index) => {
+            for (const field of this.classStructFields(member, types[index]!)) {
+                if (field.name === classTagMember) {
+                    this.fail(
+                        node,
+                        `Field '${field.sourceName}' of class '${member.name?.text ?? "?"}' ` +
+                            "collides with the class tag the hierarchy's struct stores.",
+                    );
+                }
+                const existing = fields.find(
+                    (candidate) => candidate.sourceName === field.sourceName,
+                );
+                if (!existing) {
+                    fields.push(field);
+                    continue;
+                }
+                if (this.typeKey(existing.type) !== this.typeKey(field.type)) {
+                    this.fail(
+                        node,
+                        `Field '${field.sourceName}' has a different native type in ` +
+                            `class '${member.name?.text ?? "?"}' than elsewhere in the ` +
+                            `hierarchy under '${root.name?.text ?? "?"}', so one shared ` +
+                            "struct cannot store it.",
+                    );
+                }
+                if (existing.readOnly && !field.readOnly) {
+                    delete existing.readOnly;
+                }
+            }
+        });
+        this.registerStructDefinition(`class#${name}`, {
+            name,
+            fields,
+            classTag: true,
+        });
+        return { kind: "struct", name };
+    }
+
+    /** Whether a class-backed struct stands for a hierarchy and stores a class tag. */
+    public classStructTagged(name: string): boolean {
+        return this.structsByKey.get(`class#${name}`)?.classTag === true;
     }
 
     /**
@@ -2419,39 +2520,29 @@ export class DataTypeRegistry {
     }
 
     /**
-     * The shapes that cannot be one concrete `Ref<XData>`.
-     *
-     * A native data position names one layout. An abstract class or a
-     * subclass hierarchy would need a value that dispatches on its dynamic
-     * type, which this model has no representation for -- so the demand is
-     * refused by name rather than silently specialized to whichever class the
-     * walk reached first.
+     * The shapes that cannot be one concrete `Ref<XData>`: a class whose
+     * `extends` names something other than a local class, and a class no
+     * instance can have -- abstract with no concrete class under it.
      */
     private rejectUnsupportedRuntimeClass(
         declaration: ts.ClassDeclaration,
         node: ts.Node,
     ): void {
         const className = declaration.name?.text ?? "?";
-        if (
-            (ts.getCombinedModifierFlags(declaration) &
-                ts.ModifierFlags.Abstract) !==
-            0
-        ) {
-            this.fail(
-                node,
-                `Abstract class '${className}' has no single native representation; ` +
-                    "store a concrete class instead.",
-            );
+        for (const link of classChain(this.classHierarchy.table(declaration))) {
+            if (link.unsupportedHeritage) {
+                this.fail(
+                    node,
+                    `Class '${link.declaration.name?.text ?? "?"}' extends '${link.unsupportedHeritage.expression.getText()}', ` +
+                        "which is not a local class; a stored instance needs a local hierarchy.",
+                );
+            }
         }
-        if (
-            declaration.heritageClauses?.some(
-                (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-            )
-        ) {
+        if (this.classHierarchy.concreteClasses(declaration).length === 0) {
             this.fail(
                 node,
-                `Class '${className}' extends another class; a stored instance would ` +
-                    "need dynamic dispatch, which is outside the supported subset.",
+                `Abstract class '${className}' has no concrete class under it, so no ` +
+                    "instance can be stored.",
             );
         }
     }
@@ -3652,6 +3743,9 @@ export class DataTypeRegistry {
                                 : ""
                         };`,
                 ),
+                ...(definition.classTag
+                    ? [`    int ${classTagMember}{};`]
+                    : []),
                 `    friend void gc_trace_edges([[maybe_unused]] const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, [[maybe_unused]] const bbl::js::TraceVisitor& visitor) {`,
                 ...definition.fields.map(
                     (field) => `        visitor(record.${field.name});`,

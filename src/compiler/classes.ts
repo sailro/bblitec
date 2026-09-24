@@ -13,7 +13,11 @@ import { resolvedSymbol } from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import type { DataStructField, DataType } from "./data-types.js";
-import { dataTypesEqual, passesByReference } from "./data-types.js";
+import {
+    classTagMember,
+    dataTypesEqual,
+    passesByReference,
+} from "./data-types.js";
 import type { Value } from "./types.js";
 import { sameCompiledValue } from "./types.js";
 import {
@@ -25,7 +29,19 @@ import {
     FunctionSpecializations,
     functionDependencies,
 } from "./function-specializations.js";
-import { classInstanceProperties } from "./class-properties.js";
+import {
+    type ClassMemberTable,
+    classAccessors,
+    classChain,
+    classChainInstanceProperties,
+    classExtends,
+    classHasStaticState,
+    classMemberTable,
+    classMethod,
+    effectiveConstructor,
+    isStaticMember,
+    staticClassMember,
+} from "./class-members.js";
 
 const successfulConstructorResourceKinds = new EmissionSet([
     "audio-context",
@@ -40,168 +56,35 @@ interface StoredClassField extends DataStructField {
     source: string;
 }
 
-/** A class body's own instance property declarations, named plainly. */
-type InstanceProperty = (ts.PropertyDeclaration | ts.ParameterDeclaration) & {
-    name: ts.MemberName;
-};
-
-/**
- * One class body's members by name, resolved once per declaration.
- *
- * Every lookup of a class member by name reads this table, so a method,
- * accessor or field is found by one rule: instance and static members are
- * separate namespaces, as they are in JavaScript, and an overloaded name
- * resolves to the declaration that carries the body.
- */
-export interface ClassMemberTable {
-    readonly declaration: ts.ClassDeclaration;
-    /** The constructor implementation, or its only declaration. */
-    readonly constructorDeclaration: ts.ConstructorDeclaration | undefined;
-    readonly methods: ReadonlyMap<string, ts.MethodDeclaration>;
-    readonly staticMethods: ReadonlyMap<string, ts.MethodDeclaration>;
-    readonly getters: Readonly<Record<string, ts.GetAccessorDeclaration>>;
-    readonly setters: Readonly<Record<string, ts.SetAccessorDeclaration>>;
-    /** Instance property declarations, in declaration order. */
-    readonly fields: ReadonlyMap<string, ts.PropertyDeclaration>;
-    /** Instance properties including constructor parameter properties, in order. */
-    readonly instanceProperties: readonly InstanceProperty[];
-    /** `static readonly` properties with an initializer: generation-time constants. */
-    readonly staticConstants: ReadonlyMap<string, ts.PropertyDeclaration>;
+/** The `super(...)` call a constructor statement consists of. */
+function superCallOf(statement: ts.Statement): ts.CallExpression | undefined {
+    if (!ts.isExpressionStatement(statement)) return undefined;
+    const expression = statement.expression;
+    return ts.isCallExpression(expression) &&
+        expression.expression.kind === ts.SyntaxKind.SuperKeyword
+        ? expression
+        : undefined;
 }
 
-/** A pure function of the declaration, so it outlives any emission transaction. */
-const classMemberTables = new WeakMap<ts.ClassDeclaration, ClassMemberTable>();
-
-function isStaticMember(member: ts.ClassElement): boolean {
-    return (
-        (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) !== 0
-    );
-}
-
-/** Keeps the implementation of an overloaded name: the declaration with a body. */
-function recordImplementation<T extends ts.FunctionLikeDeclaration>(
-    members: Map<string, T>,
-    name: string,
-    member: T,
-): void {
-    const existing = members.get(name);
-    if (!existing || (!existing.body && member.body)) {
-        members.set(name, member);
+/** The class whose body lexically contains `node`: the home of its `super`. */
+function enclosingClass(node: ts.Node): ts.ClassDeclaration | undefined {
+    for (let current = node.parent; current; current = current.parent) {
+        if (ts.isClassDeclaration(current)) return current;
     }
+    return undefined;
 }
 
-export function classMemberTable(
+/** The private names one class body declares. */
+function declaredPrivateNames(
     declaration: ts.ClassDeclaration,
-): ClassMemberTable {
-    const cached = classMemberTables.get(declaration);
-    if (cached) return cached;
-    let constructorDeclaration: ts.ConstructorDeclaration | undefined;
-    const methods = new Map<string, ts.MethodDeclaration>();
-    const staticMethods = new Map<string, ts.MethodDeclaration>();
-    const getters: Record<string, ts.GetAccessorDeclaration> = {};
-    const setters: Record<string, ts.SetAccessorDeclaration> = {};
-    const fields = new Map<string, ts.PropertyDeclaration>();
-    const staticConstants = new Map<string, ts.PropertyDeclaration>();
+): Map<string, ts.PrivateIdentifier> {
+    const names = new Map<string, ts.PrivateIdentifier>();
     for (const member of declaration.members) {
-        if (ts.isConstructorDeclaration(member)) {
-            if (
-                !constructorDeclaration ||
-                (!constructorDeclaration.body && member.body)
-            ) {
-                constructorDeclaration = member;
-            }
-            continue;
-        }
-        if (!member.name || !ts.isMemberName(member.name)) continue;
-        const name = member.name.text;
-        if (ts.isMethodDeclaration(member)) {
-            recordImplementation(
-                isStaticMember(member) ? staticMethods : methods,
-                name,
-                member,
-            );
-        } else if (isStaticMember(member)) {
-            if (
-                ts.isPropertyDeclaration(member) &&
-                member.initializer &&
-                (ts.getCombinedModifierFlags(member) &
-                    ts.ModifierFlags.Readonly) !==
-                    0 &&
-                !staticConstants.has(name)
-            ) {
-                staticConstants.set(name, member);
-            }
-        } else if (ts.isGetAccessorDeclaration(member)) {
-            getters[name] = member;
-        } else if (ts.isSetAccessorDeclaration(member)) {
-            setters[name] = member;
-        } else if (ts.isPropertyDeclaration(member) && !fields.has(name)) {
-            fields.set(name, member);
+        if (member.name && ts.isPrivateIdentifier(member.name)) {
+            names.set(member.name.text, member.name);
         }
     }
-    const table: ClassMemberTable = {
-        declaration,
-        constructorDeclaration,
-        methods,
-        staticMethods,
-        getters,
-        setters,
-        fields,
-        instanceProperties: classInstanceProperties(declaration).filter(
-            (member): member is InstanceProperty =>
-                ts.isMemberName(member.name),
-        ),
-        staticConstants,
-    };
-    classMemberTables.set(declaration, table);
-    return table;
-}
-
-/**
- * The class a static member access `Owner.name` reads, with the member's
- * name, resolved by the checker so imports, aliases and inherited statics
- * resolve as TypeScript resolves them. The owner must be a plain name: a
- * static member read through `this` is not this shape.
- */
-export function staticClassMember(
-    checker: ts.TypeChecker,
-    owner: ts.Expression,
-    name: ts.MemberName,
-): { table: ClassMemberTable; name: string } | undefined {
-    if (!ts.isIdentifier(owner)) return undefined;
-    const member = checker
-        .getSymbolAtLocation(name)
-        ?.declarations?.find(
-            (candidate): candidate is ts.ClassElement =>
-                ts.isClassElement(candidate) &&
-                ts.isClassDeclaration(candidate.parent) &&
-                isStaticMember(candidate),
-        );
-    if (!member || !ts.isClassDeclaration(member.parent)) return undefined;
-    return { table: classMemberTable(member.parent), name: name.text };
-}
-
-/**
- * Refuses a class body carrying `static { ... }` blocks.
- *
- * JavaScript runs a static block when the class declaration evaluates. The
- * class subset emits nothing at the declaration -- construction and member
- * calls lower where they are reached -- so the block's effects would vanish
- * from the program without a word.
- */
-export function rejectClassStaticBlocks(
-    context: Pick<LoweringServices, "fail">,
-    declaration: ts.ClassLikeDeclaration,
-): void {
-    const block = declaration.members.find(ts.isClassStaticBlockDeclaration);
-    if (block) {
-        context.fail(
-            block,
-            "Class static blocks are outside the supported subset: the " +
-                "block runs when the class declaration evaluates, and the " +
-                "class lowering emits nothing there.",
-        );
-    }
+    return names;
 }
 
 interface ClassLoweringContext extends Pick<
@@ -243,6 +126,11 @@ interface ClassLoweringContext extends Pick<
     | "defineThis"
     | "activeThis"
     | "registerClassInstance"
+    | "classOf"
+    | "compileRecordGetter"
+    | "enterRuntimeControlFlow"
+    | "leaveRuntimeControlFlow"
+    | "probeEmission"
     | "unwrap"
     | "fail"
 > {}
@@ -271,9 +159,10 @@ interface ClassLoweringContext extends Pick<
 export class ClassLowerer {
     private readonly emittedRecursiveMethods =
         new FunctionSpecializations<string>();
+    /** Per receiver class, whether a method reaches itself through `this`. */
     private readonly recursiveMethods = new EmissionMap<
-        ts.MethodDeclaration,
-        boolean
+        ts.ClassDeclaration,
+        Map<ts.MethodDeclaration, boolean>
     >();
     /**
      * Per shared class, the fields its layout hoisted and the value each
@@ -282,6 +171,11 @@ export class ClassLowerer {
     private readonly hoistedClassFields = new EmissionMap<
         string,
         Map<string, Value>
+    >();
+    /** Per shared class, every field name the constructions so far declare. */
+    private readonly hoistedClassDeclared = new EmissionMap<
+        string,
+        Set<string>
     >();
     private readonly activeRecursiveMethods = new EmissionMap<
         ts.MethodDeclaration,
@@ -297,7 +191,27 @@ export class ClassLowerer {
         }
     >();
 
+    /**
+     * Per class without static storage, the record its static methods run
+     * against: `this` inside them still names the class.
+     */
+    private readonly emptyStaticRecords = new EmissionMap<
+        ts.ClassDeclaration,
+        Value
+    >();
+    /**
+     * Methods being inlined on a stored instance. Re-entering one of them
+     * on another stored instance is recursion through run-time objects, which
+     * inlining cannot unroll.
+     */
+    private readonly storedReceiverMethods =
+        new EmissionSet<ts.MethodDeclaration>();
+
     public constructor(private readonly context: ClassLoweringContext) {}
+
+    private table(declaration: ts.ClassDeclaration): ClassMemberTable {
+        return classMemberTable(this.context.checker, declaration);
+    }
 
     /**
      * Resolves the class declaration a `new` expression constructs, or
@@ -317,18 +231,26 @@ export class ClassLowerer {
         return declaration;
     }
 
-    /** The class a static member access reads, refusing a class the subset cannot evaluate. */
+    /** The class a static member access reads, through a class name or a static `this`. */
     private staticMember(
         access: ts.PropertyAccessExpression,
     ): { table: ClassMemberTable; name: string } | undefined {
-        const found = staticClassMember(
-            this.context.checker,
-            this.context.unwrap(access.expression),
-            access.name,
-        );
-        if (found)
-            rejectClassStaticBlocks(this.context, found.table.declaration);
-        return found;
+        const owner = this.context.unwrap(access.expression);
+        if (owner.kind === ts.SyntaxKind.ThisKeyword) {
+            if (!this.context.activeThis()?.classStatics) return undefined;
+            const member = this.context.checker
+                .getSymbolAtLocation(access.name)
+                ?.declarations?.find(
+                    (candidate): candidate is ts.ClassElement =>
+                        ts.isClassElement(candidate) &&
+                        isStaticMember(candidate) &&
+                        ts.isClassDeclaration(candidate.parent),
+                );
+            return member && ts.isClassDeclaration(member.parent)
+                ? { table: this.table(member.parent), name: access.name.text }
+                : undefined;
+        }
+        return staticClassMember(this.context.checker, owner, access.name);
     }
 
     /** Resolve `ClassName.staticFactory(...)` to its local method body. */
@@ -345,6 +267,250 @@ export class ClassLowerer {
     ): ts.PropertyDeclaration | undefined {
         const found = this.staticMember(access);
         return found?.table.staticConstants.get(found.name);
+    }
+
+    /**
+     * Runs a static method's lowering with `this` bound to the class it was
+     * called through: `Derived.create()` runs an inherited `create` with
+     * `this` naming `Derived`, as JavaScript does.
+     */
+    public withStaticReceiver<T>(
+        callee: ts.PropertyAccessExpression,
+        work: () => T,
+    ): T {
+        const owner = this.context.unwrap(callee.expression);
+        const receiver =
+            owner.kind === ts.SyntaxKind.ThisKeyword
+                ? this.context.activeThis()
+                : this.staticRecord(owner);
+        const previousThis = this.context.activeThis();
+        this.context.defineThis(receiver);
+        try {
+            return work();
+        } finally {
+            this.context.defineThis(previousThis);
+        }
+    }
+
+    /**
+     * The record a class name reads its static fields from, or undefined
+     * when `owner` names no local class.
+     *
+     * The class declaration binds it where it evaluates, so a class declared
+     * in a function body has one per evaluation. A class with no static
+     * storage evaluates to nothing and reads as an empty record; one whose
+     * static storage was never evaluated refuses rather than reading fields
+     * that do not exist yet.
+     */
+    public staticRecord(owner: ts.Expression): Value | undefined {
+        if (!ts.isIdentifier(owner)) return undefined;
+        const bound = this.context.bindings.lookupOptional(owner);
+        if (bound?.classStatics) return bound;
+        const declaration = resolvedSymbol(this.context.checker, owner)
+            ?.getDeclarations()
+            ?.find(ts.isClassDeclaration);
+        if (!declaration || bound) return undefined;
+        if (this.hasStaticState(declaration)) {
+            this.context.fail(
+                owner,
+                `Class '${owner.text}' is used before its declaration ` +
+                    "evaluated its static fields and blocks.",
+            );
+        }
+        let record = this.emptyStaticRecords.get(declaration);
+        if (!record) {
+            record = {
+                kind: "record",
+                cpp: "",
+                recordProperties: {},
+                classStatics: declaration,
+            };
+            this.emptyStaticRecords.set(declaration, record);
+        }
+        return record;
+    }
+
+    /** Whether evaluating the class declaration runs or stores anything. */
+    public hasStaticState(declaration: ts.ClassDeclaration): boolean {
+        return classHasStaticState(this.context.checker, declaration);
+    }
+
+    /**
+     * Evaluates a class declaration: its static fields and `static { ... }`
+     * blocks run here, in declaration order, with `this` naming the class.
+     *
+     * The static fields become storage owned by the scope the declaration
+     * sits in, gathered into one record bound to the class name, so `C.x`
+     * and a static method's `this.x` read and write the same storage. A
+     * subclass's record also reaches the static fields it inherits. A class
+     * with no static state emits nothing: construction and member calls
+     * lower where they are reached.
+     */
+    public emitDeclaration(declaration: ts.ClassDeclaration): void {
+        if (!this.hasStaticState(declaration)) return;
+        const table = this.table(declaration);
+        if (!declaration.name) {
+            this.context.fail(
+                declaration,
+                "A class with static state requires a name.",
+            );
+        }
+        const baseName = table.base?.declaration.name;
+        const inherited = baseName
+            ? this.context.bindings.lookupOptional(baseName)
+            : undefined;
+        if (
+            table.base &&
+            !inherited?.classStatics &&
+            this.hasStaticState(table.base.declaration)
+        ) {
+            this.context.fail(
+                declaration,
+                `Class '${declaration.name.text}' extends a class whose ` +
+                    "static state is not evaluated in this scope.",
+            );
+        }
+        const statics: Record<string, Value> = {
+            ...(inherited?.classStatics ? inherited.recordProperties : {}),
+        };
+        const record: Value = {
+            kind: "record",
+            cpp: "",
+            recordProperties: statics,
+            classStatics: declaration,
+        };
+        this.context.bindings.bindCompileTimeValue(declaration.name, record);
+        const previousThis = this.context.activeThis();
+        this.context.defineThis(record);
+        try {
+            for (const element of table.staticElements) {
+                if (ts.isClassStaticBlockDeclaration(element)) {
+                    this.context.bindings.pushScope(
+                        this.context.allocateUserFunctionPrefix(),
+                    );
+                    this.context.emit("{");
+                    this.context.increaseIndent();
+                    try {
+                        for (const statement of element.body.statements) {
+                            this.context.emitStatement(statement);
+                        }
+                    } finally {
+                        this.context.decreaseIndent();
+                        this.context.bindings.popScope();
+                    }
+                    this.context.emit("}");
+                    continue;
+                }
+                statics[element.name.text] = this.bindStaticField(element);
+            }
+        } finally {
+            this.context.defineThis(previousThis);
+        }
+    }
+
+    /**
+     * Storage for one static field, initialized where the class evaluates.
+     * Any code can assign it later, so its declared type is a stored
+     * position: a local class it names takes its shared representation.
+     */
+    private bindStaticField(
+        field: ts.PropertyDeclaration & { name: ts.MemberName },
+    ): Value {
+        const declared = this.context.dataTypes.fromStoredTsType(
+            this.context.checker.getTypeAtLocation(field.name),
+            field.name,
+        );
+        if (field.initializer) {
+            this.context.bindClassField(
+                field.name,
+                field.initializer,
+                declared,
+            );
+            return this.context.compileValue(field.name);
+        }
+        const storage =
+            this.context.bindNullableClassField(field.name) ??
+            this.context.bindUninitializedClassDataField(field.name, declared);
+        if (!storage) {
+            this.context.fail(
+                field,
+                `Static field '${field.name.text}' has no initializer, so it ` +
+                    "starts undefined; its type needs an optional representation.",
+            );
+        }
+        return storage;
+    }
+
+    /**
+     * Refuses a write through a subclass to a static field it inherits.
+     *
+     * JavaScript gives the subclass its own property at that write, which the
+     * shared storage cannot express; reads through the subclass see the base
+     * class's field and stay supported.
+     */
+    public refuseInheritedStaticWrite(
+        access: ts.PropertyAccessExpression,
+    ): void {
+        const field = this.staticField(access);
+        const statics = field?.owner?.classStatics;
+        if (
+            !field ||
+            !statics ||
+            this.table(statics).staticFields.has(field.name)
+        )
+            return;
+        this.context.fail(
+            access.name,
+            `Static field '${field.name}' is inherited by class ` +
+                `'${statics.name?.text ?? "?"}'; writing it through the ` +
+                "subclass would create a separate property there.",
+        );
+    }
+
+    /**
+     * `C.x` or a static method's `this.x` for a static field with storage:
+     * the storage the class's record holds, through the constructor chain.
+     * Undefined when the access names no such field.
+     */
+    public readStaticField(
+        access: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const field = this.staticField(access);
+        if (!field) return undefined;
+        const value = field.owner?.recordProperties?.[field.name];
+        if (!value) {
+            this.context.fail(
+                access,
+                `Static field '${field.name}' is read before its class declaration ` +
+                    "evaluated it.",
+            );
+        }
+        return value;
+    }
+
+    /**
+     * The static field with storage a `C.x` or static `this.x` access names,
+     * with the record of the class it is read through.
+     */
+    private staticField(
+        access: ts.PropertyAccessExpression,
+    ): { owner: Value | undefined; name: string } | undefined {
+        const found = this.staticMember(access);
+        if (
+            !found ||
+            !classChain(found.table).some((link) =>
+                link.staticFields.has(found.name),
+            )
+        )
+            return undefined;
+        const owner = this.context.unwrap(access.expression);
+        return {
+            owner:
+                owner.kind === ts.SyntaxKind.ThisKeyword
+                    ? this.context.activeThis()
+                    : this.staticRecord(owner),
+            name: found.name,
+        };
     }
 
     /**
@@ -402,8 +568,9 @@ export class ClassLowerer {
         ) {
             return undefined;
         }
-        const { constructorDeclaration } = classMemberTable(owner);
+        const { constructorDeclaration, base } = this.table(owner);
         if (
+            base ||
             !constructorDeclaration ||
             constructorDeclaration.parameters.length !==
                 (success!.arguments?.length ?? 0) ||
@@ -549,15 +716,17 @@ export class ClassLowerer {
     /**
      * Constructs an instance: declares each field's binding, then runs
      * the constructor body with `this` bound to the record under
-     * construction.
+     * construction. A subclass runs its base class's construction at its
+     * `super(...)` call -- or first, when it declares no constructor -- so
+     * one record carries the fields of the whole chain.
      */
     public construct(
         expression: ts.NewExpression,
         declaration: ts.ClassDeclaration,
     ): Value {
         this.rejectUnsupportedMembers(declaration);
-        const members = classMemberTable(declaration);
-        const { constructorDeclaration } = members;
+        const members = this.table(declaration);
+        const constructorDeclaration = effectiveConstructor(members);
         if (
             !constructorDeclaration &&
             (expression.arguments?.length ?? 0) > 0
@@ -584,12 +753,13 @@ export class ClassLowerer {
             declaration,
             instanceType,
         );
+        const accessors = classAccessors(members);
         const instance: Value = {
             kind: "record",
             cpp: "",
             recordProperties: fields,
-            recordGetters: { ...members.getters },
-            recordSetters: { ...members.setters },
+            recordGetters: accessors.getters,
+            recordSetters: accessors.setters,
             ...(instanceTypeArguments
                 ? { classTypeArguments: instanceTypeArguments }
                 : {}),
@@ -612,6 +782,14 @@ export class ClassLowerer {
                 `${cppType} ${cpp} = ` +
                     `bbl::js::make_ref<bblscene::${structName}Data>();`,
             );
+            // One struct holds every class of a hierarchy; the tag records
+            // which one this object is, for dispatch and `instanceof`.
+            if (this.context.dataTypes.classStructTagged(structName)) {
+                this.context.emit(
+                    `${cpp}->${classTagMember} = ` +
+                        `${this.context.dataTypes.classHierarchy.tag(declaration)};`,
+                );
+            }
             instance.cpp = cpp;
             instance.dataType = structType;
             for (const field of layout) {
@@ -647,124 +825,16 @@ export class ClassLowerer {
         // rather than only after construction has already returned.
         this.context.registerClassInstance(instance, declaration);
 
-        this.context.bindings.pushScope(
-            this.context.allocateUserFunctionPrefix(),
-        );
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
-            // Field declarations with initializers bind first, so the
-            // constructor body can already read them.
-            for (const member of members.instanceProperties) {
-                if (ts.isParameter(member)) continue;
-                const stored = fields[member.name.text];
-                // A slot the layout already allocated inside the shared
-                // object is storage; its declaration initializer is a
-                // store into that slot rather than a second binding.
-                if (stored?.classStoredField) {
-                    if (member.initializer) {
-                        this.context.emit(
-                            `${stored.cpp} = ` +
-                                `${this.context.compileForDataSink(
-                                    member.initializer,
-                                    stored.dataType!,
-                                )};`,
-                        );
-                    }
-                    continue;
-                }
-                if (!member.initializer) {
-                    const nullable = this.context.bindNullableClassField(
-                        member.name,
-                    );
-                    if (nullable) {
-                        fields[member.name.text] = nullable;
-                    } else {
-                        const data =
-                            this.context.bindUninitializedClassDataField(
-                                member.name,
-                                this.context.dataTypes.classFieldDataType(
-                                    instanceType,
-                                    member.name,
-                                ),
-                            );
-                        if (data) {
-                            fields[member.name.text] = data;
-                            continue;
-                        }
-                        const declared = this.context.checker.getTypeAtLocation(
-                            member.name,
-                        );
-                        const members =
-                            (declared.flags & ts.TypeFlags.Union) !== 0
-                                ? (declared as ts.UnionType).types
-                                : [declared];
-                        if (
-                            members.some(
-                                (candidate) =>
-                                    candidate.getCallSignatures().length > 0,
-                            )
-                        ) {
-                            // An optional callback is compile-time wiring. Keep
-                            // its initial absence on the instance record so a
-                            // later property assignment can install the reached
-                            // function and an optional call can dispatch it.
-                            fields[member.name.text] = {
-                                kind: "json-null",
-                                cpp: "",
-                            };
-                        }
-                    }
-                    continue;
-                }
-                // Declaring a local gives array and numeric fields
-                // real storage; the record then names that local.
-                this.context.bindClassField(
-                    member.name,
-                    member.initializer,
-                    this.context.dataTypes.classFieldDataType(
-                        instanceType,
-                        member.name,
-                    ),
-                );
-                const bound = this.context.compileValue(member.name);
-                if (
-                    bound.kind === "callback" &&
-                    !bound.callbackRecordOwner?.recordProperties
-                ) {
-                    // A handler written in the class body closes over the
-                    // instance as well as over the enclosing scope. Keeping
-                    // both is what lets a later `on(this._handler)`
-                    // materialize the body with the same `this` -- and the
-                    // same captured locals -- the declaration had.
-                    bound.callbackRecordOwner = {
-                        ...instance,
-                        ...(bound.callbackRecordOwner?.recordScopes
-                            ? {
-                                  recordScopes:
-                                      bound.callbackRecordOwner.recordScopes,
-                                  recordTypeArguments:
-                                      bound.callbackRecordOwner
-                                          .recordTypeArguments,
-                              }
-                            : {}),
-                    };
-                }
-                fields[member.name.text] = bound;
-            }
-            if (constructorDeclaration) {
-                this.bindParameters(
-                    constructorDeclaration,
-                    expression.arguments ?? [],
-                    fields,
-                    false,
-                    evaluatedArguments,
-                );
-                for (const statement of constructorDeclaration.body
-                    ?.statements ?? []) {
-                    this.context.emitStatement(statement);
-                }
-            }
+            this.initialize(
+                members,
+                expression.arguments ?? [],
+                evaluatedArguments,
+                instance,
+                instanceType,
+            );
             if (structName) {
                 this.proveHoistedFields(
                     structName,
@@ -775,9 +845,258 @@ export class ClassLowerer {
             }
         } finally {
             this.context.defineThis(previousThis);
-            this.context.bindings.popScope();
         }
         return instance;
+    }
+
+    /**
+     * Runs one class's part of a construction with `this` already bound:
+     * its field initializers, its parameter properties and its constructor
+     * body, in JavaScript's order. A base class initializes first, then its
+     * fields, then the body. A subclass binds its parameters, runs its body
+     * up to `super(...)`, constructs the base with the arguments that call
+     * evaluated, initializes its own fields and parameter properties, and
+     * finishes the body. A subclass without a constructor passes its
+     * arguments to the base unchanged.
+     */
+    private initialize(
+        table: ClassMemberTable,
+        argumentList: readonly ts.Expression[],
+        evaluatedArguments: readonly Value[],
+        instance: Value,
+        instanceType: ts.Type,
+    ): void {
+        const fields = instance.recordProperties!;
+        const constructorDeclaration = table.constructorDeclaration;
+        if (table.base && !constructorDeclaration) {
+            this.initialize(
+                table.base,
+                argumentList,
+                evaluatedArguments,
+                instance,
+                instanceType,
+            );
+        }
+        this.context.bindings.pushScope(
+            this.context.allocateUserFunctionPrefix(),
+        );
+        try {
+            if (!table.base || !constructorDeclaration) {
+                // Field declarations with initializers bind first, so the
+                // constructor body can already read them.
+                this.initializeFields(table, instance, instanceType);
+                if (constructorDeclaration) {
+                    this.bindParameters(
+                        constructorDeclaration,
+                        argumentList,
+                        fields,
+                        false,
+                        evaluatedArguments,
+                    );
+                    for (const statement of constructorDeclaration.body
+                        ?.statements ?? []) {
+                        this.context.emitStatement(statement);
+                    }
+                }
+                return;
+            }
+            this.bindParameters(
+                constructorDeclaration,
+                argumentList,
+                undefined,
+                false,
+                evaluatedArguments,
+            );
+            let constructed = false;
+            for (const statement of constructorDeclaration.body?.statements ??
+                []) {
+                const superCall = superCallOf(statement);
+                if (!superCall) {
+                    this.context.emitStatement(statement);
+                    continue;
+                }
+                if (constructed) {
+                    this.context.fail(
+                        superCall,
+                        "A constructor calls super() once.",
+                    );
+                }
+                constructed = true;
+                const baseConstructor = effectiveConstructor(table.base);
+                if (!baseConstructor && superCall.arguments.length > 0) {
+                    this.context.fail(
+                        superCall,
+                        `Class '${table.base.declaration.name?.text ?? "?"}' has no constructor accepting arguments.`,
+                    );
+                }
+                const baseArguments = baseConstructor
+                    ? this.compileClassArguments(
+                          baseConstructor,
+                          superCall.arguments,
+                          "constructor",
+                      )
+                    : [];
+                this.initialize(
+                    table.base,
+                    superCall.arguments,
+                    baseArguments,
+                    instance,
+                    instanceType,
+                );
+                this.initializeFields(table, instance, instanceType);
+                for (const parameter of constructorDeclaration.parameters) {
+                    if (
+                        ts.isParameterPropertyDeclaration(
+                            parameter,
+                            constructorDeclaration,
+                        ) &&
+                        ts.isIdentifier(parameter.name)
+                    ) {
+                        this.initializeParameterProperty(
+                            parameter.name,
+                            fields,
+                        );
+                    }
+                }
+            }
+            if (!constructed) {
+                this.context.fail(
+                    constructorDeclaration,
+                    "A derived constructor must call super(...) as one of " +
+                        "its top-level statements.",
+                );
+            }
+        } finally {
+            this.context.bindings.popScope();
+        }
+    }
+
+    /** Binds one class body's own field declarations on the instance under construction. */
+    private initializeFields(
+        table: ClassMemberTable,
+        instance: Value,
+        instanceType: ts.Type,
+    ): void {
+        const fields = instance.recordProperties!;
+        const inherited = new Set(
+            table.base
+                ? classChainInstanceProperties(table.base).map(
+                      (property) => property.name.text,
+                  )
+                : [],
+        );
+        for (const member of table.instanceProperties) {
+            if (ts.isParameter(member)) continue;
+            if (inherited.has(member.name.text) && !member.initializer) {
+                // `declare` restates an inherited field's type and emits nothing.
+                if (
+                    (ts.getCombinedModifierFlags(member) &
+                        ts.ModifierFlags.Ambient) !==
+                    0
+                )
+                    continue;
+                // Otherwise the redeclaration is redefined as `undefined`
+                // after `super()` returns, discarding what the base stored.
+                this.context.fail(
+                    member,
+                    `Field '${member.name.text}' redeclares an inherited field ` +
+                        "without an initializer, which resets it to undefined; " +
+                        "write `declare` to restate its type.",
+                );
+            }
+            const stored = fields[member.name.text];
+            // A slot the layout already allocated inside the shared
+            // object is storage; its declaration initializer is a
+            // store into that slot rather than a second binding.
+            if (stored?.classStoredField) {
+                if (member.initializer) {
+                    this.context.emit(
+                        `${stored.cpp} = ` +
+                            `${this.context.compileForDataSink(
+                                member.initializer,
+                                stored.dataType!,
+                            )};`,
+                    );
+                }
+                continue;
+            }
+            if (!member.initializer) {
+                const nullable = this.context.bindNullableClassField(
+                    member.name,
+                );
+                if (nullable) {
+                    fields[member.name.text] = nullable;
+                } else {
+                    const data = this.context.bindUninitializedClassDataField(
+                        member.name,
+                        this.context.dataTypes.classFieldDataType(
+                            instanceType,
+                            member.name,
+                        ),
+                    );
+                    if (data) {
+                        fields[member.name.text] = data;
+                        continue;
+                    }
+                    const declared = this.context.checker.getTypeAtLocation(
+                        member.name,
+                    );
+                    const members =
+                        (declared.flags & ts.TypeFlags.Union) !== 0
+                            ? (declared as ts.UnionType).types
+                            : [declared];
+                    if (
+                        members.some(
+                            (candidate) =>
+                                candidate.getCallSignatures().length > 0,
+                        )
+                    ) {
+                        // An optional callback is compile-time wiring. Keep
+                        // its initial absence on the instance record so a
+                        // later property assignment can install the reached
+                        // function and an optional call can dispatch it.
+                        fields[member.name.text] = {
+                            kind: "json-null",
+                            cpp: "",
+                        };
+                    }
+                }
+                continue;
+            }
+            // Declaring a local gives array and numeric fields
+            // real storage; the record then names that local.
+            this.context.bindClassField(
+                member.name,
+                member.initializer,
+                this.context.dataTypes.classFieldDataType(
+                    instanceType,
+                    member.name,
+                ),
+            );
+            const bound = this.context.compileValue(member.name);
+            if (
+                bound.kind === "callback" &&
+                !bound.callbackRecordOwner?.recordProperties
+            ) {
+                // A handler written in the class body closes over the
+                // instance as well as over the enclosing scope. Keeping
+                // both is what lets a later `on(this._handler)`
+                // materialize the body with the same `this` -- and the
+                // same captured locals -- the declaration had.
+                bound.callbackRecordOwner = {
+                    ...instance,
+                    ...(bound.callbackRecordOwner?.recordScopes
+                        ? {
+                              recordScopes:
+                                  bound.callbackRecordOwner.recordScopes,
+                              recordTypeArguments:
+                                  bound.callbackRecordOwner.recordTypeArguments,
+                          }
+                        : {}),
+                };
+            }
+            fields[member.name.text] = bound;
+        }
     }
 
     /**
@@ -793,7 +1112,9 @@ export class ClassLowerer {
         structName: string,
     ): readonly StoredClassField[] {
         const layout: StoredClassField[] = [];
-        for (const member of classMemberTable(declaration).instanceProperties) {
+        for (const member of classChainInstanceProperties(
+            this.table(declaration),
+        )) {
             const source = member.name.text;
             const field = this.context.dataTypes.classStructField(
                 structName,
@@ -837,7 +1158,7 @@ export class ClassLowerer {
         });
         const stored = new EmissionSet(layout.map((field) => field.source));
         const declared = new EmissionSet(
-            classMemberTable(declaration).instanceProperties.map(
+            classChainInstanceProperties(this.table(declaration)).map(
                 (member) => member.name.text,
             ),
         );
@@ -898,7 +1219,9 @@ export class ClassLowerer {
      * a field that is not stored must be the same for all of them. The proof
      * is over every reached construction rather than the first -- a second
      * site with a different renderer fails generation instead of silently
-     * inheriting the first one's.
+     * inheriting the first one's. In a hierarchy's shared struct, a field
+     * only the classes under one subclass declare is compared across the
+     * constructions of those classes.
      */
     private proveHoistedFields(
         structName: string,
@@ -911,13 +1234,24 @@ export class ClassLowerer {
             if (value.classStoredField) continue;
             hoisted.set(name, value);
         }
+        const declared = new EmissionSet(
+            classChainInstanceProperties(this.table(declaration)).map(
+                (member) => member.name.text,
+            ),
+        );
         const known = this.hoistedClassFields.get(structName);
-        if (!known) {
+        const seen = this.hoistedClassDeclared.get(structName);
+        if (!known || !seen) {
             this.hoistedClassFields.set(structName, hoisted);
+            this.hoistedClassDeclared.set(structName, declared);
             return;
         }
         for (const [name, value] of hoisted) {
             const first = known.get(name);
+            if (!first && !seen.has(name)) {
+                known.set(name, value);
+                continue;
+            }
             if (!first || !sameCompiledValue(first, value)) {
                 this.context.fail(
                     node,
@@ -931,7 +1265,7 @@ export class ClassLowerer {
             }
         }
         for (const name of known.keys()) {
-            if (!hoisted.has(name)) {
+            if (!hoisted.has(name) && declared.has(name)) {
                 this.context.fail(
                     node,
                     `Field '${name}' of shared class ` +
@@ -940,6 +1274,7 @@ export class ClassLowerer {
                 );
             }
         }
+        for (const name of declared) seen.add(name);
     }
 
     /**
@@ -950,8 +1285,13 @@ export class ClassLowerer {
      * The receiver is bound to a local first when repeating its expression
      * would repeat work or read a loop variable that has since moved on;
      * a plain name is already stable and is used as it stands.
+     *
+     * A hierarchy's struct holds every class under its root, so the record
+     * is read as the class `node`'s type names and carries the concrete
+     * classes that type admits; a member one of them overrides dispatches
+     * on the stored tag.
      */
-    public hydrate(value: Value): Value | undefined {
+    public hydrate(value: Value, node?: ts.Node): Value | undefined {
         if (
             value.kind !== "data" ||
             value.dataType?.kind !== "struct" ||
@@ -987,26 +1327,6 @@ export class ClassLowerer {
             );
             instanceCpp = bound;
         }
-        const fields: Record<string, Value> = {};
-        const hoisted = this.hoistedClassFields.get(structName);
-        const members = classMemberTable(binding.declaration);
-        for (const member of members.instanceProperties) {
-            const source = member.name.text;
-            const stored = this.context.dataTypes.classStructField(
-                structName,
-                source,
-            );
-            const bound = stored
-                ? this.storedFieldValue(instanceCpp, stored)
-                : hoisted?.get(source);
-            if (bound) {
-                fields[source] = bound;
-            }
-        }
-        const typeArguments = this.context.dataTypes.typeArgumentsOf(
-            binding.declaration,
-            binding.type,
-        );
         // A computed receiver's identity and presence spellings follow the
         // binding, or an optional call would spell the call a second time;
         // a storage read is stable and keeps its own.
@@ -1017,14 +1337,118 @@ export class ClassLowerer {
                       this.context.dataValue(instanceCpp, value.dataType),
                       value,
                   );
+        if (!this.context.dataTypes.classStructTagged(structName)) {
+            return this.receiverRecord(
+                { ...receiver, cpp: instanceCpp },
+                binding.declaration,
+                undefined,
+                binding.type,
+            );
+        }
+        return this.narrowedReceiver(
+            { ...receiver, cpp: instanceCpp },
+            this.staticCandidates(binding.declaration, node),
+            node ?? binding.declaration,
+        );
+    }
+
+    /**
+     * The concrete classes a stored instance whose type `node` spells can be:
+     * each class of that type (a union names several) and every class under
+     * it. A type that names no class of the hierarchy -- a structural
+     * interface -- admits all of them.
+     */
+    private staticCandidates(
+        root: ts.ClassDeclaration,
+        node: ts.Node | undefined,
+    ): ts.ClassDeclaration[] {
+        const hierarchy = this.context.dataTypes.classHierarchy;
+        const all = hierarchy.concreteClasses(root);
+        if (!node) return [...all];
+        const type = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(node),
+        );
+        const classes: ts.ClassDeclaration[] = [];
+        for (const member of type.isUnion() ? type.types : [type]) {
+            const constraint =
+                (member.flags & ts.TypeFlags.TypeParameter) !== 0
+                    ? this.context.checker.getBaseConstraintOfType(member)
+                    : member;
+            const declaration = constraint?.symbol
+                ?.getDeclarations()
+                ?.find(ts.isClassDeclaration);
+            if (!declaration || hierarchy.root(declaration) !== root) {
+                return [...all];
+            }
+            classes.push(declaration);
+        }
+        const admitted = new Set(
+            classes.flatMap((declaration) =>
+                hierarchy.concreteClasses(declaration),
+            ),
+        );
+        return all.filter((candidate) => admitted.has(candidate));
+    }
+
+    /** A stored receiver read as the most derived class all `candidates` share. */
+    private narrowedReceiver(
+        receiver: Value,
+        candidates: readonly ts.ClassDeclaration[],
+        node: ts.Node,
+    ): Value {
+        if (candidates.length === 0) {
+            this.context.fail(
+                node,
+                "No concrete class can be an instance of this type.",
+            );
+        }
+        return this.receiverRecord(
+            receiver,
+            this.context.dataTypes.classHierarchy.commonClass(candidates),
+            candidates.length > 1 ? candidates : undefined,
+            undefined,
+        );
+    }
+
+    /** The record a stored receiver reads as `declaration`, over the slots it names. */
+    private receiverRecord(
+        receiver: Value,
+        declaration: ts.ClassDeclaration,
+        candidates: readonly ts.ClassDeclaration[] | undefined,
+        type: ts.Type | undefined,
+    ): Value {
+        const structName = (receiver.dataType as { name: string }).name;
+        const fields: Record<string, Value> = {};
+        const hoisted = this.hoistedClassFields.get(structName);
+        const members = this.table(declaration);
+        for (const member of classChainInstanceProperties(members)) {
+            const source = member.name.text;
+            const stored = this.context.dataTypes.classStructField(
+                structName,
+                source,
+            );
+            const bound = stored
+                ? this.storedFieldValue(receiver.cpp, stored)
+                : hoisted?.get(source);
+            if (bound) {
+                fields[source] = bound;
+            }
+        }
+        const typeArguments = type
+            ? this.context.dataTypes.typeArgumentsOf(declaration, type)
+            : undefined;
+        const accessors = classAccessors(members);
+        // A receiver narrowed from a wider one keeps only its own candidates.
+        const base: Value = { ...receiver };
+        delete base.classCandidates;
         return valueForKind("record", {
-            ...receiver,
-            cpp: instanceCpp,
+            ...base,
 
             recordProperties: fields,
-            recordGetters: { ...members.getters },
-            recordSetters: { ...members.setters },
-            classDeclaration: binding.declaration,
+            recordGetters: accessors.getters,
+            recordSetters: accessors.setters,
+            classDeclaration: declaration,
+            ...(candidates ? { classCandidates: candidates } : {}),
             ...(typeArguments ? { classTypeArguments: typeArguments } : {}),
         });
     }
@@ -1057,6 +1481,11 @@ export class ClassLowerer {
 
     /**
      * Compiles a method with `this` bound to its constructed instance.
+     *
+     * The method is the one the receiver's class resolves the name to
+     * through its chain. A stored receiver typed as a base class can be an
+     * instance of several classes; when they resolve the name to different
+     * overrides, each runs on its own tag.
      */
     public compileMethodCall(
         instance: Value,
@@ -1064,7 +1493,257 @@ export class ClassLowerer {
         call: ts.CallExpression,
         declaration: ts.ClassDeclaration,
     ): Value {
-        const method = classMemberTable(declaration).methods.get(methodName);
+        const dispatched = this.dispatch(
+            instance,
+            (table) => classMethod(table, methodName),
+            (receiver) =>
+                this.compileMethodCall(
+                    receiver,
+                    methodName,
+                    call,
+                    receiver.classDeclaration!,
+                ),
+            call,
+            ts.isExpressionStatement(call.parent)
+                ? undefined
+                : this.context.checker.getTypeAtLocation(call),
+        );
+        if (dispatched) return dispatched;
+        return this.compileResolvedMethodCall(
+            instance,
+            classMethod(this.table(declaration), methodName),
+            methodName,
+            call,
+            declaration,
+        );
+    }
+
+    /**
+     * `super.name(...)`: the method the enclosing class's base resolves the
+     * name to, run on the current instance. `super` is never virtual.
+     */
+    public compileSuperMethodCall(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): Value {
+        const instance = this.superReceiver(call);
+        const method = classMethod(instance.base, callee.name.text);
+        return this.compileResolvedMethodCall(
+            instance.receiver,
+            method,
+            callee.name.text,
+            call,
+            this.context.classOf(instance.receiver) ??
+                instance.base.declaration,
+        );
+    }
+
+    /** `super.name`: the accessor the enclosing class's base declares. */
+    public compileSuperProperty(access: ts.PropertyAccessExpression): Value {
+        const { receiver, base } = this.superReceiver(access);
+        const getter = classAccessors(base).getters[access.name.text];
+        if (!getter) {
+            this.context.fail(
+                access,
+                `'super.${access.name.text}' reads a base class accessor; ` +
+                    "fields live on the instance and read through `this`.",
+            );
+        }
+        return this.context.compileRecordGetter(receiver, getter);
+    }
+
+    /** The instance `super` runs on and the class table its lookups start from. */
+    private superReceiver(node: ts.Node): {
+        receiver: Value;
+        base: ClassMemberTable;
+    } {
+        const home = enclosingClass(node);
+        const base = home ? this.table(home).base : undefined;
+        if (!base) {
+            this.context.fail(
+                node,
+                "'super' is lowered only inside a class that extends a local class.",
+            );
+        }
+        const receiver = this.context.activeThis();
+        if (!receiver?.recordProperties || receiver.classStatics) {
+            this.context.fail(
+                node,
+                "'super' member access is lowered inside instance methods, " +
+                    "accessors and constructors.",
+            );
+        }
+        return { receiver, base };
+    }
+
+    /**
+     * Lowers a getter read on a receiver that may be one of several classes
+     * overriding it: once per override, on the stored tag. Undefined when
+     * the getter is the one every candidate reads.
+     */
+    public dispatchGetter(
+        owner: Value,
+        accessor: ts.GetAccessorDeclaration,
+        read: (receiver: Value, accessor: ts.GetAccessorDeclaration) => Value,
+    ): Value | undefined {
+        const name = accessor.name.getText();
+        const node = accessor.name;
+        const signature =
+            this.context.checker.getSignatureFromDeclaration(accessor);
+        return this.dispatch(
+            owner,
+            (table) => classAccessors(table).getters[name],
+            (receiver) => {
+                const selected = receiver.recordGetters?.[name];
+                if (!selected) {
+                    this.context.fail(
+                        node,
+                        `Class '${receiver.classDeclaration?.name?.text ?? "?"}' has no getter '${name}'.`,
+                    );
+                }
+                return read(receiver, selected);
+            },
+            node,
+            signature
+                ? this.context.checker.getReturnTypeOfSignature(signature)
+                : undefined,
+        );
+    }
+
+    /**
+     * Lowers the members a receiver of several classes reaches, once per
+     * implementation its candidates resolve them to, selected by the tag the
+     * shared struct stores. Each arm reads the receiver narrowed to the
+     * classes it serves, so a virtual call inside the member dispatches only
+     * over those. Undefined when the receiver is one class, or when every
+     * candidate resolves the same implementation.
+     */
+    private dispatch(
+        instance: Value,
+        implementation: (table: ClassMemberTable) => ts.Node | undefined,
+        lower: (receiver: Value) => Value,
+        node: ts.Node,
+        yielded: ts.Type | undefined,
+    ): Value | undefined {
+        const candidates = instance.classCandidates;
+        if (!candidates || candidates.length < 2) return undefined;
+        const groups = new EmissionMap<
+            ts.Node | undefined,
+            ts.ClassDeclaration[]
+        >();
+        for (const candidate of candidates) {
+            const key = implementation(this.table(candidate));
+            groups.set(key, [...(groups.get(key) ?? []), candidate]);
+        }
+        if (groups.size < 2) return undefined;
+        const type = yielded;
+        const resultType =
+            !type || (type.flags & ts.TypeFlags.Void) !== 0
+                ? undefined
+                : (this.context.dataTypes.fromTsType(type, node) ??
+                  this.context.fail(
+                      node,
+                      "A member several classes override yields a value " +
+                          "outside the native data model, so one result " +
+                          "cannot hold what each override returns.",
+                  ));
+        const result = resultType
+            ? this.context.allocateTemporaryCppName("dispatch_result")
+            : undefined;
+        if (result) {
+            this.context.emit(
+                `${this.context.dataTypes.cppType(resultType!)} ${result}{};`,
+            );
+        }
+        const hierarchy = this.context.dataTypes.classHierarchy;
+        const tag = `${instance.cpp}->${classTagMember}`;
+        const arms = [...groups.values()];
+        arms.forEach((group, index) => {
+            const test = group
+                .map((candidate) => `${tag} == ${hierarchy.tag(candidate)}`)
+                .join(" || ");
+            this.context.emit(
+                index === 0
+                    ? `if (${test}) {`
+                    : index === arms.length - 1
+                      ? "} else {"
+                      : `} else if (${test}) {`,
+            );
+            this.context.increaseIndent();
+            this.context.enterRuntimeControlFlow();
+            try {
+                const value = lower(
+                    this.narrowedReceiver(instance, group, node),
+                );
+                if (result) {
+                    this.context.emit(
+                        `${result} = ${this.context.dataLowerer.compileKnownValueForSink(
+                            value,
+                            resultType!,
+                            node,
+                        )};`,
+                    );
+                } else if (value.cpp) {
+                    this.context.emit(
+                        value.kind === "void"
+                            ? `${value.cpp};`
+                            : `static_cast<void>(${value.cpp});`,
+                    );
+                }
+            } finally {
+                this.context.leaveRuntimeControlFlow();
+                this.context.decreaseIndent();
+            }
+        });
+        this.context.emit("}");
+        if (!result) return { kind: "void", cpp: "" };
+        this.context.registerNativeTemporary(result, resultType);
+        return {
+            ...this.context.dataValue(result, resultType!),
+            requiresExplicitDiscard: true,
+        };
+    }
+
+    /**
+     * Runs `work` as the inlined body of `method` on `instance`. A stored
+     * instance's method that reaches itself again on another stored
+     * instance recurses through run-time objects, which inlining cannot
+     * unroll, so it refuses rather than expanding without end.
+     */
+    private inlineOnReceiver<T>(
+        method: ts.MethodDeclaration,
+        instance: Value,
+        node: ts.Node,
+        work: () => T,
+    ): T {
+        const stored =
+            instance.dataType?.kind === "struct" &&
+            this.context.dataTypes.isClassStruct(instance.dataType.name);
+        if (!stored) return work();
+        if (this.storedReceiverMethods.has(method)) {
+            this.context.fail(
+                node,
+                `Method '${method.name.getText()}' calls itself on another ` +
+                    "stored instance; recursion through run-time objects " +
+                    "cannot be inlined.",
+            );
+        }
+        this.storedReceiverMethods.add(method);
+        try {
+            return work();
+        } finally {
+            this.storedReceiverMethods.delete(method);
+        }
+    }
+
+    /** Compiles the method a receiver's class resolved, with `this` bound to the receiver. */
+    private compileResolvedMethodCall(
+        instance: Value,
+        method: ts.MethodDeclaration | undefined,
+        methodName: string,
+        call: ts.CallExpression,
+        declaration: ts.ClassDeclaration,
+    ): Value {
         if (!method) {
             this.context.fail(
                 call,
@@ -1214,11 +1893,18 @@ export class ClassLowerer {
                     false,
                     argumentValues,
                 );
-                for (const statement of leading) {
-                    this.context.emitStatement(statement);
-                }
-                const result = this.context.compileValue(
-                    finalStatement.expression,
+                const result = this.inlineOnReceiver(
+                    method,
+                    instance,
+                    call,
+                    () => {
+                        for (const statement of leading) {
+                            this.context.emitStatement(statement);
+                        }
+                        return this.context.compileValue(
+                            finalStatement.expression!,
+                        );
+                    },
                 );
                 return {
                     ...result,
@@ -1229,7 +1915,9 @@ export class ClassLowerer {
                 this.context.bindings.popScope();
             }
         }
-        if (this.methodRecurses(declaration, method)) {
+        if (
+            this.methodRecurses(declaration, method, instance.classCandidates)
+        ) {
             return this.compileRecursiveMethod(
                 instance,
                 methodName,
@@ -1251,10 +1939,16 @@ export class ClassLowerer {
             const previousThis = this.context.activeThis();
             this.context.defineThis(instance);
             try {
-                const result = this.context.compileSharedMethod(
+                const result = this.inlineOnReceiver(
                     method,
+                    instance,
                     call,
-                    argumentValues,
+                    () =>
+                        this.context.compileSharedMethod(
+                            method,
+                            call,
+                            argumentValues,
+                        ),
                 );
                 if (result) return result;
             } finally {
@@ -1290,9 +1984,11 @@ export class ClassLowerer {
             this.context.increaseIndent();
             this.context.beginNativeFunctionBody(returnType);
             try {
-                for (const statement of method.body.statements) {
-                    this.context.emitStatement(statement);
-                }
+                this.inlineOnReceiver(method, instance, call, () => {
+                    for (const statement of method.body!.statements) {
+                        this.context.emitStatement(statement);
+                    }
+                });
             } finally {
                 this.context.endNativeFunctionBody();
                 this.context.decreaseIndent();
@@ -1328,6 +2024,25 @@ export class ClassLowerer {
         const argumentValue =
             evaluatedArgument ??
             this.compileClassArguments(setter, [value], "setter")[0]!;
+        const name = setter.name.getText();
+        const dispatched = this.dispatch(
+            instance,
+            (table) => classAccessors(table).setters[name],
+            (receiver) => {
+                const selected = receiver.recordSetters?.[name];
+                if (!selected) {
+                    this.context.fail(
+                        value,
+                        `Class '${receiver.classDeclaration?.name?.text ?? "?"}' has no setter '${name}'.`,
+                    );
+                }
+                this.compileSetter(receiver, selected, value, argumentValue);
+                return { kind: "void", cpp: "" };
+            },
+            value,
+            undefined,
+        );
+        if (dispatched) return;
         this.context.bindings.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
@@ -1562,13 +2277,23 @@ export class ClassLowerer {
         };
     }
 
+    /**
+     * Whether `method` reaches itself through calls on `this`. A call
+     * resolves through the receiver's classes -- each candidate of a stored
+     * receiver read as a base class -- as it would run.
+     */
     private methodRecurses(
         declaration: ts.ClassDeclaration,
         method: ts.MethodDeclaration,
+        candidates: readonly ts.ClassDeclaration[] = [declaration],
     ): boolean {
-        const cached = this.recursiveMethods.get(method);
+        const exact = candidates.length === 1;
+        const cache =
+            this.recursiveMethods.get(declaration) ??
+            new EmissionMap<ts.MethodDeclaration, boolean>();
+        const cached = exact ? cache.get(method) : undefined;
         if (cached !== undefined) return cached;
-        const { methods } = classMemberTable(declaration);
+        const tables = candidates.map((candidate) => this.table(candidate));
         const callees = (
             candidate: ts.MethodDeclaration,
         ): ts.MethodDeclaration[] => {
@@ -1581,8 +2306,13 @@ export class ClassLowerer {
                     node.expression.expression.kind ===
                         ts.SyntaxKind.ThisKeyword
                 ) {
-                    const called = methods.get(node.expression.name.text);
-                    if (called?.body) found.add(called);
+                    for (const table of tables) {
+                        const called = classMethod(
+                            table,
+                            node.expression.name.text,
+                        );
+                        if (called?.body) found.add(called);
+                    }
                 }
                 ts.forEachChild(node, visit);
             };
@@ -1598,7 +2328,10 @@ export class ClassLowerer {
             );
         };
         const recursive = reachesStart(method);
-        this.recursiveMethods.set(method, recursive);
+        if (exact) {
+            cache.set(method, recursive);
+            this.recursiveMethods.set(declaration, cache);
+        }
         return recursive;
     }
 
@@ -1921,38 +2654,196 @@ export class ClassLowerer {
         }
     }
 
-    private rejectUnsupportedMembers(declaration: ts.ClassDeclaration): void {
-        if (
-            declaration.heritageClauses?.some(
-                (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-            )
-        ) {
+    /**
+     * The receiver `owner.name = value` runs a class setter on when the owner
+     * is a stored instance: hydrated, so its class's setter -- or each
+     * override of it -- runs. Undefined when `name` is no class setter or the
+     * owner is not a stored instance, leaving nothing emitted.
+     */
+    public storedSetterOwner(
+        target: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const setter = this.context.checker
+            .getSymbolAtLocation(target.name)
+            ?.declarations?.some(
+                (declaration) =>
+                    ts.isSetAccessorDeclaration(declaration) &&
+                    ts.isClassDeclaration(declaration.parent) &&
+                    !declaration.getSourceFile().isDeclarationFile,
+            );
+        const stored =
+            setter &&
+            this.context.dataTypes.existingClassStruct(
+                this.context.checker.getNonNullableType(
+                    this.context.checker.getTypeAtLocation(target.expression),
+                ),
+            );
+        if (!stored) return undefined;
+        return this.context.probeEmission(() => {
+            const hydrated = this.hydrate(
+                this.context.compileValue(target.expression),
+                target.expression,
+            );
+            return hydrated?.recordSetters?.[target.name.text]
+                ? hydrated
+                : undefined;
+        });
+    }
+
+    /**
+     * The method a structural view of a class instance binds for `name`: the
+     * one its class resolves through the chain. A receiver of several classes
+     * that override it differently has no single function to bind.
+     */
+    public viewMethod(
+        value: Value,
+        name: string,
+        node: ts.Node,
+    ): ts.MethodDeclaration | undefined {
+        const declaration = value.classDeclaration;
+        if (!declaration) return undefined;
+        const methods = new Set(
+            (value.classCandidates ?? [declaration]).map((candidate) =>
+                classMethod(this.table(candidate), name),
+            ),
+        );
+        if (methods.size > 1) {
             this.context.fail(
-                declaration,
-                "Class inheritance is outside the supported subset.",
+                node,
+                `A structural view binds '${name}' once, but the classes this ` +
+                    "instance can be override it differently.",
             );
         }
-        rejectClassStaticBlocks(this.context, declaration);
-        for (const member of declaration.members) {
-            if (
-                !ts.isMethodDeclaration(member) &&
-                (ts.getCombinedModifierFlags(member) &
-                    ts.ModifierFlags.Static) !==
-                    0
-            ) {
-                if (
-                    ts.isPropertyDeclaration(member) &&
-                    member.initializer &&
-                    (ts.getCombinedModifierFlags(member) &
-                        ts.ModifierFlags.Readonly) !==
-                        0
-                ) {
-                    continue;
-                }
+        return [...methods][0];
+    }
+
+    /**
+     * `value instanceof declaration` for a class instance, as a C++
+     * condition: settled at generation when the instance's class is known,
+     * a test of the stored tag when it is one of several, and false for an
+     * empty stored reference. Undefined when `value` is no class instance.
+     */
+    public instanceOf(
+        value: Value,
+        declaration: ts.ClassDeclaration,
+        node: ts.Expression,
+    ): string | undefined {
+        const structName =
+            value.kind === "data" && value.dataType?.kind === "struct"
+                ? value.dataType.name
+                : undefined;
+        if (
+            structName &&
+            this.context.dataTypes.isClassStruct(structName) &&
+            !this.context.dataTypes.classStructTagged(structName)
+        ) {
+            const stored = this.context.dataTypes.classStruct(structName)!;
+            return classExtends(this.table(stored.declaration), declaration)
+                ? `static_cast<bool>(${value.cpp})`
+                : "false";
+        }
+        const record = this.hydrate(value, node) ?? value;
+        if (record.kind !== "record" || !record.classDeclaration)
+            return undefined;
+        const candidates = record.classCandidates ?? [record.classDeclaration];
+        const matching = candidates.filter((candidate) =>
+            classExtends(this.table(candidate), declaration),
+        );
+        const stored =
+            record.dataType?.kind === "struct" &&
+            this.context.dataTypes.isClassStruct(record.dataType.name);
+        if (matching.length === 0) return "false";
+        const tested =
+            matching.length === candidates.length
+                ? undefined
+                : `(${matching
+                      .map(
+                          (candidate) =>
+                              `${record.cpp}->${classTagMember} == ` +
+                              `${this.context.dataTypes.classHierarchy.tag(candidate)}`,
+                      )
+                      .join(" || ")})`;
+        if (!stored) return tested ?? "true";
+        const present = `static_cast<bool>(${record.cpp})`;
+        return tested ? `(${present} && ${tested})` : present;
+    }
+
+    /**
+     * `#name in value`: whether `value` carries the brand the class declaring
+     * `#name` installs on every instance it -- or a subclass -- constructs.
+     * A static private name brands the class itself.
+     */
+    public compileBrandCheck(expression: ts.BinaryExpression): string {
+        const name = expression.left as ts.PrivateIdentifier;
+        const member = this.context.checker
+            .getSymbolAtLocation(name)
+            ?.declarations?.find(ts.isClassElement);
+        const owner = member?.parent;
+        if (!member || !owner || !ts.isClassDeclaration(owner)) {
+            this.context.fail(
+                name,
+                `Private name '${name.text}' does not resolve to a class member.`,
+            );
+        }
+        const value = this.context.compileValue(expression.right);
+        if (isStaticMember(member)) {
+            if (value.kind === "record") {
+                return value.classStatics === owner ? "true" : "false";
+            }
+        } else {
+            if (value.classStatics) return "false";
+            const branded = this.instanceOf(value, owner, expression.right);
+            if (branded !== undefined) return branded;
+            if (value.kind === "record") return "false";
+        }
+        this.context.fail(
+            expression,
+            `The brand check '${name.text} in ...' is decided for class ` +
+                "instances and records; this value has no represented class.",
+        );
+    }
+
+    private rejectUnsupportedMembers(declaration: ts.ClassDeclaration): void {
+        const chain = classChain(this.table(declaration));
+        const privateNames = new Map<string, ts.ClassDeclaration>();
+        for (const link of chain) {
+            if (link.unsupportedHeritage) {
                 this.context.fail(
-                    member,
-                    "Static class fields and accessors are outside the supported subset.",
+                    link.unsupportedHeritage,
+                    `Class '${link.declaration.name?.text ?? "?"}' extends ` +
+                        `'${link.unsupportedHeritage.expression.getText()}', ` +
+                        "which is not a local class with a body; only " +
+                        "inheritance between local classes is lowered.",
                 );
+            }
+            for (const member of link.declaration.members) {
+                if (
+                    isStaticMember(member) &&
+                    (ts.isGetAccessorDeclaration(member) ||
+                        ts.isSetAccessorDeclaration(member))
+                ) {
+                    this.context.fail(
+                        member,
+                        "Static class accessors are outside the supported subset.",
+                    );
+                }
+            }
+            // One record holds the fields of the whole chain by name, and a
+            // private name is private to the class that declares it: two
+            // classes of one chain may each declare `#x`, which that record
+            // could not keep apart.
+            for (const [name, node] of declaredPrivateNames(link.declaration)) {
+                const other = privateNames.get(name);
+                if (other && other !== link.declaration) {
+                    this.context.fail(
+                        node,
+                        `Private name '${name}' is declared by both ` +
+                            `'${link.declaration.name?.text ?? "?"}' and ` +
+                            `'${other.name?.text ?? "?"}'; the instance ` +
+                            "record cannot keep the two apart.",
+                    );
+                }
+                privateNames.set(name, link.declaration);
             }
         }
     }

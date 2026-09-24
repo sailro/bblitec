@@ -2,6 +2,7 @@ import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { classChain, classMemberTable } from "./class-members.js";
 import {
     isPinnedType,
     pinnedHandleKind,
@@ -302,7 +303,18 @@ export function walkReachedLoopNodes(
                             (ts.isClassDeclaration(declaration) ||
                                 ts.isClassExpression(declaration))
                         ) {
-                            for (const member of declaration.members) {
+                            // Base class field initializers run too.
+                            const owners = ts.isClassDeclaration(declaration)
+                                ? classChain(
+                                      classMemberTable(
+                                          context.checker,
+                                          declaration,
+                                      ),
+                                  ).map((link) => link.declaration)
+                                : [declaration];
+                            for (const member of owners.flatMap(
+                                (owner) => owner.members,
+                            )) {
                                 if (
                                     ts.isPropertyDeclaration(member) &&
                                     member.initializer

@@ -23,7 +23,7 @@ import {
     type DataType,
 } from "./data-types.js";
 import { MATH_MEMBERS, mathMemberCall } from "./math-intrinsics.js";
-import { classMemberTable } from "./classes.js";
+import { classMemberTable, classMethod } from "./class-members.js";
 import type { Value } from "./types.js";
 import {
     borrowsReferenceParameter,
@@ -971,10 +971,24 @@ export class NativeFunctionLowerer {
                           ?.declaration
                     : undefined));
         if (!declaration) return undefined;
-        const method = classMemberTable(declaration).methods.get(
-            callee.name.text,
+        // A receiver of several classes runs whichever override its class
+        // resolves; only one implementation shared by all of them is known.
+        const hierarchy = this.context.dataTypes.classHierarchy;
+        const candidates =
+            value.classCandidates ??
+            (value.kind === "data" && hierarchy.inHierarchy(declaration)
+                ? hierarchy.concreteClasses(declaration)
+                : [declaration]);
+        const methods = new Set(
+            candidates.map((candidate) =>
+                classMethod(
+                    classMemberTable(this.context.checker, candidate),
+                    callee.name.text,
+                ),
+            ),
         );
-        return method?.body ? method : undefined;
+        const [method] = methods;
+        return methods.size === 1 && method?.body ? method : undefined;
     }
 
     private nodeCannotRunUserCode(
@@ -1344,10 +1358,18 @@ export class NativeFunctionLowerer {
             this.rejectedMethods.add(method);
             return undefined;
         };
+        // A class in a hierarchy resolves `this` calls per run-time class,
+        // which one emitted function over field channels cannot.
         if (
             classDeclaration.heritageClauses?.length ||
+            this.context.dataTypes.classHierarchy.inHierarchy(
+                classDeclaration,
+            ) ||
             classDeclaration.typeParameters?.length ||
-            Object.keys(classMemberTable(classDeclaration).setters).length > 0
+            Object.keys(
+                classMemberTable(this.context.checker, classDeclaration)
+                    .setters,
+            ).length > 0
         ) {
             return reject();
         }
@@ -1391,8 +1413,10 @@ export class NativeFunctionLowerer {
         // Field channels, in class declaration order so the emitted
         // signature is deterministic.
         const fields: MethodFieldChannel[] = [];
-        for (const [name, member] of classMemberTable(classDeclaration)
-            .fields) {
+        for (const [name, member] of classMemberTable(
+            this.context.checker,
+            classDeclaration,
+        ).fields) {
             if (!closure.fieldNames.has(name)) {
                 continue;
             }
@@ -1456,7 +1480,9 @@ export class NativeFunctionLowerer {
         ) {
             return reject();
         }
-        const getters = { ...classMemberTable(classDeclaration).getters };
+        const getters = {
+            ...classMemberTable(this.context.checker, classDeclaration).getters,
+        };
         const signature: NativeMethodSignature = {
             cppName: this.uniqueName(
                 `${classDeclaration.name?.text ?? "Class"}_${method.name.getText()}`,
@@ -1566,7 +1592,7 @@ export class NativeFunctionLowerer {
         method: ts.MethodDeclaration,
         classDeclaration: ts.ClassDeclaration,
     ): MethodClosure | undefined {
-        const table = classMemberTable(classDeclaration);
+        const table = classMemberTable(this.context.checker, classDeclaration);
         const memberNamed = (
             name: string,
         ):

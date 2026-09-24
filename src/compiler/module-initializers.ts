@@ -5,6 +5,7 @@ import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { writeReceiverMethods } from "./data-methods.js";
 import { aliasTarget, type CompilerSymbols } from "./symbols.js";
+import { classHasStaticState, classMemberTable } from "./class-members.js";
 import {
     assignmentTargets,
     isAssignmentExpression,
@@ -15,11 +16,14 @@ import {
 } from "./syntax.js";
 
 /** Statements JavaScript executes while evaluating an imported module. */
-export function isModuleInitializerStatement(statement: ts.Statement): boolean {
-    // A class body runs nothing when its declaration evaluates -- except a
-    // `static { ... }` block, which runs then.
+export function isModuleInitializerStatement(
+    statement: ts.Statement,
+    checker: ts.TypeChecker,
+): boolean {
+    // A class body runs nothing when its declaration evaluates -- except its
+    // static fields and `static { ... }` blocks, which run then.
     if (ts.isClassDeclaration(statement)) {
-        return declaresClassStaticBlock(statement);
+        return classHasStaticState(checker, statement);
     }
     return !(
         ts.isImportDeclaration(statement) ||
@@ -198,7 +202,7 @@ export function planEntryModuleState(
     sourceFile: ts.SourceFile,
     checker: ts.TypeChecker,
     symbols: CompilerSymbols,
-): readonly ts.VariableStatement[] {
+): readonly ts.Statement[] {
     return new ModuleInitializerPlanner(
         program,
         sourceFile,
@@ -317,7 +321,7 @@ class ModuleInitializerPlanner {
      * initializer still describes it and the data lowerer keeps owning that
      * representation.
      */
-    public planEntryState(): readonly ts.VariableStatement[] {
+    public planEntryState(): readonly ts.Statement[] {
         // `true`: at module scope an incremented name is storage too.
         const rebound = collectReboundSymbols(
             this.sourceFile,
@@ -328,8 +332,17 @@ class ModuleInitializerPlanner {
             this.sourceFile,
             this.symbols,
         );
-        const result: ts.VariableStatement[] = [];
+        const result: ts.Statement[] = [];
         for (const statement of this.sourceFile.statements) {
+            // A class declaration beside `main` still evaluates its static
+            // fields and blocks when the module does.
+            if (
+                ts.isClassDeclaration(statement) &&
+                classHasStaticState(this.checker, statement)
+            ) {
+                result.push(statement);
+                continue;
+            }
             if (!ts.isVariableStatement(statement)) {
                 continue;
             }
@@ -387,6 +400,17 @@ class ModuleInitializerPlanner {
         const mutatedContainers =
             subset === "mutable" ? this.mutatedContainerSymbols() : undefined;
         for (const statement of file.statements) {
+            // A class's static fields are storage its declaration creates.
+            if (ts.isClassDeclaration(statement)) {
+                for (const field of classMemberTable(
+                    this.checker,
+                    statement,
+                ).staticFields.values()) {
+                    const symbol = this.symbols.valueSymbol(field.name);
+                    if (symbol) result.add(symbol);
+                }
+                continue;
+            }
             if (!ts.isVariableStatement(statement)) {
                 continue;
             }
@@ -556,7 +580,7 @@ class ModuleInitializerPlanner {
                 { functions: "skip" },
             );
         for (const statement of file.statements) {
-            if (!isModuleInitializerStatement(statement)) {
+            if (!isModuleInitializerStatement(statement, this.checker)) {
                 continue;
             }
             if (ts.isVariableStatement(statement)) {

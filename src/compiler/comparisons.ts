@@ -112,6 +112,7 @@ export interface ComparisonContext extends Pick<
     | "symbols"
     | "evaluator"
     | "dataTypes"
+    | "classLowerer"
     | "compileValue"
     | "propertyAccess"
     | "bindings"
@@ -174,10 +175,10 @@ export function foldBooleanComparison(
 }
 
 /**
- * `value instanceof LocalClass` is decided at generation: a class
- * instance is a compile-time record that names its class, and a struct
- * stored in data names the class it was mapped from. A value that could
- * be an instance of several classes has no representation yet.
+ * `value instanceof LocalClass` is decided at generation for a class
+ * instance whose class is known -- a compile-time record names it, and a
+ * struct stored in data names the class it was mapped from -- and on the
+ * stored tag for a receiver a class hierarchy leaves open.
  */
 export function compileClassInstanceOf(
     context: ComparisonContext,
@@ -202,9 +203,12 @@ export function compileClassInstanceOf(
             );
         return `${value.cpp}.instance_of<${context.dataTypes.cppType(type)}>()`;
     }
-    if (value.kind === "record" && value.classDeclaration) {
-        return value.classDeclaration === declaration ? "true" : "false";
-    }
+    const instance = context.classLowerer.instanceOf(
+        value,
+        declaration,
+        expression.left,
+    );
+    if (instance !== undefined) return instance;
     if (value.kind === "data" && value.dataType?.kind === "struct") {
         const classType = context.dataTypes.fromTsType(
             context.checker.getDeclaredTypeOfSymbol(symbol),

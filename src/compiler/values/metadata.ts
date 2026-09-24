@@ -42,6 +42,8 @@ const resourceMetadataFields = {
     record: [
         "nodeParticleProvider",
         "classDeclaration",
+        "classCandidates",
+        "classStatics",
         "classTypeArguments",
         "nativeError",
         "sceneNodeVector",
