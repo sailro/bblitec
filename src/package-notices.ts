@@ -119,6 +119,8 @@ export function linkedPortNotices(request: NoticeRequest): PortNotice[] {
 
 interface InstalledPort {
     depends: Set<string>;
+    /** From the port's own paragraph (a feature paragraph carries none). */
+    version?: string;
 }
 
 /** The installed ports of `triplet` in a vcpkg install's status database, with their dependencies. */
@@ -147,6 +149,8 @@ function installedPorts(
         )
             continue;
         const port = ports.get(name) ?? { depends: new Set<string>() };
+        const version = fields.get("Version");
+        if (version !== undefined) port.version = version;
         for (const dependency of (fields.get("Depends") ?? "").split(",")) {
             const [depName, depTriplet] = dependency
                 .trim()
@@ -164,6 +168,36 @@ function installedPorts(
 /** Build helpers vcpkg installs for ports, which link no code. */
 const buildOnlyPort = (port: string): boolean =>
     port.startsWith("vcpkg-") || port === "pkgconf";
+
+/**
+ * Whether the installed `port` holds only files under `share/` -- CMake
+ * helpers and vcpkg metadata such as boost-uninstall's, which Boost's ports
+ * depend on -- so it compiles and links nothing into the package. Read from
+ * the file list vcpkg records for it (`vcpkg/info/<port>_<version>_<triplet>.list`).
+ */
+function sharesOnly(
+    installed: string,
+    triplet: string,
+    name: string,
+    port: InstalledPort,
+): boolean {
+    if (port.version === undefined)
+        throw new Error(
+            `vcpkg port '${name}' has no version in ${join(installed, "vcpkg", "status")}.`,
+        );
+    const list = join(
+        installed,
+        "vcpkg",
+        "info",
+        `${name}_${port.version}_${triplet}.list`,
+    );
+    if (!existsSync(list))
+        throw new Error(`vcpkg file list not found for '${name}': ${list}`);
+    return readFileSync(list, "utf8")
+        .split(/\r?\n/)
+        .filter((file) => file !== "" && !file.endsWith("/"))
+        .every((file) => file.startsWith(`${triplet}/share/`));
+}
 
 /** The notices the package of `request`'s build owes, in a stable order. */
 export function packageNotices(
@@ -212,16 +246,16 @@ export function packageNotices(
     const ports = installedPorts(installed, triplet);
     const named = new Set(linked.map(({ port }) => port));
     const pending = [...named];
-    const reached = new Set<string>();
+    const reached = new Map<string, InstalledPort>();
     while (pending.length > 0) {
         const port = pending.pop()!;
         if (reached.has(port)) continue;
-        reached.add(port);
         const entry = ports.get(port);
         if (!entry)
             throw new Error(
                 `The package links vcpkg port '${port}', which the install at ${installed} (${triplet}) does not hold.`,
             );
+        reached.set(port, entry);
         for (const dependency of entry.depends) {
             if (buildOnlyPort(dependency)) continue;
             // The trimmed SDL replaces vcpkg's at link time.
@@ -229,8 +263,11 @@ export function packageNotices(
             pending.push(dependency);
         }
     }
-    for (const port of [...reached].sort()) {
-        if (!named.has(port))
+    const byName = [...reached].sort(([left], [right]) =>
+        left < right ? -1 : 1,
+    );
+    for (const [port, entry] of byName) {
+        if (!named.has(port) && !sharesOnly(installed, triplet, port, entry))
             add(`${port}.txt`, join(share, port, "copyright"));
     }
 

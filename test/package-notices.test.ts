@@ -216,6 +216,12 @@ test("package notices copy the artifacts' own notices and every transitive vcpkg
     };
     const triplet = "x64-windows-static";
     const installed = join(root, "installed");
+    // vcpkg's record of what each port installed.
+    const installs = (port: string, files: string[]): void =>
+        write(
+            `installed/vcpkg/info/${port}_1.0_${triplet}.list`,
+            [`${triplet}/`, `${triplet}/share/`, ...files, ""].join("\n"),
+        );
     for (const port of [
         "sdl3-image",
         "libpng",
@@ -224,15 +230,26 @@ test("package notices copy the artifacts' own notices and every transitive vcpkg
         "freetype",
         "nlohmann-json",
         "brotli",
-    ])
+    ]) {
         write(
             `installed/${triplet}/share/${port}/copyright`,
             `${port} licence`,
         );
+        installs(port, [
+            `${triplet}/lib/${port}.lib`,
+            `${triplet}/share/${port}/copyright`,
+        ]);
+    }
+    // A port that installs only share/ files (CMake helpers, metadata) links
+    // nothing and owes no notice; Boost's ports depend on this one.
+    installs("boost-uninstall", [
+        `${triplet}/share/boost-uninstall/vcpkg_abi_info.txt`,
+        `${triplet}/share/boost/vcpkg-cmake-wrapper.cmake`,
+    ]);
     const paragraph = (name: string, depends: string, feature?: string) =>
         [
             `Package: ${name}`,
-            ...(feature ? [`Feature: ${feature}`] : []),
+            ...(feature ? [`Feature: ${feature}`] : ["Version: 1.0"]),
             ...(depends ? [`Depends: ${depends}`] : []),
             `Architecture: ${triplet}`,
             "Status: install ok installed",
@@ -252,7 +269,8 @@ test("package notices copy the artifacts' own notices and every transitive vcpkg
             paragraph("nlohmann-json", ""),
             // A transitive port the table does not name travels under its own name.
             paragraph("freetype", "brotli"),
-            paragraph("brotli", ""),
+            paragraph("brotli", "boost-uninstall"),
+            paragraph("boost-uninstall", ""),
             "",
         ].join("\n\n"),
     );
@@ -332,6 +350,12 @@ test("package notices copy the artifacts' own notices and every transitive vcpkg
     assert.throws(
         () => packageNotices(request([], { BBLITE_BACKEND: "DAWN" })),
         /records no BBLITE_DAWN_DIR/,
+    );
+    // A transitive port whose file list is missing refuses, not guesses.
+    rmSync(join(installed, "vcpkg", "info", `brotli_1.0_${triplet}.list`));
+    assert.throws(
+        () => packageNotices(request(["ui:rml"])),
+        /vcpkg file list not found for 'brotli'/,
     );
 });
 
