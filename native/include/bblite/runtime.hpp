@@ -2621,12 +2621,14 @@ struct MaterialRecord {
     std::uint32_t diffuse_coord_index = 0;
     std::uint32_t specular_coord_index = 0;
     std::uint32_t ambient_coord_index = 0;
-    float metallic_factor = 1.0f;
-    float roughness_factor = 1.0f;
-    float direct_intensity = 1.0f;
-    float environment_intensity = 1.0f;
-    // Pinned default: the dielectric F0 the PBR material seeds (0.04).
-    float reflectance = 0.04f;
+    // The PBR lanes below carry no initializers: every PBR record is seeded
+    // from the pin's own writer defaults (`pbrMaterialRecordSeedCpp`), then
+    // takes its creation options or its loader's props.
+    float metallic_factor{};
+    float roughness_factor{};
+    float direct_intensity{};
+    float environment_intensity{};
+    float reflectance{};
     // KHR_materials_specular, through the pinned dielectric reflectance ext:
     // specularFactor scales the dielectric F0 and its grazing weight, and
     // specularColorFactor tints the dielectric reflectance. The fragment reads
@@ -2634,41 +2636,44 @@ struct MaterialRecord {
     // composes `dielectricF0 = reflectance * metallicF0Factor`, so the factor
     // is kept apart from the base reflectance rather than folded into it.
     bool has_metallic_reflectance = false;
-    float metallic_f0_factor = 1.0f;
-    float specular_weight = 1.0f;
-    Color3 metallic_reflectance_color{1.0f, 1.0f, 1.0f};
-    float normal_texture_scale = 1.0f;
-    float transmission_factor = 0.0f;
-    // Pinned default: gltf-ext-dielectric.ts treats ior 1.5 as neutral.
-    float index_of_refraction = 1.5f;
-    float thickness = 0.0f;
+    float metallic_f0_factor{};
+    float specular_weight{};
+    Color3 metallic_reflectance_color{};
+    float normal_texture_scale{};
+    float transmission_factor{};
+    float index_of_refraction{};
+    float thickness{};
     bool use_thickness_as_depth = false;
-    Color3 attenuation_color{1.0f, 1.0f, 1.0f};
-    float attenuation_distance = 1.0f;
-    float dispersion = 0.0f;
+    Color3 attenuation_color{};
+    float attenuation_distance{};
+    float dispersion{};
     bool has_subsurface = false;
-    float subsurface_intensity = 1.0f;
-    Color3 subsurface_color{1.0f, 1.0f, 1.0f};
-    Color3 subsurface_diffusion_distance{1.0f, 1.0f, 1.0f};
-    float subsurface_minimum_thickness = 0.0f;
-    float subsurface_maximum_thickness = 1.0f;
-    float clearcoat_intensity = 0.0f;
-    float clearcoat_roughness = 0.0f;
-    // Pinned default: the coat ior the clearcoat layer seeds.
-    float clearcoat_index_of_refraction = 1.5f;
-    float clearcoat_normal_scale = 1.0f;
-    Color3 sheen_color{0.0f, 0.0f, 0.0f};
-    float sheen_roughness = 0.0f;
-    float sheen_intensity = 1.0f;
+    float subsurface_intensity{};
+    Color3 subsurface_color{};
+    Color3 subsurface_diffusion_distance{};
+    float subsurface_minimum_thickness{};
+    float subsurface_maximum_thickness{};
+    // The optional layers, present as the pin's own `isEnabled`: a material
+    // whose `_clearCoat`, `_sheen` or `_iridescence` is absent or disabled
+    // composes and writes no slice for it (each writer's `?.isEnabled`
+    // guard), whatever its lanes hold.
+    bool has_clearcoat = false;
+    float clearcoat_intensity{};
+    float clearcoat_roughness{};
+    float clearcoat_index_of_refraction{};
+    float clearcoat_normal_scale{};
+    bool has_sheen = false;
+    Color3 sheen_color{};
+    float sheen_roughness{};
+    float sheen_intensity{};
     bool shadow_only = false;
     Color3 shadow_only_color{};
-    float shadow_only_opacity = 1.0f;
-    float shadow_only_falloff = 1.0f;
-    // KHR_materials_anisotropy / `setPbrAnisotropy`. The direction is the
-    // pin's own `direction ?? [1, 0]`, written beside the intensity into
+    float shadow_only_opacity{};
+    float shadow_only_falloff{};
+    // KHR_materials_anisotropy / `setPbrAnisotropy`, written into
     // `anisotropyParams` by the extension's own writer.
-    float anisotropy_intensity = 1.0f;
-    Vec2 anisotropy_direction{1.0f, 0.0f};
+    float anisotropy_intensity{};
+    Vec2 anisotropy_direction{};
     bool has_anisotropy = false;
     // `setPbrLightmap`'s intensity multiplier, the one lightmap quantity
     // that is not composed into the fragment: the pin's own
@@ -2680,12 +2685,11 @@ struct MaterialRecord {
     float lightmap_coord_index = 1.0f;
     bool lightmap_shadowmap = false;
     bool lightmap_texture_srgb = false;
-    float iridescence_intensity = 0.0f;
-    // Pinned defaults: KHR_materials_iridescence ior 1.3, thickness
-    // 100..400 nm (gltf-ext-iridescence.ts).
-    float iridescence_index_of_refraction = 1.3f;
-    float iridescence_minimum_thickness = 100.0f;
-    float iridescence_maximum_thickness = 400.0f;
+    bool has_iridescence = false;
+    float iridescence_intensity{};
+    float iridescence_index_of_refraction{};
+    float iridescence_minimum_thickness{};
+    float iridescence_maximum_thickness{};
     bool has_ior = false;
     bool has_volume = false;
     bool skybox_mode = false;
@@ -2693,18 +2697,17 @@ struct MaterialRecord {
     // `usePhysicalLightFalloff`, the pin's own default-true property. The
     // composed punctual arms carry both falloffs and select on the material
     // UBO's `lightFalloffMode`, which `_writeMaterialData` fills from here.
-    bool use_physical_light_falloff = true;
+    bool use_physical_light_falloff = false;
     bool has_occlusion_texture = false;
     // glTF occlusionTexture.strength, which the fragment mixes toward 1. The
     // pin forces its reflectance ext on when this is animated so the mix
     // exists; ours is on the core path, so the value simply rides here.
-    float occlusion_strength = 1.0f;
+    float occlusion_strength{};
     bool unlit = false;
     // setPbrUnlit's optional linear-RGB tint (src/material/pbr/set-unlit.ts).
     // The pin stores it only when the caller supplies one and the writer
-    // reads `_unlitColor ?? [1, 1, 1]`, so an absent tint is the identity
-    // this default already is.
-    Color3 unlit_color{1.0f, 1.0f, 1.0f};
+    // reads `_unlitColor ?? [1, 1, 1]`, which the seed writes.
+    Color3 unlit_color{};
     bool no_color = false;
     /** Original material copied into a no-colour/ESM view. */
     MaterialHandle source_material{};

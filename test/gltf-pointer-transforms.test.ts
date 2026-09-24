@@ -171,6 +171,8 @@ ${header.slice(start, structEnd)}
 ${header.slice(writerStart, writerEnd)}
 int main() {
     MaterialRecord material{};
+    // The pin's layer is \`isEnabled\`, the record's presence flag.
+    material.has_${layer.name} = true;
     ${transforms
         .slice(0, layer.fields.length)
         .map((texture, index) =>
