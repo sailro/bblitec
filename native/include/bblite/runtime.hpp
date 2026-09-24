@@ -1994,7 +1994,6 @@ struct ModelGeometry {
      */
     bool has_uvs = true;
     bool has_vertex_colors = false;
-    bool flat_normals = false;
     /** The object-local box `Mesh.boundMin`/`boundMax` hold. */
     Vec3 bounds_min{};
     Vec3 bounds_max{};

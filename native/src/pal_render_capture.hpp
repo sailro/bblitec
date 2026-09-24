@@ -822,7 +822,6 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
         json.field("vertexCount", geometry.vertices.size());
         json.field("indexCount", geometry.indices.size());
         json.field("hasTangents", geometry.has_tangents);
-        json.field("flatNormals", geometry.flat_normals);
         json.field("topology", topology_name(geometry.topology));
         json.field("morphTargets", geometry.morph_positions.size());
         json.field("boundsMin", geometry.bounds_min);

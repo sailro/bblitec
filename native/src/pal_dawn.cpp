@@ -9934,8 +9934,7 @@ public:
                 }
 #if BBLITE_GPU_DEFORMATION
                 if (mesh_world_item) {
-                    const DeformationUniforms deformation = build_deformation_uniforms(
-                        mesh, engine.geometries[item.geometry].flat_normals);
+                    const DeformationUniforms deformation = build_deformation_uniforms(mesh);
                     wgpuQueueWriteBuffer(state.queue, dawn_mesh.deformation_uniforms, 0,
                                          &deformation, sizeof(deformation));
                 }

@@ -1145,7 +1145,7 @@ struct DeformationUniforms {
     float options[4]{};
 };
 
-inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh, bool flat_normals) {
+inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh) {
     DeformationUniforms result;
     for (std::array<float, 16>& matrix : result.bone_matrices) {
         matrix[0] = 1.0f;
@@ -1170,7 +1170,6 @@ inline DeformationUniforms build_deformation_uniforms(const MeshRecord& mesh, bo
     }
     std::copy(mesh.morph_weights.begin(), mesh.morph_weights.end(), result.morph_weights);
     result.options[0] = 1.0f;
-    result.options[1] = flat_normals ? 1.0f : 0.0f;
     return result;
 }
 #endif

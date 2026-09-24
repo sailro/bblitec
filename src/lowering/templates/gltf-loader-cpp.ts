@@ -1023,8 +1023,11 @@ ${
                 animation_runtime->skins.at(unsigned_value(required(planned_skin->as_object(), "index"))).joints.size())
                 throw std::runtime_error("glTF skeleton storage disagrees with its joint bindings.");
             const AccessorInfo& positions = accessors.at(unsigned_value(required(attributes, "POSITION")));
-            const AccessorInfo* normals = required(planned, "flatNormal").as_boolean()
-                ? nullptr : &accessors.at(unsigned_value(required(attributes, "NORMAL")));
+            // A primitive without NORMAL still packages one: the pin's
+            // computeSmoothNormals output, which it uploads beside the
+            // derivative flat normal its PBR fragment composes.
+            const AccessorInfo& normals = accessors.at(unsigned_value(required(attributes, "NORMAL")));
+            const bool flat_normal = required(planned, "flatNormal").as_boolean();
             const AccessorInfo* tangents = optional(attributes, "TANGENT")
                 ? &accessors.at(unsigned_value(*optional(attributes, "TANGENT")))
                 : nullptr;
@@ -1109,13 +1112,11 @@ ${
                     read_component(buffer, container, views, positions, index, 1),
                     read_component(buffer, container, views, positions, index, 2),
                 };
-                if (normals) {
-                    vertex.normal = Vec3{
-                        read_component(buffer, container, views, *normals, index, 0),
-                        read_component(buffer, container, views, *normals, index, 1),
-                        read_component(buffer, container, views, *normals, index, 2),
-                    };
-                }
+                vertex.normal = Vec3{
+                    read_component(buffer, container, views, normals, index, 0),
+                    read_component(buffer, container, views, normals, index, 1),
+                    read_component(buffer, container, views, normals, index, 2),
+                };
                 if (tangents) {
                     vertex.tangent = Vec4{
                         read_component(buffer, container, views, *tangents, index, 0),
@@ -1236,10 +1237,9 @@ ${
                         "glTF primitive index exceeds its vertex count.");
                 }
             }
-            // The winding swap and the flat-normal fold below are both
-            // triangle facts: a mirrored transform reverses a face's winding,
-            // and a face normal is a property of a triangle. A point or a
-            // line has neither, and the pin's own flat-normal expression --
+            // The winding swap is a triangle fact: a mirrored transform
+            // reverses a face's winding. The pin's flat normal for a
+            // primitive without NORMAL -- its PBR fragment's
             // normalize(cross(dpdx(worldPos), dpdy(worldPos))) -- needs a
             // fragment quad with area to differentiate over, which a
             // one-pixel line and a point do not give it. So a non-triangle
@@ -1247,7 +1247,7 @@ ${
             // derivative both backends would evaluate at zero.
             if (
                 geometry.topology != MeshTopology::triangles &&
-                !normals) {
+                flat_normal) {
                 throw std::runtime_error(
                     "A glTF point or line primitive with no NORMAL "
                     "accessor reaches the pinned flat-normal path, whose "
@@ -1261,75 +1261,6 @@ ${
                     std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
                 }
                 geometry.source_indices_reversed = true;
-            }
-            if (!normals) {
-                geometry.flat_normals = true;
-                std::vector<ModelVertex> flat_vertices;
-                flat_vertices.reserve(geometry.indices.size());
-                std::vector<std::vector<Vec3>> flat_morph_positions(
-                    geometry.morph_positions.size());
-                std::vector<std::vector<Vec3>> flat_morph_normals(
-                    geometry.morph_normals.size());
-                for (const std::uint32_t index : geometry.indices) {
-                    flat_vertices.push_back(
-                        geometry.vertices.at(index));
-                    for (std::size_t target = 0; target < flat_morph_positions.size(); ++target) {
-                        flat_morph_positions[target].push_back(
-                            geometry.morph_positions[target].at(index));
-                        flat_morph_normals[target].push_back(
-                            geometry.morph_normals[target].at(index));
-                    }
-                }
-                geometry.vertices = std::move(flat_vertices);
-                geometry.morph_positions =
-                    std::move(flat_morph_positions);
-                geometry.morph_normals =
-                    std::move(flat_morph_normals);
-                geometry.indices.resize(geometry.vertices.size());
-                for (
-                    std::size_t index = 0;
-                    index < geometry.indices.size();
-                    ++index) {
-                    geometry.indices[index] =
-                        static_cast<std::uint32_t>(index);
-                }
-                for (
-                    std::size_t index = 0;
-                    index < geometry.vertices.size();
-                    index += 3) {
-                    ModelVertex& a = geometry.vertices[index];
-                    ModelVertex& b = geometry.vertices[index + 1];
-                    ModelVertex& c = geometry.vertices[index + 2];
-                    const Vec3 edge1{
-                        b.position.x - a.position.x,
-                        b.position.y - a.position.y,
-                        b.position.z - a.position.z,
-                    };
-                    const Vec3 edge2{
-                        c.position.x - a.position.x,
-                        c.position.y - a.position.y,
-                        c.position.z - a.position.z,
-                    };
-                    // The pin's flat normal is the fragment stage's
-                    // normalize(cross(dpdx(worldPos), dpdy(worldPos))),
-                    // the face normal of the WORLD triangle. Its CPU
-                    // stand-in is the local face normal, which the vertex
-                    // stage's normal matrix carries to the world: a
-                    // mirrored world reverses the cross product of its
-                    // edges but not that matrix, so the local face takes
-                    // the loaded world's handedness.
-                    const float handedness = mirrored_world ? -1.0f : 1.0f;
-                    const Vec3 face{
-                        handedness * (edge2.y * edge1.z - edge2.z * edge1.y),
-                        handedness * (edge2.z * edge1.x - edge2.x * edge1.z),
-                        handedness * (edge2.x * edge1.y - edge2.y * edge1.x),
-                    };
-                    const Vec3 normal =
-                        upstream::normalize_baked_direction(face);
-                    a.normal = normal;
-                    b.normal = normal;
-                    c.normal = normal;
-                }
             }
             geometry.has_tangents = tangents != nullptr;
             geometry.has_uvs = true;

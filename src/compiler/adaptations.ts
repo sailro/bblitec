@@ -2,7 +2,6 @@
 import type { LoweringServices } from "./lowering-services.js";
 import type { CompileAdaptation } from "../fidelity.js";
 import { pixelsSourcePrefix } from "../executed-module-assets.js";
-import { bakedDirectionMinimumLength } from "../lowering/pinned-vertex-normalization.js";
 import type { Feature } from "./types.js";
 
 export interface AdaptationContext extends Pick<
@@ -706,18 +705,6 @@ export function compileAdaptations(
                 "upstream formula marker tests",
                 "renderer-fidelity.json",
                 "CPU/GPU visual parity",
-            ],
-        });
-        adaptations.push({
-            id: "guarded-cpu-vertex-normalization",
-            category: "rendering",
-            sourceSemantics:
-                "Material vertex shaders normalize their normal/tangent directions with WGSL f32 arithmetic.",
-            nativeSemantics: `The CPU vertex bake projects the pinned normalization through typed WGSL lowering after its world transform, retaining f32 intermediates and division. It returns zero unless the length is strictly above ${bakedDirectionMinimumLength}; this guard is a native adaptation, not the JavaScript tuple/object normalizer's epsilon or fallback.`,
-            risk: "medium",
-            validation: [
-                "compiled normalization bit-pattern and threshold checks",
-                "both-backend scene parity",
             ],
         });
         adaptations.push({
