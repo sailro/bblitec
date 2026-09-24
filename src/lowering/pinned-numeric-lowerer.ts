@@ -1445,9 +1445,15 @@ export class PinnedNumericLowerer {
                     this.scope.bindings.set(name, { ...value, cpp });
                 } else {
                     // A second name for an owned local is not the owner: a
-                    // store through it must not move the storage away.
-                    const { owned: _owned, ...shared } = alias;
-                    this.scope.bindings.set(name, shared);
+                    // store through it must not move the storage away. Any
+                    // other alias IS the binding, which a caller's method
+                    // hook may key on.
+                    if (alias.owned) {
+                        const { owned: _owned, ...shared } = alias;
+                        this.scope.bindings.set(name, shared);
+                    } else {
+                        this.scope.bindings.set(name, alias);
+                    }
                 }
                 // An opaque record's members are bound by their dotted
                 // text, so the alias carries every member path the
@@ -3360,11 +3366,13 @@ export class PinnedNumericLowerer {
         }
         // `target.set(source[, offset])` between two typed arrays of one
         // element type: the whole run copied in, and the spec's RangeError
-        // where it would not fit. A caller's `arrayCopy` spells the
-        // two-argument form over storage it owns.
+        // where it would not fit. A caller's own `set` method, or its
+        // `arrayCopy` for the two-argument form, spells it over storage the
+        // caller owns (a fixed `std::array`, say) instead.
         if (
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "set" &&
+            !this.scope.methods?.has("set") &&
             (node.arguments.length === 1 ||
                 (node.arguments.length === 2 && !this.scope.arrayCopy))
         ) {
