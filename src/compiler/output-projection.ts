@@ -203,6 +203,7 @@ export const featureSources: Record<Feature, string[]> = {
     "shadow:pcf-directional": [],
     "shadow:csm": [],
     "shadow:task": [],
+    "shadow:morph-bounds": [],
     "sprite:2d": [],
     "sprite:2d-depth-host": [],
     "sprite:2d-y-sort": [],

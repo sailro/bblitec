@@ -4056,8 +4056,12 @@ struct Engine {
      */
 #if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
     std::vector<std::unique_ptr<UtilityLayerRecord>> utility_layers;
+#if !defined(BBLITE_HAS_CAMERA_GIZMOS) || BBLITE_HAS_CAMERA_GIZMOS
     std::vector<CameraGizmoRecord> camera_gizmos;
+#endif
+#if !defined(BBLITE_HAS_LIGHT_GIZMOS) || BBLITE_HAS_LIGHT_GIZMOS
     std::vector<LightGizmoRecord> light_gizmos;
+#endif
     std::vector<EditGizmoRecord> edit_gizmos;
     std::weak_ptr<PointerDragDispatcher> canvas_pointer_dispatcher;
     std::vector<BoundingBoxGizmoRecord> bounding_box_gizmos;
@@ -5743,7 +5747,9 @@ ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, Li
 #endif
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
+#if defined(BBLITE_SHADOW_MORPH_BOUNDS) && BBLITE_SHADOW_MORPH_BOUNDS
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);
+#endif
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);

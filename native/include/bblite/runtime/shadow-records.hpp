@@ -81,10 +81,12 @@ struct ShadowGeneratorRecord {
      * this counter is that identity change, read by the render gate.
      */
     std::uint64_t caster_list_version = 0;
+#if defined(BBLITE_SHADOW_MORPH_BOUNDS) && BBLITE_SHADOW_MORPH_BOUNDS
     // enableMorphTargetShadows: bound each caster by its morph-expanded
     // AABB rather than its unmorphed geometry box. Off unless the scene
     // asks, exactly as upstream installs no provider unless it is called.
     bool morph_shadow_bounds = false;
+#endif
     /**
      * `sg._config._forceRefreshEveryFrame`: when set, the pinned render
      * gate never skips (`renderEsmShadowMap` / `renderPcfShadowMap` /

@@ -152,11 +152,7 @@ import type {
     EffectManifest,
     SpriteCustomShaderManifest,
 } from "./compiler/types.js";
-import {
-    reachesShadowGenerator,
-    nodeShadowInputs,
-    shadowCapabilities,
-} from "./shadow-capabilities.js";
+import { nodeShadowInputs, shadowCapabilities } from "./shadow-capabilities.js";
 import {
     refusalReachedFrom,
     refuseGeneration,
@@ -779,6 +775,8 @@ class GeneratedSourceWriter {
     private readonly variantDefinitions: string[] = [];
     /** Native sources this run wrote, checked against the reached table. */
     private readonly emitted = new Set<string>();
+    /** The generated-source table's answer for the feature set `emit` runs. */
+    private reachedSources: ReadonlySet<string> = new Set();
 
     public constructor(
         private readonly tree: GeneratedTree,
@@ -791,15 +789,13 @@ class GeneratedSourceWriter {
         // The generated-source table is the one statement of which units a
         // feature set reaches; each emitter below states only how its unit
         // is lowered, and lowers it only when the table reaches it.
-        const reachedSources = new Set(reachedGeneratedSources(features));
+        this.reachedSources = new Set(reachedGeneratedSources(features));
+        const reachedSources = this.reachedSources;
         const emitReached = (
             source: string,
             lower: () => LoweredSource,
             header?: string,
-        ): void => {
-            if (reachedSources.has(source))
-                this.writeSource(source, lower(), generated, header);
-        };
+        ): void => this.emitReached(source, lower, generated, header);
         // Which programs a node-particle system draws is the pin's answer
         // twice over: the blend mode comes from the graph's own SystemBlock
         // (so from the bake), and how many passes that mode draws comes from
@@ -1016,7 +1012,7 @@ class GeneratedSourceWriter {
                 "upstream/include/bblite/upstream/light_parameters.hpp",
                 lightParameterHeader(context),
             );
-        if (features.includes("environment:sky-atmosphere")) {
+        if (this.reaches("upstream/src/procedural_sky_atmosphere.cpp")) {
             const atmosphere = lowerProceduralSkyAtmosphere(context);
             this.tree.write(
                 "upstream/include/bblite/upstream/procedural_sky_atmosphere.hpp",
@@ -1028,23 +1024,16 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
-        if (features.includes("environment:procedural-sky")) {
-            const gpu = proceduralSkyGpuSource(context);
-            this.writeSource(
-                "upstream/src/procedural_sky_loader.cpp",
-                lowerProceduralSkyLoader(
-                    context,
-                    "make_procedural_sky_descriptor()",
-                    gpu.source,
-                ),
-                generated,
-            );
-            this.writeSource(
-                "upstream/src/procedural_sky_update.cpp",
-                lowerProceduralSkyUpdate(context),
-                generated,
-            );
-        }
+        emitReached("upstream/src/procedural_sky_loader.cpp", () =>
+            lowerProceduralSkyLoader(
+                context,
+                "make_procedural_sky_descriptor()",
+                proceduralSkyGpuSource(context).source,
+            ),
+        );
+        emitReached("upstream/src/procedural_sky_update.cpp", () =>
+            lowerProceduralSkyUpdate(context),
+        );
         emitReached("upstream/src/compute_texture_mipmaps.cpp", () =>
             lowerComputeTextureMipmaps(context),
         );
@@ -1072,23 +1061,15 @@ class GeneratedSourceWriter {
         emitReached("upstream/src/compute_shader.cpp", () =>
             lowerComputeShader(context),
         );
-        if (features.includes("compute:bindings")) {
-            this.writeSource(
-                "upstream/src/compute_bindings.cpp",
-                lowerComputeBindings(context),
-                generated,
-            );
-            this.writeSource(
-                "upstream/src/compute_buffer_binding.cpp",
-                lowerComputeBufferBinding(context),
-                generated,
-            );
-            this.writeSource(
-                "upstream/src/compute_binding_resolvers.cpp",
-                lowerComputeBindingResolvers(context),
-                generated,
-            );
-        }
+        emitReached("upstream/src/compute_bindings.cpp", () =>
+            lowerComputeBindings(context),
+        );
+        emitReached("upstream/src/compute_buffer_binding.cpp", () =>
+            lowerComputeBufferBinding(context),
+        );
+        emitReached("upstream/src/compute_binding_resolvers.cpp", () =>
+            lowerComputeBindingResolvers(context),
+        );
         emitReached("upstream/src/compute_one_shot.cpp", () =>
             lowerComputeOneShot(context),
         );
@@ -1143,18 +1124,7 @@ class GeneratedSourceWriter {
             new FrameGraphContextLowerer(context).lower(),
         );
 
-        const reachesCameraFactory =
-            features.includes("camera:arc-rotate") ||
-            features.includes("camera:default") ||
-            features.includes("camera:free") ||
-            features.includes("camera:geospatial");
-        this.emitCameras(
-            reachesCameraFactory,
-            features,
-            context,
-            options,
-            generated,
-        );
+        this.emitCameras(features, context, generated);
         emitReached("upstream/src/camera_default.cpp", () =>
             new CameraLowerer(context).lowerDefaultFactory(
                 options.nodeVisibility,
@@ -1168,7 +1138,7 @@ class GeneratedSourceWriter {
             new EnvironmentLowerer(context).lowerImageSkyboxAdapter(),
         );
         this.emitEnvironment(features, context, generated);
-        this.emitLights(features, context, generated);
+        this.emitLights(context, generated);
         emitReached("upstream/src/light_hemispheric.cpp", () =>
             new LightLowerer(context).lowerFactory(),
         );
@@ -1207,6 +1177,7 @@ class GeneratedSourceWriter {
             new BabylonLowerer(context).lowerLoaderAdapter(
                 options.standardLightLists,
                 features.includes("mesh:clone"),
+                features.includes("camera:free"),
             ),
         );
         // Every WGSL module this run emits, whichever renderer produced it.
@@ -1300,13 +1271,7 @@ class GeneratedSourceWriter {
             });
         };
         if (features.includes("compute:texture-mipmaps")) deployMipBlit();
-        this.emitEffectWrapper(
-            features,
-            context,
-            options,
-            composedShaders,
-            generated,
-        );
+        this.emitEffectWrapper(context, options, composedShaders, generated);
         this.emitLoaderSplat(
             features,
             context,
@@ -1338,13 +1303,7 @@ class GeneratedSourceWriter {
         // and registration calls, so a scene that builds a set and never
         // draws one would otherwise emit a file the table does not declare
         // and refuse generation. No corpus scene does that today.
-        this.emitParticleNode(
-            features,
-            context,
-            nodeParticles,
-            options,
-            generated,
-        );
+        this.emitParticleNode(context, nodeParticles, options, generated);
         this.emitSpriteBillboard(
             features,
             context,
@@ -1364,7 +1323,7 @@ class GeneratedSourceWriter {
             utilityShaders,
             deployMipBlit,
         );
-        this.emitRendererGeometryOutput(features, context, generated);
+        this.emitRendererGeometryOutput(context, generated);
         this.emitRendererPostProcess(
             features,
             options,
@@ -1642,6 +1601,31 @@ class GeneratedSourceWriter {
         });
     }
 
+    /** Whether the generated-source table reaches one unit. */
+    private reaches(relativeSource: string): boolean {
+        return this.reachedSources.has(relativeSource);
+    }
+
+    /**
+     * Lower and write one unit when the generated-source table reaches it.
+     * The table is the one statement of which units a feature set reaches;
+     * every emitter states only how its unit is lowered.
+     */
+    private emitReached(
+        relativeSource: string,
+        lower: () => LoweredSource,
+        generated: Array<{ modulePath: string; symbolName: string }>,
+        relativeHeader?: string,
+    ): void {
+        if (this.reaches(relativeSource))
+            this.writeSource(
+                relativeSource,
+                lower(),
+                generated,
+                relativeHeader,
+            );
+    }
+
     private emitRenderCapabilities(
         transmission: boolean,
         features: string[],
@@ -1842,51 +1826,42 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
     }
 
     private emitCameras(
-        reachesCameraFactory: boolean,
         features: string[],
         context: LoweringContext,
-        _options: UpstreamEmitOptions,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (
-            reachesCameraFactory ||
-            features.includes("camera:view-projection")
-        ) {
-            const cameraLowerer = new CameraLowerer(context);
-            this.writeSource(
-                "upstream/src/camera_arc_rotate.cpp",
-                cameraLowerer.lowerArcRotateFactory(
+        // One lowerer for the camera units, built on first use.
+        let cameraLowerer: CameraLowerer | undefined;
+        const cameras = (): CameraLowerer =>
+            (cameraLowerer ??= new CameraLowerer(context));
+        this.emitReached(
+            "upstream/src/camera_arc_rotate.cpp",
+            () =>
+                cameras().lowerArcRotateFactory(
                     features.includes("loader:gltf-cameras"),
                     features.includes("renderer:high-precision-matrix"),
                     features.includes("camera:geospatial"),
                 ),
-                generated,
-                "upstream/include/bblite/upstream/camera_math.hpp",
-            );
-            if (features.includes("camera:geospatial")) {
-                this.writeSource(
-                    "upstream/src/camera_geospatial.cpp",
-                    new GeospatialCameraLowerer(context).lower(),
-                    generated,
-                    "upstream/include/bblite/upstream/camera_geospatial.hpp",
-                );
-            }
-            if (reachesCameraFactory) {
-                this.writeSource(
-                    "upstream/src/camera_controls.cpp",
-                    cameraLowerer.lowerControls(),
-                    generated,
-                    "upstream/include/bblite/upstream/camera_controls.hpp",
-                );
-            }
-            if (features.includes("camera:free")) {
-                this.writeSource(
-                    "upstream/src/camera_free.cpp",
-                    cameraLowerer.lowerFreeFactory(),
-                    generated,
-                );
-            }
-        }
+            generated,
+            "upstream/include/bblite/upstream/camera_math.hpp",
+        );
+        this.emitReached(
+            "upstream/src/camera_geospatial.cpp",
+            () => new GeospatialCameraLowerer(context).lower(),
+            generated,
+            "upstream/include/bblite/upstream/camera_geospatial.hpp",
+        );
+        this.emitReached(
+            "upstream/src/camera_controls.cpp",
+            () => cameras().lowerControls(),
+            generated,
+            "upstream/include/bblite/upstream/camera_controls.hpp",
+        );
+        this.emitReached(
+            "upstream/src/camera_free.cpp",
+            () => cameras().lowerFreeFactory(),
+            generated,
+        );
     }
 
     private emitEnvironment(
@@ -1894,80 +1869,53 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (
-            features.includes("environment:env") ||
-            features.includes("environment:hdr") ||
-            features.includes("environment:dds") ||
-            features.includes("background:dds-environment")
-        ) {
-            const environment = new EnvironmentLowerer(context);
-            if (features.includes("environment:env")) {
-                this.writeSource(
-                    "upstream/src/env_parse.cpp",
-                    environment.lowerParser(),
-                    generated,
-                    "upstream/include/bblite/upstream/env_parse.hpp",
-                );
-            }
-            // One unit for both entry points into the pinned background
-            // builders: they share the world-bounds walk, `computeSceneSize`
-            // and the DDS header, so which functions it carries follows the
-            // features rather than upstream's own file boundary.
-            if (
-                features.includes("environment:env") ||
-                features.includes("background:dds-environment")
-            ) {
-                this.writeSource(
-                    "upstream/src/environment.cpp",
-                    environment.lowerLoaderAdapter({
-                        loadEnvironment: features.includes("environment:env"),
-                        ddsBackground: features.includes(
-                            "background:dds-environment",
-                        ),
-                    }),
-                    generated,
-                );
-            }
-            if (features.includes("environment:hdr")) {
-                this.writeSource(
-                    "upstream/src/environment_hdr.cpp",
-                    environment.lowerHdrLoaderAdapter(),
-                    generated,
-                );
-            }
-            if (features.includes("environment:dds")) {
-                this.writeSource(
-                    "upstream/src/environment_dds.cpp",
-                    environment.lowerDdsLoaderAdapter(),
-                    generated,
-                );
-            }
-        }
+        // One lowerer for the environment units, built on first use.
+        let environmentLowerer: EnvironmentLowerer | undefined;
+        const environment = (): EnvironmentLowerer =>
+            (environmentLowerer ??= new EnvironmentLowerer(context));
+        this.emitReached(
+            "upstream/src/env_parse.cpp",
+            () => environment().lowerParser(),
+            generated,
+            "upstream/include/bblite/upstream/env_parse.hpp",
+        );
+        // One unit for both entry points into the pinned background
+        // builders: they share the world-bounds walk, `computeSceneSize`
+        // and the DDS header, so which functions it carries follows the
+        // features rather than upstream's own file boundary.
+        this.emitReached(
+            "upstream/src/environment.cpp",
+            () =>
+                environment().lowerLoaderAdapter({
+                    loadEnvironment: features.includes("environment:env"),
+                    ddsBackground: features.includes(
+                        "background:dds-environment",
+                    ),
+                }),
+            generated,
+        );
+        this.emitReached(
+            "upstream/src/environment_hdr.cpp",
+            () => environment().lowerHdrLoaderAdapter(),
+            generated,
+        );
+        this.emitReached(
+            "upstream/src/environment_dds.cpp",
+            () => environment().lowerDdsLoaderAdapter(),
+            generated,
+        );
     }
 
     private emitLights(
-        features: string[],
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (
-            features.includes("light:hemispheric") ||
-            features.includes("light:directional") ||
-            features.includes("light:spot") ||
-            // The pinned point-light block writer also indexes the light's
-            // world matrix (`write_point_light` calls
-            // `local_matrix_from_direction`), so a point-only scene that
-            // composes variants needs the builder too.
-            features.includes("light:point")
-        ) {
-            const light = new LightLowerer(context);
-            this.writeSource(
-                "upstream/src/light_matrix.cpp",
-                light.lowerMatrix(),
-                generated,
-                "upstream/include/bblite/upstream/light_matrix.hpp",
-            );
-        }
+        this.emitReached(
+            "upstream/src/light_matrix.cpp",
+            () => new LightLowerer(context).lowerMatrix(),
+            generated,
+            "upstream/include/bblite/upstream/light_matrix.hpp",
+        );
     }
 
     private emitAnimationGroups(
@@ -1975,18 +1923,17 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("animation:gltf-groups")) {
-            this.writeSource(
-                "upstream/src/animation_group.cpp",
+        this.emitReached(
+            "upstream/src/animation_group.cpp",
+            () =>
                 new AnimationLowerer(context).lowerGroupOperations({
                     additive: features.includes("animation:gltf-additive"),
                     groupTime: features.includes("animation:gltf-group-time"),
                     groupSpeed: features.includes("animation:gltf-group-speed"),
                     groupMask: features.includes("animation:gltf-group-mask"),
                 }),
-                generated,
-            );
-        }
+            generated,
+        );
     }
 
     private emitAnimationProperty(
@@ -1995,9 +1942,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         options: UpstreamEmitOptions,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("animation:property")) {
-            this.writeSource(
-                "upstream/src/animation_property.cpp",
+        this.emitReached(
+            "upstream/src/animation_property.cpp",
+            () =>
                 new AnimationLowerer(context).lowerPropertyAnimation({
                     gltfLoaderAvailable: features.includes("loader:gltf"),
                     cameraVersions:
@@ -2013,9 +1960,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         "animation:managed-groups",
                     ),
                 }),
-                generated,
-            );
-        }
+            generated,
+        );
     }
 
     private emitLoaderGltf(
@@ -2025,7 +1971,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         nodeGeometryViewList: ReturnType<typeof nodeGeometryVariants>,
         options: UpstreamEmitOptions,
     ): void {
-        if (features.includes("loader:gltf")) {
+        if (this.reaches("upstream/src/gltf_loader.cpp")) {
             const gltf = new GltfLowerer(context);
             this.writeSource(
                 "upstream/src/gltf_glb_parser.cpp",
@@ -2194,13 +2140,12 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
     }
 
     private emitEffectWrapper(
-        features: string[],
         context: LoweringContext,
         options: UpstreamEmitOptions,
         composedShaders: ComposedShader[],
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("effect:wrapper")) {
+        if (this.reaches("upstream/src/effect_renderer.cpp")) {
             // One module per descriptor, both entry points in it: the pin
             // builds one shader module and names a stage in each half of
             // the pipeline descriptor. The text deploys ONCE, under the
@@ -2258,7 +2203,7 @@ ${wgsl}`,
         generated: { modulePath: string; symbolName: string }[],
         composedShaders: ComposedShader[],
     ): void {
-        if (features.includes("loader:splat")) {
+        if (this.reaches("upstream/src/splat_loader.cpp")) {
             const splats = new SplatLowerer(
                 context,
                 options.splatSh?.degree ?? 0,
@@ -2303,22 +2248,18 @@ ${wgsl}`,
                 }),
                 generated,
             );
-            if (options.splatSh) {
-                this.writeSource(
-                    "upstream/src/splat_harmonics.cpp",
-                    splats.lowerHarmonics(),
-                    generated,
-                    "upstream/include/bblite/upstream/splat_harmonics.hpp",
-                );
-            }
-            if (bakesTransform) {
-                this.writeSource(
-                    "upstream/src/splat_bake.cpp",
-                    splats.lowerBake(),
-                    generated,
-                    "upstream/include/bblite/upstream/splat_bake.hpp",
-                );
-            }
+            this.emitReached(
+                "upstream/src/splat_harmonics.cpp",
+                () => splats.lowerHarmonics(),
+                generated,
+                "upstream/include/bblite/upstream/splat_harmonics.hpp",
+            );
+            this.emitReached(
+                "upstream/src/splat_bake.cpp",
+                () => splats.lowerBake(),
+                generated,
+                "upstream/include/bblite/upstream/splat_bake.hpp",
+            );
             // The pin's own module, split at its two entry points. The
             // stock provenance names the pipeline that ships the WGSL, not a
             // composer -- nothing there composes; the SH arm names the
@@ -2390,7 +2331,7 @@ ${wgsl}`,
         deployMipBlit: () => void,
         composedShaders: ComposedShader[],
     ): void {
-        if (features.includes("sprite:2d")) {
+        if (this.reaches("upstream/src/sprite_2d.cpp")) {
             const sprites = new SpriteLowerer(context);
             // A pure-2D particle bridge in an exact Multiply mode draws
             // the pin's OWN custom fragment, so it enters the same composer
@@ -2527,13 +2468,12 @@ ${wgsl}`,
     }
 
     private emitParticleNode(
-        features: string[],
         context: LoweringContext,
         nodeParticles: readonly NodeParticleSystemEmit[],
         options: UpstreamEmitOptions,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("particle:node")) {
+        if (this.reaches("upstream/src/node_particles.cpp")) {
             // The frozen bake and the two pinned functions that turn it into
             // the billboard family's own calls.
             this.writeSource(
@@ -2563,7 +2503,7 @@ ${wgsl}`,
             sprite2dMultiply: boolean;
         },
     ): void {
-        if (features.includes("sprite:billboard")) {
+        if (this.reaches("upstream/src/billboard_system.cpp")) {
             const billboards = new BillboardLowerer(context);
             const customBillboard = options.spriteCustomShaders.find(
                 (entry) => entry.family === "billboard",
@@ -2866,7 +2806,7 @@ ${wgsl}`,
                     },
                 );
             }
-        } else if (features.includes("camera:view-projection")) {
+        } else if (this.reaches("upstream/src/renderer_plan.cpp")) {
             // getViewProjectionMatrix is a public camera helper and can be
             // reached before a scene renderer. Its implementation already
             // lives in the generated render-plan math; emit that source and
@@ -2881,11 +2821,10 @@ ${wgsl}`,
     }
 
     private emitRendererGeometryOutput(
-        features: string[],
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("renderer:geometry-output")) {
+        if (this.reaches("upstream/src/frame_graph_geometry.cpp")) {
             this.writeSource(
                 "upstream/src/frame_graph_geometry.cpp",
                 new GeometryOutputLowerer(context).lowerTaskRecords(),
@@ -2913,7 +2852,7 @@ ${wgsl}`,
         generated: { modulePath: string; symbolName: string }[],
         composedShaders: ComposedShader[],
     ): void {
-        if (features.includes("renderer:post-process")) {
+        if (this.reaches("upstream/src/frame_graph_post_process.cpp")) {
             // One stage table over every kind of pass: the plain effects in
             // reach order, then each composite's own chain, then each
             // screen-space task's history copy and composite. A pass is a
@@ -3081,35 +3020,11 @@ ${composed.wgsl}`,
         factories: FactoryLowerer,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (
-            features.includes("mesh:box") ||
-            features.includes("mesh:from-data") ||
-            features.includes("mesh:update-positions") ||
-            features.includes("mesh:resize-geometry") ||
-            features.includes("mesh:ground") ||
-            features.includes("mesh:ground-heightmap") ||
-            features.includes("mesh:morph-targets") ||
-            features.includes("mesh:plane") ||
-            features.includes("mesh:sphere") ||
-            features.includes("mesh:thin-instance-colors") ||
-            features.includes("mesh:thin-instances") ||
-            features.includes("mesh:thin-instances-dynamic") ||
-            features.includes("mesh:thin-instance-gpu-culling") ||
-            features.includes("mesh:torus") ||
-            features.includes("mesh:torus-knot") ||
-            features.includes("mesh:disc") ||
-            features.includes("mesh:cylinder") ||
-            features.includes("mesh:polyhedron") ||
-            features.includes("mesh:ribbon") ||
-            features.includes("mesh:extrude") ||
-            features.includes("mesh:tube")
-        ) {
-            this.writeSource(
-                "upstream/src/mesh_factories.cpp",
-                factories.lowerMeshFactories(features),
-                generated,
-            );
-        }
+        this.emitReached(
+            "upstream/src/mesh_factories.cpp",
+            () => factories.lowerMeshFactories(features),
+            generated,
+        );
     }
 
     private emitPhysicsWorld(
@@ -3117,7 +3032,7 @@ ${composed.wgsl}`,
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("physics:world")) {
+        if (this.reaches("upstream/src/physics.cpp")) {
             this.writeSource(
                 "upstream/src/physics.cpp",
                 new PhysicsLowerer(context).lowerPhysics({
@@ -3157,7 +3072,7 @@ ${composed.wgsl}`,
         nodePcfCasters: boolean,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (reachesShadowGenerator(features)) {
+        if (this.reaches("upstream/src/shadow.cpp")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_shadow.hpp",
                 pinnedShadowHeader(context, features),
@@ -3237,7 +3152,7 @@ ${shadow.blurFragmentWgsl}`,
         options: UpstreamEmitOptions,
         composedShaders: ComposedShader[],
     ): void {
-        if (features.includes("picking:gpu")) {
+        if (this.reaches("upstream/src/picking.cpp")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/picking_math.hpp",
                 new PickingLowerer(context).mathHeader(

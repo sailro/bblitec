@@ -443,8 +443,8 @@ function geometryHeader(context: LoweringContext): string {
 #include <cmath>
 #include <limits>
 namespace bbl {
-${pinnedGizmoGeometry(context)}
-${pinnedGizmoFollowGeometry(context, true)}
+${pinnedGizmoGeometry(context, { camera: true, light: true })}
+${pinnedGizmoFollowGeometry(context, { camera: true, light: true, editing: true })}
 struct BoundingBoxBounds { Vec3d min, max, centre, size; };
 ${pinnedGizmoBoundsGeometry(context)}
 }
@@ -456,6 +456,7 @@ test("gizmo geometry carriers and resource boundaries reject incompatible pinned
         () =>
             pinnedGizmoGeometry(
                 changed(LIGHT, "pivotY: number;", "pivotY: [number, number];"),
+                { camera: false, light: true },
             ),
         /numeric LineDef record/,
     );
@@ -467,6 +468,7 @@ test("gizmo geometry carriers and resource boundaries reject incompatible pinned
                     "mesh.pickable = false;",
                     "mesh.pickable = true;",
                 ),
+                { camera: true, light: false },
             ),
         /camera-gizmo\.ts:\d+:\d+: Unsupported pinned frustum mesh attachment/,
     );
@@ -478,6 +480,7 @@ test("gizmo geometry carriers and resource boundaries reject incompatible pinned
                     "{ x: -nw, y: -nh, z: +near }",
                     "[-nw, -nh, +near]",
                 ),
+                { camera: true, light: false },
             ),
         /camera-gizmo\.ts/,
     );
@@ -489,6 +492,7 @@ test("gizmo geometry carriers and resource boundaries reject incompatible pinned
                     "for (const [i, j] of edgePairs)",
                     "for (const [i, j] of corners)",
                 ),
+                { camera: true, light: false },
             ),
         /index-pair range/,
     );
@@ -500,6 +504,7 @@ test("gizmo geometry carriers and resource boundaries reject incompatible pinned
                     "a: { x: number; y: number; z: number }",
                     "a: [number, number, number]",
                 ),
+                { camera: true, light: false },
             ),
         /two pinned point records/,
     );
@@ -522,9 +527,27 @@ test("gizmo geometry carriers and resource boundaries reject incompatible pinned
                     "const cw = camera.worldMatrix;",
                     "const cw = light.worldMatrix;",
                 ),
-                false,
+                { camera: false, light: true, editing: false },
             ),
         /utility camera's world matrix/,
+    );
+    // Each display half reads only its own pinned module.
+    assert.doesNotThrow(() =>
+        pinnedGizmoFollowGeometry(
+            changed(
+                LIGHT,
+                "const cw = camera.worldMatrix;",
+                "const cw = light.worldMatrix;",
+            ),
+            { camera: true, light: false, editing: false },
+        ),
+    );
+    assert.equal(
+        pinnedGizmoGeometry(new GeometryContext(), {
+            camera: false,
+            light: false,
+        }),
+        "",
     );
     const display = new GizmoLowerer(new GeometryContext(), [
         "gizmo:camera",
@@ -543,6 +566,29 @@ test("gizmo geometry carriers and resource boundaries reject incompatible pinned
         "gizmo:bounding-box",
     ]).lower().source;
     assert.match(bounds, /gizmo_bounds_fold|bbox_place_anchor/);
+    // The camera and light halves are emitted only for the gizmo that
+    // reaches them: a static helper nothing calls is a -Werror failure.
+    const displayOnly =
+        /create_camera_gizmo|create_light_gizmo|gizmo_frustum_geometry|gizmo_hemisphere_geometry|build_light_lines|\bgizmo_mesh\(|gizmo_camera_scaling|gizmo_light_scaling/;
+    assert.doesNotMatch(editing, displayOnly);
+    assert.doesNotMatch(bounds, displayOnly);
+    assert.doesNotMatch(bounds, /\bplace_mesh\(|quat_from_bjs_euler/);
+    const cameraOnly = new GizmoLowerer(new GeometryContext(), [
+        "gizmo:camera",
+    ]).lower().source;
+    assert.match(cameraOnly, /create_camera_gizmo/);
+    assert.doesNotMatch(
+        cameraOnly,
+        /create_light_gizmo|build_light_lines|gizmo_light_scaling|rotate_vec3_by_quat|direction_to_quat/,
+    );
+    const lightOnly = new GizmoLowerer(new GeometryContext(), [
+        "gizmo:light",
+    ]).lower().source;
+    assert.match(lightOnly, /create_light_gizmo/);
+    assert.doesNotMatch(
+        lightOnly,
+        /create_camera_gizmo|gizmo_frustum_geometry|gizmo_camera_scaling|pinned_mat4_decompose_rotation/,
+    );
     for (const symbol of [
         "buildHemisphereMesh",
         "lineDefsForLevel",
@@ -783,6 +829,13 @@ test(
         mkdirSync(output, { recursive: true });
         for (const [name, features] of [
             ["display", ["gizmo:camera", "gizmo:light"]],
+            // Each display half alone, an editing widget alone and the cage
+            // alone: every helper is emitted only beside a caller, which
+            // /W4 /WX holds to account in each combination.
+            ["camera", ["gizmo:camera"]],
+            ["light", ["gizmo:light"]],
+            ["editing", ["gizmo:axis-drag"]],
+            ["cage", ["gizmo:bounding-box"]],
             [
                 "bounds",
                 [
@@ -823,7 +876,7 @@ test(
 #include <bblite/js_data.hpp>
 #include <cmath>
 namespace bbl {
-${new GizmoLowerer(new GeometryContext())["mathHelpers"]()}
+${new GizmoLowerer(new GeometryContext(), ["gizmo:light"])["mathHelpers"]()}
 }
 `,
         );

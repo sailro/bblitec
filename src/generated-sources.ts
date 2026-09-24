@@ -186,8 +186,11 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["environment:env"],
     },
     {
+        // Both entry points into the pinned background builders:
+        // `loadEnvironment`'s deferred builder and
+        // `addDdsEnvironmentBackground`, which reaches them without it.
         source: "upstream/src/environment.cpp",
-        features: ["environment:env"],
+        features: ["environment:env", "background:dds-environment"],
     },
     {
         source: "upstream/src/environment_hdr.cpp",

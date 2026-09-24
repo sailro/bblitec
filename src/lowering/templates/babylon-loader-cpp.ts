@@ -27,7 +27,11 @@ export interface BabylonLoaderLoweredSegments {
 
 export function babylonLoaderCpp(
     provenance: string,
-    cameraParser: string,
+    // The lowered `parseBabylonCamera`, or `undefined` for a scene whose
+    // every `loadBabylon` passes `loadCamera: false`: the pin imports its
+    // camera module only when the option is not false, so neither the parser
+    // nor the camera selection is compiled then.
+    cameraParser: string | undefined,
     lowered: BabylonLoaderLoweredSegments,
     lightMeshLists = false,
     meshClones = false,
@@ -89,9 +93,7 @@ std::string string_or(
         : fallback;
 }
 
-${cameraParser}
-
-${lowered.bakeLocalMatrix}
+${cameraParser !== undefined ? `${cameraParser}\n\n` : ""}${lowered.bakeLocalMatrix}
 
 ${lowered.materialProperties}
 
@@ -141,7 +143,6 @@ MaterialHandle load_material(
     }
     apply_babylon_material_properties(material, source, scene_ambient);
     project_material_source_colors(material);
-    const float alpha = material.alpha;
     material.base_color_factor = Color4{
         material.diffuse_color.r,
         material.diffuse_color.g,
@@ -182,10 +183,6 @@ MaterialHandle load_material(
                 return index;
             }
     });
-    material.alpha_mode =
-        alpha < 1.0f || material.opacity_texture.has_image()
-            ? MaterialAlphaMode::blend
-            : MaterialAlphaMode::opaque;
     engine.materials.push_back(std::move(material));
     const MaterialHandle handle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
@@ -425,11 +422,18 @@ AssetHandle load_babylon(Engine& engine, const std::string& path, bool load_came
         asset.clear_color = *color;
         asset.has_clear_color = true;
     }
-    if (const auto camera = select_babylon_camera(engine, document, load_camera)) {
+${
+    cameraParser !== undefined
+        ? `    if (const auto camera = select_babylon_camera(engine, document, load_camera)) {
         asset.camera = *camera;
         asset.has_camera = true;
     }
-
+`
+        : `    // Every call site passes loadCamera: false, which the pin answers by
+    // never importing its camera module.
+    static_cast<void>(load_camera);
+`
+}
     if (const auto walks = document.find(${JSON.stringify(GLTF_MESH_WALKS)}); walks != document.end()) {
         install_asset_mesh_walks(asset, walks->get<std::vector<std::vector<double>>>());
     }

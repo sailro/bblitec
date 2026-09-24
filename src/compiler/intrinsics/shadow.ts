@@ -481,6 +481,7 @@ export function compileShadowIntrinsic(
                 "shadow-generator",
                 argumentAt(call, 0),
             );
+            context.reachFeature("shadow:morph-bounds", call);
             return {
                 kind: "void",
                 cpp:

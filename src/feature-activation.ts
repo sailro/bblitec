@@ -938,13 +938,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/gizmo/utility-layer.ts",
         consumers: CMAKE,
     },
+    // Each display gizmo's factories, geometry and record vector, emitted
+    // and compiled only for a scene that builds that gizmo.
     "gizmo:camera": {
         provenance: "src/gizmo/camera-gizmo.ts",
-        consumers: INVENTORY,
+        consumers: CMAKE,
     },
     "gizmo:light": {
         provenance: "src/gizmo/light-gizmo.ts",
-        consumers: INVENTORY,
+        consumers: CMAKE,
     },
     // The four editing widgets, one row per pinned module. Each builds
     // its own geometry over the same layer, follow and material builder,
@@ -1021,6 +1023,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "shadow:task": {
         provenance: "src/frame-graph/shadow-task.ts",
+        consumers: CMAKE,
+    },
+    // `enableMorphTargetShadows`: the caster fit's morph-expanded bounds,
+    // kept in its own pinned module upstream and compiled only for a scene
+    // that registers the provider.
+    "shadow:morph-bounds": {
+        provenance: "src/shadow/enable-morph-target-shadows.ts",
         consumers: CMAKE,
     },
     "sprite:2d": {
