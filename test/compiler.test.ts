@@ -15,6 +15,9 @@ import {
     transpileCommonJs,
     createJavaScriptFunction,
 } from "../src/typescript-transpile.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
+
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
 function assertCameraScalarWrite(
     cpp: string,
@@ -5286,7 +5289,7 @@ test("supports mutable tuple locals with runtime index writes", () => {
 test("compiles generated mesh data and the file-texture contract", () => {
     const result = compileSource(
         readFileSync(resolve("examples/regression-runtime-sweep.ts"), "utf8"),
-        { fileName: "examples/regression-runtime-sweep.ts" },
+        { ...labDeployment, fileName: "examples/regression-runtime-sweep.ts" },
     );
 
     assert.ok(result.manifest.features.includes("mesh:from-data"));
@@ -5346,7 +5349,8 @@ test("keeps data URL asset payloads out of the generated manifest", () => {
 });
 
 test("carries file-texture address modes into the sampler", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import { createEngine, loadTexture2D } from "@babylonjs/lite";
 
         async function main() {
@@ -5360,7 +5364,9 @@ test("carries file-texture address modes into the sampler", () => {
                 },
             );
         }
-    `);
+    `,
+        labDeployment,
+    );
 
     assert.match(
         result.cpp,
@@ -5369,7 +5375,8 @@ test("carries file-texture address modes into the sampler", () => {
 });
 
 test("uses a boolean fallback for an explicitly undefined record property", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import { createEngine, loadTexture2D } from "@babylonjs/lite";
 
         async function main() {
@@ -5386,7 +5393,9 @@ test("uses a boolean fallback for an explicitly undefined record property", () =
                 );
             }
         }
-    `);
+    `,
+        labDeployment,
+    );
 
     const loads = result.cpp.match(/bbl::load_file_texture\([^;]+/g) ?? [];
     assert.equal(loads.length, 2);
@@ -5400,7 +5409,8 @@ test("carries a base-color image's own encoding, either way", () => {
     // slot samples what the scene asked for. A material that decodes its own
     // albedo — `setPbrGammaAlbedo` — loads the linear one.
     const load = (options: string) =>
-        compileSource(`
+        compileSource(
+            `
             import {
                 createEngine,
                 createPbrMaterial,
@@ -5416,7 +5426,9 @@ test("carries a base-color image's own encoding, either way", () => {
                     ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
                 });
             }
-        `).cpp;
+        `,
+            labDeployment,
+        ).cpp;
     // The penultimate `load_file_texture` argument is the requested encoding;
     // premultiplication follows it. The attach carries the encoding onto the
     // record's own base-colour lane.
@@ -5470,7 +5482,8 @@ test("compiles scene17's file ORM and matrix-constructor chain", () => {
 test("refuses an sRGB file texture in PBR's linear ORM slot", () => {
     assert.throws(
         () =>
-            compileSource(`
+            compileSource(
+                `
                 import {
                     createEngine,
                     createPbrMaterial,
@@ -5490,7 +5503,9 @@ test("refuses an sRGB file texture in PBR's linear ORM slot", () => {
                         ormTexture: orm,
                     });
                 }
-            `),
+            `,
+                labDeployment,
+            ),
         (error: unknown) =>
             error instanceof CompileError &&
             /PBR ORM maps must be linear textures\./.test(error.message),
@@ -6204,7 +6219,8 @@ test("preserves scene-code internal metallic F0 creation state", () => {
 });
 
 test("lowers Scene 12 metallic-reflectance setter shapes", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import {
             createEngine,
             createPbrMaterial,
@@ -6251,7 +6267,9 @@ test("lowers Scene 12 metallic-reflectance setter shapes", () => {
             makeMaterial({ reflectance });
             makeMaterial({ metallic, reflectance, alphaOnly: true });
         }
-    `);
+    `,
+        labDeployment,
+    );
 
     assert.deepEqual(
         result.manifest.scenePbrMaterials.map(
@@ -6286,7 +6304,8 @@ test("lowers Scene 12 metallic-reflectance setter shapes", () => {
 });
 
 test("accumulates repeated metallic-reflectance setter fields", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import {
             createEngine,
             createPbrMaterial,
@@ -6317,7 +6336,9 @@ test("accumulates repeated metallic-reflectance setter fields", () => {
                 reflectanceTexture: reflectance,
             });
         }
-    `);
+    `,
+        labDeployment,
+    );
 
     assert.deepEqual(
         result.manifest.scenePbrMaterials[0]?.metallicReflectance,
@@ -6336,7 +6357,8 @@ test("accumulates repeated metallic-reflectance setter fields", () => {
 
 test("refuses unsupported metallic-reflectance setter inputs", () => {
     const compileSetter = (textureSetup: string, options: string) =>
-        compileSource(`
+        compileSource(
+            `
         import {
             createEngine,
             createPbrMaterial,
@@ -6354,7 +6376,9 @@ test("refuses unsupported metallic-reflectance setter inputs", () => {
             ${textureSetup}
             setPbrMetallicReflectance(material, { ${options} });
         }
-    `);
+    `,
+            labDeployment,
+        );
 
     assert.throws(
         () =>
@@ -13100,6 +13124,7 @@ test("lowers setCameraLimits with the fields present in the pinned options recor
 test("lowers Scene 12's imported recursive mesh walk and animated root clones", () => {
     const sourcePath = "corpus/babylon-lite/lab/lite/src/lite/scene12.ts";
     const result = compileSource(readFileSync(resolve(sourcePath), "utf8"), {
+        ...labDeployment,
         fileName: sourcePath,
         search: "?seekTime=0.5",
     });
@@ -13124,7 +13149,8 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
 
     assert.throws(
         () =>
-            compileSource(`
+            compileSource(
+                `
                 import {
                     createEngine,
                     createStandardMaterial,
@@ -13150,13 +13176,16 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
                         material,
                     );
                 }
-            `),
+            `,
+                labDeployment,
+            ),
         /only for the effect-only recursive TransformNode material walk/,
     );
 
     assert.throws(
         () =>
-            compileSource(`
+            compileSource(
+                `
                 import {
                     createEngine,
                     createPbrMaterial,
@@ -13191,13 +13220,16 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
                         }),
                     );
                 }
-            `),
+            `,
+                labDeployment,
+            ),
         /only for the effect-only recursive TransformNode material walk/,
     );
 
     assert.throws(
         () =>
-            compileSource(`
+            compileSource(
+                `
                 import {
                     createEngine,
                     createStandardMaterial,
@@ -13226,13 +13258,16 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
                         createStandardMaterial(),
                     );
                 }
-            `),
+            `,
+                labDeployment,
+            ),
         /currently accepts only a scene-created PBR material/,
     );
 
     assert.throws(
         () =>
-            compileSource(`
+            compileSource(
+                `
                 import {
                     createEngine,
                     createStandardMaterial,
@@ -13262,7 +13297,9 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
                         createStandardMaterial(),
                     );
                 }
-            `),
+            `,
+                labDeployment,
+            ),
         /only for the effect-only recursive TransformNode material walk/,
     );
 });
@@ -14377,7 +14414,7 @@ test("applies every recognized module URL pathname transformation", () => {
                 await loadTexture2D(engine, textureUrl);
             }
         `,
-        { fileName: "test/compiler-multi-file-entry.ts" },
+        { ...labDeployment, fileName: "test/compiler-multi-file-entry.ts" },
     );
 
     assert.deepEqual(
@@ -16188,6 +16225,7 @@ test("compiles Babylon Lite scene 168 mirrored winding", () => {
         "utf8",
     );
     const result = compileSource(source, {
+        ...labDeployment,
         fileName: "corpus/babylon-lite/lab/lite/src/lite/scene168.ts",
     });
 
@@ -16206,6 +16244,7 @@ test("compiles Babylon Lite scene 257 negative scale", () => {
         "utf8",
     );
     const result = compileSource(source, {
+        ...labDeployment,
         fileName: "corpus/babylon-lite/lab/lite/src/lite/scene257.ts",
     });
 
@@ -16221,6 +16260,7 @@ test("compiles Babylon Lite scene 266 negative scale spheres", () => {
         "utf8",
     );
     const result = compileSource(source, {
+        ...labDeployment,
         fileName: "corpus/babylon-lite/lab/lite/src/lite/scene266.ts",
     });
 
@@ -16328,6 +16368,7 @@ test("reaches a shader material's samplers and defines", () => {
             defines: { TINT: true, Scale: 2 },`,
             "if(TINT){return textureSample(albedo,albedoSampler,input.uv)*Scale;}return vec4<f32>(1.0,0.0,0.0,1.0);",
         ),
+        labDeployment,
     );
     const [program] = result.manifest.customShaderPrograms;
     assert.deepEqual(program?.samplers, ["albedo"]);
@@ -16634,6 +16675,7 @@ test("supports typed shader samplers and refuses shapes outside the reached slic
             `samplers: [{ name: "albedo", sampleType: "depth", viewDimension: "2d-array", comparison: true }],`,
             "return textureSampleCompare(albedo,albedoSampler,input.uv,0,0.5);",
         ),
+        labDeployment,
     );
     assert.deepEqual(
         typedSampler.manifest.customShaderPrograms[0]?.samplerDeclarations,
@@ -16657,6 +16699,7 @@ test("supports typed shader samplers and refuses shapes outside the reached slic
                     "out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);",
                     "out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0)+textureSample(albedo,albedoSampler,input.uv);",
                 ),
+                labDeployment,
             ),
         /read by the vertex stage/,
     );
@@ -16669,6 +16712,7 @@ test("supports typed shader samplers and refuses shapes outside the reached slic
                     defines: { albedoSampler: true },`,
                     "return textureSample(albedo,albedoSampler,input.uv);",
                 ),
+                labDeployment,
             ),
         /collides with another generated identifier/,
     );
@@ -16680,6 +16724,7 @@ test("supports typed shader samplers and refuses shapes outside the reached slic
                     `defines: { TINT: "yes" },`,
                     "if(TINT){return vec4<f32>(1.0,0.0,0.0,1.0);}return vec4<f32>(0.0,0.0,0.0,1.0);",
                 ),
+                labDeployment,
             ),
         /Expected a static numeric literal/,
     );
@@ -17284,6 +17329,7 @@ test("keeps generated scene locals and equality conditions warning-clean", () =>
     const compileScene = (id: string) => {
         const sourcePath = `corpus/babylon-lite/lab/lite/src/lite/${id}.ts`;
         return compileSource(readFileSync(resolve(sourcePath), "utf8"), {
+            ...labDeployment,
             fileName: sourcePath,
         }).cpp;
     };
@@ -17359,7 +17405,8 @@ test("compiles Babylon Lite scene 3 Standard fog and image skybox", () => {
 });
 
 test("compiles fog with an HDR environment skybox", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import {
             createEngine,
             createSceneContext,
@@ -17385,7 +17432,9 @@ test("compiles fog with an HDR environment skybox", () => {
                 color: [0.1, 0.2, 0.3],
             });
         }
-    `);
+    `,
+        labDeployment,
+    );
 
     assert.ok(result.manifest.features.includes("renderer:fog"));
     assert.ok(result.manifest.features.includes("environment:hdr"));
@@ -17398,7 +17447,8 @@ test("compiles fog with an HDR environment skybox", () => {
 });
 
 test("writes lighting-only environment rotation into native scene state", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import {
             createEngine,
             createSceneContext,
@@ -17416,14 +17466,17 @@ test("writes lighting-only environment rotation into native scene state", () => 
             });
             setEnvironmentRotation(scene, 1.9);
         }
-    `);
+    `,
+        labDeployment,
+    );
 
     assert.ok(result.manifest.features.includes("environment:ibl"));
     assert.match(result.cpp, /v_scene\.environment\.rotation_y = 1\.9f;/);
 });
 
 test("accepts the DDS loader's inert skybox and ground skip flags", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import {
             createEngine,
             createSceneContext,
@@ -17439,7 +17492,9 @@ test("accepts the DDS loader's inert skybox and ground skip flags", () => {
                 skipGround: true,
             });
         }
-    `);
+    `,
+        labDeployment,
+    );
 
     assert.ok(result.manifest.features.includes("environment:ibl"));
     assert.ok(result.manifest.features.includes("environment:dds"));
@@ -17507,6 +17562,7 @@ test("rejects rotating a visible environment skybox in either call order", () =>
                 `${prelude}${visibleSkybox}
                     setEnvironmentRotation(scene, 1.9);
                 }`,
+                labDeployment,
             ),
         /rotating one requires native skybox rotation support/,
     );
@@ -17517,6 +17573,7 @@ test("rejects rotating a visible environment skybox in either call order", () =>
                     setEnvironmentRotation(scene, 1.9);
                     ${visibleSkybox}
                 }`,
+                labDeployment,
             ),
         /Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support/,
     );
@@ -17525,7 +17582,8 @@ test("rejects rotating a visible environment skybox in either call order", () =>
 test("tracks environment rotation boundaries through scene parameters", () => {
     assert.throws(
         () =>
-            compileSource(`
+            compileSource(
+                `
                 import {
                     createEngine,
                     createSceneContext,
@@ -17547,12 +17605,15 @@ test("tracks environment rotation boundaries through scene parameters", () => {
                     await addSkybox(scene);
                     setEnvironmentRotation(scene, 1.9);
                 }
-            `),
+            `,
+                labDeployment,
+            ),
         /rotating one requires native skybox rotation support/,
     );
     assert.throws(
         () =>
-            compileSource(`
+            compileSource(
+                `
                 import {
                     createEngine,
                     createSceneContext,
@@ -17574,7 +17635,9 @@ test("tracks environment rotation boundaries through scene parameters", () => {
                         skipGround: true,
                     });
                 }
-            `),
+            `,
+                labDeployment,
+            ),
         /Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support/,
     );
 });
@@ -19143,7 +19206,7 @@ test("fuses a mesh-material map/find and replaces an asset occlusion texture bef
 
         void main();
         `,
-        { fileName: "examples/material-map-find.ts" },
+        { ...labDeployment, fileName: "examples/material-map-find.ts" },
     );
 
     assert.match(result.cpp, /for \(const bbl::MeshHandle/);
@@ -19218,6 +19281,7 @@ test("stamps a scene-code PBR lightmap with the arms composition reads", () => {
             gamma: true,
         });
     `),
+        labDeployment,
     );
 
     assert.ok(result.manifest.features.includes("material:lightmap"));
@@ -19243,6 +19307,7 @@ test("defaults a lightmap to the pin's own TEXCOORD_1 and additive blend", () =>
         const material = createPbrMaterial({});
         setPbrLightmap(material, lightmap);
     `),
+        labDeployment,
     );
 
     assert.deepEqual(result.manifest.scenePbrMaterials[0]?.lightmap, {
@@ -19264,6 +19329,7 @@ test("refuses setPbrLightmap before the opt-in registers the extension", () => {
                 const material = createPbrMaterial({});
                 setPbrLightmap(material, lightmap, { coordIndex: 0 });
             `),
+                labDeployment,
             ),
         /reached before `enablePbrLightmap\(\)`/,
     );
@@ -19272,7 +19338,8 @@ test("refuses setPbrLightmap before the opt-in registers the extension", () => {
 test("refuses a lightmap blend generation cannot settle", () => {
     assert.throws(
         () =>
-            compileSource(`
+            compileSource(
+                `
                 import {
                     createEngine,
                     createPbrMaterial,
@@ -19294,7 +19361,9 @@ test("refuses a lightmap blend generation cannot settle", () => {
                         });
                     }
                 }
-            `),
+            `,
+                labDeployment,
+            ),
         // The static evaluator refuses the non-literal read first, which is
         // the same answer one rung earlier: the blend decides which of the
         // pinned fragment's arms composes, so it cannot be per draw.
@@ -19312,13 +19381,15 @@ test("refuses a lightmap UV set the pinned extension does not declare", () => {
                 const material = createPbrMaterial({});
                 setPbrLightmap(material, lightmap, { coordIndex: 2 });
             `),
+                labDeployment,
             ),
         /TEXCOORD_0 or TEXCOORD_1/,
     );
 });
 
 test("folds a loaded container's lightmap walk to its mesh-name filter", () => {
-    const result = compileSource(`
+    const result = compileSource(
+        `
         import {
             addToScene,
             createEngine,
@@ -19348,7 +19419,9 @@ test("folds a loaded container's lightmap walk to its mesh-name filter", () => {
                 }
             }
         }
-    `);
+    `,
+        labDeployment,
+    );
 
     const asset = result.manifest.assets.find((entry) => entry.kind === "gltf");
     // The filter travels as the predicate the loop wrote, negated: the body
@@ -19376,7 +19449,8 @@ test("folds a loaded container's lightmap walk to its mesh-name filter", () => {
 test("refuses a lightmap walk filter outside the folded grammar", () => {
     assert.throws(
         () =>
-            compileSource(`
+            compileSource(
+                `
                 import {
                     addToScene,
                     createEngine,
@@ -19405,7 +19479,9 @@ test("refuses a lightmap walk filter outside the folded grammar", () => {
                         }
                     }
                 }
-            `),
+            `,
+                labDeployment,
+            ),
         /closed grammar/,
     );
 });

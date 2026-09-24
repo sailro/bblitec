@@ -7,7 +7,7 @@ import test from "node:test";
 import { TextLayoutLowerer } from "../src/lowering/text-layout-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { resolveBundledAsset } from "../src/compiler/assets.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
 import {
     nativeFixtureVcpkgRoot,
@@ -26,7 +26,7 @@ test("native live layout matches the pinned shaper and layout over editing, wrap
     const directory = resolve("artifacts/test-text-layout");
     mkdirSync(directory, { recursive: true });
     const bytes = readAssetBytesSync(
-        resolveBundledAsset("/fonts/Inter.ttf"),
+        `${pinnedLabPublicUrl()}fonts/Inter.ttf`,
         resolve(directory, "source.ts"),
     );
     writeFileSync(resolve(directory, "font.ttf"), bytes);

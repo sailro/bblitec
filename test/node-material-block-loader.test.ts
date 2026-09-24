@@ -11,6 +11,9 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { composeNodeMaterial } from "../src/pinned-node-material.js";
 import { pinnedNodeVariantsHeader } from "../src/pinned-node-material-cpp.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
+
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
 const scene83 = "corpus/babylon-lite/lab/lite/src/lite/scene83.ts";
 const scene83Graph = "corpus/babylon-lite/lab/lite/src/shared/scene83-nme.ts";
@@ -359,6 +362,7 @@ test("restores Scene 72's exact compressed graph, textures, and emitter loader",
     );
 
     const result = compileSource(readFileSync(resolve(scene72), "utf8"), {
+        ...labDeployment,
         fileName: scene72,
     });
     const material = result.manifest.nodeMaterials[0]!;

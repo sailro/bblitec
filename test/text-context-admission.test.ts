@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { readNativeHostUi } from "../src/native-host-ui.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
+
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
 const source = (
     body: string,
@@ -66,6 +69,7 @@ test("standalone text admission retains both pinned text scene paths", () => {
     ] as const) {
         const fileName = `corpus/babylon-lite/lab/lite/src/lite/scene${id}.ts`;
         const result = compileSource(readFileSync(fileName, "utf8"), {
+            ...labDeployment,
             fileName,
             nativeHostUi: readNativeHostUi(`ui/scene${id}-host.json`),
         });

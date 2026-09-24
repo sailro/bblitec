@@ -7,7 +7,7 @@ import test from "node:test";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
-import { resolveBundledAsset } from "../src/compiler/assets.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { stringLiteral } from "../src/cpp-literals.js";
 import { parseDataUrl } from "../src/data-url.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -24,13 +24,15 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
+
 const directory = resolve("artifacts/test-text-entities");
 mkdirSync(directory, { recursive: true });
 const fileName = resolve(directory, "source.ts");
 writeFileSync(
     resolve(directory, "Roboto-Regular.ttf"),
     readAssetBytesSync(
-        resolveBundledAsset("/fonts/Roboto-Regular.ttf"),
+        `${pinnedLabPublicUrl()}fonts/Roboto-Regular.ttf`,
         fileName,
     ),
 );
@@ -135,7 +137,7 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
     const font = createFontFromBuffer(
         Uint8Array.from(
             readAssetBytesSync(
-                resolveBundledAsset("/fonts/Roboto-Regular.ttf"),
+                `${pinnedLabPublicUrl()}fonts/Roboto-Regular.ttf`,
                 fileName,
             ),
         ).buffer,
@@ -368,6 +370,7 @@ test("text owner classification preserves existing splat components and imported
     for (const id of [125, 269]) {
         const sourcePath = `corpus/babylon-lite/lab/lite/src/lite/scene${id}.ts`;
         const result = compileSource(readFileSync(sourcePath, "utf8"), {
+            ...labDeployment,
             fileName: sourcePath,
         });
         assert.ok(
@@ -391,6 +394,8 @@ test("exact text source projects unchanged shaders, observed descriptors and com
             "corpus/babylon-lite/lab/lite/src/lite/scene275.ts",
             "--out",
             output,
+            "--public-url",
+            pinnedLabPublicUrl(),
         ],
         { stdio: "pipe" },
     );

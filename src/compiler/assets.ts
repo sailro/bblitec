@@ -3,21 +3,17 @@ import type { LoweringServices } from "./lowering-services.js";
 // Asset registration: from a scene URL to a packaged local file.
 //
 // A reached asset URL registers once per (kind, source) pair and maps
-// to a deterministic hashed output name beside the executable; bundled
-// root-relative paths resolve against the pinned upstream tree, and a
-// drawn sprite atlas registers the module that draws it rather than a
-// URL. The intrinsic lowerers in asset.ts and sprite.ts call these
-// through their contexts.
-// Asset registration: from a scene URL to a packaged local file.
-//
-// A reached asset URL registers once per (kind, source) pair and maps
-// to a deterministic hashed output name beside the executable; bundled
-// root-relative paths resolve against the pinned upstream tree, and a
-// drawn sprite atlas registers the module that draws it rather than a
-// URL. The intrinsic lowerers in asset.ts and sprite.ts call these
-// through their contexts.
+// to a deterministic hashed output name beside the executable;
+// root-relative paths resolve against the deployment's public directory
+// or public URL, and a drawn sprite atlas registers the module that draws
+// it rather than a URL. The intrinsic lowerers in asset.ts and sprite.ts
+// call these through their contexts.
 import ts from "typescript";
-import { deploymentAssetSource, type DeploymentOptions } from "./deployment.js";
+import {
+    deploymentAssetSource,
+    deploymentPublicAsset,
+    type DeploymentOptions,
+} from "./deployment.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -509,15 +505,13 @@ export function resolveBundledAsset(
         }
     }
     if (source.startsWith("/")) {
-        // Root-relative asset paths always mean the pinned lab/public
-        // root: corpus scenes and project-owned gates share the demo
-        // asset conventions, and repository-local fixtures use
-        // relative paths instead.
-        const pin = readUpstreamPin();
-        return (
-            "https://raw.githubusercontent.com/" +
-            `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-            `/lab/public${source}`
+        // A root-relative URL no check above placed names the deployment's
+        // public files as the public URL serves them; without one, nothing
+        // says where the file is.
+        const served = deploymentPublicAsset(source, deployment);
+        if (served !== undefined) return served;
+        throw new Error(
+            `Root-relative asset '${source}' needs --public-dir or --public-url.`,
         );
     }
     return source;

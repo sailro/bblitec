@@ -159,6 +159,7 @@ import {
     type VcpkgManifestInstall,
 } from "./vcpkg-install.js";
 import { runConcurrently } from "./run-concurrently.js";
+import { pinnedLabPublicUrl } from "./pinned-lab-public.js";
 import {
     historicalBuildCostMs,
     orderByHistoricalCost,
@@ -274,6 +275,8 @@ function compilerArguments(scene: SceneDefinition): string[] {
         scene.output,
         "--title",
         scene.title,
+        "--public-url",
+        pinnedLabPublicUrl(),
     ];
     if (scene.parity?.referenceSearch !== undefined) {
         arguments_.push("--search", scene.parity.referenceSearch);

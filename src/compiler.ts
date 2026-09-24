@@ -80,6 +80,10 @@ import {
 } from "./compiler/worker-modules.js";
 import { compileDomInstanceOf } from "./compiler/dom-targets.js";
 import {
+    conditionComparison,
+    foldSettledComparison,
+} from "./compiler/comparisons.js";
+import {
     compileWorkerValue,
     isNativeWorkerExpression,
 } from "./compiler/workers.js";
@@ -132,7 +136,11 @@ import {
     browserEnvironmentValue,
     isPrimitiveBrowserValue,
 } from "./compiler/browser-erasure.js";
-import { deploymentUrl, deploymentEnvironment } from "./compiler/deployment.js";
+import {
+    deploymentEnvironment,
+    deploymentPublicUrl,
+    deploymentUrl,
+} from "./compiler/deployment.js";
 import { httpResponseProperty } from "./compiler/http.js";
 import { numberConstantValue } from "./compiler/number-intrinsics.js";
 import {
@@ -657,6 +665,9 @@ function compileSourceApplication(
             environment,
             ...(options.publicDir
                 ? { publicDir: resolve(options.publicDir) }
+                : {}),
+            ...(options.publicUrl
+                ? { publicUrl: deploymentPublicUrl(options.publicUrl) }
                 : {}),
             ...(workers ? { workers } : {}),
             ...(options.nativeHostUi && !workers?.namespace
@@ -4581,12 +4592,18 @@ class Compiler implements LoweringServices {
             return false;
         }
         const typeSite = declaration.type ?? name;
-        let annotated = this.dataTypes.fromTsType(
-            declaration.type
-                ? this.checker.getTypeFromTypeNode(declaration.type)
-                : this.checker.getTypeAtLocation(name),
-            typeSite,
-        );
+        const declaredType = declaration.type
+            ? this.checker.getTypeFromTypeNode(declaration.type)
+            : this.checker.getTypeAtLocation(name);
+        // A rebound binding is storage: every later assignment writes a value
+        // of the declared type into it, so the declared type is mapped as a
+        // stored position. A local class it names takes its shared-object
+        // representation here exactly as it would as a field or an element;
+        // otherwise `let c: C | null = null` would keep the initializer's
+        // null as the binding's only representation.
+        let annotated = this.identifierIsRebound(name)
+            ? this.dataTypes.fromStoredTsType(declaredType, typeSite)
+            : this.dataTypes.fromTsType(declaredType, typeSite);
         if (
             annotated?.kind === "optional" &&
             annotated.inner.kind === "struct"
@@ -9085,15 +9102,14 @@ class Compiler implements LoweringServices {
                         `received ${value.kind}.`,
                 );
             }
-            const operator = new EmissionMap<ts.SyntaxKind, string>([
-                [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],
-                [ts.SyntaxKind.ExclamationEqualsEqualsToken, "!="],
-                [ts.SyntaxKind.LessThanToken, "<"],
-                [ts.SyntaxKind.LessThanEqualsToken, "<="],
-                [ts.SyntaxKind.GreaterThanToken, ">"],
-                [ts.SyntaxKind.GreaterThanEqualsToken, ">="],
-            ]).get(unwrapped.operatorToken.kind);
-            if (!operator) {
+            const comparison = conditionComparison(this.checker, unwrapped);
+            if (comparison === "coercing")
+                this.fail(
+                    unwrapped.operatorToken,
+                    "Loose equality between operands of different types " +
+                        "coerces them; convert explicitly and compare strictly.",
+                );
+            if (!comparison) {
                 if (this.evaluator.isNumberExpression(unwrapped)) {
                     this.reachJsData();
                     return `bbl::js::number_truthy(${this.compileNumber(unwrapped, "double")})`;
@@ -9113,8 +9129,12 @@ class Compiler implements LoweringServices {
             let rightValue = this.compileValue(unwrapped.right);
             if (textKind(rightValue))
                 rightValue = retainTextValue(this, rightValue);
+            const operator = comparison.cpp;
+            const equality =
+                comparison.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                comparison.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
             if (leftValue.kind === "texture" && rightValue.kind === "texture") {
-                if (operator !== "==" && operator !== "!=")
+                if (!equality)
                     this.fail(
                         unwrapped,
                         "Texture2D values support identity comparisons.",
@@ -9128,7 +9148,7 @@ class Compiler implements LoweringServices {
                 return `${stored(leftValue, unwrapped.left)} ${operator} ${stored(rightValue, unwrapped.right)}`;
             }
             if (textKind(leftValue) || textKind(rightValue)) {
-                if (operator !== "==" && operator !== "!=")
+                if (!equality)
                     this.fail(
                         unwrapped,
                         "Text entities support strict identity comparisons.",
@@ -9147,109 +9167,37 @@ class Compiler implements LoweringServices {
                     (kind) => kind === "text-font",
                 )
             ) {
-                const token = unwrapped.operatorToken.kind;
-                if (
-                    token !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
-                    token !== ts.SyntaxKind.ExclamationEqualsEqualsToken
-                ) {
+                if (!equality) {
                     this.fail(
                         unwrapped,
                         "Static font/text data only supports strict identity comparison.",
                     );
                 }
                 const equal = sameCompiledValue(leftValue, rightValue);
-                return (
-                    token === ts.SyntaxKind.EqualsEqualsEqualsToken
-                        ? equal
-                        : !equal
-                )
-                    ? "true"
-                    : "false";
+                return (operator === "==" ? equal : !equal) ? "true" : "false";
             }
-            const staticLeft =
-                leftValue.kind === "number" && !leftValue.parameterBinding
-                    ? leftValue.staticNumber
-                    : undefined;
-            const staticRight =
-                rightValue.kind === "number" && !rightValue.parameterBinding
-                    ? rightValue.staticNumber
-                    : undefined;
-            if (
-                leftValue.staticString !== undefined &&
-                rightValue.staticString !== undefined
-            ) {
-                const equal =
-                    leftValue.staticString === rightValue.staticString;
-                const folded =
-                    unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken
-                        ? equal
-                        : unwrapped.operatorToken.kind ===
-                            ts.SyntaxKind.ExclamationEqualsEqualsToken
-                          ? !equal
-                          : undefined;
-                if (folded !== undefined) {
-                    return folded ? "true" : "false";
-                }
+            const folded = foldSettledComparison(
+                comparison.kind,
+                leftValue,
+                rightValue,
+            );
+            if (folded !== undefined) {
+                return folded ? "true" : "false";
             }
             if (
+                equality &&
                 isStringValue(leftValue) &&
-                isStringValue(rightValue) &&
-                (unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                    unwrapped.operatorToken.kind ===
-                        ts.SyntaxKind.ExclamationEqualsEqualsToken)
+                isStringValue(rightValue)
             ) {
-                return (
-                    `std::string(${leftValue.cpp}) ` +
-                    `${unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? "==" : "!="} ` +
-                    `std::string(${rightValue.cpp})`
-                );
+                return `std::string(${leftValue.cpp}) ${operator} std::string(${rightValue.cpp})`;
             }
             if (
+                equality &&
                 leftValue.kind === "object-url" &&
-                rightValue.kind === "object-url" &&
-                (unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                    unwrapped.operatorToken.kind ===
-                        ts.SyntaxKind.ExclamationEqualsEqualsToken)
+                rightValue.kind === "object-url"
             ) {
                 this.expectSameEngine(leftValue, rightValue, unwrapped);
-                return (
-                    `${leftValue.cpp} ` +
-                    `${unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? "==" : "!="} ` +
-                    `${rightValue.cpp}`
-                );
-            }
-            if (
-                staticLeft !== undefined &&
-                staticRight !== undefined &&
-                Number.isFinite(staticLeft) &&
-                Number.isFinite(staticRight)
-            ) {
-                const folded = new EmissionMap<ts.SyntaxKind, boolean>([
-                    [
-                        ts.SyntaxKind.EqualsEqualsEqualsToken,
-                        staticLeft === staticRight,
-                    ],
-                    [
-                        ts.SyntaxKind.ExclamationEqualsEqualsToken,
-                        staticLeft !== staticRight,
-                    ],
-                    [ts.SyntaxKind.LessThanToken, staticLeft < staticRight],
-                    [
-                        ts.SyntaxKind.LessThanEqualsToken,
-                        staticLeft <= staticRight,
-                    ],
-                    [ts.SyntaxKind.GreaterThanToken, staticLeft > staticRight],
-                    [
-                        ts.SyntaxKind.GreaterThanEqualsToken,
-                        staticLeft >= staticRight,
-                    ],
-                ]).get(unwrapped.operatorToken.kind);
-                if (folded !== undefined) {
-                    return folded ? "true" : "false";
-                }
+                return `${leftValue.cpp} ${operator} ${rightValue.cpp}`;
             }
             // The statement emitter supplies the condition's outer
             // parentheses. Comparisons bind more tightly than the logical
@@ -13946,9 +13894,9 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * Whether every member of an expression's type is one of the two canvas
-     * types. A member whose symbol has no name is not a canvas, so it fails
-     * the test rather than being compared under an empty name.
+     * Whether every member of an expression's type is one of the DOM
+     * library's two canvas types. A program's own type that shares a canvas
+     * name is not a canvas, and neither is a member without a symbol.
      */
     public isCanvasElement(expression: ts.Expression): boolean {
         const type = this.checker.getTypeAtLocation(expression);
@@ -13956,8 +13904,12 @@ class Compiler implements LoweringServices {
         return (
             members.length > 0 &&
             members.every((member) => {
-                const name = member.getSymbol()?.getName();
-                return name !== undefined && CANVAS_TYPE_NAMES.has(name);
+                const symbol = member.getSymbol();
+                return (
+                    symbol !== undefined &&
+                    CANVAS_TYPE_NAMES.has(symbol.getName()) &&
+                    declaredInDomLibrary(symbol)
+                );
             })
         );
     }
