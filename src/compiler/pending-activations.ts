@@ -4,7 +4,7 @@
 // the promise later; the lowering unwinds it (`js_synchronous_promise.hpp`)
 // to the statement that discarded its promise. Every other use of such an
 // activation's promise needs a pending value the synchronous lowering does
-// not have, so it refuses here, before anything is emitted.
+// not have, so it refuses where the lowering reaches it.
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { libraryGlobal, resolvedSymbol } from "./symbols.js";
@@ -77,6 +77,24 @@ function owningActivation(node: ts.Node): Activation | undefined {
     return undefined;
 }
 
+/** The statement a lowering reaches before any expression inside it. */
+function enclosingStatement(node: ts.Node): ts.Statement | undefined {
+    for (let current = node.parent; current; current = current.parent) {
+        if (ts.isStatement(current) && !ts.isBlock(current)) return current;
+    }
+    return undefined;
+}
+
+const STORED_MESSAGE =
+    "A call that can await a pending constructed promise is awaited, " +
+    "returned or discarded as a statement; the synchronous lowering has no " +
+    "pending promise value to store.";
+const CALLBACK_MESSAGE =
+    "A function that can await a pending constructed promise is called " +
+    "where it is named; as a callback, the activation that ends at its " +
+    "await has no statement to end at. Start it with `void f()` inside a " +
+    "synchronous callback.";
+
 /** The activation of the promise `node` produces, through reaction chains. */
 function chainedCall(expression: ts.Expression): ts.CallExpression | undefined {
     let node = unwrapExpression(expression);
@@ -97,6 +115,11 @@ function chainedCall(expression: ts.Expression): ts.CallExpression | undefined {
 
 export class PendingActivations {
     private readonly suspending = new Set<Activation>();
+    /** Each use that needs a pending promise value, by the node lowering reaches first. */
+    private readonly misuses = new Map<
+        ts.Node,
+        { site: ts.Node; message: string }
+    >();
 
     /**
      * `handledElsewhere` answers the Promise constructions another lowering
@@ -107,7 +130,6 @@ export class PendingActivations {
         private readonly checker: ts.TypeChecker,
         files: readonly ts.SourceFile[],
         handledElsewhere: (construction: ts.NewExpression) => boolean,
-        fail: (node: ts.Node, message: string) => never,
     ) {
         const callers = new Map<Activation, Set<Activation>>();
         const calls: ts.CallExpression[] = [];
@@ -160,24 +182,34 @@ export class PendingActivations {
                 this.suspending.has(callee) &&
                 promiseUse(call) === "stored"
             )
-                fail(
-                    call,
-                    "A call that can await a pending constructed promise is " +
-                        "awaited, returned or discarded as a statement; the " +
-                        "synchronous lowering has no pending promise value to store.",
-                );
+                this.record(call, STORED_MESSAGE);
         }
         for (const reference of references) {
             if (this.escapes(reference))
-                fail(
-                    reference,
-                    "A function that can await a pending constructed promise " +
-                        "is called where it is named; as a callback, the " +
-                        "activation that ends at its await has no statement " +
-                        "to end at. Start it with `void f()` inside a " +
-                        "synchronous callback.",
-                );
+                this.record(reference, CALLBACK_MESSAGE);
         }
+    }
+
+    /**
+     * Refuses a use that needs a pending promise value once the lowering
+     * reaches it: the use itself as a value, or the statement around it
+     * (a callback registration may lower its argument without evaluating
+     * it). Unreached code refuses nothing.
+     */
+    public refuseReached(
+        node: ts.Node,
+        fail: (node: ts.Node, message: string) => never,
+    ): void {
+        const misuse = this.misuses.get(node);
+        if (misuse) fail(misuse.site, misuse.message);
+    }
+
+    private record(site: ts.Node, message: string): void {
+        const misuse = { site, message };
+        this.misuses.set(site, misuse);
+        const statement = enclosingStatement(site);
+        if (statement && !this.misuses.has(statement))
+            this.misuses.set(statement, misuse);
     }
 
     /**
