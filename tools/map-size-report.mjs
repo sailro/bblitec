@@ -18,6 +18,7 @@ if (!mapPath) {
 const publicPattern =
     /^\s+([0-9a-f]{4}):([0-9a-f]{8})\s+(\S+)\s+([0-9a-f]{16})\s+(?:f\s+)?(?:i\s+)?(\S+)$/i;
 
+/** @type {Array<{ section: number, offset: number, origin: string }>} */
 const rows = [];
 let inPublics = false;
 for (const line of readFileSync(mapPath, "utf8").split(/\r?\n/)) {
@@ -32,24 +33,27 @@ for (const line of readFileSync(mapPath, "utf8").split(/\r?\n/)) {
     if (!match) {
         continue;
     }
+    const [, section, offset, , , origin] = match;
+    if (section === undefined || offset === undefined || origin === undefined)
+        throw new Error(`unparsed public symbol line: ${line}`);
     // Import thunks and absolute symbols carry addresses outside the
     // image and would corrupt the delta arithmetic.
-    if (match[5].startsWith("<absolute>")) {
+    if (origin.startsWith("<absolute>")) {
         continue;
     }
     rows.push({
-        section: Number.parseInt(match[1], 16),
-        offset: Number.parseInt(match[2], 16),
-        origin: match[5],
+        section: Number.parseInt(section, 16),
+        offset: Number.parseInt(offset, 16),
+        origin,
     });
 }
 
 rows.sort((a, b) => a.section - b.section || a.offset - b.offset);
 
+/** @param {string} origin */
 function libraryOf(origin) {
-    const library = (
-        origin.includes(":") ? origin.split(":")[0] : origin
-    ).toLowerCase();
+    const colon = origin.indexOf(":");
+    const library = (colon < 0 ? origin : origin.slice(0, colon)).toLowerCase();
     if (
         /^(libucrt|libcmt|libcpmt|libvcruntime|libconcrt|oldnames)/.test(
             library,
@@ -70,9 +74,9 @@ function libraryOf(origin) {
     return library;
 }
 
+/** @type {Map<string, number>} */
 const byLibrary = new Map();
-for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index];
+for (const [index, row] of rows.entries()) {
     const next = rows[index + 1];
     const size =
         next && next.section === row.section ? next.offset - row.offset : 0;

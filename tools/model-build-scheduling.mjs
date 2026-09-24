@@ -59,6 +59,7 @@ const measurements = scenes.map((scene) => {
 });
 const readHistoryMs = performance.now() - started;
 
+/** @param {ReadonlyArray<{ id: string, costMs: number }>} queue */
 function model(queue) {
     const slots = Array(Math.min(workers, queue.length)).fill(0);
     const jobs = queue.map(({ id, costMs }) => {

@@ -11,6 +11,8 @@ import { PNG } from "pngjs";
  *
  * Four flat blocks is what makes a UV set readable off a rendered pixel: a
  * slot sampling the wrong set shows one colour where the other shows four.
+ * @param {number} size
+ * @param {ReadonlyArray<readonly [number, number, number, number?]>} colors
  */
 export function quadrantPng(size, colors) {
     const png = new PNG({ width: size, height: size });
@@ -18,6 +20,8 @@ export function quadrantPng(size, colors) {
         for (let x = 0; x < size; x++) {
             const quadrant = (y < size / 2 ? 0 : 2) + (x < size / 2 ? 0 : 1);
             const color = colors[quadrant];
+            if (color === undefined)
+                throw new RangeError("quadrantPng takes four colours");
             const offset = (y * size + x) * 4;
             png.data[offset] = color[0];
             png.data[offset + 1] = color[1];

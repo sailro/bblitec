@@ -18,6 +18,9 @@ import {
     contentFingerprint,
     writeJsonRecord,
 } from "../dist/src/tooling/records.js";
+import { parseBackendName } from "../dist/src/tooling/backends.js";
+
+/** @import { IosSimulator } from "../dist/src/ios-simulator.js" */
 
 const { values } = parseArgs({
     options: {
@@ -39,8 +42,7 @@ if (!values.scene || !values.device || !values.bundle || !values.output) {
 }
 if (!/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/.test(values.app))
     throw new Error("Invalid application ID.");
-if (!["sdl_gpu", "dawn"].includes(values.backend))
-    throw new Error("Use --backend sdl_gpu|dawn.");
+const backend = parseBackendName(values.backend, "--backend", false);
 const frame = values.frame === undefined ? undefined : Number(values.frame);
 if (
     frame !== undefined &&
@@ -59,6 +61,10 @@ if (
 const output = resolve(values.output);
 mkdirSync(output, { recursive: true });
 let log = "";
+/**
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} environment
+ */
 function simctl(args, environment = process.env, timeout = 30000) {
     const result = spawnSync("xcrun", ["simctl", ...args], {
         encoding: "utf8",
@@ -74,15 +80,32 @@ function simctl(args, environment = process.env, timeout = 30000) {
         );
     return result.stdout.trim();
 }
+/**
+ * @type {{
+ *     platform: string,
+ *     scene: string,
+ *     backend: string,
+ *     runId: string,
+ *     bundle: string,
+ *     bundleSha256: string,
+ *     passed: boolean,
+ *     device?: IosSimulator,
+ *     environment?: Record<string, string>,
+ *     width?: number,
+ *     height?: number,
+ *     error?: string,
+ * }}
+ */
 const receipt = {
     platform: "ios-simulator",
     scene: values.scene,
-    backend: values.backend,
+    backend,
     runId: randomUUID(),
     bundle: resolve(values.bundle),
     bundleSha256: contentFingerprint([values.bundle]),
     passed: false,
 };
+/** @type {string | undefined} */
 let launchedDevice;
 try {
     const scene = resolveScene(values.scene);
@@ -104,8 +127,8 @@ try {
     const screenshot = join(container, "Documents", `${receipt.runId}.png`);
     const stamp = join(container, "Documents", `${receipt.runId}.stamp`);
     const environment = {
-        ...iosCaptureEnvironment(scene, values.backend, {
-            frame,
+        ...iosCaptureEnvironment(scene, backend, {
+            ...(frame === undefined ? {} : { frame }),
             canvasOnly: values["canvas-only"],
             ...(values.replay === undefined
                 ? {}
@@ -149,7 +172,7 @@ try {
         height: png.height,
     });
     console.log(
-        `iOS Simulator smoke passed: ${values.scene}, ${values.backend}, ${device.name}, ${png.width}x${png.height}. ${output}`,
+        `iOS Simulator smoke passed: ${values.scene}, ${backend}, ${device.name}, ${png.width}x${png.height}. ${output}`,
     );
 } catch (error) {
     receipt.error = error instanceof Error ? error.message : String(error);
