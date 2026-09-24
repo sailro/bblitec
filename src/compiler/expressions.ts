@@ -102,6 +102,7 @@ import {
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
 import { pickedMeshHandleCpp } from "./properties.js";
+import { nullability } from "./type-facts.js";
 import type { Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
@@ -1258,15 +1259,9 @@ export class ExpressionLowerer {
                           : operand.kind === "void"
                             ? "undefined"
                             : "object";
-            const checkedType =
-                this.context.checker.getTypeAtLocation(expression);
-            const checkedMayBeUndefined =
-                (checkedType.flags & ts.TypeFlags.Undefined) !== 0 ||
-                ((checkedType.flags & ts.TypeFlags.Union) !== 0 &&
-                    (checkedType as ts.UnionType).types.some(
-                        (member) =>
-                            (member.flags & ts.TypeFlags.Undefined) !== 0,
-                    ));
+            const checkedMayBeUndefined = nullability(
+                this.context.checker.getTypeAtLocation(expression),
+            ).undefined;
             const present =
                 operand.parameterBinding &&
                 !checkedMayBeUndefined &&

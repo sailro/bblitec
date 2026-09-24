@@ -2,7 +2,7 @@ import { EmissionMap } from "./emission-transaction.js";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { isBabylonModule } from "./symbols.js";
+import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
 import { LoweringContext } from "../lowering/context.js";
 import {
     findRepositoryRoot,
@@ -184,13 +184,8 @@ export function createCompilerProgram(
     const repositoryRoot = findRepositoryRoot(
         dirname(fileURLToPath(import.meta.url)),
     );
-    const babylonTypes = resolve(
-        repositoryRoot,
-        "node_modules",
-        "@babylonjs",
-        "lite",
-        "index.d.ts",
-    );
+    const { babylon: babylonTypes, webGpu: webGpuTypes } =
+        compilerPackageTypings();
     const options: ts.CompilerOptions = {
         target: ts.ScriptTarget.ES2022,
         module: ts.ModuleKind.NodeNext,
@@ -336,14 +331,6 @@ export function createCompilerProgram(
     };
     // Include the pin's WebGPU peer typings explicitly, including for entries
     // outside this checkout. Keep unrelated ambient packages excluded above.
-    const webGpuTypes = resolve(
-        repositoryRoot,
-        "node_modules",
-        "@webgpu",
-        "types",
-        "dist",
-        "index.d.ts",
-    );
     const program = ts.createProgram([rootName, webGpuTypes], options, host);
     const sourceFile = program.getSourceFile(rootName);
     if (!sourceFile) {
