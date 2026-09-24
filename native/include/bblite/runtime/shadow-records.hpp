@@ -76,6 +76,11 @@ struct ShadowGeneratorRecord {
     /** The `ShadowTask` inputs `setShadowTaskCasterMeshes` registered. */
     std::vector<MeshHandle> caster_meshes;
     /**
+     * The fit reads every caster the array names, a removed one included,
+     * so the array names each (`name_mesh`) and none gives up its slot.
+     */
+    std::vector<MeshName> caster_names;
+    /**
      * Bumped by every `set_shadow_task_caster_meshes`. The pin rebuilds a
      * generator's task state when the caster ARRAY it is handed is a new
      * one (`existing._casterMeshes === casterMeshes` in the ensure hooks),

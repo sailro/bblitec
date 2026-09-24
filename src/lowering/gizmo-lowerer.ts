@@ -5531,6 +5531,7 @@ void attach_gizmo_to_node(
     MeshHandle node) {
     EditGizmoRecord& record = ${recordAt("engine.edit_gizmos", "gizmo")};
     record.attached_node = node;
+    record.attached_name = node.value != invalid_handle ? name_mesh(engine, node) : MeshName{};
     record.enabled = node.value != invalid_handle;
 }
 
@@ -5614,6 +5615,7 @@ void dispose_composite_gizmo(
             remove_from_scene(scene, mesh);
         }
         record.attached_node = {};
+        record.attached_name.reset();
         record.enabled = false;
         record.dragging = false;
         record.hovering = false;
