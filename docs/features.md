@@ -493,6 +493,7 @@ opacity/gamma/visibility/order; data replacement and mixed renderer families ref
 ## Runtime scene mutation
 
 Supported removal, material append and instance updates refresh plans/resources. Removing a mesh from its
-last scene retires it, as the pin does: its geometry is reclaimed and later meshes reuse its record slots
-(loader meshes and meshes a hierarchy still lists keep theirs); re-adding or cloning it refuses. Shadow
+last scene retires it, as the pin does: its geometry is reclaimed and later meshes reuse its record slot once
+no mesh is parented under it and no shadow caster array, physics body or edit gizmo names it; re-adding or
+cloning it refuses. Shadow
 resources remain engine-owned.

@@ -123,8 +123,20 @@ test("bumps the caster-list identity on every re-registration", () => {
     ]).source;
     assert.match(
         source,
-        /void set_shadow_task_caster_meshes\([\s\S]{0,900}\+\+bbl::handle_at\(engine\.shadow_generators, generator\)\.caster_list_version;/,
+        /void set_shadow_task_caster_meshes\([\s\S]{0,900}ShadowGeneratorRecord& record = bbl::handle_at\(engine\.shadow_generators, generator\);[\s\S]{0,700}\+\+record\.caster_list_version;/,
     );
+});
+
+test("a caster array names every mesh it lists, so a removed caster keeps its record", () => {
+    const source = shadowFactorySource(new LoweringContext(), [
+        "shadow:pcf",
+    ]).source;
+    assert.match(
+        source,
+        /std::vector<MeshName> caster_names = name_meshes\(engine, caster_meshes\);[\s\S]{0,200}record\.caster_names = std::move\(caster_names\);/,
+    );
+    // Every reader then finds the record the array names.
+    assert.doesNotMatch(source, /current_mesh_record/);
 });
 
 test("gates each family's fit and publishes the verdict to the task loops", () => {

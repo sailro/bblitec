@@ -1833,11 +1833,9 @@ inline std::uint64_t shadow_caster_version_sum(
     }) {
     std::uint64_t sum = 0;
     for (const MeshHandle handle : caster_meshes) {
-        // The caster array is the program's own and keeps a removed mesh;
-        // once a later mesh holds its slot nothing moves it any more.
-        const MeshRecord* found = current_mesh_record(engine, handle);
-        if (!found) continue;
-        const MeshRecord& mesh = *found;
+        // The caster array keeps a removed mesh, and names it, so its
+        // record is still there to be moved (\`caster_names\`).
+        const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
         sum += mesh.transform_version + mesh.instance_version;${
             morphBounds
                 ? `
@@ -2480,11 +2478,10 @@ void refresh_shadow_task_meshes(
         FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "task_handle")};
         task.render_meshes.clear();
         for (const MeshHandle mesh : generator.caster_meshes) {
+            const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
             // A removed caster's task entries went with its removal
             // (\`_removeMeshFromRenderTask\`); the array still names it.
-            const MeshRecord* found = current_mesh_record(engine, mesh);
-            if (!found || found->retired) continue;
-            const MeshRecord& record = *found;
+            if (record.retired) continue;
             // Invisible anchors participate in the light-volume fit but
             // the pin's normal renderable traversal does not draw them.
             if (!record.visible) continue;
@@ -2533,19 +2530,19 @@ void set_shadow_task_caster_meshes(
     if (generator.value >= engine.shadow_generators.size()) {
         throw std::runtime_error("Invalid shadow generator handle.");
     }
-    for (const MeshHandle mesh : caster_meshes) {
-        if (mesh.value >= engine.meshes.size()) {
-            throw std::runtime_error("Invalid shadow caster mesh handle.");
-        }
-    }
-    ${recordAt("engine.shadow_generators", "generator")}.caster_meshes =
-        std::move(caster_meshes);
+    // The fit keeps reading a caster the program removes from its scene,
+    // so the array names every mesh it lists (\`name_mesh\`); a handle whose
+    // slot a later mesh already took refuses here.
+    std::vector<MeshName> caster_names = name_meshes(engine, caster_meshes);
+    ShadowGeneratorRecord& record = ${recordAt("engine.shadow_generators", "generator")};
+    record.caster_meshes = std::move(caster_meshes);
+    record.caster_names = std::move(caster_names);
     // The pin's ensure hooks rebuild the task state when handed a new
     // caster array, and the fresh state's -1 sentinels force the next
     // render; this counter is what the render gate compares in their
     // place, so a re-registered list re-renders even when its version sum
     // happens to match the old list's.
-    ++${recordAt("engine.shadow_generators", "generator")}.caster_list_version;
+    ++record.caster_list_version;
     refresh_shadow_task_meshes(engine, generator);
 }
 

@@ -1764,6 +1764,17 @@ using PhysicsNodeRef = std::variant<MeshHandle, TransformNodeHandle>;
 }
 
 /**
+ * The body's name for the mesh it follows. The pin keeps syncing a body
+ * with a mesh \`removeFromScene\` disposed, both ways, so the body names it
+ * (\`name_mesh\`) and the mesh keeps its record while the body exists. A
+ * transform node's handle already carries its node's lease.
+ */
+[[nodiscard]] inline MeshName physics_node_name(Engine& engine, const PhysicsNodeRef& node) {
+    const auto* mesh = std::get_if<MeshHandle>(&node);
+    return mesh ? name_mesh(engine, *mesh) : MeshName{};
+}
+
+/**
  * ${havokModule} \`PhysicsBody\`, trimmed to the reached slice the way
  * \`PhysicsAggregateOptions\` above it is. The pin's \`_shape\` is held only
  * so \`setPhysicsBodyMass\` can branch on it, and that branch runs while the
@@ -1779,6 +1790,8 @@ struct PhysicsBody {
     }
     std::weak_ptr<PhysicsWorld> owner;
     PhysicsNodeRef node{};
+    /** Set with \`node\` (\`physics_node_name\`); every copy shares it. */
+    MeshName node_name{};
     PhysicsShape shape{};
     PhysicsMotionType motion_type = PhysicsMotionType::STATIC;
     PhysicsPrestepType prestep_type = PhysicsPrestepType::TELEPORT;
@@ -2174,18 +2187,6 @@ struct PhysicsNodePose {
 }
 
 /**
- * Whether the node a body follows still has its record. The pin keeps
- * syncing a body with a mesh \`removeFromScene\` disposed; once a later
- * mesh took that mesh's slot nothing composes under it, nothing can move it
- * and the body teleported to its pose last step, so both directions of the
- * sync skip it (\`current_mesh_record\`).
- */
-[[nodiscard]] bool physics_node_current(const Engine& engine, const PhysicsNodeRef& node) {
-    const auto* mesh = std::get_if<MeshHandle>(&node);
-    return !mesh || current_mesh_record(engine, *mesh) != nullptr;
-}
-
-/**
  * The pin's \`node.position.set(...)\` / \`node.rotationQuaternion.set(...)\`
  * pair, on whichever arena the body's node lives in.
  *
@@ -2239,7 +2240,6 @@ ${
 ${events}
 ${afterStep}
 void sync_body_to_node(Engine& engine, const PhysicsBody& body) {
-    if (!physics_node_current(engine, body.node)) return;
 ${
     thin
         ? `    if (thin_from(*body.owner.lock(), body)) return;
@@ -2264,7 +2264,6 @@ void sync_node_to_body(
     const Engine& engine,
     const PhysicsBody& body,
     bool as_target) {
-    if (!physics_node_current(engine, body.node)) return;
 ${
     thin
         ? `    auto& world = *body.owner.lock();
@@ -2868,6 +2867,7 @@ ${
 }
     body.owner = handle.ownership;
     body.node = node;
+    body.node_name = physics_node_name(engine, node);
     body.motion_type = motion_type;
     body.handle = pal::physics_body_create();
     pal::physics_body_set_motion_type(
