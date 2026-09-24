@@ -351,6 +351,30 @@ test("package notices copy the artifacts' own notices and every transitive vcpkg
         () => packageNotices(request([], { BBLITE_BACKEND: "DAWN" })),
         /records no BBLITE_DAWN_DIR/,
     );
+    // A Dawn build owes its licence; the APK also records its provenance.
+    write("dawn/LICENSE.txt", "Dawn licence");
+    write("dawn/provenance.json", "{}");
+    write("ndk/NOTICE.toolchain", "NDK notices");
+    const dawn = {
+        BBLITE_BACKEND: "DAWN",
+        BBLITE_DAWN_DIR: join(root, "dawn"),
+    };
+    const desktopDawn = packageNotices(request([], dawn)).map(
+        (notice) => notice.name,
+    );
+    assert.ok(desktopDawn.includes("Dawn.txt"));
+    assert.equal(desktopDawn.includes("Dawn-provenance.json"), false);
+    const android = packageNotices({
+        ...request([], dawn),
+        platform: "android",
+        ndk: join(root, "ndk"),
+    }).map((notice) => notice.name);
+    for (const name of [
+        "Dawn.txt",
+        "Dawn-provenance.json",
+        "NDK-toolchain.txt",
+    ])
+        assert.ok(android.includes(name), name);
     // A transitive port whose file list is missing refuses, not guesses.
     rmSync(join(installed, "vcpkg", "info", `brotli_1.0_${triplet}.list`));
     assert.throws(

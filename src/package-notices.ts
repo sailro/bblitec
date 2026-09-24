@@ -303,18 +303,18 @@ export function packageNotices(
         for (const file of files) add(file, join(labSound, file));
     }
     const backend = cache("BBLITE_BACKEND");
-    if (backend === "DAWN" || backend === "BOTH")
-        add(
-            "Dawn.txt",
-            join(
-                required("BBLITE_DAWN_DIR", `The build compiles ${backend}`),
-                "LICENSE.txt",
-            ),
-        );
+    const dawn =
+        backend === "DAWN" || backend === "BOTH"
+            ? required("BBLITE_DAWN_DIR", `The build compiles ${backend}`)
+            : undefined;
+    if (dawn !== undefined) add("Dawn.txt", join(dawn, "LICENSE.txt"));
     if (request.platform === "android") {
         if (!request.ndk)
             throw new Error("Android notices need the NDK the package links.");
         add("NDK-toolchain.txt", join(request.ndk, "NOTICE.toolchain"));
+        // The APK also records the Dawn build's source revision and patches.
+        if (dawn !== undefined)
+            add("Dawn-provenance.json", join(dawn, "provenance.json"));
         if (has("ui:rml"))
             add(
                 "NotoSansSymbols2.txt",
