@@ -386,6 +386,8 @@ test(
             write(join(directory, file), text);
             return text;
         };
+        // CMake wraps a message where the checkout path's length puts the
+        // line break, so the expectations read the message unwrapped.
         const configure = (): { status: number | null; output: string } => {
             const result = spawnSync(
                 tools.cmake!,
@@ -394,21 +396,26 @@ test(
             );
             return {
                 status: result.status,
-                output: result.stdout + result.stderr,
+                output: (result.stdout + result.stderr).replace(/\s+/g, " "),
             };
         };
+        const install = (library: string, directory: string): string =>
+            `The ${library} install at ${directory.replaceAll("\\", "/")} `;
 
-        // CMake wraps message text, so the expectations span lines.
         let result = configure();
         assert.equal(result.status, 0, result.output);
-        assert.match(
-            result.output,
-            /dawn install at\s[\s\S]*?records\s+no\s+patch\s+set/,
-        );
-        assert.match(
-            result.output,
-            /sdl3 install at\s[\s\S]*?records\s+no\s+patch\s+set/,
-        );
+        for (const [library, directory, file] of [
+            ["dawn", dawn, "bblite-dawn-features.cmake"],
+            ["sdl3", sdl, "bblite-sdl-features.cmake"],
+        ] as const) {
+            const recordPath = join(directory, file).replaceAll("\\", "/");
+            assert.ok(
+                result.output.includes(
+                    `${install(library, directory)}records no patch set (${recordPath}), so its source and patches cannot be verified.`,
+                ),
+                result.output,
+            );
+        }
 
         // The records the builders write are the ones configure accepts;
         // LabSound's recorded variant set stands.
@@ -430,7 +437,7 @@ test(
         ]);
         result = configure();
         assert.equal(result.status, 0, result.output);
-        assert.doesNotMatch(result.output, /records\s+no\s+patch\s+set/);
+        assert.equal(result.output.includes("cannot be verified"), false);
 
         write(
             join(rmlui, "bblite-rmlui-features.cmake"),
@@ -438,9 +445,13 @@ test(
         );
         result = configure();
         assert.notEqual(result.status, 0, result.output);
+        const refusal = result.output.indexOf(
+            `${install("rmlui", rmlui)}was built from '`,
+        );
+        assert.notEqual(refusal, -1, result.output);
         assert.match(
-            result.output,
-            /rmlui install at\s[\s\S]*?Rebuild\s+it\s+with\s+tools\/build-rmlui\.ps1/,
+            result.output.slice(refusal),
+            /^[^']+'[^']+' with the patch set \[[^\]]*\], but the pin and native\/patches\/manifest\.json now select '[^']+' with \[[^\]]*\]\. Rebuild it with tools\/build-rmlui\.ps1\./,
         );
         record(rmlui, "bblite-rmlui-features.cmake", "rmlui", []);
 
@@ -453,9 +464,11 @@ test(
         );
         result = configure();
         assert.notEqual(result.status, 0, result.output);
-        assert.match(
+        assert.ok(
+            result.output.includes(
+                `${install("dawn", dawn)}was built for the variants [android], but this configuration needs [${dawnVariants.join(";")}].`,
+            ),
             result.output,
-            /was\s+built\s+for\s+the\s+variants\s+\[android\]/,
         );
         write(join(dawn, "bblite-dawn-features.cmake"), dawnRecord);
         assert.equal(configure().status, 0);
