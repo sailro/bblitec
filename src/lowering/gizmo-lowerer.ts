@@ -919,7 +919,7 @@ export class GizmoLowerer {
         lowerer: PinnedNumericLowerer,
     ): string {
         const call = this.context.unwrapExpression(
-            this.localInitializer(scope, local),
+            this.context.variableInitializer(scope, local),
         );
         if (
             !ts.isCallExpression(call) ||
@@ -1047,14 +1047,6 @@ export class GizmoLowerer {
         };
     }
 
-    /** The `const <name> = ...` initializer inside one pinned body. */
-    private localInitializer(
-        scope: ts.Node | readonly ts.Node[],
-        name: string,
-    ): ts.Expression {
-        return this.context.variableInitializer(scope, name);
-    }
-
     /**
      * The widget's own local-frame axis, as the pinned body derives it.
      *
@@ -1131,7 +1123,7 @@ export class GizmoLowerer {
                     `its ${axisMember} option.`,
             );
         };
-        return render(this.localInitializer(declaration, local));
+        return render(this.context.variableInitializer(declaration, local));
     }
 
     /**
@@ -1394,7 +1386,7 @@ export class GizmoLowerer {
             guardMode,
         );
         const initializer = this.context.unwrapExpression(
-            this.localInitializer(roots, local),
+            this.context.variableInitializer(roots, local),
         );
         if (!ts.isCallExpression(initializer)) {
             this.context.contractError(
@@ -2346,7 +2338,7 @@ ${body}
         const color = this.context
             .numericTuple(
                 this.context.nullishDefault(
-                    this.localInitializer(factory, "color"),
+                    this.context.variableInitializer(factory, "color"),
                 )!.right,
                 file,
             )
@@ -2494,7 +2486,7 @@ ${
         const color = this.context
             .numericTuple(
                 this.context.nullishDefault(
-                    this.localInitializer(factory, "color"),
+                    this.context.variableInitializer(factory, "color"),
                 )!.right,
                 file,
             )
@@ -2705,7 +2697,7 @@ ${this.widgetPart(
         const color = this.context
             .numericTuple(
                 this.context.nullishDefault(
-                    this.localInitializer(factory, "color"),
+                    this.context.variableInitializer(factory, "color"),
                 )!.right,
                 file,
             )
@@ -2805,7 +2797,7 @@ ${
         const color = this.context
             .numericTuple(
                 this.context.nullishDefault(
-                    this.localInitializer(factory, "color"),
+                    this.context.variableInitializer(factory, "color"),
                 )!.right,
                 file,
             )
@@ -3242,7 +3234,7 @@ ${
     /** The `const <name> = (...) => {...}` arrow inside one pinned body. */
     private arrowLocal(scope: ts.Node, name: string): ts.ArrowFunction {
         const initializer = this.context.unwrapExpression(
-            this.localInitializer(scope, name),
+            this.context.variableInitializer(scope, name),
         );
         if (!ts.isArrowFunction(initializer)) {
             this.context.contractError(
@@ -3549,13 +3541,16 @@ std::array<float, 16> bbox_mat4_from_quat(
             ]),
         );
         const cornerArmLen = constants.expression(
-            this.localInitializer(factory, "cornerArmLen"),
+            this.context.variableInitializer(factory, "cornerArmLen"),
         );
         const rotationAnchorThickness = constants.expression(
-            this.localInitializer(factory, "rotationAnchorThickness"),
+            this.context.variableInitializer(
+                factory,
+                "rotationAnchorThickness",
+            ),
         );
         const faceBoxSize = constants.expression(
-            this.localInitializer(factory, "faceBoxSize"),
+            this.context.variableInitializer(factory, "faceBoxSize"),
         );
 
         // ---- the two materials, read from the pin's own writes ----
@@ -3665,7 +3660,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         });
         const rootCalls = this.factoryCalls(
             file,
-            this.localInitializer(factory, "root"),
+            this.context.variableInitializer(factory, "root"),
             ["createCylinder"],
         );
         if (rootCalls.length !== 1) {
@@ -3715,7 +3710,7 @@ std::array<float, 16> bbox_mat4_from_quat(
             (name) =>
                 `    const double ${name} = ` +
                 `${anchorLowerer.expression(
-                    this.localInitializer(anchorBuilder, name),
+                    this.context.variableInitializer(anchorBuilder, name),
                 )};`,
         );
         const cornerLowerer = new PinnedNumericLowerer(file, {
@@ -3750,7 +3745,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         }));
         const cornerOffsets = ["offX", "offY", "offZ"].map((name) =>
             cornerLowerer.expression(
-                this.localInitializer(cornerBuilder, name),
+                this.context.variableInitializer(cornerBuilder, name),
             ),
         );
         this.assertHidden(cornerLoop, "c.meshes[1]!", "pickable");
@@ -3767,7 +3762,7 @@ std::array<float, 16> bbox_mat4_from_quat(
             (name) =>
                 `        const double ${name} = ` +
                 `${signLowerer.expression(
-                    this.localInitializer(factory, name),
+                    this.context.variableInitializer(factory, name),
                 )};`,
         );
         const cornerCall = this.context.callExpression(
@@ -3800,7 +3795,7 @@ std::array<float, 16> bbox_mat4_from_quat(
 
         // ---- the rotation-anchor axis table ----
         const axisTable = this.context.unwrapExpression(
-            this.localInitializer(factory, "rotationAxes"),
+            this.context.variableInitializer(factory, "rotationAxes"),
         );
         if (
             !ts.isArrayLiteralExpression(axisTable) ||
@@ -3902,7 +3897,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         const boxAxes = ["xs", "ys", "zs"]
             .map((name) => {
                 const initializer = this.context.unwrapExpression(
-                    this.localInitializer(layout, name),
+                    this.context.variableInitializer(layout, name),
                 );
                 if (
                     !ts.isArrayLiteralExpression(initializer) ||
@@ -3933,7 +3928,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         // `rotatePoint(q, ...)`, and the translator inlines only a block
         // body -- so it is asserted here and bound as that call instead.
         const toWorld = this.context.unwrapExpression(
-            this.localInitializer(layout, "toWorld"),
+            this.context.variableInitializer(layout, "toWorld"),
         );
         if (
             !ts.isArrowFunction(toWorld) ||
@@ -4152,7 +4147,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         }
         const bodyName = this.stringAssignment(factory, "body", "name");
         const bodyBoxSizes = this.boxSizes(
-            this.localInitializer(factory, "body"),
+            this.context.variableInitializer(factory, "body"),
             unitLowerer,
         );
         if (bodyBoxSizes.length !== 1) {
@@ -5174,14 +5169,14 @@ void build_light_lines(
     TransformNodeHandle parent,
     double levels) {
     const std::array<double, 4> root_q =
-        ${lineMath.expression(this.localInitializer(lineDeclaration, "rootQ"))};
+        ${lineMath.expression(this.context.variableInitializer(lineDeclaration, "rootQ"))};
     const TransformNodeHandle lines_root = create_transform_node(
         engine,
         ${this.displayNodeArguments(lineDeclaration, "linesRoot", lineMath)});
     set_transform_node_parent(engine, lines_root, parent);
     for (const GizmoLineDef& def : line_defs_for_level(levels)) {
         const std::array<double, 4> q =
-            ${lineMath.expression(this.localInitializer(lineDeclaration, "q"))};
+            ${lineMath.expression(this.context.variableInitializer(lineDeclaration, "q"))};
         const std::array<double, 3> p =
             ${lineMath.expression(this.context.callExpression(lineDeclaration, "rotateVec3ByQuat"))};
         const MeshHandle line = create_cylinder(
@@ -5263,7 +5258,7 @@ CameraGizmoHandle create_camera_gizmo(
     add_to_scene(scene, gizmo.root);
 
     const std::array<double, 4> outer_rot =
-        ${cameraMath.expression(this.localInitializer(cameraFactory, "outerRot"))};
+        ${cameraMath.expression(this.context.variableInitializer(cameraFactory, "outerRot"))};
     const TransformNodeHandle body_outer = create_transform_node(
         engine,
         ${this.displayNodeArguments(cameraFactory, "bodyOuter", cameraMath)});
@@ -5276,9 +5271,9 @@ CameraGizmoHandle create_camera_gizmo(
 
     // ${this.context.provenance(CAMERA_MODULE, "buildCameraBodyMesh")}
     const std::array<double, 4> rot_x =
-        ${cameraMath.expression(this.localInitializer(cameraDeclaration, "rotX"))};
+        ${cameraMath.expression(this.context.variableInitializer(cameraDeclaration, "rotX"))};
     const std::array<double, 4> rot_z =
-        ${cameraMath.expression(this.localInitializer(cameraDeclaration, "rotZ"))};
+        ${cameraMath.expression(this.context.variableInitializer(cameraDeclaration, "rotZ"))};
     const MeshHandle box = create_box(
         engine,
         BoxOptions{
@@ -5376,7 +5371,7 @@ void attach_camera_gizmo_to_camera(
     const CameraRecord& cam = engine.cameras[camera.value];
     const double canvas_width = engine.canvas_client_width;
     const double canvas_height = engine.canvas_client_height;
-    const double aspect = ${cameraMath.expression(this.localInitializer(cameraFactory, "aspect"))};
+    const double aspect = ${cameraMath.expression(this.context.variableInitializer(cameraFactory, "aspect"))};
     for (const GizmoFrustumEdge& edge : gizmo_frustum_geometry(
              cam.fov, aspect, cam.near_plane, cam.far_plane)) {
         const MeshHandle mesh = create_cylinder(
@@ -5508,7 +5503,7 @@ void attach_light_gizmo_to_light(
     Scene& scene = layer_record(engine, record.layer).scene;
     if (kind == LightKind::directional) {
         const std::array<double, 4> mq =
-            ${lightMath.expression(this.localInitializer(directionalArm, "mq"))};
+            ${lightMath.expression(this.context.variableInitializer(directionalArm, "mq"))};
         const TransformNodeHandle mesh_root = create_transform_node(
             engine,
             ${this.displayNodeArguments(directionalArm, "meshRoot", lightMath)});
@@ -5566,7 +5561,7 @@ void attach_light_gizmo_to_light(
     set_transform_node_parent(engine, type_root, record.root);
     if (kind == LightKind::point) {
         const std::array<double, 4> sphere_rotation =
-            ${lightMath.expression(this.localInitializer(pointArm, "sq"))};
+            ${lightMath.expression(this.context.variableInitializer(pointArm, "sq"))};
         const MeshHandle sphere = create_sphere(
             engine,
             ${sphere(pointSphere, lightDeclaration)});
@@ -5581,7 +5576,7 @@ void attach_light_gizmo_to_light(
     }
     if (kind == LightKind::hemispheric) {
         const std::array<double, 4> hemi_rotation =
-            ${lightMath.expression(this.localInitializer(hemisphereArm, "hq"))};
+            ${lightMath.expression(this.context.variableInitializer(hemisphereArm, "hq"))};
         const MeshHandle hemi = build_hemisphere_mesh(engine, ${hemisphereArguments(hemisphereArm)});
         gizmo_mesh(engine, scene, hemi, record.material);
         place_mesh(
@@ -5602,7 +5597,7 @@ void attach_light_gizmo_to_light(
         ${this.displayPlacement(spotArm, "sphere", lightMath)},
         type_root);
     const std::array<double, 4> hemi_rotation =
-        ${lightMath.expression(this.localInitializer(spotArm, "hq"))};
+        ${lightMath.expression(this.context.variableInitializer(spotArm, "hq"))};
     const MeshHandle hemi = build_hemisphere_mesh(engine, ${hemisphereArguments(spotArm)});
     gizmo_mesh(engine, scene, hemi, record.material);
     place_mesh(
