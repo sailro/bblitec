@@ -71,6 +71,7 @@ export interface StatementLoweringContext extends Pick<
     | "workerAbortCpp"
     | "options"
     | "emitActivationBoundary"
+    | "refusePendingActivationUse"
     | "speculating"
     | "transaction"
     | "checker"
@@ -470,6 +471,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {
+        context.refusePendingActivationUse(statement);
         if (
             ts.canHaveModifiers(statement) &&
             ts

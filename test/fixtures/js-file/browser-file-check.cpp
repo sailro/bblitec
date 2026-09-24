@@ -244,6 +244,36 @@ int main(int argc, char** argv) {
         reader.read_as_text(engine, bbl::js::file_at(retained, 0u));
         require(events == std::vector<std::string>({"load:" + readable, "error", "replaced"}),
                 "FileReader loads inside readAsText, and errors on an unreadable File");
+
+        // File.text() is Blob.text(): UTF-8 decoded with the byte order mark
+        // removed, where FileReader also sniffs UTF-16.
+        bbl::BrowserFileHandle marked;
+        const std::string bom_text = "\xef\xbb\xbf"
+                                     "a\xff";
+        bbl::js::replace_browser_file(
+            engine, marked,
+            bbl::pal::SelectedFileSnapshot{
+                .bytes = std::vector<std::uint8_t>(bom_text.begin(), bom_text.end()),
+                .display_name = "marked.txt",
+            });
+        require(bbl::js::file_text(engine, marked) == "a\xef\xbf\xbd",
+                "File.text removes a byte order mark and replaces invalid UTF-8");
+        const std::string utf16 = "\xff\xfe"
+                                  "A";
+        bbl::BrowserFileHandle wide;
+        bbl::js::replace_browser_file(
+            engine, wide,
+            bbl::pal::SelectedFileSnapshot{
+                .bytes = std::vector<std::uint8_t>(utf16.begin(), utf16.end()),
+                .display_name = "wide.txt",
+            });
+        const bbl::js::FileReader wide_reader;
+        wide_reader.read_as_text(engine, wide);
+        require(wide_reader.result().value() == "\xef\xbf\xbd",
+                "FileReader decodes a UTF-16 byte order mark, File.text does not");
+        require(bbl::js::file_text(engine, wide) == "\xef\xbf\xbd\xef\xbf\xbd"
+                                                    "A",
+                "File.text decodes UTF-16 bytes as UTF-8");
     }
 
     engine.ui_elements[input_handle.value].selected_file = {};

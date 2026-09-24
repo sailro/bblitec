@@ -2767,6 +2767,7 @@ class Compiler implements LoweringServices {
 
     public compileValue(expression: ts.Expression): Value {
         traceSourceNode(expression);
+        this.refusePendingActivationUse(expression);
         this.checkNodeGeometryMutation(expression);
         const boundary = this.nextNativeBindingSequence;
         const dependencies = new EmissionSet<NativeCaptureBinding>();
@@ -2903,9 +2904,16 @@ class Compiler implements LoweringServices {
                 framePollExecutor(construction, this.checker, (expression) =>
                     this.libraryGlobal(expression),
                 ) !== undefined,
-            (node, message) => this.fail(node, message),
         );
         return this.pendingActivationAnalysis;
+    }
+
+    /** Refuses a reached use of a waiting function that needs a pending promise value. */
+    public refusePendingActivationUse(node: ts.Node): void {
+        if (this.options.pendingActivations)
+            this.pendingActivations().refuseReached(node, (site, message) =>
+                this.fail(site, message),
+            );
     }
 
     /**
