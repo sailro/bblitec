@@ -77,8 +77,8 @@ nested/default/renamed struct bindings refuse.
 
 Dynamic JSON preserves actual fields and object identity through typed locals, arguments (members
 included), conditionals, represented generic returns and record-typed function returns. Source-backed
-record ownership can trigger compiler replay, preserving earlier aliases and initializer counts. Getters permit statements before a final return; early returns
-refuse.
+record ownership can trigger compiler replay, preserving earlier aliases and initializer counts. Getters
+permit statements before a final return; early returns refuse.
 Self-captured `satisfies` records retain one identity when their checked and initializer layouts agree.
 
 | Promise operation | Contract |
