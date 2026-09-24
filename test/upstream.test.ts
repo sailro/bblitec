@@ -32,9 +32,9 @@ import {
 } from "../src/upstream-source.js";
 import type { CompiledShaderProgram } from "../src/compiler.js";
 import {
-    predeclaredShaderProgram,
-    shaderMaterialPrograms,
-} from "../src/shader-material-programs.js";
+    fixtureShaderProgram,
+    reachedFixtureProgram,
+} from "./shader-program-fixtures.js";
 import {
     dawnUtilityShaders,
     spriteCoreAdditionalProvenance,
@@ -77,15 +77,9 @@ function pinnedProvenance(): RegExp {
 }
 
 function reachedPrograms(names: string[]): CompiledShaderProgram[] {
-    return names.map((name) => {
-        const program = shaderMaterialPrograms.find(
-            (candidate) => candidate.name === name,
-        );
-        if (!program) {
-            throw new Error(`Unknown predeclared shader program '${name}'.`);
-        }
-        return predeclaredShaderProgram(program);
-    });
+    return names.map((name) =>
+        reachedFixtureProgram(fixtureShaderProgram(name)),
+    );
 }
 
 test("loads pinned Babylon Lite TypeScript from published source maps", () => {
@@ -1753,7 +1747,18 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         gpuInstancing: true,
         punctualLights: true,
     });
-    const shaders = lowerer.lowerShaders();
+    const shaders = lowerer.lowerShaders({
+        ground: true,
+        skybox: true,
+        transmission: true,
+        shaderPrograms: reachedPrograms(["alpha-card", "circular-cutout"]),
+        gridMaterial: false,
+        idDiagnostics: true,
+        geometryOutputTasks: [],
+        gpuDeformation: false,
+        morphStorage: false,
+        gpuInstancing: false,
+    });
     const fidelity = lowerer.fidelityManifest();
     assert.equal(lowered.modulePath, "src/frame-graph/render-task-base.ts");
     assert.match(lowered.header, /struct RenderItem/);
@@ -1803,8 +1808,8 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         lowered.source,
         /"circular-cutout",[\s\S]*?ShaderVariantStageBlock\{true, \{ShaderSystemMatrix::world_view_projection\}, 16u, \{\}\},\s*\r?\n\s*ShaderVariantStageBlock\{false, \{\}, 0u, \{\}\},\s*\r?\n\s*\{\},/,
     );
-    // The alpha-card entry carries the historical native defaults
-    // (depth 0.5, opacity 1.0) at their declaration-order value offsets
+    // The alpha-card fixture carries its uniform defaults (depth 0.5,
+    // opacity 1.0) at their declaration-order value offsets
     // and gathers both stage blocks from the flat storage.
     assert.match(
         lowered.source,

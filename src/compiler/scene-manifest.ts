@@ -8,7 +8,6 @@ import type { CompileAdaptation } from "../fidelity.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { CompiledTextData } from "../pinned-text-data.js";
-import { shaderMaterialPrograms } from "../shader-material-programs.js";
 import {
     emissionArray,
     EmissionMap,
@@ -223,12 +222,7 @@ export class SceneManifestRecorder {
                 ? { computePrograms: this.reachedComputePrograms }
                 : {}),
             shaderVariants: this.reachedShaderPrograms.map(({ name }) => name),
-            customShaderPrograms: this.reachedShaderPrograms.filter(
-                ({ name }) =>
-                    !shaderMaterialPrograms.some(
-                        (predeclared) => predeclared.name === name,
-                    ),
-            ),
+            customShaderPrograms: this.reachedShaderPrograms,
             nodeMaterials: this.reachedNodeMaterials,
             ...(this.meshWalks.length ? { meshWalks: this.meshWalks } : {}),
             ...(this.reachedTextData.length > 0

@@ -1,5 +1,6 @@
 import ts from "typescript";
-import type { LoweringContext } from "./context.js";
+import { LoweringContext } from "./context.js";
+import { sharedUpstreamStore } from "../upstream-source.js";
 
 /**
  * A pinned blend descriptor, as the native factory emitted for it.
@@ -281,25 +282,76 @@ export function blendFactorySymbol(family: string, exportName: string): string {
     return `${family}_blend_${suffix.toLowerCase()}`;
 }
 
+/** The pinned module exporting each family's blend descriptors. */
+const blendFamilyModules = [
+    ["sprite", "src/sprite/sprite-blend.ts"],
+    ["billboard", "src/sprite/billboard-blend.ts"],
+] as const;
+
+/** The initializer of a `const` a pinned module exports under `name`. */
+function exportedConstant(
+    file: ts.SourceFile,
+    name: string,
+): ts.Expression | undefined {
+    for (const statement of file.statements) {
+        if (
+            !ts.isVariableStatement(statement) ||
+            !ts
+                .getModifiers(statement)
+                ?.some(
+                    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+                )
+        ) {
+            continue;
+        }
+        for (const declaration of statement.declarationList.declarations) {
+            if (
+                ts.isIdentifier(declaration.name) &&
+                declaration.name.text === name
+            ) {
+                return declaration.initializer;
+            }
+        }
+    }
+    return undefined;
+}
+
 /**
  * The family and native symbol an imported descriptor names, or undefined
- * when the name is not one. The family is returned rather than re-tested at
- * each call site, because a 2D descriptor passed to a billboard system (or
- * the reverse) is a real mistake that no call site was checking for.
+ * when the name is not one. The family is the pinned module that exports
+ * the descriptor, and `cutout` the pin's own `_depthMode` on it -- the one
+ * billboard mode with a second pipeline behind it. The family is returned
+ * rather than re-tested at each call site, because a 2D descriptor passed to
+ * a billboard system (or the reverse) is a real mistake that no call site
+ * was checking for.
  */
 export function parseBlendExport(
     importedName: string,
-): { family: string; mode: string; symbol: string } | undefined {
-    const match = /^([a-z]+)Blend([A-Z].*)$/.exec(importedName);
-    if (!match) {
-        return undefined;
+): { family: string; cutout: boolean; symbol: string } | undefined {
+    const store = sharedUpstreamStore();
+    for (const [family, module] of blendFamilyModules) {
+        const file = store.getSourceFile(module);
+        const initializer = exportedConstant(file, importedName);
+        if (!initializer) continue;
+        const context = new LoweringContext(store);
+        const depthMode = optionalProperty(
+            context,
+            objectLiteral(
+                context,
+                initializer,
+                `blend descriptor '${importedName}'`,
+            ),
+            "_depthMode",
+        );
+        return {
+            family,
+            cutout:
+                depthMode !== undefined &&
+                context.stringValue(depthMode, file) === "cutout",
+            symbol: blendFactorySymbol(family, importedName),
+        };
     }
-    const family = match[1]!;
-    return {
-        family,
-        mode: match[2]!.toLowerCase(),
-        symbol: blendFactorySymbol(family, importedName),
-    };
+    return undefined;
 }
 
 /**

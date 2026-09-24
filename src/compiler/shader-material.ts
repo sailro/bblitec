@@ -25,11 +25,8 @@ import {
     isShaderSystemMatrix,
     lowerWgslShaderProgram,
     shaderSystemMatrices,
-    type ShaderIrProgram,
 } from "../shader-ir.js";
 import {
-    predeclaredShaderProgram,
-    shaderMaterialPrograms,
     shaderSamplerName,
     shaderUniformValueLayout,
 } from "../shader-material-programs.js";
@@ -241,64 +238,6 @@ export function compileShaderMaterialOptions(
             `Unsupported shader depthCompare '${depthCompare}'.`,
         );
 
-    for (const program of shaderMaterialPrograms) {
-        if (
-            stringArraysEqual(attributes, program.attributes) &&
-            stringArraysEqual(uniforms, program.uniforms) &&
-            stringArraysEqual(samplers, program.samplers ?? []) &&
-            storageBuffers.length === 0 &&
-            samplerDeclarations.every(
-                ({ sampleType, viewDimension, comparison }) =>
-                    sampleType === "float" &&
-                    viewDimension === "2d" &&
-                    !comparison,
-            ) &&
-            definesEqual(defines, program.defines ?? []) &&
-            needAlphaBlending === program.needAlphaBlending &&
-            blendMode === (program.blendMode ?? "alpha") &&
-            needAlphaTesting === program.needAlphaTesting &&
-            backFaceCulling === program.backFaceCulling &&
-            depthWrite === program.depthWrite &&
-            depthCompare === program.depthCompare
-        ) {
-            let candidate: ShaderIrProgram;
-            try {
-                candidate = lowerWgslShaderProgram({
-                    ...program,
-                    vertexSource,
-                    fragmentSource,
-                    attributes,
-                    uniforms,
-                    samplers,
-                    defines,
-                    needAlphaBlending,
-                    blendMode,
-                    needAlphaTesting,
-                    backFaceCulling,
-                    depthWrite,
-                });
-            } catch (error: unknown) {
-                const message =
-                    error instanceof Error ? error.message : String(error);
-                context.fail(
-                    object,
-                    `Invalid reached shader material WGSL: ${message}`,
-                );
-            }
-            const expected = lowerWgslShaderProgram(program);
-            if (JSON.stringify(candidate) === JSON.stringify(expected)) {
-                const predeclared = predeclaredShaderProgram(program);
-                return reachShaderProgram(context, {
-                    ...predeclared,
-                    uniformDefaults: [],
-                    samplers: [...predeclared.samplers],
-                    storageBuffers: [],
-                    defines: [...predeclared.defines],
-                });
-            }
-        }
-    }
-
     // Scene-local variant: the entry file's own WGSL compiles through
     // the typed shader IR instead of matching a predeclared program.
     // The pin's `name` is optional and it carries the string onto the
@@ -325,12 +264,6 @@ export function compileShaderMaterialOptions(
         context.fail(
             nameNode,
             "Scene-local shader material names must contain letters or digits.",
-        );
-    }
-    if (shaderMaterialPrograms.some(({ name }) => name === slug)) {
-        context.fail(
-            nameNode,
-            `Shader material name '${slug}' collides with a predeclared variant.`,
         );
     }
     // The pin names nine system uniforms; the reached subset is the three
@@ -649,20 +582,6 @@ function compileShaderDefines(
     // same way before storing it, and the prelude emits it in that order.
     defines.sort((left, right) => left.name.localeCompare(right.name));
     return defines;
-}
-
-function definesEqual(
-    left: readonly CompiledShaderDefine[],
-    right: readonly { name: string; value: boolean | number }[],
-): boolean {
-    return (
-        left.length === right.length &&
-        left.every(
-            (entry, index) =>
-                entry.name === right[index]!.name &&
-                entry.value === right[index]!.value,
-        )
-    );
 }
 
 function compileShaderUniformSignatures(
@@ -1015,13 +934,6 @@ function staticNumber(
     }
     const value = context.compileValue(expression);
     return value.staticNumber;
-}
-
-function stringArraysEqual(left: string[], right: string[]): boolean {
-    return (
-        left.length === right.length &&
-        left.every((value, index) => value === right[index])
-    );
 }
 
 /**

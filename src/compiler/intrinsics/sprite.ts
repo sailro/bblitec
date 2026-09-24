@@ -105,7 +105,7 @@ function blendOption(
     }
     // The cutout mode is the one billboard descriptor with a second
     // pipeline behind it, so naming it reaches that arm's shader.
-    if (family === "billboard" && named.mode === "cutout") {
+    if (family === "billboard" && named.cutout) {
         context.reachFeature("sprite:billboard-cutout", node);
     }
     return blendMode.cpp;

@@ -719,11 +719,9 @@ export interface CompiledComputeProgram {
 }
 
 /**
- * A reached shader-material program. A scene-local one is compiled from the
- * entry file's own WGSL sources through the typed shader IR and carries the
- * typed uniform defaults the pinned createShaderMaterial applies at
- * creation; a predeclared variant is its record from `shaderMaterialPrograms`
- * (shader-material-programs.ts) in this shape.
+ * A reached shader-material program, compiled from the scene's own WGSL
+ * through the typed shader IR, with the typed uniform defaults the pinned
+ * `createShaderMaterial` applies at creation.
  */
 export interface CompiledShaderProgram {
     name: string;

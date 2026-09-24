@@ -5,7 +5,7 @@ import {
     extraTextureRecords,
 } from "../shader-builtins-sprite-fx.js";
 import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
-import type { ShaderTextBinding } from "./pinned-shader-text.js";
+import type { ShaderTextBinding } from "./pinned-shader-builders.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,

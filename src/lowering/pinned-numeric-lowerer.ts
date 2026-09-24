@@ -2429,9 +2429,8 @@ export class PinnedNumericLowerer {
     /**
      * A module-scope `const` of the file being lowered, as its own value.
      *
-     * `pinned-shader-text.ts` states the rule this follows: a name the
-     * module DECLARES is the pin's own text and is read straight off that
-     * declaration, and only a name it does not declare — an import, or
+     * A name the module DECLARES is the pin's own text and is read straight
+     * off that declaration, and only a name it does not declare — an import, or
      * something the caller owns — has to be supplied through `bindings`. So
      * an unbound identifier resolves here before it fails, which is what
      * lets a pinned body reach its own constants (`extract-highlights.ts`

@@ -3,7 +3,7 @@ import test from "node:test";
 import { lowerWgslShaderProgram } from "../src/shader-ir.js";
 import { emitNativeWgslProgram } from "../src/shader-wgsl-emitter.js";
 import { composeStandaloneWgsl } from "../src/shader-material-programs.js";
-import { predeclaredProgram } from "./shader-program-fixture.js";
+import { fixtureShaderProgram as predeclaredProgram } from "./shader-program-fixtures.js";
 import {
     blitFragmentWgsl,
     blitVertexWgsl,
@@ -148,12 +148,16 @@ test("composes Babylon custom shader snippets into standalone WGSL", () => {
 });
 
 test("generates Tint utility WGSL entry points and bindings", () => {
+    // The pin's copy-task blit: its vertex stage alone, its sampler pair
+    // re-homed to the native fragment-resource group.
     assert.match(blitVertexWgsl(), /@builtin\(vertex_index\)/);
+    assert.match(blitVertexWgsl(), /fn mainVertex\(/);
+    assert.doesNotMatch(blitVertexWgsl(), /@group/);
     assert.match(
         blitFragmentWgsl(),
-        /@group\(2\) @binding\(1\) var sourceSampler/,
+        /@group\(2\) @binding\(1\) var s: sampler/,
     );
-    assert.match(blitFragmentWgsl(), /textureSampleLevel/);
+    assert.match(blitFragmentWgsl(), /textureSampleLevel\(t, s, v\.u, 0\.0\)/);
     // The lifted pinned `ip()`: the pin's own parameter block and exposure
     // multiply, under the native fragment uniform space.
     assert.match(imageProcessingFragmentWgsl(), /var c=r\.rgb\*p\.e;/);

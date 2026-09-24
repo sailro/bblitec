@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
-import type { ShaderTextBinding } from "./pinned-shader-text.js";
+import type { ShaderTextBinding } from "./pinned-shader-builders.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,

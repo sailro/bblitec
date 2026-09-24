@@ -16288,8 +16288,12 @@ test("compiles Babylon Lite scene 274 alpha to coverage", () => {
     assert.match(result.cpp, /bbl::create_shader_material/);
     assert.match(result.cpp, /bbl::set_alpha_to_coverage/);
     assert.match(result.cpp, /bbl::create_plane/);
-    assert.deepEqual(result.manifest.shaderVariants, ["alpha-card"]);
-    assert.deepEqual(result.manifest.customShaderPrograms, []);
+    // A reached program is the scene's own, named by its `name`.
+    assert.deepEqual(result.manifest.shaderVariants, ["a2c-card"]);
+    assert.deepEqual(
+        result.manifest.customShaderPrograms.map(({ name }) => name),
+        ["a2c-card"],
+    );
     assert.match(result.cpp, /bbl::create_shader_material\(v_engine, 0u\)/);
     assert.ok(
         result.manifest.generatedSources.includes(
@@ -16311,8 +16315,11 @@ test("compiles Babylon Lite scene 163 shader alpha cutout", () => {
     assert.ok(result.manifest.features.includes("material:shader"));
     assert.ok(result.manifest.features.includes("mesh:plane"));
     assert.ok(result.manifest.features.includes("renderer:scene"));
-    assert.deepEqual(result.manifest.shaderVariants, ["circular-cutout"]);
-    assert.deepEqual(result.manifest.customShaderPrograms, []);
+    assert.deepEqual(result.manifest.shaderVariants, ["scene163-shader"]);
+    assert.deepEqual(
+        result.manifest.customShaderPrograms.map(({ name }) => name),
+        ["scene163-shader"],
+    );
     assert.match(result.cpp, /bbl::create_shader_material\(v_engine, 0u\)/);
     assert.match(result.cpp, /bbl::PlaneOptions\{3\.0f, 3\.0f\}/);
     assert.ok(
@@ -16733,7 +16740,7 @@ test("supports typed shader samplers and refuses shapes outside the reached slic
     );
 });
 
-test("matches shader variants through parsed WGSL IR", () => {
+test("compiles shader variants through parsed WGSL IR", () => {
     const source = readFileSync(
         resolve("corpus/babylon-lite/lab/lite/src/lite/scene163.ts"),
         "utf8",
@@ -16745,7 +16752,7 @@ test("matches shader variants through parsed WGSL IR", () => {
         fileName: "corpus/babylon-lite/lab/lite/src/lite/scene163.ts",
     });
 
-    assert.deepEqual(result.manifest.shaderVariants, ["circular-cutout"]);
+    assert.deepEqual(result.manifest.shaderVariants, ["scene163-shader"]);
 });
 
 test("reports invalid reached WGSL at the shader options", () => {
@@ -16775,8 +16782,8 @@ test("compiles shader materials inside a frame-graph render task", () => {
     assert.ok(result.manifest.features.includes("material:shader"));
     assert.ok(result.manifest.features.includes("renderer:geometry-output"));
     assert.deepEqual(result.manifest.shaderVariants, [
-        "alpha-card",
-        "circular-cutout",
+        "audit-card",
+        "audit-cutout",
     ]);
     assert.match(result.cpp, /create_render_task/);
     assert.match(result.cpp, /add_task/);

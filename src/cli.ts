@@ -26,10 +26,6 @@ import type {
 } from "./compiler/types.js";
 import { writeJsonRecord } from "./tooling/records.js";
 import {
-    predeclaredShaderProgram,
-    shaderMaterialPrograms,
-} from "./shader-material-programs.js";
-import {
     emitUpstreamGenerated,
     readPinnedMaxLights,
     type UpstreamEmitOptions,
@@ -1084,20 +1080,14 @@ async function main(): Promise<void> {
             const custom = result.manifest.customShaderPrograms.find(
                 (program) => program.name === name,
             );
-            if (custom) {
-                return custom;
-            }
-            const predeclared = shaderMaterialPrograms.find(
-                (program) => program.name === name,
-            );
-            if (!predeclared) {
+            if (!custom) {
                 refuseGeneration(
                     "material:shader",
                     `Unknown shader variant '${name}'.`,
                     result.manifest.featureSites,
                 );
             }
-            return predeclaredShaderProgram(predeclared);
+            return custom;
         });
     // The SPZ container, recorded here rather than in the adaptation table:
     // `compileAdaptations` runs over the entry AST, and the VALUE this

@@ -13,15 +13,16 @@
  * the pin computes at and an edited bisection or a retuned curve regenerates
  * rather than drifting past a comment.
  *
- * The tone-mapping division's literal is still cross-checked against the
- * forward curve's WGSL scale, so the CPU inverse and the GPU forward pass
- * cannot disagree silently.
+ * The tone-mapping division's literal is cross-checked against the forward
+ * curve's WGSL scale, read through the typed WGSL IR, so the CPU inverse and
+ * the GPU forward pass cannot disagree silently.
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { reflectWgslModule, statementSome } from "../shader-ir.js";
 
 const transmissionModule = "src/frame-graph/transmission.ts";
 const imageProcessingModule = "src/frame-graph/image-processing-task.ts";
@@ -62,6 +63,38 @@ function pinnedToneMappingScale(context: LoweringContext): number {
 }
 
 /**
+ * The scales of every `exp2(-scale * c)` a WGSL module's functions state,
+ * read off the typed WGSL IR.
+ */
+function exponentialCurveScales(wgsl: string): string[] {
+    const scales: string[] = [];
+    for (const declaration of reflectWgslModule(wgsl).declarations) {
+        if (declaration.kind !== "fn") continue;
+        for (const statement of declaration.statements) {
+            statementSome(statement, (expression) => {
+                const argument =
+                    expression.kind === "call" &&
+                    expression.name === "exp2" &&
+                    expression.arguments.length === 1
+                        ? expression.arguments[0]
+                        : undefined;
+                if (
+                    argument?.kind === "binary" &&
+                    argument.operator === "*" &&
+                    argument.left.kind === "unary" &&
+                    argument.left.operator === "-" &&
+                    argument.left.operand.kind === "number"
+                ) {
+                    scales.push(argument.left.operand.value);
+                }
+                return false;
+            });
+        }
+    }
+    return scales;
+}
+
+/**
  * Every forward statement of the curve in the frame's image-processing
  * stage must carry the same scale the inverse divides by: the WGSL literal
  * is f32, so the comparison rounds it to that width first.
@@ -70,32 +103,31 @@ function assertForwardCurveScale(
     context: LoweringContext,
     scale: number,
 ): void {
-    // The WGSL the stage module states, literal by literal off its AST; the
-    // curve is read out of that WGSL text, which the IR parser does not yet
-    // take as a whole module.
-    const wgsl = context
-        .findNodes(
-            context.sourceFile(imageProcessingModule),
-            (node): node is ts.StringLiteralLike | ts.TemplateLiteralToken =>
-                ts.isStringLiteralLike(node) ||
-                ts.isTemplateHead(node) ||
-                ts.isTemplateMiddle(node) ||
-                ts.isTemplateTail(node),
-        )
-        .map((literal) => literal.text);
-    const matches = wgsl.flatMap((text) => [
-        ...text.matchAll(/exp2\(\s*-\s*([0-9.]+)\s*\*/g),
-    ]);
-    if (matches.length === 0) {
-        throw new Error(
+    // The stage's shared WGSL -- the uniform block, the vertex stage and the
+    // `ip` image-processing function both fragment variants call -- is one
+    // literal the stage factory binds.
+    const { file, declaration } = context.functionDeclaration(
+        imageProcessingModule,
+        "createImageProcessingState",
+    );
+    const scales = exponentialCurveScales(
+        context.stringValue(
+            context.variableInitializer(declaration, "common"),
+            file,
+        ),
+    );
+    if (scales.length === 0) {
+        context.contractError(
+            declaration,
             "Pinned image processing no longer states the exponential " +
                 "tone map as exp2(-scale * c).",
         );
     }
-    for (const match of matches) {
-        if (Math.fround(Number(match[1])) !== scale) {
-            throw new Error(
-                `Pinned forward tone map uses scale ${match[1]}, which is ` +
+    for (const stated of scales) {
+        if (Math.fround(Number(stated)) !== scale) {
+            context.contractError(
+                declaration,
+                `Pinned forward tone map uses scale ${stated}, which is ` +
                     `not the inverse's ${scale}.`,
             );
         }
