@@ -527,14 +527,6 @@ inline void release_dawn_sprite_layer_resources([[maybe_unused]] WGPUDevice devi
 
 inline void release_dawn_sprite_layer(DawnSpriteLayer& layer) { layer.reset(); }
 
-/** Release only the per-layer GPU objects, keeping the shared index buffer. */
-inline void release_dawn_sprite_pass_layers(DawnSpritePass& pass) {
-    for (DawnSpriteLayer& layer : pass.layers) {
-        release_dawn_sprite_layer(layer);
-    }
-    pass.layers.clear();
-}
-
 /**
  * Bring the pass's per-layer records in step with the renderer's list. Why
  * an entry moves rather than being rebuilt is the SDL_GPU sibling's.

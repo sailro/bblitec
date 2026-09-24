@@ -721,10 +721,11 @@ inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
     return false;
 }
 
-// TODO(window-move): adopt SDL's main-callback loop for interactive builds.
 // Conventional SDL_PollEvent loops stall application iteration during the
-// Win32 move/resize modal loop. Do not work around that with re-entrant event
-// watchers, compositor flushes, or temporary window-style changes.
+// Win32 move/resize modal loop; the fix is SDL's main-callback loop for
+// interactive builds (TODO.md, Worker and platform). Do not work around that
+// with re-entrant event watchers, compositor flushes, or temporary
+// window-style changes.
 
 /** Translate SDL's button masks to PointerEvent.buttons. */
 inline double dom_mouse_buttons(SDL_MouseButtonFlags pressed) {

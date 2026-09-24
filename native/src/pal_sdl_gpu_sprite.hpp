@@ -371,14 +371,6 @@ inline void release_sprite_layer_resources([[maybe_unused]] SDL_GPUDevice* devic
 
 inline void release_sprite_layer_gpu(SDL_GPUDevice*, SpriteLayerGpu& layer) { layer.reset(); }
 
-/** Release only the per-layer GPU objects, keeping the shared index buffer. */
-inline void release_sprite_pass_layers(SDL_GPUDevice* device, SpritePass& pass) {
-    for (SpriteLayerGpu& layer : pass.layers) {
-        release_sprite_layer_gpu(device, layer);
-    }
-    pass.layers.clear();
-}
-
 /**
  * Bring the pass's per-layer records in step with the renderer's list.
  *

@@ -20,7 +20,6 @@ struct ProceduralSkyGpu {
     std::shared_ptr<pal::StorageBufferAllocation> parameter_buffer;
     std::size_t parameter_byte_length = 0;
     pal::ComputeDispatch dispatch;
-    bool destroyed = false;
 };
 inline js::Promise<std::shared_ptr<ProceduralSkyGpu>>
 create_procedural_sky_gpu(std::shared_ptr<Engine> engine, ProceduralSkyGpuDescriptor descriptor) {
@@ -64,30 +63,9 @@ create_procedural_sky_gpu(std::shared_ptr<Engine> engine, ProceduralSkyGpuDescri
 }
 inline void write_procedural_sky_parameters(const std::shared_ptr<ProceduralSkyGpu>& state,
                                             std::span<const float> values) {
-    if (!state || state->destroyed || values.size_bytes() != state->parameter_byte_length)
+    if (!state || values.size_bytes() != state->parameter_byte_length)
         throw std::runtime_error("Procedural sky parameter buffer is not writable.");
     state->parameter_buffer->write(
         0, {reinterpret_cast<const std::uint8_t*>(values.data()), values.size_bytes()});
-}
-inline void
-record_procedural_sky_dispatch(const std::shared_ptr<pal::ComputeCommandEncoder>& encoder,
-                               const std::shared_ptr<ProceduralSkyGpu>& state,
-                               std::array<std::uint32_t, 3> workgroups) {
-    if (!state || state->destroyed || !encoder || encoder->finished || encoder->pass_active ||
-        encoder->device.get() != &state->run->device())
-        throw std::runtime_error("Procedural sky command encoder is not recordable.");
-    auto dispatch = state->dispatch;
-    dispatch.workgroups = workgroups;
-    encoder->commands.emplace_back(std::move(dispatch));
-}
-inline void dispose_procedural_sky_gpu(const std::shared_ptr<ProceduralSkyGpu>& state) {
-    if (!state || state->destroyed)
-        return;
-    state->destroyed = true;
-    state->dispatch = {};
-    if (state->parameter_buffer)
-        state->parameter_buffer->destroy();
-    if (state->texture)
-        state->texture->destroy();
 }
 } // namespace bbl

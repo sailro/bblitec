@@ -196,18 +196,4 @@ std::optional<SelectedFileSnapshot> choose_open_file(Engine& engine,
 #endif
 }
 
-void write_selected_file_atomically(const std::string& path,
-                                    const std::vector<std::uint8_t>& bytes) {
-    require_runtime_execution("a selected-file write");
-    detail::write_file_atomically(detail::utf8_file_path(path),
-                                  std::span<const std::uint8_t>(bytes),
-                                  detail::maximum_selected_file_bytes, "selected file");
-}
-
-void write_selected_file_atomically(const std::string& path, std::string_view text) {
-    require_runtime_execution("a selected-file write");
-    detail::write_file_atomically(detail::utf8_file_path(path), text,
-                                  detail::maximum_selected_file_bytes, "selected file");
-}
-
 } // namespace bbl::pal

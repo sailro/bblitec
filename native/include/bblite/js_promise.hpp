@@ -409,14 +409,4 @@ inline std::string promise_error_message(std::exception_ptr error) {
     }
 }
 
-inline std::string promise_error_string(std::exception_ptr error) {
-    try {
-        std::rethrow_exception(error);
-    } catch (const std::exception& problem) {
-        return std::string("Error: ") + problem.what();
-    } catch (...) {
-        return "Error";
-    }
-}
-
 } // namespace bbl::js

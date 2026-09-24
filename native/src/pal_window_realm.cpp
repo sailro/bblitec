@@ -8,6 +8,7 @@
 #include "pal_platform_events.hpp"
 #include "pal_system_preferences.hpp"
 #include "pal_window.hpp"
+#include "pal_gpu_dispatch.hpp"
 #include "pal_file_io.hpp"
 #if BBLITE_HAS_PBR_RENDERER
 #include "pal_camera_controls.hpp"
@@ -683,16 +684,10 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             &SDL_DestroyWindow);
         if (!window)
             throw std::runtime_error(SDL_GetError());
-        std::shared_ptr<WindowPresenter> presenter;
-        const bool dawn = use_dawn_backend();
-#if BBLITE_HAS_DAWN
-        if (dawn)
-            presenter = create_window_dawn_presenter(window.get());
-#endif
-#if BBLITE_HAS_SDL_GPU
-        if (!dawn)
-            presenter = create_window_sdl_presenter(window.get());
-#endif
+        const GpuBackend& backend = selected_gpu_backend();
+        const std::shared_ptr<WindowPresenter> presenter =
+            backend.create_window_presenter ? backend.create_window_presenter(window.get())
+                                            : nullptr;
         if (!presenter)
             throw std::runtime_error("Requested Window GPU backend is unavailable.");
         const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";

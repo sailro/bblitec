@@ -401,7 +401,6 @@ bblite_feature_define(BBLITE_COMPUTE_SHADERS "compute:shader")
 bblite_feature_define(BBLITE_COMPUTE_FRAME_GRAPH "compute:frame-graph")
 bblite_feature_define(BBLITE_STORAGE_READBACK "compute:storage-readback")
 bblite_feature_define(BBLITE_COMPUTE_BINDINGS "compute:bindings")
-bblite_feature_define(BBLITE_COMPUTE_ONE_SHOT "compute:one-shot")
 bblite_feature_define(BBLITE_WORKERS "platform:workers")
 if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
     set(BBLITE_OFFSCREEN_SURFACES ON)
@@ -1094,43 +1093,6 @@ if(MSVC)
     target_compile_options(bblite_features INTERFACE /W4 /WX /permissive- /EHsc /bigobj)
 else()
     target_compile_options(bblite_features INTERFACE -Wall -Wextra -Wpedantic -Werror)
-endif()
-
-# Optimization of generated application units, independently of PAL/upstream units.
-set(
-    BBLITE_MAIN_OPT
-    "configuration"
-    CACHE STRING
-    "Optimization of generated application sources: configuration or O1"
-)
-set_property(CACHE BBLITE_MAIN_OPT PROPERTY STRINGS "configuration" "O1")
-if(BBLITE_MAIN_OPT STREQUAL "O1")
-    if(NOT BBLITE_MINSIZE)
-        if(MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            set(BBLITE_MAIN_OPT_FLAGS /clang:-O1)
-        elseif(MSVC)
-            set(BBLITE_MAIN_OPT_FLAGS /O1)
-        else()
-            set(BBLITE_MAIN_OPT_FLAGS -O1)
-        endif()
-        set_property(
-            SOURCE "${BBLITE_ENTRY_SOURCE}" ${BBLITE_APPLICATION_UNITS}
-            APPEND PROPERTY COMPILE_OPTIONS ${BBLITE_MAIN_OPT_FLAGS}
-        )
-        # A unit compiled at another level cannot consume the tree's PCH
-        # (clang refuses a precompiled file whose OptimizationLevel differs);
-        # the generated unit includes what it needs itself, as the shipping
-        # build without a PCH proves every time.
-        set_property(
-            SOURCE "${BBLITE_ENTRY_SOURCE}" ${BBLITE_APPLICATION_UNITS}
-            PROPERTY SKIP_PRECOMPILE_HEADERS ON
-        )
-    endif()
-elseif(NOT BBLITE_MAIN_OPT STREQUAL "configuration")
-    message(
-        FATAL_ERROR
-        "BBLITE_MAIN_OPT must be configuration or O1 (got '${BBLITE_MAIN_OPT}')."
-    )
 endif()
 
 if(BBLITE_MINSIZE)
