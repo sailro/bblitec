@@ -107,7 +107,6 @@ interface ClassLoweringContext extends Pick<
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
     | "registerNativeTemporary"
-    | "registerNativeBindingType"
     | "cppString"
     | "identifierIsRebound"
     | "compileValue"
@@ -1501,9 +1500,16 @@ export class ClassLowerer {
                         : `Class ${callable} received too many arguments.`,
                 );
             }
-            const value = this.context.compileClassParameterValue(
-                parameter.name,
-                argument,
+            const value = this.context.bindings.settleBuiltValue(
+                this.context.compileClassParameterValue(
+                    parameter.name,
+                    argument,
+                ),
+                (built) =>
+                    this.context.evaluationOrder.calleeChanges(
+                        built,
+                        declaration,
+                    ),
             );
             return ordered[index] && value.kind !== "callback"
                 ? pinOperand(this.context, value, argument, "class_argument")

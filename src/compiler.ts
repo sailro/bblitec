@@ -6794,7 +6794,14 @@ class Compiler implements LoweringServices {
         }
     }
 
-    /** An immutable source binding's native storage and captures are const. */
+    /**
+     * An immutable source binding's native storage and captures are const:
+     * a binding that aliases storage keeps it from being reseated, as a
+     * class instance's binding aliases its fields. A tuple or object
+     * literal's record aliases nothing -- its captures are the storage its
+     * members were read from, which a constant record built from `count`
+     * does not make constant.
+     */
     public markImmutableNativeStorage(value: Value, immutable: boolean): void {
         const binding = this.nativeBindings.get(value.cpp);
         if (
@@ -6806,7 +6813,10 @@ class Compiler implements LoweringServices {
         ) {
             this.nativeConstBindings.add(binding);
         }
-        if (immutable && !value.sharedStorageCpp) {
+        const holdsReadValues =
+            value.kind === "tuple" ||
+            (value.kind === "record" && this.classOf(value) === undefined);
+        if (immutable && !value.sharedStorageCpp && !holdsReadValues) {
             for (const capture of value.nativeCaptures ?? [])
                 this.nativeConstBindings.add(capture);
             for (const captures of Object.values(

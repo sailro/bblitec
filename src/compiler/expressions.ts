@@ -114,6 +114,7 @@ import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import {
     booleanValue,
     commonResourceValue,
+    isCompileTimeOnlyValue,
     isStringValue,
     objectTruthinessCpp,
     presenceCpp,
@@ -178,6 +179,7 @@ export interface ExpressionContext
             | "audioSessionCpp"
             | "checker"
             | "evaluationOrder"
+            | "hasStableNativeBinding"
             | "options"
             | "referenceSearch"
             | "evaluator"
@@ -955,7 +957,12 @@ export class ExpressionLowerer {
                             }
                             elements.push(...(spread.tupleElements ?? []));
                         } else {
-                            elements.push(this.laneValue(element));
+                            elements.push(
+                                this.builtLane(
+                                    this.laneValue(element),
+                                    element,
+                                ),
+                            );
                         }
                     }
                     if (staticTuple) {
@@ -1001,7 +1008,7 @@ export class ExpressionLowerer {
                               "array_member",
                               element,
                           )
-                        : value;
+                        : this.builtLane(value, element);
                 }),
             };
         }
@@ -1832,6 +1839,30 @@ export class ExpressionLowerer {
         }
         const staticNumber = staticNumberValue(this.context, expression);
         return staticNumber === undefined ? value : { ...value, staticNumber };
+    }
+
+    /**
+     * A lane holds the value its initializer had when the tuple or record is
+     * built. The compile-time value keeps no storage of its own -- each use
+     * re-emits the lane's expression -- so a lane whose expression reads
+     * storage some code writes, or repeats an effect (`Math.random()`),
+     * records that expression: the lane is read into a temporary once the
+     * aggregate outlives the statement that builds it
+     * (`BindingScopes.settleBuiltValue`), while a sink consuming it in that
+     * statement reads it in place.
+     */
+    private builtLane(value: Value, node: ts.Expression): Value {
+        const holdsItsValue =
+            value.cpp === "" ||
+            value.kind === "callback" ||
+            value.kind === "record" ||
+            value.kind === "tuple" ||
+            isCompileTimeOnlyValue(value.kind) ||
+            this.context.hasStableNativeBinding(value);
+        return holdsItsValue ||
+            !this.context.evaluationOrder.touchesStorage(node)
+            ? value
+            : { ...value, builtFrom: { node, cpp: value.cpp } };
     }
 
     /**
@@ -4247,10 +4278,10 @@ export class ExpressionLowerer {
                         : property,
             ),
         );
-        const inOrder = (value: Value, index: number, node: ts.Expression) =>
+        const member = (value: Value, index: number, node: ts.Expression) =>
             ordered[index]
                 ? pinOperand(this.context, value, node, "record_member")
-                : value;
+                : this.builtLane(value, node);
         for (const [index, property] of unwrapped.properties.entries()) {
             if (ts.isSpreadAssignment(property)) {
                 const spread = this.compileValue(property.expression);
@@ -4338,7 +4369,7 @@ export class ExpressionLowerer {
                     methods[name] = initializer;
                     continue;
                 }
-                const value = inOrder(
+                const value = member(
                     this.laneValue(property.initializer),
                     index,
                     property.initializer,
@@ -4355,7 +4386,7 @@ export class ExpressionLowerer {
                     methods[property.name.text] = property.name;
                     continue;
                 }
-                properties[property.name.text] = inOrder(
+                properties[property.name.text] = member(
                     this.laneValue(property.name),
                     index,
                     property.name,

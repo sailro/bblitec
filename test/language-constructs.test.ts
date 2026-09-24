@@ -2822,6 +2822,57 @@ check(
 );
 
 check(
+    "record-and-tuple-members-hold-their-built-values",
+    `
+    let count = 0;
+    const holder = { value: 1 };
+    const record = { seen: count, field: holder.value, draw: Math.random() };
+    count = 5;
+    holder.value = 9;
+    if (record.seen !== 0) throw new Error("variable member " + record.seen);
+    if (record.field !== 1) throw new Error("property member " + record.field);
+    if (record.draw !== record.draw) throw new Error("draw member read twice");
+    function bump(): void { count += 1; }
+    const later = { seen: count };
+    bump();
+    if (later.seen !== 5) throw new Error("member across a call " + later.seen);
+    function inside(): void {
+        const snapshot = { seen: count };
+        count = 7;
+        if (snapshot.seen !== 6) throw new Error("function record " + snapshot.seen);
+    }
+    inside();
+    const nested = { inner: { seen: count } };
+    count = 8;
+    if (nested.inner.seen !== 7) throw new Error("nested member " + nested.inner.seen);
+    const list = [{ seen: count }];
+    count = 9;
+    if (list[0]!.seen !== 8) throw new Error("array element member " + list[0]!.seen);
+    const lanes = [count, Math.random()];
+    count = 10;
+    if (lanes[0] !== 9) throw new Error("tuple lane " + lanes[0]);
+    if (lanes[1] !== lanes[1]) throw new Error("tuple draw lane read twice");
+    let label = "a";
+    function tag(name: string): { name: string } { return { name }; }
+    const tagged = tag(label);
+    label = "b";
+    if (tagged.name !== "a") throw new Error("parameter member " + tagged.name);
+    function readAfterWrite(options: { seen: number }): number {
+        const first = options.seen;
+        count = 99;
+        return first + options.seen;
+    }
+    if (readAfterWrite({ seen: count }) !== 20) throw new Error("argument member read after the callee writes");
+    let title = "first";
+    const titled = { title };
+    const copied = title;
+    title = "second";
+    if (copied !== "first" || titled.title !== "first")
+        throw new Error("a record read does not make its source constant " + copied);
+`,
+);
+
+check(
     "array-literal-receivers-take-mutating-methods",
     `
     const last = [7, 8].pop();

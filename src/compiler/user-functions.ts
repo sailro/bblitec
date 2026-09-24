@@ -5314,10 +5314,20 @@ export class UserFunctionLowerer {
                     "A spread argument expands a compile-time tuple, or passes one native array as the whole rest parameter.",
                 );
             }
-            const value = this.argumentValue(
-                context,
-                argument,
-                ir.parameters[index]?.type,
+            // A record or tuple argument holds its members as they are at
+            // the call: a member the callee could change is read before it
+            // runs (`settleBuiltValue`).
+            const value = context.bindings.settleBuiltValue(
+                this.argumentValue(
+                    context,
+                    argument,
+                    ir.parameters[index]?.type,
+                ),
+                (built) =>
+                    context.evaluationOrder.calleeChanges(
+                        built,
+                        ir.declaration,
+                    ),
             );
             if (
                 pinArguments &&

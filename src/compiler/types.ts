@@ -2021,6 +2021,16 @@ export interface ValueFields {
      * through either.
      */
     readOnly?: boolean;
+    /**
+     * A compile-time record or tuple member whose expression reads storage
+     * code can change (or repeats an effect): the expression it was built
+     * from and the `cpp` that expression compiled to. That `cpp` is the
+     * value only in the statement that built it; the member is read into a
+     * temporary once the aggregate outlives that statement
+     * (`BindingScopes.settleBuiltValue`). A member whose `cpp` is no longer
+     * the built one was already moved into storage of its own.
+     */
+    builtFrom?: { readonly node: ts.Expression; readonly cpp: string };
     /** A pinned function retained as a compile-time alias of its intrinsic. */
     intrinsicName?: string;
     hostFunction?: "fetch" | "clipboard-write";

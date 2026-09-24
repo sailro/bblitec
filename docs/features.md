@@ -74,8 +74,9 @@ comparisons, calls, constructions and array/object literals evaluate left to rig
 them touch the same variable or object state and one writes it, including through the functions they
 call and `Math.random` draws; a function value the compiler cannot name counts as touching everything.
 An engine function or class method is read from the pinned body behind its typing, and one with no
-pinned body (an interface method) counts as touching everything. An object an engine function writes
-through (`normalizeVec3ToRef(v, out)`) keeps native storage. Loose
+pinned body (an interface method) counts as touching everything. An object or array literal kept past
+the statement that builds it holds each member's value as it was built, and an object an engine
+function writes through (`normalizeVec3ToRef(v, out)`) keeps native storage. Loose
 equality between operands of one primitive type is strict equality; across types it refuses. Destructuring finishes the source before
 left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings and plain struct fields;

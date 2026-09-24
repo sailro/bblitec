@@ -181,6 +181,16 @@ export class EvaluationOrder {
         );
     }
 
+    /**
+     * Whether evaluating `node` again later could give another value or
+     * repeat an effect: it reads storage some code writes, or writes
+     * storage itself.
+     */
+    public touchesStorage(node: ts.Node): boolean {
+        const access = this.access(node);
+        return touchesAnything(access.reads) || touchesAnything(access.writes);
+    }
+
     /** Everything evaluating `node` touches, the functions it calls included. */
     private access(node: ts.Node): Access {
         const direct = this.walk([node], undefined);
@@ -194,6 +204,58 @@ export class EvaluationOrder {
             merge(access.writes, summary.writes);
         });
         return access;
+    }
+
+    /**
+     * Whether a value built from `built` must be read before a call to
+     * `callee` runs, rather than where the callee reads it: building it has
+     * an effect, or the callee (with everything it reaches) writes storage
+     * the value reads.
+     */
+    public calleeChanges(built: ts.Node, callee: ts.Node): boolean {
+        const access = this.access(built);
+        if (touchesAnything(access.writes)) return true;
+        const units = this.declarationUnits(callee);
+        return !units || touches(this.bodyAccess(units).writes, access.reads);
+    }
+
+    /**
+     * The code calling a declaration runs: a constructor's whole chain, every
+     * implementation an overridden method dispatches to, a function's body;
+     * undefined for a declaration without one.
+     */
+    private declarationUnits(
+        declaration: ts.Node,
+    ): readonly Unit[] | undefined {
+        if (ts.isConstructorDeclaration(declaration))
+            return ts.isClassDeclaration(declaration.parent)
+                ? this.construction(declaration.parent)
+                : undefined;
+        if (ts.isMethodDeclaration(declaration)) {
+            const implementations = this.hierarchy.implementations(
+                declaration,
+            ) ?? [declaration];
+            return implementations.every(
+                (implementation): implementation is ts.MethodDeclaration =>
+                    implementation?.body !== undefined,
+            )
+                ? implementations
+                : undefined;
+        }
+        if (ts.isAccessor(declaration))
+            return declaration.body &&
+                !(
+                    ts.isClassDeclaration(declaration.parent) &&
+                    this.hierarchy.subclasses(declaration.parent).length > 0
+                )
+                ? [declaration]
+                : undefined;
+        return (ts.isFunctionDeclaration(declaration) ||
+            ts.isFunctionExpression(declaration) ||
+            ts.isArrowFunction(declaration)) &&
+            declaration.body
+            ? [declaration]
+            : undefined;
     }
 
     /**
@@ -556,17 +618,8 @@ export class EvaluationOrder {
         if (!declaration) return undefined;
         if (declaration.getSourceFile().isDeclarationFile) return "library";
         const callee = unwrapExpression(call.expression);
-        if (ts.isMethodDeclaration(declaration)) {
-            const implementations = this.hierarchy.implementations(
-                declaration,
-            ) ?? [declaration];
-            return implementations.every(
-                (implementation): implementation is ts.MethodDeclaration =>
-                    implementation?.body !== undefined,
-            )
-                ? implementations
-                : undefined;
-        }
+        if (ts.isMethodDeclaration(declaration))
+            return this.declarationUnits(declaration);
         // A function reached through a variable or a property is that
         // function only while nothing stores another one there.
         if (ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)) {
@@ -740,20 +793,36 @@ export class EvaluationOrder {
  * knows is that value's literal, anything else a temporary.
  */
 export function pinOperand(
-    context: Pick<
-        LoweringServices,
-        | "bindings"
-        | "cppString"
-        | "dataTypes"
-        | "allocateTemporaryCppName"
-        | "emit"
-        | "registerNativeConstBinding"
-        | "registerNativeBindingType"
-    >,
+    context: Pick<LoweringServices, "bindings"> & ScalarReadContext,
     value: Value,
     node: ts.Expression,
     label: string,
 ): Value {
+    return (
+        readScalarOperand(context, value, label) ??
+        context.bindings.pinValueToTemporary(value, label, node)
+    );
+}
+
+type ScalarReadContext = Pick<
+    LoweringServices,
+    | "cppString"
+    | "dataTypes"
+    | "allocateTemporaryCppName"
+    | "emit"
+    | "registerNativeConstBinding"
+    | "registerNativeBindingType"
+>;
+
+/**
+ * A scalar operand read where it stands: its literal when generation knows
+ * it, otherwise a constant temporary. Undefined for any other value.
+ */
+export function readScalarOperand(
+    context: ScalarReadContext,
+    value: Value,
+    label: string,
+): Value | undefined {
     if (value.staticNumber !== undefined)
         return { ...value, cpp: doubleLiteral(value.staticNumber) };
     if (value.staticBoolean !== undefined)
@@ -777,7 +846,7 @@ export function pinOperand(
                     )
                   ? context.dataTypes.cppType(value.dataType)
                   : undefined;
-    if (!type) return context.bindings.pinValueToTemporary(value, label, node);
+    if (!type) return undefined;
     const name = context.allocateTemporaryCppName(label);
     context.emit({
         kind: "declaration",
