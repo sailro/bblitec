@@ -785,13 +785,20 @@ export class StatementLowerer {
         }
         context.emit("{");
         context.increaseIndent();
-        context.emit(
-            stringSwitch
-                ? `const std::string_view ${discriminant} = ${value.cpp};`
-                : enumSwitch
-                  ? `const auto ${discriminant} = ${value.cpp};`
-                  : `const double ${discriminant} = ${value.cpp};`,
-        );
+        if (stringSwitch) {
+            // The view must not outlive its characters: a discriminant such
+            // as `prefix + "x"` is a temporary, so its storage is bound first.
+            context.emit(`const auto& ${discriminant}_storage = ${value.cpp};`);
+            context.emit(
+                `const std::string_view ${discriminant} = ${discriminant}_storage;`,
+            );
+        } else {
+            context.emit(
+                enumSwitch
+                    ? `const auto ${discriminant} = ${value.cpp};`
+                    : `const double ${discriminant} = ${value.cpp};`,
+            );
+        }
         const clauses = statement.caseBlock.clauses;
         const defaultIndex = clauses.findIndex(ts.isDefaultClause);
         if (defaultIndex !== -1 && defaultIndex !== clauses.length - 1) {

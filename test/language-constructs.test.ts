@@ -18,6 +18,22 @@ import {
 const native = optionalNativeFixtureTools(false);
 
 check(
+    "switch-on-temporary-string",
+    `
+    function classify(prefix: string, tail: string): number {
+        switch (prefix + tail) {
+            case "ab": return 1;
+            case "abc": return 2;
+            default: return 0;
+        }
+    }
+    let total = 0;
+    for (const tail of ["b", "bc", "x"]) total = total * 10 + classify("a", tail);
+    if (total !== 120) throw new Error("switch on a concatenation " + total);
+`,
+);
+
+check(
     "string-collection-foreach",
     `
     const names = new Set<string>(["alpha", "beta"]);
