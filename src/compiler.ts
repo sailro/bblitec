@@ -7074,13 +7074,23 @@ class Compiler implements LoweringServices {
                 struct.declaration,
             );
         }
+        // Enclosing names the body reads without its environment: bindings
+        // it did not capture, and other enclosing locals (a platform event
+        // parameter) it names unqualified.
         const captured = new EmissionSet(capture.nativeCaptures);
+        const text = lines.join("\n");
         const uncaptured = [...identifiers].filter((name) => {
             const binding = this.nativeBindings.get(name);
+            if (binding)
+                return (
+                    binding.sequence <= capture.boundary &&
+                    !captured.has(binding)
+                );
+            const allocated = this.allocatedCppNames.get(name);
             return (
-                binding !== undefined &&
-                binding.sequence <= capture.boundary &&
-                !captured.has(binding)
+                allocated !== undefined &&
+                allocated <= allocationBoundary &&
+                new RegExp(`(?:^|[^:\\w])${name}\\b`).test(text)
             );
         });
         return {

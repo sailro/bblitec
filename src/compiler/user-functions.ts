@@ -2860,7 +2860,7 @@ export class UserFunctionLowerer {
             rootEntry.captured.some(
                 (value) =>
                     value !== undefined &&
-                    valueContainsPlatformEvent(context.dataTypes, value),
+                    this.namesPlatformEvent(context, value, new EmissionSet()),
             )
         )
             throw new SharedCallRequiresInline();
@@ -3050,6 +3050,54 @@ export class UserFunctionLowerer {
             result,
             rootEntry.returnMetadata,
             call,
+        );
+    }
+
+    /**
+     * Whether a captured argument names a borrowed platform event: directly,
+     * through its fields, or through a binding a callback's body reads.
+     */
+    private namesPlatformEvent(
+        context: UserFunctionContext,
+        value: Value,
+        seen: Set<Value>,
+    ): boolean {
+        if (seen.has(value)) return false;
+        seen.add(value);
+        const scopes = value.callbackRecordOwner?.recordScopes;
+        const declaration =
+            value.callbackDeclaration &&
+            ts.isIdentifier(value.callbackDeclaration)
+                ? tryResolveFunctionDeclaration(
+                      this.checker,
+                      value.callbackDeclaration,
+                  )
+                : value.callbackDeclaration;
+        const read = new EmissionSet<ts.Symbol>();
+        if (scopes && declaration?.body)
+            forEachAnalysisNode(declaration.body, (node) => {
+                const symbol = ts.isIdentifier(node)
+                    ? this.checker.getSymbolAtLocation(node)
+                    : undefined;
+                if (symbol) read.add(symbol);
+            });
+        return (
+            valueContainsPlatformEvent(
+                context.dataTypes,
+                { ...value, recordScopes: [] },
+                new EmissionSet(
+                    [value.callbackRecordOwner].filter(
+                        (owner): owner is Value => owner !== undefined,
+                    ),
+                ),
+            ) ||
+            (scopes ?? []).some((scope) =>
+                [...scope].some(
+                    ([symbol, binding]) =>
+                        read.has(symbol) &&
+                        this.namesPlatformEvent(context, binding.value, seen),
+                ),
+            )
         );
     }
 
@@ -3381,6 +3429,7 @@ export class UserFunctionLowerer {
                                 );
                             }
                             if (ts.isBlock(body)) {
+                                let terminated = false;
                                 for (const statement of body.statements) {
                                     if (
                                         ts.isReturnStatement(statement) &&
@@ -3393,13 +3442,19 @@ export class UserFunctionLowerer {
                                             );
                                     }
                                     context.emitStatement(statement);
-                                    if (
+                                    terminated =
                                         context.statementTerminatesAfterLowering(
                                             statement,
-                                        )
-                                    )
-                                        break;
+                                        );
+                                    if (terminated) break;
                                 }
+                                // An exhaustive source switch may lower to a
+                                // native if/else chain; keep its impossible
+                                // fallthrough defined.
+                                if (!terminated && entry.returnType)
+                                    context.emit(
+                                        'throw std::runtime_error("Native value function fell through without returning.");',
+                                    );
                             } else {
                                 if (!entry.returnType) {
                                     context.emitExpressionAsStatement(body);
