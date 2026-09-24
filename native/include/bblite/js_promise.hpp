@@ -266,7 +266,8 @@ public:
                     (*converted)(result);
             } catch (const pal::WorkerTerminated&) {
             } catch (...) {
-                result.reject(std::current_exception());
+                run_teardown("Promise completion",
+                             [&] { result.reject(std::current_exception()); });
             }
             return {};
         }

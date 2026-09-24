@@ -38,7 +38,7 @@ template <class Handle, auto Release, auto Destroy = nullptr> struct DawnTextLea
                 Destroy(handle);
         }
         if (!destroyed && capture_id)
-            owner->capture.destroy(capture_id);
+            owner->capture.release(capture_id);
         destroyed = true;
     }
     void retire() noexcept {

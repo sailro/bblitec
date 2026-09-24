@@ -122,17 +122,19 @@ public:
     WorkerRealm(const WorkerRealm&) = delete;
     WorkerRealm& operator=(const WorkerRealm&) = delete;
     ~WorkerRealm() {
-        for (auto& [id, worker] : workers_) {
-            static_cast<void>(id);
-            worker->terminate();
-        }
-        for (auto& [id, worker] : workers_) {
-            static_cast<void>(id);
-            if (worker->thread_.joinable())
-                worker->thread_.join();
-        }
-        loop_.on_event({});
-        loop_.on_error({});
+        run_teardown("WorkerRealm teardown", [this] {
+            for (auto& [id, worker] : workers_) {
+                static_cast<void>(id);
+                worker->terminate();
+            }
+            for (auto& [id, worker] : workers_) {
+                static_cast<void>(id);
+                if (worker->thread_.joinable())
+                    worker->thread_.join();
+            }
+            loop_.on_event({});
+            loop_.on_error({});
+        });
         current_ = nullptr;
     }
     static WorkerRealm& current() {

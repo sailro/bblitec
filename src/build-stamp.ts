@@ -8,9 +8,10 @@
 //   * the compiled inputs (generated C++ plus the handwritten native
 //     sources) -- digested here and embedded in the executable, so a
 //     binary built from older sources reports a different stamp;
-//   * the deployed payload (shaders and assets copied beside the
-//     executable) -- compared file by file, because a failed shader step
-//     leaves the previous binaries in place next to a valid executable;
+//   * the deployed payload (the compiled renderers' shaders and the
+//     assets copied beside the executable) -- compared file by file,
+//     because a failed shader step leaves the previous binaries in place
+//     next to a valid executable;
 //   * the build configuration (the CMake cache values that select the
 //     backend, generator and toolchain) -- read from the build directory
 //     rather than embedded, so one generated tree can serve the release
@@ -179,14 +180,78 @@ export interface PayloadMismatch {
     reason: "missing" | "changed" | "unexpected";
 }
 
+/** The renderer set a build directory compiles, as `BBLITE_BACKEND` names it. */
+export type CompiledBackend = "SDL_GPU" | "DAWN" | "BOTH";
+
 /**
- * Compare a deployed directory beside the executable against the
- * generated tree it was copied from. `copy_directory` runs post-build, so
- * a mismatch means the deployment never ran or its source changed after
- * the last build.
+ * The shader files a build's compiled renderers read, by name suffix. The
+ * deploy step in `native/CMakeLists.txt` copies by the same table:
+ * SDL_GPU loads the platform's offline binary (`.dxil`, Metal `.msl`,
+ * otherwise SPIR-V `.spv`) plus the `.slots` sidecars naming each variant's
+ * register order; Dawn compiles the `.native.wgsl` text in-process. HLSL,
+ * reflection dumps, WGSL sources and tool manifests stay in the generated
+ * tree as development artifacts.
  */
+export function deployedShaderSuffixes(
+    backend: CompiledBackend,
+    platform: NodeJS.Platform = process.platform,
+): readonly string[] {
+    const sdlGpu = [
+        platform === "win32"
+            ? ".dxil"
+            : platform === "darwin"
+              ? ".msl"
+              : ".spv",
+        ".slots",
+    ];
+    const dawn = [".native.wgsl"];
+    return backend === "SDL_GPU"
+        ? sdlGpu
+        : backend === "DAWN"
+          ? dawn
+          : [...sdlGpu, ...dawn];
+}
+
 /**
- * What a build deploys beside its executable, as source/destination pairs.
+ * The renderer set recorded in the CMake cache of the build that produced
+ * the executable in `executableDirectory` -- the directory itself under
+ * Ninja, its parent under a multi-configuration generator.
+ */
+export function executableBuildBackend(
+    executableDirectory: string,
+): CompiledBackend {
+    for (const directory of [
+        executableDirectory,
+        resolve(executableDirectory, ".."),
+    ]) {
+        const backend = readCacheConfiguration(directory)?.BBLITE_BACKEND;
+        if (backend === undefined) continue;
+        if (backend === "SDL_GPU" || backend === "DAWN" || backend === "BOTH") {
+            return backend;
+        }
+        throw new Error(
+            `${directory}/CMakeCache.txt names an unknown BBLITE_BACKEND '${backend}'.`,
+        );
+    }
+    throw new Error(
+        `No CMake cache with BBLITE_BACKEND beside ${executableDirectory}; ` +
+            "the deployed shader payload depends on the compiled backends. " +
+            "Build the scene with 'scene -- process' first.",
+    );
+}
+
+/** One directory a build deploys beside its executable. */
+export interface DeployedPayload {
+    label: "shaders" | "assets";
+    source: string;
+    deployed: string;
+    /** Whether the build deploys this source file (a `/`-separated relative path). */
+    deploys: (path: string) => boolean;
+}
+
+/**
+ * What a build deploys beside its executable, as source/destination pairs:
+ * every generated asset, and the shader files its compiled renderers read.
  *
  * Two callers read it: the prune that removes what the generated tree no
  * longer has, and the guard that refuses to measure a stale one. They have to
@@ -195,45 +260,64 @@ export interface PayloadMismatch {
 export function deployedPayloads(
     executableDirectory: string,
     generatedDirectory: string,
-): Array<{ label: string; source: string; deployed: string }> {
+): DeployedPayload[] {
+    const shaderSuffixes = deployedShaderSuffixes(
+        executableBuildBackend(executableDirectory),
+    );
     return [
         {
             label: "shaders",
             source: resolve(generatedDirectory, "upstream/shaders"),
             deployed: resolve(executableDirectory, "shaders"),
+            deploys: (path) =>
+                shaderSuffixes.some((suffix) => path.endsWith(suffix)),
         },
         {
             label: "assets",
             source: resolve(generatedDirectory, "assets"),
             deployed: resolve(executableDirectory, "assets"),
+            deploys: () => true,
         },
     ];
 }
 
+/** The source files a payload deploys, as `/`-separated relative paths. */
+function expectedPayload({
+    source,
+    deploys,
+}: Pick<DeployedPayload, "source" | "deploys">): Set<string> {
+    return new Set(walkFiles(source).filter(deploys));
+}
+
+/**
+ * Compare a deployed directory beside the executable against the
+ * generated tree it was copied from. The deploy runs post-build, so
+ * a mismatch means the deployment never ran or its source changed after
+ * the last build.
+ */
 export function comparePayload(
-    sourceDirectory: string,
-    deployedDirectory: string,
+    payload: Pick<DeployedPayload, "source" | "deployed" | "deploys">,
 ): PayloadMismatch[] {
     const mismatches: PayloadMismatch[] = [];
-    if (!existsSync(sourceDirectory)) {
+    if (!existsSync(payload.source)) {
         return mismatches;
     }
-    const expected = new Set(walkFiles(sourceDirectory));
+    const expected = expectedPayload(payload);
     for (const path of expected) {
-        const deployed = resolve(deployedDirectory, path);
+        const deployed = resolve(payload.deployed, path);
         if (!existsSync(deployed) || !statSync(deployed).isFile()) {
             mismatches.push({ path, reason: "missing" });
             continue;
         }
         if (
-            !readFileSync(resolve(sourceDirectory, path)).equals(
+            !readFileSync(resolve(payload.source, path)).equals(
                 readFileSync(deployed),
             )
         ) {
             mismatches.push({ path, reason: "changed" });
         }
     }
-    for (const path of orphansAgainst(expected, deployedDirectory)) {
+    for (const path of orphansAgainst(expected, payload.deployed)) {
         mismatches.push({ path, reason: "unexpected" });
     }
     return mismatches;
@@ -268,16 +352,12 @@ function orphansAgainst(
  * keeps the full byte-compare through `comparePayload`.
  */
 export function payloadOrphans(
-    sourceDirectory: string,
-    deployedDirectory: string,
+    payload: Pick<DeployedPayload, "source" | "deployed" | "deploys">,
 ): string[] {
-    if (!existsSync(sourceDirectory)) {
+    if (!existsSync(payload.source)) {
         return [];
     }
-    return orphansAgainst(
-        new Set(walkFiles(sourceDirectory)),
-        deployedDirectory,
-    );
+    return orphansAgainst(expectedPayload(payload), payload.deployed);
 }
 
 /** The CMake cache entries that shape what a build directory produces. */

@@ -146,7 +146,7 @@ inline WGPURenderPipeline create_sprite_ui_dawn_pipeline(WGPUDevice device, WGPU
                                                          std::uint32_t samples,
                                                          WGPUPipelineLayout layout,
                                                          bool additive = false) {
-    std::array<WGPUVertexAttribute, 3> attributes{};
+    auto attributes = vertex_attribute_array<3>();
     attributes[0] = WGPU_VERTEX_ATTRIBUTE_INIT;
     attributes[0].format = WGPUVertexFormat_Float32x2;
     attributes[0].offset = offsetof(UiRenderVertex, x);

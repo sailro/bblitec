@@ -1364,12 +1364,12 @@ function runDevelopmentSetup(): void {
  * used.
  */
 function pruneDeployedOrphans(scene: (typeof scenes)[number]): void {
-    for (const { source, deployed } of deployedPayloads(
+    for (const payload of deployedPayloads(
         resolve(scene.buildDirectory),
         resolve(scene.output),
     )) {
-        for (const path of payloadOrphans(source, deployed)) {
-            rmSync(resolve(deployed, path), { force: true });
+        for (const path of payloadOrphans(payload)) {
+            rmSync(resolve(payload.deployed, path), { force: true });
         }
     }
 }

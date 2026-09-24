@@ -15,8 +15,8 @@ namespace bbl::pal {
 template <typename Resource> class TextureUploadCache {
     struct Entry {
         TextureData source;
-        bool srgb;
-        std::array<std::uint8_t, 4> fallback;
+        bool srgb{};
+        std::array<std::uint8_t, 4> fallback{};
         std::weak_ptr<Resource> resource;
     };
     std::vector<Entry> entries_;

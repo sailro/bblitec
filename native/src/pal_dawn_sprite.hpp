@@ -316,7 +316,7 @@ inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
     // sprite-pipeline.ts): the pure-2D attributes at their pinned byte
     // offsets, stepped per instance. Only the float count is translated
     // to this API's vertex formats.
-    std::array<WGPUVertexAttribute, upstream::sprite_instance_attributes.size() + 2u> attributes{};
+    auto attributes = vertex_attribute_array<upstream::sprite_instance_attributes.size() + 2u>();
     const std::size_t attribute_count = upstream::sprite_instance_attributes.size() +
                                         (plan.has_depth ? 1u : 0u) + (plan.scroll ? 1u : 0u);
     for (std::size_t index = 0; index < attribute_count; ++index) {

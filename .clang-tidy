@@ -1,3 +1,9 @@
+# Every enabled check passes on maintained and generated code. Still off
+# because generated output reports them: bugprone-unchecked-optional-access
+# (lowered upstream optional dereferences), bugprone-throwing-static-initialization
+# (namespace-scope source constants), cppcoreguidelines-pro-type-member-init
+# (record scalars without initializers) and bugprone-empty-catch (empty
+# source catch blocks).
 Checks: >
   -*,
   clang-analyzer-core.*,
@@ -8,7 +14,9 @@ Checks: >
   bugprone-assert-side-effect,
   bugprone-assignment-in-if-condition,
   bugprone-dangling-handle,
+  bugprone-exception-escape,
   bugprone-integer-division,
+  bugprone-invalid-enum-default-initialization,
   bugprone-macro-parentheses,
   bugprone-macro-repeated-side-effects,
   bugprone-misplaced-widening-cast,
@@ -32,6 +40,12 @@ Checks: >
   performance-trivially-destructible,
   performance-type-promotion-in-math-fn,
   performance-unnecessary-copy-initialization
+CheckOptions:
+  # The check already ignores std::bad_alloc; MSVC's allocators throw its
+  # subclass when a container default-constructs its sentinel node.
+  bugprone-exception-escape.IgnoredExceptions: 'bad_array_new_length'
+  # Generated `main` reports a caught error through std::cerr.
+  bugprone-exception-escape.CheckMain: false
 WarningsAsErrors: '*'
 HeaderFilterRegex: '(^|[/\\])native[/\\](include|src)[/\\]'
 SystemHeaders: false

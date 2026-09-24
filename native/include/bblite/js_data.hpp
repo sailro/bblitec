@@ -105,7 +105,10 @@ public:
     Finally& operator=(const Finally&) = delete;
     Finally(Finally&&) = delete;
     Finally& operator=(Finally&&) = delete;
-    ~Finally() noexcept(noexcept(action_())) { run(); }
+    // A finally body reached by an early exit may throw, as JavaScript's
+    // does. Exceptional paths run the guard explicitly (or skip it while
+    // unwinding), so this destructor never throws during unwinding.
+    ~Finally() noexcept(false) { run(); }
     void run() noexcept(noexcept(action_())) {
         if (!pending_)
             return;

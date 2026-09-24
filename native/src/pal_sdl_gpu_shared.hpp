@@ -555,8 +555,9 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
     }
     OwnedSdlShader owned{shader, {device}};
     if (compact_inputs) {
-        const std::lock_guard lock(sdl_shader_inputs_mutex);
-        sdl_shader_inputs.emplace(shader, std::move(inputs));
+        auto& registry = sdl_shader_inputs();
+        const std::lock_guard lock(registry.mutex);
+        registry.layouts.emplace(shader, std::move(inputs));
     }
     return owned;
 }
