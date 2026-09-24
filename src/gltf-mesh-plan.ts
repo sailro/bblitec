@@ -7,7 +7,7 @@ import {
     GLTF_MESH_PLAN,
     type JsonObject,
 } from "./gltf-document.js";
-import { LoweringContext } from "./lowering/context.js";
+import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 import { gltfBaseMaterialConstruction } from "./lowering/gltf/material-construction.js";
 import { featureMethod } from "./lowering/gltf/shared.js";
 import { ensurePinnedLoaderExecution } from "./pinned-material-input.js";
@@ -745,7 +745,7 @@ export async function recordMeshPlan(
     if (!context && !pinnedLoaders.has(enabledCameras))
         pinnedLoaders.set(
             enabledCameras,
-            recordingLoader(new LoweringContext(), options),
+            recordingLoader(sharedPinnedContext(), options),
         );
     const loader = await (context
         ? recordingLoader(context, options)
