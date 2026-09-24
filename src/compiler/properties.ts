@@ -26,7 +26,6 @@ import { readPngDimensionsSync } from "./asset-bytes-sync.js";
 import {
     cameraVectorProperties,
     sceneNodeVectorProperties,
-    type BindingScopes,
 } from "./binding-scopes.js";
 import {
     browserDeploymentValue,
@@ -331,7 +330,6 @@ export function isHandleCollectionProperty(property: string): boolean {
     );
 }
 
-/** The rule in a table claiming this (owner kind, property) pair. */
 /**
  * `node.<name>` for every automatable parameter the PAL serves. A node
  * and a source both carry them, so each name yields two rows -- the
@@ -359,6 +357,7 @@ const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
     }),
 );
 
+/** The rule in a table claiming this (owner kind, property) pair. */
 function ruleFor<Rule extends { owner: ValueKind; property: string }>(
     table: readonly Rule[],
     owner: Value,
@@ -1726,7 +1725,7 @@ export function pickedMeshHandleCpp(
 
 /**
  * What property-access lowering reads of the compiler: the surfaces its
- * special readers take, and the members it reads itself.
+ * special readers take, and the further members it reads itself.
  */
 interface PropertyAccessContext
     extends
@@ -1740,27 +1739,10 @@ interface PropertyAccessContext
         Pick<
             LoweringServices,
             | "captureManagedClosureLines"
-            | "checker"
             | "classLowerer"
-            | "compileValue"
-            | "cppString"
-            | "dataLowerer"
-            | "dataTypes"
-            | "emit"
-            | "fail"
             | "handleCollections"
-            | "isCanvasElement"
-            | "libraryGlobal"
-            | "options"
-            | "reachFeature"
-            | "reachJsData"
-            | "requireDefaultEngine"
-            | "requireEngine"
-            | "resolveStaticExpression"
-            | "unwrap"
             | "useNativeValue"
         > {
-    readonly bindings: BindingScopes;
     /** Bound only while lowering a platform visibility callback body. */
     readonly platformDocumentHiddenCpp: string | undefined;
     /** Platform owner for an entry that has no source-created engine. */

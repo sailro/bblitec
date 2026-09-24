@@ -1,4 +1,3 @@
-import type { BindingScopes } from "./binding-scopes.js";
 import { EmissionSet } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -251,9 +250,7 @@ export interface ExpressionContext
             | "isInNativeFunctionBody"
             | "isLocalCallbackEvaluationRepeated"
             | "callbackEvaluationIdentity"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 /**
  * One operand of a string concatenation, spelled as what `bbl::js::concat`

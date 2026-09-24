@@ -64,7 +64,6 @@ interface BindingScopesContext extends Pick<
     | "registerNativeConstBinding"
     | "symbols"
     | "takeNativeTemporary"
-    | "unwrap"
     | "useNativeValue"
 > {
     assignAudioMainBus(

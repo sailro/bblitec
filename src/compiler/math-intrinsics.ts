@@ -78,10 +78,10 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ["sqrt", { arity: 1, cpp: shared("sqrt") }],
     ["tan", { arity: 1, cpp: shared("tan") }],
     ["atan", { arity: 1, cpp: compilerOnly("atan") }],
-    ["acos", { arity: 1, cpp: compilerOnly("acos") }],
+    ["acos", { arity: 1, cpp: shared("acos") }],
     ["asin", { arity: 1, cpp: compilerOnly("asin") }],
-    ["log", { arity: 1, cpp: compilerOnly("log") }],
-    ["log2", { arity: 1, cpp: compilerOnly("log2") }],
+    ["log", { arity: 1, cpp: shared("log") }],
+    ["log2", { arity: 1, cpp: shared("log2") }],
     ["cbrt", { arity: 1, cpp: compilerOnly("cbrt") }],
     ["sinh", { arity: 1, cpp: compilerOnly("sinh") }],
     [
@@ -105,7 +105,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ["exp", { arity: 1, cpp: compilerOnly("exp") }],
     ["trunc", { arity: 1, cpp: compilerOnly("trunc"), fold: Math.trunc }],
     ["pow", { arity: 2, cpp: shared("pow") }],
-    ["atan2", { arity: 2, cpp: compilerOnly("atan2") }],
+    ["atan2", { arity: 2, cpp: shared("atan2") }],
     // Not `std::round`: JavaScript rounds a tie toward +Infinity and C
     // rounds it away from zero, so the two disagree on every negative
     // half. `round_js` carries the spec's own rule.

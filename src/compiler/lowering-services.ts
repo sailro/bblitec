@@ -378,7 +378,6 @@ export interface LoweringServices {
     referenceSearch(): string;
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
-    isNativeUiHelperCall(call: ts.CallExpression): boolean;
     compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean;
@@ -460,7 +459,6 @@ export interface LoweringServices {
         expression: ts.Expression,
         resolving?: ReadonlySet<ts.Symbol>,
     ): ts.Expression;
-    lookupIdentifierValue(identifier: ts.Identifier): Value | undefined;
     compileTypedArrayArgument(
         expression: ts.Expression,
         kind: TypedArrayKind,
@@ -642,10 +640,8 @@ export interface LoweringServices {
     noteCameraVectorCopy(value: Value, site: ts.Node): void;
     noteTemporalAdmissionFailure(node: ts.Node, message: string): void;
     noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
-    noteMaterialColorObjectWrite(
-        node: ts.Node,
-        property: "baseColorFactor" | "diffuseColor",
-    ): void;
+    /** A legacy tuple written into `diffuseColor`, which a numeric read of it refuses. */
+    noteLegacyDiffuseColorWrite(node: ts.Node): void;
     noteMaterialColorRenderBoundary(
         node: ts.Node,
         reason: string,

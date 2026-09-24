@@ -1,4 +1,3 @@
-import type { BindingScopes } from "../binding-scopes.js";
 import { EmissionMap } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
@@ -53,9 +52,7 @@ export interface SpriteIntrinsicContext
             | "emit"
             | "propertyName"
             | "fail"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 /**
  * The pin's billboard blend descriptors are pure-data exports a scene

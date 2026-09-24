@@ -1,4 +1,3 @@
-import type { BindingScopes } from "../binding-scopes.js";
 import { EmissionMap, EmissionSet } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 // Mesh option lowering: the size arguments of the primitive builders.
@@ -37,9 +36,7 @@ export interface MeshOptionContext
             | "objectProperty"
             | "compileNumber"
             | "bindings"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 /**
  * The option names each builder accepts, spelled once.

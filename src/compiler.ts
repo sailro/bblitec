@@ -339,10 +339,7 @@ export type {
     CompileResult,
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
-    GeometryTextureTypeName,
-    PostProcessCompositeManifest,
     PostProcessTaskManifest,
-    ShaderMaterialVariantName,
 } from "./compiler/types.js";
 
 /**
@@ -838,7 +835,6 @@ class Compiler implements LoweringServices {
             | "node-input"
             | "node-geometry"
             | "material-colors"
-            | "baseColorFactor"
             | "diffuseColor";
         node: ts.Node;
         message: string;
@@ -992,12 +988,11 @@ class Compiler implements LoweringServices {
                     "Node input bindings support one registered scene until per-scene binding snapshots are represented.",
                 );
         }
-        const colorAdmission = this.deferredAdmissionFailures.find(
-            (failure) =>
-                (failure.capability === "baseColorFactor" ||
-                    failure.capability === "diffuseColor") &&
-                this.materialColorReads.includes(failure.capability),
-        );
+        const colorAdmission = this.materialColorReads.includes("diffuseColor")
+            ? this.deferredAdmissionFailures.find(
+                  (failure) => failure.capability === "diffuseColor",
+              )
+            : undefined;
         if (colorAdmission)
             this.fail(colorAdmission.node, colorAdmission.message);
         if (this.materialColorReads.length) {
@@ -3835,16 +3830,6 @@ class Compiler implements LoweringServices {
         return identifier && this.symbols.valueSymbol(identifier);
     }
 
-    /**
-     * A local helper returning a scene-created retained element must be
-     * inlined before DOM erasure gets to classify its result type. Canvas
-     * helpers deliberately do not qualify: live Canvas2D belongs to its own
-     * bounded IR rather than the retained element tree.
-     */
-    public isNativeUiHelperCall(call: ts.CallExpression): boolean {
-        return this.ui.isNativeUiHelperCall(call);
-    }
-
     public compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean {
@@ -5098,15 +5083,6 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * A shader stage's generation-time text, with a runtime numeric template
-     * constant lifted into a material uniform when necessary.
-     *
-     * LibreQuake builds one vertex source by formatting its mover depth bias.
-     * Native pipelines are generated ahead of the BSP parse, so the equivalent
-     * representation is one pipeline whose material block receives that float
-     * when the material is created.
-     */
-    /**
      * What a source builder returns: its expression body, or the expression
      * of a block body's single `return`, read through `unwrap` so the pin's
      * `wgsl` tag over a template is that template. Undefined for any other
@@ -5128,6 +5104,15 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
+    /**
+     * A shader stage's generation-time text, with a runtime numeric template
+     * constant lifted into a material uniform when necessary.
+     *
+     * LibreQuake builds one vertex source by formatting its mover depth bias.
+     * Native pipelines are generated ahead of the BSP parse, so the equivalent
+     * representation is one pipeline whose material block receives that float
+     * when the material is created.
+     */
     public compileShaderSource(expression: ts.Expression): {
         source: string;
         dynamicUniforms: Array<{
@@ -5420,10 +5405,6 @@ class Compiler implements LoweringServices {
         resolving: ReadonlySet<ts.Symbol> = new EmissionSet(),
     ): ts.Expression {
         return this.evaluator.resolveStaticExpression(expression, resolving);
-    }
-
-    public lookupIdentifierValue(identifier: ts.Identifier): Value | undefined {
-        return this.bindings.lookupOptional(identifier);
     }
 
     public compileTypedArrayArgument(
@@ -6489,7 +6470,6 @@ class Compiler implements LoweringServices {
         };
     }
 
-    /** Commit a successful probe; restore all compiler-owned state on decline or throw. */
     /** How many speculative probes are open; a probe decides its own refusals. */
     private probeDepth = 0;
 
@@ -6497,6 +6477,7 @@ class Compiler implements LoweringServices {
         return this.probeDepth > 0;
     }
 
+    /** Commit a successful probe; restore all compiler-owned state on decline or throw. */
     public probeEmission<T>(
         probe: () => T,
         answered: (result: T) => boolean = (result) => result !== undefined,
@@ -6544,8 +6525,6 @@ class Compiler implements LoweringServices {
         }
         return this.body.splice(start);
     }
-
-    /** How many lines the body stream holds, for a caller that may undo. */
 
     /**
      * One native accessor per materialized compile-time table: a record
@@ -7421,14 +7400,12 @@ class Compiler implements LoweringServices {
         this.materialColorReads.push(property);
     }
 
-    public noteMaterialColorObjectWrite(
-        node: ts.Node,
-        property: "baseColorFactor" | "diffuseColor",
-    ): void {
+    public noteLegacyDiffuseColorWrite(node: ts.Node): void {
         this.deferredAdmissionFailures.push({
-            capability: property,
+            capability: "diffuseColor",
             node,
-            message: `Reading material.${property} requires retained numeric-array producers; the legacy color producer cannot preserve its source shape.`,
+            message:
+                "Reading material.diffuseColor requires retained numeric-array producers; the legacy color producer cannot preserve its source shape.",
         });
     }
 
@@ -7826,13 +7803,6 @@ class Compiler implements LoweringServices {
         return this.dataLowerer.leafValue(cpp, dataType);
     }
 
-    /**
-     * The engine collection an expression names, resolved through the
-     * declarative table in `properties.ts` rather than by testing one
-     * property name here. A collection the table does not carry returns
-     * undefined, so for-of falls through to the plain-data and
-     * static-literal paths.
-     */
     /**
      * The glTF animation groups a call names — the handle-collection
      * concept's list resolution, delegated so intrinsic contexts keep

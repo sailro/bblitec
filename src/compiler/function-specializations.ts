@@ -193,7 +193,7 @@ function dependencyIdentifiers(
 }
 
 export function functionDependencies(
-    context: Pick<LoweringServices, "checker" | "lookupIdentifierValue">,
+    context: Pick<LoweringServices, "checker" | "bindings">,
     roots: readonly ts.FunctionLikeDeclaration[],
 ): unknown[] {
     return [
@@ -203,7 +203,7 @@ export function functionDependencies(
             ),
         ),
     ].flatMap((identifier) => {
-        const value = context.lookupIdentifierValue(identifier);
+        const value = context.bindings.lookupOptional(identifier);
         return value
             ? [[context.checker.getSymbolAtLocation(identifier), value]]
             : [];

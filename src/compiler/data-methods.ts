@@ -414,7 +414,7 @@ export function compileDataMethodCall(
         ts.isBinaryExpression(ownerExpression)
             ? lowerer.context.compileValue(ownerExpression)
             : ts.isIdentifier(ownerExpression)
-              ? (lowerer.context.lookupIdentifierValue(ownerExpression) ??
+              ? (lowerer.context.bindings.lookupOptional(ownerExpression) ??
                 // A module string or query bag without a runtime binding
                 // is its value at the use site.
                 (["string", "search-params"].includes(

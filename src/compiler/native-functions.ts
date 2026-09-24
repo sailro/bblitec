@@ -41,7 +41,6 @@ export interface NativeFunctionContext extends Pick<
     | "dataTypes"
     | "dataLowerer"
     | "sourceFiles"
-    | "lookupIdentifierValue"
     | "knownValueWithoutEvaluation"
     | "browserErasure"
     | "classOf"
@@ -347,7 +346,8 @@ export class NativeFunctionLowerer {
                 if (!argument) return false;
                 if (ts.isStringLiteralLike(argument)) return true;
                 if (ts.isIdentifier(argument)) {
-                    const bound = this.context.lookupIdentifierValue(argument);
+                    const bound =
+                        this.context.bindings.lookupOptional(argument);
                     if (bound) return bound.staticString !== undefined;
                 }
                 return this.context.probeEmission(
@@ -433,7 +433,7 @@ export class NativeFunctionLowerer {
             if (!argument) return false;
             const expression = unwrapExpression(argument);
             const value = ts.isIdentifier(expression)
-                ? this.context.lookupIdentifierValue(expression)
+                ? this.context.bindings.lookupOptional(expression)
                 : undefined;
             return (
                 !value ||
@@ -713,7 +713,7 @@ export class NativeFunctionLowerer {
     private isAddressableArgument(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const bound = this.context.lookupIdentifierValue(unwrapped);
+            const bound = this.context.bindings.lookupOptional(unwrapped);
             return !bound || bound.kind === "data";
         }
         return (
@@ -961,7 +961,7 @@ export class NativeFunctionLowerer {
         if (!ts.isPropertyAccessExpression(callee)) return undefined;
         const receiver = unwrapExpression(callee.expression);
         const value = ts.isIdentifier(receiver)
-            ? this.context.lookupIdentifierValue(receiver)
+            ? this.context.bindings.lookupOptional(receiver)
             : this.context.knownValueWithoutEvaluation(receiver);
         const declaration =
             value &&
@@ -2119,7 +2119,7 @@ export class NativeFunctionLowerer {
                                 // (static tuples, records, strings) still fold
                                 // on any path; runtime bindings capture.
                                 const bound =
-                                    this.context.lookupIdentifierValue(node);
+                                    this.context.bindings.lookupOptional(node);
                                 if (
                                     ts.isVariableDeclaration(
                                         bindingDeclaration,

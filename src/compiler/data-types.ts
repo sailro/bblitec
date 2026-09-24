@@ -16,7 +16,7 @@ export {
     BUFFER_VIEW_KINDS,
     isTypedArrayType,
     typedArrayStem,
-    typedArrayCppType,
+    typedArrayElement,
     typedArrayStoreExpression,
 } from "./data-types/typed-arrays.js";
 export {

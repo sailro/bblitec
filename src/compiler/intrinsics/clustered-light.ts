@@ -20,27 +20,6 @@ import type { LoweringServices } from "../lowering-services.js";
  * container that ever held a spot composes a different fragment. The pin
  * reaches that at the spot factory, and so does this.
  */
-/**
- * The clustered light field's scene surface.
- *
- * `light/clustered.ts` holds a container as plain data — arrays of point and
- * spot records with a tile/slice configuration — and
- * `addClusteredLightContainer` builds its GPU state from them: three data
- * textures, a params block, and a per-frame `refresh` that re-bins every
- * light against the live camera.
- *
- * All of that is run time here, and measurably so: both reached scenes fill
- * a thousand lights from a seeded PRNG inside a counted loop, which lowers to
- * a native `for` rather than an unrolled table, so the container is a native
- * record filled by the emitted code exactly as the pin fills it.
- *
- * **One fact is compile-time, and it is the one that decides composition.**
- * `createClusteredSpotLight` calls `_enableClusteredSpotSupport`, which
- * installs the stride-3 data layout and registers the spot extension; that
- * extension's `detect` then takes a material over from the point one, so a
- * container that ever held a spot composes a different fragment. The pin
- * reaches that at the spot factory, and so does this.
- */
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { ClusteredContainerState, Value } from "../types.js";

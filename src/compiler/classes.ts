@@ -218,7 +218,6 @@ interface ClassLoweringContext extends Pick<
     | "registerNativeBinding"
     | "registerNativeConstBinding"
     | "registerNativeTemporary"
-    | "lookupIdentifierValue"
     | "identifierIsRebound"
     | "compileValue"
     | "emitStatement"

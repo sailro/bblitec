@@ -20,7 +20,6 @@ export type ObjectStaticContext = Pick<
     | "emitDiscardedValue"
     | "isInRuntimeControlFlow"
     | "bindings"
-    | "lookupIdentifierValue"
     | "resolveRecordValue"
     | "unwrap"
     | "libraryGlobal"
@@ -409,7 +408,7 @@ function compileObjectAssign(
         // binding the target was read from, not only on this read of it.
         context.bindings.invalidateRecordProperties(target);
         const bound = ts.isIdentifier(targetExpression)
-            ? context.lookupIdentifierValue(targetExpression)
+            ? context.bindings.lookupOptional(targetExpression)
             : undefined;
         if (bound) {
             context.bindings.invalidateRecordProperties(bound);

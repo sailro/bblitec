@@ -1,4 +1,3 @@
-import type { BindingScopes } from "../binding-scopes.js";
 import { EmissionMap } from "../emission-transaction.js";
 import {
     compileCreateStorageBuffer,
@@ -90,9 +89,7 @@ export interface MaterialIntrinsicContext
             | "compileShaderUniformComponents"
             | "cppString"
             | "fail"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 function compileStorageBufferData(
     context: MaterialIntrinsicContext,

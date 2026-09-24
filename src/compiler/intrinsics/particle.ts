@@ -1,4 +1,3 @@
-import type { BindingScopes } from "../binding-scopes.js";
 import type { LoweringServices } from "../lowering-services.js";
 // The node-particle family records graph builds and source lifecycle calls.
 // Frozen systems execute the pin during generation, preserving V8-dependent
@@ -76,9 +75,7 @@ export interface ParticleIntrinsicContext
             | "allocateTemporaryCppName"
             | "compileForDataSink"
             | "compileNumber"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 /** The four builders the corpus reaches, by their own export names. */
 const builders: Readonly<Record<string, NodeParticleBuilder>> = {

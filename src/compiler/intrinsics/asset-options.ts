@@ -1,4 +1,3 @@
-import type { BindingScopes } from "../binding-scopes.js";
 import type { LoweringServices } from "../lowering-services.js";
 // Environment option lowering: the .env, .dds, and .hdr loaders.
 //
@@ -40,9 +39,7 @@ export interface AssetOptionContext
             | "compileNumber"
             | "compileStringLiteral"
             | "compileVec3"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 export function compileEnvironmentOptions(
     context: AssetOptionContext,

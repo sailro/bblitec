@@ -1,4 +1,3 @@
-import type { BindingScopes } from "./binding-scopes.js";
 import {
     commonResourceValue,
     optionalPresentCpp,
@@ -999,7 +998,6 @@ export interface UserFunctionContext
             | "compileValue"
             | "emitExpressionAsStatement"
             | "emitDiscardedValue"
-            | "lookupIdentifierValue"
             | "identifierIsRebound"
             | "functionEmissionScope"
             | "activeThis"
@@ -1043,9 +1041,7 @@ export interface UserFunctionContext
             | "increaseIndent"
             | "decreaseIndent"
             | "fail"
-        > {
-    readonly bindings: BindingScopes;
-}
+        > {}
 
 /**
  * The browser-only nullable fallback shape two success-path matchers share:
@@ -1210,7 +1206,7 @@ export class UserFunctionLowerer {
             call.arguments.some((argument) => {
                 const node = unwrapExpression(argument);
                 const bound = ts.isIdentifier(node)
-                    ? context.lookupIdentifierValue(node)
+                    ? context.bindings.lookupOptional(node)
                     : undefined;
                 return bound !== undefined && !knownArgument(bound);
             })
@@ -3124,7 +3120,7 @@ export class UserFunctionLowerer {
                                         ts.isIdentifier(statement.expression)
                                     ) {
                                         returnMetadata =
-                                            context.lookupIdentifierValue(
+                                            context.bindings.lookupOptional(
                                                 statement.expression,
                                             );
                                     }
@@ -3598,7 +3594,7 @@ export class UserFunctionLowerer {
             : undefined;
         const selfIdentifier =
             ownIdentifier &&
-            !context.lookupIdentifierValue(ownIdentifier)?.sharedStorageCpp
+            !context.bindings.lookupOptional(ownIdentifier)?.sharedStorageCpp
                 ? ownIdentifier
                 : undefined;
         const cppType = context.dataTypes.cppType(dataType);
@@ -3631,7 +3627,7 @@ export class UserFunctionLowerer {
                 ],
                 ...(asynchronous ? { sharedStorageCpp: selfOwnerCpp! } : {}),
             };
-            if (context.lookupIdentifierValue(selfIdentifier)) {
+            if (context.bindings.lookupOptional(selfIdentifier)) {
                 context.bindings.rebindCompileTimeValue(
                     selfIdentifier,
                     selfValue,

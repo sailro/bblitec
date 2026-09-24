@@ -11,6 +11,7 @@ import { propertyRules } from "./properties.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
+    type StaticFoldContext,
 } from "./option-helpers.js";
 import {
     aliasTarget,
@@ -852,7 +853,7 @@ export function parameterizedResourceLoop(
         }
         return current;
     };
-    const staticContext: PositiveIntegerContext = {
+    const staticContext: StaticFoldContext = {
         resolveStaticExpression: resolve,
         libraryGlobal: (expression) => context.libraryGlobal(expression),
         bindings: {

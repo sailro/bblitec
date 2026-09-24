@@ -136,7 +136,6 @@ interface UiProjectionContext extends Pick<
     | "activeThis"
     | "assets"
     | "assetPayloads"
-    | "lookupIdentifierValue"
     | "allocateTemporaryCppName"
     | "sourceFile"
     | "sourceFiles"
@@ -4214,7 +4213,7 @@ export class UiProjection {
             ts.isStringLiteral(id) || ts.isNoSubstitutionTemplateLiteral(id)
                 ? id.text
                 : ts.isIdentifier(id)
-                  ? this.context.lookupIdentifierValue(id)?.staticString
+                  ? this.context.bindings.lookupOptional(id)?.staticString
                   : undefined;
         return text !== undefined && this.nativeHostUiTags().has(text);
     }
@@ -4225,7 +4224,7 @@ export class UiProjection {
      * helpers deliberately do not qualify: live Canvas2D belongs to its own
      * bounded IR rather than the retained element tree.
      */
-    public isNativeUiHelperCall(call: ts.CallExpression): boolean {
+    private isNativeUiHelperCall(call: ts.CallExpression): boolean {
         const declaration =
             this.context.checker.getResolvedSignature(call)?.declaration;
         if (
