@@ -3828,34 +3828,54 @@ export class StatementLowerer {
 function terminatesFlow(
     statement: ts.Statement,
     lowered: (node: ts.Statement) => boolean = () => false,
+    breakLeaves = true,
 ): boolean {
     if (
         lowered(statement) ||
         ts.isContinueStatement(statement) ||
-        ts.isBreakStatement(statement) ||
         ts.isReturnStatement(statement) ||
         ts.isThrowStatement(statement)
     ) {
         return true;
     }
+    if (ts.isBreakStatement(statement)) return breakLeaves;
     if (ts.isBlock(statement)) {
         const last = statement.statements.at(-1);
-        return last ? terminatesFlow(last, lowered) : false;
+        return last ? terminatesFlow(last, lowered, breakLeaves) : false;
     }
     if (ts.isIfStatement(statement)) {
         return (
             !!statement.elseStatement &&
-            terminatesFlow(statement.thenStatement, lowered) &&
-            terminatesFlow(statement.elseStatement, lowered)
+            terminatesFlow(statement.thenStatement, lowered, breakLeaves) &&
+            terminatesFlow(statement.elseStatement, lowered, breakLeaves)
         );
     }
     if (ts.isTryStatement(statement)) {
         return (
             (!!statement.finallyBlock &&
-                terminatesFlow(statement.finallyBlock, lowered)) ||
-            (terminatesFlow(statement.tryBlock, lowered) &&
+                terminatesFlow(statement.finallyBlock, lowered, breakLeaves)) ||
+            (terminatesFlow(statement.tryBlock, lowered, breakLeaves) &&
                 (!statement.catchClause ||
-                    terminatesFlow(statement.catchClause.block, lowered)))
+                    terminatesFlow(
+                        statement.catchClause.block,
+                        lowered,
+                        breakLeaves,
+                    )))
+        );
+    }
+    if (ts.isSwitchStatement(statement)) {
+        // Every path leaves when a `default` exists and each clause ends
+        // in control that leaves: an empty clause falls into the next one,
+        // and a `break` there leaves only the switch itself.
+        const clauses = statement.caseBlock.clauses;
+        return (
+            clauses.some(ts.isDefaultClause) &&
+            clauses.every((clause, index) => {
+                const last = clause.statements.at(-1);
+                return last
+                    ? terminatesFlow(last, lowered, false)
+                    : index < clauses.length - 1;
+            })
         );
     }
     return false;
