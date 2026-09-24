@@ -30,11 +30,18 @@ const line = (sample: Line): string =>
     `geometry_records=${sample.geometryRecords ?? 40} live_geometries=${sample.liveGeometries ?? 40} ` +
     "geometry_mb=8.0 gpu_meshes=40 shared_geometries=12 shared_geometry_mb=6.5";
 
-/** Twelve samples every 30 frames: warm-up ends at frame 120. */
-const run = (sample: (index: number) => Omit<Line, "frame">): string =>
-    Array.from({ length: 12 }, (_, index) =>
+/** `length` samples every 30 frames. */
+const runOf = (
+    length: number,
+    sample: (index: number) => Omit<Line, "frame">,
+): string =>
+    Array.from({ length }, (_, index) =>
         line({ frame: index * 30, ...sample(index) }),
     ).join("\n");
+
+/** Twelve samples every 30 frames: warm-up ends at frame 120. */
+const run = (sample: (index: number) => Omit<Line, "frame">): string =>
+    runOf(12, sample);
 
 test("parses only complete memory frame lines out of a run's stderr", () => {
     const samples = parseMemoryProfile(
@@ -103,7 +110,10 @@ test("passes a settled run and reports its trend after warm-up", () => {
     assert.ok(Math.abs(summary.slopeMbPer1000Frames) < 2);
     const text = formatMemorySummary("demo", summary);
     assert.match(text, /^demo: ok -- working set/);
-    assert.match(text, /trend [+-]\d+\.\d{2} MB per 1,000 frames/);
+    assert.match(
+        text,
+        /trend [+-]\d+\.\d{2} MB per 1,000 frames, [+-]\d+\.\d{2} over the later half/,
+    );
     assert.match(text, /41 mesh records for 40 scene mesh entries/);
     assert.match(text, /40 geometry records for 40 live/);
     assert.match(text, /700 GC allocations after warm-up/);
@@ -119,9 +129,40 @@ test("fails a working set that trends upward past the slope", () => {
     assert.equal(summary.passed, false);
     assert.match(
         formatMemorySummary("demo", summary),
-        /FAILED: working set trends \+33\.33 MB per 1,000 frames \(> 2\)/,
+        /FAILED: working set trends \+33\.33 MB per 1,000 frames after warm-up and \+33\.33 over its later half \(> 2\)/,
     );
     assert.equal(summarizeMemoryProfile(samples, 40)?.passed, true);
+    // A leak that starts late still rises through the later half.
+    const late = parseMemoryProfile(
+        runOf(60, (index) => ({ workingSet: 100 + Math.max(0, index - 40) })),
+    );
+    assert.equal(summarizeMemoryProfile(late, 2)?.passed, false);
+});
+
+test("a single allocation step or a rise that settles is not a sustained trend", () => {
+    // 60 samples: warm-up ends at sample 20; one 12 MB step later on (the
+    // pairs on either side of it agree on zero).
+    for (const stepAt of [26, 32, 44, 52]) {
+        const step = parseMemoryProfile(
+            runOf(60, (index) => ({
+                workingSet: index < stepAt ? 400 : 412,
+            })),
+        );
+        const summary = summarizeMemoryProfile(step, 2);
+        assert.ok(summary);
+        assert.equal(summary.passed, true, `step at sample ${stepAt}`);
+        assert.equal(summary.slopeMbPer1000Frames, 0);
+    }
+    // Content streaming in over the first half of the window, then level:
+    // the whole window trends, the later half does not.
+    const settling = parseMemoryProfile(
+        runOf(60, (index) => ({ workingSet: 400 + Math.min(index, 40) / 3 })),
+    );
+    const summary = summarizeMemoryProfile(settling, 2);
+    assert.ok(summary);
+    assert.ok(summary.slopeMbPer1000Frames > 2);
+    assert.equal(summary.recentSlopeMbPer1000Frames, 0);
+    assert.equal(summary.passed, true);
 });
 
 test("fails retired mesh and geometry records that pile up while the working set holds", () => {
