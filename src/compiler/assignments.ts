@@ -1718,7 +1718,7 @@ export function emitPropertyAssignment(
         requireSimpleAssignment(context, expression, "speedRatio");
         if (group.animationGroupSource === "property") {
             context.emit(
-                `${group.cpp}->speed_ratio = ${context.compileNumber(expression.right)};`,
+                `${group.cpp}->speed_ratio = ${context.compileNumber(expression.right, "double")};`,
             );
             return;
         }

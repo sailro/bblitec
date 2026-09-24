@@ -511,7 +511,7 @@ test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
         /same_animation_weight_fade_target\(\s*owner\.weight_fades\[fade_index\]\.target,\s*target\)/,
     );
     assert.match(faded.source, /target\.gltf_group\.value/);
-    assert.match(faded.source, /float& animation_weight_fade_target_weight/);
+    assert.match(faded.source, /double& animation_weight_fade_target_weight/);
     // Scheduling alone must not pull in or enable either category mixer.
     assert.doesNotMatch(faded.source, /update_weighted_property_animations/);
     assert.doesNotMatch(
@@ -525,18 +525,20 @@ test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
     // exact destination weight before the job is removed. Replacement
     // removes every prior job for the same target before the new one is
     // pushed.
+    // The fade and the group weight are JavaScript numbers, held at that
+    // width by the records, so every lane is read and written directly.
     assert.match(
         faded.source,
-        /AnimationFloatLane\{manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.elapsed_ms\} = std::min<double>\(/,
+        /manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.elapsed_ms = std::min<double>\(/,
     );
     assert.match(faded.source, /std::max<double>\(0\.0, delta_ms\)/);
     assert.match(
         faded.source,
-        /\(static_cast<double>\(manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.to\) - static_cast<double>\(manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.from\)\) \* t\)/,
+        /\(manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.to - manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.from\) \* t\)/,
     );
     assert.match(
         faded.source,
-        /\.duration_ms\)\) \{\s*AnimationFloatLane\{animation_weight_fade_target_weight\(engine, [^}]*\.target\)\} = static_cast<double>\([^;]*\.to\);\s*manager\.weight_fades\.erase/,
+        /\.duration_ms\) \{\s*animation_weight_fade_target_weight\(engine, [^;]*\.target\) = manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.to;\s*manager\.weight_fades\.erase/,
     );
     const replacement = faded.source.indexOf(
         "same_animation_weight_fade_target(",
@@ -556,11 +558,11 @@ test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
 
     assert.match(
         faded.source,
-        /!std::isfinite\(duration_ms\) \|\| !\(duration_ms > 0\.0f\)/,
+        /!std::isfinite\(duration_ms\) \|\| !\(duration_ms > 0\.0\)/,
     );
     assert.match(
         faded.source,
-        /!std::isfinite\(weight\)[\s\S]*?weight < 0\.0f[\s\S]*?weight > 1\.0f/,
+        /!std::isfinite\(weight\)[\s\S]*?weight < 0\.0[\s\S]*?weight > 1\.0/,
     );
 
     // Installation is stable (function-target comparison, no wrapper),
@@ -586,7 +588,7 @@ test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
         weightFades: true,
     });
     const fadeTick = blended.source.indexOf(
-        "manager.pre_update(engine, manager, static_cast<float>(delta_ms));",
+        "manager.pre_update(engine, manager, delta_ms);",
     );
     const mixerTick = blended.source.indexOf(
         "manager.category_handler ==",

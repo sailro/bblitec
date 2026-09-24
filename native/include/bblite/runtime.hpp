@@ -3104,7 +3104,7 @@ struct AnimationGroupRecord {
     std::uint32_t asset = invalid_handle;
     std::size_t clip = 0;
     /** `AnimationGroup.weight`: what the weighted mixer contributes it at. */
-    float weight = 1.0f;
+    double weight = 1.0;
     std::weak_ptr<PropertyAnimationManagerRecord> animation_owner;
     double duration = 0;
     double frame_rate = 0;
@@ -6014,7 +6014,7 @@ void off_visibility_change(Engine& engine, std::size_t identity);
 #if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
 #include <bblite/runtime/animation-api.hpp>
 #endif
-void set_animation_weight(Engine& engine, AnimationGroupHandle group, float weight);
+void set_animation_weight(Engine& engine, AnimationGroupHandle group, double weight);
 void go_to_frame(Engine& engine, AnimationGroupHandle group, float frame, bool with_engine);
 void play_animation(Engine& engine, AnimationGroupHandle group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);

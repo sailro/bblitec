@@ -357,8 +357,8 @@ export function compileAnimationIntrinsic(
                     `${manager.cpp}, ${engine}, ` +
                     `${fadeTarget(fromGroup)}, ` +
                     `${fadeTarget(toGroup)}, ` +
-                    `${context.compileNumber(duration)}, ` +
-                    `${toWeight ? context.compileNumber(toWeight) : "1.0f"})`,
+                    `${context.compileNumber(duration, "double")}, ` +
+                    `${toWeight ? context.compileNumber(toWeight, "double") : "1.0"})`,
             };
         }
 
@@ -371,7 +371,7 @@ export function compileAnimationIntrinsic(
             context.expectArgumentCount(call, 2, 2);
             const group = context.compileValue(argumentAt(call, 0));
             context.expectKind(group, "animation-group", argumentAt(call, 0));
-            const weight = context.compileNumber(argumentAt(call, 1));
+            const weight = context.compileNumber(argumentAt(call, 1), "double");
             if (group.animationGroupSource === "property") {
                 context.reachFeature("animation:property-blending", call);
                 return {
@@ -662,7 +662,13 @@ export function compileAnimationIntrinsic(
             context.expectArgumentCount(call, 2, 3);
             const group = context.compileValue(argumentAt(call, 0));
             context.expectKind(group, "animation-group", argumentAt(call, 0));
-            const frame = context.compileNumber(argumentAt(call, 1));
+            // A property group's seek divides the frame by its clip's rate
+            // in JavaScript numbers; the glTF seeker takes the asset
+            // runtime's own width.
+            const frame = context.compileNumber(
+                argumentAt(call, 1),
+                group.animationGroupSource === "property" ? "double" : "float",
+            );
             const engineArgument = call.arguments[2];
             if (engineArgument !== undefined) {
                 context.expectKind(

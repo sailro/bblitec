@@ -17085,7 +17085,7 @@ test("compiles property animation scenes", () => {
         if (sourcePath.endsWith("scene150.ts")) {
             assert.match(
                 result.cpp,
-                /create_property_animation_clip\("xSlide", \{.*\}, 10\.0f\)/,
+                /create_property_animation_clip\("xSlide", \{.*\}, 10\.0\)/,
             );
         }
     }
@@ -18854,7 +18854,7 @@ test("compiles scene 156's measured cross-fade branch directly", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::cross_fade_animation_groups\(v_manager, v_engine, bbl::AnimationWeightFadeTarget::from_property\(v_positiveGroup\), bbl::AnimationWeightFadeTarget::from_property\(v_negativeGroup\), 1000\.0f, 1\.0f\)/,
+        /bbl::cross_fade_animation_groups\(v_manager, v_engine, bbl::AnimationWeightFadeTarget::from_property\(v_positiveGroup\), bbl::AnimationWeightFadeTarget::from_property\(v_negativeGroup\), 1000\.0, 1\.0\)/,
     );
     // Both operands are generation-known once the query has folded -- the
     // 1250 from `?seekTime=1.25` and the 1000 from a module constant -- so
@@ -19000,7 +19000,7 @@ test("cross-fades glTF groups without enabling or replacing their mixer", () => 
     assert.match(result.cpp, /bbl::enable_animation_blending\(v_manager\)/);
     assert.match(
         result.cpp,
-        /bbl::cross_fade_animation_groups\(v_manager, v_engine, bbl::AnimationWeightFadeTarget::from_gltf\(v_idle\), bbl::AnimationWeightFadeTarget::from_gltf\(v_sadPose\), 1000\.0f, 1\.0f\)/,
+        /bbl::cross_fade_animation_groups\(v_manager, v_engine, bbl::AnimationWeightFadeTarget::from_gltf\(v_idle\), bbl::AnimationWeightFadeTarget::from_gltf\(v_sadPose\), 1000\.0, 1\.0\)/,
     );
     assert.ok(result.manifest.features.includes("animation:gltf-blending"));
     assert.ok(result.manifest.features.includes("animation:weight-fades"));
