@@ -21,7 +21,9 @@ backend requests fail.
 
 ## Shared frame conductor
 
-`pal_frame_conductor.hpp` coordinates scene, sprite, effect and frame-graph drivers.
+`pal_frame_conductor.hpp` coordinates scene, sprite, effect and frame-graph drivers. `pal_gpu_dispatch.hpp`
+holds each compiled backend's entry points and Window presenter; `RendererRun` (`pal_frame_session.hpp`)
+shares the standalone hosts' input, clock, capture and benchmark phases.
 `pal_gpu_shared.hpp` owns clocks, capture gates, callbacks and upload records.
 Canvas metrics update before callbacks; RAF retains its registration phase and timers drain at frame boundaries.
 `pal_window.hpp` owns the OS window independently of renderer rebuilds.
