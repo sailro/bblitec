@@ -23,13 +23,13 @@ import {
 import {
     compiledShaderArtifactExtensions,
     GeneratedTree,
+    isCompiledShaderOutput,
 } from "./generated-tree.js";
 import {
     contentDigest,
     hashEntries,
-    isCompiledShaderOutput,
     writeJsonRecord,
-} from "./validation-resume.js";
+} from "./tooling/records.js";
 import {
     assertReflectedBindings,
     assertUniformBufferCap,

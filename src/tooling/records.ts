@@ -19,7 +19,6 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { compiledShaderArtifactExtensions } from "../generated-tree.js";
 
 /**
  * Every regular file under `path` (or `path` itself when it is a file),
@@ -157,17 +156,6 @@ export function metadataFingerprint(
         }
     }
     return hashEntries(entries);
-}
-
-/** An offline shader compiler product inside a generated tree. */
-export function isCompiledShaderOutput(path: string): boolean {
-    return (
-        compiledShaderArtifactExtensions.some((extension) =>
-            path.endsWith(extension),
-        ) ||
-        path === "shader-compiler.json" ||
-        path.endsWith("/shader-compiler.json")
-    );
 }
 
 /**

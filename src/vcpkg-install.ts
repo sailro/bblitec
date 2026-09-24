@@ -1,31 +1,16 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { runChecked } from "./tooling/logged-process.js";
 import {
     contentFingerprint,
     hashEntries,
     toolIdentity,
-} from "./validation-resume.js";
+} from "./tooling/records.js";
 
 export interface VcpkgManifestInstall {
     installedDirectory: string;
     triplet: string;
     features: readonly string[];
-}
-
-function run(
-    command: string,
-    args: string[],
-    environment: NodeJS.ProcessEnv,
-): void {
-    const result = spawnSync(command, args, {
-        stdio: "inherit",
-        env: environment,
-        windowsHide: true,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0)
-        throw new Error(command + " exited with status " + result.status);
 }
 
 /** Reconcile one manifest install when its manifest, overlays, features, triplet
@@ -54,7 +39,7 @@ export function installVcpkgManifest(
     ) {
         return;
     }
-    run(
+    runChecked(
         vcpkgExecutable,
         [
             "install",

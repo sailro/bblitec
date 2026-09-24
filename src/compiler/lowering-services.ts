@@ -1082,6 +1082,7 @@ export interface LoweringServices {
     requiresStaticIteration(statement: ts.Statement): boolean;
     eraseBrowserInstrumentation(position: number): void;
     recordGeometryOutputTask(manifest: GeometryOutputTaskManifest): void;
+    recordCopyTask(name: string): void;
     recordPostProcessTask(manifest: PostProcessTaskManifest): void;
     recordPostProcessComposite(
         manifest: PostProcessCompositeManifest,

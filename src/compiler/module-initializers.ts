@@ -16,15 +16,29 @@ import {
 
 /** Statements JavaScript executes while evaluating an imported module. */
 export function isModuleInitializerStatement(statement: ts.Statement): boolean {
+    // A class body runs nothing when its declaration evaluates -- except a
+    // `static { ... }` block, which runs then.
+    if (ts.isClassDeclaration(statement)) {
+        return declaresClassStaticBlock(statement);
+    }
     return !(
         ts.isImportDeclaration(statement) ||
         ts.isExportDeclaration(statement) ||
         ts.isFunctionDeclaration(statement) ||
-        ts.isClassDeclaration(statement) ||
         ts.isInterfaceDeclaration(statement) ||
         ts.isTypeAliasDeclaration(statement) ||
         ts.isEnumDeclaration(statement) ||
         ts.isModuleDeclaration(statement)
+    );
+}
+
+/** A top-level class whose `static { ... }` block runs at module evaluation. */
+export function declaresClassStaticBlock(
+    statement: ts.Statement,
+): statement is ts.ClassDeclaration {
+    return (
+        ts.isClassDeclaration(statement) &&
+        statement.members.some(ts.isClassStaticBlockDeclaration)
     );
 }
 
@@ -567,6 +581,10 @@ class ModuleInitializerPlanner {
         file: ts.SourceFile,
         moduleState: ReadonlySet<ts.Symbol>,
     ): boolean {
+        // A static block runs when the module evaluates, whatever it
+        // touches, so the module's initializer is emitted -- where the class
+        // lowering refuses the block rather than dropping it.
+        if (file.statements.some(declaresClassStaticBlock)) return true;
         if (moduleState.size === 0) return false;
         for (const symbol of this.moduleInitializerMutations(file)) {
             if (moduleState.has(symbol)) return true;

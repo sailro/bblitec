@@ -123,61 +123,8 @@ export function topLevelFunction(
     return declaration;
 }
 
-/**
- * A run of `buf[base + lane] = …` stores covering lanes 0..count-1 in
- * order — the pin's Float32Array writes that become one vector build.
- */
-export function collectLaneStores(
-    scope: CppExpressionScope,
-    statements: readonly ts.Statement[],
-    start: number,
-    count: number,
-    laneOf: (target: ts.ElementAccessExpression) => number | undefined,
-): { expressions: ts.Expression[]; next: number } {
-    const expressions: ts.Expression[] = [];
-    let index = start;
-    for (let lane = 0; lane < count; lane += 1) {
-        const statement = statements[index];
-        const assignment =
-            statement &&
-            ts.isExpressionStatement(statement) &&
-            ts.isBinaryExpression(statement.expression) &&
-            statement.expression.operatorToken.kind ===
-                ts.SyntaxKind.EqualsToken
-                ? statement.expression
-                : undefined;
-        if (
-            !assignment ||
-            !ts.isElementAccessExpression(assignment.left) ||
-            laneOf(assignment.left) !== lane
-        ) {
-            refuseNode(
-                scope.symbol,
-                scope.file,
-                statement ?? statements[start] ?? scope.file,
-                `no longer stores lane ${lane} where this lowering expects it`,
-            );
-        }
-        expressions.push(assignment.right);
-        index += 1;
-    }
-    return { expressions, next: index };
-}
-
 export const pinnedDoubleLiteral = (literal: ts.NumericLiteral): string =>
     doubleLiteral(Number(literal.text));
-
-/** Flattens a left-associated `a + b + c + …` chain into its terms. */
-export function additiveTerms(expression: ts.Expression): ts.Expression[] {
-    const node = unwrapExpression(expression);
-    if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.PlusToken
-    ) {
-        return [...additiveTerms(node.left), node.right];
-    }
-    return [expression];
-}
 
 export function refuseModule(symbol: string, reason: string): never {
     throw new Error(`Pinned ${symbol} ${reason}.`);

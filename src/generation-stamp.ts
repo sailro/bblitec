@@ -51,12 +51,11 @@ import {
     computeBuildStamp,
     type StampInput,
 } from "./build-stamp.js";
-import { GeneratedTree } from "./generated-tree.js";
+import { GeneratedTree, isCompiledShaderOutput } from "./generated-tree.js";
 import {
     contentFingerprint,
     contentIdentity,
     hashEntries,
-    isCompiledShaderOutput,
     metadataFingerprint,
     toolIdentity,
     writeJsonRecord,

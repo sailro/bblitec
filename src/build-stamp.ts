@@ -29,8 +29,8 @@ import {
     realpathSync,
     statSync,
 } from "node:fs";
-import { join, relative, resolve } from "node:path";
-import { contentDigest } from "./validation-resume.js";
+import { relative, resolve } from "node:path";
+import { contentDigest, listFiles } from "./tooling/records.js";
 
 /** The generated header the executable embeds. */
 export const buildStampHeaderPath =
@@ -52,25 +52,11 @@ function digest(bytes: Buffer): string {
     return createHash("sha256").update(bytes).digest("hex");
 }
 
-function walkFiles(
-    root: string,
-    directory = root,
-    out: string[] = [],
-): string[] {
-    if (!existsSync(directory)) {
-        return out;
-    }
-    for (const entry of readdirSync(directory, {
-        withFileTypes: true,
-    })) {
-        const full = join(directory, entry.name);
-        if (entry.isDirectory()) {
-            walkFiles(root, full, out);
-        } else if (entry.isFile()) {
-            out.push(relative(root, full).replace(/\\/g, "/"));
-        }
-    }
-    return out;
+/** Every regular file under `root`, as `/`-separated relative paths. */
+function relativeFiles(root: string): string[] {
+    return listFiles(root).map((path) =>
+        relative(root, path).replaceAll("\\", "/"),
+    );
 }
 
 /**
@@ -81,7 +67,7 @@ function walkFiles(
  */
 function compiledGeneratedFiles(generatedDirectory: string): string[] {
     return (
-        walkFiles(generatedDirectory)
+        relativeFiles(generatedDirectory)
             .filter(
                 (path) =>
                     path === "main.cpp" ||
@@ -113,7 +99,7 @@ function nativeSourceFiles(repositoryRoot: string): string[] {
     const nativeRoot = resolve(repositoryRoot, "native");
     const tracked = nativeBuildFiles(repositoryRoot);
     for (const directory of ["src", "include"]) {
-        for (const path of walkFiles(resolve(nativeRoot, directory))) {
+        for (const path of relativeFiles(resolve(nativeRoot, directory))) {
             tracked.push(`${directory}/${path}`);
         }
     }
@@ -286,7 +272,7 @@ function expectedPayload({
     source,
     deploys,
 }: Pick<DeployedPayload, "source" | "deploys">): Set<string> {
-    return new Set(walkFiles(source).filter(deploys));
+    return new Set(relativeFiles(source).filter(deploys));
 }
 
 /**
@@ -331,7 +317,7 @@ function orphansAgainst(
     deployedDirectory: string,
 ): string[] {
     const orphans: string[] = [];
-    for (const path of walkFiles(deployedDirectory)) {
+    for (const path of relativeFiles(deployedDirectory)) {
         // The build's own marker files (CMake stamps the shader snapshot
         // with `.snapshot-stamp`) are not payload.
         if (path.split("/").pop()?.startsWith(".")) {

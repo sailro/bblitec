@@ -17,7 +17,7 @@ import {
 import {
     contentFingerprint,
     writeJsonRecord,
-} from "../dist/src/validation-resume.js";
+} from "../dist/src/tooling/records.js";
 
 const { values } = parseArgs({
     options: {

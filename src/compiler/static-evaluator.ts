@@ -46,6 +46,7 @@ import {
     staticNumberValue,
 } from "./option-helpers.js";
 import { isJsonValue } from "./json-bridge.js";
+import { conditionComparison } from "./comparisons.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
@@ -877,14 +878,7 @@ export class StaticEvaluator {
         const unwrapped = this.unwrap(expression);
         return (
             ts.isBinaryExpression(unwrapped) &&
-            [
-                ts.SyntaxKind.EqualsEqualsEqualsToken,
-                ts.SyntaxKind.ExclamationEqualsEqualsToken,
-                ts.SyntaxKind.LessThanToken,
-                ts.SyntaxKind.LessThanEqualsToken,
-                ts.SyntaxKind.GreaterThanToken,
-                ts.SyntaxKind.GreaterThanEqualsToken,
-            ].includes(unwrapped.operatorToken.kind)
+            conditionComparison(this.checker, unwrapped) !== undefined
         );
     }
 

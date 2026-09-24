@@ -21,6 +21,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { listFiles } from "./tooling/records.js";
 
 /**
  * Every artifact extension `src/compile-shaders.ts` derives from one
@@ -37,6 +38,17 @@ export const compiledShaderArtifactExtensions = [
     ".slots",
     ".tint-reflection.txt",
 ] as const;
+
+/** An offline shader compiler product inside a generated tree. */
+export function isCompiledShaderOutput(path: string): boolean {
+    return (
+        compiledShaderArtifactExtensions.some((extension) =>
+            path.endsWith(extension),
+        ) ||
+        path === "shader-compiler.json" ||
+        path.endsWith("/shader-compiler.json")
+    );
+}
 
 const compiledShaderArtifactPattern = new RegExp(
     `^(.*/shaders/)([^/]+?)(?:${compiledShaderArtifactExtensions
@@ -90,7 +102,7 @@ export class GeneratedTree {
         if (!existsSync(directory)) {
             return;
         }
-        for (const path of this.files(directory)) {
+        for (const path of listFiles(directory)) {
             const key = this.key(path);
             if (this.written.has(key)) {
                 continue;
@@ -133,20 +145,6 @@ export class GeneratedTree {
 
     private key(path: string): string {
         return relative(this.root, path).replace(/\\/g, "/").toLowerCase();
-    }
-
-    private files(directory: string, out: string[] = []): string[] {
-        for (const entry of readdirSync(directory, {
-            withFileTypes: true,
-        })) {
-            const full = join(directory, entry.name);
-            if (entry.isDirectory()) {
-                this.files(full, out);
-            } else {
-                out.push(full);
-            }
-        }
-        return out;
     }
 
     private pruneEmptyDirectories(directory: string): boolean {
@@ -198,17 +196,6 @@ export interface GeneratedTreeDigest {
     strays: string[];
 }
 
-function listFiles(directory: string, out: string[]): void {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const full = join(directory, entry.name);
-        if (entry.isDirectory()) {
-            listFiles(full, out);
-        } else {
-            out.push(full);
-        }
-    }
-}
-
 /**
  * Hash every file under the registry-owned directories below `root`
  * (sha1, one `<rootName>/<path>\t<hash>` line per file, forward slashes,
@@ -239,9 +226,7 @@ export function digestGeneratedTree(
             strays.push(entry.name);
             continue;
         }
-        const files: string[] = [];
-        listFiles(join(resolvedRoot, entry.name), files);
-        for (const file of files) {
+        for (const file of listFiles(join(resolvedRoot, entry.name))) {
             const relativePath = relative(resolvedRoot, file).replace(
                 /\\/g,
                 "/",

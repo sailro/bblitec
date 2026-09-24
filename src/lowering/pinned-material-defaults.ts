@@ -145,8 +145,9 @@ const PINNED_MATERIAL_DEFAULTS = {
     subsurfaceMaximumThickness: {
         pinned: `${subsurfaceModule}#writeSubsurfaceUBO#max`,
     },
-    // `writeRefractionUBO` — seeded by `compilePbrMaterialOptions`'s
-    // subsurface/refraction lanes.
+    // `writeRefractionUBO` — the refraction ground state
+    // `compilePbrMaterialOptions` seeds; the thickness max, which no
+    // creation option reaches, anchors the writer's discard sites only.
     transmissionIntensity: {
         pinned: `${refractionModule}#writeRefractionUBO#intensity`,
     },
