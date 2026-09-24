@@ -11,8 +11,15 @@ import {
 import { SCENE_NODE_TRANSFORMS } from "../scene-node-transform-descriptor.js";
 import { recordAt } from "../compiler/record-access.js";
 
-/** Public synthetic-root TRS over the loader's flattened, mirrored mesh worlds. */
-export function assetRootTransformSource(context: LoweringContext): string {
+/**
+ * Public synthetic-root TRS: the outer transform of the loader's flattened,
+ * mirrored mesh worlds, or, for an import carrying its node hierarchy
+ * (`nodeHierarchy`), the TRS of the root node itself.
+ */
+export function assetRootTransformSource(
+    context: LoweringContext,
+    nodeHierarchy = false,
+): string {
     const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
     let observables = "";
     for (const descriptor of SCENE_NODE_TRANSFORMS.filter(
@@ -85,7 +92,26 @@ namespace asset_root_detail {
 ${pinnedQuaternionMath(context)}
 }
 
-void publish_asset_root_transform(Engine& engine, const AssetRecord& root) {
+void publish_asset_root_transform(Engine& engine, const AssetRecord& root) {${
+        nodeHierarchy
+            ? `
+    if (root.root_node.value != invalid_handle) {
+        // The pin's __root__ is this node: the edit is its own TRS, and
+        // every primitive composes under it through the node chain.
+        set_transform_node_position(engine, root.root_node, root.root_position);
+        set_transform_node_rotation_quaternion(engine, root.root_node, Vec4{
+            static_cast<float>(root.root_rotation_quaternion.x),
+            static_cast<float>(root.root_rotation_quaternion.y),
+            static_cast<float>(root.root_rotation_quaternion.z),
+            static_cast<float>(root.root_rotation_quaternion.w)});
+        set_transform_node_scaling(engine, root.root_node, Vec3{
+            static_cast<float>(root.root_scaling.x),
+            static_cast<float>(root.root_scaling.y),
+            static_cast<float>(root.root_scaling.z)});
+        return;
+    }`
+            : ""
+    }
     for (const auto mesh : root.meshes) {
         auto& record = ${recordAt("engine.meshes", "mesh")};
         record.outer_position = root.root_position;

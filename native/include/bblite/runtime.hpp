@@ -2056,6 +2056,15 @@ struct TransformNodeRecord {
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     bool has_rotation_quaternion = false;
     Vec3 scaling{1.0f, 1.0f, 1.0f};
+    /**
+     * `SceneNode._localMatrix`: a glTF `matrix` node's raw local, or the
+     * exact affine local setParent keeps. While set it IS the local
+     * transform and the TRS lanes are ignored; a TRS write clears it unless
+     * `local_matrix_locked` (`_localMatrixLocked`) holds, which only
+     * setParent releases.
+     */
+    std::optional<std::array<float, 16>> local_matrix;
+    bool local_matrix_locked = false;
     /** The node this one hangs under, or none — `IParentable.parent`. */
     TransformNodeHandle parent{};
     /**
@@ -3173,6 +3182,16 @@ struct AssetRecord {
     Vec4d root_rotation_quaternion{0, 0, 0, 1};
     double root_quaternion_version = 0;
     double root_synced_quaternion_version = -1;
+    /**
+     * The pin's own hierarchy (`buildNodeHierarchy`), carried when scene
+     * code writes imported node transforms: the synthetic `__root__`, whose
+     * TRS is the root edit above, and one transform node per glTF node,
+     * indexed by node, under which each primitive hangs as an identity-TRS
+     * child. Empty otherwise, when the loaded worlds are flattened onto the
+     * meshes and the root edit composes as their outer transform.
+     */
+    TransformNodeHandle root_node{};
+    std::vector<TransformNodeHandle> nodes;
     CameraHandle camera{};
     Color4 clear_color{};
     bool has_camera = false;
@@ -6320,6 +6339,8 @@ void clear_interval(Engine& engine, double id);
 void set_mesh_parent(Engine& engine, MeshHandle child, MeshHandle parent);
 void set_mesh_parent(Engine& engine, MeshHandle child, TransformNodeHandle parent);
 void set_asset_root_parent(Engine& engine, AssetHandle child, TransformNodeHandle parent);
+/** The same setParent over a transform-node child; none detaches it. */
+void reparent_transform_node(Engine& engine, TransformNodeHandle child, TransformNodeHandle parent);
 /** src/scene/visibility.ts setMeshVisible cascade. */
 void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
 [[nodiscard]] std::vector<float> mesh_cpu_positions(const Engine& engine, MeshHandle mesh);

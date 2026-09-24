@@ -35,6 +35,12 @@ import {
     type RecordedMeshSetup,
 } from "./gltf-mesh-setup.js";
 import {
+    packageNodeHierarchy,
+    readNodeHierarchy,
+    type GltfNodeHierarchy,
+} from "./gltf-node-hierarchy.js";
+import { refuseGeneration } from "./generation-refusal.js";
+import {
     packageGltfLight,
     packagedGltfLights,
     type GltfLightPlan,
@@ -163,6 +169,11 @@ export interface GltfMeshPlan extends GltfLightPlan, GltfCameraPlan {
         } & GltfMeshDeformation
     >;
     geometries: GltfMeshGeometry[];
+    /**
+     * The pin's node hierarchy, for a scene that writes SceneNode transforms
+     * (`GltfLoadFeatures.nodeTransforms`).
+     */
+    hierarchy?: GltfNodeHierarchy;
 }
 /** Actual material/geometry construction available before final animation packaging. */
 export type GltfConstructedMaterialPlan = Pick<
@@ -172,8 +183,8 @@ export type GltfConstructedMaterialPlan = Pick<
 export interface GltfLoadFeatures {
     cameras?: boolean;
     /**
-     * Scene code writes SceneNode transforms, so each static primitive
-     * carries its glTF node's own TRS and parent world.
+     * Scene code writes SceneNode transforms, so the asset carries the
+     * pin's node hierarchy for the loader to build.
      */
     nodeTransforms?: boolean;
 }
@@ -1061,11 +1072,7 @@ export async function recordMeshPlan(
                 geometry,
                 name: mesh.name,
                 flatNormal: mesh._flatNormal === true,
-                setup: packageMeshSetup(
-                    mesh,
-                    packer,
-                    options.nodeTransforms === true,
-                ),
+                setup: packageMeshSetup(mesh, packer),
                 ...packageMeshDeformation(
                     mesh,
                     input._vertexCount,
@@ -1200,8 +1207,36 @@ export async function recordMeshPlan(
                   )
                 : null;
         }
+        // A scene that writes SceneNode transforms moves the pin's nodes
+        // and everything beneath them, so the loader builds the pin's own
+        // hierarchy. What the native runtime poses or places from its own
+        // copy of the loaded nodes would not follow it, and refuses.
+        let hierarchy: GltfNodeHierarchy | undefined;
+        if (options.nodeTransforms === true) {
+            const refuse = (what: string): never =>
+                refuseGeneration(
+                    "scene:node-transforms",
+                    `A scene that writes SceneNode transforms loads a glTF ` +
+                        `asset with ${what}, which the native runtime ` +
+                        "places from its own loaded node worlds rather " +
+                        "than from the scene's node records.",
+                );
+            if (features.includes(loader.__animationFeature))
+                refuse("animations");
+            if (
+                plannedMeshes.some(
+                    (mesh) =>
+                        mesh.skin !== undefined || mesh.morph !== undefined,
+                )
+            )
+                refuse("skinned or morphed primitives");
+            if (sourceLights.length > 0) refuse("punctual lights");
+            if (sourceCameras.length > 0) refuse("cameras");
+            hierarchy = packageNodeHierarchy(root, nodeMap, packer);
+        }
         return {
             plan: {
+                ...(hierarchy ? { hierarchy } : {}),
                 features: featureIds,
                 cores,
                 materials,
@@ -1364,6 +1399,15 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
             "Missing source animation base-color definition identities.",
         );
     return {
+        ...(plan.hierarchy === undefined
+            ? {}
+            : {
+                  hierarchy: readNodeHierarchy(
+                      plan.hierarchy,
+                      nodes.length,
+                      accessorCount,
+                  ),
+              }),
         features: plan.features,
         cores: plan.cores,
         materials: plan.materials,

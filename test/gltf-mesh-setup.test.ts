@@ -113,32 +113,74 @@ test("mesh placement follows source hierarchy, local bounds and primitive windin
     );
 });
 
-test("a scene writing node transforms packages each primitive's node TRS and parent world", async () => {
+test("a scene writing node transforms packages the pin's node hierarchy", async () => {
+    const plain = fixture();
+    await packageFixture(plain);
+    assert.equal(packagedGltfMeshPlan(plain.document).hierarchy, undefined);
+    // A transform-only node over a matrix node over the primitive's node.
     const input = fixture();
-    asRecords(input.document.nodes)[0]!.scale = [-2, 3, 1];
-    asRecords(input.document.nodes)[0]!.translation = [10, 20, 30];
-    assert.equal((await packageFixture(input)).mesh.setup.node, undefined);
-    const withNode = fixture();
-    asRecords(withNode.document.nodes)[0]!.scale = [-2, 3, 1];
-    asRecords(withNode.document.nodes)[0]!.translation = [10, 20, 30];
-    const result = await packageFixture(withNode, undefined, true);
-    const node = result.mesh.setup.node!;
-    assert.deepEqual(node.translation, [10, 20, 30]);
-    assert.deepEqual(node.rotation, [0, 0, 0, 1]);
-    assert.deepEqual(node.scaling, [-2, 3, 1]);
-    // The node is a scene root, so its parent is the synthetic RH-to-LH root,
-    // signed zeros as the pin's composition stores them.
-    assert.deepEqual(
-        result.attribute(node.parentWorld),
-        [-1, -0, -0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-    );
-    const matrixNode = fixture();
-    asRecords(matrixNode.document.nodes)[0]!.matrix = [
-        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1,
+    input.document.nodes = [
+        {
+            name: "pivot",
+            translation: [10, 20, 30],
+            scale: [-2, 3, 1],
+            children: [1],
+        },
+        {
+            matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1],
+            children: [2],
+        },
+        { name: "leaf", mesh: 0, rotation: [0, 0.6, 0, 0.8] },
     ];
-    assert.equal(
-        (await packageFixture(matrixNode, undefined, true)).mesh.setup.node,
-        undefined,
+    input.document.scenes = [{ nodes: [0] }];
+    const result = await packageFixture(input, undefined, true);
+    const hierarchy = packagedGltfMeshPlan(result.document).hierarchy!;
+    // The synthetic root's own RH-to-LH TRS, then the scene's roots.
+    assert.deepEqual(hierarchy.root, {
+        translation: [0, 0, 0],
+        rotation: [0, 0, 0, 1],
+        scaling: [-1, 1, 1],
+    });
+    assert.deepEqual(hierarchy.rootChildren, [0]);
+    const [pivot, matrix, leaf] = hierarchy.nodes;
+    assert.deepEqual(
+        { ...pivot, matrix: undefined },
+        {
+            name: "pivot",
+            parent: -1,
+            translation: [10, 20, 30],
+            rotation: [0, 0, 0, 1],
+            scaling: [-2, 3, 1],
+            matrix: undefined,
+            locked: false,
+        },
+    );
+    // A matrix node keeps its raw local, locked against TRS writes, and the
+    // pin's `node_<index>` name for a node the file leaves unnamed.
+    assert.equal(matrix?.name, "node_1");
+    assert.equal(matrix?.parent, 0);
+    assert.equal(matrix?.locked, true);
+    assert.deepEqual(
+        result.attribute(matrix.matrix!),
+        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1],
+    );
+    assert.equal(leaf?.parent, 1);
+    assert.deepEqual(leaf?.rotation, [0, 0.6, 0, 0.8]);
+    assert.equal(result.mesh.node, 2);
+});
+
+test("a node-carrying load refuses a light the runtime places from its loaded node world", async () => {
+    const lit = fixture();
+    lit.document.extensionsUsed = ["KHR_lights_punctual"];
+    lit.document.extensions = {
+        KHR_lights_punctual: { lights: [{ type: "point" }] },
+    };
+    asRecords(lit.document.nodes)[0]!.extensions = {
+        KHR_lights_punctual: { light: 0 },
+    };
+    await assert.rejects(
+        packageFixture(lit, undefined, true),
+        /punctual lights/,
     );
 });
 

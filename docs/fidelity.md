@@ -74,7 +74,8 @@ steps by an integer and is written and captured nowhere else counts in 64 bits a
 Matrix order, layout and rounding are
 part of the contract. Signed-zero byte differences can remain despite numeric equality. GLTF light
 scalars/colors use float storage, clamping oversized ranges; spot-angle math remains double until its
-uniform store. Imported cameras retain double fields and source Float32 matrices.
+uniform store. Imported cameras retain double fields and source Float32 matrices. A loaded glTF node's
+rotation, scaling and raw `matrix` are stored at float width where the pin holds JavaScript numbers.
 
 ### The reference pose
 

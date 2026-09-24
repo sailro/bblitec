@@ -110,39 +110,94 @@ export interface GltfLoaderLoweredSegments {
 }
 
 /**
- * The node hierarchy over flattened node-transform records: a node whose
- * parent node bears primitives composes under that node's first record, and
- * a node's further primitives under its first, as the pin's mesh children
- * hang under their `TransformNode`.
+ * The pin's own hierarchy (load-gltf.ts buildNodeHierarchy), built before the
+ * primitives load: the synthetic `__root__`, whose TRS is the asset's root
+ * edit, and one transform node per glTF node from the TRS -- or the raw,
+ * locked `matrix` -- the pin built it with, linked and listed in the pin's
+ * order. Each primitive then hangs under its node with an identity TRS.
  */
-function gltfNodeTransformLinksCpp(): string {
-    return `    {
-        std::unordered_map<std::size_t, MeshHandle> node_records;
-        for (const auto& [node_index, handle] : node_transform_records) node_records.try_emplace(node_index, handle);
-        const auto link = [&](MeshHandle child, MeshHandle parent) {
-            MeshRecord& record = ${recordAt("engine.meshes", "child")};
-            record.parent = parent;
-            record.parent_world.reset();
-            MeshRecord& parent_record = ${recordAt("engine.meshes", "parent")};
-            parent_record.children.push_back(child);
-            parent_record.parented_meshes.push_back(child);
+function gltfNodeHierarchyCpp(): string {
+    return `    std::vector<std::vector<MeshHandle>> node_mesh_children(node_json.size());
+    {
+        const auto& hierarchy = required(mesh_plan, "hierarchy").as_object();
+        const auto lanes = [](const JsonObject& planned_node, const char* key, std::size_t count) {
+            const auto& values = required(planned_node, key).as_array();
+            if (values.size() != count) throw std::runtime_error("Invalid glTF node transform.");
+            std::array<double, 4> result{};
+            for (std::size_t lane = 0; lane < count; ++lane) result[lane] = values[lane].as_number();
+            return result;
         };
-        for (const auto& [node_index, handle] : node_transform_records) {
-            const MeshHandle first = node_records.at(node_index);
-            if (first != handle) {
-                MeshRecord& record = ${recordAt("engine.meshes", "handle")};
-                record.position = Vec3d{};
-                record.rotation_quaternion = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
-                record.has_rotation_quaternion = false;
-                record.scaling = Vec3{1.0f, 1.0f, 1.0f};
-                link(handle, first);
-                continue;
-            }
-            const double parent = find_gltf_parent(parents, static_cast<double>(node_index));
-            if (parent < 0.0) continue;
-            const auto found = node_records.find(static_cast<std::size_t>(parent));
-            if (found != node_records.end()) link(handle, found->second);
+        const auto create_node = [&](const JsonObject& planned_node, std::string name) {
+            const auto translation = lanes(planned_node, "translation", 3);
+            const auto rotation = lanes(planned_node, "rotation", 4);
+            const auto scaling = lanes(planned_node, "scaling", 3);
+            return create_transform_node(engine, std::move(name),
+                Vec3d{translation[0], translation[1], translation[2]},
+                Vec4{static_cast<float>(rotation[0]), static_cast<float>(rotation[1]),
+                    static_cast<float>(rotation[2]), static_cast<float>(rotation[3])},
+                Vec3{static_cast<float>(scaling[0]), static_cast<float>(scaling[1]),
+                    static_cast<float>(scaling[2])});
+        };
+        const auto& root = required(hierarchy, "root").as_object();
+        {
+            // The root edit starts as the pin's __root__, so the edit and
+            // the node it drives agree from the first frame.
+            const auto translation = lanes(root, "translation", 3);
+            const auto rotation = lanes(root, "rotation", 4);
+            const auto scaling = lanes(root, "scaling", 3);
+            if (translation[0] != asset.root_position.x || translation[1] != asset.root_position.y ||
+                translation[2] != asset.root_position.z || rotation[0] != asset.root_rotation_quaternion.x ||
+                rotation[1] != asset.root_rotation_quaternion.y || rotation[2] != asset.root_rotation_quaternion.z ||
+                rotation[3] != asset.root_rotation_quaternion.w || scaling[0] != asset.root_scaling.x ||
+                scaling[1] != asset.root_scaling.y || scaling[2] != asset.root_scaling.z)
+                throw std::runtime_error("The glTF __root__ differs from the imported root's initial edit.");
         }
+        asset.root_node = create_node(root, "__root__");
+        const auto& planned_nodes = required(hierarchy, "nodes").as_array();
+        if (planned_nodes.size() != node_json.size())
+            throw std::runtime_error("Invalid glTF node hierarchy storage.");
+        asset.nodes.resize(planned_nodes.size());
+        for (std::size_t index = 0; index < planned_nodes.size(); ++index) {
+            if (planned_nodes[index].is_null()) continue;
+            const auto& planned_node = planned_nodes[index].as_object();
+            asset.nodes[index] = create_node(planned_node, required(planned_node, "name").as_string());
+            TransformNodeRecord& node = ${recordAt("engine.transform_nodes", "asset.nodes[index]")};
+            if (const auto* matrix = optional(planned_node, "matrix")) {
+                const auto& storage = accessors.at(unsigned_value(*matrix));
+                if (storage.type != "VEC4" || storage.component_type != 5126 || storage.count != 4)
+                    throw std::runtime_error("Invalid glTF node matrix storage.");
+                node.local_matrix = read_matrix(storage, 0);
+            }
+            node.local_matrix_locked = required(planned_node, "locked").as_boolean();
+        }
+        const auto node_at = [&](std::size_t index) -> const TransformNodeHandle& {
+            const TransformNodeHandle& node = asset.nodes.at(index);
+            if (node.value == invalid_handle)
+                throw std::runtime_error("A glTF node links a node its scene does not reach.");
+            return node;
+        };
+        for (std::size_t index = 0; index < planned_nodes.size(); ++index) {
+            if (planned_nodes[index].is_null()) continue;
+            const ts::JsonValue& parent = required(planned_nodes[index].as_object(), "parent");
+            set_transform_node_parent(engine, asset.nodes[index],
+                parent.as_number() < 0.0 ? asset.root_node : node_at(unsigned_value(parent)));
+        }
+        for (const ts::JsonValue& child : required(hierarchy, "rootChildren").as_array())
+            push_transform_node_child(engine, asset.root_node, node_at(unsigned_value(child)));
+        for (std::size_t index = 0; index < planned_nodes.size(); ++index) {
+            if (planned_nodes[index].is_null()) continue;
+            for (const ts::JsonValue& child : array_or_empty(node_json[index].as_object(), "children"))
+                push_transform_node_child(engine, asset.nodes[index], node_at(unsigned_value(child)));
+        }
+    }
+`;
+}
+
+/** A node's meshes join its traversal list after its child nodes, as the pin pushes them. */
+function gltfNodeMeshChildrenCpp(): string {
+    return `    for (std::size_t index = 0; index < node_mesh_children.size(); ++index) {
+        for (const MeshHandle mesh : node_mesh_children[index])
+            push_transform_node_child(engine, asset.nodes.at(index), mesh);
     }
 `;
 }
@@ -995,7 +1050,7 @@ ${
             std::move(runtime_skin));
     }
     std::vector<std::size_t> animation_mesh_indices(planned_meshes.size(), std::numeric_limits<std::size_t>::max());
-${nodeTransforms ? "    std::vector<std::pair<std::size_t, MeshHandle>> node_transform_records;\n" : ""}    for (std::size_t gltf_mesh_counter = 0; gltf_mesh_counter < planned_meshes.size(); ++gltf_mesh_counter) {
+${nodeTransforms ? gltfNodeHierarchyCpp() : ""}    for (std::size_t gltf_mesh_counter = 0; gltf_mesh_counter < planned_meshes.size(); ++gltf_mesh_counter) {
             const auto& planned = planned_meshes[gltf_mesh_counter].as_object();
             const auto node_index = unsigned_value(required(planned, "node"));
             const auto& node = node_json.at(node_index).as_object();
@@ -1308,36 +1363,12 @@ ${
             record.parent_world = mesh_world;${
                 nodeTransforms
                     ? `
-            // Scene code writes node transforms, so a static primitive's
-            // record stands for its node as well: the node's own TRS under
-            // its parent's world, which packaging read off the pin's node.
-            const auto* node_transform =
-                !deformed_geometry && instance_matrices.empty()
-                    ? optional(setup, "node")
-                    : nullptr;
-            if (node_transform) {
-                const auto& transform = node_transform->as_object();
-                const auto lanes = [&](const char* key, std::size_t count) {
-                    const auto& values = required(transform, key).as_array();
-                    if (values.size() != count) throw std::runtime_error("Invalid glTF node transform.");
-                    std::array<double, 4> result{};
-                    for (std::size_t lane = 0; lane < count; ++lane) result[lane] = values[lane].as_number();
-                    return result;
-                };
-                const auto translation = lanes("translation", 3);
-                const auto rotation = lanes("rotation", 4);
-                const auto scaling = lanes("scaling", 3);
-                record.position = Vec3d{translation[0], translation[1], translation[2]};
-                record.rotation_quaternion = Vec4{static_cast<float>(rotation[0]), static_cast<float>(rotation[1]),
-                    static_cast<float>(rotation[2]), static_cast<float>(rotation[3])};
-                record.has_rotation_quaternion = true;
-                record.scaling = Vec3{static_cast<float>(scaling[0]), static_cast<float>(scaling[1]),
-                    static_cast<float>(scaling[2])};
-                const auto& parent_world = accessors.at(unsigned_value(required(transform, "parentWorld")));
-                if (parent_world.type != "VEC4" || parent_world.component_type != 5126 || parent_world.count != 4)
-                    throw std::runtime_error("Invalid glTF node parent world storage.");
-                record.parent_world = read_matrix(parent_world, 0);
-            }`
+            // Scene code writes node transforms, so the node's world is its
+            // transform node's, composed through the hierarchy live.
+            // Generation refused what the runtime poses apart from it.
+            if (deformed_geometry)
+                throw std::runtime_error("A deformed glTF primitive reached a node-carrying load.");
+            record.parent_world.reset();`
                     : ""
             }
             record.instance_matrices =
@@ -1356,7 +1387,8 @@ ${
                 store_mesh_record(engine, std::move(record));
 ${
     nodeTransforms
-        ? `            if (node_transform) node_transform_records.push_back({node_index, mesh_handle});
+        ? `            set_mesh_transform_parent(engine, mesh_handle, asset.nodes.at(node_index));
+            node_mesh_children[node_index].push_back(mesh_handle);
 `
         : ""
 }
@@ -1455,7 +1487,7 @@ ${
                     : ""
             }
     }
-${nodeTransforms ? gltfNodeTransformLinksCpp() : ""}${
+${nodeTransforms ? gltfNodeMeshChildrenCpp() : ""}${
         interactivity || animationPointer
             ? `
         asset.node_children.resize(node_json.size());
