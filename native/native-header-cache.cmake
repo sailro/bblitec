@@ -1,4 +1,4 @@
-# Generated headers per translation unit, content-addressed for the object cache.
+# Content-addressed compile inputs for the object cache.
 #
 # A unit names the folder it reads generated headers from on its compile line.
 # A folder holding exactly the generated headers the unit's include closure
@@ -7,7 +7,9 @@
 # dependencies then follow what it reads, and a header only other units read
 # neither rebuilds nor misses it. Closures follow #include lines without
 # evaluating conditions, so a unit's set can only be a superset of what the
-# preprocessor opens.
+# preprocessor opens. Generated units compile from content-addressed copies and
+# every unit of a checkout's trees uses the same precompiled header wherever its
+# inputs agree, so a unit two trees generate alike is one cache entry.
 
 set(BBLITE_GENERATED_INCLUDE_DIR "${BBLITE_GENERATED_DIR}/upstream/include")
 
@@ -136,11 +138,39 @@ function(bblite_cached_headers output)
     set(${output} "${directory}" PARENT_SCOPE)
 endfunction()
 
-# Give every repository unit of the targets its own folder. SCENE_INVARIANT
-# names targets whose units may read only the activation macros: a unit there
-# that reaches any other generated header is refused, since its compile line
-# would then differ between scenes that reach the same features. EXCLUDE names
-# units that read the tree in place.
+get_filename_component(BBLITE_CACHED_SOURCE_DIR "${BBLITE_NATIVE_CACHE_DIR}/sources" ABSOLUTE)
+
+# Each generated unit as a copy named by its bytes: two trees generating the
+# same unit compile the same path. A diagnostic names the copy,
+# `<unit>-<digest>.cpp`, whose lines are the generated unit's.
+function(bblite_content_addressed_sources output)
+    set(copies "")
+    file(MAKE_DIRECTORY "${BBLITE_CACHED_SOURCE_DIR}")
+    foreach(source IN LISTS ARGN)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}")
+        file(SHA256 "${source}" digest)
+        string(SUBSTRING "${digest}" 0 16 digest)
+        get_filename_component(stem "${source}" NAME_WE)
+        get_filename_component(extension "${source}" LAST_EXT)
+        set(copy "${BBLITE_CACHED_SOURCE_DIR}/${stem}-${digest}${extension}")
+        # Written under another name and renamed, so an interrupted configure
+        # never leaves a partial file under the content's name.
+        file(LOCK "${copy}.lock" TIMEOUT 60)
+        if(NOT EXISTS "${copy}")
+            configure_file("${source}" "${copy}.partial" COPYONLY)
+            file(RENAME "${copy}.partial" "${copy}")
+        endif()
+        file(LOCK "${copy}.lock" RELEASE)
+        list(APPEND copies "${copy}")
+    endforeach()
+    set(${output} "${copies}" PARENT_SCOPE)
+endfunction()
+
+# Give every repository and copied generated unit of the targets its own
+# folder. SCENE_INVARIANT names targets whose units may read only the
+# activation macros: a unit there that reaches any other generated header is
+# refused, since its compile line would then differ between scenes that reach
+# the same features. EXCLUDE names units that read the tree in place.
 function(bblite_cache_unit_headers)
     cmake_parse_arguments(PARSE_ARGV 0 arg "" "" "TARGETS;SCENE_INVARIANT;EXCLUDE")
     foreach(target IN LISTS arg_TARGETS)
@@ -148,7 +178,8 @@ function(bblite_cache_unit_headers)
         foreach(source IN LISTS sources)
             get_filename_component(source "${source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
             string(FIND "${source}" "${BBLITE_NATIVE_ROOT}/src/" native_at)
-            if(NOT native_at EQUAL 0 OR source IN_LIST arg_EXCLUDE)
+            string(FIND "${source}" "${BBLITE_CACHED_SOURCE_DIR}/" copy_at)
+            if((NOT native_at EQUAL 0 AND NOT copy_at EQUAL 0) OR source IN_LIST arg_EXCLUDE)
                 continue()
             endif()
             bblite_generated_inputs(headers "${source}")
@@ -167,5 +198,66 @@ function(bblite_cache_unit_headers)
             bblite_cached_headers(directory ${headers})
             set_source_files_properties("${source}" PROPERTIES INCLUDE_DIRECTORIES "${directory}")
         endforeach()
+    endforeach()
+endfunction()
+
+# A precompiled header shared by build trees, for clang-cl. ccache keys a
+# user's compile on the PCH's bytes, and Clang records in them the absolute
+# path of every file the PCH was built from; CMake's own PCH is built from
+# cmake_pch.hxx in each tree, and for MSVC-style /Yc and /Yu ccache also drops
+# base_dir and keys on the tree's absolute paths, so no user of it hit across
+# scenes. This PCH is built with Clang's own -emit-pch from a source named by
+# its text under the cache and read through -include-pch. Its creation is
+# cached without base_dir: the entry records this checkout's paths, so the
+# trees of this checkout share one PCH and its users' entries, and a PCH
+# naming another worktree's files is never handed out. On a miss ccache
+# preprocesses a user with the PCH's source included as text, so the users
+# also read the folder of the PCH's generated headers.
+function(bblite_shared_pch)
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "INCLUDE_DIRECTORY" "TARGETS;HEADERS")
+    set(text "// The precompiled header of native/CMakeLists.txt.\n")
+    foreach(header IN LISTS arg_HEADERS)
+        string(APPEND text "#include ${header}\n")
+    endforeach()
+    string(SHA256 key "${text}")
+    string(SUBSTRING "${key}" 0 16 key)
+    get_filename_component(source "${BBLITE_NATIVE_CACHE_DIR}/pch/bblite_pch-${key}.cxx" ABSOLUTE)
+    get_filename_component(directory "${source}" DIRECTORY)
+    file(MAKE_DIRECTORY "${directory}")
+    file(LOCK "${source}.lock" TIMEOUT 60)
+    if(NOT EXISTS "${source}")
+        file(WRITE "${source}.partial" "${text}")
+        file(RENAME "${source}.partial" "${source}")
+    endif()
+    file(LOCK "${source}.lock" RELEASE)
+    add_library(bblite_pch OBJECT "${source}")
+    target_link_libraries(bblite_pch PRIVATE bblite_features)
+    if(arg_INCLUDE_DIRECTORY)
+        target_include_directories(bblite_pch PRIVATE "${arg_INCLUDE_DIRECTORY}")
+    endif()
+    set_source_files_properties("${source}" PROPERTIES COMPILE_OPTIONS "-Xclang;-emit-pch")
+    set(launcher ${CMAKE_CXX_COMPILER_LAUNCHER})
+    list(FILTER launcher EXCLUDE REGEX "^base_dir=")
+    set_property(TARGET bblite_pch PROPERTY CXX_COMPILER_LAUNCHER "${launcher}")
+    # The compile's output object is the PCH the units read. A source's
+    # OBJECT_DEPENDS takes no generator expression, so the units depend on a
+    # stamp touched after each compile of it.
+    set(pch "$<TARGET_OBJECTS:bblite_pch>")
+    set(stamp "${CMAKE_CURRENT_BINARY_DIR}/bblite_pch.stamp")
+    add_custom_command(
+        OUTPUT "${stamp}"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${stamp}"
+        DEPENDS "${pch}"
+        VERBATIM
+    )
+    add_custom_target(bblite_pch_stamp DEPENDS "${stamp}")
+    foreach(target IN LISTS arg_TARGETS)
+        add_dependencies(${target} bblite_pch_stamp)
+        target_compile_options(${target} PRIVATE "SHELL:-Xclang -include-pch -Xclang ${pch}")
+        if(arg_INCLUDE_DIRECTORY)
+            target_include_directories(${target} PRIVATE "${arg_INCLUDE_DIRECTORY}")
+        endif()
+        get_target_property(sources ${target} SOURCES)
+        set_property(SOURCE ${sources} APPEND PROPERTY OBJECT_DEPENDS "${stamp}")
     endforeach()
 endfunction()

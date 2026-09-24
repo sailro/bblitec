@@ -1946,9 +1946,11 @@ std::array<float, 16> build_view_projection(
 // The same composition over a transform node, which upstream is the same
 // call: TransformNode is a pure alias for SceneNode, so its local matrix
 // is composeTrsLocalMatrix(position, rotationQuaternion, scaling) exactly
-// as a mesh's is.
+// as a mesh's is -- or, while the node holds one, its raw local matrix
+// (scene-node.ts initSceneNodeTransform's \`_localMatrix\` arm).
 std::array<float, 16> transform_node_local_matrix(
     const TransformNodeRecord& node) {
+    if (node.local_matrix) return *node.local_matrix;
     return trs_matrix(node);
 }
 

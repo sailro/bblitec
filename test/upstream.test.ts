@@ -764,10 +764,14 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /upstream::transform_position\(|upstream::transform_direction\(/,
     );
-    // A face normal takes the vertex stage's own normalize (the declared
-    // guarded CPU stand-in). Animated lights take the pin's
-    // writeWorldLightDirection, lowered whole.
-    assert.match(adapter.source, /upstream::normalize_baked_direction\(face\)/);
+    // A primitive without NORMAL reads the packaged smooth normals the pin
+    // uploads; no CPU face normal stands in for its derivative flat normal.
+    // Animated lights take the pin's writeWorldLightDirection, lowered whole.
+    assert.doesNotMatch(adapter.source, /normalize_baked_direction\(face\)/);
+    assert.match(
+        adapter.source,
+        /const AccessorInfo& normals = accessors\.at\(unsigned_value\(required\(attributes, "NORMAL"\)\)\);/,
+    );
     const animatedLights = lowerer.lowerLoaderAdapter({
         animationPointer: true,
     }).source;
@@ -780,9 +784,14 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /0\.000001f|Vec3\{0\.0f, 1\.0f, 0\.0f\}/,
     );
+    // buildNodeHierarchy names an unnamed node `node_<index>` and keeps an
+    // empty authored name.
+    assert.match(
+        adapter.source,
+        /node_name && !node_name->is_null\(\)\s*\? node_name->as_string\(\)\s*: "node_" \+ std::to_string\(node_index\);/,
+    );
     assert.match(adapter.source, /record\.clockwise_front_face/);
     assert.match(adapter.source, /source_clockwise &&\s*!clockwise_front_face/);
-    assert.match(adapter.source, /geometry\.flat_normals = true/);
     assert.match(
         adapter.source,
         /geometry\.has_tangents = tangents != nullptr/,

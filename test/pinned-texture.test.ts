@@ -114,6 +114,65 @@ test("float shader expression projection preserves swizzles, broadcasts and refu
     );
 });
 
+test("WGSL normalize projection validates dimensions and divides by the length", () => {
+    for (const width of [2, 3, 4]) {
+        const bindings = new Map([
+            [
+                "value",
+                Array.from({ length: width }, (_, index) => ({
+                    cpp: `v[${index}]`,
+                })),
+            ],
+        ]);
+        const raw = emitShaderCppExpression(
+            parseWgslExpression("normalize(value)"),
+            bindings,
+        );
+        assert.equal(raw.components.length, width);
+        assert.ok(
+            raw.components.every(
+                (component, index) =>
+                    component ===
+                    `(shader_normalize_input_0[${index}] / shader_normalize_length_0)`,
+            ),
+        );
+    }
+    assert.throws(
+        () =>
+            emitShaderCppExpression(
+                parseWgslExpression("normalize()"),
+                new Map(),
+            ),
+        /one vector/,
+    );
+    assert.throws(
+        () =>
+            emitShaderCppExpression(
+                parseWgslExpression("normalize(1.0)"),
+                new Map(),
+            ),
+        /lane vector/,
+    );
+    assert.throws(
+        () =>
+            emitShaderCppExpression(
+                parseWgslExpression("normalize(value)"),
+                new Map([
+                    ["value", Array.from({ length: 5 }, () => ({ cpp: "v" }))],
+                ]),
+            ),
+        /lane vector/,
+    );
+    assert.throws(
+        () =>
+            emitShaderCppExpression(
+                parseWgslExpression("value[0]"),
+                new Map([["value", [{ cpp: "v" }]]]),
+            ),
+        /does not support indexed values/,
+    );
+});
+
 test("WGSL abstract arithmetic materializes only at a concrete float sink", () => {
     const emit = (expression: string): string[] =>
         emitShaderCppExpression(parseWgslExpression(expression), new Map())

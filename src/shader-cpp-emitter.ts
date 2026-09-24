@@ -16,21 +16,10 @@ export function emitShaderCppExpression(
     bindings: ReadonlyMap<string, readonly ShaderCppScalar[]>,
     options: {
         tabulateUnorm8?: boolean;
-        /** Explicit CPU-bake adaptation: return zero unless length exceeds this f32 threshold. */
-        minimumNormalizeLength?: number;
     } = {},
 ): { components: string[]; declarations: string[] } {
     const declarations: string[] = [];
     const tables = new Map<string, string>();
-    if (
-        options.minimumNormalizeLength !== undefined &&
-        (!Number.isFinite(Math.fround(options.minimumNormalizeLength)) ||
-            options.minimumNormalizeLength < 0)
-    ) {
-        throw new Error(
-            "WGSL normalization threshold must be a nonnegative finite f32 value.",
-        );
-    }
     const abstract = (value: number, integer: boolean): ShaderCppScalar => {
         // Keep the bounded interpreter exact; wider abstract integers need a
         // BigInt path before they can be accepted (WGSL uses signed 64-bit).
@@ -198,10 +187,7 @@ export function emitShaderCppExpression(
                         `const float ${length} = std::sqrt(${squared});`,
                     );
                     return lanes.map((_, index) => ({
-                        cpp:
-                            options.minimumNormalizeLength === undefined
-                                ? `(${input}[${index}] / ${length})`
-                                : `(${length} > ${floatLiteral(options.minimumNormalizeLength)} ? ${input}[${index}] / ${length} : 0.0f)`,
+                        cpp: `(${input}[${index}] / ${length})`,
                     }));
                 }
                 const arities: Readonly<Record<string, number>> = {

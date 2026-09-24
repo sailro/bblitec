@@ -822,7 +822,6 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
         json.field("vertexCount", geometry.vertices.size());
         json.field("indexCount", geometry.indices.size());
         json.field("hasTangents", geometry.has_tangents);
-        json.field("flatNormals", geometry.flat_normals);
         json.field("topology", topology_name(geometry.topology));
         json.field("morphTargets", geometry.morph_positions.size());
         json.field("boundsMin", geometry.bounds_min);
@@ -1736,7 +1735,6 @@ inline void write_node_gpu_capture(JsonWriter& json, const NodeGpuCapture& captu
         json.field("geometryVariant", pipeline.geometry_variant);
         json.field("colorTargetCount", pipeline.color_target_count);
         json.field("samples", pipeline.samples);
-        json.field("usesLocalAttributes", pipeline.uses_local_attributes);
         json.field("topology", pipeline.topology);
         json.field("cullMode", pipeline.cull_mode);
         json.field("frontFace", pipeline.front_face);
