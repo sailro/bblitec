@@ -40,6 +40,28 @@ struct Traced {
     void gc_trace(const TraceVisitor&) const {}
 };
 
+static_assert(!gc_traceable<Ref<int>> && !gc_traceable<Array<Ref<int>>>);
+static_assert(gc_traceable<Ref<Traced>> && gc_traceable<Array<Ref<Traced>>>);
+
+/** A closure registers its body only when its captures can own an edge. */
+void closure_bodies() {
+    const auto nodes = managed_node_count();
+    auto holder = make_ref<Traced>();
+    holder->value = 3;
+    {
+        const Callback<int()> untraced{
+            make_closure(std::tuple{2}, [](std::tuple<int>& env) { return std::get<0>(env); })};
+        assert(untraced() == 2 && managed_node_count() == nodes + 1);
+        const Callback<int()> traced{
+            make_closure(std::tuple{holder},
+                         [](std::tuple<Ref<Traced>>& env) { return std::get<0>(env)->value; })};
+        assert(traced() == 3 && managed_node_count() == nodes + 2);
+    }
+    holder.reset();
+    assert(managed_node_count() == nodes);
+    check_registry();
+}
+
 /** A payload that describes no edge cannot close a cycle and stays out of the registry. */
 void untraced_payloads() {
     const auto nodes = managed_node_count();
@@ -296,6 +318,7 @@ int main(int argc, char** argv) {
     if (selected == "all" || selected == "owners") {
         ref_owners_and_allocations();
         untraced_payloads();
+        closure_bodies();
         shared_alias_owners_and_allocations();
         exact_cycle_edges();
     }
@@ -310,6 +333,6 @@ int main(int argc, char** argv) {
     assert(managed_node_count() == nodes && outstanding_allocations == outstanding);
     std::printf(
         "ref-gc-ownership-check: ok (Ref=1 allocation, weak token=1, shared=1; "
-        "untraced payloads unregistered; cycle edges=2/2, collected=2; registry and allocations "
+        "untraced payloads and closures unregistered; cycle edges=2/2, collected=2; registry and allocations "
         "restored)\n");
 }

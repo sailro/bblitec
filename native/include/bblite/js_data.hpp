@@ -599,10 +599,10 @@ private:
 
 namespace gc {
 /**
- * A reference's payload may be incomplete where a container asks, so any
- * reference counts as a possible edge; an unregistered block reports none.
+ * A reference is an edge exactly when `make_ref` registers its payload, so a
+ * container of references to edge-free payloads stays out of the registry.
  */
-template <typename T> struct Traceable<Ref<T>> : std::true_type {};
+template <typename T> struct Traceable<Ref<T>> : Traceable<std::remove_cv_t<T>> {};
 } // namespace gc
 
 /**
@@ -1792,7 +1792,9 @@ template <typename V> class WeakMap {
             }
         }
     };
-    std::shared_ptr<Storage> storage_ = make_gc_shared_if<gc_traceable<V>, Storage>();
+    // Registered whatever its values: each collection prunes the entries
+    // whose keys died, even when no value can own a traced edge.
+    std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
 
 public:
     [[nodiscard]] typename MapGetResult<V>::Type get(const WeakIdentity& key) const {

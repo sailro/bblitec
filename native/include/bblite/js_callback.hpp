@@ -31,6 +31,12 @@ template <typename Environment, typename Invoke> struct Closure {
     void gc_trace(const TraceVisitor& visitor) const { visitor(environment); }
 };
 
+namespace gc {
+/** A closure owns traced edges only through its environment. */
+template <typename Environment, typename Invoke>
+struct Traceable<Closure<Environment, Invoke>> : Traceable<Environment> {};
+} // namespace gc
+
 template <typename Invoke, typename Signature> struct ClosureInvoker;
 
 template <typename Invoke, typename R, bool Noexcept, typename... Args>
@@ -110,7 +116,13 @@ template <typename R, typename... Args> class Callback<R(Args...)> {
             else
                 return true;
         }
-        void gc_trace(const TraceVisitor& visitor) const { visitor(function); }
+        /** Only a body that can own a traced edge describes one, so `make_gc_shared`
+         * registers exactly those. */
+        void gc_trace(const TraceVisitor& visitor) const
+            requires gc_traceable<F>
+        {
+            visitor(function);
+        }
     };
 
 public:
