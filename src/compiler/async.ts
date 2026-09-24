@@ -10,7 +10,7 @@ import {
 } from "./user-functions.js";
 import { unwrapExpression, argumentAt } from "./syntax.js";
 import type { Value } from "./types.js";
-import { someAnalysisNode } from "./analysis-walk.js";
+import { findAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import {
     propertyIsReadOnly,
     type DataType,
@@ -682,19 +682,15 @@ export class AsyncLowerer {
                 visited.add(local);
                 return namesResolving(local);
             });
-        let found: ts.CallExpression | undefined;
-        someAnalysisNode(executor.body, (candidate) => {
-            if (
+        return findAnalysisNode(
+            executor.body,
+            (candidate): candidate is ts.CallExpression =>
                 ts.isCallExpression(candidate) &&
                 DEFERRED_SCHEDULERS.has(
                     context.libraryGlobal(candidate.expression) ?? "",
                 ) &&
-                candidate.arguments.some(namesResolving)
-            )
-                found = candidate;
-            return found !== undefined;
-        });
-        return found;
+                candidate.arguments.some(namesResolving),
+        );
     }
 
     private synchronousPromiseType(
