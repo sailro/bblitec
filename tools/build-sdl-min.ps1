@@ -156,10 +156,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "SDL minimal CMake configuration failed."
 }
 
-$cache = Read-CMakeCache (Join-Path $build "CMakeCache.txt")
-$cacheTypes = Read-CMakeCacheTypes (Join-Path $build "CMakeCache.txt")
+$cache = Read-CMakeCache (Join-Path $build "CMakeCache.txt") -WithTypes
 foreach ($option in $sdlOptions.GetEnumerator()) {
-    $actual = $cache[$option.Key]
+    $entry = $cache[$option.Key]
+    $actual = if ($entry) { $entry.Value } else { $null }
     if ($actual -ne $option.Value) {
         throw (
             "The SDL cache records $($option.Key)=$actual where " +
@@ -167,9 +167,9 @@ foreach ($option in $sdlOptions.GetEnumerator()) {
             "CMake as a value. Refusing to build a mis-trimmed SDL."
         )
     }
-    if ($cacheTypes[$option.Key] -notin @("BOOL", "INTERNAL")) {
+    if ($entry.Type -notin @("BOOL", "INTERNAL")) {
         throw (
-            "The SDL cache records $($option.Key) as $($cacheTypes[$option.Key]), " +
+            "The SDL cache records $($option.Key) as $($entry.Type), " +
             "not an option: SDL $sdlVersion declares no such setting, so it " +
             "trims nothing. Remove it from the option table."
         )
@@ -177,10 +177,10 @@ foreach ($option in $sdlOptions.GetEnumerator()) {
 }
 $unexpanded = @(
     $cache.GetEnumerator() |
-        Where-Object { $_.Key -like "SDL_*" -and $_.Value.Contains('$') }
+        Where-Object { $_.Key -like "SDL_*" -and $_.Value.Value.Contains('$') }
 )
 if ($unexpanded.Count -gt 0) {
-    $listing = ($unexpanded | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ", "
+    $listing = ($unexpanded | ForEach-Object { "$($_.Key)=$($_.Value.Value)" }) -join ", "
     throw "SDL cache entries hold unexpanded script text: $listing"
 }
 
