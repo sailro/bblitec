@@ -54,7 +54,7 @@ interface AudioCallContext
             | "registerAsset"
             | "dataLowerer"
             | "options"
-            | "compileCondition"
+            | "conditions"
             | "compileStringLiteral"
             | "dataTypes"
             | "hoistForwardCallbackBindings"

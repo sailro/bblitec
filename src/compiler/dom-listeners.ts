@@ -18,7 +18,7 @@ type Context = Pick<
     | "requireEngine"
     | "allocateTemporaryCppName"
     | "compileValue"
-    | "compileCondition"
+    | "conditions"
     | "compileStringLiteral"
     | "dataLowerer"
     | "dataTypes"
@@ -62,7 +62,7 @@ export function listenerOptions(
         Context,
         | "unwrap"
         | "checker"
-        | "compileCondition"
+        | "conditions"
         | "compileValue"
         | "allocateTemporaryCppName"
         | "emit"
@@ -79,7 +79,7 @@ export function listenerOptions(
     const source = context.unwrap(expression);
     const type = context.checker.getTypeAtLocation(expression);
     if ((type.flags & ts.TypeFlags.BooleanLike) !== 0) {
-        result.capture = context.compileCondition(expression);
+        result.capture = context.conditions.compileCondition(expression);
         return result;
     }
     if ((type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0)
@@ -152,7 +152,7 @@ export function listenerOptions(
             name === "capture" ||
             (!removing && (name === "once" || name === "passive"))
         ) {
-            const cpp = context.compileCondition(initializer);
+            const cpp = context.conditions.compileCondition(initializer);
             const value = context.allocateTemporaryCppName("event_option");
             context.emit(`const bool ${value} = ${cpp};`);
             result[name] = value;

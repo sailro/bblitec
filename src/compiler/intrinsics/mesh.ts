@@ -95,7 +95,7 @@ export interface MeshIntrinsicContext
             | "compileVec3"
             | "vec3FromRecord"
             | "compileNumber"
-            | "compileCondition"
+            | "conditions"
             | "reachJsData"
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
@@ -951,7 +951,7 @@ function compileSetMeshVisible(
         cpp:
             `bbl::set_mesh_visible(` +
             `${context.requireEngine(mesh, call)}, ${mesh.cpp}, ` +
-            `${context.compileCondition(argumentAt(call, 1))})`,
+            `${context.conditions.compileCondition(argumentAt(call, 1))})`,
     };
 }
 
@@ -1813,7 +1813,7 @@ function compileEnableThinInstanceGpuCulling(
     const mesh = context.compileValue(argumentAt(call, 0));
     context.expectKind(mesh, "mesh", argumentAt(call, 0));
     const enabled = call.arguments[1]
-        ? context.compileCondition(call.arguments[1])
+        ? context.conditions.compileCondition(call.arguments[1])
         : pinnedParameterFlag(
                 "src/mesh/thin-instance.ts",
                 "enableThinInstanceGpuCulling",

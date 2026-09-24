@@ -206,7 +206,7 @@ export interface ExpressionContext
             | "probeEmission"
             | "recordAccessor"
             | "requireEngine"
-            | "compileCondition"
+            | "conditions"
             | "compileNumber"
             | "castNumber"
             | "compileBoolean"
@@ -1298,7 +1298,7 @@ export class ExpressionLowerer {
                 // dispatcher: a concise callback commonly returns
                 // `!set.has(value)`, which is boolean but not a static
                 // literal expression.
-                cpp: this.context.compileCondition(unwrapped),
+                cpp: this.context.conditions.compileCondition(unwrapped),
                 ...(staticBoolean === undefined ? {} : { staticBoolean }),
             };
         }
@@ -1307,7 +1307,7 @@ export class ExpressionLowerer {
         if (this.context.evaluator.isComparisonExpression(unwrapped)) {
             return {
                 kind: "boolean",
-                cpp: this.context.compileCondition(unwrapped),
+                cpp: this.context.conditions.compileCondition(unwrapped),
             };
         }
         if (this.context.isBrowserOnlyExpression(unwrapped)) {
@@ -2741,7 +2741,7 @@ export class ExpressionLowerer {
             // already spells for every kind.
             this.context.expectArgumentCount(call, 1, 1);
             return booleanValue(
-                this.context.compileCondition(argumentAt(call, 0)),
+                this.context.conditions.compileCondition(argumentAt(call, 0)),
             );
         }
 
@@ -3383,7 +3383,7 @@ export class ExpressionLowerer {
         }
         const ownerExpression = this.context.unwrap(unwrapped.expression);
         if (ts.isConditionalExpression(ownerExpression)) {
-            const condition = this.context.compileCondition(
+            const condition = this.context.conditions.compileCondition(
                 ownerExpression.condition,
             );
             const selectedOwner =
@@ -3861,7 +3861,9 @@ export class ExpressionLowerer {
                 : !containsEvaluatedCall(unwrapped.condition)
                   ? this.context.probeEmission(
                         () =>
-                            this.context.compileCondition(unwrapped.condition),
+                            this.context.conditions.compileCondition(
+                                unwrapped.condition,
+                            ),
                         (condition) =>
                             condition === "true" || condition === "false",
                     )
@@ -3951,7 +3953,7 @@ export class ExpressionLowerer {
             (conditionalType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(conditionalType.name))
         ) {
-            const condition = this.context.compileCondition(
+            const condition = this.context.conditions.compileCondition(
                 unwrapped.condition,
             );
             if (condition === "true" || condition === "false") {
@@ -4011,7 +4013,9 @@ export class ExpressionLowerer {
                     : {}),
             };
         }
-        const condition = this.context.compileCondition(unwrapped.condition);
+        const condition = this.context.conditions.compileCondition(
+            unwrapped.condition,
+        );
         if (condition === "true" || condition === "false") {
             return this.compileValue(
                 condition === "true" ? unwrapped.whenTrue : unwrapped.whenFalse,

@@ -1,6 +1,7 @@
 import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { BindingLookup } from "./binding-scopes.js";
+import type { ConditionLowerer } from "./conditions.js";
 // Shared option-lowering helpers.
 //
 // The option compilers agree on three small contracts: an options
@@ -91,9 +92,7 @@ export interface StaticBooleanContext extends Pick<
 > {}
 
 interface StaticNumberSelectionContext
-    extends
-        PositiveIntegerContext,
-        Pick<LoweringServices, "compileCondition"> {}
+    extends PositiveIntegerContext, Pick<LoweringServices, "conditions"> {}
 
 /**
  * A static number after following any statically settled conditional arms.
@@ -123,8 +122,11 @@ export function selectedStaticNumberValue(
  */
 interface StaticSelectionContext extends Pick<
     LoweringServices,
-    "compileCondition" | "resolveStaticExpression"
-> {}
+    "resolveStaticExpression"
+> {
+    /** The condition compiler the fold asks; a caller may probe it. */
+    readonly conditions: Pick<ConditionLowerer, "compileCondition">;
+}
 
 export function selectedStaticExpression(
     context: StaticSelectionContext,
@@ -132,7 +134,9 @@ export function selectedStaticExpression(
 ): ts.Expression | undefined {
     let selected = context.resolveStaticExpression(expression);
     while (ts.isConditionalExpression(selected)) {
-        const condition = context.compileCondition(selected.condition);
+        const condition = context.conditions.compileCondition(
+            selected.condition,
+        );
         if (condition !== "true" && condition !== "false") {
             return undefined;
         }

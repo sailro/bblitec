@@ -84,7 +84,7 @@ interface PlatformCallContext
             | "canvasReadbackFunctions"
             | "checker"
             | "compileBoolean"
-            | "compileCondition"
+            | "conditions"
             | "compileFrameCallback"
             | "compileNumber"
             | "compilePlatformCallback"
@@ -675,7 +675,8 @@ export class PlatformCalls {
             }
             const onceExpression = this.context.objectProperty(options, "once");
             if (onceExpression) {
-                const compiled = this.context.compileCondition(onceExpression);
+                const compiled =
+                    this.context.conditions.compileCondition(onceExpression);
                 if (compiled !== "true" && compiled !== "false") {
                     this.context.fail(
                         onceExpression,

@@ -58,6 +58,7 @@ import type {
 import type { ClassLowerer } from "./classes.js";
 import type { SceneManifestRecorder } from "./scene-manifest.js";
 import type { BindingScopes } from "./binding-scopes.js";
+import type { ConditionLowerer } from "./conditions.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -116,6 +117,7 @@ export interface LoweringServices {
     readonly handleCollections: HandleCollections;
     readonly sceneManifest: SceneManifestRecorder;
     readonly bindings: BindingScopes;
+    readonly conditions: ConditionLowerer;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
@@ -407,7 +409,6 @@ export interface LoweringServices {
     compileVec2(expression: ts.Expression): string;
     compileVec4(expression: ts.Expression): string;
     compileBoolean(expression: ts.Expression): string;
-    compileCondition(expression: ts.Expression): string;
     meshTransformDirtyEntry():
         "mark_mesh_dirty" | "mark_mesh_runtime_transform";
     compileFrameCallback(

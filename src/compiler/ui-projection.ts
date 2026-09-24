@@ -142,7 +142,7 @@ interface UiProjectionContext extends Pick<
     | "sourceFiles"
     | "checker"
     | "compileBoolean"
-    | "compileCondition"
+    | "conditions"
     | "compileNumber"
     | "compilePlatformCall"
     | "compileStringLiteral"
@@ -2979,7 +2979,7 @@ export class UiProjection {
         if (ts.isConditionalExpression(unwrapped)) {
             recordCandidates(unwrapped);
             return (
-                `(${this.context.compileCondition(unwrapped.condition)} ? ` +
+                `(${this.context.conditions.compileCondition(unwrapped.condition)} ? ` +
                 `${this.compileUiStyleString(unwrapped.whenTrue)} : ` +
                 `${this.compileUiStyleString(unwrapped.whenFalse)})`
             );
@@ -3516,7 +3516,7 @@ export class UiProjection {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isConditionalExpression(unwrapped)) {
             return (
-                `(${this.context.compileCondition(unwrapped.condition)} ? ` +
+                `(${this.context.conditions.compileCondition(unwrapped.condition)} ? ` +
                 `${this.compileUiMarkupString(unwrapped.whenTrue, ownerId)} : ` +
                 `${this.compileUiMarkupString(unwrapped.whenFalse, ownerId)})`
             );

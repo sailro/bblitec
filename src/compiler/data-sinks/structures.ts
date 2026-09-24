@@ -86,7 +86,7 @@ function expressionStruct(
         lowerer.context.dataTypes.isReferenceStruct(dataType.name)
     ) {
         return (
-            `(${lowerer.context.compileCondition(unwrapped.condition)} ? ` +
+            `(${lowerer.context.conditions.compileCondition(unwrapped.condition)} ? ` +
             `${lowerer.compileForSink(unwrapped.whenTrue, dataType)} : ` +
             `${lowerer.compileForSink(unwrapped.whenFalse, dataType)})`
         );

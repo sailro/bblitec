@@ -25,7 +25,7 @@ export interface LocalCubemapIntrinsicContext
             | "hasRegisteredScene"
             | "emit"
             | "cppString"
-            | "compileCondition"
+            | "conditions"
             | "fail"
         > {}
 
@@ -175,7 +175,9 @@ export function compileLocalCubemapIntrinsic(
     const first = context.compileValue(argumentAt(call, 0));
     if (name === "setPbrLocalEnvironmentProbeDebug") {
         context.expectKind(first, "pbr-local-probe-set", argumentAt(call, 0));
-        const enabled = context.compileCondition(argumentAt(call, 1));
+        const enabled = context.conditions.compileCondition(
+            argumentAt(call, 1),
+        );
         if ((enabled !== "true" && enabled !== "false") || !first.localCubemap)
             context.fail(
                 call,

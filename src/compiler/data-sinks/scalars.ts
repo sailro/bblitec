@@ -27,7 +27,7 @@ function expressionBoolean(
     _expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
-    return lowerer.context.compileCondition(unwrapped);
+    return lowerer.context.conditions.compileCondition(unwrapped);
 }
 
 function expressionBorrowedPlatformEvent(

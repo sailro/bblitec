@@ -39,7 +39,7 @@ export interface SpriteIntrinsicContext
             | "expectSameEngine"
             | "compileVec3"
             | "compileBoolean"
-            | "compileCondition"
+            | "conditions"
             | "compileNumber"
             | "compileVec2"
             | "compileVec4"
@@ -1211,7 +1211,9 @@ function compileUpdateSprite2DIndex(
     };
     const unwrappedOptions = context.unwrap(options);
     if (ts.isConditionalExpression(unwrappedOptions)) {
-        const condition = context.compileCondition(unwrappedOptions.condition);
+        const condition = context.conditions.compileCondition(
+            unwrappedOptions.condition,
+        );
         return {
             kind: "void",
             cpp:
@@ -1280,7 +1282,7 @@ function compilePlaySprite2DAnimation(
     );
     const number = (index: number): string =>
         context.compileNumber(argumentAt(call, index), "double");
-    const loop = context.compileCondition(argumentAt(call, 4));
+    const loop = context.conditions.compileCondition(argumentAt(call, 4));
     const options = optionsRecord(context, call.arguments[6], importedName);
     if (property(options, "onEnd")) {
         context.fail(

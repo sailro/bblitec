@@ -972,7 +972,9 @@ export class StaticEvaluator {
                     // The two members the fold reads, handed over
                     // explicitly because this evaluator keeps its
                     // condition compiler private.
-                    compileCondition: (node) => this.compileCondition(node),
+                    conditions: {
+                        compileCondition: (node) => this.compileCondition(node),
+                    },
                     resolveStaticExpression: (node) =>
                         this.resolveStaticExpression(node),
                 },

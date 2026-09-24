@@ -370,7 +370,7 @@ interface HandleCollectionsContext
             | "emitStatement"
             | "libraryGlobal"
             | "isInRuntimeControlFlow"
-            | "compileCondition"
+            | "conditions"
             | "compileStringLiteral"
             | "cppString"
             | "bindings"
@@ -1710,7 +1710,7 @@ export class HandleCollections {
                 predicate.parameters[0]!.name,
                 root,
             );
-            if (context.compileCondition(predicate.body) !== "true")
+            if (context.conditions.compileCondition(predicate.body) !== "true")
                 return context.fail(
                     predicate.body,
                     "Entity search beyond the synthetic glTF root requires a represented heterogeneous entity collection.",
@@ -1807,7 +1807,7 @@ export class HandleCollections {
                     context.increaseIndent();
                 }
                 context.bindings.bindLocalValue(predicateParameter, selected);
-                const test = context.compileCondition(
+                const test = context.conditions.compileCondition(
                     predicate.body as ts.Expression,
                 );
                 context.emit(`if (${test}) {`);
@@ -2147,7 +2147,7 @@ export class HandleCollections {
             predicateParameter,
             (context) => {
                 const item = context.bindings.lookup(predicateParameter).cpp;
-                const test = context.compileCondition(
+                const test = context.conditions.compileCondition(
                     predicate.body as ts.Expression,
                 );
                 context.emit(`if (${test}) {`);

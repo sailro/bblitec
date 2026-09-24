@@ -3082,7 +3082,9 @@ function compileDataViewAccessor(
     const littleEndian = accessor.wide
         ? [
               call.arguments[fixed]
-                  ? lowerer.context.compileCondition(call.arguments[fixed])
+                  ? lowerer.context.conditions.compileCondition(
+                        call.arguments[fixed],
+                    )
                   : "false",
           ]
         : [];

@@ -15,7 +15,7 @@ export interface SkeletonIntrinsicContext
             | "emit"
             | "cppString"
             | "compileStringLiteral"
-            | "compileCondition"
+            | "conditions"
             | "compileNumber"
             | "compileForDataSink"
             | "requireEngine"
@@ -212,7 +212,9 @@ export function compileSkeletonIntrinsic(
             const bone = context.compileValue(argumentAt(call, 1));
             context.expectKind(bone, "bone", argumentAt(call, 1));
             context.expectSameEngine(skeleton, bone, call);
-            const visible = context.compileCondition(argumentAt(call, 2));
+            const visible = context.conditions.compileCondition(
+                argumentAt(call, 2),
+            );
             return {
                 kind: "void",
                 cpp:

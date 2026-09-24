@@ -49,7 +49,7 @@ export interface NativeFunctionContext extends Pick<
     | "probeEmission"
     | "useNativeValue"
     | "compileNumber"
-    | "compileCondition"
+    | "conditions"
     | "emitStatement"
     | "statementTerminatesAfterLowering"
     | "bindings"

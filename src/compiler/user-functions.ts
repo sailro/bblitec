@@ -1007,7 +1007,7 @@ export interface UserFunctionContext
             | "canReplaySharedCallEffects"
             | "requiresStaticDataIteration"
             | "probeEmission"
-            | "compileCondition"
+            | "conditions"
             | "withRecordScopes"
             | "isBrowserOnlyExpression"
             | "evaluateBrowserValue"
@@ -3963,7 +3963,9 @@ export class UserFunctionLowerer {
             for (const statement of ir.statements) {
                 context.emitStatement(statement);
             }
-            const condition = context.compileCondition(ir.returnExpression);
+            const condition = context.conditions.compileCondition(
+                ir.returnExpression,
+            );
             return {
                 kind: "boolean",
                 cpp: condition,
@@ -4278,7 +4280,7 @@ export class UserFunctionLowerer {
                 } else if (firstReturn([statement])) {
                     if (!ts.isIfStatement(statement))
                         return { kind: "dynamic" };
-                    const condition = context.compileCondition(
+                    const condition = context.conditions.compileCondition(
                         statement.expression,
                     );
                     if (condition !== "true" && condition !== "false")

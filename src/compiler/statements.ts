@@ -122,7 +122,7 @@ export interface StatementLoweringContext extends Pick<
     | "checkNodeGeometryMutation"
     | "emitDiscardedValue"
     | "emitAwaitExpression"
-    | "compileCondition"
+    | "conditions"
     | "isBrowserOnlyExpression"
     | "isDeferredCallbackCall"
     | "libraryGlobal"
@@ -986,7 +986,9 @@ export class StatementLowerer {
             // condition lowerer and its pinned static deductions.
             return;
         }
-        const condition = context.compileCondition(statement.expression);
+        const condition = context.conditions.compileCondition(
+            statement.expression,
+        );
         // A condition the compiler already settled leaves only the branch it
         // takes. The corpus guards a value this port folded — `!system` over
         // a particle system the bake resolved — and emitting
@@ -1911,7 +1913,7 @@ export class StatementLowerer {
         let condition = "";
         const lines = this.inRuntimeControlFlow(context, () =>
             context.captureEmittedLines(() => {
-                condition = context.compileCondition(expression);
+                condition = context.conditions.compileCondition(expression);
             }),
         );
         const checkpoint = context.workerCheckpointCpp();
@@ -3034,7 +3036,7 @@ export class StatementLowerer {
                     );
                 } else if (target.kind === "boolean" && operator === "=") {
                     context.emit(
-                        `${target.cpp} = ${context.compileCondition(unwrapped.right)};`,
+                        `${target.cpp} = ${context.conditions.compileCondition(unwrapped.right)};`,
                     );
                 } else if (operator === "+=" && isStringValue(target)) {
                     emitStringAppend(context, target.cpp, unwrapped.right);
@@ -3249,7 +3251,7 @@ export class StatementLowerer {
                 `bbl::defer_capture_until(` +
                     `${context.requireDefaultEngine(unwrapped)}, ` +
                     `[&]() { return ` +
-                    `${context.compileCondition(drain)}; });`,
+                    `${context.conditions.compileCondition(drain)}; });`,
             );
             return;
         }

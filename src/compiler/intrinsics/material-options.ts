@@ -82,7 +82,7 @@ export interface MaterialOptionContext
             | "objectProperty"
             | "compileNumber"
             | "compileBoolean"
-            | "compileCondition"
+            | "conditions"
             | "compileColor3"
             | "compileColor4"
             | "compileVec3"

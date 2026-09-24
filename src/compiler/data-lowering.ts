@@ -189,7 +189,7 @@ export interface DataLoweringContext
             | "emitDiscardedValue"
             | "compileNumber"
             | "castNumber"
-            | "compileCondition"
+            | "conditions"
             | "cppString"
             | "propertyName"
             | "recordDataAssignmentMetadata"
@@ -330,7 +330,7 @@ export class DataLowerer {
             if (target?.kind === "boolean" && !target.dataStore) {
                 return {
                     kind: "boolean",
-                    cpp: `(${target.cpp} = ${this.context.compileCondition(expression.right)})`,
+                    cpp: `(${target.cpp} = ${this.context.conditions.compileCondition(expression.right)})`,
                     dataType: { kind: "boolean" },
                     impure: true,
                 };
@@ -352,7 +352,7 @@ export class DataLowerer {
         if (scalar?.kind === "boolean") {
             return {
                 kind: "boolean",
-                cpp: `(${scalar.cpp} = ${this.context.compileCondition(expression.right)})`,
+                cpp: `(${scalar.cpp} = ${this.context.conditions.compileCondition(expression.right)})`,
                 dataType: { kind: "boolean" },
                 impure: true,
             };
@@ -3847,7 +3847,7 @@ export class DataLowerer {
             if (!whenTrue || !whenFalse) {
                 return undefined;
             }
-            const condition = this.context.compileCondition(
+            const condition = this.context.conditions.compileCondition(
                 unwrapped.condition,
             );
             return condition === "true"
@@ -6022,7 +6022,9 @@ export class DataLowerer {
                 left.operatorToken.kind ===
                     ts.SyntaxKind.AmpersandAmpersandToken
             ) {
-                const condition = this.context.compileCondition(left.left);
+                const condition = this.context.conditions.compileCondition(
+                    left.left,
+                );
                 const empty = this.context.dataTypes.absentValue(dataType);
                 if (condition === "false") return empty;
                 const selected = this.compileForSink(left.right, dataType);
@@ -6039,7 +6041,7 @@ export class DataLowerer {
             ts.isConditionalExpression(unwrapped) &&
             dataType.kind !== "boolean"
         ) {
-            const condition = this.context.compileCondition(
+            const condition = this.context.conditions.compileCondition(
                 unwrapped.condition,
             );
             return this.compileConditionalForSink(
@@ -7435,7 +7437,9 @@ export class DataLowerer {
         if (kind === ts.SyntaxKind.QuestionQuestionEqualsToken) {
             return nullish;
         }
-        const truthy = this.context.compileCondition(expression.left);
+        const truthy = this.context.conditions.compileCondition(
+            expression.left,
+        );
         if (kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken) {
             return truthy;
         }
@@ -7606,7 +7610,9 @@ export class DataLowerer {
                 scalarKind === "number"
                     ? this.context.compileNumber(expression.right, "double")
                     : scalarKind === "boolean"
-                      ? this.context.compileCondition(expression.right)
+                      ? this.context.conditions.compileCondition(
+                            expression.right,
+                        )
                       : scalarKind === "string"
                         ? this.compileKnownValueForSink(
                               this.context.compileValue(expression.right),
@@ -8075,7 +8081,7 @@ export class DataLowerer {
                 );
             }
             this.context.emit(
-                `${target.cpp} = ${this.context.compileCondition(expression.right)};`,
+                `${target.cpp} = ${this.context.conditions.compileCondition(expression.right)};`,
             );
             invalidateRootRecordSnapshot();
             return true;

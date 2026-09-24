@@ -49,7 +49,6 @@ import {
 } from "./compiler/survey.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./compiler/json-bridge.js";
 import { DynamicBindingStorageRequired } from "./compiler/dynamic-binding-storage.js";
-import { ERROR_CONSTRUCTORS } from "./compiler/error-values.js";
 import {
     NativeRecordStorageRequired,
     type NativeRecordStorageDemand,
@@ -78,13 +77,6 @@ import {
     usesWorkers,
     ApplicationRealmRequired,
 } from "./compiler/worker-modules.js";
-import { compileDomInstanceOf } from "./compiler/dom-targets.js";
-import {
-    compileClassInstanceOf,
-    conditionComparison,
-    foldBooleanComparison,
-    foldSettledComparison,
-} from "./compiler/comparisons.js";
 import {
     compileWorkerValue,
     isNativeWorkerExpression,
@@ -241,9 +233,7 @@ import {
 } from "./compiler/camera-writes.js";
 import { noteCameraRecordWrite } from "./compiler/intrinsics/camera.js";
 import {
-    BUFFER_VIEW_KINDS,
     DataTypeRegistry,
-    TYPED_ARRAY_KINDS,
     doubleLiteral as dataDoubleLiteral,
     domAudioHandleKind,
     handleCppType,
@@ -367,7 +357,7 @@ import type {
     ValueKind,
     VariableBinding,
 } from "./compiler/types.js";
-import { isCompileTimeOnlyValue, sameCompiledValue } from "./compiler/types.js";
+import { isCompileTimeOnlyValue } from "./compiler/types.js";
 import {
     ClassLowerer,
     rejectClassStaticBlocks,
@@ -397,6 +387,7 @@ import {
     BindingScopes,
     valueContainsPlatformEvent,
 } from "./compiler/binding-scopes.js";
+import { ConditionLowerer } from "./compiler/conditions.js";
 import { PlatformCalls } from "./compiler/platform-calls.js";
 import { UiProjection } from "./compiler/ui-projection.js";
 import { recordAt } from "./compiler/record-access.js";
@@ -740,6 +731,8 @@ class Compiler implements LoweringServices {
     public readonly sceneManifest = new SceneManifestRecorder(this);
     /** The lexical scope stack: every source name's current binding. */
     public readonly bindings = new BindingScopes(this);
+    /** The C++ truth test of a source condition. */
+    public readonly conditions = new ConditionLowerer(this);
     private readonly statements = new StatementLowerer();
     public readonly userFunctions: UserFunctionLowerer;
     private readonly ui = new UiProjection(this);
@@ -985,7 +978,7 @@ class Compiler implements LoweringServices {
             (expression) => this.compileValue(expression),
             (expression) => this.compileValue(expression),
             (expression) => this.compileValue(expression),
-            (expression) => this.compileCondition(expression),
+            (expression) => this.conditions.compileCondition(expression),
             (expression) => this.evaluateBrowserValue(expression),
             (expression) => this.isBrowserOnlyExpression(expression),
             (value, expression, assertedNonNull, expectedType) =>
@@ -8390,433 +8383,6 @@ class Compiler implements LoweringServices {
         return this.evaluator.compileBoolean(expression);
     }
 
-    public compileCondition(expression: ts.Expression): string {
-        traceSourceNode(expression);
-        const unwrapped = this.options.workers
-            ? unwrapExpression(expression)
-            : this.unwrap(expression);
-        if (this.options.workers && ts.isAwaitExpression(unwrapped)) {
-            const value = this.compileValue(unwrapped);
-            if (value.kind === "void") {
-                this.emitDiscardedValue(value);
-                return "false";
-            }
-            return (
-                this.dataLowerer.conditionFromValue(value) ??
-                this.fail(
-                    unwrapped,
-                    "Awaited result has no represented truthiness.",
-                )
-            );
-        }
-        if (ts.isConditionalExpression(unwrapped)) {
-            const value = this.compileValue(unwrapped);
-            return (
-                this.dataLowerer.conditionFromValue(value) ??
-                this.fail(
-                    unwrapped,
-                    "Conditional result has no represented truthiness.",
-                )
-            );
-        }
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            (unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.AmpersandAmpersandToken ||
-                unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-        ) {
-            const left = this.compileCondition(unwrapped.left);
-            // Fold browser-derived constants before lowering the remaining
-            // runtime condition. Scene 12 deliberately combines its pinned
-            // query pose with a frame counter in one conjunction.
-            const isAnd =
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.AmpersandAmpersandToken;
-            const identity = isAnd ? "true" : "false";
-            const absorbing = isAnd ? "false" : "true";
-            // Preserve JavaScript short circuiting: an unreachable right
-            // operand may itself be outside the lowering contract.
-            if (left === absorbing) {
-                return absorbing;
-            }
-            let right = "";
-            let rightLines: string[] = [];
-            if (left === identity) {
-                right = this.compileCondition(unwrapped.right);
-            } else {
-                this.enterRuntimeControlFlow();
-                try {
-                    rightLines = this.captureEmittedLines(() => {
-                        right = this.compileCondition(unwrapped.right);
-                    });
-                } finally {
-                    this.leaveRuntimeControlFlow();
-                }
-            }
-            if (rightLines.length > 0) {
-                if (
-                    this.options.workers &&
-                    someAnalysisNode(unwrapped.right, ts.isAwaitExpression, {
-                        functions: "skip",
-                    })
-                ) {
-                    const result =
-                        this.allocateTemporaryCppName("logical_result");
-                    this.emit({
-                        kind: "declaration",
-                        type: "bool",
-                        name: result,
-                        initializer: left,
-                    });
-                    this.registerNativeBinding(result);
-                    this.emit(`if (${isAnd ? result : `!${result}`}) {`);
-                    for (const line of rightLines) this.emit(`    ${line}`);
-                    this.emit(`    ${result} = ${right};`);
-                    this.emit("}");
-                    return result;
-                }
-                const guardedLines = rightLines
-                    .map((line) => `    ${line}`)
-                    .join("\n");
-                return (
-                    `([&]() -> bool {\n` +
-                    `    if (${isAnd ? `!(${left})` : left}) return ${absorbing};\n` +
-                    `${guardedLines}\n` +
-                    `    return ${right};\n` +
-                    `}())`
-                );
-            }
-            if (right === absorbing) return absorbing;
-            if (left === identity) return right;
-            if (right === identity) return left;
-            return `(${left} ${isAnd ? "&&" : "||"} ${right})`;
-        }
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            (unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.ExclamationEqualsEqualsToken)
-        ) {
-            const isPointerLockElement = (operand: ts.Expression): boolean => {
-                const value = this.unwrap(operand);
-                return (
-                    ts.isPropertyAccessExpression(value) &&
-                    value.name.text === "pointerLockElement" &&
-                    this.libraryGlobal(value.expression) === "document"
-                );
-            };
-            const isCanvas = (operand: ts.Expression): boolean => {
-                const value = this.unwrap(operand);
-                return ts.isIdentifier(value) && this.isCanvasElement(value);
-            };
-            if (
-                (isPointerLockElement(unwrapped.left) &&
-                    isCanvas(unwrapped.right)) ||
-                (isCanvas(unwrapped.left) &&
-                    isPointerLockElement(unwrapped.right))
-            ) {
-                const locked = `${this.requireDefaultEngine(unwrapped)}.pointer_locked`;
-                return unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsEqualsEqualsToken
-                    ? locked
-                    : `!(${locked})`;
-            }
-        }
-        const domInstance = compileDomInstanceOf(this, unwrapped);
-        if (domInstance !== undefined) return domInstance;
-        if (
-            ts.isPrefixUnaryExpression(unwrapped) &&
-            unwrapped.operator === ts.SyntaxKind.ExclamationToken
-        ) {
-            const operand = this.compileCondition(unwrapped.operand);
-            if (operand === "true") return "false";
-            if (operand === "false") return "true";
-            return `!(${operand})`;
-        }
-        if (this.isBrowserOnlyExpression(unwrapped)) {
-            const condition = this.evaluateBrowserCondition(unwrapped);
-            if (condition !== undefined) {
-                return condition ? "true" : "false";
-            }
-            // A browser-only expression that does not fold carries an
-            // operand the deployment does not answer: one answered beside a
-            // native operand already lowered as native. Name the browser
-            // operands of a binary expression so the refusal points at the
-            // unanswered one.
-            const browserOperands = ts.isBinaryExpression(unwrapped)
-                ? [unwrapped.left, unwrapped.right].filter((operand) =>
-                      this.isBrowserOnlyExpression(operand),
-                  )
-                : [];
-            this.fail(
-                unwrapped,
-                "Browser-dependent condition cannot be determined for native AOT lowering " +
-                    `(browser operands: ${browserOperands.map((operand) => operand.getText()).join(", ") || unwrapped.getText()}).`,
-            );
-        }
-        if (ts.isBinaryExpression(unwrapped)) {
-            if (unwrapped.operatorToken.kind === ts.SyntaxKind.InKeyword) {
-                return this.dataLowerer.compileInOperator(unwrapped);
-            }
-            if (
-                unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.InstanceOfKeyword &&
-                ts.isIdentifier(unwrapped.right) &&
-                !this.bindings.lookupOptional(unwrapped.right)
-            ) {
-                const global = this.libraryGlobal(unwrapped.right) ?? "";
-                if (ERROR_CONSTRUCTORS.has(global)) {
-                    const value = this.compileValue(unwrapped.left);
-                    if (value.nativeError) {
-                        if (global === "Error") return "true";
-                        const name = value.recordProperties?.name;
-                        if (name)
-                            return `(${name.cpp} == ${this.cppString(global)})`;
-                    }
-                }
-                const classInstance = compileClassInstanceOf(
-                    this,
-                    unwrapped,
-                    unwrapped.right,
-                );
-                if (classInstance !== undefined) return classInstance;
-                // The two buffer views answer `instanceof` beside the
-                // typed arrays; neither table alone names every binary kind.
-                const expected: string | undefined =
-                    BUFFER_VIEW_KINDS.get(global) ??
-                    TYPED_ARRAY_KINDS.get(global);
-                if (expected) {
-                    const value = this.compileValue(unwrapped.left);
-                    if (value.dataType) {
-                        return value.dataType.kind === expected
-                            ? "true"
-                            : "false";
-                    }
-                }
-            }
-            // Engine-handle identity first: `group === sadPose` is
-            // upstream object identity, which native handles carry as
-            // their creation-ordered `.value`. The probe only looks
-            // bindings up, so a miss falls through without emitting.
-            const handles =
-                this.handleCollections.compileHandleEquality(unwrapped);
-            if (handles) {
-                return handles;
-            }
-            // Two booleans compared for identity, which is how a shared
-            // module normalizes an optional flag its caller may have left
-            // out (`opts.useFloatingOrigin === true`). Asked before the
-            // arms that would EMIT a comparison, because where both sides
-            // settle at generation the answer settles with them -- and an
-            // option that decides a lowering needs that answer, not an
-            // expression computing it at run time.
-            const foldedBoolean = foldBooleanComparison(this, unwrapped);
-            if (foldedBoolean) {
-                return foldedBoolean;
-            }
-            // The data equality path has to inspect both operands before it
-            // can decide whether it owns the comparison. Calls emit as they
-            // are inspected, so discard a declined probe and let the numeric
-            // path below perform JavaScript's one evaluation for real.
-            const typed = this.probeEmission(() =>
-                this.dataLowerer.equalityComparison(unwrapped),
-            );
-            if (typed) {
-                return typed;
-            }
-            if (
-                unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken
-            ) {
-                // `if (a ?? b)`: the value dispatch selects, and the
-                // selected value is the condition — the call arm's
-                // delegate-and-kind-check shape below.
-                const value = this.compileValue(unwrapped);
-                if (value.staticBoolean !== undefined) {
-                    return value.staticBoolean ? "true" : "false";
-                }
-                if (value.kind === "boolean") {
-                    return value.cpp;
-                }
-                this.fail(
-                    unwrapped.operatorToken,
-                    "'??' in a condition must select a boolean, " +
-                        `received ${value.kind}.`,
-                );
-            }
-            const comparison = conditionComparison(this.checker, unwrapped);
-            if (comparison === "coercing")
-                this.fail(
-                    unwrapped.operatorToken,
-                    "Loose equality between operands of different types " +
-                        "coerces them; convert explicitly and compare strictly.",
-                );
-            if (!comparison) {
-                if (this.evaluator.isNumberExpression(unwrapped)) {
-                    this.reachJsData();
-                    return `bbl::js::number_truthy(${this.compileNumber(unwrapped, "double")})`;
-                }
-                this.fail(
-                    unwrapped.operatorToken,
-                    "Reached callback conditions support numeric comparisons and logical operators.",
-                );
-            }
-            let leftValue = this.compileValue(unwrapped.left);
-            const textKind = (value: Value) =>
-                ["text-data", "text-renderable", "text-vector"].includes(
-                    value.kind,
-                );
-            if (textKind(leftValue))
-                leftValue = retainTextValue(this, leftValue);
-            let rightValue = this.compileValue(unwrapped.right);
-            if (textKind(rightValue))
-                rightValue = retainTextValue(this, rightValue);
-            const operator = comparison.cpp;
-            const equality =
-                comparison.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-                comparison.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
-            if (leftValue.kind === "texture" && rightValue.kind === "texture") {
-                if (!equality)
-                    this.fail(
-                        unwrapped,
-                        "Texture2D values support identity comparisons.",
-                    );
-                const stored = (value: Value, node: ts.Expression) =>
-                    this.dataLowerer.compileKnownValueForSink(
-                        value,
-                        { kind: "handle", handle: "texture" },
-                        node,
-                    );
-                return `${stored(leftValue, unwrapped.left)} ${operator} ${stored(rightValue, unwrapped.right)}`;
-            }
-            if (textKind(leftValue) || textKind(rightValue)) {
-                if (!equality)
-                    this.fail(
-                        unwrapped,
-                        "Text entities support strict identity comparisons.",
-                    );
-                const sameKind =
-                    leftValue.kind === rightValue.kind &&
-                    leftValue.textTransform === rightValue.textTransform;
-                return sameKind
-                    ? `${leftValue.cpp} ${operator} ${rightValue.cpp}`
-                    : operator === "=="
-                      ? "false"
-                      : "true";
-            }
-            if (
-                [leftValue.kind, rightValue.kind].some(
-                    (kind) => kind === "text-font",
-                )
-            ) {
-                if (!equality) {
-                    this.fail(
-                        unwrapped,
-                        "Static font/text data only supports strict identity comparison.",
-                    );
-                }
-                const equal = sameCompiledValue(leftValue, rightValue);
-                return (operator === "==" ? equal : !equal) ? "true" : "false";
-            }
-            const folded = foldSettledComparison(
-                comparison.kind,
-                leftValue,
-                rightValue,
-            );
-            if (folded !== undefined) {
-                return folded ? "true" : "false";
-            }
-            if (
-                equality &&
-                isStringValue(leftValue) &&
-                isStringValue(rightValue)
-            ) {
-                return `std::string(${leftValue.cpp}) ${operator} std::string(${rightValue.cpp})`;
-            }
-            if (
-                equality &&
-                leftValue.kind === "object-url" &&
-                rightValue.kind === "object-url"
-            ) {
-                this.expectSameEngine(leftValue, rightValue, unwrapped);
-                return `${leftValue.cpp} ${operator} ${rightValue.cpp}`;
-            }
-            // The statement emitter supplies the condition's outer
-            // parentheses. Comparisons bind more tightly than the logical
-            // expressions that compose them, so another pair here is both
-            // unnecessary and diagnosed by clang-cl's
-            // -Wparentheses-equality for `if ((a == b))`.
-            // Both operands were already compiled above to inspect static
-            // values and string identity. Reuse them: compiling their ASTs
-            // again would duplicate call-shaped numeric operands.
-            return `${this.castNumber(leftValue, "double")} ${operator} ${this.castNumber(rightValue, "double")}`;
-        }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) ||
-            ts.isElementAccessExpression(unwrapped)
-        ) {
-            const data = this.dataLowerer.conditionOperand(unwrapped);
-            if (data) {
-                return data;
-            }
-        }
-        if (ts.isCallExpression(unwrapped)) {
-            const value = this.compileValue(unwrapped);
-            const condition = this.dataLowerer.conditionFromValue(value);
-            if (condition !== undefined) return condition;
-            this.fail(
-                unwrapped,
-                `Condition call must produce a boolean, received ${value.kind}.`,
-            );
-        }
-        if (
-            unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
-            unwrapped.kind === ts.SyntaxKind.FalseKeyword
-        ) {
-            return this.compileBoolean(unwrapped);
-        }
-        if (ts.isIdentifier(unwrapped)) {
-            const value = this.bindings.lookupOptional(unwrapped);
-            if (value) {
-                const dataCondition =
-                    this.dataLowerer.conditionFromValue(value);
-                if (dataCondition !== undefined) {
-                    return dataCondition;
-                }
-                if (value.kind === "callback" || value.kind === "ui-element") {
-                    return "true";
-                }
-                if (value.kind === "json-null") {
-                    return "false";
-                }
-            }
-            return this.compileBoolean(unwrapped);
-        }
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            // A record member in condition position: a boolean member is
-            // its own truth (`result.hit`), and a member that carries a
-            // found flag — a search result's maybe-absent record
-            // (`result.hitPoint`) — is truthy exactly when the search
-            // said so.
-            const value = this.compileValue(unwrapped);
-            const condition = this.dataLowerer.conditionFromValue(value);
-            if (condition !== undefined) return condition;
-            if (value.kind === "callback") {
-                return "true";
-            }
-            if (value.kind === "json-null") {
-                return "false";
-            }
-            this.fail(
-                unwrapped,
-                "Expected a reached callback condition; property produced " +
-                    `${value.kind}${value.dataType ? ` ${JSON.stringify(value.dataType)}` : ""}.`,
-            );
-        }
-        this.fail(unwrapped, "Expected a reached callback condition.");
-    }
-
     /** Nonzero while a frame callback's statements are being lowered. */
     private frameCallbackDepth = 0;
     /** Native path-dependent bodies currently being lowered. */
@@ -10383,11 +9949,13 @@ class Compiler implements LoweringServices {
         // to fold would leak that emission into a lowering nobody kept.
         const resolved = selectedStaticExpression(
             {
-                compileCondition: (node) =>
-                    this.probeEmission(
-                        () => this.compileCondition(node),
-                        (folded) => folded === "true" || folded === "false",
-                    ),
+                conditions: {
+                    compileCondition: (node) =>
+                        this.probeEmission(
+                            () => this.conditions.compileCondition(node),
+                            (folded) => folded === "true" || folded === "false",
+                        ),
+                },
                 resolveStaticExpression: (node) =>
                     this.resolveStaticExpression(node),
             },
@@ -12094,7 +11662,7 @@ class Compiler implements LoweringServices {
         }
         if (returnType.kind === "boolean") {
             this.emit(
-                `${returnKeyword} ${this.compileCondition(statement.expression)};`,
+                `${returnKeyword} ${this.conditions.compileCondition(statement.expression)};`,
             );
             return;
         }
@@ -13771,7 +13339,7 @@ class Compiler implements LoweringServices {
             for (const statement of poll.setup) this.emitStatement(statement);
             let conditionCpp = "";
             const lines = this.captureEmittedLines(() => {
-                conditionCpp = this.compileCondition(poll.condition);
+                conditionCpp = this.conditions.compileCondition(poll.condition);
             });
             condition =
                 lines.length === 0

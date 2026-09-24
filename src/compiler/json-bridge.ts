@@ -43,7 +43,7 @@ interface JsonBridgeContext extends Pick<
     | "bindings"
     | "compileValue"
     | "compileNumber"
-    | "compileCondition"
+    | "conditions"
     | "castNumber"
     | "pinValueToTemporary"
     | "cppString"
@@ -56,7 +56,7 @@ interface JsonBridgeContext extends Pick<
 
 interface JsonStrictComparisonContext extends Pick<
     LoweringServices,
-    "compileValue" | "compileNumber" | "compileCondition" | "fail"
+    "compileValue" | "compileNumber" | "conditions" | "fail"
 > {}
 
 const jsonType: DataType = { kind: "json" };
@@ -414,7 +414,7 @@ export function compileJsonStrictComparison(
         return `${documentCpp}.strict_equals(${context.compileNumber(other, "double")})`;
     }
     if (value.kind === "boolean" || value.dataType?.kind === "boolean") {
-        return `${documentCpp}.strict_equals(${context.compileCondition(other)})`;
+        return `${documentCpp}.strict_equals(${context.conditions.compileCondition(other)})`;
     }
     if (value.kind === "string" || value.dataType?.kind === "string") {
         return `${documentCpp}.strict_equals(${compileString(other)})`;
