@@ -82,7 +82,12 @@ function substitute(
 function pinnedPbrVertexTemplate(
     context: LoweringContext,
     morph: boolean,
-): { declaration: ts.FunctionDeclaration; module: ShaderModule } {
+): {
+    declaration: ts.FunctionDeclaration;
+    module: ShaderModule;
+    /** The vertex attributes the template declares, by name. */
+    attributes: string[];
+} {
     const { declaration } = context.functionDeclaration(
         templateModule,
         "createPbrTemplate",
@@ -91,8 +96,26 @@ function pinnedPbrVertexTemplate(
     const template = builders.call(templateModule, "createPbrTemplate", [
         { _hasMorph: morph, _normalMode: "tangent" },
     ]);
+    const declared: unknown =
+        typeof template === "object" && template !== null
+            ? Reflect.get(template, "_baseVertexAttributes")
+            : undefined;
+    const attributes = Array.isArray(declared)
+        ? declared.map((attribute: unknown) =>
+              builders.text(
+                  attribute,
+                  ["_name"],
+                  declaration,
+                  "createPbrTemplate",
+              ),
+          )
+        : context.contractError(
+              declaration,
+              "Pinned createPbrTemplate no longer lists its vertex attributes.",
+          );
     return {
         declaration,
+        attributes,
         module: parseWgslModule(
             builders.text(
                 template,
@@ -131,19 +154,30 @@ function homogeneousInput(
         !isNumber(vector.arguments[1], w)
     )
         return undefined;
-    let input = vector.arguments[0]!;
-    if (direction) {
-        if (
-            input.kind !== "call" ||
-            input.name !== "normalize" ||
-            input.arguments.length !== 1
-        )
-            return undefined;
-        input = input.arguments[0]!;
+    const input = vector.arguments[0]!;
+    if (!direction) {
+        return input.kind === "path" && input.parts.length === 1
+            ? input.parts[0]
+            : undefined;
     }
-    return input.kind === "path" && input.parts.length === 1
-        ? input.parts[0]
-        : undefined;
+    if (
+        input.kind !== "call" ||
+        input.name !== "normalize" ||
+        input.arguments.length !== 1
+    )
+        return undefined;
+    // The direction the pin normalizes may be any expression over the one
+    // attribute it reads; that attribute is the input.
+    const read = new Set<string>();
+    let single = true;
+    mapShaderExpression(input.arguments[0]!, (node) => {
+        if (node.kind === "path") {
+            read.add(node.parts[0]!);
+            single &&= node.parts.length === 1;
+        }
+        return node;
+    });
+    return single && read.size === 1 ? [...read][0] : undefined;
 }
 
 /** Resolve the pin's local aliases and output identity before choosing a transport. */
@@ -153,6 +187,7 @@ export function pinnedPbrVertexOutputs(
 ): {
     declaration: ts.FunctionDeclaration;
     module: ShaderModule;
+    attributes: string[];
     /** The position the template transforms: the attribute or the morphed one. */
     position: string;
     /** The normal the template transforms: the attribute or the morphed one. */
@@ -226,7 +261,14 @@ export function pinnedPbrVertexOutputs(
     requireShape(normal, "homogeneous normal transport");
     checkReferences(
         template.module.entryPoint.statements,
-        new Set(["mesh", "scene", position, normal, "tangent", "uv"]),
+        // The morph fragment declares the morphed inputs; without it the
+        // template reads only the attributes it declares.
+        new Set([
+            "mesh",
+            "scene",
+            ...template.attributes,
+            ...(morph ? [position, normal] : []),
+        ]),
         requireShape,
     );
     return { ...template, position, normal, outputs };
