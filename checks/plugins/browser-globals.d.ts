@@ -87,3 +87,61 @@ declare var __gpuReceipts: GpuReceipts;
 declare var __textUniform: Uint8Array | undefined;
 /** raf-pacing.init.js: pace requestAnimationFrame at `rate` frames per second. */
 declare var __bblRafPacing: (rate: number) => void;
+
+interface IdentityBindGroup {
+    id: number;
+    entries: Array<{ binding: number; resource: number }>;
+}
+
+interface IdentityPipeline {
+    id: number;
+    vertex: {
+        buffers: Array<{
+            arrayStride: number;
+            attributes: Array<{ format: GPUVertexFormat; offset: number }>;
+        } | null>;
+    };
+    fragment: { targets: Array<{ format: GPUTextureFormat } | null> };
+}
+
+interface IdentityBinding {
+    pipeline: number | null;
+    groups: Record<number, { group: number }>;
+    vertices: Record<number, { buffer: number; offset: number }>;
+    index: { buffer: number; format: GPUIndexFormat; offset: number } | null;
+}
+
+type IdentityDraw =
+    | { method: "draw"; args: number[] }
+    | ({ method: "drawIndexed"; args: number[] } & IdentityBinding);
+
+/** The scene149 objects scene149-identity.init.js reads, as the pin shapes them. */
+interface Scene149Texture {
+    texture: GPUTexture;
+    view: GPUTextureView;
+    sampler: GPUSampler;
+}
+interface Scene149Mesh {
+    name: string;
+    material: { inputs: { albedo: { texture: Scene149Texture } } };
+    worldMatrix: Float32Array;
+    _gpu: {
+        positionBuffer: GPUBuffer;
+        normalBuffer: GPUBuffer;
+        uvBuffer: GPUBuffer;
+        indexBuffer: GPUBuffer;
+    };
+}
+interface Scene149Material {
+    baseColorTexture?: Scene149Texture;
+    diffuseTexture?: Scene149Texture;
+}
+
+/** scene149-identity.init.js: the scene's source hook sets `source`. */
+declare var __scene149Identity: {
+    source: { byMaterial: Map<Scene149Material, Scene149Mesh[]> } | undefined;
+    submissions: IdentityDraw[][];
+    record(count: number): void;
+    materials(): unknown[];
+    observation(): unknown;
+};
