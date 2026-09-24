@@ -1,6 +1,6 @@
 {
   "scene": "scene261",
-  "notes": "TAA, frozen: the corpus source accumulates then stops the engine, so every native phase must hold the exact retained state the browser observation records (executions, Halton index, blend factor, camera version, the clean/drawn/jitter words as uint32 so signed zeros count), the images must not move, and pointer input on the stopped engine must change nothing. The live camera and resize behaviour is scene261-live's, against the no-query twin.",
+  "notes": "TAA, frozen: the corpus source accumulates then stops the engine, so every native phase must hold the exact retained state the browser observation records (executions, Halton index, blend factor, camera version, the clean/drawn/jitter words as uint32 so signed zeros count), the images must not move, and pointer input on the stopped engine must change nothing. The live camera and resize behaviour is taa-live-camera's, against a repository fixture with attached camera controls.",
   "base": "adhoc",
   "minFrames": 30,
   "phases": [

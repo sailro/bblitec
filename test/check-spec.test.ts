@@ -341,7 +341,7 @@ test("checks apply registered capture queries without changing no-query twins", 
     );
 });
 
-test("every declared check names a registry scene, existing plugins and unique hook markers", () => {
+test("every declared check names a registry scene or repository source, existing plugins and unique hook markers", () => {
     const ids = listCheckIds();
     assert.ok(ids.length >= 20, `declared checks: ${ids.join(", ")}`);
     for (const id of ids) {
