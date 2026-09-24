@@ -26,31 +26,6 @@ export interface ShaderTextContext {
 }
 
 /**
- * A bounded evaluator for the pin's shader-text builders.
- *
- * Upstream writes each shader as a TypeScript function that returns WGSL,
- * branching on a handful of permutation flags. Reconstructing the text by
- * folding those branches keeps the shader OWNED by the pin: a bump that
- * rewrites the arithmetic changes what we emit, and a bump that changes the
- * SHAPE (a new statement kind, a branch on an unbound name) refuses
- * generation rather than silently keeping our copy. Transcribing the WGSL
- * would forfeit both properties.
- *
- * What it evaluates is deliberately small — string and template literals,
- * `const` bindings, `if`/`switch`/conditional branches over bound values,
- * the arithmetic a binding index takes, a counted `for` whose bound settles
- * to zero trips, and calls to builders whose parameters bind positionally,
- * in this module or one it imports. Anything else is a contract error, which
- * is the point: the evaluator is a proof that the pinned text still has the
- * shape we think it has.
- *
- * Callers bind the permutation: a flag the scene settles at compile time
- * (`hasDepth`, `orientation`) enters as a value here, and a name the
- * evaluator cannot resolve — an imported constant, say — is supplied
- * through `constants` so the module it lives in stays the module that owns
- * it.
- */
-/**
  * One record in a list the pin loops over — an extra texture's `name`, or a
  * `defines` entry whose `value` decides both the WGSL type word and the
  * literal, which is why a field is not only a string.
@@ -136,12 +111,25 @@ function truthy(value: ShaderTextBinding): boolean {
             : true;
 }
 
+/**
+ * A bounded evaluator for shader-text builders that cannot be run whole.
+ *
+ * A pinned builder called with a generation-known permutation is executed
+ * (`PinnedShaderBuilders`). This folds what execution cannot reach: a
+ * fragment of a pinned builder -- one template piece, one loop body line --
+ * and an application's own shader builders, which are not packaged modules.
+ * Folding the branches over bound values keeps the text the builder's: a
+ * rewritten builder changes what is emitted, and a changed SHAPE (a new
+ * statement kind, a branch on an unbound name) refuses generation.
+ *
+ * What it evaluates is deliberately small — string and template literals,
+ * `const` bindings, `if`/`switch`/conditional branches over bound values,
+ * the arithmetic a binding index takes, a counted `for` whose bound settles
+ * to zero trips, and calls to builders whose parameters bind positionally,
+ * in this module or one it imports. Anything else is a contract error.
+ */
 export class PinnedShaderText {
-    public constructor(
-        private readonly context: ShaderTextContext,
-        /** Module-scope names the pin's builders read but do not declare. */
-        private readonly constants: ReadonlyMap<string, string> = new Map(),
-    ) {}
+    public constructor(private readonly context: ShaderTextContext) {}
 
     /**
      * The text a pinned builder returns for one permutation. Parameters bind
@@ -174,6 +162,7 @@ export class PinnedShaderText {
             scope,
             modulePath,
             symbolName,
+            (expression) => this.evaluateString(expression, scope, modulePath),
         );
         if (returned === undefined) {
             return this.context.contractError(
@@ -185,11 +174,60 @@ export class PinnedShaderText {
     }
 
     /**
+     * The expression a builder returns for one permutation, selected by the
+     * same branch folding as `evaluate` -- statements, then a returned
+     * conditional -- and handed back unevaluated, for a caller whose builder
+     * returns something other than text: a material plugin's injection
+     * record, whose values are the caller's own static strings.
+     */
+    public returnedExpression(
+        modulePath: string,
+        declaration: ts.FunctionLikeDeclaration,
+        parameters: ReadonlyMap<string, ShaderTextBinding>,
+    ): ts.Expression {
+        const symbolName = declaration.name?.getText() ?? "shader builder";
+        const scope = new Map(parameters);
+        this.bindDefaults(declaration, scope, modulePath);
+        const select = (expression: ts.Expression): ts.Expression => {
+            const node = this.context.unwrapExpression(expression);
+            return ts.isConditionalExpression(node)
+                ? select(
+                      this.condition(node.condition, scope, modulePath)
+                          ? node.whenTrue
+                          : node.whenFalse,
+                  )
+                : expression;
+        };
+        const body = declaration.body;
+        if (!body) {
+            return this.context.contractError(
+                declaration,
+                `${symbolName} has no body.`,
+            );
+        }
+        if (!ts.isBlock(body)) return select(body);
+        const returned = this.evaluateStatements(
+            body.statements,
+            scope,
+            modulePath,
+            symbolName,
+            select,
+        );
+        if (returned === undefined) {
+            return this.context.contractError(
+                declaration,
+                `${symbolName} falls off its body without returning.`,
+            );
+        }
+        return returned;
+    }
+
+    /**
      * A parameter the caller left unbound takes the pin's own default, so a
      * permutation only has to name what it actually varies.
      */
     private bindDefaults(
-        declaration: ts.FunctionDeclaration,
+        declaration: ts.SignatureDeclarationBase,
         scope: Map<string, ShaderTextBinding>,
         modulePath: string,
     ): void {
@@ -214,15 +252,17 @@ export class PinnedShaderText {
     }
 
     /**
-     * Runs a statement list, returning the returned text or undefined when
-     * control falls off the end (a `switch` case that breaks, say).
+     * Runs a statement list, returning what `returned` reads out of the
+     * `return` control reaches, or undefined when control falls off the end
+     * (a `switch` case that breaks, say).
      */
-    private evaluateStatements(
+    private evaluateStatements<T>(
         statements: readonly ts.Statement[],
         scope: Map<string, ShaderTextBinding>,
         modulePath: string,
         symbolName: string,
-    ): string | undefined {
+        returned: (expression: ts.Expression) => T,
+    ): T | undefined {
         for (const statement of statements) {
             if (ts.isVariableStatement(statement)) {
                 for (const binding of statement.declarationList.declarations) {
@@ -262,11 +302,7 @@ export class PinnedShaderText {
                         `Pinned ${symbolName} returns nothing.`,
                     );
                 }
-                return this.evaluateString(
-                    statement.expression,
-                    scope,
-                    modulePath,
-                );
+                return returned(statement.expression);
             }
             if (ts.isIfStatement(statement)) {
                 const taken = this.condition(
@@ -279,14 +315,15 @@ export class PinnedShaderText {
                 if (!taken) {
                     continue;
                 }
-                const returned = this.evaluateStatements(
+                const result = this.evaluateStatements(
                     ts.isBlock(taken) ? taken.statements : [taken],
                     scope,
                     modulePath,
                     symbolName,
+                    returned,
                 );
-                if (returned !== undefined) {
-                    return returned;
+                if (result !== undefined) {
+                    return result;
                 }
                 continue;
             }
@@ -307,28 +344,30 @@ export class PinnedShaderText {
                     if (!matches) {
                         continue;
                     }
-                    const returned = this.evaluateStatements(
+                    const result = this.evaluateStatements(
                         clause.statements,
                         scope,
                         modulePath,
                         symbolName,
+                        returned,
                     );
-                    if (returned !== undefined) {
-                        return returned;
+                    if (result !== undefined) {
+                        return result;
                     }
                     break;
                 }
                 continue;
             }
             if (ts.isForStatement(statement)) {
-                const returned = this.evaluateFor(
+                const result = this.evaluateFor(
                     statement,
                     scope,
                     modulePath,
                     symbolName,
+                    returned,
                 );
-                if (returned !== undefined) {
-                    return returned;
+                if (result !== undefined) {
+                    return result;
                 }
                 continue;
             }
@@ -382,12 +421,13 @@ export class PinnedShaderText {
      * already resolved, so the loop runs a settled number of times or the
      * shape refuses -- there is no unbounded iteration to guard against.
      */
-    private evaluateFor(
+    private evaluateFor<T>(
         statement: ts.ForStatement,
         scope: Map<string, ShaderTextBinding>,
         modulePath: string,
         symbolName: string,
-    ): string | undefined {
+        returned: (expression: ts.Expression) => T,
+    ): T | undefined {
         const list = statement.initializer;
         if (
             !list ||
@@ -457,14 +497,15 @@ export class PinnedShaderText {
                     `Pinned ${symbolName} loops past ${MAX_LOOP_TRIPS} trips, which no shader builder does.`,
                 );
             }
-            const returned = this.evaluateStatements(
+            const result = this.evaluateStatements(
                 body,
                 scope,
                 modulePath,
                 symbolName,
+                returned,
             );
-            if (returned !== undefined) {
-                return returned;
+            if (result !== undefined) {
+                return result;
             }
             scope.set(
                 step.operand.text,
@@ -679,14 +720,9 @@ export class PinnedShaderText {
             if (bound !== undefined) {
                 return bound;
             }
-            const constant = this.constants.get(node.text);
-            if (constant !== undefined) {
-                return constant;
-            }
             // A module-scope `const` in the module being evaluated is the
-            // pin's own text and is read straight off its declaration. Only
-            // a name the module does NOT declare — an import — has to be
-            // supplied, which is what keeps that module owning it.
+            // pin's own text and is read straight off its declaration. A
+            // name the module does NOT declare — an import — refuses.
             const declared = this.moduleConstant(node.text, modulePath);
             if (declared !== undefined) {
                 return this.evaluateValue(declared, scope, modulePath);
@@ -849,32 +885,36 @@ export class PinnedShaderText {
         );
     }
 
-    /**
-     * The body of a braced block, from an opening marker to the brace that
-     * closes it. Counting braces rather than cutting at the first `}` is
-     * what keeps a stage whose body opens a block of its own — a cutout
-     * fragment's `discard` guard, say — from being silently truncated.
-     */
     public braced(source: string, open: string, label: string): string {
-        const start = source.indexOf(open);
-        if (start < 0) {
-            throw new Error(
-                `Pinned ${label} is no longer introduced by '${open}'.`,
-            );
-        }
-        let depth = 1;
-        for (
-            let index = start + open.length;
-            index < source.length;
-            index += 1
-        ) {
-            const character = source[index];
-            if (character === "{") depth += 1;
-            if (character === "}") depth -= 1;
-            if (depth === 0) {
-                return source.slice(start + open.length, index).trim();
-            }
-        }
-        throw new Error(`Pinned ${label} has no closing brace.`);
+        return bracedShaderText(source, open, label);
     }
+}
+
+/**
+ * The body of a braced block of shader text, from an opening marker to the
+ * brace that closes it. Counting braces rather than cutting at the first `}`
+ * is what keeps a stage whose body opens a block of its own -- a cutout
+ * fragment's `discard` guard, say -- from being silently truncated.
+ */
+export function bracedShaderText(
+    source: string,
+    open: string,
+    label: string,
+): string {
+    const start = source.indexOf(open);
+    if (start < 0) {
+        throw new Error(
+            `Pinned ${label} is no longer introduced by '${open}'.`,
+        );
+    }
+    let depth = 1;
+    for (let index = start + open.length; index < source.length; index += 1) {
+        const character = source[index];
+        if (character === "{") depth += 1;
+        if (character === "}") depth -= 1;
+        if (depth === 0) {
+            return source.slice(start + open.length, index).trim();
+        }
+    }
+    throw new Error(`Pinned ${label} has no closing brace.`);
 }

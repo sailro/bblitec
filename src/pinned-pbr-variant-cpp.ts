@@ -19,6 +19,30 @@ import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 import { createHash } from "node:crypto";
 import ts from "typescript";
 import { floatLiteral } from "./cpp-literals.js";
+import {
+    forEachShaderStatement,
+    parseWgslStructMembers,
+    reflectWgslBindingStruct,
+    reflectWgslBindings,
+    reflectWgslModule,
+    reflectWgslStruct,
+    sameWgslMembers,
+    statementSome,
+    wgslAttributeInteger,
+    wgslEntryPoints,
+    wgslFunctionStatements,
+    wgslSamplesTexture,
+    wgslStructLayout,
+    type WgslMemberSyntax,
+    type WgslStructDeclaration,
+} from "./shader-ir.js";
+import {
+    layoutOf,
+    roundUp,
+    wgslMatrix,
+    wgslVector,
+    type WgslTypeShape,
+} from "./wgsl-layout.js";
 import { pinnedLightModeCpp } from "./pinned-light-mode.js";
 import { materialShadowReceiverCpp } from "./lowering/material-shadow-receiver.js";
 import type { LoweringContext } from "./lowering/context.js";
@@ -37,17 +61,16 @@ import { stringLiteral } from "./cpp-literals.js";
 
 /**
  * The float lanes a scalar or vector UBO field spans, shared by the PBR and
- * Standard slot builders. Anything that is neither `f32` nor `vec3<f32>` is
- * the four-lane `vec4<f32>`, exactly as both builders spelled it.
+ * Standard slot builders. Anything that is neither `f32` nor a two- or
+ * three-lane float vector is the four-lane `vec4<f32>`, exactly as both
+ * builders spelled it.
  */
-function laneCount(wgslType: string): number {
-    return wgslType === "f32"
-        ? 1
-        : wgslType === "vec2<f32>"
-          ? 2
-          : wgslType === "vec3<f32>"
-            ? 3
-            : 4;
+function laneCount(type: WgslTypeShape): number {
+    if (type.arguments.length === 0 && type.name === "f32") return 1;
+    const vector = wgslVector(type);
+    return vector?.element === "f32" && vector.components < 4
+        ? vector.components
+        : 4;
 }
 
 /**
@@ -403,101 +426,96 @@ function uvTransformSources(
 
 interface VariantField {
     name: string;
+    /** The declaration's own spelling, as the mirror's comments cite it. */
     wgslType: string;
+    shape: WgslTypeShape;
     cppType: string;
-    align: number;
     size: number;
 }
 
-const fieldTypes: Readonly<
-    Record<string, { cppType: string; align: number; size: number }>
-> = {
-    f32: { cppType: "float", align: 4, size: 4 },
-    "vec2<f32>": { cppType: "std::array<float, 2>", align: 8, size: 8 },
-    "vec3<f32>": { cppType: "std::array<float, 3>", align: 16, size: 12 },
-    "vec4<f32>": { cppType: "std::array<float, 4>", align: 16, size: 16 },
-    // The scene block carries matrices where the material blocks do not.
-    "mat4x4<f32>": { cppType: "std::array<float, 16>", align: 16, size: 64 },
-    // The mesh block carries its light count and index list.
-    u32: { cppType: "std::uint32_t", align: 4, size: 4 },
-};
+/**
+ * The C++ member type mirroring a uniform-block member.
+ *
+ * The material blocks carry float scalars and vectors, the scene block its
+ * matrices, and the mesh block its light count and index list --
+ * `array<vec4<u32>, N>`, N the pin's own `MAX_LIGHTS / 4`, read from the
+ * declaration rather than restated, so a pin that changed the constant
+ * changes the mirror with it.
+ */
+function cppFieldType(shape: WgslTypeShape): string | undefined {
+    if (shape.arguments.length === 0 && shape.name === "f32") return "float";
+    if (shape.arguments.length === 0 && shape.name === "u32")
+        return "std::uint32_t";
+    const vector = wgslVector(shape);
+    if (vector?.element === "f32")
+        return `std::array<float, ${vector.components}>`;
+    const matrix = wgslMatrix(shape);
+    if (matrix?.columns === 4 && matrix.rows === 4)
+        return "std::array<float, 16>";
+    const [element, count] = shape.arguments;
+    const lanes =
+        shape.name === "array" && typeof element === "object"
+            ? wgslVector(element)
+            : undefined;
+    if (
+        lanes?.element === "u32" &&
+        lanes.components === 4 &&
+        typeof count === "number"
+    ) {
+        return `std::array<std::array<std::uint32_t, 4>, ${count}>`;
+    }
+    return undefined;
+}
 
 /**
- * The one field type whose element count is part of the declaration.
- *
- * `array<vec4<u32>, N>` is the mesh block's light-index list, and N is the
- * pin's own `MAX_LIGHTS / 4` — read from the text rather than restated, so a
- * pin that changed the constant changes the mirror with it.
+ * A pinned uniform block's members, mirrored, with their WGSL offsets and
+ * the block's total -- the uniform layout rule rounds a block up to 16 bytes
+ * past its last member.
  */
-function arrayFieldType(
-    wgslType: string,
-): { cppType: string; align: number; size: number } | undefined {
-    const match = /^array<vec4<u32>\s*,\s*(\d+)>$/.exec(wgslType);
-    if (!match) return undefined;
-    const count = Number.parseInt(match[1]!, 10);
-    return {
-        cppType: `std::array<std::array<std::uint32_t, 4>, ${count}>`,
-        align: 16,
-        size: count * 16,
-    };
-}
-
-/** A WGSL identifier reused verbatim as the C++ member name. */
-function memberName(name: string): string {
-    if (!/^[A-Za-z_]\w*$/.test(name)) {
-        throw new Error(
-            `Pinned material UBO field '${name}' is not an identifier.`,
-        );
-    }
-    return name;
-}
-
-function parseVariantFields(structBody: string): VariantField[] {
-    const fields: VariantField[] = [];
-    for (const line of structBody.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed === "") continue;
-        const match = /^(\w+)\s*:\s*(.+?),?$/.exec(trimmed);
-        if (!match) {
-            throw new Error(
-                `Pinned material UBO declaration is not a field: '${trimmed}'.`,
-            );
-        }
-        const wgslType = match[2]!.trim();
-        const mapped = fieldTypes[wgslType] ?? arrayFieldType(wgslType);
-        if (!mapped) {
-            throw new Error(
-                `Pinned material UBO field '${match[1]}' has unsupported ` +
-                    `type '${wgslType}'.`,
-            );
-        }
-        fields.push({
-            name: memberName(match[1]!),
-            wgslType,
-            cppType: mapped.cppType,
-            align: mapped.align,
-            size: mapped.size,
-        });
-    }
-    if (fields.length === 0) {
-        throw new Error("Pinned material UBO declares no fields.");
-    }
-    return fields;
-}
-
-/** Offsets and total size under WGSL uniform layout rules. */
-function variantLayout(fields: readonly VariantField[]): {
+function variantFields(members: readonly WgslMemberSyntax[]): {
+    fields: VariantField[];
     offsets: number[];
     totalBytes: number;
 } {
-    const offsets: number[] = [];
-    let cursor = 0;
-    for (const field of fields) {
-        cursor = Math.ceil(cursor / field.align) * field.align;
-        offsets.push(cursor);
-        cursor += field.size;
+    if (members.length === 0) {
+        throw new Error("Pinned material UBO declares no fields.");
     }
-    return { offsets, totalBytes: Math.ceil(cursor / 16) * 16 };
+    const fields = members.map((member): VariantField => {
+        const cppType = cppFieldType(member.type.shape);
+        const layout = layoutOf(member.type.shape);
+        if (member.attributes.length > 0 || !cppType || !layout) {
+            throw new Error(
+                `Pinned material UBO field '${member.name}' has unsupported ` +
+                    `type '${member.type.source}'.`,
+            );
+        }
+        return {
+            name: member.name,
+            wgslType: member.type.source,
+            shape: member.type.shape,
+            cppType,
+            size: layout.size,
+        };
+    });
+    const layout = wgslStructLayout(members)!;
+    return {
+        fields,
+        offsets: layout.offsets,
+        totalBytes: roundUp(16, layout.extent),
+    };
+}
+
+/** The struct a composed module declares, or a refusal naming the module. */
+function composedStruct(
+    wgsl: string,
+    name: string,
+    what: string,
+): readonly WgslMemberSyntax[] {
+    const declaration = reflectWgslStruct(wgsl, name);
+    if (!declaration) {
+        throw new Error(`${what} no longer declares struct ${name}.`);
+    }
+    return declaration.members;
 }
 
 /** A C++ identifier for a variant key such as `ibl|reflectance|refraction`. */
@@ -525,17 +543,28 @@ interface VariantColorOutput {
  * pipeline built with a colour target is what Dawn refuses outright.
  */
 function variantColorOutput(fragmentWgsl: string): VariantColorOutput {
-    // The pin's build step minifies the struct's own template while the
-    // return clause it interpolates keeps its spaces, so both readers
-    // accept either spacing.
-    const fragmentOutputStruct = fragmentWgsl.match(
-        /struct FragmentOutput\s*\{[^}]*\}/,
-    );
-    const hasColorReturn = /->\s*@location\(0\)/.test(fragmentWgsl);
+    const module = reflectWgslModule(fragmentWgsl);
+    const [entry, ...others] = wgslEntryPoints(module, "fragment");
+    if (!entry || others.length > 0) {
+        throw new Error(
+            "A pinned composed fragment declares no single @fragment entry point.",
+        );
+    }
+    const outputStruct = entry.returnType
+        ? module.declarations.find(
+              (declaration): declaration is WgslStructDeclaration =>
+                  declaration.kind === "struct" &&
+                  declaration.name === entry.returnType!.text,
+          )
+        : undefined;
+    const hasColorReturn =
+        wgslAttributeInteger(entry.returnAttributes, "location") === 0;
     return {
-        noColorOutput: !hasColorReturn && !fragmentOutputStruct,
-        colorTargetCount: fragmentOutputStruct
-            ? (fragmentOutputStruct[0].match(/@location\(\d+\)/g) ?? []).length
+        noColorOutput: !hasColorReturn && !outputStruct,
+        colorTargetCount: outputStruct
+            ? outputStruct.members.filter((member) =>
+                  member.attributes.some(({ name }) => name === "location"),
+              ).length
             : hasColorReturn
               ? 1
               : 0,
@@ -550,8 +579,35 @@ function variantColorOutput(fragmentWgsl: string): VariantColorOutput {
  * `false`.
  */
 function variantUsesLocalPosition(vertexWgsl: string): boolean {
-    const stored = /\bout\.vLocalPos\s*=\s*position;/.test(vertexWgsl);
-    if (!stored && vertexWgsl.includes("vLocalPos")) {
+    const module = reflectWgslModule(vertexWgsl);
+    let stored = false;
+    let mentioned = module.declarations.some(
+        (declaration) =>
+            declaration.kind === "struct" &&
+            declaration.members.some(({ name }) => name === "vLocalPos"),
+    );
+    for (const statements of wgslFunctionStatements(module)) {
+        forEachShaderStatement(statements, (statement) => {
+            stored ||=
+                statement.kind === "assign" &&
+                statement.operator === undefined &&
+                statement.target.kind === "path" &&
+                statement.target.parts.join(".") === "out.vLocalPos" &&
+                statement.value.kind === "path" &&
+                statement.value.parts.join(".") === "position";
+        });
+        mentioned ||= statements.some((statement) =>
+            statementSome(
+                statement,
+                (expression) =>
+                    (expression.kind === "path" &&
+                        expression.parts.includes("vLocalPos")) ||
+                    (expression.kind === "member" &&
+                        expression.member === "vLocalPos"),
+            ),
+        );
+    }
+    if (!stored && mentioned) {
         throw new Error(
             "Pinned vertex stage declares vLocalPos without storing the raw position into it.",
         );
@@ -576,18 +632,22 @@ interface VariantAttribute {
  * variant but the widest.
  */
 function variantAttributes(vertexWgsl: string): readonly VariantAttribute[] {
-    const body = vertexWgsl.slice(vertexWgsl.indexOf("@vertex fn main("));
-    // The parameter list ends at the return arrow, spelled `) ->` in the
-    // pin's source and `)->` by its build step.
-    const list = body.slice(0, body.search(/\)\s*->/));
+    const entry = wgslEntryPoints(reflectWgslModule(vertexWgsl), "vertex").find(
+        ({ name }) => name === "main",
+    );
+    if (!entry) {
+        throw new Error(
+            "A pinned composed vertex stage no longer declares '@vertex fn main'.",
+        );
+    }
     const attributes: VariantAttribute[] = [];
-    const pattern =
-        /@location\((\d+)\)\s*([A-Za-z0-9_]+)\s*:\s*([A-Za-z0-9_<>]+)/g;
-    for (const match of list.matchAll(pattern)) {
+    for (const parameter of entry.parameters) {
+        const location = wgslAttributeInteger(parameter.attributes, "location");
+        if (location === undefined) continue;
         attributes.push({
-            location: Number(match[1]),
-            name: match[2]!,
-            wgslType: match[3]!,
+            location,
+            name: parameter.name,
+            wgslType: parameter.type.source,
         });
     }
     return attributes.sort((left, right) => left.location - right.location);
@@ -800,45 +860,43 @@ function reflectVariantBindings(
     group: number,
     includeBaseUniforms: boolean,
 ): readonly VariantBinding[] {
-    const pattern = new RegExp(
-        `@group\\(${group}\\)\\s*@binding\\((\\d+)\\)\\s*` +
-            "var(?:<([^>]*)>)?\\s*([A-Za-z0-9_]+)\\s*:\\s*" +
-            "([A-Za-z0-9_<>]+)",
-        "g",
-    );
     const byBinding = new Map<number, VariantBinding>();
     for (const [text, isVertex] of [
         [vertexWgsl, true],
         [fragmentWgsl, false],
     ] as const) {
-        for (const match of text.matchAll(pattern)) {
-            const addressSpace = match[2] ?? "";
-            const type = match[4]!;
-            const name = match[3]!;
-            const sampled = new RegExp(
-                `textureSample[A-Za-z]*\\(\\s*${name}\\b`,
-            ).test(text);
+        if (text === "") continue;
+        const module = reflectWgslModule(text);
+        for (const variable of reflectWgslBindings(text)) {
+            if (variable.group !== group || !variable.type) continue;
+            const type = variable.type.source;
+            const name = variable.name;
+            const binding = variable.binding;
             // The morph arms read their deltas and weights through read-only
             // storage buffers in the vertex stage.
-            const kind = addressSpace.startsWith("storage")
-                ? "storageBuffer"
-                : // A group-1 uniform block past the hand-managed mesh (0) and
-                  // material (1): the geometry arms' gpUniforms is the reached
-                  // one, and Dawn builds its layout entry from this row. Every
-                  // uniform block of another group is the group's own.
-                  addressSpace.startsWith("uniform")
-                  ? includeBaseUniforms || group !== 1 || Number(match[1]) > 1
-                      ? "uniformBuffer"
-                      : undefined
-                  : type.startsWith("texture_")
-                    ? textureBindingKind(type, name, sampled)
-                    : type === "sampler_comparison"
-                      ? "samplerComparison"
-                      : type === "sampler"
-                        ? "sampler"
-                        : undefined;
+            const kind =
+                variable.addressSpace === "storage"
+                    ? "storageBuffer"
+                    : // A group-1 uniform block past the hand-managed mesh (0) and
+                      // material (1): the geometry arms' gpUniforms is the reached
+                      // one, and Dawn builds its layout entry from this row. Every
+                      // uniform block of another group is the group's own.
+                      variable.addressSpace === "uniform"
+                      ? includeBaseUniforms || group !== 1 || binding > 1
+                          ? "uniformBuffer"
+                          : undefined
+                      : variable.type.shape.name.startsWith("texture_")
+                        ? textureBindingKind(
+                              type,
+                              name,
+                              wgslSamplesTexture(module, name),
+                          )
+                        : type === "sampler_comparison"
+                          ? "samplerComparison"
+                          : type === "sampler"
+                            ? "sampler"
+                            : undefined;
             if (!kind) continue;
-            const binding = Number(match[1]);
             const existing = byBinding.get(binding);
             if (existing) {
                 existing.vertex ||= isVertex;
@@ -1041,51 +1099,19 @@ function mirroredMembers(
 }
 
 /**
- * One field per line, out of a WGSL struct body.
- *
- * The separator is a comma or a newline — the composed fragments minify a
- * block onto one line while the node pipeline writes one field per line — but
- * only outside `<>`: `li: array<vec4<u32>, 4>` carries a comma inside its own
- * type, and splitting there produces two halves of a field rather than two
- * fields.
- */
-function splitWgslFields(structBody: string): string {
-    const parts: string[] = [];
-    let depth = 0;
-    let current = "";
-    for (const character of structBody) {
-        if (character === "<") depth += 1;
-        else if (character === ">") depth -= 1;
-        if (depth === 0 && (character === "," || character === "\n")) {
-            parts.push(current);
-            current = "";
-            continue;
-        }
-        current += character;
-    }
-    parts.push(current);
-    return parts
-        .map((part) => part.replace(/\/\/.*$/, "").trim())
-        .filter((part) => part !== "")
-        .map((part) => `${part},`)
-        .join("\n");
-}
-
-/**
  * A WGSL struct declaration mirrored into C++, padded to the pin's offsets.
  *
  * Each composed family declares blocks a PAL uploads byte for byte, and each
- * reads them out of the composed text rather than restating them. This is
- * that step, once: parse the declaration, lay it out under WGSL's uniform
- * rules, and emit the struct with a `static_assert` per field.
+ * reads them out of the composed module rather than restating them. This is
+ * that step, once: take the reflected declaration, lay it out under WGSL's
+ * uniform rules, and emit the struct with a `static_assert` per field.
  */
 export function mirroredStructFromWgsl(
     structName: string,
-    structBody: string,
+    declaration: readonly WgslMemberSyntax[],
     provenance: string,
 ): string {
-    const fields = parseVariantFields(splitWgslFields(structBody));
-    const { offsets, totalBytes } = variantLayout(fields);
+    const { fields, offsets, totalBytes } = variantFields(declaration);
     const mirrored = mirroredMembers(structName, fields, offsets, totalBytes);
     return (
         `// ${provenance}\n` +
@@ -1111,18 +1137,14 @@ export function meshUniformsBlock(
     fragmentWgsl: string,
     lightIndexWordOffset: number,
 ): string {
-    const body = /struct MeshUniforms\s*\{([\s\S]*?)\}/.exec(fragmentWgsl);
-    if (!body) {
-        throw new Error(
-            "A pinned composed fragment no longer declares struct " +
-                "MeshUniforms.",
-        );
-    }
-    const declaration = body[1]!;
-    const fields = parseVariantFields(splitWgslFields(declaration));
-    const { offsets } = variantLayout(fields);
-    const arrayIndex = fields.findIndex((field) =>
-        field.wgslType.startsWith("array<"),
+    const declaration = composedStruct(
+        fragmentWgsl,
+        "MeshUniforms",
+        "A pinned composed fragment",
+    );
+    const { fields, offsets } = variantFields(declaration);
+    const arrayIndex = fields.findIndex(
+        (field) => field.shape.name === "array",
     );
     if (arrayIndex < 0) {
         throw new Error(
@@ -1248,33 +1270,24 @@ export function sceneUniformsStruct(
     // The packaged module is minified: the struct name is mangled and the
     // declaration is one line. The binding names it, so that is what identifies
     // it rather than a literal `SceneUniforms`.
-    const binding =
-        /@group\(0\)\s*@binding\(0\)\s*var<uniform>\s*scene\s*:\s*(\w+)\s*;/.exec(
-            sceneUniformsWgsl,
-        );
-    if (!binding) {
+    const binding = { group: 0, binding: 0, name: "scene" };
+    const uniform = reflectWgslBindings(sceneUniformsWgsl).some(
+        (variable) =>
+            variable.group === binding.group &&
+            variable.binding === binding.binding &&
+            variable.name === binding.name &&
+            variable.addressSpace === "uniform",
+    );
+    const declaration = uniform
+        ? reflectWgslBindingStruct(sceneUniformsWgsl, binding)
+        : undefined;
+    if (!declaration) {
         throw new Error(
-            "Pinned scene uniforms no longer bind at @group(0) @binding(0).",
+            "Pinned scene uniforms no longer bind a declared struct as " +
+                "`scene` at @group(0) @binding(0).",
         );
     }
-    const body = new RegExp(`struct ${binding[1]}\\s*\\{([\\s\\S]*?)\\}`).exec(
-        sceneUniformsWgsl,
-    );
-    if (!body) {
-        throw new Error(
-            `Pinned scene uniforms no longer declare struct ` +
-                `'${binding[1]}'.`,
-        );
-    }
-    const fields = parseVariantFields(
-        body[1]!
-            .split(/[,\n]/)
-            .map((part) => part.replace(/\/\/.*$/, "").trim())
-            .filter((part) => part !== "")
-            .map((part) => `${part},`)
-            .join("\n"),
-    );
-    const { offsets, totalBytes } = variantLayout(fields);
+    const { fields, offsets, totalBytes } = variantFields(declaration.members);
     // `scene-uniforms-size.ts` publishes the byte count the pin allocates for
     // this block. The layout above is derived from the declaration
     // independently, so the two agreeing is what makes this the pin's block
@@ -1530,8 +1543,10 @@ export function pinnedPbrVariantsHeader(
                     "UBO body.",
             );
         }
-        const fields = parseVariantFields(spec._structBody);
-        const computed = variantLayout(fields);
+        const computed = variantFields(
+            parseWgslStructMembers(spec._structBody),
+        );
+        const fields = computed.fields;
         const totalBytes = spec._totalBytes ?? computed.totalBytes;
         if (
             spec._totalBytes !== undefined &&
@@ -1574,7 +1589,7 @@ export function pinnedPbrVariantsHeader(
         const slots: UboFieldSlot[] = fields.map((field, index) => ({
             name: field.name,
             offset: offsets[index]!,
-            lanes: laneCount(field.wgslType),
+            lanes: laneCount(field.shape),
         }));
         const pluginFields = new Set(variant.pluginUniformFields ?? []);
         // Every pinned extension writer whose base field this variant declares,
@@ -2980,31 +2995,17 @@ export function pinnedStandardVariantsHeader(
     // The template's own material block, from the composed fragment: the
     // Standard template inlines `matUniforms` rather than building it from
     // UBO field specs, so the text is the layout authority.
-    const structMatch = /struct matUniforms\s*\{([^}]*)\}/.exec(
+    const declaration = composedStruct(
         variants[0]!.fragmentWgsl,
+        "matUniforms",
+        "A pinned composed Standard fragment",
     );
-    if (!structMatch) {
-        throw new Error(
-            "A pinned composed Standard fragment no longer declares " +
-                "struct matUniforms.",
-        );
-    }
-    const fields = parseVariantFields(
-        structMatch[1]!
-            .split(/[,\n]/)
-            .map((part) => part.replace(/\/\/.*$/, "").trim())
-            .filter((part) => part !== "")
-            .map((part) => `${part},`)
-            .join("\n"),
-    );
-    const { offsets, totalBytes } = variantLayout(fields);
+    const { fields, offsets, totalBytes } = variantFields(declaration);
     // Every variant shares the block — the template emits it unconditionally
     // — so any variant disagreeing with the first is a pin change to see.
     for (const variant of variants.slice(1)) {
-        const other = /struct matUniforms\s*\{([^}]*)\}/.exec(
-            variant.fragmentWgsl,
-        );
-        if (!other || other[1] !== structMatch[1]) {
+        const other = reflectWgslStruct(variant.fragmentWgsl, "matUniforms");
+        if (!other || !sameWgslMembers(other.members, declaration)) {
             throw new Error(
                 `Pinned Standard variant '${variant.fragmentKey}' declares ` +
                     "a different matUniforms block than its siblings.",
@@ -3024,7 +3025,7 @@ export function pinnedStandardVariantsHeader(
     const slots: UboFieldSlot[] = fields.map((field, index) => ({
         name: field.name,
         offset: offsets[index]!,
-        lanes: laneCount(field.wgslType),
+        lanes: laneCount(field.shape),
     }));
     const mirrored = mirroredMembers(
         "StandardMaterialUniforms",

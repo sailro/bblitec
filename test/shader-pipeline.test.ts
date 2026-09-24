@@ -4,7 +4,8 @@ import { lowerWgslShaderProgram } from "../src/shader-ir.js";
 import { emitNativeWgslProgram } from "../src/shader-wgsl-emitter.js";
 import {
     composeStandaloneWgsl,
-    getShaderMaterialProgram,
+    shaderMaterialPrograms,
+    type ShaderMaterialProgramSource,
 } from "../src/shader-material-programs.js";
 import {
     blitFragmentWgsl,
@@ -24,10 +25,16 @@ import { findRepositoryRoot, readUpstreamPin } from "../src/upstream-source.js";
 import { resolve } from "node:path";
 import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
 
-test("lowers reached alpha-card WGSL through typed reflection", () => {
-    const program = lowerWgslShaderProgram(
-        getShaderMaterialProgram("alpha-card"),
+function predeclaredProgram(name: string): ShaderMaterialProgramSource {
+    const program = shaderMaterialPrograms.find(
+        (candidate) => candidate.name === name,
     );
+    assert.ok(program, `predeclared shader program '${name}'`);
+    return program;
+}
+
+test("lowers reached alpha-card WGSL through typed reflection", () => {
+    const program = lowerWgslShaderProgram(predeclaredProgram("alpha-card"));
     assert.deepEqual(program.reflection.attributes, [
         { name: "position", location: 0, type: "vec3<f32>" },
     ]);
@@ -85,7 +92,7 @@ test("lowers reached alpha-card WGSL through typed reflection", () => {
 
 test("lowers matrix, varying, branch, and discard WGSL nodes", () => {
     const program = lowerWgslShaderProgram(
-        getShaderMaterialProgram("circular-cutout"),
+        predeclaredProgram("circular-cutout"),
     );
     assert.deepEqual(
         program.reflection.varyings.map(({ name, type, attribute }) => ({
@@ -138,7 +145,7 @@ test("lowers matrix, varying, branch, and discard WGSL nodes", () => {
 
 test("composes Babylon custom shader snippets into standalone WGSL", () => {
     const source = composeStandaloneWgsl(
-        getShaderMaterialProgram("circular-cutout"),
+        predeclaredProgram("circular-cutout"),
         "struct Scene {} @group(0) @binding(0) var<uniform> scene: Scene;",
         "vertex",
     );

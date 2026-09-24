@@ -1,5 +1,6 @@
 import ts from "typescript";
-import { PinnedShaderText, ShaderTextBinding } from "./pinned-shader-text.js";
+import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
+import type { ShaderTextBinding } from "./pinned-shader-text.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,
@@ -68,10 +69,10 @@ export interface SpriteShaderSource {
  * pin. Coverage gamma is still unreached and therefore not emitted.
  */
 export class SpriteLowerer {
-    private readonly shaderText: PinnedShaderText;
+    private readonly shaderText: PinnedShaderBuilders;
 
     public constructor(private readonly context: LoweringContext) {
-        this.shaderText = new PinnedShaderText(context);
+        this.shaderText = new PinnedShaderBuilders(context);
     }
 
     // -----------------------------------------------------------------

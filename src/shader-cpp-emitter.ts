@@ -113,6 +113,10 @@ export function emitShaderCppExpression(
                 throw new Error(
                     "C++ shader projection does not support indexed values.",
                 );
+            case "unary":
+                throw new Error(
+                    `C++ shader projection does not support unary '${node.operator}'.`,
+                );
             case "construct": {
                 if (node.type === "mat4x4<f32>")
                     throw new Error(

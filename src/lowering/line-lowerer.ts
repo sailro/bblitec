@@ -11,10 +11,10 @@
  *
  * Both halves come from the pin rather than from here:
  *
- * - the **material's WGSL** is folded out of `line-material.ts`'s own
- *   `vertexSource`/`fragmentSource` builders through `PinnedShaderText`, so a
- *   bump that rewrites a stage rewrites what this port deploys and a bump that
- *   changes the shape refuses generation;
+ * - the **material's WGSL** is what `line-material.ts`'s own
+ *   `vertexSource`/`fragmentSource` builders return, executed at generation
+ *   (`PinnedShaderBuilders`), so a bump that rewrites a stage rewrites what
+ *   this port deploys;
  * - the **flatten** is emitted as C++ from this file, with each rule the
  *   emitted loop folds asserted against the pinned declaration that states it
  *   — the index pair, the per-line disconnection, the zero normals, the
@@ -23,7 +23,7 @@
 import ts from "typescript";
 import { containsPinnedErrorMessage } from "./pinned-error.js";
 import type { LoweredSource, LoweringContext } from "./context.js";
-import { PinnedShaderText } from "./pinned-shader-text.js";
+import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
 import { lowerComputeAabb } from "./pinned-compute-aabb.js";
 import type { CompiledShaderProgram } from "../compiler/types.js";
 
@@ -43,10 +43,10 @@ export interface LineMaterialOptions {
 }
 
 export class LineLowerer {
-    private readonly shaderText: PinnedShaderText;
+    private readonly shaderText: PinnedShaderBuilders;
 
     public constructor(private readonly context: LoweringContext) {
-        this.shaderText = new PinnedShaderText(context);
+        this.shaderText = new PinnedShaderBuilders(context);
     }
 
     // -----------------------------------------------------------------

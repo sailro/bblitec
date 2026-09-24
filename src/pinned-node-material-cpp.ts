@@ -20,6 +20,11 @@ import {
     shadowBindingSlotOrNull,
     variantBindings,
 } from "./pinned-pbr-variant-cpp.js";
+import {
+    reflectWgslStruct,
+    sameWgslMembers,
+    type WgslMemberSyntax,
+} from "./shader-ir.js";
 import type {
     ComposedNodeAttribute,
     ComposedNodeGeometryView,
@@ -414,15 +419,18 @@ inline std::size_t node_geometry_variant_for(
 }
 
 /** The pin's own node mesh block, as its composed module declares it. */
-function nodeMeshStructBody(wgsl: string, label: string): string {
-    const body = /struct MeshU\s*\{([\s\S]*?)\}/.exec(wgsl);
-    if (!body) {
+function nodeMeshStructMembers(
+    wgsl: string,
+    label: string,
+): readonly WgslMemberSyntax[] {
+    const declaration = reflectWgslStruct(wgsl, "MeshU");
+    if (!declaration) {
         throw new Error(
             `The composed node module ${label} no longer declares ` +
                 "'struct MeshU'.",
         );
     }
-    return body[1]!;
+    return declaration.members;
 }
 
 export function pinnedNodeVariantsHeader(
@@ -440,29 +448,29 @@ export function pinnedNodeVariantsHeader(
     }
     // Optional node features append fields. One allocation serves compatible
     // prefixes; a reordered or incompatible field layout refuses.
-    const meshBodies = [
+    const meshBlocks = [
         ...variants.map((variant) => ({
             label: `node-${variant.index}`,
-            body: nodeMeshStructBody(
+            members: nodeMeshStructMembers(
                 variant.composed.wgsl,
                 `node-${variant.index}`,
             ),
         })),
         ...geometryVariants.map((variant) => ({
             label: variant.fragmentStem,
-            body: nodeMeshStructBody(
+            members: nodeMeshStructMembers(
                 variant.composed.wgsl,
                 variant.fragmentStem,
             ),
         })),
     ];
-    const meshBody = meshBodies.reduce(
-        (longest, entry) =>
-            entry.body.length > longest.length ? entry.body : longest,
-        "",
+    const meshMembers = meshBlocks.reduce<readonly WgslMemberSyntax[]>(
+        (widest, entry) =>
+            entry.members.length > widest.length ? entry.members : widest,
+        [],
     );
-    for (const { label, body } of meshBodies) {
-        if (!meshBody.startsWith(body)) {
+    for (const { label, members } of meshBlocks) {
+        if (!sameWgslMembers(meshMembers.slice(0, members.length), members)) {
             throw new Error(
                 `Node module ${label} declares a mesh block the others do ` +
                     "not; the PAL uploads one struct.",
@@ -790,7 +798,7 @@ ${cpp.table("float", "node_variant_uniform_floats", uniformFloats.length, `${uni
 
 ${mirroredStructFromWgsl(
     "NodeMeshUniforms",
-    meshBody,
+    meshMembers,
     "src/material/node/node-pipeline.ts buildMeshStruct",
 )}
 

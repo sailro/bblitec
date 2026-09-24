@@ -1,15 +1,15 @@
 /**
- * GridMaterial WGSL, built by evaluating the pinned template functions.
+ * GridMaterial WGSL, built by executing the pinned template functions.
  *
  * `grid-material.ts`'s `buildVertexSource`/`buildFragmentSource` are private
- * but pure template functions, so — as for every other pinned shader-text
- * builder — their AST is evaluated by the shared `PinnedShaderText` with the
- * option record bound and the *returned strings* are what gets emitted. The
+ * but pure template functions, so -- as for the other pinned shader-text
+ * builders -- they are executed (`PinnedShaderBuilders`) with the option
+ * record bound and the *returned strings* are what gets emitted. The
  * native fragment keeps runtime option gates (one generated fragment serves
  * every grid material a scene data file can describe), but each gated arm is
  * the pin's own built text: the two `gridIsOnLine` bodies, the two
  * grid-combine folds, the transparent-opacity clamp, and the premultiply all
- * come out of builder evaluations at the option sets that produce them.
+ * come out of builder calls at the option sets that produce them.
  *
  * The documented re-homings, mirroring the background lift:
  * - `@group`/`@binding` move to SDL_GPU's register spaces (vertex uniforms in
@@ -22,13 +22,14 @@
  *   world-space position attribute, and reads the object-space position and
  *   normal from the shared model vertex layout's dedicated attributes.
  *
- * Anything the evaluator cannot fold refuses naming the pinned node, and any
- * built string missing a piece this file must gate throws naming the piece —
- * a changed template stops generation instead of silently keeping a copy.
+ * A builder whose parameters no longer match the bound options refuses
+ * naming the pinned declaration, and any built string missing a piece this
+ * file must gate throws naming the piece -- a changed template stops
+ * generation instead of silently keeping a copy.
  */
 import ts from "typescript";
 import { LoweringContext } from "./lowering/context.js";
-import { PinnedShaderText } from "./lowering/pinned-shader-text.js";
+import { PinnedShaderBuilders } from "./lowering/pinned-shader-builders.js";
 import { extractWgslFunction } from "./pinned-shader-composer.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 
@@ -39,13 +40,13 @@ function gridLiftError(what: string): never {
 }
 
 /**
- * The context the shared evaluator reads the grid module through.
+ * The context the builders' declarations are read through.
  *
  * The renderer hands this file the grid module it already resolved, so the
  * supplied source stands in for the store's copy of that one module and
  * every other module still resolves through the shared store -- the same
- * evaluator, over the same file, whether the caller is the renderer or a
- * test doctoring the template.
+ * declarations whether the caller is the renderer or a test doctoring the
+ * template.
  */
 class GridSourceContext extends LoweringContext {
     public constructor(private readonly gridMaterial: ts.SourceFile) {
@@ -71,7 +72,7 @@ function builtFragment(
         preMultiplyAlpha: boolean;
     },
 ): string {
-    return new PinnedShaderText(new GridSourceContext(file)).evaluate(
+    return new PinnedShaderBuilders(new GridSourceContext(file)).evaluate(
         gridModule,
         "buildFragmentSource",
         new Map([["opts", { ...options, hasOpacity }]]),
@@ -266,7 +267,7 @@ export function gridVertexWgsl(
     provenance: string,
     gridMaterial: ts.SourceFile,
 ): string {
-    const built = new PinnedShaderText(
+    const built = new PinnedShaderBuilders(
         new GridSourceContext(gridMaterial),
     ).evaluate(
         gridModule,
