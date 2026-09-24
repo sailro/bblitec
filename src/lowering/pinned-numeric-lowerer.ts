@@ -47,6 +47,7 @@ import { CPP_RECORD, type CppRecordShape, cppVector } from "./cpp-types.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_ASSIGNMENT_OPERATORS,
+    PINNED_BITWISE_ASSIGNMENT_OPERATORS,
     PINNED_COMPARISON_OPERATORS,
     JS_BITWISE_FUNCTIONS,
     foldNumericUnary,
@@ -1027,6 +1028,54 @@ export class PinnedNumericLowerer {
      * keeps the ordinary zeroed local, because there the hoisting is what
      * the body means.
      */
+    /**
+     * Whether the function declaring `name` writes one of its members
+     * (`name.x = ...`, `name.x += ...`, `name.x++`) anywhere.
+     */
+    private membersWritten(
+        declaration: ts.VariableDeclaration,
+        name: string,
+    ): boolean {
+        const owner = ts.findAncestor(
+            declaration,
+            (node) =>
+                ts.isFunctionDeclaration(node) ||
+                ts.isFunctionExpression(node) ||
+                ts.isArrowFunction(node) ||
+                ts.isMethodDeclaration(node) ||
+                ts.isSourceFile(node),
+        );
+        const ownsMember = (target: ts.Expression): boolean => {
+            const unwrapped = unwrapExpression(target);
+            return (
+                ts.isPropertyAccessExpression(unwrapped) &&
+                ts.isIdentifier(unwrapped.expression) &&
+                unwrapped.expression.text === name
+            );
+        };
+        let written = false;
+        const visit = (node: ts.Node): void => {
+            if (written) return;
+            if (
+                (ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                    node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+                    ownsMember(node.left)) ||
+                ((ts.isPrefixUnaryExpression(node) ||
+                    ts.isPostfixUnaryExpression(node)) &&
+                    (node.operator === ts.SyntaxKind.PlusPlusToken ||
+                        node.operator === ts.SyntaxKind.MinusMinusToken) &&
+                    ownsMember(node.operand))
+            ) {
+                written = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        if (owner) visit(owner);
+        return written;
+    }
+
     private hoistedLoopVariable(
         declaration: ts.VariableDeclaration,
         name: string,
@@ -1414,8 +1463,11 @@ export class PinnedNumericLowerer {
             ) {
                 const value = this.expression(initializer);
                 this.scope.bindings.set(name, { cpp, type: "vec3" });
+                // A JavaScript `const` binds the object, not its members,
+                // so one the body writes a member of is not const here.
+                const writable = this.membersWritten(declaration, name);
                 lines.push(
-                    `${indent}${isConst ? "const " : ""}Vec3d ${cpp} = ${value};`,
+                    `${indent}${isConst && !writable ? "const " : ""}Vec3d ${cpp} = ${value};`,
                 );
                 continue;
             }
@@ -1489,6 +1541,30 @@ export class PinnedNumericLowerer {
                 lines.push(
                     `${indent}std::vector<double> ${cpp} = ` +
                         `${this.expression(source)};`,
+                );
+                continue;
+            }
+            // `const bounds = [a, b, c]` -- an array of numbers the body
+            // indexes and stores through, held at the pin's double width.
+            // Never `const`: a JavaScript `const` binds the array, not its
+            // elements.
+            if (
+                ts.isArrayLiteralExpression(initializer) &&
+                initializer.elements.length > 0
+            ) {
+                const elements = initializer.elements.map((element) => {
+                    if (
+                        ts.isSpreadElement(element) ||
+                        ts.isOmittedExpression(element) ||
+                        this.recordValue(element)
+                    ) {
+                        this.fail(element, "array literal element");
+                    }
+                    return this.expression(element);
+                });
+                this.scope.bindings.set(name, { cpp, type: "f64-list" });
+                lines.push(
+                    `${indent}${listStorage("f64-list")!} ${cpp}{${elements.join(", ")}};`,
                 );
                 continue;
             }
@@ -1685,6 +1761,28 @@ export class PinnedNumericLowerer {
             // around it is the identity and only the mutation is emitted.
             const inPlace = this.inPlaceSelfStore(expression);
             if (inPlace) return inPlace;
+            // `v >>= r`: the bitwise operator's `ToInt32` result stored back
+            // as the number it is. Only a scalar local qualifies -- an
+            // integer index or a typed-array element would narrow it again.
+            const bitwise = PINNED_BITWISE_ASSIGNMENT_OPERATORS.get(
+                expression.operatorToken.kind,
+            );
+            if (bitwise !== undefined) {
+                const target = unwrapExpression(expression.left);
+                if (
+                    !ts.isIdentifier(target) ||
+                    this.scope.bindings.get(target.text)?.type !== "scalar"
+                ) {
+                    this.fail(
+                        expression,
+                        "compound bitwise assignment to a non-scalar",
+                    );
+                }
+                return (
+                    `${this.assignmentTarget(target)} = static_cast<double>(` +
+                    `${jsBitwiseCall(bitwise, this.expression(target), this.expression(expression.right))})`
+                );
+            }
             const operator = PINNED_ASSIGNMENT_OPERATORS.get(
                 expression.operatorToken.kind,
             );

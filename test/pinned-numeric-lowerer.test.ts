@@ -225,6 +225,113 @@ test("native typed-array chains capture indices before writes and preserve unrou
         );
 });
 
+// The recast-navigation generators' `dtIlog2`/`dtNextPow2` shapes: compound
+// bitwise stores on number locals, an array literal the body indexes and
+// updates, and a `const` object whose members the body writes. Each is
+// checked against JavaScript's own evaluation of the same statements.
+test("compound bitwise stores, array literals and written const records run as JavaScript does", (t) => {
+    const source =
+        "let v = 4097; let r = 0; let shift = 0; " +
+        "r = Number(v > 0xffff) << 4; v >>= r; " +
+        "shift = Number(v > 0xff) << 3; v >>= shift; r |= shift; " +
+        "shift = Number(v > 0xf) << 2; v >>= shift; r |= shift; " +
+        "shift = Number(v > 0x3) << 1; v >>= shift; r |= shift; r |= v >> 1; " +
+        "let w = -5; w >>>= 1; let a = 13; a &= 6; a ^= 3; a <<= 30; " +
+        "const b = [1.5, 2, 3]; b[0] -= 0.25; b[2] += b[1]; " +
+        "const p = { x: Infinity, y: 0, z: 0 }; p.x = Math.min(p.x, 3);";
+    const body = lower(source, [], {
+        calls: new Map([
+            ["Number", (args) => `static_cast<double>(${args[0]})`],
+            [
+                "Math.min",
+                (args) => `bbl::js::math_extreme<false>({${args.join(", ")}})`,
+            ],
+        ]),
+        vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+    });
+    assert.match(
+        body,
+        /v = static_cast<double>\(bbl::js::shift_right\(v, r\)\);/,
+    );
+    assert.match(
+        body,
+        /r = static_cast<double>\(bbl::js::bitwise_or\(r, bbl::js::shift_right\(v, 1\.0\)\)\);/,
+    );
+    assert.match(body, /std::vector<double> b\{1\.5, 2\.0, 3\.0\};/);
+    assert.match(body, /^Vec3d p = /m);
+    // The same statements, run by JavaScript itself.
+    const expected = ((): number[] => {
+        let v = 4097;
+        let r = Number(v > 0xffff) << 4;
+        v >>= r;
+        let shift = Number(v > 0xff) << 3;
+        v >>= shift;
+        r |= shift;
+        shift = Number(v > 0xf) << 2;
+        v >>= shift;
+        r |= shift;
+        shift = Number(v > 0x3) << 1;
+        v >>= shift;
+        r |= shift;
+        r |= v >> 1;
+        let w = -5;
+        w >>>= 1;
+        let a = 13;
+        a &= 6;
+        a ^= 3;
+        a <<= 30;
+        const b = [1.5, 2, 3];
+        b[0]! -= 0.25;
+        b[2]! += b[1]!;
+        const p = { x: Infinity, y: 0, z: 0 };
+        p.x = Math.min(p.x, 3);
+        return [r, w, a, b[0]!, b[2]!, p.x];
+    })();
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const output = resolve("artifacts/pinned-numeric-bitwise-stores");
+    mkdirSync(output, { recursive: true });
+    const file = join(output, "check.cpp"),
+        executable = join(output, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/js_data.hpp>
+        #include <bblite/runtime.hpp>
+        #include <cassert>
+        struct Vec3d { double x; double y; double z; };
+        int main() {
+            ${body}
+            const double seen[] = {r, w, a, b[0], b[2], p.x};
+            const double expected[] = {${expected.join(", ")}};
+            for (int index = 0; index < 6; ++index) assert(seen[index] == expected[index]);
+        }`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/Od",
+        `/Fo:${output}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        file,
+    ]);
+    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+    // An integer loop index would narrow the stored number again.
+    assert.throws(
+        () => lower("for (let i = 0; i < 4; i++) { i |= 1; }"),
+        /compound bitwise assignment to a non-scalar/,
+    );
+});
+
 test("caller substitutions can name later local declarations", () => {
     const cpp = lower(
         "const defaultOffset = 3; const offset = options.offset;",
