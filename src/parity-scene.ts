@@ -58,6 +58,7 @@ import {
 import { readMemoryTape } from "./tooling/check-spec.js";
 import { readReport, writeReport } from "./tooling/reports.js";
 import {
+    nativeRunBound,
     resolveNativeExecutable,
     runMeasured,
     spawnNativeMeasured,
@@ -708,8 +709,15 @@ export function runMemoryReport(
                     ? { BBLITE_INPUT_REPLAY: replay }
                     : {}),
             },
-            ["BBLITE_GPU_BACKEND"],
-            true,
+            {
+                dropVariables: ["BBLITE_GPU_BACKEND"],
+                captureStderr: true,
+                ...nativeRunBound(
+                    generatedDirectory,
+                    memoryArguments.frames,
+                    undefined,
+                ),
+            },
         );
         verifyBuildIdentity(executable, generatedDirectory, stampPath);
         const samples = parseMemoryProfile(stderr);

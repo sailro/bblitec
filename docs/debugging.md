@@ -50,7 +50,9 @@ iOS-browser parity. Viewport, DPR and display dimensions must match; authored su
 the browser compositor, never offline PNG resizing.
 
 `BBLITE_TEST_PASS` windows stay visible; run Windows regression captures on an inactive desktop when
-they must not appear on the user's desktop.
+they must not appear on the user's desktop. A `platform:window` scene paces on the desktop compositor
+clock, which stops while the console session is locked: its measured runs without their own bound are
+killed after two minutes plus 50 ms per frame.
 
 ## Captured state and its limits
 
