@@ -249,7 +249,7 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
     );
     assert.match(
         dawn,
-        /descriptor\.fragment =\s*shadow_pass &&\s*shader_info\s*\? nullptr/,
+        /descriptor\.fragment =\s*shadow_pass\s*\? nullptr/,
     );
     assert.match(
         dawn,
