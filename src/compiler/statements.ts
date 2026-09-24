@@ -59,6 +59,7 @@ import {
     type HandleCollectionTarget,
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
+import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
 
 export interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -254,16 +255,23 @@ function bodyStatements(
         : [statement.statement];
 }
 
-const BITWISE_ASSIGNMENT_HELPERS: Readonly<Record<string, string>> = {
-    "%=": "remainder_js",
-    "&=": "bitwise_and",
-    "|=": "bitwise_or",
-    "^=": "bitwise_xor",
-    "<<=": "shift_left",
-    ">>=": "shift_right",
-    ">>>=": "shift_right_unsigned",
-};
-const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
+/**
+ * The compound assignments whose C++ operator would not mean the JavaScript
+ * one, by spelling, with the `bbl::js` helper each lowers through: a bitwise
+ * form applies its operator's `JS_BITWISE_FUNCTIONS` helper, and `%=` is
+ * JavaScript's floating remainder.
+ */
+export const COMPOUND_ASSIGNMENT_HELPERS: ReadonlyMap<string, string> =
+    new EmissionMap([
+        ["%=", "remainder_js"],
+        ...[...JS_BITWISE_FUNCTIONS].map(([kind, helper]): [string, string] => [
+            `${ts.tokenToString(kind)}=`,
+            helper,
+        ]),
+    ]);
+
+/** `=` and the compound assignments the lowerings accept, by spelling. */
+export const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
     new EmissionMap([
         [ts.SyntaxKind.EqualsToken, "="],
         [ts.SyntaxKind.PlusEqualsToken, "+="],
@@ -3367,7 +3375,7 @@ export class StatementLowerer {
         operator: string,
         right: string,
     ): string {
-        const helper = BITWISE_ASSIGNMENT_HELPERS[operator];
+        const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
         if (!helper) {
             return `${target} ${operator} ${right};`;
         }

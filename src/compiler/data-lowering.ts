@@ -47,6 +47,10 @@ import {
     mathExtremeCpp,
 } from "../lowering/pinned-operators.js";
 import {
+    ASSIGNMENT_OPERATORS,
+    COMPOUND_ASSIGNMENT_HELPERS,
+} from "./statements.js";
+import {
     dataTypesEqual,
     doubleLiteral,
     isTypedArrayType,
@@ -7655,23 +7659,9 @@ export class DataLowerer {
     }
 
     public emitAssignment(expression: ts.BinaryExpression): boolean {
-        const operator = new EmissionMap<ts.SyntaxKind, string>([
-            [ts.SyntaxKind.EqualsToken, "="],
-            [ts.SyntaxKind.PlusEqualsToken, "+="],
-            [ts.SyntaxKind.MinusEqualsToken, "-="],
-            [ts.SyntaxKind.AsteriskEqualsToken, "*="],
-            [ts.SyntaxKind.SlashEqualsToken, "/="],
-            [ts.SyntaxKind.PercentEqualsToken, "%="],
-            [ts.SyntaxKind.AmpersandEqualsToken, "&="],
-            [ts.SyntaxKind.BarEqualsToken, "|="],
-            [ts.SyntaxKind.CaretEqualsToken, "^="],
-            [ts.SyntaxKind.LessThanLessThanEqualsToken, "<<="],
-            [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
-            [
-                ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
-                ">>>=",
-            ],
-        ]).get(expression.operatorToken.kind);
+        const operator = ASSIGNMENT_OPERATORS.get(
+            expression.operatorToken.kind,
+        );
         if (!operator) {
             return false;
         }
@@ -8033,15 +8023,7 @@ export class DataLowerer {
                 expression.right,
                 "double",
             );
-            const helper = new EmissionMap<string, string>([
-                ["%=", "remainder_js"],
-                ["&=", "bitwise_and"],
-                ["|=", "bitwise_or"],
-                ["^=", "bitwise_xor"],
-                ["<<=", "shift_left"],
-                [">>=", "shift_right"],
-                [">>>=", "shift_right_unsigned"],
-            ]).get(operator);
+            const helper = COMPOUND_ASSIGNMENT_HELPERS.get(operator);
             const assigned = helper
                 ? `bbl::js::${helper}(${previous}, ${right})`
                 : undefined;
