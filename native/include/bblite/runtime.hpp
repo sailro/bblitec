@@ -3227,7 +3227,7 @@ struct AssetRecord {
     bool has_camera = false;
     bool has_clear_color = false;
     std::function<void(float)> animation_tick;
-    std::function<void(float)> animation_seek;
+    std::function<void(double)> animation_seek;
     std::shared_ptr<GltfAnimationRuntimeState> source_animation;
     std::function<void(std::size_t, double, bool)> animation_tick_group;
     js::Callback<void(float)> before_render_hook;
@@ -3279,7 +3279,7 @@ struct AssetRecord {
     /** Sets one clip's _stopped, which decides whether a seek reaches it. */
     std::function<void(std::size_t, bool)> set_clip_stopped;
     /** Sets one clip's currentTime in seconds. */
-    std::function<void(std::size_t, float)> set_clip_time;
+    std::function<void(std::size_t, double)> set_clip_time;
     /**
      * Applies one clip at its stored time. The boolean is the pin's own
      * `engine` argument to `goToFrame`: without it a stopped glTF group's
@@ -3302,7 +3302,7 @@ struct AssetRecord {
     /** Sets one clip's loopAnimation, which the weighted mixer reads. */
     std::function<void(std::size_t, bool)> set_clip_loop;
     /** Sets one clip's speedRatio, which its own advance scales by. */
-    std::function<void(std::size_t, float)> set_clip_speed_ratio;
+    std::function<void(std::size_t, double)> set_clip_speed_ratio;
     /**
      * Resolves one clip's AnimationGroupMask against the asset's node names
      * and stores the skip flags the channel walk reads (the pin's own
@@ -3312,7 +3312,7 @@ struct AssetRecord {
     // Marks one clip additive at its reference time (the pin's
     // `group._additive = { referenceTime }`); filled by the generated
     // loader only when the additive mixer is compiled in.
-    std::function<void(std::size_t, float)> set_clip_additive;
+    std::function<void(std::size_t, double)> set_clip_additive;
     /**
      * `AssetContainer.skeletons`: the skeletons the opt-in bone-control
      * chunk built for this file, empty for every other scene.
@@ -4861,7 +4861,7 @@ struct SceneState {
     js::Callback<void()> flow_graph_dispose;
     bool flow_graph_pointer_refresh = false;
     std::function<void()> flow_graph_pointer_cleanup;
-    std::vector<js::Callback<void(float)>> animation_seekers;
+    std::vector<js::Callback<void(double)>> animation_seekers;
     /**
      * Whether this scene already contributed the seeker that reaches the
      * engine's animation managers. Registration is idempotent upstream,
@@ -4952,7 +4952,7 @@ struct Scene {
     ClusteredLightContainerHandle& clustered_lights;
     SnapshotList<js::Callback<void(float)>>& before_render;
     std::vector<js::Callback<void()>>& disposables;
-    std::vector<js::Callback<void(float)>>& animation_seekers;
+    std::vector<js::Callback<void(double)>>& animation_seekers;
 #if BBLITE_HAS_ANIMATION
     bool& seeks_animation_managers;
 #endif
@@ -6037,7 +6037,7 @@ void off_visibility_change(Engine& engine, std::size_t identity);
 #include <bblite/runtime/animation-api.hpp>
 #endif
 void set_animation_weight(Engine& engine, AnimationGroupHandle group, double weight);
-void go_to_frame(Engine& engine, AnimationGroupHandle group, float frame, bool with_engine);
+void go_to_frame(Engine& engine, AnimationGroupHandle group, double frame, bool with_engine);
 void play_animation(Engine& engine, AnimationGroupHandle group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);
 void stop_animation(Engine& engine, AnimationGroupHandle group);
@@ -6057,15 +6057,15 @@ VatClipRow vat_clip_row(Engine& engine, VatBake baked, const std::string& clip);
 // This port's deterministic-pose entry point for a baked mesh, standing
 // for the frozen `play(clip, {offset: round(t*60), fps: 0})` the browser
 // harness drives scene 218 into through its ?seekTime query.
-void seek_vat(Engine& engine, float seconds);
+void seek_vat(Engine& engine, double seconds);
 void set_animation_loop(Engine& engine, AnimationGroupHandle group, bool loop);
-void set_animation_speed_ratio(Engine& engine, AnimationGroupHandle group, float speed_ratio);
+void set_animation_speed_ratio(Engine& engine, AnimationGroupHandle group, double speed_ratio);
 void set_animation_mask(Engine& engine, AnimationGroupHandle group,
                         const std::vector<std::string>& names, bool include);
-void set_animation_current_time(Engine& engine, AnimationGroupHandle group, float time);
-void set_animation_additive(Engine& engine, AnimationGroupHandle group, float reference_time);
+void set_animation_current_time(Engine& engine, AnimationGroupHandle group, double time);
+void set_animation_additive(Engine& engine, AnimationGroupHandle group, double reference_time);
 void set_animation_additive_from_frame(Engine& engine, AnimationGroupHandle group,
-                                       float reference_frame);
+                                       double reference_frame);
 void attach_control(Engine& engine, CameraHandle camera);
 void write_camera_scalar(CameraRecord& camera, double CameraRecord::* field, double value);
 void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::* vector,

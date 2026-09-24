@@ -4637,9 +4637,8 @@ inline FrameOptions read_frame_options() {
 inline void apply_animation_seek(const FrameOptions& options, const Scene& scene) {
     if (options.animation_seek_seconds == 0.0)
         return;
-    const float time = static_cast<float>(options.animation_seek_seconds);
     for (const auto& seek : scene.animation_seekers) {
-        seek(time);
+        seek(options.animation_seek_seconds);
     }
 }
 

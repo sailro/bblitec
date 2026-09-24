@@ -359,15 +359,14 @@ VatClipRow vat_clip_row(
     return row ? *row : VatClipRow{};
 }
 
-void seek_vat(Engine& engine, float seconds) {
+void seek_vat(Engine& engine, double seconds) {
     // The frozen pose scene 218 renders under ?seekTime: the clip is
     // played at the exact baked frame round(t * 60) with fps 0, so the row
     // is static and the clock contributes nothing. VAT bakes that very
     // pose at full precision, which is what makes the frozen native frame
     // the frozen browser frame.
     const double frame = bbl::js::round_js(
-        static_cast<double>(seconds) *
-        static_cast<double>(kVatDefaultFrameRate));
+        seconds * static_cast<double>(kVatDefaultFrameRate));
     for (std::size_t mesh = 0; mesh < engine.meshes.size(); ++mesh) {
         MeshRecord& record = engine.meshes[mesh];
         if (!record.has_vat) continue;

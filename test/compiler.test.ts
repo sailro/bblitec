@@ -13148,7 +13148,7 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
         /set_asset_root_position_component\([^;]+1u, \(-3\.0\)\)/,
     );
     assert.equal(result.cpp.match(/bbl::add_asset_entities\(/g)?.length, 2);
-    assert.match(result.cpp, /bbl::go_to_frame\([^;]+30\.0f, false\)/);
+    assert.match(result.cpp, /bbl::go_to_frame\([^;]+30\.0, false\)/);
 
     assert.throws(
         () =>
@@ -18965,7 +18965,7 @@ test("binds a loader group collection, resolves finds statically, and erases the
     // setAnimationAdditive: frame zero through the pinned conversion.
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0f\)/,
+        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0\)/,
     );
     // The handle ternary folded per unrolled element: the additive pose
     // keeps its own time, the other group takes the seek value.
@@ -19113,11 +19113,11 @@ test("setAnimationAdditive resolves its options at generation exactly where the 
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive\(v_engine, [^,]+, 0\.5f\)/,
+        /bbl::set_animation_additive\(v_engine, [^,]+, 0\.5\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0f\)/,
+        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0\)/,
     );
 });
 

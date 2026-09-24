@@ -1710,7 +1710,7 @@ export function emitPropertyAssignment(
             `bbl::set_animation_speed_ratio(${context.requireEngine(
                 group,
                 expression,
-            )}, ${group.cpp}, ${context.compileNumber(expression.right)});`,
+            )}, ${group.cpp}, ${context.compileNumber(expression.right, "double")});`,
         );
         return;
     }

@@ -400,16 +400,16 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
         asset.animation_tick_group=[animation_runtime](std::size_t index,double delta_ms,bool with_engine){animation_runtime->tick_group(index,delta_ms,with_engine);};
         asset.set_clip_playing=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).playing=value;};
         asset.set_clip_stopped=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).stopped=value;};
-        asset.set_clip_time=[animation_runtime](std::size_t index,float value){animation_runtime->clips.at(index).time=value;};
+        asset.set_clip_time=[animation_runtime](std::size_t index,double value){animation_runtime->clips.at(index).time=value;};
         asset.set_clip_loop=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).loop=value;};
-        asset.set_clip_speed_ratio=[animation_runtime](std::size_t index,float value){animation_runtime->clips.at(index).speed_ratio=value;};
+        asset.set_clip_speed_ratio=[animation_runtime](std::size_t index,double value){animation_runtime->clips.at(index).speed_ratio=value;};
         asset.apply_clip_pose=[animation_runtime](std::size_t index,bool with_engine) {
             auto& clip=animation_runtime->clips.at(index);
             gltf_animation_go_to_frame(clip,clip.time*clip.frame_rate,clip.frame_rate,clip.speed_ratio,with_engine,
                 clip.pose->requires_engine,true,[&](){${syncMask}},
                 [&](double time,bool active_engine){animation_runtime->evaluate_pose(index,time,active_engine);});
         };
-        asset.animation_seek=[animation_runtime](float time) {
+        asset.animation_seek=[animation_runtime](double time) {
             animation_runtime->paused=true;
             for(std::size_t index=0;index<animation_runtime->clips.size();++index) {
                 auto& clip=animation_runtime->clips[index];
@@ -469,7 +469,7 @@ ${
 }
 ${
     options.animationAdditive
-        ? `        asset.set_clip_additive=[animation_runtime](std::size_t index,float reference_time) {
+        ? `        asset.set_clip_additive=[animation_runtime](std::size_t index,double reference_time) {
             auto& clip=animation_runtime->clips.at(index);clip.additive=true;clip.additive_reference_time=reference_time;
         };`
         : ""

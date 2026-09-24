@@ -1778,7 +1778,7 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
         scene.seeks_vat = true;
         Engine* engine = scene.engine;
         scene.animation_seekers.push_back(
-            [engine](float time) { seek_vat(*engine, time); });
+            [engine](double time) { seek_vat(*engine, time); });
     }`
             : "";
     }
@@ -1790,7 +1790,7 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
         scene.seeks_animation_managers = true;
         Engine* engine = scene.engine;
         scene.animation_seekers.push_back(
-            [engine](float time) {
+            [engine](double time) {
                 // Walked when the seek fires, not when it is attached:
                 // a manager created after this scene registered still
                 // owns animation time for the groups on it.
