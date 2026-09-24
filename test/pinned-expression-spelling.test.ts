@@ -62,7 +62,7 @@ test("source spelling preserves parentheses through non-null assertions and prin
     assert.equal(render("(a * (b + 1))!", source), "(a * (b + 1.0f))");
     assert.equal(
         render("a ? Math.max(b, 1e-6) : 2", source),
-        "(a ? std::max(b, 0.000001f) : 2.0f)",
+        "(a ? bbl::js::math_extreme_lane<true>({b, 0.000001f}) : 2.0f)",
     );
     assert.equal(render("a % b", source), "std::fmod(a, b)");
     assert.equal(
@@ -80,7 +80,10 @@ test("glTF expression scopes carry arithmetic, comparisons and Math calls throug
     for (const [source, expected] of [
         ["(a + b) * c", "(a + b) * c"],
         ["a <= b && b !== c", "a <= b && b != c"],
-        ["a <= b ? Math.max(a, b) : c", "a <= b ? std::max(a, b) : c"],
+        [
+            "a <= b ? Math.max(a, b) : c",
+            "a <= b ? bbl::js::math_extreme_lane<true>({a, b}) : c",
+        ],
         ["a % 3", "a % 3"],
     ]) {
         const file = ts.createSourceFile(
@@ -166,6 +169,17 @@ function lowerStatements(source: string): string {
         .join("\n");
 }
 
+test("Math.max and Math.min lower to one JavaScript call over every argument", () => {
+    assert.equal(
+        lowerStatements("a = Math.max(a, b, c);"),
+        "        a = bbl::js::math_extreme<true>({a, b, c});",
+    );
+    assert.equal(
+        lowerStatements("a = Math.min(b, c);"),
+        "        a = bbl::js::math_extreme<false>({b, c});",
+    );
+});
+
 test("a Uint32Array store converts with ToUint32", () => {
     const store = lowerStatements("mask[0] = -1;");
     assert.match(store, /= bbl::js::to_uint32\(/);
@@ -175,3 +189,60 @@ test("a Uint32Array store converts with ToUint32", () => {
         /compound assignment into a typed-array element/,
     );
 });
+
+const headerTools = optionalNativeFixtureTools(false);
+test(
+    "lowered Math.max, Math.min and Uint32Array stores keep JavaScript's results natively",
+    { skip: !headerTools },
+    () => {
+        const directory = resolve("artifacts/pinned-math-extreme");
+        mkdirSync(directory, { recursive: true });
+        const source = resolve(directory, "check.cpp"),
+            executable = resolve(directory, "check.exe");
+        writeFileSync(
+            source,
+            `#include <bblite/js_data.hpp>
+#include <array>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+int main() {
+    std::array<std::uint32_t, 1> mask{};
+    double a = 1.0, b = std::numeric_limits<double>::quiet_NaN(), c = 3.0;
+${lowerStatements("a = Math.max(a, b, c);")}
+    assert(std::isnan(a));
+    a = -0.0; b = 0.0; c = -1.0;
+${lowerStatements("a = Math.max(a, b, c);")}
+    assert(a == 0.0 && !std::signbit(a));
+    a = 0.0; b = -0.0;
+${lowerStatements("a = Math.min(a, b);")}
+    assert(a == 0.0 && std::signbit(a));
+    a = 1.0; b = 7.0; c = 2.0;
+${lowerStatements("a = Math.max(a, b, c);")}
+    assert(a == 7.0);
+${lowerStatements("mask[0] = -1;")}
+    assert(mask[0] == 4294967295u);
+${lowerStatements("mask[0] = 1 << 31;")}
+    assert(mask[0] == 0x80000000u);
+${lowerStatements("mask[0] = 4294967296.5;")}
+    assert(mask[0] == 0u);
+}
+`,
+        );
+        runNativeFixtureCompiler(headerTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/I${resolve("native/include")}`,
+            `/Fo:${directory}\\`,
+            `/Fe:${executable}`,
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);

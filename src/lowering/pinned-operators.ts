@@ -139,10 +139,36 @@ export function jsBitwiseCall(
 /**
  * `Math.max`/`Math.min` over a numeric range, as JavaScript defines them: a
  * NaN operand poisons the result and `-0` orders below `+0`, neither of
- * which `std::max`/`std::min` does. `source` is a range of doubles.
+ * which `std::max`/`std::min` does. `source` is a range of doubles, or a
+ * braced argument list (`mathExtremeCall`).
  */
 export function mathExtremeCpp(method: string, source: string): string {
     return `bbl::js::math_extreme<${method === "max"}>(${source})`;
+}
+
+/**
+ * `Math.max`/`Math.min` over a call's own arguments, at any arity: the one
+ * spelling scene code and pinned bodies share. The braced list evaluates
+ * left to right, as JavaScript's argument list does.
+ *
+ * At `"double"` every operand, whatever its native type, converts to
+ * JavaScript's own width first. At `"deduced"` the operands share one
+ * floating type and the call keeps it, which is what a float writer lane
+ * computes in; the result is one of the operands (or the empty list's
+ * infinity) either way, so the float arithmetic around it is unchanged and
+ * only NaN and signed zero decide differently from `std::max`/`std::min`.
+ */
+export function mathExtremeCall(
+    method: "max" | "min",
+    args: readonly string[],
+    width: "double" | "deduced" = "double",
+): string {
+    const list = `{${args.join(", ")}}`;
+    // An empty list has no operand to deduce a type from; its infinity is
+    // JavaScript's double either way.
+    return width === "double" || args.length === 0
+        ? mathExtremeCpp(method, list)
+        : `bbl::js::math_extreme_lane<${method === "max"}>(${list})`;
 }
 
 /** The operators that mean in C++ exactly what they mean in TypeScript. */
@@ -216,13 +242,13 @@ export function pinnedRemainderCall(left: string, right: string): string {
 /**
  * The `Math` members that are a `<cmath>` call of the same arity. Every one of
  * these takes and returns a double, which is what a pinned writer computes in
- * before it stores.
+ * before it stores. `Math.max`/`Math.min` are not among them: they are
+ * variadic, and JavaScript's NaN and signed-zero rules are not `std::max`'s,
+ * so they lower through `mathExtremeCall`.
  */
 const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
     pow: "std::pow",
     log: "std::log",
-    max: "std::max",
-    min: "std::min",
     cos: "std::cos",
     acos: "std::acos",
     atan2: "std::atan2",
@@ -254,31 +280,32 @@ export function pinnedMathSpelling(name: string): string {
 }
 
 /**
- * Math calls for numeric scopes. min/max use double unless the scope requests
- * deduced arguments for its existing scalar width. They are `std::max`/
- * `std::min`, which neither poison on NaN nor order -0 below +0 the way
- * JavaScript's `mathExtremeCpp` does; that spelling needs
- * `bblite/js_data.hpp` in every unit a pinned numeric scope lands in, and
- * several emitters include it only conditionally. Other semantics, including
- * Math.round and Math.hypot, are supplied by their dedicated helpers.
+ * Math calls for numeric scopes: the `<cmath>` members one to one, and
+ * `Math.max`/`Math.min` at any arity with JavaScript's NaN and signed-zero
+ * rules through `mathExtremeCall`. A `"double"` scope computes them at
+ * JavaScript's width; a `"deduced"` scope (the float writer lanes) keeps
+ * its operands' own floating type. Their spelling lives in
+ * `bblite/js_data.hpp`, which every unit a pinned numeric scope lands in
+ * includes. Math.round and Math.hypot are supplied by their dedicated
+ * helpers.
  */
 export function pinnedNumericMathCalls(
-    templateArgument: "double" | "deduced" = "double",
+    width: "double" | "deduced" = "double",
 ): Map<string, (args: readonly string[]) => string> {
-    return new Map(
+    const calls = new Map(
         Object.entries(PINNED_MATH_FUNCTIONS).map(
             ([name, spelling]): [
                 string,
                 (args: readonly string[]) => string,
-            ] => [
-                `Math.${name}`,
-                templateArgument === "double" &&
-                (name === "max" || name === "min")
-                    ? (args) => `${spelling}<double>(${args.join(", ")})`
-                    : (args) => `${spelling}(${args.join(", ")})`,
-            ],
+            ] => [`Math.${name}`, (args) => `${spelling}(${args.join(", ")})`],
         ),
     );
+    for (const method of ["max", "min"] as const) {
+        calls.set(`Math.${method}`, (args) =>
+            mathExtremeCall(method, args, width),
+        );
+    }
+    return calls;
 }
 
 /**
@@ -320,12 +347,10 @@ export function pinnedRoundCall(args: readonly string[]): string {
 }
 
 /**
- * The `<cmath>` name a `Math.x(...)` call lowers to, or undefined when the
- * node is not such a call.
+ * A `Math.x(...)` call the numeric scopes' shared map lowers -- a `<cmath>`
+ * member or `Math.max`/`Math.min` -- or undefined when the node is not one.
  */
-export function pinnedMathCall(
-    node: ts.Node,
-): { native: string; call: ts.CallExpression } | undefined {
+export function pinnedMathCall(node: ts.Node): ts.CallExpression | undefined {
     if (
         !ts.isCallExpression(node) ||
         !ts.isPropertyAccessExpression(node.expression) ||
@@ -334,6 +359,8 @@ export function pinnedMathCall(
     ) {
         return undefined;
     }
-    const native = PINNED_MATH_FUNCTIONS[node.expression.name.text];
-    return native ? { native, call: node } : undefined;
+    const name = node.expression.name.text;
+    return name === "max" || name === "min" || PINNED_MATH_FUNCTIONS[name]
+        ? node
+        : undefined;
 }

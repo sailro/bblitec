@@ -88,7 +88,7 @@ test("the grown-array builders flow their pinned defaults and rounding", () => {
     // The disc's own `??` defaults, flowed rather than restated.
     assert.match(lowered.source, /const double radius = options\.radius;/);
     // The cylinder's tessellation floor is the pin's `Math.max(3, …)`.
-    assert.match(lowered.source, /std::max<double>\(3\.0,/);
+    assert.match(lowered.source, /bbl::js::math_extreme<true>\(\{3\.0,/);
     // The ribbon's seam normal: a VALUE-selecting `||`, which a boolean
     // operator would flatten to the constant 1.
     assert.match(lowered.source, /bbl::js::or_number\(/);
@@ -213,7 +213,10 @@ test("mesh factory tables flow from the pinned builders", () => {
         lowered.source,
         /totalYRotationSteps = \(2\.0 \* totalZRotationSteps\)/,
     );
-    assert.match(lowered.source, /std::max<double>\(3\.0, options\.segments\)/);
+    assert.match(
+        lowered.source,
+        /bbl::js::math_extreme<true>\(\{3\.0, options\.segments\}\)/,
+    );
     assert.match(
         lowered.source,
         /bbl::js::to_uint32\(a\)[\s\S]*bbl::js::to_uint32\(\(a \+ 1\.0\)\)[\s\S]*bbl::js::to_uint32\(b\)/,

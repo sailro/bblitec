@@ -272,27 +272,13 @@ const SCALAR_HELPERS: readonly ClusteredHelper[] = [
     },
 ];
 
-/**
- * Each helper's own C++ spelling, so a body may call its siblings.
- *
- * `Math.max`/`Math.min` take the pin's whole argument list: the build sizes
- * its data texture from `Math.max(lightTexels, zSlices, maskTexels)`, and a
- * third argument to the two-operand `std::max` is its comparator.
- */
+/** Each helper's own C++ spelling, so a body may call its siblings. */
 export function clusteredCalls(): Map<
     string,
     (args: readonly string[]) => string
 > {
-    const extreme =
-        (spelling: string) =>
-        (args: readonly string[]): string =>
-            args.length > 2
-                ? `${spelling}<double>({${args.join(", ")}})`
-                : `${spelling}<double>(${args.join(", ")})`;
     return new Map<string, (args: readonly string[]) => string>([
         ...pinnedNumericMathCalls(),
-        ["Math.max", extreme("std::max")],
-        ["Math.min", extreme("std::min")],
         ...SCALAR_HELPERS.map(
             ({
                 pinned,

@@ -143,7 +143,7 @@ export function pinnedInverseImageProcessingHeader(
         },
     );
     return pinnedHeader(
-        ["<algorithm>", "<cmath>", "<cstdint>"],
+        ["<bblite/js_data.hpp>", "<cmath>", "<cstdint>"],
         `
 ${clamp}
 

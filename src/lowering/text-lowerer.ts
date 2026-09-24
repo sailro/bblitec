@@ -73,6 +73,7 @@ export class TextLowerer {
     public header(): string {
         return `#pragma once
 #include <bblite/text.hpp>
+#include <bblite/js_data.hpp>
 #include <cmath>
 #include <cstring>
 namespace bbl {

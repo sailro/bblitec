@@ -527,9 +527,12 @@ test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
     // pushed.
     assert.match(
         faded.source,
-        /AnimationFloatLane\{manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.elapsed_ms\} = std::min<double>\(/,
+        /AnimationFloatLane\{manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.elapsed_ms\} = bbl::js::math_extreme<false>\(/,
     );
-    assert.match(faded.source, /std::max<double>\(0\.0, delta_ms\)/);
+    assert.match(
+        faded.source,
+        /bbl::js::math_extreme<true>\(\{0\.0, delta_ms\}\)/,
+    );
     assert.match(
         faded.source,
         /\(static_cast<double>\(manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.to\) - static_cast<double>\(manager\.weight_fades\[static_cast<std::size_t>\(i\)\]\.from\)\) \* t\)/,
@@ -1549,7 +1552,7 @@ test("lowers both readers of a camera viewport from their pinned bodies", () => 
     // from inside that namespace.
     assert.match(
         plan.source,
-        /double clamp01\(\n {4}double value\) \{\n {4}return std::max<double>\(0\.0, std::min<double>\(1\.0, value\)\);/,
+        /double clamp01\(\n {4}double value\) \{\n {4}return bbl::js::math_extreme<true>\(\{0\.0, bbl::js::math_extreme<false>\(\{1\.0, value\}\)\}\);/,
     );
     assert.match(
         plan.source,
@@ -1565,7 +1568,7 @@ test("lowers both readers of a camera viewport from their pinned bodies", () => 
     );
     assert.match(
         plan.source,
-        /const double width = std::max<double>\(0\.0, \(std::ceil\(\(x1 \* target_width\)\) - x\)\);/,
+        /const double width = bbl::js::math_extreme<true>\(\{0\.0, \(std::ceil\(\(x1 \* target_width\)\) - x\)\}\);/,
     );
     assert.match(
         plan.source,

@@ -1504,6 +1504,7 @@ ${body}
 
 // ${this.context.provenance(pipelineModule, "buildSpriteLayerUbo")}
 #include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 
 #include <algorithm>
 #include <array>

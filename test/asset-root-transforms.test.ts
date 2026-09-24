@@ -134,6 +134,7 @@ test(
         writeFileSync(
             file,
             `#include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/js_data.hpp>
 #include <cassert>
 #include <numbers>
 namespace bbl {
