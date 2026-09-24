@@ -5,7 +5,6 @@ import { jsonObject, jsonRecords, jsonString } from "./json.js";
 import { GeneratedTree } from "../src/generated-tree.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
-import { spriteVertexWgsl } from "../src/shader-builtins-sprite.js";
 import {
     emitUpstreamGenerated,
     type UpstreamEmitOptions,
@@ -74,7 +73,7 @@ function options(pure: boolean): UpstreamEmitOptions {
     };
 }
 
-test("upstream emission publishes only reached sprite vertex programs and their pinned origins", () => {
+test("upstream emission publishes only reached sprite programs and their pinned origins", () => {
     const context = new LoweringContext(),
         sprites = new SpriteLowerer(context);
     const provenance = context.provenance(
@@ -111,6 +110,9 @@ test("upstream emission publishes only reached sprite vertex programs and their 
                     options(pure),
                     tree,
                 );
+                // Each reached permutation's program is the pin's module,
+                // deployed whole under its fragment stem, the vertex stem
+                // compiling from it.
                 const expected = new Map<string, string>();
                 for (const [reached, depthHosted, stem] of [
                     [pure, false, "sprite"],
@@ -119,16 +121,8 @@ test("upstream emission publishes only reached sprite vertex programs and their 
                     if (!reached) continue;
                     for (const uvScroll of scroll ? [false, true] : [false]) {
                         expected.set(
-                            `upstream/shaders/${stem}${uvScroll ? "_uvscroll" : ""}.vert.native.wgsl`,
-                            spriteVertexWgsl(
-                                provenance,
-                                sprites.shaderSource(
-                                    uvScroll,
-                                    undefined,
-                                    [],
-                                    depthHosted,
-                                ),
-                            ),
+                            `upstream/shaders/${stem}${uvScroll ? "_uvscroll" : ""}.frag.native.wgsl`,
+                            `// ${provenance}\n${sprites.module({ hasDepth: depthHosted, uvScroll })}`,
                         );
                     }
                 }
@@ -137,7 +131,7 @@ test("upstream emission publishes only reached sprite vertex programs and their 
                         [...tree.contents].filter(
                             ([path]) =>
                                 path.includes("/sprite") &&
-                                path.endsWith(".vert.native.wgsl"),
+                                path.endsWith(".native.wgsl"),
                         ),
                     ),
                     expected,
@@ -146,17 +140,25 @@ test("upstream emission publishes only reached sprite vertex programs and their 
                 const composition = jsonObject(
                     JSON.parse(tree.read("upstream/shaders/composition.json")),
                 );
+                const modules = jsonRecords(composition.modules).filter(
+                    (module) => jsonString(module.output).includes("/sprite"),
+                );
                 assert.deepEqual(
-                    jsonRecords(composition.modules)
-                        .map((module) => jsonString(module.output))
-                        .filter(
-                            (path) =>
-                                path.includes("/sprite") &&
-                                path.endsWith(".vert.native.wgsl"),
-                        )
-                        .sort(),
+                    modules.map((module) => jsonString(module.output)).sort(),
                     [...expected.keys()].sort(),
                 );
+                // Both stages enter where the pin's module declares them.
+                for (const module of modules) {
+                    assert.equal(jsonString(module.entryPoint), "fs");
+                    const [vertex] = jsonRecords(module.alsoStages);
+                    assert.equal(jsonString(vertex!.entryPoint), "vs");
+                    assert.equal(
+                        jsonString(vertex!.stem),
+                        jsonString(module.output)
+                            .slice("upstream/shaders/".length)
+                            .replace(".frag.native.wgsl", ".vert"),
+                    );
+                }
                 const manifest = jsonObject(
                     JSON.parse(tree.read("upstream/provenance.json")),
                 );

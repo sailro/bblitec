@@ -40,6 +40,7 @@ import {
     reflectWgslModule,
     wgslEntryPoints,
 } from "./shader-ir.js";
+import { pinnedSceneLayout } from "./pinned-scene-layout.js";
 
 /** One attribute of a pinned vertex buffer layout. */
 export interface PinnedVertexAttribute {
@@ -548,29 +549,37 @@ function groupRows(
 }
 
 /**
- * Group 0 is the pin's scene group (`getSceneBindGroupLayout`): the scene
- * block at binding 0 and the lights at binding 1, which every backend binds
- * from its per-pass frame state. An arm laying out anything else there is
+ * Group 0 is the pin's scene group (`getSceneBindGroupLayout`), which every
+ * backend binds from its per-pass frame state and lays out from the rows
+ * recorded off that same call. An arm laying out anything else there is
  * outside that contract.
  */
 function assertSceneGroup(
     layout: BackgroundShapes["bindGroupLayout"],
     symbol: string,
 ): void {
-    const bindings = layout.entries.map((entry) =>
-        entry.buffer && (entry.buffer.type ?? "uniform") === "uniform"
-            ? entry.binding
-            : -1,
-    );
+    const rows = layout.entries
+        .map((entry) => ({
+            binding: entry.binding,
+            uniform:
+                entry.buffer !== undefined &&
+                (entry.buffer.type ?? "uniform") === "uniform",
+            vertex: (entry.visibility & vertexStage) !== 0,
+            fragment: (entry.visibility & fragmentStage) !== 0,
+        }))
+        .sort((left, right) => left.binding - right.binding);
+    const scene = pinnedSceneLayout();
     if (
-        bindings.length !== 2 ||
-        !bindings.includes(0) ||
-        !bindings.includes(1)
+        rows.length !== scene.length ||
+        rows.some(
+            (row, index) =>
+                !row.uniform ||
+                row.binding !== scene[index]!.binding ||
+                row.vertex !== scene[index]!.vertex ||
+                row.fragment !== scene[index]!.fragment,
+        )
     ) {
-        refuse(
-            symbol,
-            "no longer lays out group 0 as the scene and lights blocks",
-        );
+        refuse(symbol, "no longer lays out group 0 as the pin's scene layout");
     }
 }
 

@@ -8373,15 +8373,14 @@ public:
 #if BBLITE_HAS_BILLBOARDS
                     const auto draw_task_billboards =
                         [&](SDL_GPURenderPass* pass, BillboardDepthMode mode,
-                            const std::array<float, 16>& view_projection,
-                            const std::array<float, 16>& view) {
+                            const upstream::SceneUniforms& scene_block) {
                             for (const BillboardPass& billboard : state.billboard_passes) {
                                 if (handle_at(engine.billboard_systems, billboard.system)
                                         .depth_mode != mode) {
                                     continue;
                                 }
                                 record_billboard_pass(command, pass, engine, billboard,
-                                                      view_projection, view);
+                                                      scene_block);
                             }
                         };
 #endif
@@ -8771,8 +8770,10 @@ public:
                             if (!draw_pass_matrices.view)
                                 throw std::runtime_error(
                                     "Billboard scene stages require a view matrix.");
-                            draw_task_billboards(task_pass, BillboardDepthMode::cutout, draw_matrix,
-                                                 *draw_pass_matrices.view);
+                            draw_task_billboards(task_pass, BillboardDepthMode::cutout,
+                                                 billboard_scene_block(draw_context, engine,
+                                                                       draw_camera, draw_matrix,
+                                                                       *draw_pass_matrices.view));
                         }
 #endif
                         draw_list(draw_lists.transparent);
@@ -9211,7 +9212,9 @@ public:
 #endif
 #if BBLITE_HAS_BILLBOARDS
                                 draw_task_billboards(task_pass, BillboardDepthMode::transparent,
-                                                     task_matrix, task_view);
+                                                     billboard_scene_block(graph_scene, engine,
+                                                                           task_camera, task_matrix,
+                                                                           task_view));
 #endif
                             }
                             task_pass.end();
@@ -10047,11 +10050,13 @@ public:
             // depth and everything after has to see it, and 200 after the
             // scene's own stages for the transparent modes.
             const auto draw_billboards = [&](BillboardDepthMode mode) {
+                const upstream::SceneUniforms billboard_block =
+                    billboard_scene_block(scene, engine, camera, matrix, frame_view);
                 for (const BillboardPass& billboard : state.billboard_passes) {
                     if (handle_at(engine.billboard_systems, billboard.system).depth_mode != mode) {
                         continue;
                     }
-                    record_billboard_pass(command, pass, engine, billboard, matrix, frame_view);
+                    record_billboard_pass(command, pass, engine, billboard, billboard_block);
                 }
             };
 #endif

@@ -20,11 +20,11 @@ test("Dawn lays a group out from its stages' reflected .slots lines and the site
     mkdirSync(output, { recursive: true });
     const source = readFileSync("native/src/pal_dawn_shared.hpp", "utf8");
     // The layout reader and builder, from the one-bit helper through the
-    // entries function, exactly as the backend declares them.
+    // group count, exactly as the backend declares them.
     const first = "/** One bit per binding index";
     const last = cppFunction(
         source,
-        "inline std::vector<WGPUBindGroupLayoutEntry> dawn_reflected_layout_entries(",
+        "inline std::uint32_t dawn_reflected_group_count(",
     );
     const start = source.indexOf(first);
     const end = source.indexOf(last);

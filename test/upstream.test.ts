@@ -37,7 +37,8 @@ import {
 } from "./shader-program-fixtures.js";
 import {
     spriteCoreAdditionalProvenance,
-    spriteVertexPermutations,
+    spriteProgramStem,
+    spritePermutations,
 } from "../src/upstream-lower.js";
 import {
     pinnedMipBlitModule,
@@ -2245,34 +2246,34 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
     }
 });
 
-test("gates pure and depth-hosted sprite vertex permutations independently", () => {
+test("gates pure and depth-hosted sprite permutations independently", () => {
     assert.deepEqual(
-        spriteVertexPermutations({
+        spritePermutations({
             pure: false,
             depthHosted: true,
             uvScroll: true,
         }),
         [
-            {
-                output: "sprite_depth.vert.native.wgsl",
-                uvScroll: false,
-                depthHosted: true,
-            },
-            {
-                output: "sprite_depth_uvscroll.vert.native.wgsl",
-                uvScroll: true,
-                depthHosted: true,
-            },
+            { suffix: "_depth", uvScroll: false, depthHosted: true },
+            { suffix: "_depth_uvscroll", uvScroll: true, depthHosted: true },
         ],
     );
+    const pure = spritePermutations({
+        pure: true,
+        depthHosted: false,
+        uvScroll: true,
+    });
+    // The stock program and the custom ones share the permutation suffix,
+    // the names `sprite_program_stem` (pal_gpu_shared.hpp) loads.
     assert.deepEqual(
-        spriteVertexPermutations({
-            pure: true,
-            depthHosted: false,
-            uvScroll: true,
-        }).map(({ output }) => output),
-        ["sprite.vert.native.wgsl", "sprite_uvscroll.vert.native.wgsl"],
+        pure.map((permutation) => spriteProgramStem(0, permutation)),
+        ["sprite", "sprite_uvscroll"],
     );
+    assert.deepEqual(
+        pure.map((permutation) => spriteProgramStem(2, permutation)),
+        ["sprite_custom_2", "sprite_custom_2_uvscroll"],
+    );
+    assert.equal(spriteProgramStem(1, pure[0]!), "sprite_custom");
 });
 
 test("pins the complete synchronous Sprite2D pick-result contract", () => {

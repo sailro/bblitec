@@ -400,14 +400,6 @@ inline std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, 
 }
 #endif
 
-inline std::string sprite_fragment_shader_name(std::uint32_t program) {
-    if (program == 0u)
-        return "sprite.frag";
-    if (program == 1u)
-        return "sprite_custom.frag";
-    return "sprite_custom_" + std::to_string(program) + ".frag";
-}
-
 /**
  * The scene's active camera, read from the live `scene.camera` at each
  * use as the pin reads it, or null when the scene has none. Without one
@@ -538,6 +530,23 @@ inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(const Sprite2DLayerRec
         layer.uv_scroll, has_depth, layer.depth_mode == Sprite2DDepthMode::test_write,
         layer.alpha_to_coverage,
         layer.instance_floats_per_sprite * static_cast<std::uint32_t>(sizeof(float))};
+}
+
+/**
+ * A layer's program: the pin's module for its permutation, deployed whole
+ * under this stem -- the stock program (0) or a custom one (its 1-based
+ * index) -- with `<stem>.vert` and `<stem>.frag` both compiled from it.
+ * `spriteProgramStem` (upstream-lower.ts) deploys the same names.
+ */
+inline std::string sprite_program_stem(std::uint32_t program, const SpriteLayerPipelinePlan& plan) {
+    std::string stem = program == 0u   ? std::string("sprite")
+                       : program == 1u ? std::string("sprite_custom")
+                                       : "sprite_custom_" + std::to_string(program);
+    if (plan.has_depth)
+        stem += "_depth";
+    if (plan.scroll)
+        stem += "_uvscroll";
+    return stem;
 }
 
 /** Fixed pipeline identity for layers targeting the same scene pass. */
@@ -2834,7 +2843,7 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
 }
 #endif
 
-#if BBLITE_PINNED_MATERIALS
+#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
 /**
  * The pin's per-pass scene block.
  *
@@ -2935,7 +2944,29 @@ inline upstream::SceneUniforms pinned_scene_block(const Scene& scene, const Engi
     }
     return scene_block;
 }
+#endif
 
+#if BBLITE_HAS_BILLBOARDS
+/**
+ * The scene block a billboard program binds at its group 0: the pin's
+ * block for the pass, over the view projection and view the pass draws
+ * billboards with. A pass without a camera carries the zero block the pin
+ * never writes, as every composed family's does.
+ */
+inline upstream::SceneUniforms billboard_scene_block(const Scene& scene, const Engine& engine,
+                                                     const CameraRecord* camera,
+                                                     const std::array<float, 16>& view_projection,
+                                                     const std::array<float, 16>& view) {
+    upstream::SceneUniforms block =
+        camera ? pinned_scene_block(scene, engine, *camera, view_projection)
+               : upstream::SceneUniforms{};
+    block.viewProjection = view_projection;
+    block.view = view;
+    return block;
+}
+#endif
+
+#if BBLITE_PINNED_MATERIALS
 /**
  * The pin's per-pass lights block: a u32 count, three words of padding, then
  * MAX_LIGHTS entries.
@@ -4178,15 +4209,14 @@ inline std::size_t sprite_pass_target_run_end(const Engine& engine, const Sprite
  * keep pipeline and bind mechanics only.
  */
 struct BillboardDrawPlan {
-    const char* vertex_stem;
-    const char* fragment_stem;
+    /** The program's stem: `<stem>.vert` and `<stem>.frag` compile from one module. */
+    const char* program_stem;
     bool axis_locked;
     /** The pinned depth table pairs `transparent` with writes off, which
      *  is what makes the sorted draw order the composite, and `cutout`
      *  with writes on, which lets the GPU resolve overlap instead. */
     bool cutout_writes_depth;
-    /** The axis-locked basis reads the system block in the vertex stage. */
-    bool vertex_reads_system_block;
+
     std::uint32_t particle_passes;
 };
 
@@ -4209,24 +4239,21 @@ inline BillboardDrawPlan billboard_draw_plan(const BillboardSystemRecord& system
     }
     const bool cutout = system.depth_mode == BillboardDepthMode::cutout;
     BillboardDrawPlan plan{};
-    // Unlike the 2D layer, a custom billboard program brings its own
-    // vertex stage: the pin's composer exposes the view distance and the
-    // world position to a custom body, which the stock stage does not
-    // write.
-    plan.vertex_stem = particle_multiply      ? "billboard_particle_multiply.vert"
-                       : system.custom_shader ? "billboard_custom.vert"
-                       : axis_locked          ? "billboard_axis_locked.vert"
-                                              : "billboard.vert";
-    // The cutout arm discards below the cutoff; with alpha-to-coverage
-    // the pin drops the discard and lets sample coverage carry the edge,
-    // so that permutation shares the transparent stage.
-    plan.fragment_stem = particle_multiply                     ? "billboard_particle_multiply.frag"
-                         : system.custom_shader                ? "billboard_custom.frag"
-                         : cutout && !system.alpha_to_coverage ? "billboard_cutout.frag"
-                                                               : "billboard.frag";
+    // Each program is the module the pin composes for the system, deployed
+    // whole under these stems (`emitSpriteBillboard`, upstream-lower.ts).
+    // The custom composer takes the orientation and has no depth arm; the
+    // stock cutout arm discards below the cutoff, and with alpha-to-coverage
+    // the pin drops the discard and lets sample coverage carry the edge, so
+    // that permutation shares the transparent program.
+    const bool discards = cutout && !system.alpha_to_coverage;
+    plan.program_stem =
+        particle_multiply      ? "billboard_particle_multiply"
+        : system.custom_shader ? (axis_locked ? "billboard_custom_axis_locked" : "billboard_custom")
+        : discards             ? (axis_locked ? "billboard_axis_locked_cutout" : "billboard_cutout")
+        : axis_locked          ? "billboard_axis_locked"
+                               : "billboard";
     plan.axis_locked = axis_locked;
     plan.cutout_writes_depth = cutout;
-    plan.vertex_reads_system_block = axis_locked;
     plan.particle_passes = system.blend.particle_passes;
     return plan;
 }

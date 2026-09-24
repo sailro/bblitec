@@ -83,61 +83,19 @@ inline WGPURenderPipeline sprite_ui_dawn_target_pipeline(const SpriteUiDawnResou
     return ui.composite_pipeline ? ui.composite_pipeline : ui.texture_pipeline;
 }
 
+/**
+ * The deployed draw module (`shader-builtins-ui.ts`): the textured
+ * fragment's stem carries the module, and each pipeline enters it at its
+ * own entry point. Its stages' `.slots` sidecars lay the two groups out.
+ */
+inline constexpr std::array<DawnLayoutStage, 3> sprite_ui_dawn_stages{{
+    {"ui.vert", WGPUShaderStage_Vertex},
+    {"ui-color.frag", WGPUShaderStage_Fragment},
+    {"ui-texture.frag", WGPUShaderStage_Fragment},
+}};
+
 inline WGPUShaderModule create_sprite_ui_dawn_module(WGPUDevice device) {
-    static constexpr char source[] = R"wgsl(
-struct Screen {
-    size: vec2<f32>,
-    padding: vec2<f32>,
-};
-
-@group(0) @binding(0) var<uniform> screen: Screen;
-@group(1) @binding(0) var ui_texture: texture_2d<f32>;
-@group(1) @binding(1) var ui_sampler: sampler;
-
-struct VertexInput {
-    @location(0) position: vec2<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) uv: vec2<f32>,
-};
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec4<f32>,
-    @location(1) uv: vec2<f32>,
-};
-
-@vertex
-fn vs(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = vec4<f32>(
-        input.position.x * 2.0 / screen.size.x - 1.0,
-        1.0 - input.position.y * 2.0 / screen.size.y,
-        0.0,
-        1.0);
-    output.color = input.color;
-    output.uv = input.uv;
-    return output;
-}
-
-@fragment
-fn fs_color(input: VertexOutput) -> @location(0) vec4<f32> {
-    return input.color;
-}
-
-@fragment
-fn fs_texture(input: VertexOutput) -> @location(0) vec4<f32> {
-    return input.color * textureSample(ui_texture, ui_sampler, input.uv);
-}
-)wgsl";
-    WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
-    wgsl.code = WGPUStringView{source, sizeof(source) - 1};
-    WGPUShaderModuleDescriptor descriptor{};
-    descriptor.nextInChain = &wgsl.chain;
-    descriptor.label = string_view("bblite-ui");
-    DawnShaderModule module{wgpuDeviceCreateShaderModule(device, &descriptor)};
-    if (!module)
-        dawn_error("wgpuDeviceCreateShaderModule UI");
-    return module.release();
+    return load_wgsl_module(device, "ui-texture.frag");
 }
 
 inline WGPURenderPipeline create_sprite_ui_dawn_pipeline(WGPUDevice device, WGPUShaderModule module,
@@ -233,34 +191,10 @@ inline void create_sprite_ui_dawn_resources(DawnDevice& state, SpriteUiDawnResou
                                             std::optional<std::uint32_t> layer_samples) {
     if (ui.color_pipeline)
         return;
-    WGPUBindGroupLayoutEntry screen_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    screen_entry.binding = 0;
-    screen_entry.visibility = WGPUShaderStage_Vertex;
-    screen_entry.buffer.type = WGPUBufferBindingType_Uniform;
-    screen_entry.buffer.minBindingSize = 16;
-    WGPUBindGroupLayoutDescriptor screen_descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    screen_descriptor.entryCount = 1;
-    screen_descriptor.entries = &screen_entry;
-    ui.screen_layout = wgpuDeviceCreateBindGroupLayout(state.device, &screen_descriptor);
-    if (!ui.screen_layout)
-        dawn_error("UI screen bind group layout");
-
-    std::array<WGPUBindGroupLayoutEntry, 2> texture_entries{};
-    texture_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    texture_entries[0].binding = 0;
-    texture_entries[0].visibility = WGPUShaderStage_Fragment;
-    texture_entries[0].texture.sampleType = WGPUTextureSampleType_Float;
-    texture_entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
-    texture_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    texture_entries[1].binding = 1;
-    texture_entries[1].visibility = WGPUShaderStage_Fragment;
-    texture_entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
-    WGPUBindGroupLayoutDescriptor texture_descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    texture_descriptor.entryCount = texture_entries.size();
-    texture_descriptor.entries = texture_entries.data();
-    ui.texture_layout = wgpuDeviceCreateBindGroupLayout(state.device, &texture_descriptor);
-    if (!ui.texture_layout)
-        dawn_error("UI texture bind group layout");
+    // The screen block (group 0) and the texture pair (group 1), as the
+    // draw module declares them.
+    ui.screen_layout = create_dawn_reflected_layout(state.device, sprite_ui_dawn_stages, 0);
+    ui.texture_layout = create_dawn_reflected_layout(state.device, sprite_ui_dawn_stages, 1);
 
     const std::array<WGPUBindGroupLayout, 2> texture_layouts{ui.screen_layout, ui.texture_layout};
     WGPUPipelineLayoutDescriptor texture_pipeline_descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
