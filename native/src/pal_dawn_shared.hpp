@@ -894,10 +894,12 @@ struct DawnLayoutBindingModel {
 
 /**
  * One `@binding` line of a stage's `.slots` sidecar: the layout shape
- * the shader step reflected off the stage's module, visibility aside.
+ * the shader step reflected off the stage's module, visibility aside,
+ * and the name the module declares the binding under.
  */
 struct DawnReflectedBinding {
     std::uint32_t group = 0;
+    std::string name;
     WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
     /** A resource the shader may write, which no vertex stage may see. */
     bool writable = false;
@@ -932,7 +934,7 @@ inline WGPUTextureSampleType dawn_reflected_sample_type(std::string_view value,
     dawn_error(std::string(stem) + ".slots names sample type '" + std::string(value) + "'.");
 }
 
-/** Parses one `@binding <group> <binding> <resource...>` line. */
+/** Parses one `@binding <group> <binding> <name> <resource...>` line. */
 inline DawnReflectedBinding parse_dawn_reflected_binding(std::string_view line,
                                                          std::string_view stem) {
     std::vector<std::string_view> words;
@@ -960,31 +962,32 @@ inline DawnReflectedBinding parse_dawn_reflected_binding(std::string_view line,
         }
         return value;
     };
-    if (words.size() < 4)
+    if (words.size() < 5)
         return malformed();
     DawnReflectedBinding row;
     row.group = number(words[1]);
     row.entry.binding = number(words[2]);
-    const std::string_view resource = words[3];
-    if (resource == "uniform" && words.size() == 4) {
+    row.name = words[3];
+    const std::string_view resource = words[4];
+    if (resource == "uniform" && words.size() == 5) {
         row.entry.buffer.type = WGPUBufferBindingType_Uniform;
-    } else if (resource == "storage" && words.size() == 5) {
-        row.writable = words[4] == "read_write";
-        if (!row.writable && words[4] != "read")
+    } else if (resource == "storage" && words.size() == 6) {
+        row.writable = words[5] == "read_write";
+        if (!row.writable && words[5] != "read")
             return malformed();
         row.entry.buffer.type =
             row.writable ? WGPUBufferBindingType_Storage : WGPUBufferBindingType_ReadOnlyStorage;
-    } else if (resource == "sampler" && words.size() == 5) {
-        if (words[4] != "filtering" && words[4] != "comparison")
+    } else if (resource == "sampler" && words.size() == 6) {
+        if (words[5] != "filtering" && words[5] != "comparison")
             return malformed();
-        row.entry.sampler.type = words[4] == "comparison" ? WGPUSamplerBindingType_Comparison
+        row.entry.sampler.type = words[5] == "comparison" ? WGPUSamplerBindingType_Comparison
                                                           : WGPUSamplerBindingType_Filtering;
-    } else if (resource == "texture" && words.size() == 7) {
-        if (words[6] != "single" && words[6] != "multisampled")
+    } else if (resource == "texture" && words.size() == 8) {
+        if (words[7] != "single" && words[7] != "multisampled")
             return malformed();
-        row.entry.texture.sampleType = dawn_reflected_sample_type(words[4], stem);
-        row.entry.texture.viewDimension = dawn_reflected_view_dimension(words[5], stem);
-        row.entry.texture.multisampled = words[6] == "multisampled";
+        row.entry.texture.sampleType = dawn_reflected_sample_type(words[5], stem);
+        row.entry.texture.viewDimension = dawn_reflected_view_dimension(words[6], stem);
+        row.entry.texture.multisampled = words[7] == "multisampled";
     } else if (resource == "storage-texture") {
         // No reached render stage writes a storage texture; the compute
         // families lay theirs out from the pin's own binding descriptors.
@@ -1024,21 +1027,28 @@ inline bool same_dawn_binding_shape(const WGPUBindGroupLayoutEntry& left,
            left.texture.multisampled == right.texture.multisampled;
 }
 
+/** One entry of a reflected group layout, and the name its modules declare it under. */
+struct DawnReflectedLayoutEntry {
+    WGPUBindGroupLayoutEntry entry;
+    std::string name;
+};
+
 /**
  * Group `group` of a pipeline, laid out from what its stages' modules
  * declare there -- the `@binding` lines the shader step reflected into each
- * stage's `.slots` sidecar -- and the site's binding model.
+ * stage's `.slots` sidecar -- and the site's binding model, in binding order.
  *
  * A binding is visible to every stage whose module declares it, except that
  * no vertex stage sees a resource the shader may write. A texture one stage
  * samples and another only loads is filterable in both. Two stages that
- * declare one binding as different resources, and a binding model naming a
- * binding the group does not declare as that kind of resource, refuse.
+ * declare one binding as different resources or under different names, and a
+ * binding model naming a binding the group does not declare as that kind of
+ * resource, refuse.
  */
-inline std::vector<WGPUBindGroupLayoutEntry>
-dawn_reflected_layout_entries(std::span<const DawnLayoutStage> stages, std::uint32_t group,
-                              const DawnLayoutBindingModel& model = {}) {
-    std::vector<WGPUBindGroupLayoutEntry> entries;
+inline std::vector<DawnReflectedLayoutEntry>
+dawn_reflected_layout(std::span<const DawnLayoutStage> stages, std::uint32_t group,
+                      const DawnLayoutBindingModel& model = {}) {
+    std::vector<DawnReflectedLayoutEntry> named;
     const std::string label = [&] {
         std::string joined;
         for (const DawnLayoutStage& stage : stages)
@@ -1052,14 +1062,18 @@ dawn_reflected_layout_entries(std::span<const DawnLayoutStage> stages, std::uint
             const WGPUShaderStage visibility = row.writable && stage.stage == WGPUShaderStage_Vertex
                                                    ? WGPUShaderStage_None
                                                    : stage.stage;
-            const auto existing =
-                std::find_if(entries.begin(), entries.end(),
-                             [&](const auto& entry) { return entry.binding == row.entry.binding; });
-            if (existing == entries.end()) {
+            const auto found = std::find_if(named.begin(), named.end(), [&](const auto& declared) {
+                return declared.entry.binding == row.entry.binding;
+            });
+            if (found == named.end()) {
                 row.entry.visibility = visibility;
-                entries.push_back(row.entry);
+                named.push_back({row.entry, std::move(row.name)});
                 continue;
             }
+            if (found->name != row.name)
+                dawn_error(label + " binding " + std::to_string(row.entry.binding) +
+                           " is declared under different names by its stages.");
+            WGPUBindGroupLayoutEntry* const existing = &found->entry;
             const bool float_pair =
                 existing->texture.sampleType != WGPUTextureSampleType_BindingNotUsed &&
                 row.entry.texture.sampleType != WGPUTextureSampleType_BindingNotUsed &&
@@ -1081,13 +1095,13 @@ dawn_reflected_layout_entries(std::span<const DawnLayoutStage> stages, std::uint
         for (std::uint32_t binding = 0; bits != 0; ++binding, bits >>= 1) {
             if (!(bits & 1))
                 continue;
-            const auto found = std::find_if(entries.begin(), entries.end(), [&](const auto& entry) {
-                return entry.binding == binding;
+            const auto found = std::find_if(named.begin(), named.end(), [&](const auto& declared) {
+                return declared.entry.binding == binding;
             });
-            if (found == entries.end() || !accepts(*found))
+            if (found == named.end() || !accepts(found->entry))
                 dawn_error(label + " binds " + std::to_string(binding) + " " + what +
                            ", which its modules do not declare there.");
-            apply(*found);
+            apply(found->entry);
         }
     };
     claim(
@@ -1109,14 +1123,35 @@ dawn_reflected_layout_entries(std::span<const DawnLayoutStage> stages, std::uint
             else
                 entry.texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
         });
-    for (const WGPUBindGroupLayoutEntry& entry : entries) {
-        if (entry.visibility == WGPUShaderStage_None)
-            dawn_error(label + " binding " + std::to_string(entry.binding) +
+    for (const DawnReflectedLayoutEntry& declared : named) {
+        if (declared.entry.visibility == WGPUShaderStage_None)
+            dawn_error(label + " binding " + std::to_string(declared.entry.binding) +
                        " is writable and declared only by a vertex stage.");
     }
-    std::sort(entries.begin(), entries.end(),
-              [](const auto& left, const auto& right) { return left.binding < right.binding; });
+    std::sort(named.begin(), named.end(), [](const auto& left, const auto& right) {
+        return left.entry.binding < right.entry.binding;
+    });
+    return named;
+}
+
+/** The entries of `dawn_reflected_layout`, as a group layout takes them. */
+inline std::vector<WGPUBindGroupLayoutEntry>
+dawn_reflected_layout_entries(std::span<const DawnLayoutStage> stages, std::uint32_t group,
+                              const DawnLayoutBindingModel& model = {}) {
+    std::vector<WGPUBindGroupLayoutEntry> entries;
+    for (const DawnReflectedLayoutEntry& declared : dawn_reflected_layout(stages, group, model))
+        entries.push_back(declared.entry);
     return entries;
+}
+
+/** How many groups a pipeline over `stages` lays out: one past the highest declared. */
+inline std::uint32_t dawn_reflected_group_count(std::span<const DawnLayoutStage> stages) {
+    std::uint32_t count = 0;
+    for (const DawnLayoutStage& stage : stages) {
+        for (const DawnReflectedBinding& row : read_dawn_reflected_bindings(stage.stem))
+            count = std::max(count, row.group + 1u);
+    }
+    return count;
 }
 
 /** The group layout `dawn_reflected_layout_entries` describes; the caller owns it. */
@@ -1133,6 +1168,38 @@ inline WGPUBindGroupLayout create_dawn_reflected_layout(WGPUDevice device,
     if (!layout)
         dawn_error("reflected bind group layout for @group(" + std::to_string(group) + ")");
     return layout;
+}
+
+/**
+ * A bind group over `layout`, the reflected layout of group `group`: each
+ * binding its stages declare takes the resource `serve(name, entry)` fills
+ * in for the name the module declares it under. A binding the site cannot
+ * serve -- `serve` returns false -- refuses, naming it.
+ */
+template <typename Serve>
+WGPUBindGroup create_dawn_reflected_group(WGPUDevice device, WGPUBindGroupLayout layout,
+                                          std::span<const DawnLayoutStage> stages,
+                                          std::uint32_t group, Serve&& serve) {
+    std::vector<WGPUBindGroupEntry> entries;
+    for (const DawnReflectedLayoutEntry& declared : dawn_reflected_layout(stages, group)) {
+        WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        entry.binding = declared.entry.binding;
+        if (!serve(std::string_view(declared.name), entry)) {
+            dawn_error("@group(" + std::to_string(group) + ") @binding(" +
+                       std::to_string(declared.entry.binding) + ") '" + declared.name +
+                       "' is declared by " + std::string(stages.front().stem) +
+                       ", which this pass does not bind.");
+        }
+        entries.push_back(entry);
+    }
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = layout;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    WGPUBindGroup bound = wgpuDeviceCreateBindGroup(device, &descriptor);
+    if (!bound)
+        dawn_error("reflected bind group for @group(" + std::to_string(group) + ")");
+    return bound;
 }
 
 /**

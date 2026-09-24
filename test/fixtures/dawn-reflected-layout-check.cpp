@@ -60,37 +60,43 @@ int main() {
     // Separate stage files: each binding is visible to the stage declaring
     // it, a group neither declares lays out empty, and the rows sort.
     deployed = {
-        {"sprite.vert.slots", "@entry mainVertex\nb0 L\n@binding 1 0 uniform\n"},
-        {"sprite.frag.slots", "@entry mainFragment\r\nb0 L\r\ns0 atlasSamp\r\nt0 atlasTex\r\n"
-                              "@binding 3 0 uniform\r\n@binding 2 1 sampler filtering\r\n"
-                              "@binding 2 0 texture float 2d single\r\n"},
+        {"sprite.vert.slots", "@entry mainVertex\nb0 L\n@binding 1 0 L uniform\n"},
+        {"sprite.frag.slots",
+         "@entry mainFragment\r\nb0 L\r\ns0 atlasSamp\r\nt0 atlasTex\r\n"
+         "@binding 3 0 L uniform\r\n@binding 2 1 atlasSamp sampler filtering\r\n"
+         "@binding 2 0 atlasTex texture float 2d single\r\n"},
     };
     const std::array<DawnLayoutStage, 2> sprite{
         {{"sprite.vert", WGPUShaderStage_Vertex}, {"sprite.frag", WGPUShaderStage_Fragment}}};
     require(dawn_reflected_layout_entries(sprite, 0).empty(), "group 0 is empty");
+    require(dawn_reflected_group_count(sprite) == 4, "one past the highest declared group");
     const auto vertex_group = dawn_reflected_layout_entries(sprite, 1);
     require(vertex_group.size() == 1 && at(vertex_group, 0).visibility == WGPUShaderStage_Vertex &&
                 at(vertex_group, 0).buffer.type == WGPUBufferBindingType_Uniform,
             "vertex uniform");
-    const auto textures = dawn_reflected_layout_entries(sprite, 2);
-    require(textures.size() == 2 && textures[0].binding == 0 && textures[1].binding == 1,
+    const auto textures = dawn_reflected_layout(sprite, 2);
+    require(textures.size() == 2 && textures[0].entry.binding == 0 &&
+                textures[1].entry.binding == 1,
             "sorted texture pair");
-    require(textures[0].texture.sampleType == WGPUTextureSampleType_Float &&
-                textures[0].texture.viewDimension == WGPUTextureViewDimension_2D &&
-                textures[0].visibility == WGPUShaderStage_Fragment,
+    require(textures[0].name == "atlasTex" && textures[1].name == "atlasSamp",
+            "each binding carries the name its module declares");
+    require(textures[0].entry.texture.sampleType == WGPUTextureSampleType_Float &&
+                textures[0].entry.texture.viewDimension == WGPUTextureViewDimension_2D &&
+                textures[0].entry.visibility == WGPUShaderStage_Fragment,
             "filterable texture");
-    require(textures[1].sampler.type == WGPUSamplerBindingType_Filtering, "filtering sampler");
+    require(textures[1].entry.sampler.type == WGPUSamplerBindingType_Filtering,
+            "filtering sampler");
 
     // One module under both stems: every binding is visible to both, a
     // texture one stage samples is filterable for both, and no vertex stage
     // sees a resource the shader may write.
     deployed = {
-        {"whole.vert.slots", "@binding 0 0 uniform\n@binding 0 1 texture unfilterable-float 2d "
-                             "single\n@binding 0 2 storage read_write\n@binding 0 3 texture "
-                             "depth 2d-array single\n@binding 0 4 sampler comparison\n"},
-        {"whole.frag.slots", "@binding 0 0 uniform\n@binding 0 1 texture float 2d single\n"
-                             "@binding 0 2 storage read_write\n@binding 0 3 texture depth "
-                             "2d-array single\n@binding 0 4 sampler comparison\n"},
+        {"whole.vert.slots", "@binding 0 0 u uniform\n@binding 0 1 t texture unfilterable-float 2d "
+                             "single\n@binding 0 2 w storage read_write\n@binding 0 3 d texture "
+                             "depth 2d-array single\n@binding 0 4 c sampler comparison\n"},
+        {"whole.frag.slots", "@binding 0 0 u uniform\n@binding 0 1 t texture float 2d single\n"
+                             "@binding 0 2 w storage read_write\n@binding 0 3 d texture depth "
+                             "2d-array single\n@binding 0 4 c sampler comparison\n"},
     };
     const std::array<DawnLayoutStage, 2> whole{
         {{"whole.vert", WGPUShaderStage_Vertex}, {"whole.frag", WGPUShaderStage_Fragment}}};
@@ -109,9 +115,9 @@ int main() {
     // The binding model: a dynamic offset on a buffer, and a format that
     // does not filter on a texture and its sampler.
     deployed = {
-        {"splat.vert.slots", "@binding 1 0 uniform\n@binding 1 1 sampler filtering\n"
-                             "@binding 1 2 texture float 2d single\n@binding 1 6 texture uint 2d "
-                             "single\n"},
+        {"splat.vert.slots", "@binding 1 0 u uniform\n@binding 1 1 e sampler filtering\n"
+                             "@binding 1 2 F texture float 2d single\n@binding 1 6 sh texture uint "
+                             "2d single\n"},
     };
     const std::array<DawnLayoutStage, 1> splat{{{"splat.vert", WGPUShaderStage_Vertex}}};
     const auto modelled =
@@ -130,17 +136,24 @@ int main() {
     refuses([&] { dawn_reflected_layout_entries(splat, 1, {.unfilterable = dawn_binding_bit(5)}); },
             "a model naming an undeclared binding refuses");
 
-    // Refusals: stages disagreeing on a binding, a writable resource only a
-    // vertex stage declares, a storage texture, and a malformed line.
+    // Refusals: stages disagreeing on a binding's resource or its name, a
+    // writable resource only a vertex stage declares, a storage texture, and
+    // a malformed line.
     deployed = {
-        {"a.vert.slots", "@binding 0 0 uniform\n@binding 0 1 storage read_write\n"},
-        {"a.frag.slots", "@binding 0 0 storage read\n"},
-        {"b.frag.slots", "@binding 0 0 storage-texture write-only rgba8unorm 2d\n"},
-        {"c.frag.slots", "@binding 0 x uniform\n"},
+        {"a.vert.slots", "@binding 0 0 u uniform\n@binding 0 1 w storage read_write\n"},
+        {"a.frag.slots", "@binding 0 0 u storage read\n"},
+        {"n.vert.slots", "@binding 0 0 u uniform\n"},
+        {"n.frag.slots", "@binding 0 0 v uniform\n"},
+        {"b.frag.slots", "@binding 0 0 w storage-texture write-only rgba8unorm 2d\n"},
+        {"c.frag.slots", "@binding 0 x u uniform\n"},
+        {"d.frag.slots", "@binding 0 0 uniform\n"},
     };
     const std::array<DawnLayoutStage, 2> disagreeing{
         {{"a.vert", WGPUShaderStage_Vertex}, {"a.frag", WGPUShaderStage_Fragment}}};
     refuses([&] { dawn_reflected_layout_entries(disagreeing, 0); }, "disagreeing stages refuse");
+    const std::array<DawnLayoutStage, 2> renamed{
+        {{"n.vert", WGPUShaderStage_Vertex}, {"n.frag", WGPUShaderStage_Fragment}}};
+    refuses([&] { dawn_reflected_layout_entries(renamed, 0); }, "differently named stages refuse");
     const std::array<DawnLayoutStage, 1> vertex_only{{{"a.vert", WGPUShaderStage_Vertex}}};
     refuses([&] { dawn_reflected_layout_entries(vertex_only, 0); },
             "a vertex-only writable binding refuses");
@@ -149,5 +162,7 @@ int main() {
             "a storage texture refuses");
     const std::array<DawnLayoutStage, 1> malformed{{{"c.frag", WGPUShaderStage_Fragment}}};
     refuses([&] { dawn_reflected_layout_entries(malformed, 0); }, "a malformed line refuses");
+    const std::array<DawnLayoutStage, 1> unnamed{{{"d.frag", WGPUShaderStage_Fragment}}};
+    refuses([&] { dawn_reflected_layout_entries(unnamed, 0); }, "an unnamed line refuses");
     return 0;
 }
