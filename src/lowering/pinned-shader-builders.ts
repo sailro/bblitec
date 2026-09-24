@@ -9,10 +9,12 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join } from "node:path";
 import ts from "typescript";
-import { pinnedLibraryRoot } from "../pinned-shader-composer.js";
+import {
+    anchorSpecifiersInText,
+    pinnedLibraryRoot,
+} from "../pinned-shader-composer.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 import {
     bracedShaderText,
@@ -126,7 +128,7 @@ function pinnedModuleExport(
         const alias = `__bblitecExecuted_${symbolName}`;
         const loaded: unknown = loadModule(
             augmentedModuleFile(
-                `${anchoredSpecifiers(
+                `${anchorSpecifiersInText(
                     readFileSync(packaged, "utf8"),
                     packaged,
                 )}\nexport { ${symbolName} as ${alias} };\n`,
@@ -147,58 +149,6 @@ function pinnedModuleExport(
         const result: unknown = Reflect.apply(value, undefined, parameters);
         return result;
     };
-}
-
-/**
- * A packaged module's text with every relative module specifier -- static
- * and dynamic imports, re-exports -- made absolute against the module's own
- * directory, located by the module's syntax tree.
- */
-function anchoredSpecifiers(text: string, modulePath: string): string {
-    const file = ts.createSourceFile(
-        modulePath,
-        text,
-        ts.ScriptTarget.Latest,
-        false,
-        ts.ScriptKind.JS,
-    );
-    const edits: Array<{ start: number; end: number; text: string }> = [];
-    const anchor = (literal: ts.Expression | undefined): void => {
-        if (
-            literal &&
-            ts.isStringLiteral(literal) &&
-            (literal.text.startsWith("./") || literal.text.startsWith("../"))
-        ) {
-            edits.push({
-                start: literal.getStart(file),
-                end: literal.end,
-                text: JSON.stringify(
-                    pathToFileURL(resolve(dirname(modulePath), literal.text))
-                        .href,
-                ),
-            });
-        }
-    };
-    const visit = (node: ts.Node): void => {
-        if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-            anchor(node.moduleSpecifier);
-        } else if (
-            ts.isCallExpression(node) &&
-            node.expression.kind === ts.SyntaxKind.ImportKeyword
-        ) {
-            anchor(node.arguments[0]);
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(file);
-    let anchored = text;
-    for (const edit of edits.reverse()) {
-        anchored =
-            anchored.slice(0, edit.start) +
-            edit.text +
-            anchored.slice(edit.end);
-    }
-    return anchored;
 }
 
 /** The augmented module, written once per content under the OS temp directory. */

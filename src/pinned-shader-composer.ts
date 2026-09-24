@@ -21,6 +21,7 @@ import ts from "typescript";
 
 import { javascriptModuleUrl } from "./data-url.js";
 import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
+import { isRelativeSpecifier } from "./typescript-module-specifiers.js";
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve, relative } from "node:path";
@@ -671,10 +672,11 @@ export async function importPinnedModuleObserving<T>(
  * Module text with every relative specifier made importable, anchored
  * against the module's own directory unless a shim redirects it. Every
  * pinned import that has to leave the file system (a `data:` URL, an
- * augmented module) goes through this or, for the unasynced import, through
- * the same `rewriteModuleSpecifiers` with its dynamic imports hoisted.
+ * augmented module, an executed shader builder) goes through this or, for
+ * the unasynced import, through the same `rewriteModuleSpecifiers` with its
+ * dynamic imports hoisted.
  */
-function anchorSpecifiersInText(
+export function anchorSpecifiersInText(
     text: string,
     modulePath: string,
     shims: ReadonlyMap<string, string> = new Map(),
@@ -690,10 +692,6 @@ function anchorSpecifiersInText(
               }
             : undefined,
     );
-}
-
-function isRelativeSpecifier(specifier: string): boolean {
-    return specifier.startsWith("./") || specifier.startsWith("../");
 }
 
 /** A specifier as an importable URL: its shim, or the file it names. */
