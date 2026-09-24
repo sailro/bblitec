@@ -6695,26 +6695,11 @@ class SdlSceneRun {
         return *frame_;
     }
 
-    /**
-     * The scene's active camera, read from the live `scene.camera` at each
-     * use as the pin reads it, or null when the scene has none. Without one
-     * the pin still runs the scene pass: it clears and draws, but writes no
-     * scene block (`_writePassSceneUBO` returns first, render-task-base.ts),
-     * so the pass draws through the zero block the frame starts with and
-     * nothing it projects reaches a fragment.
-     */
-    CameraRecord* active_camera() {
-        return data_.scene.camera.value < data_.engine.cameras.size()
-                   ? &handle_at(data_.engine.cameras, data_.scene.camera)
-                   : nullptr;
-    }
+    /** The run scene's `scene_camera`. */
+    CameraRecord* active_camera() { return scene_camera(data_.engine, data_.scene); }
 
     /** A registered layer's own camera, null when it has none. */
-    CameraRecord* layer_camera(const Scene& layer) {
-        return layer.camera.value < data_.engine.cameras.size()
-                   ? &handle_at(data_.engine.cameras, layer.camera)
-                   : nullptr;
-    }
+    CameraRecord* layer_camera(const Scene& layer) { return scene_camera(data_.engine, layer); }
 
     void rebuild_task_draw_lists() {
         [[maybe_unused]] auto& engine = data_.engine;
@@ -9111,7 +9096,7 @@ public:
                                 "the scene's active camera; a scene without one is not reached.");
                         }
                         // A pass without a camera pushes the zero block the pin
-                        // never writes (see `active_camera`).
+                        // never writes (see `scene_camera`).
                         upstream::SceneUniforms pass_scene_block =
 #if BBLITE_HAS_TAA
                             deferred_scene ? temporal_clean_scene_block(*deferred_scene) :
@@ -9513,13 +9498,8 @@ public:
                                     "Temporal source requires a prepared Standard color pass in its owning scene.");
                             }
 #endif
-                            // `cfg.cam ?? scene.camera`; null is a pass the pin
-                            // runs without writing its scene block.
                             const CameraRecord* const task_camera =
-                                task.render.has_camera &&
-                                        task.render.camera.value < engine.cameras.size()
-                                    ? &handle_at(engine.cameras, task.render.camera)
-                                    : graph_camera;
+                                render_task_camera(engine, task, graph_camera);
 #if BBLITE_HAS_TAA
                             CameraRecord* source_camera =
                                 task.render.has_camera
@@ -11063,7 +11043,7 @@ public:
                 }
                 // The layer's own camera, or the base scene's for a layer
                 // without one; null when neither has one, which draws
-                // through the zero block (see `active_camera`).
+                // through the zero block (see `scene_camera`).
                 const CameraRecord* const own_overlay_camera = layer_camera(*overlay_scene);
                 const CameraRecord* const overlay_camera =
                     own_overlay_camera ? own_overlay_camera : camera;

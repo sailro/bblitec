@@ -9589,29 +9589,17 @@ class DawnSceneRun {
         return *frame_;
     }
 
-    /**
-     * The scene's active camera, read from the live `scene.camera` at each
-     * use as the pin reads it, or null when the scene has none. Without one
-     * the pin still runs the scene pass: it clears and draws, but writes no
-     * scene block (`_writePassSceneUBO` returns first, render-task-base.ts),
-     * so the pass draws through the zero block the frame starts with and
-     * nothing it projects reaches a fragment.
-     */
-    CameraRecord* active_camera() {
-        return data_.scene.camera.value < data_.engine.cameras.size()
-                   ? &handle_at(data_.engine.cameras, data_.scene.camera)
-                   : nullptr;
-    }
+    /** The run scene's `scene_camera`. */
+    CameraRecord* active_camera() { return scene_camera(data_.engine, data_.scene); }
 
     /**
      * The camera a registered layer's pass projects through: its own, or,
      * for a layer without one, the base scene's. Null when neither has one,
-     * which is the no-camera pass `active_camera` describes.
+     * which is the no-camera pass `scene_camera` describes.
      */
     CameraRecord* layer_camera(const Scene& layer) {
-        return layer.camera.value < data_.engine.cameras.size()
-                   ? &handle_at(data_.engine.cameras, layer.camera)
-                   : active_camera();
+        CameraRecord* const own = scene_camera(data_.engine, layer);
+        return own ? own : active_camera();
     }
 
     void rebuild_task_draw_lists() {

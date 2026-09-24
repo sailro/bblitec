@@ -404,6 +404,30 @@ inline const char* background_skybox_fragment(const EnvironmentState& environmen
 }
 
 /**
+ * The scene's active camera, read from the live `scene.camera` at each
+ * use as the pin reads it, or null when the scene has none. Without one
+ * the pin still runs the scene pass: it clears and draws, but writes no
+ * scene block (`_writePassSceneUBO` returns first, render-task-base.ts),
+ * so the pass draws through the zero block the frame starts with and
+ * nothing it projects reaches a fragment.
+ */
+inline CameraRecord* scene_camera(Engine& engine, const Scene& scene) {
+    return handle_find(engine.cameras, scene.camera);
+}
+
+/**
+ * A render task's camera, the pin's `cfg.cam ?? scene.camera`: the task's
+ * own when it was given one, else `scene`'s, the camera of the scene it
+ * renders. Null is the no-camera pass `scene_camera` describes.
+ */
+inline const CameraRecord* render_task_camera(const Engine& engine, const FrameTaskRecord& task,
+                                              const CameraRecord* scene) {
+    const CameraRecord* own =
+        task.render.has_camera ? handle_find(engine.cameras, task.render.camera) : nullptr;
+    return own ? own : scene;
+}
+
+/**
  * The pin's nullish camera, as a record.
  *
  * `getEffectiveAspectRatio` and `resolveCameraViewport` both answer the
@@ -3115,9 +3139,9 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
     // rather than per generator.
     const PixelViewport surface_extent =
         scene_surface_extent(engine, scene, engine.options.width, engine.options.height);
+    const CameraRecord* const aspect_camera = scene_camera(engine, scene);
     const double csm_camera_aspect = upstream::effective_aspect_ratio(
-        scene.camera.value < engine.cameras.size() ? handle_at(engine.cameras, scene.camera)
-                                                   : no_camera_record,
+        aspect_camera ? *aspect_camera : no_camera_record,
         static_cast<double>(surface_extent.width), static_cast<double>(surface_extent.height));
 #endif
     for_each_shadow_generator(
@@ -3195,16 +3219,16 @@ inline void refresh_shadow_generators(const Scene& scene, Engine& engine,
             // folded in) and the near/far pair the split formula reads. A
             // forced generator's gate returns before reading it, so the
             // key is built only when the gate will.
-            const bool csm_fit = generator.filter == ShadowFilter::csm_directional &&
-                                 scene.camera.value < engine.cameras.size();
+            const CameraRecord* const fit_camera = scene_camera(engine, scene);
+            const bool csm_fit =
+                generator.filter == ShadowFilter::csm_directional && fit_camera != nullptr;
             upstream::CsmCameraKey camera_key;
             if (csm_fit)
                 csm_camera = &camera_key;
             if (csm_fit && !generator.force_refresh_every_frame) {
-                const CameraRecord& camera = handle_at(engine.cameras, scene.camera);
-                camera_key.view_projection = upstream::build_view_projection(camera, aspect);
-                camera_key.near_plane = camera.near_plane;
-                camera_key.far_plane = camera.far_plane;
+                camera_key.view_projection = upstream::build_view_projection(*fit_camera, aspect);
+                camera_key.near_plane = fit_camera->near_plane;
+                camera_key.far_plane = fit_camera->far_plane;
             }
 #endif
             // The pin's render gate, ahead of each family's fit exactly as
