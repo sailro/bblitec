@@ -1,0 +1,28 @@
+{
+  "scene": "regression-node-local-attributes",
+  "notes": "Node-geometry transport of raw source attributes: the scene draws examples/assets/regression/node-local-attributes.gltf (nonunit and signed-zero NORMAL lanes, hierarchies with both determinant signs) and a scene-created mesh under a scaled parent with one node material, in a colour task and two geometry tasks. The native nodeGpu receipts of one frame (BBLITE_NODE_GPU_CAPTURE=1) must bind the source attribute bytes and index sequence, one texture and sampler across the views, a distinct mesh UBO per mesh and view on Dawn, and the pin's world matrices exact to the word except signed zeros (the scene-created mesh within 2 ulps); the browser observation (checks/plugins/webgpu-recorder.init.js) must upload the same attribute, index and world bytes.",
+  "base": "adhoc",
+  "timeoutMs": 90000,
+  "env": { "BBLITE_NODE_GPU_CAPTURE": "1" },
+  "phases": [
+    { "id": "canonical", "frame": 181 }
+  ],
+  "expect": [
+    { "kind": "capture-path", "phase": "canonical", "path": "nodeGpu.draws.length", "equals": 9 },
+    { "kind": "plugin", "module": "checks/plugins/node-transport.mjs", "options": { "control": "node-local" } }
+  ],
+  "observe": {
+    "initScriptFile": "checks/plugins/webgpu-recorder.init.js",
+    "steps": [
+      {
+        "id": "recorded",
+        "screenshot": "none",
+        "state": false,
+        "actions": [
+          { "frames": 10 },
+          { "evaluate": "window.__webgpuRecorder.observation()", "as": "observation" }
+        ]
+      }
+    ]
+  }
+}

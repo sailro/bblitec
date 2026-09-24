@@ -1,129 +1,10 @@
 // The globals the check init scripts (checks/plugins/*.init.js) install on an
 // observed page, for tsconfig.browser.json.
 
-interface GpuReceiptResource {
-    id: number;
-    kind: "buffer" | "texture" | "sampler" | "view";
-    label: string;
-    size?: number | { width: number; height: number };
-    usage?: number;
-    format?: GPUTextureFormat;
-    texture?: number;
-}
-
-interface GpuReceiptWrite {
-    id: number;
-    frame: number;
-    offset?: number;
-    layout?: {
-        offset: number;
-        bytesPerRow: number | undefined;
-        rowsPerImage: number | undefined;
-    };
-    mipLevel?: number;
-    origin?: unknown;
-    size?: unknown;
-    bytes: number[] | null;
-    byteLength: number;
-    mapped?: boolean;
-}
-
-interface GpuReceiptGroup {
-    id: number;
-    label: string;
-    entries: Array<{
-        binding: number;
-        resource: number;
-        offset?: number;
-        size?: number | null;
-    }>;
-}
-
-interface GpuReceiptPipeline {
-    id: number;
-    label: string;
-    vertex: { constants: unknown; buffers: unknown };
-    fragment: { constants: unknown; targets: unknown } | null;
-    depthStencil: unknown;
-    primitive: unknown;
-    multisample: unknown;
-}
-
-interface GpuReceiptBinding {
-    pipeline: number | null;
-    groups: Array<number | null>;
-    vertices: Array<{
-        buffer: number | null;
-        offset: number;
-        size: number | null;
-    }>;
-    index: {
-        buffer: number;
-        format: GPUIndexFormat;
-        offset: number;
-        size: number | null;
-    } | null;
-}
-
-interface GpuReceiptDraw extends GpuReceiptBinding {
-    method: "draw" | "drawIndexed";
-    frame: number;
-    args: number[];
-}
-
-/** checks/plugins/gpu-receipts.init.js's record of a page's WebGPU operations. */
-interface GpuReceipts {
-    resources: GpuReceiptResource[];
-    writes: GpuReceiptWrite[];
-    pipelines: GpuReceiptPipeline[];
-    groups: GpuReceiptGroup[];
-    draws: GpuReceiptDraw[];
-    frame: number;
-}
-
-/** gpu-receipts.init.js */
-declare var __gpuReceipts: GpuReceipts;
-/** scene180-uniform.init.js: the text layer uniform bytes, write for write. */
-declare var __textUniform: Uint8Array | undefined;
-/** raf-pacing.init.js: pace requestAnimationFrame at `rate` frames per second. */
-declare var __bblRafPacing: (rate: number) => void;
-
-interface IdentityBindGroup {
-    id: number;
-    entries: Array<{ binding: number; resource: number }>;
-}
-
-interface IdentityPipeline {
-    id: number;
-    vertex: {
-        buffers: Array<{
-            arrayStride: number;
-            attributes: Array<{ format: GPUVertexFormat; offset: number }>;
-        } | null>;
-    };
-    fragment: { targets: Array<{ format: GPUTextureFormat } | null> };
-}
-
-interface IdentityBinding {
-    pipeline: number | null;
-    groups: Record<number, { group: number }>;
-    vertices: Record<number, { buffer: number; offset: number }>;
-    index: { buffer: number; format: GPUIndexFormat; offset: number } | null;
-}
-
-type IdentityDraw =
-    | { method: "draw"; args: number[] }
-    | ({ method: "drawIndexed"; args: number[] } & IdentityBinding);
-
-/** The scene149 objects scene149-identity.init.js reads, as the pin shapes them. */
-interface Scene149Texture {
-    texture: GPUTexture;
-    view: GPUTextureView;
-    sampler: GPUSampler;
-}
-interface Scene149Mesh {
+/** A mesh as webgpu-recorder.init.js describes it, as the pin shapes it. */
+interface RecorderMesh {
     name: string;
-    material: { inputs: { albedo: { texture: Scene149Texture } } };
+    material: object;
     worldMatrix: Float32Array;
     _gpu: {
         positionBuffer: GPUBuffer;
@@ -132,16 +13,18 @@ interface Scene149Mesh {
         indexBuffer: GPUBuffer;
     };
 }
-interface Scene149Material {
-    baseColorTexture?: Scene149Texture;
-    diffuseTexture?: Scene149Texture;
-}
 
-/** scene149-identity.init.js: the scene's source hook sets `source`. */
-declare var __scene149Identity: {
-    source: { byMaterial: Map<Scene149Material, Scene149Mesh[]> } | undefined;
-    submissions: IdentityDraw[][];
-    record(count: number): void;
-    materials(): unknown[];
-    observation(): unknown;
+/** webgpu-recorder.init.js; a source hook may set `source`. */
+declare var __webgpuRecorder: {
+    source: unknown;
+    identity(object: object): number;
+    receipts(): import("./webgpu-records.js").RecordedReceipts;
+    observation(): import("./webgpu-records.js").RecordedObservation;
+    describeMeshes(
+        meshes: readonly RecorderMesh[],
+    ): import("./webgpu-records.js").RecordedMesh[];
 };
+/** scene180-uniform.init.js: the text layer uniform bytes, write for write. */
+declare var __textUniform: Uint8Array | undefined;
+/** raf-pacing.init.js: pace requestAnimationFrame at `rate` frames per second. */
+declare var __bblRafPacing: (rate: number) => void;

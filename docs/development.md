@@ -146,7 +146,7 @@ Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript p
 
 | Command | Result |
 | --- | --- |
-| `help`, `list [--json]`, `show <scene>` | Usage and registry data |
+| `help [command]`, `list [--json]`, `show <scene>` | Usage (all, or one command's) and registry data |
 | `show <scene> --activation\|--adaptations\|--provenance` | Feature/evidence inventory |
 | `status <scene> [--run]` | Generation, payload and executable stamps |
 | `compile <scene\|all>` | C++, WGSL, assets, manifests |

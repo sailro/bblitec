@@ -69,8 +69,9 @@ clock, which stops while the console session is locked: a run with a frame budge
 | retainedDataFile | CPU splat bytes, not texture uploads |
 | Palette summary | Two matrices; full dumps needed for wider deformation |
 
-Enable BBLITE_NODE_GPU_CAPTURE with BBLITE_RENDER_CAPTURE for node receipts. Scene149-transport joins
-those receipts to browser buffers and checks stamps, bindings and numeric worlds; signed zero is separate.
+Enable BBLITE_NODE_GPU_CAPTURE with BBLITE_RENDER_CAPTURE for node receipts. The scene149-transport and
+node-local-transport checks join those receipts to the browser buffers checks/plugins/webgpu-recorder.init.js
+records and check stamps, bindings and numeric worlds; signed zero is separate.
 `probe` temporarily changes and restores the deployed Dawn WGSL; SDL_GPU changes need offline compilation.
 Bounds and mesh-handle generations are checked in every build; set BBLITE_CHECKED_HANDLES=1 before building
 (CMake: BBLITE_CHECKED_HANDLES=ON) to name the call site in a handle refusal.

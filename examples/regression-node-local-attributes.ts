@@ -9,7 +9,7 @@ import {
     loadNodeBlockEmitterWithGeometry, parseNodeMaterialFromSnippet, registerScene, startEngine,
 } from "@babylonjs/lite";
 import type { Mesh, SceneNode } from "@babylonjs/lite";
-import { SCENE149_NME_JSON } from "../../corpus/babylon-lite/lab/lite/src/shared/scene149-nme.js";
+import { SCENE149_NME_JSON } from "../corpus/babylon-lite/lab/lite/src/shared/scene149-nme.js";
 
 function isMeshNode(node: unknown): node is Mesh {
     return typeof node === "object" && node !== null && "_gpu" in node;
@@ -37,7 +37,7 @@ async function main(): Promise<void> {
         json: SCENE149_NME_JSON, blockLoader: loadNodeBlockEmitterWithGeometry,
         textures: { albedo },
     });
-    const container = await loadGltf(engine, "../../examples/assets/regression/node-local-attributes.gltf");
+    const container = await loadGltf(engine, "../examples/assets/regression/node-local-attributes.gltf");
     const meshes: Mesh[] = [];
     for (const entity of container.entities) collectMeshes(entity, meshes);
     for (const mesh of meshes) mesh.material = material;

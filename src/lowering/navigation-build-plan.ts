@@ -42,13 +42,97 @@ import {
 import {
     type PinnedBinding,
     PinnedNumericLowerer,
+    type PinnedRecordMember,
+    type PinnedRecordShape,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedMathCall, pinnedNumericMathCalls } from "./pinned-operators.js";
 import { doubleLiteral } from "../cpp-literals.js";
 
 export const WRAPPER_CORE = "@recast-navigation/core/dist/index.mjs";
-const WRAPPER_GENERATORS = "@recast-navigation/generators/dist/index.mjs";
+export const WRAPPER_GENERATORS =
+    "@recast-navigation/generators/dist/index.mjs";
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
+
+/**
+ * `bbl::pal::NavMeshBuildParams`' list field for each list key a reached
+ * `createNavMesh` may carry, empty where the scene names none.
+ */
+const NAV_MESH_BUILD_PARAM_LISTS: ReadonlyMap<string, string> = new Map([
+    ["offMeshConnections", "off_mesh_connections"],
+]);
+
+/**
+ * How each member of the pin's `OffMeshConnection` reads off
+ * `bbl::pal::NavOffMeshConnection`, whose fields `intrinsics/navigation.ts`
+ * fills from the scene's literal: the two endpoints' lanes and the radius
+ * widen from the floats the seam holds, and the three optional members
+ * read absent where the scene left them out.
+ */
+function offMeshConnectionRecord(): PinnedRecordShape {
+    const lanes = (field: string) => (owner: string) =>
+        new Map<string, PinnedBinding>(
+            (["x", "y", "z"] as const).map((axis) => [
+                `.${axis}`,
+                {
+                    cpp: `static_cast<double>(${owner}.${field}.${axis})`,
+                    type: "scalar",
+                },
+            ]),
+        );
+    const optional = (field: string) => (owner: string) =>
+        new Map<string, PinnedBinding>([
+            [
+                "",
+                {
+                    cpp: `(*${owner}.${field})`,
+                    type: "scalar",
+                    nullish: `!${owner}.${field}.has_value()`,
+                },
+            ],
+        ]);
+    const member = (
+        name: string,
+        read: (owner: string) => ReadonlyMap<string, PinnedBinding>,
+    ): PinnedRecordMember => ({
+        name,
+        read,
+        store: () =>
+            contractError(
+                wrapperModule(WRAPPER_CORE),
+                `The build plan only reads an off-mesh connection's ${name}.`,
+            ),
+    });
+    return {
+        cpp: "bbl::pal::NavOffMeshConnection",
+        members: [
+            member("startPosition", lanes("start")),
+            member("endPosition", lanes("end")),
+            member(
+                "radius",
+                (owner) =>
+                    new Map([
+                        [
+                            "",
+                            {
+                                cpp: `static_cast<double>(${owner}.radius)`,
+                                type: "scalar",
+                            },
+                        ],
+                    ]),
+            ),
+            member(
+                "bidirectional",
+                (owner) =>
+                    new Map([
+                        ["", { cpp: `${owner}.bidirectional`, type: "bool" }],
+                    ]),
+            ),
+            member("area", optional("area")),
+            member("flags", optional("flags")),
+            member("userId", optional("user_id")),
+        ],
+    };
+}
 
 /**
  * `bbl::pal::NavMeshBuildParams`' field for each `NavMeshParameters` key a
@@ -114,7 +198,7 @@ export function wrapperPackageVersion(name: string): string {
 }
 
 /** `a.b.c` as its names, or undefined for anything but a property path. */
-function propertyPath(expression: ts.Expression): string[] | undefined {
+export function propertyPath(expression: ts.Expression): string[] | undefined {
     const unwrapped = unwrapExpression(expression);
     if (ts.isIdentifier(unwrapped)) return [unwrapped.text];
     if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) return ["this"];
@@ -132,7 +216,7 @@ function isBlockArrow(node: ts.Node): node is BlockArrow {
 }
 
 /** A `const name = (...) => { ... }` under `scope`, refusing any other shape. */
-function blockArrow(
+export function blockArrow(
     scope: ts.Node,
     name: string,
     parameters: readonly string[],
@@ -156,7 +240,7 @@ function blockArrow(
 }
 
 /** The one statement of `statements` declaring `name`, and its index. */
-function declarationOf(
+export function declarationOf(
     statements: readonly ts.Statement[],
     name: string,
     at: ts.Node,
@@ -309,6 +393,7 @@ type BuildArm = NavigationBuildArm;
  */
 type CfgAssignment =
     | { key: string; kind: "given" }
+    | { key: string; kind: "givenNonEmpty" }
     | { key: string; kind: "always"; value: ts.Expression }
     | { key: string; kind: "conditional"; at: ts.Node };
 
@@ -382,18 +467,30 @@ function pinnedCfgAssignments(arm: BuildArm): readonly CfgAssignment[] {
             const path = store ? propertyPath(store.left) : undefined;
             const key = path?.length === 2 ? path[1]! : undefined;
             if (
-                store &&
-                key &&
-                context.expressionMatchesShape(
-                    guard,
-                    `params.${key} !== undefined`,
-                ) &&
-                context.expressionMatchesShape(
+                !store ||
+                !key ||
+                !context.expressionMatchesShape(
                     store,
                     `cfg.${key} = params.${key}`,
                 )
             ) {
+                continue;
+            }
+            if (
+                context.expressionMatchesShape(
+                    guard,
+                    `params.${key} !== undefined`,
+                )
+            ) {
                 common.push({ key, kind: "given" });
+                accounted.add(store);
+            } else if (
+                context.expressionMatchesShape(
+                    guard,
+                    `params.${key} !== undefined && params.${key}.length > 0`,
+                )
+            ) {
+                common.push({ key, kind: "givenNonEmpty" });
                 accounted.add(store);
             }
         }
@@ -404,10 +501,7 @@ function pinnedCfgAssignments(arm: BuildArm): readonly CfgAssignment[] {
                 node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 propertyPath(node.left)?.[0] === "cfg",
         )) {
-            // `offMeshConnections` rides in `cfg` only when non-empty, and
-            // the PAL reads the list itself; the build plan never does.
-            const key = propertyPath(store.left)![1];
-            if (!accounted.has(store) && key !== "offMeshConnections") {
+            if (!accounted.has(store)) {
                 contractError(
                     store,
                     "Expected every cfg store in _createNavMeshFromMerged to " +
@@ -456,6 +550,13 @@ function cfgValue(
                     "the build plan does not read.",
             );
         }
+        if (assignment.kind === "givenNonEmpty") {
+            return contractError(
+                at,
+                `cfg.${key} is a list, which the build plan reads through ` +
+                    "cfgListPresence.",
+            );
+        }
         if (assignment.kind === "given") {
             // Present only when the scene gave it; the spread beneath
             // answers otherwise.
@@ -474,7 +575,8 @@ function cfgValue(
             continue;
         }
         // Always present: `params.K ?? N`, or `params.K` itself, which a
-        // scene that selected this arm has given.
+        // scene that selected this arm has given -- read as the pin's proven
+        // presence.
         const nullish = nullishDefault(assignment.value);
         const path = propertyPath(nullish ? nullish.left : assignment.value);
         if (path?.length !== 2 || path[0] !== "params") {
@@ -492,12 +594,43 @@ function cfgValue(
                           assignment.value.getSourceFile(),
                       ),
                   )})`
-                : `${field}.value()`,
+                : `bbl::pinned::present(${field})`,
             type: "scalar",
             readsParams: true,
         };
     }
     return value;
+}
+
+/**
+ * A list key of `cfg` the generator tests for truthiness: the pinned module
+ * stores it only when the scene's list is non-empty, so the test is the
+ * seam list's own, and the list it then reads is the scene's.
+ */
+function cfgListPresence(
+    arm: BuildArm,
+    key: string,
+    at: ts.Node,
+): { present: string; list: string } {
+    const assignments = pinnedCfgAssignments(arm).filter(
+        (assignment) => assignment.key === key,
+    );
+    const field = NAV_MESH_BUILD_PARAM_LISTS.get(key);
+    if (
+        assignments.length !== 1 ||
+        assignments[0]!.kind !== "givenNonEmpty" ||
+        !field
+    ) {
+        return contractError(
+            at,
+            `Expected the pinned cfg to carry ${key} exactly when the ` +
+                "scene's list is non-empty.",
+        );
+    }
+    return {
+        present: `!params.${field}.empty()`,
+        list: `params.${field}`,
+    };
 }
 
 /** One generator's config spread and the names it binds. */
@@ -1442,17 +1575,142 @@ function configStepFunction(
 }
 
 /**
- * The `NavMeshCreateParams` setters PAL code performs itself: the poly-mesh
- * and detail-mesh copies are library data, and the off-mesh connections
- * are packed from the scene's own list.
+ * The `NavMeshCreateParams` setters PAL code performs itself: each copies
+ * the library's own poly-mesh or detail-mesh arrays in, through the glue's
+ * `DetourNavMeshBuilder`.
  */
 const PAL_CREATE_SETTERS: ReadonlySet<string> = new Set([
     "setPolyMeshCreateParams",
     "setPolyMeshDetailCreateParams",
-    "setOffMeshConnections",
 ]);
 
-/** `generateSoloNavMeshData`'s `NavMeshCreateParams` scalars. */
+/** The emitted `NavMeshCreateParams.setOffMeshConnections`. */
+const OFF_MESH_PACKING = "set_off_mesh_connections";
+
+/**
+ * Core's `NavMeshCreateParams.setOffMeshConnections`: the scene's
+ * connections packed into the six arrays the glue's
+ * `DetourNavMeshBuilder.setOffMeshConnections` takes, with the three
+ * optional members' own defaults. The glue's typed-array copy into the
+ * create params is the PAL's.
+ */
+function offMeshPackingFunction(): PlanFunction {
+    const core = wrapperModule(WRAPPER_CORE);
+    const declaration = core.statements.find(
+        (statement): statement is ts.ClassDeclaration =>
+            ts.isClassDeclaration(statement) &&
+            statement.name?.text === "NavMeshCreateParams",
+    );
+    const method = declaration?.members.find(
+        (member): member is ts.MethodDeclaration =>
+            ts.isMethodDeclaration(member) &&
+            member.name.getText() === "setOffMeshConnections",
+    );
+    const statements = method?.body?.statements;
+    if (
+        !method ||
+        !statements ||
+        method.parameters.length !== 1 ||
+        method.parameters[0]!.name.getText() !== "offMeshConnections"
+    ) {
+        throw new Error(
+            `${WRAPPER_CORE} no longer declares ` +
+                "NavMeshCreateParams.setOffMeshConnections(offMeshConnections).",
+        );
+    }
+    const context = sharedPinnedContext();
+    const bindings = new Map<string, PinnedBinding>([
+        [
+            "offMeshConnections",
+            {
+                cpp: "offMeshConnections",
+                type: "record-list",
+                record: offMeshConnectionRecord(),
+            },
+        ],
+    ]);
+    const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(core, {
+        bindings,
+        calls: new Map(),
+        statement: (statement, active, indent) => {
+            // No connections: the create params keep the glue's zero
+            // count.
+            if (ts.isReturnStatement(statement) && !statement.expression) {
+                return [`${indent}return bbl::pal::NavOffMeshPacking{};`];
+            }
+            // `const verts = []`: a JavaScript array the loop pushes
+            // numbers onto.
+            const declared =
+                ts.isVariableStatement(statement) &&
+                statement.declarationList.declarations.length === 1
+                    ? statement.declarationList.declarations[0]!
+                    : undefined;
+            const initializer = declared?.initializer
+                ? unwrapExpression(declared.initializer)
+                : undefined;
+            if (
+                declared &&
+                ts.isIdentifier(declared.name) &&
+                initializer &&
+                ts.isArrayLiteralExpression(initializer) &&
+                initializer.elements.length === 0
+            ) {
+                bindings.set(declared.name.text, {
+                    cpp: declared.name.text,
+                    type: "f64-list",
+                });
+                return [`${indent}std::vector<double> ${declared.name.text};`];
+            }
+            // The glue's copy into the create params, which the PAL makes.
+            const call =
+                ts.isExpressionStatement(statement) &&
+                ts.isCallExpression(statement.expression)
+                    ? statement.expression
+                    : undefined;
+            if (
+                !call ||
+                call.expression.getText() !==
+                    "Raw.DetourNavMeshBuilder.setOffMeshConnections"
+            ) {
+                return undefined;
+            }
+            const [target, count, ...lists] = call.arguments;
+            if (
+                target?.getText() !== "this.raw" ||
+                !count ||
+                lists.length !== 6 ||
+                lists.some(
+                    (list) =>
+                        !ts.isIdentifier(list) ||
+                        bindings.get(list.text)?.type !== "f64-list",
+                )
+            ) {
+                return context.contractError(
+                    call,
+                    "Expected the glue's setOffMeshConnections over the " +
+                        "create params, a count and six packed lists.",
+                );
+            }
+            return [
+                `${indent}return bbl::pal::NavOffMeshPacking{${[
+                    active.expression(count),
+                    ...lists.map((list) => `std::move(${list.getText()})`),
+                ].join(", ")}};`,
+            ];
+        },
+    });
+    return {
+        comment: coreProvenance("NavMeshCreateParams.setOffMeshConnections"),
+        returns: "bbl::pal::NavOffMeshPacking",
+        name: OFF_MESH_PACKING,
+        parameters: [
+            "const std::vector<bbl::pal::NavOffMeshConnection>& offMeshConnections",
+        ],
+        body: lowerer.statements(statements, "    "),
+    };
+}
+
+/** `generateSoloNavMeshData`'s `NavMeshCreateParams` values. */
 function soloCreateParamsFunction(generator: GeneratorConfig): PlanFunction {
     const file = wrapperModule(WRAPPER_GENERATORS);
     const statements = generator.body.statements;
@@ -1513,7 +1771,7 @@ function soloCreateParamsFunction(generator: GeneratorConfig): PlanFunction {
         bindings,
         calls: new Map(),
     });
-    const lines = ["    bbl::pal::NavMeshCreateScalars navMeshCreateParams{};"];
+    const lines = ["    bbl::pal::NavMeshCreateValues navMeshCreateParams{};"];
     for (const statement of statements.slice(start.index + 1, end.index)) {
         const call =
             ts.isExpressionStatement(statement) &&
@@ -1537,13 +1795,40 @@ function soloCreateParamsFunction(generator: GeneratorConfig): PlanFunction {
             }
             if (PAL_CREATE_SETTERS.has(setter)) continue;
         }
+        // The scene's off-mesh connections, packed where the generator's
+        // config carries them.
+        const packing =
+            ts.isIfStatement(statement) &&
+            !statement.elseStatement &&
+            ts.isBlock(statement.thenStatement) &&
+            statement.thenStatement.statements.length === 1
+                ? statement.thenStatement.statements[0]
+                : undefined;
         if (
             ts.isIfStatement(statement) &&
+            packing &&
+            ts.isExpressionStatement(packing) &&
             context.expressionMatchesShape(
                 statement.expression,
                 "navMeshGeneratorConfig.offMeshConnections",
+            ) &&
+            context.expressionMatchesShape(
+                packing.expression,
+                "navMeshCreateParams.setOffMeshConnections(navMeshGeneratorConfig.offMeshConnections)",
             )
         ) {
+            const connections = cfgListPresence(
+                "solo",
+                "offMeshConnections",
+                statement,
+            );
+            readsParams = true;
+            lines.push(
+                `    if (${connections.present}) {`,
+                `        navMeshCreateParams.offMeshConnections = ` +
+                    `${OFF_MESH_PACKING}(${connections.list});`,
+                "    }",
+            );
             continue;
         }
         return contractError(
@@ -1556,8 +1841,8 @@ function soloCreateParamsFunction(generator: GeneratorConfig): PlanFunction {
     return {
         comment:
             generatorsProvenance("generateSoloNavMeshData") +
-            " Its NavMeshCreateParams scalars.",
-        returns: "bbl::pal::NavMeshCreateScalars",
+            " Its NavMeshCreateParams values.",
+        returns: "bbl::pal::NavMeshCreateValues",
         name: "solo_nav_mesh_create_params",
         parameters: [
             `const bbl::pal::NavRcConfig& ${rcConfig}`,
@@ -2012,7 +2297,7 @@ export function navigationBuildPlanDeclarations(
             "bbl::pal::navigation_grid_size(build.bounds, build.config.cs)";
         if (arm === "solo") {
             const create = soloCreateParamsFunction(generator);
-            functions.push(create);
+            functions.push(offMeshPackingFunction(), create);
             builders.push(
                 planFunctionCpp({
                     comment:

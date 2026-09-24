@@ -304,7 +304,7 @@ export class TubeLowerer {
                     cpp: "va",
                     annotation: "Vec3 | null",
                     specialized: true,
-                    binding: absentBinding(),
+                    binding: absentBinding("null"),
                 },
             ],
             {
@@ -322,7 +322,7 @@ export class TubeLowerer {
         );
         const bindings = new Map<string, PinnedBinding>([
             ["curve", { cpp: "curve", type: "vec3-list" }],
-            ["firstNormal", absentBinding()],
+            ["firstNormal", absentBinding("null")],
         ]);
         const frameLists = new Map<string, PinnedBinding["type"]>([
             ["tangents", "vec3-list"],

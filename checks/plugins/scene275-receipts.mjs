@@ -1,5 +1,5 @@
 // Scene 275: the native text GPU receipts against the browser's WebGPU
-// receipts (checks/plugins/gpu-receipts.init.js): every text allocation
+// receipts (checks/plugins/webgpu-recorder.init.js): every text allocation
 // of each role with the bytes the browser uploaded (a contiguous prefix;
 // unused allocation tails are excluded), the write count/order/ranges,
 // the two draws' bindings, pipeline state, blend, constants, and the
@@ -20,6 +20,7 @@ import {
 /**
  * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
  * @import { ObservedStep } from "./support.mjs"
+ * @import { RecordedReceipts } from "./webgpu-records.js"
  */
 
 /**
@@ -73,40 +74,7 @@ import {
  *     frame: number,
  *     textGpu?: { frame: number, resources: NativeResource[], draws: NativeDraw[] },
  * }} NativeCapture the fields read from a phase's render capture
- * @typedef {{ id: number, kind: "buffer", label: string, size: number }} ObservedBuffer
- * @typedef {{ id: number, kind: "texture", label: string, size: Extent }} ObservedTexture
- * @typedef {{ id: number, kind: "view", label: string, texture: number }} ObservedView
- * @typedef {{ id: number, kind: "sampler", label: string }} ObservedSampler
- * @typedef {{
- *     id: number,
- *     offset?: number,
- *     layout?: { offset: number },
- *     bytes: number[] | null,
- * }} ObservedWrite a buffer write carries `offset`, a texture write its data layout; `bytes` is null past 1 MiB
- * @typedef {{ srcFactor?: string, dstFactor?: string, operation?: string }} BlendComponent
- * @typedef {{
- *     id: number,
- *     vertex: { constants: Record<string, number> },
- *     fragment: {
- *         constants: Record<string, number>,
- *         targets: Array<{ blend?: { color: BlendComponent, alpha: BlendComponent } } | null>,
- *     } | null,
- *     depthStencil: { format: string, depthCompare?: string, depthWriteEnabled?: boolean } | null,
- *     primitive: { topology?: string, cullMode?: string, frontFace?: string },
- *     multisample: { count?: number, mask?: number, alphaToCoverageEnabled?: boolean },
- * }} ObservedPipeline
- * @typedef {{
- *     resources: Array<ObservedBuffer | ObservedTexture | ObservedView | ObservedSampler>,
- *     writes: ObservedWrite[],
- *     pipelines: ObservedPipeline[],
- *     groups: Array<{ id: number, entries: Array<{ binding: number, resource: number }> }>,
- *     draws: Array<{
- *         pipeline: number | null,
- *         groups: Array<number | null>,
- *         vertices: Array<{ buffer: number } | null>,
- *         args: number[],
- *     }>,
- * }} Receipts the init script's `window.__gpuReceipts` record
+ * @typedef {RecordedReceipts} Receipts the recorder's `receipts()`, as each observed step's state
  * @typedef {{
  *     role: string,
  *     id: number,
@@ -213,13 +181,13 @@ function verifyReceipts(capture, observed, backend, where) {
             let used = 0;
             for (const write of writes) {
                 assert(
-                    write.bytes,
+                    write.data !== null,
                     `${where}: a ${label} upload was too large to record`,
                 );
                 // A buffer write carries `offset`; a texture write carries its data layout's.
                 const offset = write.offset ?? write.layout?.offset ?? 0;
-                Buffer.from(write.bytes).copy(bytes, offset);
-                used = Math.max(used, offset + write.bytes.length);
+                Buffer.from(write.data, "base64").copy(bytes, offset);
+                used = Math.max(used, offset + write.byteLength);
             }
             assert.deepEqual(
                 native.writtenRanges,
@@ -236,13 +204,10 @@ function verifyReceipts(capture, observed, backend, where) {
                     offset: write.offset,
                     bytes: write.bytes,
                 })),
-                writes.map((write) => {
-                    assert(write.bytes);
-                    return {
-                        offset: write.offset ?? write.layout?.offset ?? 0,
-                        bytes: write.bytes.length,
-                    };
-                }),
+                writes.map((write) => ({
+                    offset: write.offset ?? write.layout?.offset ?? 0,
+                    bytes: write.byteLength,
+                })),
                 `${where}: ${role}[${index}] write count/order/ranges`,
             );
             summaries.push({
@@ -255,7 +220,8 @@ function verifyReceipts(capture, observed, backend, where) {
             });
         });
     }
-    const draws = observed.draws.slice(-2);
+    // The browser's last submission holds the frame's text draws.
+    const draws = observed.submissions.at(-1) ?? [];
     assert.equal(gpu.draws.length, draws.length, `${where}: draw count`);
     /** @type {Map<number, number>} */
     const groupIdentity = new Map();
