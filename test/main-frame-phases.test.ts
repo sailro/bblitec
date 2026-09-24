@@ -26,8 +26,8 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
     writeFileSync(
         join(directory, "scene-restart.hpp"),
         [
-            "inline bool registered_scene_set_changed(",
-            "inline bool request_renderer_restart_if_scene_set_changed(",
+            "bool registered_scene_set_changed(",
+            "bool request_renderer_restart_if_scene_set_changed(",
         ]
             .map((signature) => cppFunction(shared, signature))
             .join("\n"),

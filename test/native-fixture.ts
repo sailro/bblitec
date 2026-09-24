@@ -100,8 +100,9 @@ export function cppFunction(source: string, signature: string): string {
 
 /**
  * The GPU backends' shared concerns as one text, in the order
- * `pal_gpu_shared.hpp` includes them: what a fixture that lifts the shared
- * helpers by name reads, whichever concern header holds one.
+ * `pal_gpu_shared.hpp` includes them, then the units holding their bodies:
+ * what a fixture that lifts the shared helpers by name reads, whichever
+ * concern header or unit holds one.
  */
 export function sharedGpuSource(): string {
     const umbrella = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
@@ -111,8 +112,17 @@ export function sharedGpuSource(): string {
     )) {
         parts.push(readFileSync(join("native/src", name!), "utf8"));
     }
+    for (const unit of sharedGpuUnits) {
+        parts.push(readFileSync(unit, "utf8"));
+    }
     return parts.join("\n");
 }
+
+/** The units holding the shared GPU helpers' bodies, for a fixture to link. */
+export const sharedGpuUnits = [
+    "native/src/pal_gpu_frame.cpp",
+    "native/src/pal_gpu_images.cpp",
+] as const;
 
 /** Header-only fixtures can opt out of the installed-library prerequisite. */
 export function optionalNativeFixtureTools(

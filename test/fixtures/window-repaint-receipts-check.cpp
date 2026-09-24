@@ -67,6 +67,7 @@ static SDL_Window* hidden_window(const char* title, int width, int height, SDL_W
 #undef WindowFrameClock
 #undef SDL_CreateWindow
 #include "pal_media_query.cpp"
+#include "window-frame-unit-fixture.hpp"
 
 namespace bbl {
 void set_canvas_dataset(Engine&, std::string, std::string) {

@@ -47,7 +47,7 @@ test(
 #include <cassert>
 namespace bbl::pal {
 ${cppRecord(shared, "enum class CompressedBlockFormat")}
-${cppFunction(shared, "inline CompressedBlockFormat compressed_block_format(")}
+${cppFunction(shared, "CompressedBlockFormat compressed_block_format(")}
 template <typename Supports>
 ${cppFunction(shared, "const CompressedTexture& select_compressed_texture(")}
 }

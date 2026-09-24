@@ -72,7 +72,7 @@ test(
             (name) => {
                 const body = shared.match(
                     new RegExp(
-                        `inline void ${name}\\(Engine& engine\\) \\{[\\s\\S]*?\\n\\}`,
+                        `\\nvoid ${name}\\(Engine& engine\\) \\{[\\s\\S]*?\\n\\}`,
                     ),
                 )?.[0];
                 assert.ok(

@@ -30,16 +30,16 @@ test("native frame clocks, continuation drains and capture budgets preserve fram
                 "class FrameClock {",
                 "class CaptureGate {",
             ].map((signature) => cppRecord(shared, signature)),
-            cppFunction(shared, "inline void run_animation_frame_callbacks("),
+            cppFunction(shared, "void run_animation_frame_callbacks("),
             cppFunction(
                 shared,
-                "[[nodiscard]] inline double advance_frame(\n    Engine& engine,\n    FrameClock&",
+                "double advance_frame(Engine& engine, FrameClock&",
             ),
             cppFunction(
                 shared,
-                "[[nodiscard]] inline double advance_frame(\n    Engine& engine,\n    FrameGraphContext&",
+                "double advance_frame(Engine& engine, FrameGraphContext&",
             ),
-            cppFunction(shared, "inline void finish_frame("),
+            cppFunction(shared, "void finish_frame("),
         ].join("\n"),
     );
     writeFileSync(

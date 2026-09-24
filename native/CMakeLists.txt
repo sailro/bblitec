@@ -301,6 +301,15 @@ endforeach()
 if(NOT BBLITE_BACKEND_SDL_GPU)
     list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "/src/pal_sdl_gpu[^/]*\\.cpp$")
 endif()
+# The bodies the GPU backends share (pal_gpu_shared.hpp's concerns) follow
+# the units that include them: every renderer unit and the window realm.
+if(BBLITE_SDL_GPU_SOURCES OR "platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
+    list(
+        APPEND BBLITE_RUNTIME_SOURCES
+        "${BBLITE_NATIVE_ROOT}/src/pal_gpu_frame.cpp"
+        "${BBLITE_NATIVE_ROOT}/src/pal_gpu_images.cpp"
+    )
+endif()
 
 # The PAL units whose preprocessed text depends on the generated tree only
 # through the activation macros they test (bblite/features/); the two
@@ -314,7 +323,7 @@ endif()
 # static registrations it carries.
 set(
     BBLITE_PAL_COMMON_PATTERN
-    "/src/(pal|pal_sdl|pal_image|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_file|pal_storage|pal_text_layout)\\.cpp$"
+    "/src/(pal|pal_sdl|pal_image|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_file|pal_storage|pal_text_layout|pal_gpu_frame|pal_gpu_images)\\.cpp$"
 )
 set(BBLITE_PAL_COMMON_SOURCES ${BBLITE_RUNTIME_SOURCES})
 list(FILTER BBLITE_PAL_COMMON_SOURCES INCLUDE REGEX "${BBLITE_PAL_COMMON_PATTERN}")
