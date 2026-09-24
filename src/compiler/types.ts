@@ -1907,8 +1907,8 @@ export interface ValueFields {
     packagedSources?: readonly string[];
     /** A fresh response read; only that exact expression proves unchanged bytes. */
     fetchedBytes?: {
-        expression: ts.CallExpression;
-        sources: readonly string[];
+        readonly expression: ts.CallExpression;
+        readonly sources: readonly string[];
     };
     ownedEngineCpp?: string;
     cpp: string;
@@ -1975,10 +1975,10 @@ export interface ValueFields {
     staticElements?: readonly Value[];
     /** The sampled provider options retain callback identity and their initial matrix. */
     nodeParticleProvider?: {
-        callbackCpp: string;
-        initialMatrixCpp: string;
-        emitter: readonly [number, number, number];
-        textureBaseUrl?: string;
+        readonly callbackCpp: string;
+        readonly initialMatrixCpp: string;
+        readonly emitter: readonly [number, number, number];
+        readonly textureBaseUrl?: string;
     };
     /** Root binding whose static element snapshot this parameter alias shares. */
     staticElementsOwner?: Value;
@@ -2043,9 +2043,9 @@ export interface ValueFields {
     nativeCallbackReturnType?: DataType;
     /** An owned promise's resolving function; cpp names its retained settlement state. */
     nativePromiseSettlement?: {
-        mode: "resolve" | "reject";
-        type: string;
-        result: Value;
+        readonly mode: "resolve" | "reject";
+        readonly type: string;
+        readonly result: Value;
     };
     /** Scope-carrying record a function-valued property was read from. */
     callbackRecordOwner?: Value;
@@ -2100,10 +2100,10 @@ export interface ValueFields {
     /** Borrowed 2D-array depth view returned by getCsmReceiverTexture. */
     csmReceiverGeneratorIndex?: number;
     textureFile?: {
-        srgb: boolean;
+        readonly srgb: boolean;
         /** Packaged source used only when source dimensions are reached. */
-        source?: string;
-        entryFileName?: string;
+        readonly source?: string;
+        readonly entryFileName?: string;
     };
     /** Statically decoded source dimensions for file-backed image textures. */
     textureWidth?: number;
@@ -2344,15 +2344,15 @@ export interface ValueFields {
     pickingEngineKnown?: true;
     /** A node's observable transform object retains its owning handle. */
     sceneNodeVector?: {
-        owner: Value & { engineCpp: string };
-        transform: SceneNodeTransformDescriptor;
-        bound?: true;
+        readonly owner: Value & { engineCpp: string };
+        readonly transform: SceneNodeTransformDescriptor;
+        readonly bound?: true;
     };
     /** An observable camera vector retains its original camera handle. */
     cameraVector?: {
-        owner: Value & { engineCpp: string };
-        field: "position" | "target" | "up_vector";
-        bound?: true;
+        readonly owner: Value & { engineCpp: string };
+        readonly field: "position" | "target" | "up_vector";
+        readonly bound?: true;
     };
     geometryTask?: GeometryOutputTaskManifest;
     /**
@@ -2391,10 +2391,10 @@ export interface ValueFields {
     renderTask?: true;
     /** Proven target descriptor retained by aliases for pass-signature admission. */
     renderTargetSignature?: {
-        surfaceFormat: boolean;
-        hasColor: boolean;
-        depthFormat?: string;
-        samples: number;
+        readonly surfaceFormat: boolean;
+        readonly hasColor: boolean;
+        readonly depthFormat?: string;
+        readonly samples: number;
     };
     /**
      * Set instead when a `task` value names a screen-space effect. Its
@@ -2565,14 +2565,18 @@ export interface ValueFields {
     /** A known absent receiver stopped this optional chain before member evaluation. */
     optionalChainShortCircuited?: true;
     browserValue?:
-        | { kind: "boolean"; value: boolean }
-        | { kind: "number"; value: number }
-        | { kind: "null" }
-        | { kind: "undefined" }
-        | { kind: "dom-rect" }
-        | { kind: "object"; primaryCanvas?: true; moduleUrl?: true }
-        | { kind: "search-params"; search: string }
-        | { kind: "string"; value: string };
+        | { readonly kind: "boolean"; readonly value: boolean }
+        | { readonly kind: "number"; readonly value: number }
+        | { readonly kind: "null" }
+        | { readonly kind: "undefined" }
+        | { readonly kind: "dom-rect" }
+        | {
+              readonly kind: "object";
+              readonly primaryCanvas?: true;
+              readonly moduleUrl?: true;
+          }
+        | { readonly kind: "search-params"; readonly search: string }
+        | { readonly kind: "string"; readonly value: string };
     nodeBlockLoader?: Pick<
         CompiledNodeMaterial,
         "blockEmitters" | "pinnedBlockLoader"

@@ -8,7 +8,12 @@ interface GenerationValuePayloads {
     /** An emitted body cannot complete normally; coroutine returns retain their represented result. */
     void: { abruptCompletion?: true; coroutineResult?: Value };
     promise: { promiseResult?: Value; promiseType?: string };
-    "text-font": { textFont?: { source: TextFontSource; bytes: Uint8Array } };
+    "text-font": {
+        textFont?: {
+            readonly source: TextFontSource;
+            readonly bytes: Uint8Array;
+        };
+    };
     "csg-solid": { csgSolid?: CsgSolidPlan };
     "csg2-solid": {
         csg2Solid?: {
@@ -16,7 +21,9 @@ interface GenerationValuePayloads {
             readonly disposed: boolean;
         };
     };
-    "executed-url": { executedUrl?: { module: string; exportName: string } };
+    "executed-url": {
+        executedUrl?: { readonly module: string; readonly exportName: string };
+    };
     "animation-group-mask": {
         animationGroupMask?: {
             readonly names: readonly string[];
