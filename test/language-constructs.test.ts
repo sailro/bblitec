@@ -2567,6 +2567,23 @@ check(
 `,
 );
 
+check(
+    "callbacks-calling-abstract-methods",
+    `
+    abstract class Animal {
+        constructor(readonly name: string) {}
+        abstract speak(): string;
+    }
+    class Dog extends Animal { speak(): string { return this.name + " barks"; } }
+    class Cat extends Animal { speak(): string { return this.name + " meows"; } }
+    const zoo: Animal[] = [new Dog("rex"), new Cat("po")];
+    let total = 0;
+    for (const animal of zoo) total += animal.speak().length;
+    const sorted = [...zoo].sort((left, right) => left.speak().length - right.speak().length).map((animal) => animal.name);
+    if (sorted.join(",") !== "po,rex" || total !== 17) throw new Error("sorted " + sorted.join(",") + total);
+`,
+);
+
 test("imported class static fields and blocks run when their module evaluates", async (t) => {
     const directory = resolve("artifacts/class-static-state-module");
     mkdirSync(directory, { recursive: true });
