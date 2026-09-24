@@ -72,6 +72,24 @@ test("centralizes default-library identity and AST-driven upstream contracts", (
     );
 });
 
+test("reads checker symbols through the named readers in symbols.ts alone", () => {
+    // `declaredSymbol` (a name as written: identity, declarations, modules)
+    // and `resolvedSymbol`/`aliasTarget` (the declaration a use stands for)
+    // make each read say which it is; a raw read anywhere else decides it
+    // silently, and differently for an imported name.
+    const raw = [
+        "getSymbolAtLocation",
+        "getAliasedSymbol",
+        "getShorthandAssignmentValueSymbol",
+    ];
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            raw.some((member) => sourceFacts(path).members.has(member)),
+        ),
+        ["src/compiler/symbols.ts"],
+    );
+});
+
 test("entry points acquire the dist lock and only its owner sets the nesting marker", () => {
     for (const path of [
         "src/cli.ts",

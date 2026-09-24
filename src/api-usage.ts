@@ -8,6 +8,7 @@ import {
     propertyNameText,
 } from "./compiler/syntax.js";
 import { sourceLocation } from "./source-location.js";
+import { declaredSymbol, resolvedSymbol } from "./compiler/symbols.js";
 
 export interface ApiUse {
     id: string;
@@ -53,15 +54,12 @@ export function scanApiUsage(
                 !program.isSourceFileFromExternalLibrary(file),
         );
     const localFiles = new Set(files);
+    /** The surface entries a resolved symbol's declarations belong to. */
     const ids = (symbol: ts.Symbol | undefined): string[] => {
         if (!symbol) return [];
-        const target =
-            symbol.flags & ts.SymbolFlags.Alias
-                ? checker.getAliasedSymbol(symbol)
-                : symbol;
         return [
             ...new Set(
-                (target.declarations ?? []).flatMap(
+                (symbol.declarations ?? []).flatMap(
                     (declaration) =>
                         surface.byDeclaration.get(
                             declarationKey(declaration),
@@ -182,9 +180,9 @@ export function scanApiUsage(
     };
     const unresolved = new Set<string>();
     const importsSurface = (specifier: ts.Expression): boolean => {
-        const file = checker
-            .getSymbolAtLocation(specifier)
-            ?.declarations?.find(ts.isSourceFile);
+        const file = declaredSymbol(checker, specifier)?.declarations?.find(
+            ts.isSourceFile,
+        );
         return file !== undefined && resolve(file.fileName) === surface.entry;
     };
     const visit = (node: ts.Node): void => {
@@ -232,7 +230,7 @@ export function scanApiUsage(
                     ? node.name
                     : node.argumentExpression;
                 add(
-                    ids(checker.getSymbolAtLocation(name)),
+                    ids(resolvedSymbol(checker, name)),
                     node,
                     operation(node),
                     () => shape(node),
@@ -270,7 +268,7 @@ export function scanApiUsage(
                 );
             }
         } else if (ts.isIdentifier(node)) {
-            const targets = ids(checker.getSymbolAtLocation(node));
+            const targets = ids(resolvedSymbol(checker, node));
             const constants = targets.filter(
                 (id) =>
                     kinds.get(id) === "variable" ||

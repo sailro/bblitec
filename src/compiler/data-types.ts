@@ -47,6 +47,7 @@ import {
     declaredIn,
     declaredInDefaultLibrary,
     declaredInDomLibrary,
+    declaredSymbol,
     libraryGlobal,
 } from "./symbols.js";
 import { isNullable, nullability, presentMembers } from "./type-facts.js";
@@ -2392,7 +2393,7 @@ export class DataTypeRegistry {
         const classes = this.classHierarchy.hierarchyClasses(root);
         const typeOf = (member: ts.ClassDeclaration): ts.Type => {
             const symbol = member.name
-                ? this.checker.getSymbolAtLocation(member.name)
+                ? declaredSymbol(this.checker, member.name)
                 : undefined;
             if (!symbol || member.typeParameters?.length) {
                 this.fail(
