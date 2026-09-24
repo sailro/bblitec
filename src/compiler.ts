@@ -13898,9 +13898,9 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * Whether every member of an expression's type is one of the two canvas
-     * types. A member whose symbol has no name is not a canvas, so it fails
-     * the test rather than being compared under an empty name.
+     * Whether every member of an expression's type is one of the DOM
+     * library's two canvas types. A program's own type that shares a canvas
+     * name is not a canvas, and neither is a member without a symbol.
      */
     public isCanvasElement(expression: ts.Expression): boolean {
         const type = this.checker.getTypeAtLocation(expression);
@@ -13908,8 +13908,12 @@ class Compiler implements LoweringServices {
         return (
             members.length > 0 &&
             members.every((member) => {
-                const name = member.getSymbol()?.getName();
-                return name !== undefined && CANVAS_TYPE_NAMES.has(name);
+                const symbol = member.getSymbol();
+                return (
+                    symbol !== undefined &&
+                    CANVAS_TYPE_NAMES.has(symbol.getName()) &&
+                    declaredInDomLibrary(symbol)
+                );
             })
         );
     }
