@@ -97,6 +97,9 @@
 #include <bblite/upstream/esm_shadow.hpp>
 #endif
 #include <bblite/upstream/pinned_depth_state.hpp>
+#if BBLITE_GPU_MORPH_STORAGE
+#include <bblite/upstream/morph_targets.hpp>
+#endif
 #include <cstdio>
 
 namespace bbl::pal {
@@ -4268,41 +4271,12 @@ inline upstream::StandardUvTxUniforms standard_uv_transform_block(const Material
 #endif
 
 #if BBLITE_GPU_MORPH_STORAGE
-// Storage-buffer morph payloads shared by both render backends (moved
-// verbatim from the two upload paths). Both backends must pack these
-// byte-identically: the deltas are indexed by the shader as
-// (target * vertexCount + vertex) * 6, and the weights blob carries a
-// 16-byte header the shader reads before the float array.
+// Storage-buffer morph payloads shared by both render backends. The deltas
+// are the pin's own packing (`upstream::pack_morph_deltas`); the weights
+// blob carries a 16-byte header the shader reads before the float array.
 // The empty binding still needs the 16-byte header plus one runtime-array
 // element. Both WebGPU and Metal validate that 20-byte minimum.
 inline constexpr std::array<std::uint32_t, 5> empty_morph_weight_data{};
-
-inline std::vector<float> pack_morph_deltas(const ModelGeometry& geometry) {
-    // Flat 6-float deltas indexed
-    // (target * vertexCount + vertex) * 6, packed with the
-    // same x negation as the vertex attributes.
-    const std::size_t target_count = geometry.morph_positions.size();
-    const std::size_t vertex_count = geometry.vertices.size();
-    std::vector<float> deltas(target_count * vertex_count * 6, 0.0f);
-    for (std::size_t target = 0; target < target_count; ++target) {
-        const std::vector<Vec3>& positions = geometry.morph_positions[target];
-        for (std::size_t vertex = 0; vertex < vertex_count; ++vertex) {
-            const std::size_t offset = (target * vertex_count + vertex) * 6;
-            const Vec3 position = vertex < positions.size() ? positions[vertex] : Vec3{};
-            const Vec3 normal = target < geometry.morph_normals.size() &&
-                                        vertex < geometry.morph_normals[target].size()
-                                    ? geometry.morph_normals[target][vertex]
-                                    : Vec3{};
-            deltas[offset] = -position.x;
-            deltas[offset + 1] = position.y;
-            deltas[offset + 2] = position.z;
-            deltas[offset + 3] = -normal.x;
-            deltas[offset + 4] = normal.y;
-            deltas[offset + 5] = normal.z;
-        }
-    }
-    return deltas;
-}
 
 /**
  * The float array behind the weights blob's 16-byte header: one weight

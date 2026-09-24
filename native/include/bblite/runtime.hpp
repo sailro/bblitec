@@ -1948,6 +1948,27 @@ struct MeshPrimitiveState {
     std::optional<bool> clockwise_front_face;
 };
 
+/**
+ * One morph target of `ModelGeometry::morph_positions`/`morph_normals`, read
+ * as the pin's flat `Float32Array` lanes (`deltas[v * 3 + k]`) in native
+ * vertex space: the x lane carries the mirror the vertex attributes carry.
+ */
+struct MorphTargetLanes {
+    const std::vector<std::vector<Vec3>>& targets;
+    std::size_t target;
+    [[nodiscard]] float operator[](std::size_t lane) const {
+        const Vec3& delta = targets.at(target).at(lane / 3);
+        switch (lane % 3) {
+        case 0:
+            return -delta.x;
+        case 1:
+            return delta.y;
+        default:
+            return delta.z;
+        }
+    }
+};
+
 struct ModelGeometry {
     /** Source procedural streams own one tightly packed allocation. */
     bool owned_packed_geometry = false;

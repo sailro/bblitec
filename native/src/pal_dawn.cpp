@@ -8739,7 +8739,7 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
         mesh.morph_deltas = nullptr;
         mesh.morph_weights = nullptr;
         mesh.owns_morph_buffers = true;
-        const std::vector<float> deltas = pack_morph_deltas(geometry);
+        const std::vector<float> deltas = upstream::pack_morph_deltas(geometry);
         mesh.morph_deltas = create_buffer(state, WGPUBufferUsage_Storage, deltas.data(),
                                           deltas.size() * sizeof(float));
         const std::vector<std::uint8_t> weights_blob = pack_morph_weights(geometry, mesh_record);

@@ -97,6 +97,7 @@ import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedMat4InvertHeader } from "./lowering/pinned-mat4-invert.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
+import { morphTargetsHeader } from "./lowering/morph-targets-lowerer.js";
 import { pinnedQuaternionHeader } from "./lowering/pinned-euler-proxy.js";
 import { pinnedMat4CreateHeader } from "./lowering/pinned-mat4-create.js";
 import { pinnedLookDirectionHeader } from "./lowering/pinned-look-direction.js";
@@ -917,6 +918,14 @@ class GeneratedSourceWriter {
         // detailed pick's own two bodies import it. Gated rather than
         // always emitted because nothing else reaches it, and the header
         // is what its consumers on both sides of the split include.
+        // The pin's deltas packing, where the morph storage the two render
+        // backends upload compiles at all (`BBLITE_GPU_MORPH_STORAGE`).
+        if (gpuMorphStorage) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/morph_targets.hpp",
+                morphTargetsHeader(new LoweringContext(this.store)),
+            );
+        }
         if (features.includes("math:normalize-vec3")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_normalize_vec3.hpp",
