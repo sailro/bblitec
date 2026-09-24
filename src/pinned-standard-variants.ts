@@ -70,8 +70,7 @@ import {
     reachCsmReceiverFactories,
     type ShadowLightSlot,
 } from "./pinned-shadow-slots.js";
-import { LoweringContext } from "./lowering/context.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
+import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
 import {
     PinnedNumericLowerer,
@@ -816,7 +815,7 @@ let instanceColorSlot: string | undefined;
  */
 function standardInstanceColorSlot(): string {
     if (instanceColorSlot !== undefined) return instanceColorSlot;
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     const modulePath = "src/material/standard/standard-renderable.ts";
     // Anchored at the function that owns the rewrite rather than at the
     // file, so an unrelated `BC` slot elsewhere in the module is not a
@@ -2065,7 +2064,7 @@ const standardBuiltinBindings: readonly StandardBuiltinBinding[] = [
 export function standardBuiltinBindingNames(): ReadonlySet<string> {
     const bindings = [
         ...standardBuiltinBindings,
-        standardSkeletonBinding(new LoweringContext(sharedUpstreamStore())),
+        standardSkeletonBinding(sharedPinnedContext()),
     ];
     return new Set(
         bindings

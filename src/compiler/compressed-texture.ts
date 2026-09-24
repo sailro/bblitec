@@ -1,7 +1,6 @@
 /** Package supported KTX candidates in source order; the rendering device selects one. */
-import { LoweringContext } from "../lowering/context.js";
+import { sharedPinnedContext } from "../lowering/context.js";
 import { CompressedTextureLowerer } from "../lowering/compressed-texture-lowerer.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
 
 const compiledFeatures = new Set([
     "texture-compression-bc",
@@ -16,9 +15,7 @@ let cached: CompressedTextureLowerer | undefined;
 
 export function compressedTextureLowerer(): CompressedTextureLowerer {
     if (!cached) {
-        cached = new CompressedTextureLowerer(
-            new LoweringContext(sharedUpstreamStore()),
-        );
+        cached = new CompressedTextureLowerer(sharedPinnedContext());
     }
     return cached;
 }

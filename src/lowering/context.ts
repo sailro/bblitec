@@ -1675,3 +1675,14 @@ export function sharedPinnedContext(): LoweringContext {
     sharedPinned ??= new LoweringContext(sharedUpstreamStore());
     return sharedPinned;
 }
+
+/**
+ * The context over `store`: the shared one for the process's store, and a
+ * context of its own for another (a test pointing at another tree). These
+ * two are the only places a context is built outside tests.
+ */
+export function pinnedContextOver(store: UpstreamSourceStore): LoweringContext {
+    return store === sharedUpstreamStore()
+        ? sharedPinnedContext()
+        : new LoweringContext(store);
+}

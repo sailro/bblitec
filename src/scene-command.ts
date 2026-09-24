@@ -502,10 +502,13 @@ async function specializePhysicsDebugGeometry(
         ]),
     ].sort();
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    // The compiler is its emitted JavaScript, by content as the generation
+    // stamp digests it: the build wrapper's stamp keys dist reuse on source
+    // mtimes, which a checkout moves without changing a byte.
     const sourceAndAssets = contentFingerprint([
         ...manifest.inputs,
         join(scene.output, "assets"),
-        "dist/.build-stamp",
+        "dist/src",
         "package-lock.json",
         "upstream",
     ]);
