@@ -6,7 +6,7 @@ import {
     type PinnedBinding,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { jsBitwiseCall, pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const RENDERABLE = "src/text/text-renderable.ts";
 const TEXTURES = "src/text/_gpu/text-textures.ts";
@@ -277,8 +277,13 @@ ${this.draw()}
                                 "r",
                                 "Text capacity shift target",
                             );
+                            const target = lowerer.expression(expression.left);
                             return [
-                                `${indent}${lowerer.expression(expression.left)} = bbl::js::shift_left(${lowerer.expression(expression.left)}, ${lowerer.expression(expression.right)});`,
+                                `${indent}${target} = ${jsBitwiseCall(
+                                    ts.SyntaxKind.LessThanLessThanToken,
+                                    target,
+                                    lowerer.expression(expression.right),
+                                )!};`,
                             ];
                         }
                         return undefined;
