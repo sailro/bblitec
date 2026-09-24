@@ -142,7 +142,7 @@ and performance.
 | NT-11 | low | Single-backend builds deployed both backends' shaders. | Deploy and payload checks filter by compiled backend. | fixed |
 | NT-12 | low | 8-way backend `#if` matrix. | `pal_gpu_dispatch.hpp` table. | fixed |
 | NT-13 | med | `synchronize()`'s internal order (overlay refresh, rematch, draw lists, plan-mesh sync, storage publication, submit, camera update) is written per backend and still differs (storage publication). | A shared `synchronize_scene<Backend>` in the frame conductor owning the order, with backend hooks (with NT-4). | open |
-| NT-14 | med | The patch record is computed three times (TypeScript, CMake, PowerShell); vcpkg portfiles restate PATCHES lists a regex parser reconciles; builders' variant choice is re-derived by verifiers. | One `cmake -P` record script invoked by builders and doctor; artifacts record their variants; portfiles read PATCHES from the manifest. | open |
+| NT-14 | med | The patch record is computed three times (TypeScript, CMake, PowerShell); vcpkg portfiles restate PATCHES lists a regex parser reconciles; builders' variant choice is re-derived by verifiers. | `patch-identity.cmake` is the one reader of the patch series (configure, portfiles, builders, doctor); artifacts record `_VARIANTS`; `portfilePatches` and the TypeScript/PowerShell copies are deleted. | fixed |
 | NT-15 | low | Three Dawn invalid-handle checks raise `GpuTransportError` (reaching the device-recovery listeners) where the SDL_GPU equivalents raise `std::runtime_error`. | One classification for an invalid handle on both backends. | open |
 
 ## Generated C++ (GC)
@@ -151,10 +151,10 @@ and performance.
 | --- | --- | --- | --- | --- |
 | GC-1 | high | Mesh/geometry records append-only (doom tape: 178 → 4,924). | Retired slots are reused under mesh-handle generations (doom 179 records for 178 entries; minecraft 474 for a 474 peak); the memory gate judges occupied records against the meshes the scene draws (doom 178 for 178, tetris 46 for 46, minecraft 455 for 455). Remaining: loader, hierarchy-listed and transform-node records keep their slots. | partial |
 | GC-2 | high | The memory gate ran idle and watched only working set. | Gameplay tapes, record-growth and slope gates. | fixed |
-| GC-3 | med | `.clang-tidy` enabled 17 checks. | Analyzer groups, exception-escape and enum-init enabled and clean; maintained hits fixed. Remaining generated hits keep optional-access, throwing-static-init, member-init and empty-catch off. | partial |
+| GC-3 | med | `.clang-tidy` enabled 17 checks. | Empty-catch, throwing-static-initialization, unchecked-optional-access and member-init are enabled: empty source handlers are dropped or name their discard, allocating generated constants are function-local statics, the Havok event methods receive the checked context; CheckMain is on. | fixed |
 | GC-4 | med | Generated code indexes records directly (850 sites), so a handle kept past its mesh's retirement reaches the slot's next mesh. | Every generated access goes through `recordAt` → `bbl::handle_at` (registry: 24,699 direct sites → 0); bounds and the mesh generation are checked in every build (≤0.6% of a cold frame), so a retired mesh's handle throws. The check found an SDL_GPU sync of the previous plan after mesh retirement, now fixed. | fixed |
-| GC-5 | med | Every `Array<T>` registered a GC node. | Only traceable element types register. Remaining: records without traced edges still declare `gc_trace_edges`. | partial |
-| GC-6 | low | 623 loops count with `double`. | Integer counters for canonical loops. | open |
+| GC-5 | med | Every `Array<T>` registered a GC node. | Records declare `gc_trace_edges` only when a field can own a traced edge; `make_ref`/`make_gc_shared` register only traceable payloads (doom 11.9M → 209k GC allocations after warm-up). Remaining: closure bodies always register (GC-21). | fixed |
+| GC-6 | low | 623 loops count with `double`. | Canonical counted loops count in `std::int64_t` and convert at each read (666 of 728 loops). | fixed |
 | GC-7 | low | Constant tables wrapped every element. | Typed literals and element-typed tables. | fixed |
 | GC-8 | low | Asset lookup inline per fetch site. | One table per asset set. | fixed |
 | GC-9 | low | Uninitialised generated locals and scalar fields. | Value-initialised. | fixed |
@@ -163,12 +163,13 @@ and performance.
 | GC-12 | med | A `switch` over a temporary string bound a dangling `string_view`. | Storage bound before the view. | fixed |
 | GC-13 | low | Collection `forEach` copies were `const auto`, rejected by clang-cl `/WX`. | Non-const copies. | fixed |
 | GC-14 | low | `float32Literal` rounds through double first; a midpoint can differ from `Math.fround` (`cpp-literals.ts`). | `float32Literal` and `floatLiteral` spell a float32-midpoint double as `Math.fround` stores it; table literals defer to them. | fixed |
-| GC-15 | low | Generated `main` catches only `std::exception`. | Route every escape through the application error reporter. | open |
+| GC-15 | low | Generated `main` catches only `std::exception`. | Generated `main`, the Window application and platform entries report every escape through `bbl::report_uncaught_error`. | fixed |
 | GC-16 | med | Physics node refs, property-animation targets, animated-mesh bindings and light include/exclude lists name a mesh by slot without its generation (`mesh_slot_handle` stopgap), so the retired-mesh check cannot see them. | Store `MeshHandle`s. | open |
 | GC-17 | low | `runtime.hpp` still indexes records by `.value` in render-task, material and animation helpers. | `runtime.hpp` render-task, material, asset, storage-buffer and CSM helpers go through `handle_at`/`handle_find` (one shared validity predicate); the slot allocator stays raw. | fixed |
 | GC-18 | med | `handle_at` checks a generation only when the handle type carries one, so slot-only references (`PhysicsNodeRef`, `mesh_slot_handle` callers) pass unchecked and retirement scans child lists to protect them. | Store `MeshHandle`s (a variant for physics nodes), make a generation-carrying table reject generation-less handles at compile time, delete `mesh_slot_handle`. | open |
 | GC-19 | low | Slot reuse waits on `composition_feature_rows_initialized`, and `composition_feature_mesh` falls back to the creation ordinal, because composition rows have two identities. | Assign the row in `store_mesh_record` (clones take their source's). | open |
 | GC-20 | med | MSVC builds of generated trees fail on C4244 conversions: a `float`-parameter callback through `std::function<void(double)>` (scene303), `build_view_matrix` storing doubles into floats (renderer_plan), `size_t`/`uint64_t` to double (scene164). | Emit explicit conversions or matching types. | open |
+| GC-21 | low | Closure bodies always register with the cycle collector (doom's remaining 209k allocations); gating them on traceable captures tripped a clang-analyzer `NewDeleteLeaks` false positive. | Register only closures whose captures can own an edge. | open |
 
 ## Dead code (DEAD)
 
@@ -207,7 +208,7 @@ and performance.
 | TL-1 | high | `clean --artifacts` deleted 10 live artifact roots. | One `ARTIFACT_ROOTS` table shared by writers and clean, with a test. | fixed |
 | TL-2 | med | 8 of 25 scene commands restated others. | 21 commands; parity measures both backends by default. | fixed |
 | TL-3 | med | Four sizing tools. | `scene -- survey`. | fixed |
-| TL-4 | med | PowerShell packaging re-implements TypeScript helpers. | Move desktop packaging into TypeScript. | open |
+| TL-4 | med | PowerShell packaging re-implements TypeScript helpers. | Desktop packaging is `src/package-demo.ts`; staging, archive, receipts, publication and notices are shared TypeScript modules the Android/iOS scripts call. | fixed |
 | TL-5 | med | Tools import `dist/src` unchecked. | `tsconfig.tools.json` (strict + `checkJs`) checks tools/ and checks/plugins/ at 0 errors through `npm run lint:tools` (part of `lint`); the build emits declarations; the import-name test is subsumed and deleted. Remaining: the three `checks/plugins/*.init.js` browser scripts (TL-24). | fixed |
 | TL-6 | med | Backend names and `--exe` accepted inconsistently. | One backend parser; `BBLITE_NATIVE_EXE` for every measuring command. | fixed |
 | TL-7 | med | Seek handled 3 ways; `parity --seek` could overwrite a golden. | One pose resolver; seeks are diagnostic. | fixed |
@@ -219,15 +220,16 @@ and performance.
 | TL-13 | low | `parity`/`check` wait forever on a Window host in a locked console session (offscreen 905 s, ocean 8,830 s). | Window-host runs without their own limit are killed after 120 s + 50 ms per frame; the timeout names the locked session. | fixed |
 | TL-14 | low | `check scene149` fails 1/28 at main (the pin's live resize did not throw #84); scene149 and break-meshes-60 browser observations are stale. | The check reads the error codes the pinned `buildResolvePath` throws (1.31 renumbered #84 to #86); break-meshes-60/240/live, scene149, scene180, scene46 and scene47 re-observed; all pass on both backends. | fixed |
 | TL-15 | low | Package `.staging/` folders accumulate. | A published run removes its staging folder; a failed one keeps it. | fixed |
-| TL-16 | low | The memory gate's slope test trips on a single allocation step (quake SDL_GPU once; minecraft while its records stay flat). | Judge a sustained trend. | open |
-| TL-17 | low | Window-host runs are bounded by a tool timeout; the native frame clock already sees the occluded or timed-out present and retries forever. | Fail a measured run after a bounded streak with the actual status, then drop the tool timeout. | open |
+| TL-16 | low | The memory gate's slope test trips on a single allocation step (quake SDL_GPU once; minecraft while its records stay flat). | Theil–Sen slope over the whole window and its later half; minecraft is flat at 18,000 frames. | fixed |
+| TL-17 | low | Window-host runs are bounded by a tool timeout; the native frame clock already sees the occluded or timed-out present and retries forever. | A bounded run fails after 30 s without a compositor tick, naming the status; the tool timeout is gone. | fixed |
 | TL-18 | med | 18 test files slice `pal_sdl_gpu.cpp`/`pal_dawn.cpp` as text and stub what the slice needs (the camera is non-null), so the camera-less arms are never run by a harness. | Link harnesses against extracted shared stage units (after RDN-20/NT-13). | open |
-| TL-19 | low | `build-labsound.ps1` and `build-rmlui.ps1` reset their checkout and re-apply patches on every `demos:release`, recompiling everything (build-sdl-min now records its applied series). | One applied-series record in `bblite-tools.psm1` for every builder. | open |
+| TL-19 | low | `build-labsound.ps1` and `build-rmlui.ps1` reset their checkout and re-apply patches on every `demos:release`, recompiling everything (build-sdl-min now records its applied series). | `Sync-PatchedCheckout` serves every builder; warm runs compile 0 units (RmlUi 203 → 0). | fixed |
 | TL-20 | med | `window-input-order` is timing-dependent: it passes alone and fails under machine load (2 of 4 runs at one head). | Drive the fixture's frame clock and presentation deterministically. | open |
 | TL-21 | low | scene181 cannot be observed: its golden (2026-09-08) differs from the current Chrome only at the textarea resize grip. | Recapture the golden with provenance, then observe. | open |
 | TL-22 | low | `check scene149-transport` fails ("Generated source differs from browser source"): its inputs were captured at pin 1.27 by an observer the repository does not contain. | Capture them with repository tooling at the current pin. | open |
 | TL-23 | med | `check scene261-live` fails: the "moving" capture describes frame 161 where the phase asked for 35, and the input tape does not move the camera. | Fix the native frame timing / input replay. | open |
 | TL-24 | low | The three `checks/plugins/*.init.js` browser scripts are not type-checked (40 errors). | A browser tsconfig (DOM + WebGPU types, declared globals) in `lint:tools`. | open |
+| TL-25 | low | Window-host applications (offscreen, ocean) print no `[mem][frame]` samples, so `memory all` reports them unmeasured; `lint:cpp` does not refuse a build whose PCH is older than its headers. | Sample memory on the Window host; check PCH freshness. | open |
 
 ## Building (BD)
 
@@ -242,15 +244,16 @@ and performance.
 | BD-7 | med | Every unit receives all feature macros; header folder keyed on all headers. | Units read only the macro headers they include; under the object cache each repository unit reads a content-addressed folder of its include closure's generated headers. quake: a `render_capabilities.hpp` edit rebuilds 3 units (was 33), an unread macro flip 0 (was 41). | fixed |
 | BD-8 | med | Backend units compile once per scene shape. | Capability-independent code in shared units. | open |
 | BD-9 | med | `main.cpp` is each large app's critical path. | With GC-10. | open |
-| BD-10 | low | Shipping carries SDL software blitting and the MSVC demangler. | Demangler removed. Remaining: SDL blitter references. | partial |
+| BD-10 | low | Shipping carries SDL software blitting and the MSVC demangler. | The trimmed SDL compiles out the blitters, RLE, YUV and stb_image through a project include (torus-states exe −22%). | fixed |
 | BD-11 | med | Trimmed SDL records no patch set. | The trimmed SDL records its patch set under NT-7's check. | fixed |
 | BD-12 | low | Two SDL trim options are not options. | Removed; the guard requires a declared (BOOL or INTERNAL) option. | fixed |
-| BD-13 | low | Packages ship vcpkg SDL's 349 KB licence. | Windows packages ship the trimmed SDL's notices (5,196 B). Remaining: Android/iOS copy vcpkg's notice; the shipping profile still installs vcpkg SDL. | partial |
+| BD-13 | low | Packages ship vcpkg SDL's 349 KB licence. | vcpkg SDL is the `sdl` manifest feature, requested only where no trimmed SDL replaces it; every package, iOS included, ships the trimmed SDL's notices. | fixed |
 | BD-14 | low | `--plan` failed before generation. | Plan generates first. | fixed |
 | BD-15 | low | Startup failures discarded output. | Output tail; long paths refused. | fixed |
-| BD-16 | med | Checkouts of different manifests sharing one vcpkg install reinstall it on every build. | Key the shared install by manifest identity. | open |
+| BD-16 | med | Checkouts of different manifests sharing one vcpkg install reinstall it on every build. | Shared installs are keyed by the manifest digest, three kept per name. | fixed |
 | BD-17 | low | Journaled writes to shared records are found by inventory, not enforced by types; `EmissionSet.add` is 21 s of antigravity's 59 s journal cost. | Readonly types inside the compiler (or a test failing on unjournaled writes); cheaper dependency-set adds. | open |
 | BD-18 | low | `runtime.hpp` sits in the PCH and tests 15 feature macros, so every PAL unit's cache key carries them; generated units never hit the cache across scenes. | Split the feature-gated record blocks out of `runtime.hpp`; content-addressed generated sources. | open |
+| BD-19 | low | `controller_type` (11.5 KiB) is linked into the trimmed SDL with joystick support off. | Trim it with the joystick subsystem. | open |
 
 ## Workers (WK)
 
