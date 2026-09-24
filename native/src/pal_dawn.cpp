@@ -153,10 +153,12 @@ WGPUCullMode dawn_cull_mode(upstream::RenderCullMode cull) {
  * operation has already cleared or loaded the whole attachment.
  */
 void set_pass_camera_viewport(WGPURenderPassEncoder pass, const Scene& scene, const Engine& engine,
-                              const CameraRecord& camera, std::uint32_t target_width,
+                              const CameraRecord* camera, std::uint32_t target_width,
                               std::uint32_t target_height) {
-    const std::optional<PixelViewport> resolved =
-        scene_camera_viewport(engine, scene, camera, target_width, target_height);
+    // A pass without a camera keeps the whole target, the nullish camera's
+    // answer (`no_camera_record`).
+    const std::optional<PixelViewport> resolved = scene_camera_viewport(
+        engine, scene, camera ? *camera : no_camera_record, target_width, target_height);
     if (!resolved.has_value())
         return;
     const PixelViewport& rect = *resolved;
@@ -3875,13 +3877,17 @@ void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engi
 // Upload the pin's per-pass blocks. Both are built by the shared builders, so
 // this backend decides only where they land.
 void write_pinned_frame_blocks(DawnState& state, const Scene& scene, const Engine& engine,
-                               const CameraRecord& camera,
+                               const CameraRecord* camera,
                                const std::array<float, 16>& view_projection) {
     ensure_pinned_frame_buffers(state);
-    const upstream::SceneUniforms scene_block =
-        pinned_scene_block(scene, engine, camera, view_projection);
-    wgpuQueueWriteBuffer(state.queue, state.pinned_scene_uniforms, 0, &scene_block,
-                         sizeof(scene_block));
+    // The pin refreshes the lights before `_writePassSceneUBO`, which
+    // returns without a camera and leaves the scene block as it was.
+    if (camera) {
+        const upstream::SceneUniforms scene_block =
+            pinned_scene_block(scene, engine, *camera, view_projection);
+        wgpuQueueWriteBuffer(state.queue, state.pinned_scene_uniforms, 0, &scene_block,
+                             sizeof(scene_block));
+    }
     const std::vector<std::uint8_t> lights = pinned_lights_block(scene, engine);
     wgpuQueueWriteBuffer(state.queue, state.pinned_lights_uniforms, 0, lights.data(),
                          lights.size());
@@ -9536,8 +9542,6 @@ class DawnSceneRun {
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
         std::optional<DawnTextResourceOps> text_ops;
 #endif
-        CameraRecord fallback_camera;
-        CameraRecord* camera = nullptr;
         CameraPointerState pointer_state;
         SurfaceCameraPointerState surface_pointer_state;
         CameraTraceState camera_trace_state;
@@ -9597,6 +9601,31 @@ class DawnSceneRun {
         return *frame_;
     }
 
+    /**
+     * The scene's active camera, read from the live `scene.camera` at each
+     * use as the pin reads it, or null when the scene has none. Without one
+     * the pin still runs the scene pass: it clears and draws, but writes no
+     * scene block (`_writePassSceneUBO` returns first, render-task-base.ts),
+     * so the pass draws through the zero block the frame starts with and
+     * nothing it projects reaches a fragment.
+     */
+    CameraRecord* active_camera() {
+        return data_.scene.camera.value < data_.engine.cameras.size()
+                   ? &handle_at(data_.engine.cameras, data_.scene.camera)
+                   : nullptr;
+    }
+
+    /**
+     * The camera a registered layer's pass projects through: its own, or,
+     * for a layer without one, the base scene's. Null when neither has one,
+     * which is the no-camera pass `active_camera` describes.
+     */
+    CameraRecord* layer_camera(const Scene& layer) {
+        return layer.camera.value < data_.engine.cameras.size()
+                   ? &handle_at(data_.engine.cameras, layer.camera)
+                   : active_camera();
+    }
+
     void rebuild_task_draw_lists() {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& state = data_.state;
@@ -9640,13 +9669,17 @@ class DawnSceneRun {
         [[maybe_unused]] auto& width = data_.width;
         [[maybe_unused]] auto& height = data_.height;
         [[maybe_unused]] auto& render_plan = data_.render_plan;
-        [[maybe_unused]] auto& camera = *data_.camera;
         [[maybe_unused]] const auto& matrix = current_frame().matrix;
         [[maybe_unused]] const auto& capture_ready = current_frame().capture_ready;
 
         if (capture_ready && !captures.render_capture_saved &&
             !frame_options.render_capture_path.empty()) {
-            write_render_capture(frame_options.render_capture_path, "dawn", scene, engine, camera,
+            const CameraRecord* camera = active_camera();
+            if (!camera) {
+                throw std::runtime_error("The render capture records the active camera and the "
+                                         "draws it projects; this scene has no active camera.");
+            }
+            write_render_capture(frame_options.render_capture_path, "dawn", scene, engine, *camera,
                                  render_plan, matrix, static_cast<int>(width),
                                  static_cast<int>(height), frame
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
@@ -9858,7 +9891,6 @@ public:
             data_.synced_render_topology_version;
         [[maybe_unused]] auto& synced_draw_list_epoch = data_.synced_draw_list_epoch;
         [[maybe_unused]] auto& synced_material_family_mask = data_.synced_material_family_mask;
-        [[maybe_unused]] auto& fallback_camera = data_.fallback_camera;
         [[maybe_unused]] auto& benchmark_samples = data_.samples_ms;
         [[maybe_unused]] auto& screenshot_path = data_.frame_options.screenshot_path;
         [[maybe_unused]] const auto benchmark = data_.frame_options.benchmarking();
@@ -10180,10 +10212,6 @@ public:
             text_ops);
 #endif
 
-        data_.camera =
-            &(scene.camera.value < engine.cameras.size() ? handle_at(engine.cameras, scene.camera)
-                                                         : fallback_camera);
-
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 
 #endif
@@ -10262,7 +10290,6 @@ public:
         [[maybe_unused]] auto& height = data_.height;
         [[maybe_unused]] auto& pointer_state = data_.pointer_state;
         [[maybe_unused]] auto& surface_pointer_state = data_.surface_pointer_state;
-        [[maybe_unused]] auto& camera = *data_.camera;
         [[maybe_unused]] auto& hidden_test_pass = data_.frame_options.test_pass;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         [[maybe_unused]] auto& ui_runtime = data_.ui_runtime;
@@ -10279,7 +10306,7 @@ public:
         const auto camera_pointer_hook = [&](const SDL_Event& event) {
             if (hidden_test_pass && !is_replayed_ui_event(event))
                 return;
-            dispatch_surface_camera_pointer(engine, event, camera, pointer_state,
+            dispatch_surface_camera_pointer(engine, event, active_camera(), pointer_state,
                                             surface_pointer_state);
         };
 
@@ -10406,7 +10433,7 @@ public:
         [[maybe_unused]] auto& synced_draw_list_epoch = data_.synced_draw_list_epoch;
         [[maybe_unused]] auto& synced_material_family_mask = data_.synced_material_family_mask;
         [[maybe_unused]] auto& camera_trace_state = data_.camera_trace_state;
-        [[maybe_unused]] auto& camera = *data_.camera;
+        CameraRecord* const camera = active_camera();
         [[maybe_unused]] auto& screenshot_frame = data_.frame_options.screenshot_frame;
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
         [[maybe_unused]] auto& text_ops = *data_.text_ops;
@@ -10741,40 +10768,49 @@ public:
         }
         uploaded = cpu_profile ? monotonic_milliseconds() : 0.0;
         update_surface_cameras(engine, camera, delta_ms);
-        trace_camera_state(camera, camera_trace_state, frame);
-        upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, camera);
-
-        // getEffectiveAspectRatio divides two JavaScript numbers, so
-        // the ratio reaches the projection writer in double. It is the
-        // pinned function itself: a camera carrying a viewport scales
-        // the target ratio by the viewport's own, and one without takes
-        // the pin's literal 1.
         surface_extent = scene_surface_extent(engine, scene, width, height);
-        aspect = upstream::effective_aspect_ratio(camera, static_cast<double>(surface_extent.width),
-                                                  static_cast<double>(surface_extent.height));
-        matrix = upstream::build_view_projection(camera, aspect);
+        if (camera) {
+            trace_camera_state(*camera, camera_trace_state, frame);
+            // `sortTransparentBindings` sorts only with a camera
+            // (render-task-base.ts).
+            upstream::sort_transparent_draws(render_plan.draw_lists.transparent, engine, *camera);
+            // getEffectiveAspectRatio divides two JavaScript numbers, so
+            // the ratio reaches the projection writer in double. It is the
+            // pinned function itself: a camera carrying a viewport scales
+            // the target ratio by the viewport's own, and one without takes
+            // the pin's literal 1.
+            aspect =
+                upstream::effective_aspect_ratio(*camera, static_cast<double>(surface_extent.width),
+                                                 static_cast<double>(surface_extent.height));
+            matrix = upstream::build_view_projection(*camera, aspect);
+            // The frame's own two factors, built once. A shader material may
+            // declare either beside the product, the pin's splat UBO stores
+            // them separately, and the billboard sort reads the view. The
+            // projection is the pin's `getProjectionMatrix` -- the arm that
+            // branches on the camera -- rather than the perspective writer.
+            frame_view = upstream::build_view_matrix(upstream::camera_world_matrix(*camera));
+            frame_projection = upstream::build_scene_projection(*camera, aspect);
+            frame_camera_position = shader_camera_position(scene, engine, *camera);
+        }
+        // Without a camera the matrices above keep the frame's zeros: the
+        // scene block the pin never writes (see `active_camera`).
+        frame_pass_matrices = {matrix.data(), &frame_view, &frame_projection};
+        frame_pass_matrices.camera_position = &frame_camera_position;
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
         validate_text_scene(scene);
         state.text->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-        const TextCameraInput text_camera{matrix, upstream::scene_camera_change_key(camera),
-                                          aspect};
-        state.text->scene.update(scene.camera.value < engine.cameras.size() ? &text_camera
-                                                                            : nullptr,
+        const std::optional<TextCameraInput> text_camera =
+            camera ? std::optional<TextCameraInput>{TextCameraInput{
+                         matrix, upstream::scene_camera_change_key(*camera), aspect}}
+                   : std::nullopt;
+        state.text->scene.update(text_camera ? &*text_camera : nullptr,
                                  static_cast<double>(surface_extent.width),
                                  static_cast<double>(surface_extent.height), text_ops);
 #endif
-        // The frame's own two factors, built once. A shader material may
-        // declare either beside the product, the pin's splat UBO stores
-        // them separately, and the billboard sort reads the view. The
-        // projection is the pin's `getProjectionMatrix` -- the arm that
-        // branches on the camera -- rather than the perspective writer.
-        frame_view = upstream::build_view_matrix(upstream::camera_world_matrix(camera));
-        frame_projection = upstream::build_scene_projection(camera, aspect);
-        frame_camera_position = shader_camera_position(scene, engine, camera);
-        frame_pass_matrices = {matrix.data(), &frame_view, &frame_projection};
-        frame_pass_matrices.camera_position = &frame_camera_position;
 #if BBLITE_HAS_SPLATS
-        {
+        if (camera) {
+            // The splat renderable's update returns without a camera
+            // (gaussian-splatting-pipeline.ts), leaving its block unwritten.
             // Lazily built for the same reason the billboard passes are:
             // the clouds are known only once the scene has run. The sort
             // then follows the camera, which `upload_dawn_splat_pass`
@@ -10796,11 +10832,12 @@ public:
 #if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
         // The cluster binning, in the place the splat sort runs and for the
         // same reason: it reads this frame's camera and the draws below read
-        // what it wrote.
+        // what it wrote. The pinned updater returns without a camera
+        // (clustered.ts).
         if (ClusteredLightContainer* clustered =
-                upstream::clustered_container(engine, scene.clustered_lights)) {
+                camera ? upstream::clustered_container(engine, scene.clustered_lights) : nullptr) {
             upload_dawn_clustered(state.device, state.queue, *clustered, frame_view,
-                                  frame_projection, camera.near_plane, camera.far_plane,
+                                  frame_projection, camera->near_plane, camera->far_plane,
                                   state.clustered);
         }
 #endif
@@ -10853,24 +10890,22 @@ public:
                 continue;
             DawnState::OverlayFrame& overlay = state.overlay_frames[layer];
             overlay_frame_group(state, overlay);
-            const CameraRecord& overlay_camera =
-                overlay_scene->camera.value < engine.cameras.size()
-                    ? handle_at(engine.cameras, overlay_scene->camera)
-                    : camera;
-            // A layer's own camera answers `getEffectiveAspectRatio` for
-            // itself: upstream each scene's render task writes its OWN
-            // scene UBO from `cfg.cam ?? scene.camera`, so two scenes
-            // splitting one target by viewport project at two ratios.
-            const PixelViewport overlay_surface_extent =
-                scene_surface_extent(engine, *overlay_scene, width, height);
-            const double overlay_aspect = upstream::effective_aspect_ratio(
-                overlay_camera, static_cast<double>(overlay_surface_extent.width),
-                static_cast<double>(overlay_surface_extent.height));
-            const upstream::SceneUniforms overlay_scene_block =
-                pinned_scene_block(*overlay_scene, engine, overlay_camera,
-                                   upstream::build_view_projection(overlay_camera, overlay_aspect));
-            wgpuQueueWriteBuffer(state.queue, overlay.scene_uniforms, 0, &overlay_scene_block,
-                                 sizeof(overlay_scene_block));
+            if (const CameraRecord* overlay_camera = layer_camera(*overlay_scene)) {
+                // A layer's own camera answers `getEffectiveAspectRatio` for
+                // itself: upstream each scene's render task writes its OWN
+                // scene UBO from `cfg.cam ?? scene.camera`, so two scenes
+                // splitting one target by viewport project at two ratios.
+                const PixelViewport overlay_surface_extent =
+                    scene_surface_extent(engine, *overlay_scene, width, height);
+                const double overlay_aspect = upstream::effective_aspect_ratio(
+                    *overlay_camera, static_cast<double>(overlay_surface_extent.width),
+                    static_cast<double>(overlay_surface_extent.height));
+                const upstream::SceneUniforms overlay_scene_block = pinned_scene_block(
+                    *overlay_scene, engine, *overlay_camera,
+                    upstream::build_view_projection(*overlay_camera, overlay_aspect));
+                wgpuQueueWriteBuffer(state.queue, overlay.scene_uniforms, 0, &overlay_scene_block,
+                                     sizeof(overlay_scene_block));
+            }
             const std::vector<std::uint8_t> overlay_lights =
                 pinned_lights_block(*overlay_scene, engine);
             wgpuQueueWriteBuffer(state.queue, overlay.lights_uniforms, 0, overlay_lights.data(),
@@ -10939,25 +10974,26 @@ public:
             Scene* overlay_scene = engine.registered_scenes[layer + 1u].get();
             if (!overlay_scene)
                 continue;
-            const CameraRecord& overlay_camera =
-                overlay_scene->camera.value < engine.cameras.size()
-                    ? handle_at(engine.cameras, overlay_scene->camera)
-                    : camera;
-            // The layer's own effective aspect, as above: a viewport is
-            // the camera's, not the target's.
-            const PixelViewport overlay_surface_extent =
-                scene_surface_extent(engine, *overlay_scene, width, height);
-            const double overlay_aspect = upstream::effective_aspect_ratio(
-                overlay_camera, static_cast<double>(overlay_surface_extent.width),
-                static_cast<double>(overlay_surface_extent.height));
-            const std::array<float, 16> overlay_matrix =
-                upstream::build_view_projection(overlay_camera, overlay_aspect);
-            const std::array<float, 16> overlay_view =
-                upstream::build_view_matrix(upstream::camera_world_matrix(overlay_camera));
-            const std::array<float, 16> overlay_projection =
-                upstream::build_scene_projection(overlay_camera, overlay_aspect);
-            const std::array<float, 4> overlay_camera_position =
-                shader_camera_position(*overlay_scene, engine, overlay_camera);
+            // A layer without a camera keeps the zero pass matrices of the
+            // block the pin never writes for it.
+            std::array<float, 16> overlay_matrix{}, overlay_view{}, overlay_projection{};
+            std::array<float, 4> overlay_camera_position{};
+            if (const CameraRecord* overlay_camera = layer_camera(*overlay_scene)) {
+                // The layer's own effective aspect, as above: a viewport is
+                // the camera's, not the target's.
+                const PixelViewport overlay_surface_extent =
+                    scene_surface_extent(engine, *overlay_scene, width, height);
+                const double overlay_aspect = upstream::effective_aspect_ratio(
+                    *overlay_camera, static_cast<double>(overlay_surface_extent.width),
+                    static_cast<double>(overlay_surface_extent.height));
+                overlay_matrix = upstream::build_view_projection(*overlay_camera, overlay_aspect);
+                overlay_view =
+                    upstream::build_view_matrix(upstream::camera_world_matrix(*overlay_camera));
+                overlay_projection =
+                    upstream::build_scene_projection(*overlay_camera, overlay_aspect);
+                overlay_camera_position =
+                    shader_camera_position(*overlay_scene, engine, *overlay_camera);
+            }
             ShaderPassMatrices overlay_pass_matrices{overlay_matrix.data(), &overlay_view,
                                                      &overlay_projection};
             overlay_pass_matrices.camera_position = &overlay_camera_position;
@@ -10970,13 +11006,16 @@ public:
             pass_meshes = &state.meshes;
         }
 #endif
+        // The environment renderables read the pass's scene block, which a
+        // scene without a camera leaves unwritten: their camera-derived
+        // blocks keep the zeros they were created with.
         if (state.skybox_enabled) {
-            const std::array<float, 16> skybox_view_projection =
-                upstream::build_skybox_view_projection(camera, aspect);
-            if (scene.environment.skybox_uses_environment) {
+            if (camera && scene.environment.skybox_uses_environment) {
+                const std::array<float, 16> skybox_view_projection =
+                    upstream::build_skybox_view_projection(*camera, aspect);
                 wgpuQueueWriteBuffer(state.queue, state.skybox_matrix, 0,
                                      skybox_view_projection.data(), sizeof(skybox_view_projection));
-            } else {
+            } else if (camera) {
                 const upstream::SkyboxVertexUniforms vertex_uniforms =
                     upstream::build_skybox_vertex_uniforms(scene.environment, matrix);
                 wgpuQueueWriteBuffer(state.queue, state.skybox_matrix, 0, &vertex_uniforms,
@@ -10986,9 +11025,9 @@ public:
                 upstream::build_skybox_uniforms(scene.environment, scene.transmission_enabled);
             wgpuQueueWriteBuffer(state.queue, state.skybox_uniforms, 0, &skybox, sizeof(skybox));
         }
-        if (state.ground_enabled) {
+        if (state.ground_enabled && camera) {
             const upstream::BackgroundUniforms background = upstream::build_background_uniforms(
-                scene.environment, camera, scene.transmission_enabled);
+                scene.environment, *camera, scene.transmission_enabled);
             wgpuQueueWriteBuffer(state.queue, state.ground_uniforms, 0, &background,
                                  sizeof(background));
         }
@@ -10998,10 +11037,12 @@ public:
             // matrix beside the view and the eye position it offsets the
             // cube by -- so the draw binds that layout over the frame's
             // matrix.
-            const upstream::SolidSkyboxSceneUniforms solid_skybox_scene =
-                upstream::build_solid_skybox_scene_uniforms(camera, matrix);
-            wgpuQueueWriteBuffer(state.queue, state.solid_skybox_scene_uniforms, 0,
-                                 &solid_skybox_scene, sizeof(solid_skybox_scene));
+            if (camera) {
+                const upstream::SolidSkyboxSceneUniforms solid_skybox_scene =
+                    upstream::build_solid_skybox_scene_uniforms(*camera, matrix);
+                wgpuQueueWriteBuffer(state.queue, state.solid_skybox_scene_uniforms, 0,
+                                     &solid_skybox_scene, sizeof(solid_skybox_scene));
+            }
             const upstream::SolidSkyboxUniforms solid_skybox_mesh =
                 upstream::build_solid_skybox_uniforms(scene);
             wgpuQueueWriteBuffer(state.queue, state.solid_skybox_mesh_uniforms, 0,
@@ -11009,9 +11050,9 @@ public:
         }
 #endif
 #if BBLITE_IMAGE_SKYBOX
-        if (state.image_skybox_enabled) {
+        if (state.image_skybox_enabled && camera) {
             const upstream::ImageSkyboxUniforms image_skybox_uniforms =
-                upstream::build_image_skybox_uniforms(scene, camera);
+                upstream::build_image_skybox_uniforms(scene, *camera);
             wgpuQueueWriteBuffer(state.queue, state.image_skybox_uniforms, 0,
                                  &image_skybox_uniforms, sizeof(image_skybox_uniforms));
         }
@@ -11030,10 +11071,7 @@ public:
             for (std::size_t graph_layer = 0; graph_layer < engine.registered_scenes.size();
                  ++graph_layer) {
                 const Scene& graph_scene = *engine.registered_scenes[graph_layer];
-                const CameraRecord& graph_camera =
-                    graph_scene.camera.value < engine.cameras.size()
-                        ? handle_at(engine.cameras, graph_scene.camera)
-                        : camera;
+                const CameraRecord* const graph_camera = layer_camera(graph_scene);
                 const auto graph_extent = scene_surface_extent(engine, graph_scene, width, height);
 #if BBLITE_GEOMETRY_TASK_FAMILIES
                 std::optional<std::array<float, 16>> graph_matrix;
@@ -11052,17 +11090,21 @@ public:
                     }
                     const FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
                     if (task.kind == FrameTaskKind::geometry) {
+                        // A geometry task without a camera does not execute
+                        // (geometry-renderer-task.ts executeTask returns 0).
+                        if (!graph_camera)
+                            continue;
 #if BBLITE_GEOMETRY_TASK_FAMILIES
                         if (!graph_matrix) {
                             const double graph_aspect = upstream::effective_aspect_ratio(
-                                graph_camera, graph_extent.width, graph_extent.height);
+                                *graph_camera, graph_extent.width, graph_extent.height);
                             graph_matrix =
-                                upstream::build_view_projection(graph_camera, graph_aspect);
+                                upstream::build_view_projection(*graph_camera, graph_aspect);
                         }
 #endif
                         upstream::sort_transparent_draws(
                             handle_at(state.render_tasks, handle).draw_lists.transparent, engine,
-                            graph_camera);
+                            *graph_camera);
 #if BBLITE_GEOMETRY_TASK_FAMILIES
                         // The task's own frame state, written once and before
                         // any family: its scene block, its gpUniforms buffer and
@@ -11071,9 +11113,9 @@ public:
                         // decides only whether it is written at all.
                         if (pinned_lists_have_pinned_draws(
                                 handle_at(state.render_tasks, handle).draw_lists)) {
-                            write_pinned_geometry_prologue(state, graph_scene, engine, graph_camera,
-                                                           handle_at(state.geometry_tasks, handle),
-                                                           *graph_matrix);
+                            write_pinned_geometry_prologue(
+                                state, graph_scene, engine, *graph_camera,
+                                handle_at(state.geometry_tasks, handle), *graph_matrix);
                         }
 #endif
 #if BBLITE_PBR_VARIANTS > 0
@@ -11111,42 +11153,49 @@ public:
                         handle_at(engine.render_targets, task.render.target);
                     const DawnRenderTarget& target =
                         handle_at(state.render_targets, task.render.target);
-                    const CameraRecord& task_camera =
+                    // `cfg.cam ?? scene.camera`; null is a pass the pin runs
+                    // without writing its scene block (see `active_camera`).
+                    const CameraRecord* const task_camera =
                         task.render.has_camera && task.render.camera.value < engine.cameras.size()
-                            ? handle_at(engine.cameras, task.render.camera)
+                            ? &handle_at(engine.cameras, task.render.camera)
                             : graph_camera;
-                    // `_writePassSceneUBO` folds the camera's own viewport
-                    // into whichever extent the task was configured for --
-                    // the canvas or the target.
-                    const double task_aspect =
-                        task.render.canvas_size
-                            ? upstream::effective_aspect_ratio(
-                                  task_camera, static_cast<double>(graph_extent.width),
-                                  static_cast<double>(graph_extent.height))
-                            : upstream::effective_aspect_ratio(task_camera,
-                                                               static_cast<double>(target.width),
-                                                               static_cast<double>(target.height));
                     // A shadow task renders from the light, not from a
                     // camera: the generator's own matrices replace both of
                     // these below, so building and uploading a camera
                     // view-projection first would be a dead pass over the
                     // camera basis and a dead 64-byte write.
                     const bool shadow_task = task.render.shadow_generator.value != invalid_handle;
-                    const std::array<float, 16> task_matrix =
-                        shadow_task ? std::array<float, 16>{}
-                                    : upstream::build_view_projection(task_camera, task_aspect);
-                    // The task's own two factors, beside its product, for a
-                    // shader material that declares one.
-                    const std::array<float, 16> task_view =
-                        upstream::build_view_matrix(upstream::camera_world_matrix(task_camera));
-                    const std::array<float, 16> task_projection =
-                        upstream::build_scene_projection(task_camera, task_aspect);
-                    const std::array<float, 4> task_camera_position =
-                        shader_camera_position(graph_scene, engine, task_camera);
+                    double task_aspect = 0.0;
+                    std::array<float, 16> task_matrix{}, task_view{}, task_projection{};
+                    std::array<float, 4> task_camera_position{};
+                    if (task_camera) {
+                        // `_writePassSceneUBO` folds the camera's own viewport
+                        // into whichever extent the task was configured for --
+                        // the canvas or the target.
+                        task_aspect =
+                            task.render.canvas_size
+                                ? upstream::effective_aspect_ratio(
+                                      *task_camera, static_cast<double>(graph_extent.width),
+                                      static_cast<double>(graph_extent.height))
+                                : upstream::effective_aspect_ratio(
+                                      *task_camera, static_cast<double>(target.width),
+                                      static_cast<double>(target.height));
+                        if (!shadow_task)
+                            task_matrix =
+                                upstream::build_view_projection(*task_camera, task_aspect);
+                        // The task's own two factors, beside its product, for a
+                        // shader material that declares one.
+                        task_view = upstream::build_view_matrix(
+                            upstream::camera_world_matrix(*task_camera));
+                        task_projection =
+                            upstream::build_scene_projection(*task_camera, task_aspect);
+                        task_camera_position =
+                            shader_camera_position(graph_scene, engine, *task_camera);
+                    }
                     ShaderPassMatrices task_pass_matrices{task_matrix.data(), &task_view,
                                                           &task_projection};
                     task_pass_matrices.camera_position = &task_camera_position;
-                    if (!shadow_task) {
+                    if (!shadow_task && task_camera) {
                         wgpuQueueWriteBuffer(state.queue, render_task.view_projection, 0,
                                              task_matrix.data(), 64);
                     }
@@ -11168,8 +11217,13 @@ public:
                         const std::array<float, 16>& caster_view_projection =
                             caster.view_projection;
                         const std::array<float, 16>& caster_view = caster.view;
+                        if (!graph_camera) {
+                            throw std::runtime_error(
+                                "A shadow caster pass fills its scene block's camera lanes from "
+                                "the scene's active camera; a scene without one is not reached.");
+                        }
                         upstream::SceneUniforms shadow_block = pinned_scene_block(
-                            graph_scene, engine, graph_camera, caster_view_projection);
+                            graph_scene, engine, *graph_camera, caster_view_projection);
                         shadow_block.view = caster_view;
                         task_pinned_frame_group(state, render_task, graph_lights);
                         wgpuQueueWriteBuffer(state.queue, render_task.pinned_scene_uniforms, 0,
@@ -11213,11 +11267,11 @@ public:
                     // zeroed one. Six shadow scenes and a demo moved on Dawn
                     // alone while SDL_GPU stayed byte-identical -- which is the
                     // differential naming the side before anything was read.
-                    if (target_record.has_color && !shadow_task) {
+                    if (target_record.has_color && !shadow_task && task_camera) {
                         // The task's own pass block, in the pin's own shape: the
                         // frame's writer over the task's camera and matrix.
                         const upstream::SceneUniforms task_scene_block =
-                            pinned_scene_block(graph_scene, engine, task_camera, task_matrix);
+                            pinned_scene_block(graph_scene, engine, *task_camera, task_matrix);
                         task_pinned_frame_group(state, render_task, graph_lights);
                         wgpuQueueWriteBuffer(state.queue, render_task.pinned_scene_uniforms, 0,
                                              &task_scene_block, sizeof(task_scene_block));
@@ -11232,14 +11286,14 @@ public:
                             render_task.skybox_scene_group =
                                 skybox_scene_group_over(state, render_task.skybox_matrix, dds);
                         }
-                        if (dds) {
+                        if (dds && task_camera) {
                             const auto skybox = upstream::build_skybox_vertex_uniforms(
                                 graph_scene.environment, task_matrix);
                             wgpuQueueWriteBuffer(state.queue, render_task.skybox_matrix, 0, &skybox,
                                                  sizeof(skybox));
-                        } else {
+                        } else if (task_camera) {
                             const auto skybox =
-                                upstream::build_skybox_view_projection(task_camera, task_aspect);
+                                upstream::build_skybox_view_projection(*task_camera, task_aspect);
                             wgpuQueueWriteBuffer(state.queue, render_task.skybox_matrix, 0,
                                                  skybox.data(), sizeof(skybox));
                         }
@@ -11254,8 +11308,10 @@ public:
                     // nothing to sort for. The SDL backend sorts in exactly
                     // its colour and geometry task arms for the same reasons.
                     if (target_record.has_color) {
-                        upstream::sort_transparent_draws(render_task.draw_lists.transparent, engine,
-                                                         task_camera);
+                        if (task_camera) {
+                            upstream::sort_transparent_draws(render_task.draw_lists.transparent,
+                                                             engine, *task_camera);
+                        }
                         write_material_uniforms(render_task.draw_lists.opaque, task_pass_matrices);
                         write_material_uniforms(render_task.draw_lists.transparent,
                                                 task_pass_matrices);
@@ -11310,7 +11366,7 @@ public:
         [[maybe_unused]] auto& render_plan = data_.render_plan;
         [[maybe_unused]] auto& overlay_plans = data_.overlay_plans;
         [[maybe_unused]] auto& overlay_topology_versions = data_.overlay_topology_versions;
-        [[maybe_unused]] auto& camera = *data_.camera;
+        CameraRecord* const camera = active_camera();
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
         [[maybe_unused]] auto& text_ops = *data_.text_ops;
 #endif
@@ -11888,14 +11944,8 @@ public:
                 overlay_descriptor.depthStencilAttachment = &overlay_depth;
                 DawnRenderPass overlay_pass{
                     wgpuCommandEncoderBeginRenderPass(encoder, &overlay_descriptor)};
-                {
-                    const CameraRecord& overlay_pass_camera =
-                        overlay_scene->camera.value < engine.cameras.size()
-                            ? handle_at(engine.cameras, overlay_scene->camera)
-                            : camera;
-                    set_pass_camera_viewport(overlay_pass, *overlay_scene, engine,
-                                             overlay_pass_camera, width, height);
-                }
+                set_pass_camera_viewport(overlay_pass, *overlay_scene, engine,
+                                         layer_camera(*overlay_scene), width, height);
                 WGPURenderPipeline overlay_bound_pipeline = nullptr;
                 pass_scene = overlay_scene;
                 pass_meshes = &state.overlay_meshes[layer];
@@ -12082,7 +12132,12 @@ public:
                                     : nullptr;
                             validate_temporal_source(engine, task, source_camera,
                                                      render_task.draw_lists);
-                            const auto& task_camera = source_camera ? *source_camera : camera;
+                            if (!source_camera && !camera) {
+                                throw std::runtime_error(
+                                    "A temporal source pass without a camera is not reached.");
+                            }
+                            const CameraRecord& task_camera =
+                                source_camera ? *source_camera : *camera;
                             const auto graph_extent =
                                 scene_surface_extent(engine, graph_scene, width, height);
                             restore_temporal_source_buffer(state, task, render_task);
@@ -12605,12 +12660,8 @@ public:
                                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
                                     DawnRenderPass utility_pass{wgpuCommandEncoderBeginRenderPass(
                                         encoder, &pass_descriptor)};
-                                    const CameraRecord& utility_camera =
-                                        utility.camera.value < engine.cameras.size()
-                                            ? handle_at(engine.cameras, utility.camera)
-                                            : camera;
                                     set_pass_camera_viewport(utility_pass, utility, engine,
-                                                             utility_camera, target.width,
+                                                             layer_camera(utility), target.width,
                                                              target.height);
                                     pass_scene = &utility;
                                     pass_meshes = &state.overlay_meshes[layer];
@@ -12624,9 +12675,12 @@ public:
                                 const WGPUBuffer utility_uniforms = state.view_projection;
 #endif
                                     WGPURenderPipeline utility_pipeline = nullptr;
-                                    upstream::sort_transparent_draws(
-                                        overlay_plans[layer].draw_lists.transparent, engine,
-                                        utility_camera);
+                                    if (const CameraRecord* utility_camera =
+                                            layer_camera(utility)) {
+                                        upstream::sort_transparent_draws(
+                                            overlay_plans[layer].draw_lists.transparent, engine,
+                                            *utility_camera);
+                                    }
                                     draw_list_into(utility_pass,
                                                    overlay_plans[layer].draw_lists.opaque, samples,
                                                    utility_pipeline, pass_has_depth, utility_group,
@@ -12644,6 +12698,10 @@ public:
                             continue;
                         }
                         if (task.kind == FrameTaskKind::geometry) {
+                            // Without a camera the task does not execute, not
+                            // even its clears (geometry-renderer-task.ts).
+                            if (!layer_camera(graph_scene))
+                                continue;
                             DawnGeometryTask& geometry = handle_at(state.geometry_tasks, handle);
                             DawnRenderTask& render_task = handle_at(state.render_tasks, handle);
                             const std::uint32_t samples =
