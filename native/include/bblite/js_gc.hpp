@@ -45,11 +45,11 @@ struct Node {
     bool reachable = false;
     bool payload_alive = false;
     bool linked = false;
-    Node() = default;
-    /** Registration is the collector's allocation: it drives the collection cadence. */
-    void attach() {
+    Node() {
         ++registry.allocations;
         ++registry.total_allocations;
+    }
+    void attach() {
         const auto index = registry.nodes.size();
         registry.nodes.push_back(this);
         registry_index = index;

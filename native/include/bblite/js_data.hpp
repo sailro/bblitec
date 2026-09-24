@@ -515,10 +515,7 @@ public:
     [[nodiscard]] T& operator*() const { return require_value(); }
     [[nodiscard]] T* operator->() const { return std::addressof(require_value()); }
     explicit operator bool() const { return block_ != nullptr; }
-    void gc_trace(const TraceVisitor& visitor) const {
-        if constexpr (gc_traceable<T>)
-            visitor.edge(block_);
-    }
+    void gc_trace(const TraceVisitor& visitor) const { visitor.edge(block_); }
     [[nodiscard]] std::weak_ptr<const void> weak_identity() const {
         if (!block_)
             return {};
@@ -592,14 +589,13 @@ private:
 };
 
 namespace gc {
-template <typename T> struct Traceable<Ref<T>> : Traceable<T> {};
+/** Every reference block is registered, so a reference is always an edge. */
+template <typename T> struct Traceable<Ref<T>> : std::true_type {};
 } // namespace gc
 
 template <typename T, typename... Args> [[nodiscard]] Ref<T> make_ref(Args&&... args) {
     auto block = std::make_unique<typename Ref<T>::Block>(std::forward<Args>(args)...);
-    // A payload that owns no traced edge cannot close a cycle; its count alone releases it.
-    if constexpr (gc_traceable<T>)
-        block->attach();
+    block->attach();
     auto* value = block.get();
     value->lifetime = std::move(block);
     return Ref<T>(value);
