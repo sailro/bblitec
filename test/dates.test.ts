@@ -6,6 +6,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     cppFunction,
+    developmentVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -44,7 +45,7 @@ int main() { std::cout << *bbl::js::make_date_time_format(); }
                 "-I",
                 "native/include",
                 "-I",
-                `artifacts/vcpkg-installed/development-full/${triplet}/include`,
+                join(developmentVcpkgRoot(triplet), "include"),
                 source,
                 "-framework",
                 "CoreFoundation",

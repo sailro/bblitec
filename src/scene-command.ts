@@ -144,8 +144,6 @@ import {
     canonicalDevelopmentCompiler,
     canonicalOfflineShaderTarget,
     compiledBuildDirectory,
-    DEVELOPMENT_VCPKG_INSTALL,
-    developmentVcpkgFeatures,
     developmentTriplet,
     hostOfflineShaderTarget,
     needsOfflineShaders,
@@ -162,6 +160,7 @@ import {
 } from "./development-tools.js";
 import { checkPatchInventory } from "./patch-inventory.js";
 import {
+    developmentVcpkgInstall,
     installVcpkgManifest,
     type VcpkgManifestInstall,
 } from "./vcpkg-install.js";
@@ -752,24 +751,6 @@ function sceneUsesNativeFeature(
     return (
         existsSync(features) && readFileSync(features, "utf8").includes(feature)
     );
-}
-
-/**
- * The install every development tree links against: the full manifest
- * feature set (`developmentVcpkgFeatures`) under the shared root.
- */
-function developmentVcpkgInstall(): VcpkgManifestInstall {
-    return {
-        installedDirectory: resolve(
-            process.env.BBLITE_VCPKG_INSTALLED_ROOT ??
-                artifactDirectory("vcpkg-installed"),
-            DEVELOPMENT_VCPKG_INSTALL,
-        ),
-        triplet: developmentTriplet(),
-        features: developmentVcpkgFeatures(
-            readFileSync(resolve("native", "vcpkg.json"), "utf8"),
-        ),
-    };
 }
 
 /** A positive-integer environment override, rejected loudly if malformed. */

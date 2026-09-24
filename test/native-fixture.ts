@@ -8,10 +8,14 @@ import {
     discoverWindowsBuildTools,
     type WindowsBuildTools,
 } from "../src/development-tools.js";
+import { developmentVcpkgInstall } from "../src/vcpkg-install.js";
 
-export const nativeFixtureVcpkgRoot = resolve(
-    "artifacts/vcpkg-installed/development-full/x64-windows",
-);
+/** The development vcpkg install for `triplet` (the one scene builds link against). */
+export function developmentVcpkgRoot(triplet = "x64-windows"): string {
+    return resolve(developmentVcpkgInstall().installedDirectory, triplet);
+}
+
+export const nativeFixtureVcpkgRoot = developmentVcpkgRoot();
 
 /** Isolate contiguous emitted helpers, refusing a missing or reversed boundary. */
 export function cppSection(
