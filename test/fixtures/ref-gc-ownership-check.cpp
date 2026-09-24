@@ -25,12 +25,39 @@ void check_registry() {
     assert(count == managed_node_count());
 }
 
+/** Describes its (absent) edges, so its references join the registry. */
 struct Payload {
     static inline int live = 0;
     int value;
     explicit Payload(int input) : value(input) { ++live; }
     ~Payload() { --live; }
+    void gc_trace(const TraceVisitor&) const {}
 };
+
+/** A registered root that owns no edge. */
+struct Traced {
+    int value = 0;
+    void gc_trace(const TraceVisitor&) const {}
+};
+
+/** A payload that describes no edge cannot close a cycle and stays out of the registry. */
+void untraced_payloads() {
+    const auto nodes = managed_node_count();
+    const auto managed_allocations = gc::registry.total_allocations;
+    const auto outstanding = outstanding_allocations;
+    {
+        auto plain = make_ref<int>(5);
+        auto copy = plain;
+        auto cell = make_gc_shared<double>(2.5);
+        auto holder = make_ref<Traced>();
+        assert(!node_of(plain) && *copy == 5 && *cell == 2.5);
+        assert(managed_node_count() == nodes + 1);
+        assert(gc::registry.total_allocations == managed_allocations + 1);
+        assert(collect_cycles() == 0 && *plain == 5 && holder->value == 0);
+    }
+    assert(managed_node_count() == nodes && outstanding_allocations == outstanding);
+    check_registry();
+}
 
 void ref_owners_and_allocations() {
     const auto nodes = managed_node_count();
@@ -154,16 +181,17 @@ struct CollectDuringConstruction {
         assert(managed_node_count() == expected_nodes);
         assert(collect_cycles() == 0);
     }
+    void gc_trace(const TraceVisitor&) const {}
 };
 
 void construction_reentrancy() {
     const auto nodes = managed_node_count();
     const auto outstanding = outstanding_allocations;
     {
-        auto root = make_ref<int>(42);
+        auto root = make_ref<Traced>(42);
         auto reference = make_ref<CollectDuringConstruction>(nodes + 1);
         auto shared = make_gc_shared<CollectDuringConstruction>(nodes + 2);
-        assert(*root == 42);
+        assert(root->value == 42);
         assert(managed_node_count() == nodes + 3);
         check_registry();
     }
@@ -174,27 +202,28 @@ struct CollectDuringDestruction {
     static inline int destructions = 0;
     ~CollectDuringDestruction() {
         if (++destructions == 1) {
-            auto replacement = make_ref<int>(17);
+            auto replacement = make_ref<Traced>(17);
             collect_cycles();
-            assert(*replacement == 17);
+            assert(replacement->value == 17);
         }
     }
+    void gc_trace(const TraceVisitor&) const {}
 };
 
 void destruction_reentrancy() {
     const auto nodes = managed_node_count();
     const auto outstanding = outstanding_allocations;
     {
-        auto root = make_ref<int>(42);
+        auto root = make_ref<Traced>(42);
         CollectDuringDestruction::destructions = 0;
         auto reference = make_ref<CollectDuringDestruction>();
         reference.reset();
-        assert(CollectDuringDestruction::destructions == 1 && *root == 42);
+        assert(CollectDuringDestruction::destructions == 1 && root->value == 42);
         assert(managed_node_count() == nodes + 1);
         CollectDuringDestruction::destructions = 0;
         auto shared = make_gc_shared<CollectDuringDestruction>();
         shared.reset();
-        assert(CollectDuringDestruction::destructions == 1 && *root == 42);
+        assert(CollectDuringDestruction::destructions == 1 && root->value == 42);
         assert(managed_node_count() == nodes + 1);
         check_registry();
     }
@@ -202,12 +231,13 @@ void destruction_reentrancy() {
 }
 
 struct FailingConstruction {
-    Ref<int> child = make_ref<int>(19);
+    Ref<Traced> child = make_ref<Traced>(19);
     explicit FailingConstruction(std::size_t expected_nodes) {
         assert(managed_node_count() == expected_nodes + 1);
         assert(collect_cycles() == 0);
         throw 19;
     }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(child); }
 };
 
 void construction_failure() {
@@ -230,10 +260,10 @@ void construction_failure() {
 }
 
 void registry_growth_failure() {
-    std::vector<Ref<int>> roots;
+    std::vector<Ref<Traced>> roots;
     roots.reserve(gc::registry.nodes.capacity());
     while (gc::registry.nodes.size() < gc::registry.nodes.capacity())
-        roots.push_back(make_ref<int>(23));
+        roots.push_back(make_ref<Traced>(23));
     const auto nodes = managed_node_count();
     const auto outstanding = outstanding_allocations;
     for (const bool shared : {false, true}) {
@@ -251,7 +281,7 @@ void registry_growth_failure() {
         }
         allocation_failure_at = std::numeric_limits<std::size_t>::max();
         assert(threw && allocation_count == allocations + 1);
-        assert(gc::registry.total_allocations == managed_allocations + 1);
+        assert(gc::registry.total_allocations == managed_allocations);
         assert(Payload::live == 0 && managed_node_count() == nodes);
         assert(outstanding_allocations == outstanding);
         check_registry();
@@ -265,6 +295,7 @@ int main(int argc, char** argv) {
     const auto outstanding = outstanding_allocations;
     if (selected == "all" || selected == "owners") {
         ref_owners_and_allocations();
+        untraced_payloads();
         shared_alias_owners_and_allocations();
         exact_cycle_edges();
     }
@@ -278,5 +309,6 @@ int main(int argc, char** argv) {
     }
     assert(managed_node_count() == nodes && outstanding_allocations == outstanding);
     std::printf("ref-gc-ownership-check: ok (Ref=1 allocation, weak token=1, shared=1; "
-                "cycle edges=2/2, collected=2; registry and allocations restored)\n");
+                "untraced payloads unregistered; cycle edges=2/2, collected=2; registry and allocations "
+                "restored)\n");
 }

@@ -7,6 +7,8 @@ import {
     dataTypesEqual,
     passesByReferenceKind,
     containsDataKind,
+    ownsTracedEdge,
+    untracedRecords,
     type DataTypeCppContext,
 } from "./data-types/operations.js";
 export type { DataType, TypedArrayKind } from "./data-types/model.js";
@@ -3598,6 +3600,9 @@ export class DataTypeRegistry {
                 "",
             );
         }
+        const fieldTypes = (name: string): DataType[] =>
+            this.structFieldTypes(name);
+        const untraced = untracedRecords(this.structsByName.keys(), fieldTypes);
         const emitStruct = (definition: DataStructDefinition): void => {
             if (emitted.has(definition.name)) {
                 return;
@@ -3652,11 +3657,26 @@ export class DataTypeRegistry {
                                 : ""
                         };`,
                 ),
-                `    friend void gc_trace_edges([[maybe_unused]] const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, [[maybe_unused]] const bbl::js::TraceVisitor& visitor) {`,
-                ...definition.fields.map(
-                    (field) => `        visitor(record.${field.name});`,
-                ),
-                "    }",
+                // Only a record that can own a traced edge joins cycle
+                // collection, and it visits only the fields that can.
+                ...(untraced.has(definition.name)
+                    ? []
+                    : [
+                          `    friend void gc_trace_edges(const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, const bbl::js::TraceVisitor& visitor) {`,
+                          ...definition.fields
+                              .filter((field) =>
+                                  ownsTracedEdge(
+                                      field.type,
+                                      fieldTypes,
+                                      untraced,
+                                  ),
+                              )
+                              .map(
+                                  (field) =>
+                                      `        visitor(record.${field.name});`,
+                              ),
+                          "    }",
+                      ]),
                 ...(structuredClone
                     ? [
                           "",

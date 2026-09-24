@@ -15677,7 +15677,7 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     // readback's nullable point, and the distance beside it.
     assert.match(
         result.cpp,
-        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system;\s*double spriteIndex\{\};\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint;\s*double distance\{\};\s*friend void gc_trace_edges\([^]*?visitor\(record\.system\);\s*visitor\(record\.spriteIndex\);\s*visitor\(record\.pickedPoint\);\s*visitor\(record\.distance\);\s*\}\s*\};/,
+        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system;\s*double spriteIndex\{\};\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint;\s*double distance\{\};\s*\};/,
     );
     // A miss is the pin's `_spritePick ?? null`: an id no billboard
     // contributor owns leaves the payload unset.

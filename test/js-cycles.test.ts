@@ -4,7 +4,16 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import type { DataType } from "../src/compiler/data-types.js";
+import { untracedHandleKinds } from "../src/compiler/data-types/handles.js";
 import {
+    dataTypeCppType,
+    ownsTracedEdge,
+    type DataTypeCppContext,
+} from "../src/compiler/data-types/operations.js";
+import {
+    cppRecord,
+    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -22,7 +31,106 @@ test("generated records describe their current owning fields", () => {
     assert.match(result.cpp, /visitor\(record.next\);/);
 });
 
+test("records that own no traced edge stay out of cycle collection", () => {
+    const result = compileSource(`
+        interface Point { x: number; y: number; }
+        interface Link { next: Link | null; value: number; label: string; }
+        interface Path { points: Point[]; weight: number; }
+        function build(): number {
+            const point: Point = { x: 1, y: 2 };
+            const path: Path = { points: [point], weight: 3 };
+            const link: Link = { next: null, value: 1, label: "a" };
+            link.next = link;
+            path.points.push({ x: 3, y: 4 });
+            return point.x + path.weight + link.value;
+        }
+        console.log(build());
+    `);
+    assert.doesNotMatch(
+        cppRecord(result.cpp, "struct PointData {"),
+        /gc_trace_edges/,
+    );
+    assert.doesNotMatch(
+        cppRecord(result.cpp, "struct Path {"),
+        /gc_trace_edges/,
+    );
+    const link = cppRecord(result.cpp, "struct LinkData {");
+    assert.match(link, /gc_trace_edges[^{]*\{\s*visitor\(record\.next\);\s*\}/);
+});
+
 const tools = optionalNativeFixtureTools();
+
+test(
+    "kinds lowered as owning no traced edge are untraceable natively",
+    { skip: !tools },
+    () => {
+        const untraced: DataType[] = [
+            { kind: "number" },
+            { kind: "boolean" },
+            { kind: "string" },
+            { kind: "error" },
+            { kind: "event-target" },
+            { kind: "arraybuffer" },
+            { kind: "dataview" },
+            { kind: "bufferview" },
+            { kind: "numberindex" },
+            { kind: "tuple", arity: 3 },
+            { kind: "f32array" },
+            { kind: "u32array" },
+            { kind: "vector", element: { kind: "number" } },
+            { kind: "optional", inner: { kind: "string" } },
+            {
+                kind: "map",
+                key: { kind: "string" },
+                value: { kind: "handle", handle: "mesh" },
+            },
+            ...[...untracedHandleKinds].map((handle): DataType => ({
+                kind: "handle",
+                handle,
+            })),
+        ];
+        const context: DataTypeCppContext = {
+            cppType: (type) => dataTypeCppType(type, context),
+            namedType: (name) => name,
+            isReferenceStruct: () => false,
+            enumSize: () => 0,
+            tableCppType: () => "",
+        };
+        const lines = untraced.map((type) => {
+            assert.equal(
+                ownsTracedEdge(type, () => [], new Set()),
+                false,
+                JSON.stringify(type),
+            );
+            const cpp = dataTypeCppType(type, context);
+            return `static_assert(!bbl::js::gc_traceable<${cpp}>, ${JSON.stringify(cpp)});`;
+        });
+        const output = resolve("artifacts/js-cycles-untraced-kinds");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        writeFileSync(
+            source,
+            [
+                "#include <bblite/js_data.hpp>",
+                "#include <bblite/js_error.hpp>",
+                "#include <bblite/runtime.hpp>",
+                ...lines,
+                "",
+            ].join("\n"),
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/EHsc",
+            "/W4",
+            "/WX",
+            "/Zs",
+            `/I${resolve("native/include")}`,
+            `/I${join(nativeFixtureVcpkgRoot, "include")}`,
+            source,
+        ]);
+    },
+);
 test(
     "returned callback containers retain aliases across captured resource releases",
     { skip: !tools },

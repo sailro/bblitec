@@ -46,15 +46,15 @@ struct Node {
     bool reachable = false;
     bool payload_alive = false;
     bool linked = false;
-    Node() {
-        ++registry.allocations;
-        ++registry.total_allocations;
-    }
+    Node() = default;
+    /** Registers the node; only registered nodes count toward the collection cadence. */
     void attach() {
         const auto index = registry.nodes.size();
         registry.nodes.push_back(this);
         registry_index = index;
         linked = true;
+        ++registry.allocations;
+        ++registry.total_allocations;
     }
     void detach() noexcept {
         if (!linked)
@@ -284,16 +284,24 @@ template <typename T> struct SharedBlock final : Node {
 };
 } // namespace gc
 
-/** Shared storage with ordinary shared_ptr alias/weak semantics and a visitor. */
+/**
+ * Shared storage with ordinary shared_ptr alias/weak semantics. A payload
+ * that can own a traced edge joins cycle collection with its visitor; any
+ * other payload cannot close a cycle, and reference counting releases it.
+ */
 template <typename T, typename... Args>
 [[nodiscard]] std::shared_ptr<T> make_gc_shared(Args&&... args) {
-    auto block = std::make_shared<gc::SharedBlock<T>>(std::forward<Args>(args)...);
-    block->identity = block;
-    block->attach();
-    auto* value = std::addressof(block->value);
-    if constexpr (requires { value->gc_bind_node(block.get()); })
-        value->gc_bind_node(block.get());
-    return {std::move(block), value};
+    if constexpr (!gc_traceable<T>) {
+        return std::make_shared<T>(std::forward<Args>(args)...);
+    } else {
+        auto block = std::make_shared<gc::SharedBlock<T>>(std::forward<Args>(args)...);
+        block->identity = block;
+        block->attach();
+        auto* value = std::addressof(block->value);
+        if constexpr (requires { value->gc_bind_node(block.get()); })
+            value->gc_bind_node(block.get());
+        return {std::move(block), value};
+    }
 }
 
 /**
