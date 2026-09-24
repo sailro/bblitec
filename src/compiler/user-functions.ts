@@ -21,6 +21,7 @@ import {
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { pinOperand } from "./evaluation-order.js";
+import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import { CompileError } from "./compile-error.js";
 import { nullability, typeCanCarryReference } from "./type-facts.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
@@ -486,7 +487,12 @@ export function parameterIsMutated(
                     return true;
                 if (!ts.isCallExpression(node)) return false;
                 const called = checker.getResolvedSignature(node)?.declaration;
-                if (!isSupportedFunction(called)) return false;
+                if (!isSupportedFunction(called) || !called.body)
+                    return node.arguments.some(
+                        (argument, index) =>
+                            scan.containsAlias(argument) &&
+                            engineCallMutatesArgument(checker, node, index),
+                    );
                 for (const [index, argument] of node.arguments.entries()) {
                     if (!scan.containsAlias(argument)) continue;
                     const nested = called.parameters[index]?.name;
@@ -509,6 +515,33 @@ export function parameterIsMutated(
         parameterMutationCache.set(checker, checkerCache);
     }
     return mutated;
+}
+
+/**
+ * Whether an engine call writes through the object it is handed at
+ * `index`: a pinned body behind its typing (`engine-bodies.ts`) mutates
+ * that parameter, as `normalizeVec3ToRef(v, out)` does `out`. Both
+ * analyses must allow the write: one follows every store the parameter
+ * reaches, the other proves a parameter it only reads unchanged.
+ */
+export function engineCallMutatesArgument(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+): boolean {
+    const declaration = checker.getResolvedSignature(call)?.declaration;
+    if (!declaration || !isEngineDeclaration(declaration)) return false;
+    const engine = engineBodies();
+    return (engine.bodies(declaration) ?? []).some((body) => {
+        const parameter = body.parameters[index]?.name;
+        return (
+            isSupportedFunction(body) &&
+            parameter !== undefined &&
+            ts.isIdentifier(parameter) &&
+            parameterIsMutated(engine.checker, body, parameter) &&
+            !parameterIsReadOnly(engine.checker, body, parameter)
+        );
+    });
 }
 
 /** Conservatively determines whether a function leaves a parameter unchanged. */

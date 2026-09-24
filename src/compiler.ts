@@ -320,6 +320,7 @@ import {
 import { ClassLowerer } from "./compiler/classes.js";
 import { ClassHierarchy } from "./compiler/class-members.js";
 import { EvaluationOrder } from "./compiler/evaluation-order.js";
+import { engineBodies } from "./compiler/engine-bodies.js";
 import {
     assertDeterministicRandomUnreached,
     isDeterministicRandomRead,
@@ -920,6 +921,7 @@ class Compiler implements LoweringServices {
         this.evaluationOrder = new EvaluationOrder(
             checker,
             this.dataTypes.classHierarchy,
+            engineBodies,
         );
         this.nativeFunctions = new NativeFunctionLowerer(this);
         this.browserErasure = new BrowserErasure(this);

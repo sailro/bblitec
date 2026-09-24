@@ -2843,6 +2843,27 @@ check(
 `,
 );
 
+test("engine calls that write their arguments keep operand order and object storage", async (t) => {
+    // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
+    // expected values follow their bodies (`v.x * (1 / len)`).
+    const result = compileSource(
+        `import { normalizeVec3ToRef, scaleVec3ToRef } from "@babylonjs/lite";
+        function show(a: number, b: number): string { return a + ":" + b; }
+        const v = { x: 3, y: 0, z: 4 };
+        const normalized = show(v.x, normalizeVec3ToRef(v, v).x);
+        if (normalized !== "3:" + 3 * (1 / 5)) throw new Error("engine argument write " + normalized);
+        const w = { x: 1, y: 2, z: 3 };
+        function grow(target: { x: number; y: number; z: number }): number {
+            scaleVec3ToRef(target, 2, target);
+            return target.z;
+        }
+        const grown = show(w.x, grow(w));
+        if (grown !== "1:6" || w.x !== 2) throw new Error("engine write through a function " + grown);`,
+        { fileName: "engine-argument-writes.ts" },
+    );
+    await executeGeneratedAssertions(t, "engine-argument-writes", result.cpp);
+});
+
 test("imported class static fields and blocks run when their module evaluates", async (t) => {
     const directory = resolve("artifacts/class-static-state-module");
     mkdirSync(directory, { recursive: true });

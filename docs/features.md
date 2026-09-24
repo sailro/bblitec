@@ -72,8 +72,10 @@ variables are not loaded implicitly.
 Defaults and short-circuit operands evaluate once and lazily. Operands of concatenation, arithmetic,
 comparisons, calls, constructions and array/object literals evaluate left to right wherever two of
 them touch the same variable or object state and one writes it, including through the functions they
-call and `Math.random` draws; a function value the compiler cannot name counts as touching everything,
-and an engine method is taken to write nothing but what the callbacks it is handed write. Loose
+call and `Math.random` draws; a function value the compiler cannot name counts as touching everything.
+An engine function or class method is read from the pinned body behind its typing, and one with no
+pinned body (an interface method) counts as touching everything. An object an engine function writes
+through (`normalizeVec3ToRef(v, out)`) keeps native storage. Loose
 equality between operands of one primitive type is strict equality; across types it refuses. Destructuring finishes the source before
 left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings and plain struct fields;
