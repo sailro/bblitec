@@ -117,6 +117,7 @@ import {
     presenceCpp,
     staticStringValue,
 } from "./types.js";
+import { recordAt } from "./record-access.js";
 
 /**
  * Number formatters the language owns rather than the scene.
@@ -3467,7 +3468,7 @@ export class ExpressionLowerer {
             const element = index.staticNumber;
             return {
                 kind: "number",
-                cpp: `bbl::upstream::camera_world_matrix(${this.context.requireEngine(owner, unwrapped)}.cameras[${owner.cpp}.value])[${element}]`,
+                cpp: `bbl::upstream::camera_world_matrix(${recordAt(`${this.context.requireEngine(owner, unwrapped)}.cameras`, owner.cpp)})[${element}]`,
                 impure: true,
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             };

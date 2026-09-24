@@ -50,6 +50,7 @@ import {
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const buildSymbol = "buildClusteredLightGpuState";
 
@@ -1119,7 +1120,7 @@ void size_clustered_light_state(
     Scene& scene,
     ClusteredLightContainer& container) {
     const auto scene_camera = [&]() -> const CameraRecord& {
-        return engine.cameras[scene.camera.value];
+        return ${recordAt("engine.cameras", "scene.camera")};
     };
 ${lowerBuild(context)}
 }
@@ -1150,7 +1151,7 @@ const ClusteredLightContainer* clustered_container(
     const Engine& engine,
     ClusteredLightContainerHandle handle) {
     return handle.value < engine.clustered_light_containers.size()
-        ? &engine.clustered_light_containers[handle.value]
+        ? &${recordAt("engine.clustered_light_containers", "handle")}
         : nullptr;
 }
 

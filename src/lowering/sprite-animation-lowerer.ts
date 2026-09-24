@@ -19,6 +19,7 @@
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const animationModule = "src/sprite/sprite-animation.ts";
 
@@ -254,7 +255,7 @@ void play_sprite_frame_animation(
     animation.animation_started = true;
     animation.remove_when_finished = remove_when_finished;
     set_target_frame(engine, target, animation.from);
-    engine.sprite_animation_managers[manager.value].animations.push_back(
+    ${recordAt("engine.sprite_animation_managers", "manager")}.animations.push_back(
         animation);
 }
 
@@ -263,7 +264,7 @@ void update_sprite_animation_manager(
     SpriteAnimationManagerHandle manager,
     double delta_ms) {
     SpriteAnimationManagerRecord& record =
-        engine.sprite_animation_managers[manager.value];
+        ${recordAt("engine.sprite_animation_managers", "manager")};
     // The pin takes its manager's fixedDeltaMs where one is set; the
     // option that would set it refuses at generation, so every step here
     // is the caller's own delta.

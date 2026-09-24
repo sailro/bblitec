@@ -32,6 +32,7 @@ import {
     compositeScalarAccessors,
     compositeScalarFunction,
 } from "./post-process-accessors.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** The feature every post-process refusal is keyed on. */
 const POST_PROCESS_FEATURE = "renderer:post-process";
@@ -565,7 +566,7 @@ void resolve_post_process_pass_output(
             "source to size its own.");
     }
     const RenderTargetRecord& source =
-        engine.render_targets[pass.source.target.value];
+        ${recordAt("engine.render_targets", "pass.source.target")};
     RenderTargetOptions internal;
     internal.samples = 1u;
     internal.has_color = true;
@@ -597,7 +598,7 @@ void update_post_process_uniforms(Engine& engine, TaskHandle handle) {
     if (handle.value >= engine.frame_tasks.size()) {
         throw std::runtime_error("Invalid frame task handle.");
     }
-    FrameTaskRecord& task = engine.frame_tasks[handle.value];
+    FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "handle")};
     if (task.kind != FrameTaskKind::post_process) {
         throw std::runtime_error(
             "updateUniforms names a task that is not a post-process pass.");
@@ -673,7 +674,7 @@ ${this.compositeAccessorDefinitions()}
                             `Composite scalar ${accessor.property} requires one retained inline pass.`,
                             this.featureSites,
                         );
-                    const parameter = `engine.frame_tasks.at(task.value).post_process.passes.at(${passes[0]}).params.at(${accessor.slot})`;
+                    const parameter = `${recordAt("engine.frame_tasks", "task")}.post_process.passes.at(${passes[0]}).params.at(${accessor.slot})`;
                     return `double ${compositeScalarFunction(index, accessor.property, false)}(const Engine& engine, TaskHandle task) {
     const double& parameter = ${parameter};
 ${accessor.getter}
@@ -827,7 +828,7 @@ ${
         ? `    options.taa = std::make_shared<TaaPostProcessState>(
         upstream::create_taa_post_process_state(${dvalue(composite.taa.factor)}, ${composite.taa.disableOnCameraMove}));
     upstream::initialize_taa_jitter(*options.taa, ${dvalue(composite.taa.samples)});
-    FrameTaskRecord& source = engine.frame_tasks.at(options.source_tasks.at(0).value);
+    FrameTaskRecord& source = ${recordAt("engine.frame_tasks", "options.source_tasks.at(0)")};
     if (source.kind != FrameTaskKind::render || !source.source_scene) {
         throw std::runtime_error("TAA source must retain its original render-task scene.");
     }
@@ -1033,11 +1034,11 @@ ${body}
         }
         if (effect.usesCamera) {
             bindings.set("camera.nearPlane", {
-                cpp: "engine.cameras[task.camera.value].near_plane",
+                cpp: `${recordAt("engine.cameras", "task.camera")}.near_plane`,
                 type: "scalar",
             });
             bindings.set("camera.farPlane", {
-                cpp: "engine.cameras[task.camera.value].far_plane",
+                cpp: `${recordAt("engine.cameras", "task.camera")}.far_plane`,
                 type: "scalar",
             });
         }

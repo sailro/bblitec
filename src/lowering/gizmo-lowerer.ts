@@ -74,6 +74,7 @@ import {
     pinnedGizmoGeometry,
 } from "./pinned-gizmo-geometry.js";
 import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -1616,7 +1617,7 @@ MaterialHandle gizmo_material(
     Vec3d color,
     bool double_sided) {
     const MaterialHandle material = create_standard_material(engine);
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     set_material_diffuse_color(engine, material,
         js::Array<double>{color.x, color.y, color.z});
     record.specular_color = Color3{
@@ -1659,7 +1660,7 @@ void edit_gizmo_mesh(
     const std::array<double, 3>& rotation,
     Vec3 scaling,
     TransformNodeHandle parent) {
-    engine.meshes[mesh.value].material = material;
+    ${recordAt("engine.meshes", "mesh")}.material = material;
     add_to_scene(scene, mesh);
     // The pin writes \`mesh.rotation\`, which is a BJS Euler triple; the
     // quaternion helper above is the pin's own conversion for it.
@@ -1700,11 +1701,11 @@ EditGizmoHandle push_edit_gizmo(
     Engine* live_engine = &engine;
     on_before_render(scene, [live_engine, handle, layer](float) {
         Engine& e = *live_engine;
-        EditGizmoRecord& g = e.edit_gizmos[handle.value];
+        EditGizmoRecord& g = ${recordAt("e.edit_gizmos", "handle")};
         if (g.attached_node.value >= e.meshes.size()) return;
         const std::array<float, 16> wm = upstream::mesh_world_matrix(
             e,
-            e.meshes[g.attached_node.value]);
+            ${recordAt("e.meshes", "g.attached_node")});
         const double tx = static_cast<double>(wm[12]);
         const double ty = static_cast<double>(wm[13]);
         const double tz = static_cast<double>(wm[14]);
@@ -1712,7 +1713,7 @@ EditGizmoHandle push_edit_gizmo(
         Scene& utility = utility_layer_scene(e, layer);
         if (utility.camera.value >= e.cameras.size()) return;
         const std::array<float, 16> cw =
-            upstream::camera_world_matrix(e.cameras[utility.camera.value]);
+            upstream::camera_world_matrix(${recordAt("e.cameras", "utility.camera")});
         const Vec3d scale = gizmo_projected_scaling(
             Vec3d{tx, ty, tz}, cw, g.scale_ratio);
         set_transform_node_scaling(
@@ -1757,7 +1758,7 @@ EditGizmoHandle push_edit_gizmo(
             static_cast<float>(rotation[1]),
             static_cast<float>(rotation[2]),
             static_cast<float>(rotation[3])};
-        const TransformNodeRecord& root_record = e.transform_nodes[g.root.value];
+        const TransformNodeRecord& root_record = ${recordAt("e.transform_nodes", "g.root")};
         const Vec4& current_rotation = root_record.rotation_quaternion;
         if (!root_record.has_rotation_quaternion ||
             current_rotation.x != desired_rotation.x ||
@@ -2380,7 +2381,7 @@ ${
     const auto collider_start = scene.meshes.size();
 ${this.widgetPart(`create_cylinder(engine, ${this.widgetCylinder(colliderCone)})`, colliderCone)}
 ${this.widgetPart(`create_cylinder(engine, ${this.widgetCylinder(colliderLine)})`, colliderLine)}
-    for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) engine.meshes[scene.meshes[i].value].visible = false;
+    for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) ${recordAt("engine.meshes", "scene.meshes[i]")}.visible = false;
 `
         : ""
 }
@@ -2831,7 +2832,7 @@ ${
         ? `
     const auto collider_start = scene.meshes.size();
 ${this.widgetPart(`create_torus(engine, TorusOptions{${this.widgetOption(collider, "diameter")}, ${this.widgetOption(collider, "thickness")}, static_cast<std::uint32_t>(${this.widgetOption(collider, "tessellation")})})`, collider)}
-    for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) engine.meshes[scene.meshes[i].value].visible = false;
+    for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) ${recordAt("engine.meshes", "scene.meshes[i]")}.visible = false;
 `
         : ""
 }
@@ -2859,7 +2860,7 @@ ${
     this.features.includes("gizmo:pointer-drag")
         ? `
     initialize_pointer_gizmo(engine, layer, handle, material, true);
-    engine.edit_gizmos[handle.value].rotation_drag = true;
+    ${recordAt("engine.edit_gizmos", "handle")}.rotation_drag = true;
 `
         : ""
 }
@@ -2986,7 +2987,7 @@ ${
         lowerer: PinnedNumericLowerer,
         retainedColor: { source: string; cpp: string },
     ): string {
-        const target = `engine.materials[${material}.value]`;
+        const target = `${recordAt("engine.materials", material)}`;
         const fields = new Map<string, "color3" | "number" | "boolean">([
             ["diffuseColor", "color3"],
             ["emissiveColor", "color3"],
@@ -4178,7 +4179,7 @@ void bbox_set_position(
     double x,
     double y,
     double z) {
-    engine.meshes[mesh.value].position = Vec3d{x, y, z};
+    ${recordAt("engine.meshes", "mesh")}.position = Vec3d{x, y, z};
     mark_mesh_runtime_transform(engine, mesh);
 }
 
@@ -4188,7 +4189,7 @@ void bbox_set_scaling(
     double x,
     double y,
     double z) {
-    engine.meshes[mesh.value].scaling = Vec3{
+    ${recordAt("engine.meshes", "mesh")}.scaling = Vec3{
         static_cast<float>(x),
         static_cast<float>(y),
         static_cast<float>(z)};
@@ -4275,13 +4276,13 @@ bool bbox_is_descendant(
         if (mesh.parent.value >= engine.meshes.size()) return false;
         return bbox_is_descendant(
             engine,
-            engine.meshes[mesh.parent.value],
+            ${recordAt("engine.meshes", "mesh.parent")},
             root);
     }
     TransformNodeHandle node = mesh.transform_parent;
     while (node.value < engine.transform_nodes.size()) {
         if (node.value == root.value) return true;
-        node = engine.transform_nodes[node.value].parent;
+        node = ${recordAt("engine.transform_nodes", "node")}.parent;
     }
     return false;
 }
@@ -4343,7 +4344,7 @@ BoundingBoxBounds bbox_compute_bounds(
     std::vector<std::uint32_t> visited_nodes;
     if (root.value < engine.transform_nodes.size()) {
         for (const TransformNodeChild& child :
-             engine.transform_nodes[root.value].children) {
+             ${recordAt("engine.transform_nodes", "root")}.children) {
             pending.push_back(child);
         }
     }
@@ -4363,7 +4364,7 @@ BoundingBoxBounds bbox_compute_bounds(
             }
             visited_nodes.push_back(node.value);
             for (const TransformNodeChild& nested :
-                 engine.transform_nodes[node.value].children) {
+                 ${recordAt("engine.transform_nodes", "node")}.children) {
                 pending.push_back(nested);
             }
             continue;
@@ -4373,7 +4374,7 @@ BoundingBoxBounds bbox_compute_bounds(
             continue;
         }
         visited.push_back(node.value);
-        const MeshRecord& record = engine.meshes[node.value];
+        const MeshRecord& record = ${recordAt("engine.meshes", "node")};
         bbox_fold_mesh(engine, record, pre_transform, bounds);
         for (const MeshHandle descendant : record.children) {
             pending.push_back(TransformNodeChild{descendant});
@@ -4383,7 +4384,7 @@ BoundingBoxBounds bbox_compute_bounds(
         if (candidate.value >= engine.meshes.size() || seen(candidate.value)) {
             continue;
         }
-        const MeshRecord& mesh = engine.meshes[candidate.value];
+        const MeshRecord& mesh = ${recordAt("engine.meshes", "candidate")};
         if (!bbox_is_descendant(engine, mesh, root)) continue;
         visited.push_back(candidate.value);
         bbox_fold_mesh(engine, mesh, pre_transform, bounds);
@@ -4398,7 +4399,7 @@ BoundingBoxBounds bbox_compute_bounds(
  * which collapses every handle onto the origin exactly as upstream does.
  */
 void bbox_refresh(Engine& engine, BoundingBoxGizmoHandle handle) {
-    BoundingBoxGizmoRecord& record = engine.bounding_box_gizmos[handle.value];
+    BoundingBoxGizmoRecord& record = ${recordAt("engine.bounding_box_gizmos", "handle")};
     const std::array<double, 4> identity{${identityQuat}};
     if (
         !record.attached ||
@@ -4482,9 +4483,9 @@ ${materialWrites}
         const MeshHandle mesh = create_cylinder(
             engine,
             ${edgeCylinder});
-        engine.meshes[mesh.value].name = ${edgeName};
-        engine.meshes[mesh.value].material = gizmo.material;
-        engine.meshes[mesh.value].pickable = false;
+        ${recordAt("engine.meshes", "mesh")}.name = ${edgeName};
+        ${recordAt("engine.meshes", "mesh")}.material = gizmo.material;
+        ${recordAt("engine.meshes", "mesh")}.pickable = false;
         add_to_scene(scene, mesh);
         gizmo.edges.push_back(mesh);
     }
@@ -4497,21 +4498,21 @@ ${cornerParts
         (part, index) => `        ${part.target} = create_box(
             engine,
             ${cube(cornerBoxSizes[index]!)});
-        engine.meshes[${part.target}.value].material = gizmo.material;
-        engine.meshes[${part.target}.value].scaling = Vec3{
+        ${recordAt("engine.meshes", part.target)}.material = gizmo.material;
+        ${recordAt("engine.meshes", part.target)}.scaling = Vec3{
             static_cast<float>(${part.scaling[0]}),
             static_cast<float>(${part.scaling[1]}),
             static_cast<float>(${part.scaling[2]})};
-        engine.meshes[${part.target}.value].position = Vec3d{
+        ${recordAt("engine.meshes", part.target)}.position = Vec3d{
             ${part.position[0]},
             ${part.position[1]},
             ${part.position[2]}};
         add_to_scene(scene, ${part.target});`,
     )
     .join("\n")}
-        engine.meshes[corner.anchor.value].name = ${cornerName};
-        engine.meshes[corner.y_arm.value].pickable = false;
-        engine.meshes[corner.z_arm.value].pickable = false;
+        ${recordAt("engine.meshes", "corner.anchor")}.name = ${cornerName};
+        ${recordAt("engine.meshes", "corner.y_arm")}.pickable = false;
+        ${recordAt("engine.meshes", "corner.z_arm")}.pickable = false;
         corner.offsets = Vec3d{
             ${cornerOffsets[0]},
             ${cornerOffsets[1]},
@@ -4526,12 +4527,12 @@ ${cornerParts
             engine,
             ${cube(anchorBoxSizes[0]!)});
 ${anchorAbs.map((line) => `    ${line}`).join("\n")}
-        engine.meshes[mesh.value].scaling = Vec3{
+        ${recordAt("engine.meshes", "mesh")}.scaling = Vec3{
             static_cast<float>(${anchorScaling[0]}),
             static_cast<float>(${anchorScaling[1]}),
             static_cast<float>(${anchorScaling[2]})};
-        engine.meshes[mesh.value].material = gizmo.material;
-        engine.meshes[mesh.value].name = ${rotatorName};
+        ${recordAt("engine.meshes", "mesh")}.material = gizmo.material;
+        ${recordAt("engine.meshes", "mesh")}.name = ${rotatorName};
         add_to_scene(scene, mesh);
         gizmo.rotators.push_back(mesh);
     }
@@ -4539,16 +4540,16 @@ ${anchorAbs.map((line) => `    ${line}`).join("\n")}
         const MeshHandle mesh = create_box(
             engine,
             ${cube(faceBoxSizes[0]!)});
-        engine.meshes[mesh.value].material = gizmo.material;
-        engine.meshes[mesh.value].name = ${faceName};
+        ${recordAt("engine.meshes", "mesh")}.material = gizmo.material;
+        ${recordAt("engine.meshes", "mesh")}.name = ${faceName};
         add_to_scene(scene, mesh);
         gizmo.faces.push_back(mesh);
     }
     gizmo.body_material = create_standard_material(engine);
 ${bodyMaterialWrites}
     gizmo.body = create_box(engine, ${cube(bodyBoxSizes[0]!)});
-    engine.meshes[gizmo.body.value].name = "${bodyName}";
-    engine.meshes[gizmo.body.value].material = gizmo.body_material;
+    ${recordAt("engine.meshes", "gizmo.body")}.name = "${bodyName}";
+    ${recordAt("engine.meshes", "gizmo.body")}.material = gizmo.body_material;
     add_to_scene(scene, gizmo.body);
     return push_bounding_box_gizmo(engine, scene, std::move(gizmo));
 }
@@ -4557,7 +4558,7 @@ void attach_bounding_box_gizmo_to_node(
     Engine& engine,
     BoundingBoxGizmoHandle gizmo,
     TransformNodeHandle node) {
-    BoundingBoxGizmoRecord& record = engine.bounding_box_gizmos[gizmo.value];
+    BoundingBoxGizmoRecord& record = ${recordAt("engine.bounding_box_gizmos", "gizmo")};
     record.attached = true;
     record.attached_node = node;
     // The pin recomputes immediately, so the handles match the new target
@@ -4739,14 +4740,14 @@ void attach_bounding_box_gizmo_to_node(
     gizmo.material = create_standard_material(engine);
     set_material_diffuse_color(engine, gizmo.material,
         js::Array<double>{0.5, 0.5, 0.5});
-    engine.materials[gizmo.material.value].specular_color =
+    ${recordAt("engine.materials", "gizmo.material")}.specular_color =
         Color3{0.1f, 0.1f, 0.1f};
     gizmo.frustum_material = create_standard_material(engine);
     set_material_diffuse_color(engine, gizmo.frustum_material,
         js::Array<double>{1.0, 1.0, 1.0});
-    engine.materials[gizmo.frustum_material.value].emissive_factor =
+    ${recordAt("engine.materials", "gizmo.frustum_material")}.emissive_factor =
         Color3{1.0f, 1.0f, 1.0f};
-    engine.materials[gizmo.frustum_material.value].disable_lighting = true;
+    ${recordAt("engine.materials", "gizmo.frustum_material")}.disable_lighting = true;
     gizmo.root = create_transform_node(
         engine,
         ${this.displayNodeArguments(cameraFactory, "root", cameraMath)});
@@ -4815,10 +4816,10 @@ void attach_bounding_box_gizmo_to_node(
     Engine* live_engine = &engine;
     on_before_render(scene, [live_engine, handle, layer](float) {
         Engine& e = *live_engine;
-        CameraGizmoRecord& g = e.camera_gizmos[handle.value];
+        CameraGizmoRecord& g = ${recordAt("e.camera_gizmos", "handle")};
         if (g.attached_camera.value >= e.cameras.size()) return;
         const std::array<float, 16> wm =
-            upstream::camera_world_matrix(e.cameras[g.attached_camera.value]);
+            upstream::camera_world_matrix(${recordAt("e.cameras", "g.attached_camera")});
         set_transform_node_position(
             e,
             g.root,
@@ -4838,7 +4839,7 @@ void attach_bounding_box_gizmo_to_node(
         Scene& utility = utility_layer_scene(e, layer);
         const bool has_camera = utility.camera.value < e.cameras.size();
         const std::array<float, 16> cw = has_camera
-            ? upstream::camera_world_matrix(e.cameras[utility.camera.value])
+            ? upstream::camera_world_matrix(${recordAt("e.cameras", "utility.camera")})
             : std::array<float, 16>{};
         const Vec3d scale = gizmo_camera_scaling(has_camera, cw, wm);
         set_transform_node_scaling(
@@ -4856,14 +4857,14 @@ void attach_camera_gizmo_to_camera(
     Engine& engine,
     CameraGizmoHandle gizmo,
     CameraHandle camera) {
-    CameraGizmoRecord& record = engine.camera_gizmos[gizmo.value];
+    CameraGizmoRecord& record = ${recordAt("engine.camera_gizmos", "gizmo")};
     record.attached_camera = camera;
     if (record.frustum_built || camera.value >= engine.cameras.size()) {
         return;
     }
     record.frustum_built = true;
     Scene& scene = layer_record(engine, record.layer).scene;
-    const CameraRecord& cam = engine.cameras[camera.value];
+    const CameraRecord& cam = ${recordAt("engine.cameras", "camera")};
     const double canvas_width = engine.canvas_client_width;
     const double canvas_height = engine.canvas_client_height;
     const double aspect = ${cameraMath.expression(this.context.variableInitializer(cameraFactory, "aspect"))};
@@ -5062,7 +5063,7 @@ void build_light_lines(
         const MeshHandle line = create_cylinder(
             engine,
             ${this.cylinderOptions(lineCall, lightDeclaration)});
-        engine.meshes[line.value].name = "lightLine";
+        ${recordAt("engine.meshes", "line")}.name = "lightLine";
         gizmo_mesh(engine, scene, line, material);
         place_mesh(
             engine,
@@ -5082,7 +5083,7 @@ void build_light_lines(
     gizmo.material = create_standard_material(engine);
     set_material_diffuse_color(engine, gizmo.material,
         js::Array<double>{0.5, 0.5, 0.5});
-    engine.materials[gizmo.material.value].specular_color =
+    ${recordAt("engine.materials", "gizmo.material")}.specular_color =
         Color3{0.1f, 0.1f, 0.1f};
     gizmo.root = create_transform_node(
         engine,
@@ -5094,9 +5095,9 @@ void build_light_lines(
     Engine* live_engine = &engine;
     on_before_render(scene, [live_engine, handle, layer](float) {
         Engine& e = *live_engine;
-        LightGizmoRecord& g = e.light_gizmos[handle.value];
+        LightGizmoRecord& g = ${recordAt("e.light_gizmos", "handle")};
         if (g.attached_light.value >= e.lights.size()) return;
-        const LightRecord& light = e.lights[g.attached_light.value];
+        const LightRecord& light = ${recordAt("e.lights", "g.attached_light")};
         // The pin tests \`if (pos)\` and \`if (dir)\` on the light OBJECT,
         // and which of the two a light carries is decided by the factory
         // that made it: hemispheric declares only a direction, point only
@@ -5132,10 +5133,10 @@ void build_light_lines(
         }
         Scene& utility = utility_layer_scene(e, layer);
         const Vec3d root_position =
-            e.transform_nodes[g.root.value].position;
+            ${recordAt("e.transform_nodes", "g.root")}.position;
         const bool has_camera = utility.camera.value < e.cameras.size();
         const std::array<float, 16> cw = has_camera
-            ? upstream::camera_world_matrix(e.cameras[utility.camera.value])
+            ? upstream::camera_world_matrix(${recordAt("e.cameras", "utility.camera")})
             : std::array<float, 16>{};
         const Vec3d scale = gizmo_light_scaling(has_camera, cw, root_position);
         set_transform_node_scaling(
@@ -5154,10 +5155,10 @@ void attach_light_gizmo_to_light(
     Engine& engine,
     LightGizmoHandle gizmo,
     LightHandle light) {
-    LightGizmoRecord& record = engine.light_gizmos[gizmo.value];
+    LightGizmoRecord& record = ${recordAt("engine.light_gizmos", "gizmo")};
     record.attached_light = light;
     if (light.value >= engine.lights.size()) return;
-    const LightKind kind = engine.lights[light.value].kind;
+    const LightKind kind = ${recordAt("engine.lights", "light")}.kind;
     if (record.built) {
         // The pin's _build has two arms: it early-returns when the new
         // light's lightType matches the one it built for, and otherwise
@@ -5427,7 +5428,7 @@ UtilityLayerRecord& layer_record(
     if (layer.value >= engine.utility_layers.size()) {
         throw std::runtime_error("Invalid utility layer handle.");
     }
-    return *engine.utility_layers[layer.value];
+    return *${recordAt("engine.utility_layers", "layer")};
 }
 
 ${
@@ -5438,8 +5439,8 @@ MeshHandle gizmo_mesh(
     Scene& scene,
     MeshHandle mesh,
     MaterialHandle material) {
-    engine.meshes[mesh.value].material = material;
-    engine.meshes[mesh.value].pickable = false;
+    ${recordAt("engine.meshes", "mesh")}.material = material;
+    ${recordAt("engine.meshes", "mesh")}.pickable = false;
     add_to_scene(scene, mesh);
     return mesh;
 }
@@ -5455,7 +5456,7 @@ MeshHandle gizmo_mesh(
     Vec3 scaling,
     const std::array<double, 4>& rotation,
     TransformNodeHandle parent) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     record.position = position;
     record.scaling = scaling;
     // Through the setter rather than the field: a quaternion write also
@@ -5504,7 +5505,7 @@ UtilityLayerHandle create_utility_layer(
         engine,
         Vec3{${utilityDirection}},
         ${this.context.floatLiteral(utilityIntensity)});
-    engine.lights[light.value].ground_color = Color3{0.5f, 0.5f, 0.5f};
+    ${recordAt("engine.lights", "light")}.ground_color = Color3{0.5f, 0.5f, 0.5f};
     add_to_scene(record->scene, light);
     engine.utility_layers.push_back(std::move(record));
     return UtilityLayerHandle{
@@ -5535,7 +5536,7 @@ void attach_gizmo_to_node(
     Engine& engine,
     EditGizmoHandle gizmo,
     MeshHandle node) {
-    EditGizmoRecord& record = engine.edit_gizmos[gizmo.value];
+    EditGizmoRecord& record = ${recordAt("engine.edit_gizmos", "gizmo")};
     record.attached_node = node;
     record.enabled = node.value != invalid_handle;
 }
@@ -5551,8 +5552,8 @@ bool pointer_drag_has_collider(
     }
     // Visible geometry and enlarged invisible colliders share one root;
     // both identify the widget, as in the pinned collider list.
-    return engine.meshes[mesh.value].transform_parent.value ==
-        engine.edit_gizmos[drag.value].root.value;
+    return ${recordAt("engine.meshes", "mesh")}.transform_parent.value ==
+        ${recordAt("engine.edit_gizmos", "drag")}.root.value;
 }
 
 ${
@@ -5568,7 +5569,7 @@ void set_edit_gizmo_local_coordinates(
     Engine& engine,
     EditGizmoHandle gizmo,
     bool use_local) {
-    engine.edit_gizmos[gizmo.value].use_local_coordinates = use_local;
+    ${recordAt("engine.edit_gizmos", "gizmo")}.use_local_coordinates = use_local;
 }
 
 // ${this.context.provenance(
@@ -5604,14 +5605,14 @@ void dispose_composite_gizmo(
     for (std::uint32_t i = 0; i < gizmo.part_count; ++i) {
         const EditGizmoHandle part = gizmo.parts[i];
         if (part.value >= engine.edit_gizmos.size()) continue;
-        EditGizmoRecord& record = engine.edit_gizmos[part.value];
+        EditGizmoRecord& record = ${recordAt("engine.edit_gizmos", "part")};
         record.dispose_pointer();
         record.dispose_pointer = []() {};
         std::vector<MeshHandle> meshes;
         for (const MeshHandle mesh : scene.meshes) {
             if (
                 mesh.value < engine.meshes.size() &&
-                engine.meshes[mesh.value].transform_parent.value ==
+                ${recordAt("engine.meshes", "mesh")}.transform_parent.value ==
                     record.root.value) {
                 meshes.push_back(mesh);
             }

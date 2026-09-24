@@ -48,6 +48,7 @@ import {
     csg2MaterialSlotCount,
     type Csg2SolidPlan,
 } from "../../pinned-csg2.js";
+import { recordAt } from "../record-access.js";
 
 /**
  * Native math and instance-buffer work: these may record reached stream facts,
@@ -726,7 +727,7 @@ function compileCreateMeshFromCsg2(
             );
         if (material) {
             context.emit(
-                `${engine.cpp}.meshes[${cpp}.value].material = ${material.cpp};`,
+                `${recordAt(`${engine.cpp}.meshes`, cpp)}.material = ${material.cpp};`,
             );
             context.recordSceneMeshMaterial(sceneMeshIndex, {
                 pbrMaterial: null,

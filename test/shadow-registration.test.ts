@@ -24,6 +24,7 @@ test(
         writeFileSync(
             join(output, "check.cpp"),
             `
+#include <bblite/checked_handles.hpp>
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -106,6 +107,8 @@ int main() {
             "/EHsc",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
+            "/I",
+            "native/include",
             join(output, "check.cpp"),
         ]);
         execFileSync(executable, { stdio: "pipe" });

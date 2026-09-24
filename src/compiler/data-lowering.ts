@@ -84,6 +84,7 @@ import {
     identifierText,
     unwrapExpression,
 } from "./syntax.js";
+import { recordAt } from "./record-access.js";
 
 /** Container length mutations, isolated by checker and source file. */
 const resizedSymbolsByChecker = new EmissionWeakMap<
@@ -5719,7 +5720,7 @@ export class DataLowerer {
                 : undefined);
         if (staticSource?.kind === "camera-world-matrix") {
             const engine = this.context.requireEngine(staticSource, unwrapped);
-            return `bbl::js::${prefix}_array_from(bbl::upstream::camera_world_matrix(${engine}.cameras[${staticSource.cpp}.value]))`;
+            return `bbl::js::${prefix}_array_from(bbl::upstream::camera_world_matrix(${recordAt(`${engine}.cameras`, staticSource.cpp)}))`;
         }
         if (
             keepKind !== undefined &&

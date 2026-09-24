@@ -1,4 +1,5 @@
 import { GLTF_MESH_WALKS } from "../../gltf-document.js";
+import { recordAt } from "../../compiler/record-access.js";
 
 /**
  * The generated `.babylon` loader.
@@ -227,7 +228,7 @@ void realize_babylon_hierarchy(Engine& engine, AssetRecord& asset,
         const auto& node = nodes[index];
         const auto& matrix = world(world, index);
         if (node.mesh.value == invalid_handle) continue;
-        auto& mesh = engine.meshes.at(node.mesh.value);
+        auto& mesh = ${recordAt("engine.meshes", "node.mesh")};
         mesh.instance_parent_matrix = matrix;
         auto& geometry = engine.geometries.at(mesh.geometry);
         geometry.bounds_min = Vec3{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};

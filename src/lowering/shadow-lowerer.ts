@@ -44,6 +44,7 @@ import {
     pinnedOptionDefaults,
     pinnedOptionNumber,
 } from "./pinned-option-defaults.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const baseModule = "src/shadow/shadow-base.ts";
 const spotModule = "src/shadow/pcf-spotlight-shadow-generator.ts";
@@ -1859,7 +1860,7 @@ inline std::uint64_t shadow_caster_version_sum(
     std::uint64_t sum = 0;
     for (const MeshHandle handle : caster_meshes) {
         if (handle.value >= engine.meshes.size()) continue;
-        const MeshRecord& mesh = engine.meshes[handle.value];
+        const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
         sum += mesh.transform_version + mesh.instance_version;${
             morphBounds
                 ? `
@@ -2138,7 +2139,7 @@ function shadowGeneratorFactory(spec: {
     if (light.value >= engine.lights.size()) {
         throw std::runtime_error("Invalid shadow generator light handle.");
     }
-    if (engine.lights[light.value].kind != LightKind::${spec.lightKind}) {
+    if (${recordAt("engine.lights", "light")}.kind != LightKind::${spec.lightKind}) {
         throw std::runtime_error(
             "${spec.article} requires a ${spec.lightKind} light.");
     }
@@ -2378,7 +2379,7 @@ ${shadowGeneratorFactory({
     // first draw, and taken at the zero offset because a camera that has not
     // moved is the zero offset in either mode.
     tail: `    upstream::update_pcf_spot_shadow(
-        generator, engine.lights[light.value], Vec3d{});`,
+        generator, ${recordAt("engine.lights", "light")}, Vec3d{});`,
 })}
 ${
     !pcfDirectionalShadows
@@ -2454,7 +2455,7 @@ MaterialHandle shadow_caster_view(
     ShadowGeneratorHandle handle,
     MaterialHandle material) {
     ShadowGeneratorRecord& generator =
-        engine.shadow_generators[handle.value];
+        ${recordAt("engine.shadow_generators", "handle")};
     for (std::size_t index = 0;
          index < generator.caster_material_sources.size();
          ++index) {
@@ -2469,7 +2470,7 @@ ${
 `
         : ""
 }\
-    const MaterialRecord& source = engine.materials[material.value];
+    const MaterialRecord& source = ${recordAt("engine.materials", "material")};
     const MaterialHandle view =
         source.shadow_caster_material.value != invalid_handle
             ? source.shadow_caster_material
@@ -2491,7 +2492,7 @@ void refresh_shadow_task_meshes(
     Engine& engine,
     ShadowGeneratorHandle handle) {
     ShadowGeneratorRecord& generator =
-        engine.shadow_generators[handle.value];
+        ${recordAt("engine.shadow_generators", "handle")};
     if (generator.caster_tasks.empty()) return;
     // A cascaded generator owns one caster pass per cascade layer, and the
     // pin adds every caster to each of them (\`ensureCsmShadowTaskState\`
@@ -2499,10 +2500,10 @@ void refresh_shadow_task_meshes(
     // generator's tasks therefore carry one mesh list, filled here once
     // per task.
     for (const TaskHandle task_handle : generator.caster_tasks) {
-        FrameTaskRecord& task = engine.frame_tasks[task_handle.value];
+        FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "task_handle")};
         task.render_meshes.clear();
         for (const MeshHandle mesh : generator.caster_meshes) {
-            const MeshRecord& record = engine.meshes[mesh.value];
+            const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
             // Invisible anchors participate in the light-volume fit but
             // the pin's normal renderable traversal does not draw them.
             if (!record.visible) continue;
@@ -2539,7 +2540,7 @@ void enable_morph_target_shadows(
     if (generator.value >= engine.shadow_generators.size()) {
         throw std::runtime_error("Invalid shadow generator handle.");
     }
-    engine.shadow_generators[generator.value].morph_shadow_bounds = true;
+    ${recordAt("engine.shadow_generators", "generator")}.morph_shadow_bounds = true;
 }
 `
         : ""
@@ -2556,14 +2557,14 @@ void set_shadow_task_caster_meshes(
             throw std::runtime_error("Invalid shadow caster mesh handle.");
         }
     }
-    engine.shadow_generators[generator.value].caster_meshes =
+    ${recordAt("engine.shadow_generators", "generator")}.caster_meshes =
         std::move(caster_meshes);
     // The pin's ensure hooks rebuild the task state when handed a new
     // caster array, and the fresh state's -1 sentinels force the next
     // render; this counter is what the render gate compares in their
     // place, so a re-registered list re-renders even when its version sum
     // happens to match the old list's.
-    ++engine.shadow_generators[generator.value].caster_list_version;
+    ++${recordAt("engine.shadow_generators", "generator")}.caster_list_version;
     refresh_shadow_task_meshes(engine, generator);
 }
 
@@ -2588,24 +2589,24 @@ namespace {
  */
 void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
     Engine& engine = *scene.engine;
-    if (engine.shadow_generators[handle.value].caster_meshes.empty()) {
+    if (${recordAt("engine.shadow_generators", "handle")}.caster_meshes.empty()) {
         return;
     }
     const bool esm =${
         esmShadows
             ? `
-        engine.shadow_generators[handle.value].filter ==
+        ${recordAt("engine.shadow_generators", "handle")}.filter ==
         ShadowFilter::esm_directional`
             : " false"
     };
     const std::uint32_t map_size =
-        engine.shadow_generators[handle.value].map_size;
+        ${recordAt("engine.shadow_generators", "handle")}.map_size;
     const std::uint32_t layers =${
         csmShadows
             ? `
-        engine.shadow_generators[handle.value].filter ==
+        ${recordAt("engine.shadow_generators", "handle")}.filter ==
                 ShadowFilter::csm_directional
-            ? engine.shadow_generators[handle.value].csm_num_cascades
+            ? ${recordAt("engine.shadow_generators", "handle")}.csm_num_cascades
             : 1u`
             : " 1u"
     };
@@ -2645,13 +2646,13 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
         task.depth_layer = layer;
         const TaskHandle task_handle =
             create_render_task(engine, scene, std::move(task));
-        engine.shadow_generators[handle.value].caster_tasks.push_back(
+        ${recordAt("engine.shadow_generators", "handle")}.caster_tasks.push_back(
             task_handle);
     }
     // Every cascade renders into a layer of this one target, and it is the
     // target -- not any one pass -- that the receiver's texture lookup
     // resolves through.
-    engine.shadow_generators[handle.value].map_target = rt;
+    ${recordAt("engine.shadow_generators", "handle")}.map_target = rt;
     refresh_shadow_task_meshes(engine, handle);
 }
 
@@ -2668,12 +2669,12 @@ void register_scene_with_shadow_support(Scene& scene) {
     for (const LightHandle light : scene.lights) {
         if (light.value >= scene.engine->lights.size()) continue;
         const ShadowGeneratorHandle generator =
-            scene.engine->lights[light.value].shadow_generator;
+            ${recordAt("scene.engine->lights", "light")}.shadow_generator;
         if (generator.value >= scene.engine->shadow_generators.size()) {
             continue;
         }
         const auto& caster_tasks =
-            scene.engine->shadow_generators[generator.value].caster_tasks;
+            ${recordAt("scene.engine->shadow_generators", "generator")}.caster_tasks;
         if (caster_tasks.empty()) build_shadow_task(scene, generator);
         // Prepend in reverse order to preserve cascade order. Re-registering
         // the same scene keeps each pass exactly once.
@@ -2683,7 +2684,7 @@ void register_scene_with_shadow_support(Scene& scene) {
                     [&](TaskHandle existing) { return existing.value == task.value; })) {
                 continue;
             }
-            scene.engine->frame_tasks[task.value].source_scene = scene.state;
+            ${recordAt("scene.engine->frame_tasks", "task")}.source_scene = scene.state;
             add_task_at_start(scene, task);
         }
     }

@@ -6,6 +6,7 @@ import {
     recordLiteralCpp,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** The complete pinned camera parser, with JSON reads and engine handles as native carriers. */
 export function lowerBabylonCamera(context: LoweringContext): string {
@@ -82,7 +83,7 @@ export function lowerBabylonCamera(context: LoweringContext): string {
                 ["farPlane", "far_plane"],
             ]) {
                 bindings.set(`${name}.${source}`, {
-                    cpp: `handle_at(engine.cameras, ${name}).${target}`,
+                    cpp: `${recordAt("engine.cameras", name)}.${target}`,
                     type: "scalar",
                 });
             }

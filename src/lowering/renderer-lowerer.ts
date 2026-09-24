@@ -77,6 +77,7 @@ import {
 import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
 import { lowerRenderBucket } from "./render-bucket.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -1683,7 +1684,7 @@ RenderItem bind_render_item(
     if (material_handle.value >= engine.materials.size()) {
         return item;
     }
-    const MaterialRecord& material = engine.materials[material_handle.value];
+    const MaterialRecord& material = ${recordAt("engine.materials", "material_handle")};
     item.material_kind = material.grid_material
         ? RenderMaterialKind::grid
         : material.shader_material
@@ -1830,10 +1831,10 @@ void append_draw(
         // render-task.ts drawList reads transparent visibility every frame.
         list.visibility_candidates.push_back(command);
     }
-    if (!mesh_draws(engine.meshes[item.mesh.value])) {
+    if (!mesh_draws(${recordAt("engine.meshes", "item.mesh")})) {
         return;
     }
-    if (!engine.meshes[item.mesh.value].thin_instance_gpu_culling && !render_item_material_draws(item, engine)) return;
+    if (!${recordAt("engine.meshes", "item.mesh")}.thin_instance_gpu_culling && !render_item_material_draws(item, engine)) return;
     list.commands.push_back(command);
 }
 
@@ -1871,7 +1872,7 @@ void include_material_features(
     MaterialHandle handle,
     bool shadow_pass = false) {
     if (handle.value >= engine.materials.size()) return;
-    const MaterialRecord& material = engine.materials[handle.value];
+    const MaterialRecord& material = ${recordAt("engine.materials", "handle")};
     features.standard_material |= material.standard_material;
     features.grid_material |= material.grid_material;
     features.no_color_material |= material.no_color;
@@ -1892,7 +1893,7 @@ RenderFeatures build_render_features(
             include_material_features(
                 result,
                 engine,
-                engine.meshes[handle.value].material);
+                ${recordAt("engine.meshes", "handle")}.material);
         }
     }
     for (const FrameTaskRecord& task : engine.frame_tasks) {
@@ -2055,7 +2056,7 @@ void sort_transparent_draws(
             command.sort_distance = 0.0f;
             continue;
         }
-        const MeshRecord& mesh = engine.meshes[command.item.mesh.value];
+        const MeshRecord& mesh = ${recordAt("engine.meshes", "command.item.mesh")};
         // pin-adopted(sort-center): both pinned families store sortCenter =
         // worldMatrix[12..14] (pbr-renderable.ts / standard-renderable.ts),
         // the draw world's translation -- never the bounds center. The
@@ -2099,7 +2100,7 @@ void sort_transparent_draws(
         });
     transparent.commands.clear();
     for (const RenderDrawCommand& command : commands) {
-        if (mesh_draws(engine.meshes.at(command.item.mesh.value)) && render_item_material_draws(command.item, engine)) {
+        if (mesh_draws(${recordAt("engine.meshes", "command.item.mesh")}) && render_item_material_draws(command.item, engine)) {
             transparent.commands.push_back(command);
         }
     }
@@ -2146,7 +2147,7 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         if (handle.value >= engine.meshes.size()) {
             return;
         }
-        const MeshRecord& mesh = engine.meshes[handle.value];
+        const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
         if (mesh.geometry >= engine.geometries.size()) {
             return;
         }
@@ -2174,7 +2175,7 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         for (const auto& output : scene.state->material_outputs) append_item(output->mesh, output->material, output->guard);
     } else {
         for (const auto handle : scene.meshes) {
-            if (handle.value < engine.meshes.size()) append_item(handle, engine.meshes[handle.value].material, nullptr);
+            if (handle.value < engine.meshes.size()) append_item(handle, ${recordAt("engine.meshes", "handle")}.material, nullptr);
         }
     }
     result.draw_lists =
@@ -2282,7 +2283,7 @@ std::array<float, 16> transform_node_world(
             0.0f, 0.0f, 0.0f, 1.0f};
     }
     const TransformNodeRecord& record =
-        engine.transform_nodes[node.value];
+        ${recordAt("engine.transform_nodes", "node")};
     const std::array<float, 16> local =
         transform_node_local_matrix(record);
     if (record.parent.value >= engine.transform_nodes.size()) {
@@ -2306,7 +2307,7 @@ std::array<float, 16> mesh_world_matrix(
     // did.
     if (mesh.parent.value < engine.meshes.size()) {
         return matrix_product(
-            mesh_world_matrix(engine, engine.meshes[mesh.parent.value]),
+            mesh_world_matrix(engine, ${recordAt("engine.meshes", "mesh.parent")}),
             local);
     }
     if (mesh.transform_parent.value < engine.transform_nodes.size()) {
@@ -2323,7 +2324,7 @@ ${
     bool flipped = false;
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) continue;
-        MeshRecord& mesh = engine.meshes[handle.value];
+        MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
         // The pin compares the live determinant to its authored sign. Native
         // loading has already baked the glTF node world into the geometry
         // and reconciled its indices/front-face state, so that stored state
@@ -2454,7 +2455,7 @@ bool pick_candidate(const MeshRecord& mesh) {
     }
 
 bool render_item_material_draws(const RenderItem& item, const Engine& engine) {
-    return !item.material_guard || item.material_guard(engine.meshes.at(item.mesh.value).material, item.material, item.material_override);
+    return !item.material_guard || item.material_guard(${recordAt("engine.meshes", "item.mesh")}.material, item.material, item.material_override);
 }
 
 bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
@@ -2462,7 +2463,7 @@ bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
     // Ordinary opaque commands replay the source bundle. Direct and transparent
     // bindings evaluate their captured-material guard on every source draw.
     return (item.bucket != RenderBucket::alpha_blend && !item.transmissive &&
-        !engine.meshes.at(item.mesh.value).thin_instance_gpu_culling) || render_item_material_draws(item, engine);
+        !${recordAt("engine.meshes", "item.mesh")}.thin_instance_gpu_culling) || render_item_material_draws(item, engine);
 }
 
 // src/render/mesh-light-selection.ts affectsMesh.
@@ -2500,7 +2501,7 @@ PbrUniforms build_pbr_uniforms(
         if (handle.value >= engine.lights.size()) {
             return;
         }
-        const LightRecord& light = engine.lights[handle.value];
+        const LightRecord& light = ${recordAt("engine.lights", "handle")};
         const auto light_world = light_world_matrix(light);
         std::array<float, 3> world_direction{};
 ${new LightLowerer(this.context).lowerDirectionBody("world_direction", "0", "light_world", "light.direction")}
@@ -2593,7 +2594,7 @@ ${
         : ""
 }\
     if (item.material.value < engine.materials.size()) {
-        const MaterialRecord& material = engine.materials[item.material.value];
+        const MaterialRecord& material = ${recordAt("engine.materials", "item.material")};
         result.base_color_factor = {
             material.base_color_factor.r,
             material.base_color_factor.g,
@@ -2666,7 +2667,7 @@ GridUniforms build_grid_uniforms(
         return result;
     }
     const MaterialRecord& material =
-        engine.materials[item.material.value];
+        ${recordAt("engine.materials", "item.material")};
     result.grid_control = {
         material.grid_control.x,
         material.grid_control.y,

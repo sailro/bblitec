@@ -21,6 +21,7 @@ import {
     pinnedVertexAttributeRows,
     vertexAttributeTableCpp,
 } from "./pinned-vertex-attributes.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
@@ -1082,9 +1083,9 @@ double add_billboard_sprite_index(
     BillboardSystemHandle system_handle,
     BillboardSpriteProps props) {
     BillboardSystemRecord& system =
-        engine.billboard_systems[system_handle.value];
+        ${recordAt("engine.billboard_systems", "system_handle")};
     const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[system.atlas.value];
+        ${recordAt("engine.sprite_atlases", "system.atlas")};
     const std::uint32_t index = system.count;
     if (index >= system.capacity) {
         const std::uint32_t capacity =
@@ -1184,7 +1185,7 @@ BillboardSpriteHandle add_billboard_sprite(
     const std::uint32_t index = static_cast<std::uint32_t>(
         add_billboard_sprite_index(engine, system_handle, props));
     BillboardSystemRecord& system =
-        engine.billboard_systems[system_handle.value];
+        ${recordAt("engine.billboard_systems", "system_handle")};
     if (system.next_handle_id == invalid_handle) {
         throw std::runtime_error("Billboard sprite handle id space exhausted.");
     }
@@ -1205,7 +1206,7 @@ void update_billboard_sprite(
         throw std::runtime_error("Invalid billboard system handle.");
     }
     BillboardSystemRecord& system =
-        engine.billboard_systems[handle.system.value];
+        ${recordAt("engine.billboard_systems", "handle.system")};
     const auto found = system.handle_id_to_index.find(handle.id);
     if (found == system.handle_id_to_index.end()) {
         throw std::runtime_error("Invalid billboard sprite handle.");
@@ -1244,13 +1245,13 @@ void set_billboard_sprite_frame(
         throw std::runtime_error("Invalid billboard system handle.");
     }
     BillboardSystemRecord& system =
-        engine.billboard_systems[handle.system.value];
+        ${recordAt("engine.billboard_systems", "handle.system")};
     const auto found = system.handle_id_to_index.find(handle.id);
     if (found == system.handle_id_to_index.end()) {
         throw std::runtime_error("Invalid billboard sprite handle.");
     }
     const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[system.atlas.value];
+        ${recordAt("engine.sprite_atlases", "system.atlas")};
     const SpriteFrame& atlas_frame =
         atlas.frames[upstream::resolve_sprite_frame(atlas, frame)];
     const std::size_t base =
@@ -1280,7 +1281,7 @@ bool billboard_sprite_alive(
         return false;
     }
     const BillboardSystemRecord& system =
-        engine.billboard_systems[handle.system.value];
+        ${recordAt("engine.billboard_systems", "handle.system")};
     return system.handle_id_to_index.count(handle.id) != 0;
 }
 
@@ -1291,7 +1292,7 @@ void remove_billboard_sprite(
         return;
     }
     BillboardSystemRecord& system =
-        engine.billboard_systems[handle.system.value];
+        ${recordAt("engine.billboard_systems", "handle.system")};
     const auto found = system.handle_id_to_index.find(handle.id);
     if (found == system.handle_id_to_index.end()) {
         return;
@@ -1327,7 +1328,7 @@ void clear_billboard_sprites(
     // Keep the allocated instance buffer: the JavaScript system resets its
     // logical count and reuses capacity when a dynamic set is refilled.
     BillboardSystemRecord& system =
-        engine.billboard_systems[system_handle.value];
+        ${recordAt("engine.billboard_systems", "system_handle")};
     system.handle_id_to_index.clear();
     std::fill(
         system.index_to_handle_id.begin(),
@@ -1349,7 +1350,7 @@ void set_billboard_shader_params(
     if (system.value >= engine.billboard_systems.size()) {
         throw std::runtime_error("Invalid billboard system handle.");
     }
-    engine.billboard_systems[system.value].shader_params = params;
+    ${recordAt("engine.billboard_systems", "system")}.shader_params = params;
 }
 
 // render/alpha-to-coverage.ts setAlphaToCoverage: membership of the enabled
@@ -1362,7 +1363,7 @@ void set_billboard_alpha_to_coverage(
     if (system.value >= engine.billboard_systems.size()) {
         throw std::runtime_error("Invalid billboard system handle.");
     }
-    engine.billboard_systems[system.value].alpha_to_coverage = enabled;
+    ${recordAt("engine.billboard_systems", "system")}.alpha_to_coverage = enabled;
 }
 
 void add_billboard_system(

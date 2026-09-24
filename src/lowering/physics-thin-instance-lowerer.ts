@@ -5,6 +5,7 @@ import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { lowerQuatFromRotationBasis } from "./pinned-mat4-decompose.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const modulePath = "src/physics/havok-thin-instances.ts";
 
@@ -225,7 +226,7 @@ export function lowerPhysicsThinInstances(
     methodCalls.set(
         "flushThinInstances",
         (args) =>
-            `flush_thin_instances(*world.engine, MeshHandle{${args[0]}.value})`,
+            `flush_thin_instances(*world.engine, mesh_slot_handle(*world.engine, ${args[0]}.value))`,
     );
     methodCalls.set(
         "raw.HP_Body_SetQTransform",
@@ -714,7 +715,7 @@ export function lowerPhysicsThinInstances(
         helpers: `${quat}\n${transform}\n${compose}
 MeshRecord* thin_mesh(PhysicsWorld& world, PhysicsNodeRef node) {
     if (node.kind != PhysicsNodeKind::mesh) return nullptr;
-    auto& mesh = world.engine->meshes.at(node.value);
+    auto& mesh = ${recordAt("world.engine->meshes", "node")};
     return mesh.thin_instanced ? &mesh : nullptr;
 }
 std::vector<float>& thin_matrices(PhysicsWorld& world, PhysicsNodeRef node) {

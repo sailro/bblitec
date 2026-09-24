@@ -18,6 +18,7 @@ import {
     gltfAnimatedLightCpp,
 } from "../gltf/animation-runtime.js";
 import { gltfMaterialProjection } from "../gltf/material-projection.js";
+import { recordAt } from "../../compiler/record-access.js";
 /**
  * The generated glTF loader.
  *
@@ -723,7 +724,7 @@ ${
             texture.width = texture.data.rgba_width = 1;
             texture.height = texture.data.rgba_height = 1;
         }
-        engine.materials.at(handle.value).source_albedo_texture = std::move(texture);
+        ${recordAt("engine.materials", "handle")}.source_albedo_texture = std::move(texture);
     };`
         : ""
 }
@@ -828,7 +829,7 @@ ${lowered.iblLoading}${
         }
         const AssetHandle self{static_cast<std::uint32_t>(engine.assets.size())};
         gaussian_splat_setup = [self, prepared_splats](Scene& scene) {
-            setup_gltf_gaussian_splats(scene, scene.engine->assets.at(self.value), *prepared_splats,
+            setup_gltf_gaussian_splats(scene, ${recordAt("scene.engine->assets", "self")}, *prepared_splats,
                 [](Scene& target, const PreparedGltfSplat& item) {
                     const auto splat = create_gaussian_splatting_mesh(*target.engine, item.name, item.rows);
                     attach_gaussian_splatting_mesh(target, splat);
@@ -1113,8 +1114,7 @@ ${
                 source_clockwise &&
                 materials[material_index].value <
                     engine.materials.size() &&
-                engine.materials[
-                    materials[material_index].value]
+                ${recordAt("engine.materials", "materials[material_index]")}
                     .double_sided;
             for (std::size_t index = 0; index < positions.count; ++index) {
                 ModelVertex vertex;
@@ -1558,7 +1558,7 @@ ${
                         "nothing.");
                 }`
                 }
-                engine.meshes[mesh_record_index]
+                ${recordAt("engine.meshes", "mesh_handle")}
                     .gpu_deformation = true;
                 std::vector<Matrix> initial_joint_matrices;
                 if (planned_skin) {
@@ -1574,14 +1574,14 @@ ${
                     for (std::size_t bone = 0; bone < bone_count; ++bone)
                         initial_joint_matrices.push_back(upstream::matrix_product(mesh_world, read_matrix(palette, bone)));
                 }
-                publish_gltf_deformation(engine.meshes[mesh_record_index], engine.geometries.at(engine.meshes[mesh_record_index].geometry),
+                publish_gltf_deformation(${recordAt("engine.meshes", "mesh_handle")}, engine.geometries.at(${recordAt("engine.meshes", "mesh_handle")}.geometry),
                     mesh_world, initial_joint_matrices, planned_skin != nullptr, morph_default_weights);
                 // mesh.skeleton upstream: the node named a skin, so the
                 // pose pass writes this record a joint palette rather than
                 // its own world matrix.
 ${
     vat || deformPicking
-        ? `                engine.meshes[mesh_record_index].skinned =
+        ? `                ${recordAt("engine.meshes", "mesh_handle")}.skinned =
                     skin_index !=
                     std::numeric_limits<std::size_t>::max();`
         : ""
@@ -1590,7 +1590,7 @@ ${
             ? `
                 // A mesh with no skin publishes no palette at all, so the
                 // flag is about the transport rather than about this mesh.
-                engine.meshes[mesh_record_index]
+                ${recordAt("engine.meshes", "mesh_handle")}
                     .pinned_bone_palette = true;`
             : ""
     }
@@ -1598,7 +1598,7 @@ ${
                 animation_runtime->meshes.push_back(
                     AnimatedMeshBinding{
                         mesh_record_index,
-                        engine.meshes[mesh_record_index].geometry,
+                        ${recordAt("engine.meshes", "mesh_handle")}.geometry,
                         node_index,
                         skin_index,
                         std::move(morph_default_weights),
@@ -1660,7 +1660,7 @@ ${
             if(index>=punctual_lights.size()||punctual_lights[index].value==invalid_handle)return std::nullopt;
             return punctual_lights[index];
         };
-        pointers->set_light_angle=[](Engine& target,LightHandle handle,double angle) {refresh_spot_light_cone(target.lights.at(handle.value),angle);};
+        pointers->set_light_angle=[](Engine& target,LightHandle handle,double angle) {refresh_spot_light_cone(${recordAt("target.lights", "handle")},angle);};
         for(std::size_t index=0;index<loaded_lights.size();++index)
             pointers->add_light(loaded_lights[index],required(mesh_plan,"lights").as_array().at(index));
         pointers->configure_light_effects();
@@ -1724,7 +1724,7 @@ ${lowered.boneControlEntryPoints}${
 // subtree, then the epoch bump that rebuilds the draw lists when a flag
 // actually moved.
 bool gltf_node_visible(const Engine& engine, AssetHandle asset_handle, std::size_t node) {
-    const AssetRecord& asset = engine.assets.at(asset_handle.value);
+    const AssetRecord& asset = ${recordAt("engine.assets", "asset_handle")};
     return node < asset.node_visible.size() ? asset.node_visible[node] : true;
 }
 
@@ -1734,7 +1734,7 @@ bool gltf_visibility_cascade(Engine& engine, AssetRecord& asset, std::size_t nod
     bool changed = asset.node_visible[node] != visible;
     asset.node_visible[node] = visible;
     for (const MeshHandle mesh : asset.node_meshes[node]) {
-        engine.meshes[mesh.value].visible = visible;
+        ${recordAt("engine.meshes", "mesh")}.visible = visible;
     }
     for (const std::size_t child : asset.node_children[node]) {
         if (gltf_visibility_cascade(engine, asset, child, visible)) changed = true;
@@ -1745,7 +1745,7 @@ bool gltf_visibility_cascade(Engine& engine, AssetRecord& asset, std::size_t nod
 } // namespace
 
 void set_gltf_node_visible(Engine& engine, AssetHandle asset_handle, std::size_t node, bool visible) {
-    AssetRecord& asset = engine.assets.at(asset_handle.value);
+    AssetRecord& asset = ${recordAt("engine.assets", "asset_handle")};
     if (node >= asset.node_visible.size()) {
         throw std::runtime_error("KHR_interactivity visibility pointer names a node the asset lacks.");
     }
@@ -1760,11 +1760,11 @@ void set_gltf_node_visible(Engine& engine, AssetHandle asset_handle, std::size_t
 // defaults); a write is picked up by the next draw, which rebuilds the
 // material's UV matrix from the record.
 TextureTransform& gltf_base_color_transform(Engine& engine, AssetHandle asset_handle, std::size_t material) {
-    const AssetRecord& asset = engine.assets.at(asset_handle.value);
+    const AssetRecord& asset = ${recordAt("engine.assets", "asset_handle")};
     if (material >= asset.materials.size()) {
         throw std::runtime_error("KHR_interactivity material pointer names a material the asset lacks.");
     }
-    return engine.materials.at(asset.materials[material].value).base_color_transform;
+    return ${recordAt("engine.materials", "asset.materials[material]")}.base_color_transform;
 }
 `
             : ""

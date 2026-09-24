@@ -13,7 +13,7 @@ double execute_compute_frame_tasks(std::span<const std::shared_ptr<ComputeTask>>
 inline std::string compute_frame_task_name(const Engine& engine, TaskHandle handle) {
     if (handle.value == invalid_handle)
         return {};
-    const auto& task = engine.frame_tasks.at(handle.value);
+    const auto& task = handle_at(engine.frame_tasks, handle);
     if (task.compute)
         return task.compute->name;
     return task.kind == FrameTaskKind::render &&
@@ -91,7 +91,7 @@ inline ComputeFramePrefix collect_compute_frame_prefix(const Engine& engine) {
             prefix.leading_shadows = true;
 #endif
         for (const auto handle : scene->tasks) {
-            const auto& record = engine.frame_tasks.at(handle.value);
+            const auto& record = handle_at(engine.frame_tasks, handle);
             if (record.execution_enabled == false)
                 continue;
             if (record.kind != FrameTaskKind::compute) {
@@ -114,7 +114,7 @@ inline ComputeFramePrefix collect_compute_frame_prefix(const Engine& engine) {
     }
     for (const auto& graph : engine.registered_frame_graph_contexts)
         for (const auto handle : graph->tasks)
-            if (engine.frame_tasks.at(handle.value).kind == FrameTaskKind::compute)
+            if (handle_at(engine.frame_tasks, handle).kind == FrameTaskKind::compute)
                 throw std::runtime_error(
                     "Standalone compute frame graphs require a native queue adapter.");
     return prefix;

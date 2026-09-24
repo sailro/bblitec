@@ -3,6 +3,7 @@ import {
     SCENE_NODE_TRANSFORMS,
     type SceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
+import { recordAt } from "../compiler/record-access.js";
 
 function assetRead(descriptor: SceneNodeTransformDescriptor): string {
     const root =
@@ -22,7 +23,7 @@ function meshWrite(descriptor: SceneNodeTransformDescriptor): string {
         return `${descriptor.meshSetter}(
                 engine, concrete, value, runtime_transform);`;
     }
-    return `engine.meshes.at(concrete.value).${descriptor.nativeField} = value;
+    return `${recordAt("engine.meshes", "concrete")}.${descriptor.nativeField} = value;
             if (runtime_transform) mark_mesh_runtime_transform(engine, concrete);
             else mark_mesh_dirty(engine, concrete);`;
 }
@@ -39,18 +40,18 @@ function componentWrite(
         .join("\n            ");
     const mesh = descriptor.meshSetter
         ? `${descriptor.cppType} vector =
-                engine.meshes.at(concrete.value).${descriptor.nativeField};
+                ${recordAt("engine.meshes", "concrete")}.${descriptor.nativeField};
             assign_component(vector);
             ${descriptor.meshSetter}(
                 engine, concrete, vector, runtime_transform);`
         : `auto& vector =
-                engine.meshes.at(concrete.value).${descriptor.nativeField};
+                ${recordAt("engine.meshes", "concrete")}.${descriptor.nativeField};
             assign_component(vector);
             if (runtime_transform) mark_mesh_runtime_transform(engine, concrete);
             else mark_mesh_dirty(engine, concrete);`;
     const transformNode = transformNodes
         ? `${descriptor.cppType} vector =
-                engine.transform_nodes.at(concrete.value).${descriptor.nativeField};
+                ${recordAt("engine.transform_nodes", "concrete")}.${descriptor.nativeField};
             assign_component(vector);
             ${descriptor.transformNodeSetter}(
                 engine, concrete, vector, runtime_transform);`
@@ -94,9 +95,9 @@ ${descriptor.cppType} scene_node_${descriptor.nativeField}(
     return std::visit([&engine](const auto& concrete) -> ${descriptor.cppType} {
         using Handle = std::decay_t<decltype(concrete)>;
         if constexpr (std::is_same_v<Handle, MeshHandle>) {
-            return engine.meshes.at(concrete.value).${descriptor.nativeField};
+            return ${recordAt("engine.meshes", "concrete")}.${descriptor.nativeField};
         } else if constexpr (std::is_same_v<Handle, TransformNodeHandle>) {
-            return engine.transform_nodes.at(concrete.value).${descriptor.nativeField};
+            return ${recordAt("engine.transform_nodes", "concrete")}.${descriptor.nativeField};
         } else {
             ${assetRead(descriptor)}
         }

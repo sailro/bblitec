@@ -7,6 +7,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerMat4InvertCpp } from "./pinned-function-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const modulePath = "src/physics/havok.ts";
 
@@ -238,7 +239,7 @@ void append_physics_mesh_geometry(
     bool include_children, bool collect_indices,
     std::vector<std::array<double, 3>>& positions, std::vector<std::uint32_t>& indices) {
     if (node.kind == PhysicsNodeKind::mesh) {
-        const auto& record = engine.meshes.at(node.value);
+        const auto& record = ${recordAt("engine.meshes", "node")};
         if (record.geometry < engine.geometries.size()) {
             const auto& geometry = engine.geometries.at(record.geometry);
             if (!geometry.vertices.empty()) {
@@ -272,7 +273,7 @@ void append_physics_mesh_geometry(
             append_physics_mesh_geometry(engine, physics_node(child), root_to_body, true, collect_indices, positions, indices);
         }
     } else if (include_children) {
-        for (const auto& child : engine.transform_nodes.at(node.value).children) {
+        for (const auto& child : ${recordAt("engine.transform_nodes", "node")}.children) {
             std::visit([&](auto value) {
                 append_physics_mesh_geometry(engine, physics_node(value), root_to_body, true, collect_indices, positions, indices);
             }, child);
@@ -282,7 +283,7 @@ void append_physics_mesh_geometry(
 `,
         source: `
 std::array<float, 16> physics_node_world(const Engine& engine, PhysicsNodeRef node) {
-    if (node.kind == PhysicsNodeKind::mesh) return mesh_world_matrix(engine, engine.meshes.at(node.value));
+    if (node.kind == PhysicsNodeKind::mesh) return mesh_world_matrix(engine, ${recordAt("engine.meshes", "node")});
     if (node.value >= engine.transform_nodes.size()) throw std::runtime_error("Physics geometry requires a live node.");
     return transform_node_world(engine, TransformNodeHandle{node.value});
 }
@@ -292,7 +293,7 @@ PhysicsShape create_physics_mesh_shape(
     const Engine& engine = *physics_world_record(handle).engine;
     const auto inverse = mat4_invert(physics_node_world(engine, root));
     if (!inverse) throw std::runtime_error("Cannot create physics mesh shape from a singular root transform.");
-    const auto& scale = root.kind == PhysicsNodeKind::mesh ? engine.meshes.at(root.value).scaling : engine.transform_nodes.at(root.value).scaling;
+    const auto& scale = root.kind == PhysicsNodeKind::mesh ? ${recordAt("engine.meshes", "root")}.scaling : ${recordAt("engine.transform_nodes", "root")}.scaling;
     const auto root_to_body = physics_matrix_product(physics_root_scale(scale.x, scale.y, scale.z), *inverse);
     std::vector<std::array<double, 3>> positions;
     std::vector<std::uint32_t> indices;

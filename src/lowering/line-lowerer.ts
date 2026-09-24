@@ -26,6 +26,7 @@ import type { LoweredSource, LoweringContext } from "./context.js";
 import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
 import { lowerComputeAabb } from "./pinned-compute-aabb.js";
 import type { CompiledShaderProgram } from "../compiler/types.js";
+import { recordAt } from "../compiler/record-access.js";
 
 export const lineMaterialModule = "src/material/line/line-material.ts";
 export const lineSystemModule = "src/mesh/create-line-system.ts";
@@ -523,7 +524,7 @@ MeshHandle create_line_system(
         {},
         {},
         data.colors);
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     record.material = material;
     record.line_point_counts = data.line_point_counts;
     record.line_has_colors = !data.colors.empty();
@@ -542,7 +543,7 @@ void update_line_system(
     if (mesh.value >= engine.meshes.size()) {
         throw std::runtime_error("Invalid line system mesh handle.");
     }
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     const std::vector<std::uint32_t>& point_counts = record.line_point_counts;
     if (point_counts.empty()) {
         throw std::runtime_error(

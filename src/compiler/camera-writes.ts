@@ -3,6 +3,7 @@ import ts from "typescript";
 import { isPinnedType } from "./data-types.js";
 import { cameraRecordField } from "./properties.js";
 import type { Value } from "./types.js";
+import { recordAt } from "./record-access.js";
 
 interface CameraWriteContext extends Pick<
     LoweringServices,
@@ -98,7 +99,7 @@ export function cameraNumberWrite(
         name: handle,
         initializer: camera.cpp,
     });
-    const record = `${engine}.cameras[${handle}.value]`;
+    const record = `${recordAt(`${engine}.cameras`, handle)}`;
     return vector
         ? {
               camera,

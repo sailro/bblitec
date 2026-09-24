@@ -16,6 +16,7 @@ import {
     lowerPinnedFunction,
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const arcRotateEyeMembers = [
     "alpha",
@@ -524,7 +525,7 @@ CameraHandle create_arc_rotate_camera(
 namespace bbl {
 CameraHandle enable_orthographic_camera(Engine& engine, CameraHandle camera, double half_height,
     std::optional<double> left, std::optional<double> right, std::optional<double> bottom, std::optional<double> top) {
-    CameraRecord& record = engine.cameras[camera.value];
+    CameraRecord& record = ${recordAt("engine.cameras", "camera")};
     record.orthographic = true;
     record.ortho_half_height = half_height;
     record.ortho_left = left;
@@ -695,7 +696,7 @@ CameraHandle create_banked_free_camera(
     Vec3d target,
     Vec3d up) {
     const CameraHandle camera = create_free_camera(engine, position, target);
-    engine.cameras[camera.value].up_vector = up;
+    ${recordAt("engine.cameras", "camera")}.up_vector = up;
     return camera;
 }
 
@@ -723,14 +724,14 @@ CameraHandle create_banked_free_camera(
                 [
                     "cam.nearPlane",
                     {
-                        cpp: "engine.cameras[cam.value].near_plane",
+                        cpp: `${recordAt("engine.cameras", "cam")}.near_plane`,
                         type: "scalar",
                     },
                 ],
                 [
                     "cam.farPlane",
                     {
-                        cpp: "engine.cameras[cam.value].far_plane",
+                        cpp: `${recordAt("engine.cameras", "cam")}.far_plane`,
                         type: "scalar",
                     },
                 ],
@@ -772,7 +773,7 @@ CameraHandle create_banked_free_camera(
                                       ? {
                                             cpp:
                                                 `(${element}.value < engine.meshes.size() && ` +
-                                                `!engine.meshes[${element}.value].visible)`,
+                                                `!${recordAt("engine.meshes", element)}.visible)`,
                                             type: "bool",
                                         }
                                       : // Nothing writes `visible` in a
@@ -853,7 +854,7 @@ ${lowerWorldAabbHelpers(this.context, { emptyAccumulator: true })}
 WorldAabbMesh default_camera_world_aabb_mesh(const Engine& engine, MeshHandle handle) {
     WorldAabbMesh result{};
     if (handle.value >= engine.meshes.size()) return result;
-    const MeshRecord& mesh = engine.meshes[handle.value];
+    const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
     Vec3 local_min{};
     Vec3 local_max{};
     if (mesh.primitive == PrimitiveKind::gltf && mesh.geometry < engine.geometries.size()) {
@@ -958,7 +959,7 @@ void set_camera_limits(
     if (handle.value >= engine.cameras.size()) {
         throw std::runtime_error("Invalid camera handle.");
     }
-    CameraRecord& camera = engine.cameras[handle.value];
+    CameraRecord& camera = ${recordAt("engine.cameras", "handle")};
     if ((present_mask & (1u << 0u)) != 0u) camera.lower_alpha_limit = limits[0];
     if ((present_mask & (1u << 1u)) != 0u) camera.upper_alpha_limit = limits[1];
     if ((present_mask & (1u << 2u)) != 0u) camera.lower_beta_limit = limits[2];
@@ -979,7 +980,7 @@ void attach_control(Engine& engine, CameraHandle camera) {
     if (camera.value >= engine.cameras.size()) {
         throw std::runtime_error("Invalid camera handle.");
     }
-    engine.cameras[camera.value].controls_enabled = true;
+    ${recordAt("engine.cameras", "camera")}.controls_enabled = true;
 }
 
 // The free-camera entry point is a separate pinned symbol reaching a separate

@@ -197,7 +197,7 @@ void build_graph(State& state, const Engine& engine, std::uint32_t width, std::u
 
 SDL_GPUTexture* target_texture(State& state, const Engine& engine, RenderTargetHandle handle,
                                SDL_GPUTexture* swapchain, bool sampled) {
-    const RenderTargetRecord& record = engine.render_targets.at(handle.value);
+    const RenderTargetRecord& record = handle_at(engine.render_targets, handle);
     if (record.swapchain)
         return swapchain;
     const Target& target = state.targets.at(handle.value);
@@ -210,7 +210,7 @@ SDL_GPUTexture* source_texture(State& state, const Engine& engine, const RenderT
     if (source.source != RenderTextureSource::render_target) {
         throw std::runtime_error("A standalone frame graph cannot sample a scene geometry task.");
     }
-    const RenderTargetRecord& record = engine.render_targets.at(source.target.value);
+    const RenderTargetRecord& record = handle_at(engine.render_targets, source.target);
     if (record.swapchain) {
         throw std::runtime_error("A post-process pass cannot sample the swapchain target.");
     }
@@ -280,11 +280,11 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
                          SDL_GPUTexture* swapchain, std::uint32_t width, std::uint32_t height,
                          SDL_GPUTexture*& capture_texture) {
     PostProcessPassOptions& pass =
-        engine.frame_tasks.at(task_handle.value).post_process.passes.at(pass_index);
+        handle_at(engine.frame_tasks, task_handle).post_process.passes.at(pass_index);
     const upstream::PostProcessShaderInfo& info =
         upstream::post_process_shader_infos.at(pass.shader_index);
     PostProcessPass& gpu = state.post_processes.at(task_handle.value).at(pass_index);
-    const RenderTargetRecord& output_record = engine.render_targets.at(pass.output_target.value);
+    const RenderTargetRecord& output_record = handle_at(engine.render_targets, pass.output_target);
     const Target& output = state.targets.at(pass.output_target.value);
     const std::uint32_t output_width = output_record.swapchain ? width : output.width;
     const std::uint32_t output_height = output_record.swapchain ? height : output.height;
@@ -471,7 +471,7 @@ public:
             engine, [&](const auto& write) { encode_sdl_gpu_timestamp(command, write); });
 #endif
         for (const TaskHandle handle : context->tasks) {
-            FrameTaskRecord& task = engine.frame_tasks.at(handle.value);
+            FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
             if (task.execution_enabled == false)
                 continue;
 #if BBLITE_GPU_TASK_TIMING
@@ -481,7 +481,7 @@ public:
             if (task.kind == FrameTaskKind::effect) {
                 EffectPass& pass = state.effects.at(handle.value);
                 const RenderTargetRecord& record =
-                    engine.render_targets.at(task.effect.target.value);
+                    handle_at(engine.render_targets, task.effect.target);
                 const Target& output = state.targets.at(task.effect.target.value);
                 if (!pass.pipeline) {
                     pass = create_effect_pass(

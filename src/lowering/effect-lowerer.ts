@@ -16,6 +16,7 @@
  */
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const effectModule = "src/effect/effect-renderer.ts";
 const uniformEffectModule = "src/effect/uniform-effect-renderer.ts";
@@ -224,7 +225,7 @@ void set_effect_uniforms(
     Engine& engine,
     EffectWrapperHandle effect,
     const std::vector<float>& values) {
-    EffectWrapperRecord& wrapper = engine.effect_wrappers.at(effect.value);
+    EffectWrapperRecord& wrapper = ${recordAt("engine.effect_wrappers", "effect")};
     const upstream::EffectVariantEntry& entry =
         upstream::effect_variants.at(wrapper.variant);
     std::uint32_t bytes = 0;
@@ -254,7 +255,7 @@ void set_effect_texture(
     EffectWrapperHandle effect,
     const std::string& name,
     SolidTexture texture) {
-    EffectWrapperRecord& wrapper = engine.effect_wrappers.at(effect.value);
+    EffectWrapperRecord& wrapper = ${recordAt("engine.effect_wrappers", "effect")};
     for (EffectTextureSlot& slot : wrapper.textures) {
         if (slot.name != name) continue;
         slot.texture = texture;

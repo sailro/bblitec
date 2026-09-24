@@ -3,6 +3,7 @@ import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { lowerPbrTransmissionTransaction } from "./pbr-transmission-transaction.js";
+import { recordAt } from "../compiler/record-access.js";
 
 export function lowerPbrGammaAlbedo(context: LoweringContext): string {
     const module = "src/material/pbr/set-gamma-albedo.ts";
@@ -15,7 +16,7 @@ export function lowerPbrGammaAlbedo(context: LoweringContext): string {
             [
                 "mat._gammaAlbedo",
                 {
-                    cpp: "engine.materials.at(material.value).source_gamma_albedo",
+                    cpp: `${recordAt("engine.materials", "material")}.source_gamma_albedo`,
                     type: "bool",
                 },
             ],
@@ -150,8 +151,8 @@ export function lowerPbrTransmissionSelection(
                 absentCpp: "!mat",
             });
             return [
-                `${indent}const auto material = engine.meshes.at(meshes.at(static_cast<std::size_t>(${lowerer.expression(mesh.argumentExpression)})).value).material;`,
-                `${indent}const MaterialRecord* mat = material.value < engine.materials.size() ? &engine.materials[material.value] : nullptr;`,
+                `${indent}const auto material = ${recordAt("engine.meshes", `meshes.at(static_cast<std::size_t>(${lowerer.expression(mesh.argumentExpression)}))`)}.material;`,
+                `${indent}const MaterialRecord* mat = material.value < engine.materials.size() ? &${recordAt("engine.materials", "material")} : nullptr;`,
             ];
         },
     });

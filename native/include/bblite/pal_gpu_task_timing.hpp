@@ -199,7 +199,7 @@ public:
         shadow_name_ = scene->state->shadow_task_name;
         const bool has_casters =
             std::any_of(scene->tasks.begin(), scene->tasks.end(), [&](TaskHandle handle) {
-                const auto& task = engine.frame_tasks.at(handle.value);
+                const auto& task = handle_at(engine.frame_tasks, handle);
                 return task.kind == FrameTaskKind::render &&
                        task.render.shadow_generator.value != invalid_handle;
             });
@@ -219,10 +219,10 @@ public:
     }
 
     auto scoped_task(const Engine& engine, TaskHandle handle) {
-        const auto marker = begin(engine.frame_tasks.at(handle.value));
+        const auto marker = begin(handle_at(engine.frame_tasks, handle));
         return js::finally([this, &engine, handle, marker] {
             if (marker && std::uncaught_exceptions() == 0)
-                end(*marker, engine.frame_tasks.at(handle.value));
+                end(*marker, handle_at(engine.frame_tasks, handle));
         });
     }
 

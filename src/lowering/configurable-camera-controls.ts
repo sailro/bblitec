@@ -11,6 +11,7 @@ import {
     cameraPointerDeltaBindings,
     jsMinMaxCalls,
 } from "./camera-mutation-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const configurableModule = "src/camera/configurable-free-camera-controls.ts";
 const freeModule = "src/camera/free-camera-controls.ts";
@@ -439,7 +440,7 @@ ${fields.join("\n")}
     };
     auto state = std::make_shared<State>();
 ${optionInitializers.join("\n")}
-    auto& camera = engine.cameras[handle.value];
+    auto& camera = ${recordAt("engine.cameras", "handle")};
     camera.controls_enabled = true;
     camera.configurable_free_pointer = [state](CameraRecord& camera, double delta_x, double delta_y) {
 ${pointerBody}

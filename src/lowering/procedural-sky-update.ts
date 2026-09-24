@@ -10,6 +10,7 @@ import {
 } from "./pinned-body-lowerer.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { proceduralSkyModule } from "./procedural-sky-atmosphere.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** Source-owned update cancellation, active-generation checks and GPU submission order. */
 export function lowerProceduralSkyUpdate(
@@ -330,7 +331,7 @@ export function lowerProceduralSkyUpdate(
                     );
                     return [
                         `${indent}for(const auto handle:scene.tasks){`,
-                        `${indent}    auto& task=scene.engine->frame_tasks.at(handle.value);`,
+                        `${indent}    auto& task=${recordAt("scene.engine->frame_tasks", "handle")};`,
                         ...lowerer.statements(
                             ts.isBlock(node.statement)
                                 ? node.statement.statements

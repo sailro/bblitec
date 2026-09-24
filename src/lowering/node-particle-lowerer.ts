@@ -43,6 +43,7 @@ import {
     NodeParticleLiveLowerer,
 } from "./node-particle-live-lowerer.js";
 import type { CompileAsset, PixelsTextureSource } from "../compiler/types.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const billboardModule = "src/particle/particle-billboard.ts";
 const blendModule = "src/particle/particle-blend.ts";
@@ -1723,9 +1724,9 @@ void assert_frozen_bridge_ownership(const Sprite2DLayerRecord& layer) {
 // Index API caller clears, appends, or hides slots between renderer updates.
 void sync_frozen_bridge(Engine& engine, Sprite2DLayerHandle handle,
     const Sprite2DBridge& bridge, const BakedSystem& system, const FrozenSystem& state) {
-    Sprite2DLayerRecord& layer = engine.sprite_layers[handle.value];
+    Sprite2DLayerRecord& layer = ${recordAt("engine.sprite_layers", "handle")};
     assert_frozen_bridge_ownership(layer);
-    const SpriteAtlasRecord& atlas = engine.sprite_atlases[layer.atlas.value];
+    const SpriteAtlasRecord& atlas = ${recordAt("engine.sprite_atlases", "layer.atlas")};
     const std::size_t alive = system.particle_count;
     const std::uint32_t previous_count = layer.count;
     for (std::size_t i = 0; i < alive; ++i) {
@@ -1802,12 +1803,12 @@ void register_retained_frozen_node_particle_set_2d(
     sprite_renderer_before_update(engine, renderer,
         [&engine, mappings = std::move(mappings)](double) {
             for (const Mapping& mapping : mappings) {
-                if (mapping.secondary) assert_frozen_bridge_ownership(engine.sprite_layers[mapping.secondary->value]);
+                if (mapping.secondary) assert_frozen_bridge_ownership(${recordAt("engine.sprite_layers", "*mapping.secondary")});
                 const Sprite2DBridge& bridge = *mapping.bridge;
                 sync_frozen_bridge(engine, mapping.primary, bridge, *mapping.system, *mapping.state);
                 if (mapping.secondary) {
-                    const Sprite2DLayerRecord& source = engine.sprite_layers[mapping.primary.value];
-                    Sprite2DLayerRecord& target = engine.sprite_layers[mapping.secondary->value];
+                    const Sprite2DLayerRecord& source = ${recordAt("engine.sprite_layers", "mapping.primary")};
+                    Sprite2DLayerRecord& target = ${recordAt("engine.sprite_layers", "*mapping.secondary")};
                     target.opacity = source.opacity;
                     target.visible = source.visible;
                     target.order = source.order;
@@ -2186,8 +2187,8 @@ void sync_live_bridge(
     Engine& engine,
     const LiveMapping& mapping,
     const State& state) {
-    Sprite2DLayerRecord& layer = engine.sprite_layers[mapping.layer.value];
-    const SpriteAtlasRecord& atlas = engine.sprite_atlases[layer.atlas.value];
+    Sprite2DLayerRecord& layer = ${recordAt("engine.sprite_layers", "mapping.layer")};
+    const SpriteAtlasRecord& atlas = ${recordAt("engine.sprite_atlases", "layer.atlas")};
     const double pixels_per_unit = mapping.row->pixels_per_unit;
     const double origin_x = mapping.origin_x;
     const double origin_y = mapping.origin_y;

@@ -3,6 +3,7 @@ import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerGltfVatBinding } from "./gltf/vat-binding.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const VAT_MODULE = "src/vat/vat-baker.ts";
 
@@ -211,7 +212,7 @@ VatBake bake_vat(
             throw std::runtime_error("bakeVat names no such clip.");
         }
         const AnimationGroupRecord& clip_record =
-            engine.animation_groups[group.value];
+            ${recordAt("engine.animation_groups", "group")};
         if (clip_record.asset >= engine.assets.size()) {
             throw std::runtime_error("bakeVat clip has no asset.");
         }
@@ -266,7 +267,7 @@ VatBake bake_vat(
         0.0f);
     std::size_t row = 0;
     for (std::size_t index = 0; index < groups.size(); ++index) {
-        const AnimationGroupRecord& clip_record = engine.animation_groups[groups[index].value];
+        const AnimationGroupRecord& clip_record = ${recordAt("engine.animation_groups", "groups[index]")};
         const AssetRecord& asset = engine.assets[clip_record.asset];
         const std::uint32_t frames = frames_per_clip[index];
         for (std::uint32_t frame = 0; frame < frames; ++frame) {
@@ -309,7 +310,7 @@ VatHandle attach_vat(
     record.skinned = false;
     record.bone_matrices.clear();
     const VatHandle handle{mesh.value};
-    const VatBakeRecord& bake = engine.vat_bakes[baked.value];
+    const VatBakeRecord& bake = ${recordAt("engine.vat_bakes", "baked")};
     const std::string selected = clip.empty() && !bake.clips.empty()
         ? bake.clips[0].name
         : clip;
@@ -354,7 +355,7 @@ VatClipRow vat_clip_row(
     const std::string& clip) {
     if (baked.value >= engine.vat_bakes.size()) return VatClipRow{};
     const VatClipRow* row =
-        vat_clip(engine.vat_bakes[baked.value], clip);
+        vat_clip(${recordAt("engine.vat_bakes", "baked")}, clip);
     return row ? *row : VatClipRow{};
 }
 

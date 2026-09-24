@@ -4,6 +4,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const STANDARD_RENDERABLE = "src/material/standard/standard-renderable.ts";
 const STANDARD_FLAGS = "src/material/standard/standard-flags.ts";
@@ -184,7 +185,7 @@ export function lowerRenderBucket(
     const colorAlphaBlend = options.standardVertexAlpha
         ? `bool color_alpha_blend = false;
         if (item.mesh.value < engine.meshes.size()) {
-            const MeshRecord& mesh = engine.meshes[item.mesh.value];
+            const MeshRecord& mesh = ${recordAt("engine.meshes", "item.mesh")};
             const bool has_vertex_color = ${options.standardVertexColors ? "mesh.geometry < engine.geometries.size() && engine.geometries[mesh.geometry].has_vertex_colors" : "false"};
             color_alpha_blend = standard_color_alpha_features(
                 shadow_output, mesh.has_vertex_alpha, has_vertex_color,

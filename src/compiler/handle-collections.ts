@@ -45,6 +45,7 @@ import {
 // "which meshes of this file are skinned" has one answer in the compiler.
 import { skinnedMeshIndices } from "../pinned-mesh-features.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
+import { recordAt } from "./record-access.js";
 
 /**
  * One engine handle collection an expression names.
@@ -483,7 +484,7 @@ export class HandleCollections {
                     const child = context.lookup(proof.child);
                     context.bindLocalValue(proof.ownerName, {
                         kind: "string",
-                        cpp: `${target.engineCpp}.meshes[${child.cpp}.value].scene_node_name`,
+                        cpp: `${recordAt(`${target.engineCpp}.meshes`, child.cpp)}.scene_node_name`,
                         dataType: { kind: "string" },
                     });
                     context.bindLocalValue(proof.output, map);
@@ -1267,7 +1268,7 @@ export class HandleCollections {
         return {
             property: "children",
             temporaryLabel: "asset_descendant_mesh",
-            containerCpp: `${engineCpp}.assets[${owner.cpp}.value].meshes`,
+            containerCpp: `${recordAt(`${engineCpp}.assets`, owner.cpp)}.meshes`,
             elementKind: "mesh",
             elementCppType: handleCppType("mesh"),
             engineCpp,
@@ -1885,14 +1886,14 @@ export class HandleCollections {
         });
         this.context.emit(
             `for (const ${handleCppType("mesh")} ${item} : ` +
-                `${engine}.assets[${root.cpp}.value].meshes) {`,
+                `${recordAt(`${engine}.assets`, root.cpp)}.meshes) {`,
         );
         this.context.increaseIndent();
         this.context.emit(
             `if (` +
-                `${engine}.meshes[${item}.value].scene_node_name == ` +
+                `${recordAt(`${engine}.meshes`, item)}.scene_node_name == ` +
                 `${this.context.cppString(name)} || ` +
-                `${engine}.meshes[${item}.value].name == ` +
+                `${recordAt(`${engine}.meshes`, item)}.name == ` +
                 `${this.context.cppString(name)}) {`,
         );
         this.context.increaseIndent();
@@ -1967,10 +1968,12 @@ export class HandleCollections {
         });
         this.context.emit(
             `for (const ${handleCppType("mesh")} ${item} : ` +
-                `${engine}.assets[${root.cpp}.value].meshes) {`,
+                `${recordAt(`${engine}.assets`, root.cpp)}.meshes) {`,
         );
         this.context.increaseIndent();
-        this.context.emit(`if (${engine}.meshes[${item}.value].skinned) {`);
+        this.context.emit(
+            `if (${recordAt(`${engine}.meshes`, item)}.skinned) {`,
+        );
         this.context.increaseIndent();
         this.context.emit(`${result} = ${item};`);
         this.context.emit(`${found} = true;`);

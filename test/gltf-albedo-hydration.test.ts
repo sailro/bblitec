@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-document.js";
+import { recordAt } from "../src/compiler/record-access.js";
 import {
     cppFunction,
     nativeFixtureVcpkgRoot,
@@ -20,10 +21,15 @@ test(
         const template = readFileSync(
             "src/lowering/templates/gltf-loader-cpp.ts",
             "utf8",
-        ).replaceAll(
-            "${GLTF_SOURCE_ALBEDO_IDENTITIES}",
-            GLTF_SOURCE_ALBEDO_IDENTITIES,
-        );
+        )
+            .replaceAll(
+                "${GLTF_SOURCE_ALBEDO_IDENTITIES}",
+                GLTF_SOURCE_ALBEDO_IDENTITIES,
+            )
+            .replaceAll(
+                '${recordAt("engine.materials", "handle")}',
+                recordAt("engine.materials", "handle"),
+            );
         const start = template.indexOf("    const auto& source_albedo =");
         const lambda = template.indexOf(
             "    const auto retain_source_albedo =",

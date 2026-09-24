@@ -1,4 +1,5 @@
 import type { LoweringContext } from "./context.js";
+import { recordAt } from "../compiler/record-access.js";
 
 export const physicsViewerModule = "src/physics/physics-viewer.ts";
 
@@ -79,7 +80,7 @@ void dispose_physics_viewer(const PhysicsViewerHandle& viewer);
 namespace {
 void copy_physics_body_debug_transform(PhysicsBody body, Engine& engine, MeshHandle mesh) {
     const PhysicsNodePose pose = physics_node_pose(engine, body.node);
-    MeshRecord& record = engine.meshes.at(mesh.value);
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     record.position = pose.position;
     record.rotation_quaternion = pose.rotation;
     record.has_rotation_quaternion = true;
@@ -131,10 +132,10 @@ std::optional<MeshHandle> show_physics_body(const PhysicsViewerHandle& viewer, P
     const MeshHandle mesh = bind_scene_mesh_profile(engine,
         create_mesh_from_data(engine, "physicsBodyDebug", positions, normals, lines, {}, {}, {}, {}), mesh_profile);
     const MaterialHandle material = create_shader_material(engine, viewer->material_variant);
-    engine.meshes.at(mesh.value).material = material;
-    engine.meshes.at(mesh.value).pickable = false;
-    engine.meshes.at(mesh.value).has_render_order = true;
-    engine.meshes.at(mesh.value).render_order = 1000.0;
+    ${recordAt("engine.meshes", "mesh")}.material = material;
+    ${recordAt("engine.meshes", "mesh")}.pickable = false;
+    ${recordAt("engine.meshes", "mesh")}.has_render_order = true;
+    ${recordAt("engine.meshes", "mesh")}.render_order = 1000.0;
     copy_physics_body_debug_transform(body, engine, mesh);
     viewer->bodies.push_back(body);
     viewer->meshes.push_back(mesh);

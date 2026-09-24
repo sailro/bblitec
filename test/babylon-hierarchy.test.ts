@@ -249,7 +249,13 @@ std::string parent_path(const std::string&) { return ""; }
 std::string join_path(const std::string& a,const std::string& b) { return a+b; }
 DecodedImage decode_image(const js::ArrayBuffer&) { throw std::runtime_error("Unexpected fixture texture."); }
 }
-CameraHandle create_free_camera(Engine&,Vec3d,Vec3d) { throw std::runtime_error("Unexpected fixture camera."); }
+// The refusal reads a volatile flag: a factory MSVC proves always throws makes the
+// loader's checked camera writes after it unreachable code (C4702 under /WX).
+CameraHandle create_free_camera(Engine&,Vec3d,Vec3d) {
+    static volatile bool unexpected = true;
+    if (unexpected) throw std::runtime_error("Unexpected fixture camera.");
+    return {};
+}
 ${fileTexture}
 }
 int main() {

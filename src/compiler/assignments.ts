@@ -816,9 +816,7 @@ function emitPostProcessOptionAssignment(
     // one is refused above.
 
     context.emit(
-        `${context.requireEngine(owner, expression)}.frame_tasks[${
-            owner.cpp
-        }.value].post_process.passes[0].params[${slot}] = ${context.compileNumber(
+        `${recordAt(`${context.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.post_process.passes[0].params[${slot}] = ${context.compileNumber(
             expression.right,
             "double",
         )};`,
@@ -845,9 +843,7 @@ function emitScreenSpaceSettingAssignment(
         return false;
     }
     const setting = left.name.text;
-    const record = `${context.requireEngine(owner, expression)}.frame_tasks[${
-        owner.cpp
-    }.value].screen_space`;
+    const record = `${recordAt(`${context.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.screen_space`;
     requireSimpleAssignment(context, expression, "screen-space setting");
     if (setting === "enabled") {
         context.emit(
@@ -925,7 +921,7 @@ function emitSpriteLayerViewAssignment(
     const layer = context.compileValue(layerExpression);
     context.expectKind(layer, "sprite-layer", layerExpression);
     context.emit(
-        `${context.requireEngine(layer, layerExpression)}.sprite_layers[${layer.cpp}.value].view.${field} = static_cast<float>(${context.compileNumber(expression.right, "double")});`,
+        `${recordAt(`${context.requireEngine(layer, layerExpression)}.sprite_layers`, layer.cpp)}.view.${field} = static_cast<float>(${context.compileNumber(expression.right, "double")});`,
     );
     return true;
 }
@@ -1278,8 +1274,8 @@ export function emitPropertyAssignment(
         const drag = context.compileValue(left.expression);
         if (drag.kind === "pointer-drag") {
             context.emit(
-                `${context.requireEngine(drag, expression)}.edit_gizmos[` +
-                    `${drag.cpp}.value].${left.name.text} ${operator} ` +
+                `${recordAt(`${context.requireEngine(drag, expression)}.edit_gizmos`, drag.cpp)}` +
+                    `.${left.name.text} ${operator} ` +
                     `${context.compileBoolean(expression.right)};`,
             );
             return;
@@ -1537,7 +1533,7 @@ export function emitPropertyAssignment(
             operator === "=",
         );
         context.emit(
-            `${context.requireEngine(scene, expression)}.cameras[${scene.cpp}.camera.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
+            `${recordAt(`${context.requireEngine(scene, expression)}.cameras`, `${scene.cpp}.camera`)}.${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
         );
         return;
     }
@@ -1642,7 +1638,7 @@ export function emitPropertyAssignment(
                 const vectorRead =
                     vector === "rotation"
                         ? `bbl::asset_root_rotation(${engine}, ${target})`
-                        : `${engine}.assets[${target}.value].root_${trsVector.nativeField}`;
+                        : `${recordAt(`${engine}.assets`, target)}.root_${trsVector.nativeField}`;
                 context.emit(
                     `const double ${previous} = ${vectorRead}.${component};`,
                 );
@@ -1823,7 +1819,7 @@ export function emitPropertyAssignment(
                         .map((lane) =>
                             lane === component
                                 ? context.compileNumber(expression.right)
-                                : `${engine}.lights[${mesh.cpp}.value].${vector}.${lane}`,
+                                : `${recordAt(`${engine}.lights`, mesh.cpp)}.${vector}.${lane}`,
                         )
                         .join(", ") +
                     `});`,
@@ -1841,7 +1837,7 @@ export function emitPropertyAssignment(
             const component = ["x", "y", "z"][axis]!;
             const engine = context.requireEngine(mesh, expression);
             context.emit(
-                `${engine}.cameras[${mesh.cpp}.value].${vector}.${component} ${operator} ${context.compileNumber(expression.right, "double")};`,
+                `${recordAt(`${engine}.cameras`, mesh.cpp)}.${vector}.${component} ${operator} ${context.compileNumber(expression.right, "double")};`,
             );
             return;
         }
@@ -1894,7 +1890,7 @@ export function emitPropertyAssignment(
                 return;
             }
             const vectorRead =
-                `${engine}.transform_nodes[${mesh.cpp}.value].` +
+                `${recordAt(`${engine}.transform_nodes`, mesh.cpp)}.` +
                 trsVector.nativeField;
             const current = `${vectorRead}.${component}`;
             const replacement =
@@ -1967,7 +1963,7 @@ export function emitPropertyAssignment(
                 );
             }
             const engine = context.requireEngine(mesh, expression);
-            const current = `${engine}.meshes[${mesh.cpp}.value].${trsVector.nativeField}.${component}`;
+            const current = `${recordAt(`${engine}.meshes`, mesh.cpp)}.${trsVector.nativeField}.${component}`;
             const replacement =
                 operator === "="
                     ? context.compileNumber(
@@ -1984,7 +1980,7 @@ export function emitPropertyAssignment(
                         .map((lane) =>
                             lane === component
                                 ? replacement
-                                : `${engine}.meshes[${mesh.cpp}.value].${trsVector.nativeField}.${lane}`,
+                                : `${recordAt(`${engine}.meshes`, mesh.cpp)}.${trsVector.nativeField}.${lane}`,
                         )
                         .join(", ") +
                     `}, false);`,
@@ -1999,7 +1995,7 @@ export function emitPropertyAssignment(
         // coordinate to the float32 grid, which is the whole reason the
         // field is a double.
         context.emit(
-            `${engine}.${record.collection}[${mesh.cpp}.value].${trsVector.nativeField}.${component} ${operator} ${context.compileNumber(
+            `${recordAt(`${engine}.${record.collection}`, mesh.cpp)}.${trsVector.nativeField}.${component} ${operator} ${context.compileNumber(
                 expression.right,
                 record.collection === "meshes" ? trsVector.precision : "float",
             )};`,
@@ -2186,7 +2182,7 @@ function emitCameraViewportAssignment(
         false,
     );
     context.emit(
-        `${context.requireEngine(scene, expression)}.cameras[${scene.cpp}.camera.value]` +
+        `${recordAt(`${context.requireEngine(scene, expression)}.cameras`, `${scene.cpp}.camera`)}` +
             `.viewport = bbl::NormalizedViewport{${lanes.join(", ")}};`,
     );
 }
@@ -2240,6 +2236,7 @@ import {
     sceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
 import type { Feature, LightKind, Value } from "./types.js";
+import { recordAt } from "./record-access.js";
 export { isTrsVectorName } from "../scene-node-transform-descriptor.js";
 
 interface TargetPropertyAssignment {
@@ -2386,14 +2383,14 @@ function emitTargetPropertyAssignment(
                       },
                   )}).to_optional()`;
         context.emit(
-            `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].${field} = ${value};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}.${field} = ${value};`,
         );
         return true;
     }
     if (target.kind === "task" && property === "executionEnabled") {
         requireSimpleAssignment(context, expression, "Task.executionEnabled");
         context.emit(
-            `${context.requireEngine(target, expression)}.frame_tasks[${target.cpp}.value].execution_enabled = bbl::js::Nullable<bool>(${context.dataLowerer.compileForSink(expression.right, { kind: "optional", inner: { kind: "boolean" } })}).to_optional();`,
+            `${recordAt(`${context.requireEngine(target, expression)}.frame_tasks`, target.cpp)}.execution_enabled = bbl::js::Nullable<bool>(${context.dataLowerer.compileForSink(expression.right, { kind: "optional", inner: { kind: "boolean" } })}).to_optional();`,
         );
         return true;
     }
@@ -2573,9 +2570,10 @@ function emitTargetPropertyAssignment(
                 `${recordField.kind} ${recordField.property}`,
             );
         }
-        const record =
-            `${context.requireEngine(target, expression)}` +
-            `.${recordField.collection}[${target.cpp}.value]`;
+        const record = recordAt(
+            `${context.requireEngine(target, expression)}.${recordField.collection}`,
+            target.cpp,
+        );
         if (recordField.value === "number2") {
             const elements = context.unwrap(
                 context.resolveStaticExpression(expression.right),
@@ -2740,7 +2738,7 @@ function emitTargetPropertyAssignment(
         // write is not one of its scalar properties, so it invalidates.
         noteCameraRecordWrite(context, target, "target", undefined, false);
         context.emit(
-            `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].target = ${context.compileVec3(expression.right, "double")};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.cameras`, target.cpp)}.target = ${context.compileVec3(expression.right, "double")};`,
         );
         return true;
     }
@@ -2756,7 +2754,7 @@ function emitTargetPropertyAssignment(
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken,
             );
             context.emit(
-                `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
+                `${recordAt(`${context.requireEngine(target, expression)}.cameras`, target.cpp)}.${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
             );
             return true;
         }
@@ -2817,7 +2815,7 @@ function emitTargetPropertyAssignment(
                           : "float",
                   );
         context.emit(
-            `${context.requireEngine(target, expression)}.${direct.collection}[${target.cpp}.value].${direct.nativeProperty} ${operator} ${value};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.${direct.collection}`, target.cpp)}.${direct.nativeProperty} ${operator} ${value};`,
         );
         return true;
     }
@@ -2953,10 +2951,10 @@ function emitRenderOrderAssignment(
         requireSimpleAssignment(context, expression, "mesh renderOrder");
         const engine = context.requireEngine(target, expression);
         context.emit(
-            `${engine}.meshes[${target.cpp}.value].render_order = ${context.compileNumber(expression.right, "double")};`,
+            `${recordAt(`${engine}.meshes`, target.cpp)}.render_order = ${context.compileNumber(expression.right, "double")};`,
         );
         context.emit(
-            `${engine}.meshes[${target.cpp}.value].has_render_order = true;`,
+            `${recordAt(`${engine}.meshes`, target.cpp)}.has_render_order = true;`,
         );
         return true;
     }
@@ -2982,7 +2980,7 @@ function emitNameAssignment(
         const name = context.compileValue(expression.right);
         context.expectKind(name, "string", expression.right);
         context.emit(
-            `${context.requireEngine(target, expression)}.${collection}[${target.cpp}.value].name = ${name.cpp};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.${collection}`, target.cpp)}.name = ${name.cpp};`,
         );
         return true;
     }
@@ -3047,8 +3045,8 @@ function emitReceiveShadowsAssignment(
         // serves a receiving mesh and a non-receiving one. The two
         // composed families never read the lane.
         context.emit(
-            `${context.requireEngine(target, expression)}.meshes[` +
-                `${target.cpp}.value].receives_shadows = true;`,
+            `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}` +
+                `.receives_shadows = true;`,
         );
         return true;
     }
@@ -3125,7 +3123,7 @@ function emitShadowGeneratorAssignment(
         context.expectKind(generator, "shadow-generator", expression.right);
         context.expectSameEngine(target, generator, expression);
         context.emit(
-            `${context.requireEngine(target, expression)}.lights[${target.cpp}.value].shadow_generator = ${generator.cpp};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.lights`, target.cpp)}.shadow_generator = ${generator.cpp};`,
         );
         // The pin's `ShadowTask` walks `scene.lights` and its receiver
         // slots come from the same walk, so the generator has to be
@@ -3164,8 +3162,8 @@ function emitIncludedOnlyMeshIdsAssignment(
         );
         context.reachFeature("light:included-meshes", expression);
         context.emit(
-            `${context.requireEngine(target, expression)}.lights[` +
-                `${target.cpp}.value].included_meshes = {` +
+            `${recordAt(`${context.requireEngine(target, expression)}.lights`, target.cpp)}` +
+                `.included_meshes = {` +
                 `${meshes.map((mesh) => `${mesh}.value`).join(", ")}};`,
         );
         return true;
@@ -3301,10 +3299,10 @@ function emitBoundMinAssignment(
             property === "boundMin" ? "bounds_min" : "bounds_max";
         const side = property === "boundMin" ? "min" : "max";
         context.emit(
-            `${engine}.meshes[${target.cpp}.value].${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
+            `${recordAt(`${engine}.meshes`, target.cpp)}.${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
         );
         context.emit(
-            `${engine}.meshes[${target.cpp}.value].has_bounds_${side}_override = true;`,
+            `${recordAt(`${engine}.meshes`, target.cpp)}.has_bounds_${side}_override = true;`,
         );
         return true;
     }

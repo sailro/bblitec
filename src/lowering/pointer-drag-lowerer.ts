@@ -15,6 +15,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import { lowerRotationPointerDrag } from "./rotation-pointer-drag-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const POINTER = "src/gizmo/pointer-drag.ts";
 const MATH = "src/gizmo/gizmo-math.ts";
@@ -331,7 +332,7 @@ ${statements
 Vec3d drag_local_delta(Engine& engine, const MeshRecord& node, const Vec3d& delta) {
     std::optional<std::array<float, 16>> parent;
     if (node.parent.value < engine.meshes.size()) {
-        parent = upstream::mesh_world_matrix(engine, engine.meshes[node.parent.value]);
+        parent = upstream::mesh_world_matrix(engine, ${recordAt("engine.meshes", "node.parent")});
     } else if (node.transform_parent.value < engine.transform_nodes.size()) {
         parent = upstream::transform_node_world(engine, node.transform_parent);
     }
@@ -344,18 +345,18 @@ ${localLowerer.statement(localReturn, "    ").join("\n")}
 
 Vec3d drag_axis(Engine& engine, const EditGizmoRecord& drag) {
     return drag.use_local_coordinates && drag.attached_node.value < engine.meshes.size()
-        ? transform_direction_by_world(upstream::mesh_world_matrix(engine, engine.meshes[drag.attached_node.value]), drag.local_axis)
+        ? transform_direction_by_world(upstream::mesh_world_matrix(engine, ${recordAt("engine.meshes", "drag.attached_node")}), drag.local_axis)
         : drag.local_axis;
 }
 Vec3d drag_anchor(const Engine& engine, const EditGizmoRecord& drag) {
-    return engine.transform_nodes[drag.root.value].position;
+    return ${recordAt("engine.transform_nodes", "drag.root")}.position;
 }
 Vec3d drag_plane(PointerDragDispatcher& state, const EditGizmoRecord& drag, const Vec3d& hit) {
     Engine& engine = *state.engine;
     const auto& scene = utility_layer_scene(engine, state.layer);
     const auto axis = drag_axis(engine, drag);
     return drag.plane_drag ? normalize_vec3(axis)
-        : drag_axis_plane(upstream::camera_position(engine.cameras[scene.camera.value]), hit, axis);
+        : drag_axis_plane(upstream::camera_position(${recordAt("engine.cameras", "scene.camera")}), hit, axis);
 }
 void drag_update_plane(PointerDragDispatcher& state, const EditGizmoRecord& drag, const Vec3d& hit) {
     const auto axis = drag_axis(*state.engine, drag);
@@ -366,7 +367,7 @@ std::optional<Vec3d> drag_pointer_hit(PointerDragDispatcher& state, const Platfo
     Engine& engine = *state.engine;
     const Scene& scene = utility_layer_scene(engine, state.layer);
     if (scene.camera.value >= engine.cameras.size()) return std::nullopt;
-    const auto& camera = engine.cameras[scene.camera.value];
+    const auto& camera = ${recordAt("engine.cameras", "scene.camera")};
     const double width = engine.options.width, height = engine.options.height;
     const auto viewport = upstream::resolve_camera_viewport(camera, width, height);
     if (viewport.width == 0 || viewport.height == 0) return std::nullopt;
@@ -390,14 +391,14 @@ PointerDragHandle drag_pick(PointerDragDispatcher& state, const PickingInfo& inf
 }
 void drag_clear_hover(PointerDragDispatcher& state) {
     if (state.hovered.value < state.engine->edit_gizmos.size()) {
-        state.engine->edit_gizmos[state.hovered.value].hovering = false;
+        ${recordAt("state.engine->edit_gizmos", "state.hovered")}.hovering = false;
         pointer_drag_hover(*state.engine, state.hovered, false);
     }
     state.hovered = {};
 }
 void drag_end(PointerDragDispatcher& state) {
     if (state.active.value < state.engine->edit_gizmos.size()) {
-        state.engine->edit_gizmos[state.active.value].dragging = false;
+        ${recordAt("state.engine->edit_gizmos", "state.active")}.dragging = false;
         pointer_drag_hover(*state.engine, state.active, false);
     }
     state.active = {};
@@ -418,8 +419,8 @@ void drag_event(PointerDragDispatcher& state, unsigned event_kind, const Platfor
         catch (...) { state.pick_pending = false; throw; }
         state.pick_pending = false;
         const auto handle = drag_pick(state, info);
-        if (handle.value >= engine.edit_gizmos.size() || !engine.edit_gizmos[handle.value].enabled) return;
-        const auto& drag = engine.edit_gizmos[handle.value];
+        if (handle.value >= engine.edit_gizmos.size() || !${recordAt("engine.edit_gizmos", "handle")}.enabled) return;
+        const auto& drag = ${recordAt("engine.edit_gizmos", "handle")};
         const Scene& scene = utility_layer_scene(engine, state.layer);
         if (scene.camera.value >= engine.cameras.size()) return;
         const Vec3d hit = info.picked_point ? Vec3d{(*info.picked_point)[0], (*info.picked_point)[1], (*info.picked_point)[2]} : Vec3d{};
@@ -429,12 +430,12 @@ void drag_event(PointerDragDispatcher& state, unsigned event_kind, const Platfor
         state.last_point = state.start_point;
         drag_clear_hover(state);
         state.active = handle;
-        engine.edit_gizmos[handle.value].dragging = true;
+        ${recordAt("engine.edit_gizmos", "handle")}.dragging = true;
         pointer_drag_hover(engine, handle, true);
         return;
     }
     if (active) {
-        auto& drag = engine.edit_gizmos[state.active.value];
+        auto& drag = ${recordAt("engine.edit_gizmos", "state.active")};
         const auto hit = drag_pointer_hit(state, event);
         if (!hit) return;
         drag_update_plane(state, drag, *hit);
@@ -452,7 +453,7 @@ ${
         const auto step = drag_step(*hit, state.last_point, state.start_point, drag_axis(engine, drag), !drag.plane_drag);
         state.last_point = *hit;
         if (drag.attached_node.value < engine.meshes.size()) {
-            auto& node = engine.meshes[drag.attached_node.value];
+            auto& node = ${recordAt("engine.meshes", "drag.attached_node")};
             const auto delta = drag_local_delta(engine, node, step.delta);
             node.position = {node.position.x + delta.x, node.position.y + delta.y, node.position.z + delta.z};
             mark_mesh_runtime_transform(engine, drag.attached_node);
@@ -460,15 +461,15 @@ ${
         return;
     }
     PointerDragHandle next{};
-    if (std::any_of(state.drags.begin(), state.drags.end(), [&](auto drag) { return engine.edit_gizmos[drag.value].enabled; })) {
+    if (std::any_of(state.drags.begin(), state.drags.end(), [&](auto drag) { return ${recordAt("engine.edit_gizmos", "drag")}.enabled; })) {
         next = drag_pick(state, gpu_pick(engine, state.picker, event.client_x, event.client_y));
-        if (next.value < engine.edit_gizmos.size() && !engine.edit_gizmos[next.value].enabled) next = {};
+        if (next.value < engine.edit_gizmos.size() && !${recordAt("engine.edit_gizmos", "next")}.enabled) next = {};
     }
     if (next.value == state.hovered.value) return;
     drag_clear_hover(state);
     state.hovered = next;
     if (next.value < engine.edit_gizmos.size()) {
-        engine.edit_gizmos[next.value].hovering = true;
+        ${recordAt("engine.edit_gizmos", "next")}.hovering = true;
         pointer_drag_hover(engine, next, true);
     }
 }
@@ -476,22 +477,22 @@ ${
 
 void pointer_drag_hover(Engine& engine, PointerDragHandle handle, bool hovered) {
     if (handle.value >= engine.edit_gizmos.size()) return;
-    const auto& drag = engine.edit_gizmos[handle.value];
+    const auto& drag = ${recordAt("engine.edit_gizmos", "handle")};
     for (const auto mesh : drag.visible_meshes) {
-        engine.meshes[mesh.value].material = hovered ? drag.hover_material : drag.colored_material;
+        ${recordAt("engine.meshes", "mesh")}.material = hovered ? drag.hover_material : drag.colored_material;
     }
 }
 void initialize_pointer_gizmo(Engine& engine, UtilityLayerHandle layer, EditGizmoHandle handle, MaterialHandle material, bool plane) {
-    auto& drag = engine.edit_gizmos[handle.value];
+    auto& drag = ${recordAt("engine.edit_gizmos", "handle")};
     drag.plane_drag = plane;
     drag.update_drag_plane = plane ? ${planeUpdates} : ${axisUpdates};
     drag.colored_material = material;
     drag.hover_material = create_standard_material(engine);
     set_material_diffuse_color(engine, drag.hover_material,
         js::Array<double>{${hoverColor.map((value) => context.doubleLiteral(value)).join(", ")}});
-    engine.materials[drag.hover_material.value].double_sided = plane;
+    ${recordAt("engine.materials", "drag.hover_material")}.double_sided = plane;
     for (const auto mesh : utility_layer_scene(engine, layer).meshes) {
-        if (engine.meshes[mesh.value].transform_parent.value == drag.root.value && engine.meshes[mesh.value].visible) drag.visible_meshes.push_back(mesh);
+        if (${recordAt("engine.meshes", "mesh")}.transform_parent.value == drag.root.value && ${recordAt("engine.meshes", "mesh")}.visible) drag.visible_meshes.push_back(mesh);
     }
     drag.dispose_pointer = register_pointer_drag(create_pointer_drag_dispatcher(engine, layer, true), PointerDragHandle{handle.value});
 }

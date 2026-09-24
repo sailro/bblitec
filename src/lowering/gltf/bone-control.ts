@@ -10,6 +10,7 @@ import {
     topLevelFunction,
     unwrapExpression,
 } from "./shared.js";
+import { recordAt } from "../../compiler/record-access.js";
 
 const SYMBOL = "bone-control";
 
@@ -224,10 +225,10 @@ BoneHandle get_bone_by_name(
     const std::string& name) {
     if (skeleton.value >= engine.skeletons.size()) return BoneHandle{};
     for (const BoneHandle bone :
-         engine.skeletons[skeleton.value].bones) {
+         ${recordAt("engine.skeletons", "skeleton")}.bones) {
         if (
             bone.value < engine.bones.size() &&
-            engine.bones[bone.value].name == name) {
+            ${recordAt("engine.bones", "bone")}.name == name) {
             return bone;
         }
     }
@@ -251,10 +252,10 @@ void set_bone_visible(
         return;
     }
     const std::uint32_t asset =
-        engine.skeletons[skeleton.value].asset;
+        ${recordAt("engine.skeletons", "skeleton")}.asset;
     if (asset >= engine.assets.size()) return;
     AssetRecord& owner = engine.assets[asset];
-    const std::uint32_t node = engine.bones[bone.value].node_index;
+    const std::uint32_t node = ${recordAt("engine.bones", "bone")}.node_index;
     if (node >= owner.bone_overrides.size()) return;
     gltf_set_bone_visibility(owner.bone_overrides, node, visible, [&] {
         if (owner.bake_skeletons) owner.bake_skeletons();

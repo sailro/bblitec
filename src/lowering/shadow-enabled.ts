@@ -5,6 +5,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** The native shadow hook is fixed; retain the pin's wrapper state beside it. */
 export function lowerShadowEnabled(context: LoweringContext): string {
@@ -239,7 +240,7 @@ export function lowerShadowEnabled(context: LoweringContext): string {
     }
     return `// ${context.provenance(module, "setShadowGeneratorEnabled,syncShadowGeneratorEnabled")}
 inline void set_shadow_generator_enabled(Engine& engine, ShadowGeneratorHandle handle, bool enabled) {
-    auto& generator = engine.shadow_generators.at(handle.value);
+    auto& generator = ${recordAt("engine.shadow_generators", "handle")};
     if (!generator.runtime_enabled) generator.runtime_enabled = ${initial};
 ${setter}
 }
