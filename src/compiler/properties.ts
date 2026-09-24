@@ -330,7 +330,6 @@ export function isHandleCollectionProperty(property: string): boolean {
     );
 }
 
-/** The rule in a table claiming this (owner kind, property) pair. */
 /**
  * `node.<name>` for every automatable parameter the PAL serves. A node
  * and a source both carry them, so each name yields two rows -- the
@@ -358,6 +357,7 @@ const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
     }),
 );
 
+/** The rule in a table claiming this (owner kind, property) pair. */
 function ruleFor<Rule extends { owner: ValueKind; property: string }>(
     table: readonly Rule[],
     owner: Value,

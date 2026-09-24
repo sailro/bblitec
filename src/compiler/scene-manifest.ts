@@ -145,7 +145,7 @@ export class SceneManifestRecorder {
      * the unique id a source file carries, and `src/render/lights-ubo.ts`
      * `affectsMesh` is its only reader. So the string is a join key rather
      * than record state, and the join folds here exactly as the `.babylon`
-     * loader folds its own `mesh_records_by_id` — an id names a LIST,
+     * loader folds its own `meshes_by_id` — an id names a LIST,
      * because nothing upstream enforces uniqueness.
      */
     private readonly sceneMeshesById = new EmissionMap<string, string[]>();
