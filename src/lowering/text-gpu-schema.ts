@@ -406,14 +406,6 @@ export const textGpuRecords: readonly RecordSpec[] = [
         reference: true,
         omit: new Map([
             ["_kind", "the renderer's type is its kind"],
-            [
-                "_update",
-                "the native frame calls the lowered textRendererUpdate for each registered renderer",
-            ],
-            [
-                "_record",
-                "the native frame calls the lowered textRendererRecord for each registered renderer",
-            ],
             ["_resize", "a text renderer has no size-dependent resources"],
             ["_drawCallsPre", "the backend counts a frame's draw calls"],
         ]),

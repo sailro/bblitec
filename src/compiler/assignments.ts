@@ -1398,7 +1398,7 @@ export function emitPropertyAssignment(
                     );
                 writable((writable(owner).recordProperties ??= {}))[
                     left.name.text
-                ] = assigned;
+                ] = context.bindings.settleBuiltValue(assigned);
                 return;
             }
         }

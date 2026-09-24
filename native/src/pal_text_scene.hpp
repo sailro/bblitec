@@ -43,63 +43,24 @@ inline void validate_text_scene(const Scene& scene) {
 }
 
 /**
- * One text renderable's `DrawBinding` in the scene's transparent list: what
- * `bindTextRenderable` resolves once and its `update`/`draw` reuse.
+ * The admitted default scene has only text in its transparent binding list:
+ * each renderable's `DrawBinding`, from the pin's own `bind`, whose
+ * `update` and `draw` the render pass task calls.
  */
-struct TextSceneBinding {
-    TextRenderable renderable;
-    std::shared_ptr<TextRenderableGpu> gpu;
-    TextGpuHandle pipeline;
-    TextPipelineDeviceCacheHandle cache;
-    std::string color_format;
-    double sample_count = 1;
-    std::optional<std::string> depth_format;
-    bool depth_write = true;
-    std::string depth_compare;
-};
-
-/** The admitted default scene has only text in its transparent binding list. */
 struct TextScenePass {
-    std::vector<TextSceneBinding> bindings;
+    std::vector<TextDrawBindingHandle> bindings;
 
     void bind(const Scene& scene, const TextSurfaceHandle& surface,
               const TextTargetSignature& target) {
         validate_text_scene(scene);
-        for (const auto& renderable : scene.state->text_renderables) {
-            if (!target.color_format)
-                throw std::runtime_error("TextRenderable: render target has no color format.");
-            TextSceneBinding binding;
-            binding.renderable = renderable;
-            binding.color_format = *target.color_format;
-            binding.sample_count = target.sample_count == 1 ? 1 : 4;
-            binding.depth_format = target.depth_format;
-            binding.depth_compare = target.depth_compare.value_or("greater-equal");
-            binding.depth_write = !renderable->ignore_depth;
-            binding.gpu = text_renderable_detail::ensure_gpu(
-                renderable, surface, target, binding.color_format, binding.sample_count,
-                binding.depth_format, binding.depth_write, binding.depth_compare);
-            binding.pipeline = binding.gpu->pipeline;
-            binding.cache = surface->device->text_pipeline_cache();
-            bindings.push_back(std::move(binding));
-        }
+        for (const auto& renderable : scene.state->text_renderables)
+            bindings.push_back(renderable->bind(surface, target));
     }
 
-    void update(const TextSurfaceHandle& surface, TextCameraInputPointer camera, double width,
-                double height) {
-        for (auto& binding : bindings) {
-            // A styling feature enabled after the binding was built refreshes
-            // the variant pipeline once, as the pin's binding update does.
-            if (binding.gpu->variant_pipeline == binding.gpu->pipeline && text_weight_installed)
-                binding.gpu->variant_pipeline =
-                    surface->device
-                        ->text_pipeline(binding.color_format, binding.sample_count,
-                                        binding.depth_format, binding.depth_write,
-                                        binding.renderable, binding.depth_compare)
-                        .variant_pipeline;
-            text_renderable_detail::update_text_renderable(
-                binding.renderable, surface, binding.gpu, binding.cache->bind_group_layout,
-                TextDrawUpdateContext{camera, width, height});
-        }
+    void update(TextCameraInputPointer camera, double width, double height) const {
+        for (const auto& binding : bindings)
+            if (binding->update)
+                binding->update(TextDrawUpdateContext{camera, width, height});
     }
 
     /**
@@ -107,25 +68,23 @@ struct TextScenePass {
      * (`context._camera ?? null`) as its product, change key and aspect, and
      * a camera-less pass hands them none.
      */
-    void update_for_pass(const TextSurfaceHandle& surface, const CameraRecord* camera,
-                         const std::array<float, 16>& view_projection, double aspect, double width,
-                         double height) {
+    void update_for_pass(const CameraRecord* camera, const std::array<float, 16>& view_projection,
+                         double aspect, double width, double height) const {
         const std::optional<TextCameraInput> input =
             camera ? std::optional<TextCameraInput>{TextCameraInput{
                          js::TypedArray<float>(view_projection.begin(), view_projection.end()),
                          upstream::scene_camera_change_key(*camera), aspect}}
                    : std::nullopt;
-        update(surface, input ? &*input : nullptr, width, height);
+        update(input ? &*input : nullptr, width, height);
     }
 
-    double draw(const TextGpuEncoderHandle& pass) const {
+    double draw(const TextGpuEncoderHandle& pass, const TextSurfaceHandle& surface) const {
         double count = 0;
         for (const auto& binding : bindings) {
             // The render pass task binds the binding's declared pipeline before
             // the pin's text draw switches per atlas group.
-            pass->set_pipeline(binding.pipeline);
-            count += text_renderable_detail::draw_text_renderable(
-                binding.gpu, binding.renderable->data, binding.cache->quad_vertex_buffer, pass);
+            pass->set_pipeline(binding->pipeline);
+            count += binding->draw(pass, surface);
         }
         return count;
     }

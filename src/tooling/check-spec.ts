@@ -1004,31 +1004,50 @@ function memoryTapePath(sceneId: string): string {
     return `${CHECKS_DIRECTORY}/memory/${sceneId}.json`;
 }
 
+/** A demo's default memory tape (`readMemoryTape`). */
+export interface MemoryTape {
+    path: string;
+    /**
+     * The run length the demo needs: its warm-up third has to cover the
+     * frames over which the program's own content still grows (a streamed
+     * world reaching its peak loaded set), or the judged window measures
+     * that growth rather than the settled program. Absent, the default run.
+     */
+    frames?: number;
+    lead: string[];
+    cycle: string[];
+}
+
 /**
  * The default gameplay tape `scene -- memory` plays for a demo, when
- * `checks/memory/<id>.json` declares one: `{ notes, lead?, cycle }` in the
- * phase tape grammar, the cycle repeated after the lead until the tape
- * covers `frames` frames (one entry per frame). An idle demo retires
- * nothing, so a leak of retired records only shows under play.
+ * `checks/memory/<id>.json` declares one: `{ notes, frames?, lead?, cycle }`
+ * in the phase tape grammar. An idle demo retires nothing, so a leak of
+ * retired records only shows under play.
  */
-export function readMemoryTape(
-    sceneId: string,
-    frames: number,
-): { path: string; tape: string[] } | undefined {
+export function readMemoryTape(sceneId: string): MemoryTape | undefined {
     const path = memoryTapePath(sceneId);
     if (!existsSync(resolve(path))) return undefined;
     const value: unknown = JSON.parse(readFileSync(resolve(path), "utf8"));
     if (!isRecord(value)) fail(path, "must be an object");
-    refuseUnknown(value, ["notes", "lead", "cycle"], path);
+    refuseUnknown(value, ["notes", "frames", "lead", "cycle"], path);
     requiredString(value, "notes", path);
+    const frames = optionalNumber(value, "frames", path);
+    if (frames !== undefined && (!Number.isInteger(frames) || frames <= 0)) {
+        fail(path, "'frames' must be a positive integer");
+    }
     const lead = expandTape(optionalStringArray(value, "lead", path) ?? []);
     const cycle = expandTape(optionalStringArray(value, "cycle", path) ?? []);
     if (cycle.length === 0) {
         fail(path, "'cycle' must name at least one tape entry");
     }
-    const tape = [...lead];
-    while (tape.length < frames) tape.push(...cycle);
-    return { path, tape: tape.slice(0, frames) };
+    return { path, ...(frames !== undefined ? { frames } : {}), lead, cycle };
+}
+
+/** A tape's entries for a run of `frames` frames: the lead, then the cycle repeated. */
+export function memoryTapeEntries(tape: MemoryTape, frames: number): string[] {
+    const entries = [...tape.lead];
+    while (entries.length < frames) entries.push(...tape.cycle);
+    return entries.slice(0, frames);
 }
 
 /** Read `checks/<id>.json`, or throw naming what is missing. */

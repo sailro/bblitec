@@ -187,10 +187,10 @@ int main() {
             DawnState state;
             state.default_sampler = make<WGPUSampler>();
             const auto layout =
-                state.layouts.group(state.device, {DawnLayoutFamily::mesh, 0, 2},
+                state.layouts.group(state.device, {DawnLayoutFamily::diagnostic, 0, 2},
                                     [] { return std::vector<WGPUBindGroupLayoutEntry>{}; });
             const auto pipeline_layout = state.layouts.pipeline(
-                state.device, {DawnLayoutFamily::mesh}, [&] { return std::vector{layout}; });
+                state.device, {DawnLayoutFamily::diagnostic}, [&] { return std::vector{layout}; });
             state.pipelines[0].pipeline = make<WGPURenderPipeline>({pipeline_layout});
             const auto texture = make<WGPUTexture>();
             const auto view = make<WGPUTextureView>({texture});
@@ -202,7 +202,7 @@ int main() {
                 mesh.samplers[1] = state.default_sampler;
                 mesh.vertices = make<WGPUBuffer>();
                 mesh.indices = make<WGPUBuffer>();
-                auto& binding = mesh.bindings[bbl::upstream::RenderPipelineKind::pbr];
+                auto& binding = mesh.diagnostic_bindings;
                 binding.textures =
                     make<WGPUBindGroup>({view, mesh.samplers[0], state.default_sampler, layout});
                 for (auto* draws :
@@ -247,7 +247,7 @@ int main() {
             mesh.owns_geometry_buffers = false;
             mesh.shared_geometry = geometry.get();
             mesh.shared_composed_textures = textures.get();
-            mesh.bindings[bbl::upstream::RenderPipelineKind::standard].textures =
+            mesh.diagnostic_bindings.textures =
                 make<WGPUBindGroup>({textures->views[0].get(), textures->samplers[0].get()});
             state.meshes.push_back(std::move(mesh));
         }
@@ -278,8 +278,7 @@ int main() {
             DawnState state;
             state.shader_storage_buffers.push_back({buffer, 16, 0, owner});
             DawnMesh mesh(state);
-            mesh.bindings[bbl::upstream::RenderPipelineKind::standard].textures =
-                make<WGPUBindGroup>({buffer});
+            mesh.diagnostic_bindings.textures = make<WGPUBindGroup>({buffer});
             state.meshes.push_back(std::move(mesh));
         }
         assert(buffer->alive);

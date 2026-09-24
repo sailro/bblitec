@@ -77,6 +77,11 @@ struct PointerDragDispatcher;
 struct EditGizmoRecord {
     TransformNodeHandle root{};
     MeshHandle attached_node{};
+    /**
+     * The widget follows its attached node every frame, a removed one
+     * included, as the pin's does; so it names it (`name_mesh`).
+     */
+    MeshName attached_name;
     double scale_ratio = 1.0;
     bool use_local_coordinates = false;
     Vec3d local_axis{0.0, 0.0, 1.0};

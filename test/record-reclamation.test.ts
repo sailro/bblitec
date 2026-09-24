@@ -187,3 +187,63 @@ int main() {
         );
     },
 );
+
+test(
+    "a removed mesh a reading table names keeps its record and bounds until the last name ends",
+    { skip: !tools },
+    () => {
+        runCheck(
+            "mesh-name-reclamation",
+            `#include <bblite/runtime.hpp>
+#include <cassert>
+#include <cstdio>
+int main() {
+    bbl::Engine engine;
+    const auto stored = [&](float extent) {
+        bbl::ModelGeometry geometry;
+        geometry.vertices.resize(1);
+        geometry.bounds_min = {-extent, -extent, -extent};
+        geometry.bounds_max = {extent, extent, extent};
+        bbl::MeshRecord record;
+        record.geometry = bbl::store_geometry_record(engine, std::move(geometry));
+        return bbl::store_mesh_record(engine, std::move(record));
+    };
+    const auto caster = stored(2.0f), plain = stored(1.0f);
+    bbl::MeshName name = bbl::name_mesh(engine, caster);
+    // Every table shares one lease per record.
+    assert(bbl::name_mesh(engine, caster) == name);
+    bbl::retire_mesh_record(engine, caster);
+    bbl::retire_mesh_record(engine, plain);
+    // The unnamed mesh gives its slot up; the named one keeps its record,
+    // and the bounds its released geometry gave it.
+    assert(engine.free_mesh_slots.size() == 1 && engine.free_mesh_slots[0] == plain.value);
+    const auto& kept = bbl::handle_at(engine.meshes, caster);
+    assert(kept.retired && kept.geometry == bbl::invalid_handle);
+    assert(kept.has_bounds_min_override && kept.bounds_min_override.x == -2.0f);
+    assert(kept.has_bounds_max_override && kept.bounds_max_override.x == 2.0f);
+    // Naming a retired mesh again takes its offered slot back.
+    bbl::MeshName late = bbl::name_mesh(engine, plain);
+    assert(engine.free_mesh_slots.empty());
+    const auto next = stored(3.0f);
+    assert(next.value == 2 && next.generation == 0);
+    // Once the last names end, the next meshes take both slots under the
+    // next generation.
+    name.reset();
+    late.reset();
+    const auto first = stored(4.0f), second = stored(5.0f);
+    assert(engine.meshes.size() == 3 && first.generation == 1 && second.generation == 1);
+    // A kept handle whose slot a later mesh took cannot be named.
+    bool refused = false;
+    try { static_cast<void>(bbl::name_mesh(engine, caster)); }
+    catch (const std::out_of_range&) { refused = true; }
+    assert(refused);
+    // A clone copies its source's record, not the names on it.
+    const bbl::MeshName source_name = bbl::name_mesh(engine, first);
+    const auto clone = bbl::store_mesh_record(engine, bbl::handle_at(engine.meshes, first));
+    assert(bbl::handle_at(engine.meshes, clone).names.expired() && source_name);
+    std::puts("mesh-name-reclamation: ok");
+}
+`,
+        );
+    },
+);

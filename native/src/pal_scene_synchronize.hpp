@@ -170,13 +170,13 @@ void sync_plan_mesh_rows(const Scene& scene, Engine& engine, const upstream::Ren
  * the bindings' own updates through the pass camera and extent.
  */
 template <class TextState>
-void update_scene_text(TextState& text, Engine& engine, const Scene& scene, long frame,
+void update_scene_text(TextState& text, const Scene& scene, long frame,
                        const PixelViewport& surface_extent, const PassCamera& pass) {
     validate_text_scene(scene);
     text.device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-    text.scene.update_for_pass(
-        bbl::text_surface(engine), pass.camera, pass.matrices.view_projection, pass.matrices.aspect,
-        static_cast<double>(surface_extent.width), static_cast<double>(surface_extent.height));
+    text.scene.update_for_pass(pass.camera, pass.matrices.view_projection, pass.matrices.aspect,
+                               static_cast<double>(surface_extent.width),
+                               static_cast<double>(surface_extent.height));
 }
 #endif
 

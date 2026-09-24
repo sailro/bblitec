@@ -468,8 +468,9 @@ test("the scene-invariant PAL units compile in their own object library", () => 
     assert.ok(pattern, "no PAL-common pattern");
     const selector = new RegExp(pattern.replaceAll("\\\\", "\\"));
     // These units read the generated tree only through activation macros;
-    // the backend families, the window realm and the build stamp include
-    // lowered module headers (configure refuses a PAL-common unit that does).
+    // the backend families, the window realm, the build stamp and the
+    // navigation PAL include lowered module headers (configure refuses a
+    // PAL-common unit that does).
     for (const unit of [
         "pal",
         "pal_sdl",
@@ -477,7 +478,6 @@ test("the scene-invariant PAL units compile in their own object library", () => 
         "pal_audio_labsound",
         "pal_physics_bullet",
         "pal_physics_debug",
-        "pal_navigation_recast",
         "pal_file",
         "pal_storage",
         "pal_text_layout",
@@ -495,6 +495,7 @@ test("the scene-invariant PAL units compile in their own object library", () => 
         "pal_window_realm",
         "pal_window_presenter_sdl",
         "pal_build_stamp",
+        "pal_navigation_recast",
     ]) {
         assert.doesNotMatch(
             `/src/${unit}.cpp`,
@@ -532,6 +533,17 @@ test("the scene-invariant PAL units compile in their own object library", () => 
     assert.match(
         cmake,
         /target_precompile_headers\(bblite_native REUSE_FROM bblite_pal_common\)/,
+    );
+    // Under the object cache the lowered modules compile from
+    // content-addressed copies and clang-cl builds one precompiled header the
+    // trees of a checkout share (executed in native-cache.test.ts).
+    assert.match(
+        cmake,
+        /bblite_content_addressed_sources\(BBLITE_GENERATED_UNITS \$\{BBLITE_GENERATED_SOURCES\}\)/,
+    );
+    assert.match(
+        cmake,
+        /bblite_shared_pch\(\s*TARGETS bblite_pal_common bblite_native\s+HEADERS \$\{BBLITE_PCH_HEADERS\}/,
     );
     assert.match(
         cmake,

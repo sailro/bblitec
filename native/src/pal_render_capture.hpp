@@ -829,7 +829,6 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
         json.field("vertexCount", geometry.vertices.size());
         json.field("indexCount", geometry.indices.size());
         json.field("hasTangents", geometry.has_tangents);
-        json.field("flatNormals", geometry.flat_normals);
         json.field("topology", topology_name(geometry.topology));
         json.field("morphTargets", geometry.morph_positions.size());
         json.field("boundsMin", geometry.bounds_min);
@@ -1288,8 +1287,7 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
         json.handle("material", invalid_handle);
         json.handle("geometry", invalid_handle);
         json.field("billboardSystem", handle.value);
-        json.field("vertexStem", plan.vertex_stem);
-        json.field("fragmentStem", plan.fragment_stem);
+        json.field("programStem", plan.program_stem);
         json.field("orientation", plan.axis_locked ? "axisLocked" : "facing");
         json.field("depthMode", billboard_depth_mode_name(system.depth_mode));
         json.field("depthWrites", plan.cutout_writes_depth);
@@ -1317,14 +1315,11 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
         json.key("uniforms");
         json.begin_array();
         {
-            // The reconstructed vertex stage's own block: view-projection
-            // then view, pushed as one block by both backends
-            // (`BillboardSceneUniforms`).
-            std::array<float, 32> scene_block{};
-            std::copy(view_projection.begin(), view_projection.end(), scene_block.begin());
-            std::copy(view.begin(), view.end(), scene_block.begin() + 16);
-            write_float_block(json, "vertex", 0, "BillboardSceneUniforms", scene_block.data(),
-                              scene_block.size());
+            // The pin's per-pass scene block the module binds at its group
+            // 0, from the builder both backends fill it with.
+            write_uniform_block(
+                json, "vertex", 0, "SceneUniforms",
+                billboard_scene_block(scene, engine, &camera, view_projection, view));
             // The per-system block, from the same builder both backends
             // push — to the fragment stage always, and to the axis-locked
             // vertex stage too, which reads its lock axis from it.
@@ -1743,7 +1738,6 @@ inline void write_node_gpu_capture(JsonWriter& json, const NodeGpuCapture& captu
         json.field("geometryVariant", pipeline.geometry_variant);
         json.field("colorTargetCount", pipeline.color_target_count);
         json.field("samples", pipeline.samples);
-        json.field("usesLocalAttributes", pipeline.uses_local_attributes);
         json.field("topology", pipeline.topology);
         json.field("cullMode", pipeline.cull_mode);
         json.field("frontFace", pipeline.front_face);

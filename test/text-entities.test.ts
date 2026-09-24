@@ -188,6 +188,10 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
         new TextGpuLowerer(new LoweringContext()).header(),
     );
     writeFileSync(
+        resolve(include, "upstream_text_renderable.hpp"),
+        lowerer.renderableHeader(),
+    );
+    writeFileSync(
         resolve(include, "upstream_text_renderer.hpp"),
         new TextRendererLowerer(new LoweringContext()).header(),
     );
@@ -239,6 +243,7 @@ int main(){if(bbl::upstream::text_pipeline_rows.size()!=5)return 2;return genera
         "/fp:strict",
         "/MD",
         "/O2",
+        "/DBBLITE_HAS_TEXT=1",
         `/I${resolve("native/include")}`,
         `/I${directory}`,
         resolve(directory, "check.cpp"),

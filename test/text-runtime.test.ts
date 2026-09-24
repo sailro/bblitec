@@ -87,6 +87,10 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
     for (const [name, header] of [
         ["upstream_text", new TextLowerer(context).header()],
         ["upstream_text_gpu", new TextGpuLowerer(context).header()],
+        [
+            "upstream_text_renderable",
+            new TextLowerer(context).renderableHeader(),
+        ],
     ] as const) {
         writeFileSync(resolve(directory, "bblite", `${name}.hpp`), header);
         writeFileSync(
@@ -216,6 +220,26 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
             renderable._version,
             ...renderable._worldMatrix(),
         );
+    // The compiler spells a transform write through the record model; so
+    // does this check.
+    const model = textRecordModel(context);
+    const records = {
+        position: "ObservableVec3",
+        scaling: "ObservableVec3",
+        rotationQuaternion: "ObservableQuat",
+        rotation: "EulerProxy",
+    } as const;
+    type Transform = keyof typeof records;
+    const lane = (transform: Transform, axis: string) =>
+        model.memberRead(
+            model.memberRead("r", "TextRenderable", transform),
+            records[transform],
+            axis,
+        );
+    const write = (transform: Transform, axis: string, value: string) =>
+        `${model.memberWrite(model.memberRead("r", "TextRenderable", transform), records[transform], axis, value)};`;
+    const bulk = (transform: Transform, ...args: string[]) =>
+        `${model.memberCall(model.memberRead("r", "TextRenderable", transform), records[transform], "set", args)};`;
     const actions: string[] = [];
     const act = (cpp: string, apply: () => void) => {
         actions.push(cpp, "record();");
@@ -223,31 +247,28 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
         record();
     };
     act("", () => {});
-    act("text_write_position(*r, 0, 0);", () => (renderable.position.x = 0));
-    act("text_set_position(*r, 0, 0, 0);", () =>
+    act(write("position", "x", "0"), () => (renderable.position.x = 0));
+    act(bulk("position", "0", "0", "0"), () =>
         renderable.position.set(0, 0, 0),
     );
     act(
-        "text_write_position(*r, 1, 2.123456789123);",
+        write("position", "y", "2.123456789123"),
         () => (renderable.position.y = 2.123456789123),
     );
-    act("text_set_scaling(*r, -.5, 1.2, 3.1);", () =>
+    act(bulk("scaling", "-.5", "1.2", "3.1"), () =>
         renderable.scaling.set(-0.5, 1.2, 3.1),
     );
-    act("text_set_rotation(*r, .1, 1.5707963267948966, -.3);", () =>
+    act(bulk("rotation", ".1", "1.5707963267948966", "-.3"), () =>
         renderable.rotation.set(0.1, Math.PI / 2, -0.3),
     );
-    act("text_write_rotation(*r, 0, .4);", () => (renderable.rotation.x = 0.4));
-    act("text_write_rotation(*r, 1, .6);", () => (renderable.rotation.y = 0.6));
+    act(write("rotation", "x", ".4"), () => (renderable.rotation.x = 0.4));
+    act(write("rotation", "y", ".6"), () => (renderable.rotation.y = 0.6));
     act(
-        "text_write_rotation_quaternion(*r, 2, .125);",
+        write("rotationQuaternion", "z", ".125"),
         () => (renderable.rotationQuaternion.z = 0.125),
     );
-    act(
-        "text_write_rotation(*r, 2, -.8);",
-        () => (renderable.rotation.z = -0.8),
-    );
-    act("text_set_rotation_quaternion(*r, .25, -.5, .75, 1);", () =>
+    act(write("rotation", "z", "-.8"), () => (renderable.rotation.z = -0.8));
+    act(bulk("rotationQuaternion", ".25", "-.5", ".75", "1"), () =>
         renderable.rotationQuaternion.set(0.25, -0.5, 0.75, 1),
     );
     act(
@@ -279,7 +300,7 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
     camera.aspect = 0.75;
     uniform("camera.effective_aspect = .75; update(&camera, 800, 640);");
     uniform("update(nullptr, 400, 0);", false, 400, 0);
-    act("text_write_position(*r, 2, -3);", () => (renderable.position.z = -3));
+    act(write("position", "z", "-3"), () => (renderable.position.z = -3));
     uniform("update(nullptr, 400, 0);", false, 400, 0);
     uniform("update(&camera, 400, 0);", true, 400, 0);
     let destroyed = "";
@@ -302,7 +323,7 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
         resolve(directory, "expected-writes.bin"),
         Buffer.concat(writes),
     );
-    const cpp = `#include "upstream_text_gpu.hpp"
+    const cpp = `#include "upstream_text_renderable.hpp"
 #include <fstream>
 #include <stdexcept>
 using namespace bbl;
@@ -341,11 +362,11 @@ int main() {
     if (alias != r || other == r || other->data != r->data) return 1;
     std::ofstream state("state.bin", std::ios::binary), writes("writes.bin", std::ios::binary);
     auto record = [&]() {
-        const double ex = text_read_rotation(*r,0), ey = text_read_rotation(*r,1), ez = text_read_rotation(*r,2);
-        const auto world = text_world_matrix(*r);
-        const double values[] = {r->position.x,r->position.y,r->position.z,
-            r->rotation_quaternion.x,r->rotation_quaternion.y,r->rotation_quaternion.z,r->rotation_quaternion.w,
-            r->quaternion_version,ex,ey,ez,r->scaling.x,r->scaling.y,r->scaling.z,r->opacity,r->order,
+        const double ex = ${lane("rotation", "x")}, ey = ${lane("rotation", "y")}, ez = ${lane("rotation", "z")};
+        const auto world = ${model.memberCall("r", "TextRenderable", "_worldMatrix", [])};
+        const double values[] = {${lane("position", "x")},${lane("position", "y")},${lane("position", "z")},
+            ${lane("rotationQuaternion", "x")},${lane("rotationQuaternion", "y")},${lane("rotationQuaternion", "z")},${lane("rotationQuaternion", "w")},
+            ${lane("rotationQuaternion", "version")},ex,ey,ez,${lane("scaling", "x")},${lane("scaling", "y")},${lane("scaling", "z")},r->opacity,r->order,
             double(r->ignore_depth),double(r->is_transparent),double(r->wm_dirty),r->version};
         state.write(reinterpret_cast<const char*>(values),sizeof(values));
         for (std::size_t index = 0; index < world.size(); ++index) { const double wide=world.load(index); state.write(reinterpret_cast<const char*>(&wide),sizeof(wide)); }
@@ -398,6 +419,7 @@ int main() {
         "/W4",
         "/WX",
         "/fp:strict",
+        "/DBBLITE_HAS_TEXT=1",
         `/I${resolve("native/include")}`,
         `/I${directory}`,
         source,
@@ -586,10 +608,14 @@ test("deferred scene registration observes snapshot order, identity guards, fail
     const source = new SceneLowerer(context).lowerCore({ text: true }).source;
     const ordinary = new SceneLowerer(context).lowerCore().source;
     assert.doesNotMatch(ordinary, /text_renderables|bblite\/text\.hpp/);
-    writeFileSync(
-        resolve(directory, "upstream_text.hpp"),
-        new TextLowerer(context).header(),
-    );
+    for (const [name, header] of [
+        ["upstream_text_gpu", new TextGpuLowerer(context).header()],
+        [
+            "upstream_text_renderable",
+            new TextLowerer(context).renderableHeader(),
+        ],
+    ] as const)
+        writeFileSync(resolve(directory, "bblite", `${name}.hpp`), header);
     const bodies = [
         "void require_scene_engine(",
         "std::uint32_t material_family_bit(",
@@ -601,7 +627,7 @@ test("deferred scene registration observes snapshot order, identity guards, fail
     ]
         .map((name) => cppFunction(source, name))
         .join("\n");
-    const cpp = `#include "upstream_text.hpp"
+    const cpp = `#include <bblite/upstream_text_renderable.hpp>
 namespace bbl {
 ${lowerMeshMaterialSetter(context)}
 ${bodies}
@@ -828,14 +854,18 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
         resolve(directory, "bblite/upstream_text_records.hpp"),
         textRecordsHeader(context),
     );
-    writeFileSync(resolve(directory, "upstream_text.hpp"), lowerer.header());
+    for (const [name, header] of [
+        ["upstream_text_gpu", new TextGpuLowerer(context).header()],
+        ["upstream_text_renderable", lowerer.renderableHeader()],
+    ] as const)
+        writeFileSync(resolve(directory, "bblite", `${name}.hpp`), header);
     // The pin's own DefaultTextData, rebuilt from its transported records.
     const expression = records.transportCpp(
         baked,
         { kind: "record", name: "DefaultTextData" },
         (index) => `js::ArrayBuffer(read("${index}.bin"))`,
     );
-    const cpp = `#include "upstream_text.hpp"
+    const cpp = `#include <bblite/upstream_text_renderable.hpp>
 #include <fstream>
 #include <iterator>
 std::vector<std::uint8_t> read(const std::string& path){std::ifstream input(path,std::ios::binary);return {std::istreambuf_iterator<char>(input),{}};}
@@ -873,7 +903,7 @@ int main(){
     if(second->groups.empty() || second->instance_count==0) return 8;
     TextRenderableOptions options;options.position=Vec3d{-0.0,0,0};options.scaling=Vec3d{1,1,1};options.rotation_quaternion=TextQuaternion{0,0,0,1};options.opacity=0;options.ignore_depth=true;options.order=0;
     auto r=create_text_renderable(second,options);
-    if(!std::signbit(r->position.x) || std::signbit(text_world_matrix(*r)[12]) || r->opacity || r->order || !r->ignore_depth)return 9;
+    if(!std::signbit(observable_vec3_get_x(r->position)) || std::signbit(r->world_matrix().load(12)) || r->opacity || r->order || !r->ignore_depth)return 9;
     return 0;
 }`;
     const source = resolve(directory, "check.cpp"),
@@ -885,6 +915,7 @@ int main(){
         "/EHsc",
         "/W4",
         "/WX",
+        "/DBBLITE_HAS_TEXT=1",
         `/I${resolve("native/include")}`,
         `/I${directory}`,
         source,

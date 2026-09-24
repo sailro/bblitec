@@ -222,7 +222,7 @@ test("native lint selects owned translation units from the actual compilation da
             build,
             root,
             ["native/src/pal.cpp"],
-            resolve(root, "generated", "scene1"),
+            [resolve(root, "generated", "scene1")],
         ),
         [
             resolve(root, "generated", "scene1", "main.cpp"),
@@ -293,6 +293,12 @@ test("native lint finds each precompiled header a build creates and its stale in
                     "x.cxx",
                 ],
             },
+            {
+                directory: build,
+                file: "C:/cache/pch/bblite_pch-0123456789abcdef.cxx",
+                command:
+                    "clang-cl.exe /nologo -Xclang -emit-pch /FoCMakeFiles/bblite_pch.dir/bblite_pch.cxx.obj -c -- C:/cache/pch/bblite_pch-0123456789abcdef.cxx",
+            },
         ],
         build,
     );
@@ -304,6 +310,13 @@ test("native lint finds each precompiled header a build creates and its stale in
         {
             target: "CMakeFiles/app.dir/cmake_pch.hxx.pch",
             header: resolve(build, "CMakeFiles/app.dir/cmake_pch.hxx.pch"),
+        },
+        {
+            target: "CMakeFiles/bblite_pch.dir/bblite_pch.cxx.obj",
+            header: resolve(
+                build,
+                "CMakeFiles/bblite_pch.dir/bblite_pch.cxx.obj",
+            ),
         },
     ]);
     const inputs = [

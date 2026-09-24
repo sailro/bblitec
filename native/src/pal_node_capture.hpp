@@ -14,7 +14,6 @@ struct NodeGpuPipelineCapture {
     std::uint32_t variant = 0, color_target_count = 0, samples = 0;
     // -1 identifies the ordinary color view.
     int geometry_variant = -1;
-    bool uses_local_attributes = false;
     std::string topology, cull_mode, front_face;
     std::vector<NodeGpuAttributeCapture> attributes;
 };

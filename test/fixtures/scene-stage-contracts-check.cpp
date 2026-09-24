@@ -218,7 +218,12 @@ struct SdlGraph : Graph {
     static void draw_task_background(int, int, const int*, BackgroundKind kind) {
         record_background(kind);
     }
-    static void draw_task_billboards(int, BillboardDepthMode mode, int, int) {
+    // The pass's scene block a billboard program binds, built from the
+    // pass's scene, camera and matrices; the stages only order the draw.
+    int draw_context = 0, draw_camera = 0, engine = 0;
+    static int billboard_scene_block(int, int, const int*, int, int) { return 0; }
+    static int billboard_scene_block(int, int, int, int, int) { return 0; }
+    static void draw_task_billboards(int, BillboardDepthMode mode, int) {
         Graph::draw_task_billboards(mode);
     }
     template <class... Args> void draw_scene(Args... args) {

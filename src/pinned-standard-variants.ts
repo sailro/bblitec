@@ -99,35 +99,35 @@ const SKELETON_FRAGMENT_MODULE = "src/shader/fragments/skeleton-fragment.ts";
 
 /** The material fields the pin's Standard feature derivation reads. */
 export interface PinnedStandardMaterialInput {
-    diffuseTexture?: unknown;
-    diffuseCoordIndex?: number;
-    emissiveTexture?: unknown;
-    bumpTexture?: unknown;
-    specularTexture?: unknown;
-    specularCoordIndex?: number;
-    ambientTexture?: unknown;
-    ambientCoordIndex?: number;
-    lightmapTexture?: unknown;
-    lightmapCoordIndex?: number;
-    useLightmapAsShadowmap?: boolean;
-    opacityTexture?: unknown;
-    opacityFromRGB?: boolean;
-    reflectionTexture?: unknown;
-    reflectionCubeTexture?: unknown;
+    readonly diffuseTexture?: unknown;
+    readonly diffuseCoordIndex?: number;
+    readonly emissiveTexture?: unknown;
+    readonly bumpTexture?: unknown;
+    readonly specularTexture?: unknown;
+    readonly specularCoordIndex?: number;
+    readonly ambientTexture?: unknown;
+    readonly ambientCoordIndex?: number;
+    readonly lightmapTexture?: unknown;
+    readonly lightmapCoordIndex?: number;
+    readonly useLightmapAsShadowmap?: boolean;
+    readonly opacityTexture?: unknown;
+    readonly opacityFromRGB?: boolean;
+    readonly reflectionTexture?: unknown;
+    readonly reflectionCubeTexture?: unknown;
     /** The pin's default is `true` (`createStandardMaterial`); an absent
      *  value is normalized to it so `DOUBLE_SIDED` needs an explicit opt-in
      *  the way it does upstream. */
-    backFaceCulling?: boolean;
-    disableLighting?: boolean;
+    readonly backFaceCulling?: boolean;
+    readonly disableLighting?: boolean;
     /** Defaults to the pin's 1; below 1 adds `MATERIAL_ALPHA_BLEND`. */
-    alpha?: number;
+    readonly alpha?: number;
     /** `enableMaterialUvTransform(material)` marked this material, which is
      *  what `stdUvTransformExt._meshFeatures` reads. */
-    _hasUvTx?: boolean;
+    readonly _hasUvTx?: boolean;
     /** `material.plugins = [...]`: the compiler's own 1-based index for the
      *  list, which is the one the pin's Standard bridge baked and the one the
      *  material record carries. The bits come from that bake. */
-    pluginIndex?: number;
+    readonly pluginIndex?: number;
     [key: string]: unknown;
 }
 
@@ -436,6 +436,7 @@ export async function composePinnedStandardVariant(
                 ESM_SHADOW_OUTPUT: number;
                 NO_COLOR_OUTPUT: number;
                 GEOMETRY_OUTPUT: number;
+                HAS_SKELETON: number;
             }>("material/standard/standard-flags.js"),
             importPinnedModule<{
                 MSH_HAS_SKELETON: number;
@@ -669,6 +670,21 @@ export async function composePinnedStandardVariant(
             (features & ~flags.MATERIAL_ALPHA_BLEND) |
             flags.GEOMETRY_OUTPUT |
             passFeatures;
+        // The composer's skeletal velocity arm (`hasSkeletonVelocity`)
+        // samples the previous frame's bone texture, which the pin's
+        // renderable keeps beside its previous world; neither backend keeps
+        // one.
+        if (
+            options.geometry.attachments.includes("LINEAR_VELOCITY") &&
+            (viewFeatures & flags.HAS_SKELETON) !== 0
+        ) {
+            refuseGeneration(
+                "renderer:geometry-output",
+                "A skinned Standard mesh in a LINEAR_VELOCITY geometry task " +
+                    "reads the previous frame's bone texture, which no " +
+                    "backend keeps.",
+            );
+        }
         const composed = geometry.composeStandardGeometryShader(
             viewFeatures,
             meshFeatures,

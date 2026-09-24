@@ -130,6 +130,9 @@ if(IOS)
     endif()
 endif()
 include("${BBLITE_NATIVE_ROOT}/compiler-cache.cmake")
+if(BBLITE_NATIVE_CACHE_ACTIVE)
+    include("${BBLITE_NATIVE_ROOT}/native-header-cache.cmake")
+endif()
 
 set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
 set(BBLITE_BUILD_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders")
@@ -301,17 +304,17 @@ endif()
 
 # The PAL units whose preprocessed text depends on the generated tree only
 # through the activation macros they test (bblite/features/); the two
-# backend families, the window realm and the build stamp include lowered
-# module headers. Under the object cache they compile in their own object
-# library against folders holding only those macros, so their compile lines
-# are the same in every scene whose macros they read agree (a unit reaching
-# any other generated header is refused). An object library rather than an
-# archive: the executable links every object exactly as before, where an
-# archive would drop an unreferenced object and the static registrations it
-# carries.
+# backend families, the window realm, the build stamp and the navigation
+# PAL include lowered module headers. Under the object cache they compile
+# in their own object library against folders holding only those macros,
+# so their compile lines are the same in every scene whose macros they read
+# agree (a unit reaching any other generated header is refused). An object
+# library rather than an archive: the executable links every object exactly
+# as before, where an archive would drop an unreferenced object and the
+# static registrations it carries.
 set(
     BBLITE_PAL_COMMON_PATTERN
-    "/src/(pal|pal_sdl|pal_image|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_navigation_recast|pal_file|pal_storage|pal_text_layout)\\.cpp$"
+    "/src/(pal|pal_sdl|pal_image|pal_ui_rml|pal_audio_labsound|pal_physics_bullet|pal_physics_debug|pal_file|pal_storage|pal_text_layout)\\.cpp$"
 )
 set(BBLITE_PAL_COMMON_SOURCES ${BBLITE_RUNTIME_SOURCES})
 list(FILTER BBLITE_PAL_COMMON_SOURCES INCLUDE REGEX "${BBLITE_PAL_COMMON_PATTERN}")
@@ -333,6 +336,14 @@ set(BBLITE_ENTRY_SOURCE "${BBLITE_GENERATED_DIR}/main.cpp")
 # The platform wrapper includes main.cpp; every other application unit is compiled normally.
 set(BBLITE_APPLICATION_UNITS ${BBLITE_APPLICATION_SOURCES})
 list(REMOVE_ITEM BBLITE_APPLICATION_UNITS "${BBLITE_GENERATED_DIR}/main.cpp")
+# Under the object cache the lowered modules compile from content-addressed
+# copies (native-header-cache.cmake), so a module two scenes generate alike
+# is one cache entry.
+if(BBLITE_NATIVE_CACHE_ACTIVE)
+    bblite_content_addressed_sources(BBLITE_GENERATED_UNITS ${BBLITE_GENERATED_SOURCES})
+else()
+    set(BBLITE_GENERATED_UNITS ${BBLITE_GENERATED_SOURCES})
+endif()
 if(ANDROID)
     set(BBLITE_ENTRY_SOURCE "${BBLITE_NATIVE_ROOT}/src/pal_android_main.cpp")
     add_library(bblite_native SHARED "${BBLITE_ENTRY_SOURCE}")
@@ -360,7 +371,7 @@ target_sources(
     # so only it recompiles when the stamp changes within one tree.
     "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
     ${BBLITE_RUNTIME_SOURCES}
-    ${BBLITE_GENERATED_SOURCES}
+    ${BBLITE_GENERATED_UNITS}
     ${BBLITE_APPLICATION_UNITS}
 )
 target_link_libraries(bblite_native PRIVATE bblite_features bblite_pal_common)
@@ -1031,10 +1042,12 @@ option(
     "Precompile the stable native headers once per build tree"
     ${BBLITE_PCH_DEFAULT}
 )
-# Under the native cache only Clang keeps the PCH: without a timestamp in it
-# (and with the PCH sloppiness compiler-cache.cmake sets) a rebuilt tree's PCH
-# and its users hit, and the checkout-relative PCH path is the same in every
-# tree. Other compilers under the cache build without one.
+# Under the native cache only Clang keeps the PCH, without a timestamp in it
+# and with the PCH sloppiness compiler-cache.cmake sets. clang-cl builds it
+# from a source under the cache (bblite_shared_pch, below), so its bytes and
+# its users' cache keys are the same in every tree of the checkout whose PCH
+# inputs agree. Other compilers under the cache build without one.
+set(BBLITE_SHARED_PCH OFF)
 if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
     if(BBLITE_NATIVE_CACHE_ACTIVE)
         target_compile_options(bblite_features INTERFACE "SHELL:-Xclang -fno-pch-timestamp")
@@ -1073,17 +1086,21 @@ if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQ
     )
         list(APPEND BBLITE_PCH_HEADERS <bblite/ts_runtime.hpp>)
     endif()
-    # Built once, on the object library, and reused by the executable's
-    # units: both consume the same interface requirements, and the PCH
+    # Built once and used by every unit of the object library and the
+    # executable: both consume the same interface requirements, and the PCH
     # closure reaches no generated header beyond activation macros.
-    target_precompile_headers(bblite_pal_common PRIVATE ${BBLITE_PCH_HEADERS})
-    target_precompile_headers(bblite_native REUSE_FROM bblite_pal_common)
+    if(BBLITE_NATIVE_CACHE_ACTIVE AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        set(BBLITE_SHARED_PCH ON)
+    else()
+        target_precompile_headers(bblite_pal_common PRIVATE ${BBLITE_PCH_HEADERS})
+        target_precompile_headers(bblite_native REUSE_FROM bblite_pal_common)
+    endif()
 endif()
 
 # Generated headers. Without the object cache every unit reads the tree in
-# place. Under it, generated and application units, the entry and the build
-# stamp still do; every repository unit reads a content-addressed folder
-# holding exactly the generated headers its include closure names
+# place. Under it, application units, the entry and the build stamp still do;
+# every repository unit and copied lowered module reads a content-addressed
+# folder holding exactly the generated headers its include closure names
 # (native-header-cache.cmake), so its compile line and dependencies follow
 # what it reads, and a scene-invariant PAL unit's line is the same in every
 # scene whose activation macros it reads agree. The precompiled header reads
@@ -1092,10 +1109,8 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
     set_source_files_properties(
         "${BBLITE_ENTRY_SOURCE}"
         "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
-        ${BBLITE_GENERATED_SOURCES}
         ${BBLITE_APPLICATION_UNITS}
         PROPERTIES INCLUDE_DIRECTORIES "${BBLITE_GENERATED_DIR}/upstream/include")
-    include("${BBLITE_NATIVE_ROOT}/native-header-cache.cmake")
     bblite_cache_unit_headers(
         TARGETS bblite_pal_common bblite_native
         SCENE_INVARIANT bblite_pal_common
@@ -1108,8 +1123,17 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
         endif()
     endforeach()
     bblite_generated_inputs(BBLITE_PCH_GENERATED ${BBLITE_PCH_ROOTS})
+    set(BBLITE_PCH_GENERATED_DIR "")
     if(BBLITE_PCH_GENERATED)
         bblite_cached_headers(BBLITE_PCH_GENERATED_DIR ${BBLITE_PCH_GENERATED})
+    endif()
+    if(BBLITE_SHARED_PCH)
+        bblite_shared_pch(
+            TARGETS bblite_pal_common bblite_native
+            HEADERS ${BBLITE_PCH_HEADERS}
+            INCLUDE_DIRECTORY "${BBLITE_PCH_GENERATED_DIR}"
+        )
+    elseif(BBLITE_PCH_GENERATED_DIR)
         target_include_directories(bblite_pal_common PRIVATE "${BBLITE_PCH_GENERATED_DIR}")
     endif()
 else()

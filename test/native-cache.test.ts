@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -178,3 +184,141 @@ endif()
         );
     });
 }
+
+test("clangcl shares the precompiled header and lowered modules between the build trees of a checkout", (t) => {
+    const tools = discoverDevelopmentTools();
+    if (process.platform !== "win32" || !tools.cmake || !tools.ccache) {
+        t.skip("Windows, CMake and ccache are required.");
+        return;
+    }
+    const windows = discoverWindowsBuildTools("clangcl");
+    const artifacts = resolve("artifacts/test-native-cache");
+    mkdirSync(artifacts, { recursive: true });
+    const root = mkdtempSync(join(artifacts, "shared-pch-"));
+    const repository = resolve("native").replaceAll("\\", "/");
+    const log = join(root, "cache.log");
+    const env = { ...windows.environment, CCACHE_LOGFILE: log };
+    const run = (args: string[]): string =>
+        execFileSync(tools.cmake!, args, {
+            env,
+            encoding: "utf8",
+            stdio: "pipe",
+        });
+    const checkout = (name: string): string => {
+        const native = join(root, name, "native");
+        mkdirSync(join(native, "src"), { recursive: true });
+        mkdirSync(join(native, "include/bblite"), { recursive: true });
+        writeFileSync(
+            join(native, "CMakeLists.txt"),
+            `cmake_minimum_required(VERSION 3.24)
+project(pch_fixture LANGUAGES CXX)
+set(BBLITE_NATIVE_ROOT "${native.replaceAll("\\", "/")}")
+include("${repository}/compiler-cache.cmake")
+include("${repository}/native-header-cache.cmake")
+add_library(bblite_features INTERFACE)
+target_compile_features(bblite_features INTERFACE cxx_std_20)
+target_include_directories(bblite_features INTERFACE "\${BBLITE_NATIVE_ROOT}/include")
+target_compile_options(bblite_features INTERFACE "SHELL:-Xclang -fno-pch-timestamp")
+bblite_content_addressed_sources(modules "\${BBLITE_GENERATED_DIR}/upstream/src/module.cpp")
+add_executable(check src/main.cpp \${modules})
+target_link_libraries(check PRIVATE bblite_features)
+bblite_cache_unit_headers(TARGETS check)
+bblite_generated_inputs(pch_generated "\${BBLITE_NATIVE_ROOT}/include/bblite/shared.hpp")
+bblite_cached_headers(pch_directory \${pch_generated})
+bblite_shared_pch(TARGETS check HEADERS <bblite/shared.hpp> <vector> INCLUDE_DIRECTORY "\${pch_directory}")
+`,
+        );
+        // The precompiled header reads an activation macro of the tree.
+        writeFileSync(
+            join(native, "include/bblite/shared.hpp"),
+            "#pragma once\n#include <bblite/features/has_value.hpp>\n#include <vector>\ninline int shared_value() { return HAS_VALUE ? 4 : 0; }\n",
+        );
+        writeFileSync(
+            join(native, "src/main.cpp"),
+            '#include <bblite/shared.hpp>\n#include <cstdio>\nint module_value();\nint main() { std::printf("%d%d", shared_value(), module_value()); }\n',
+        );
+        return native;
+    };
+    // Two scene trees generating the same activation macro and module.
+    const tree = (native: string, name: string): string => {
+        const generated = join(native, "..", "generated", name);
+        mkdirSync(join(generated, "upstream/include/bblite/features"), {
+            recursive: true,
+        });
+        mkdirSync(join(generated, "upstream/src"), { recursive: true });
+        writeFileSync(
+            join(generated, "upstream/include/bblite/features/has_value.hpp"),
+            "#pragma once\n#define HAS_VALUE 1\n",
+        );
+        writeFileSync(
+            join(generated, "upstream/src/module.cpp"),
+            "#include <bblite/shared.hpp>\nint module_value() { return shared_value() + 1; }\n",
+        );
+        return generated;
+    };
+    const build = (
+        native: string,
+        name: string,
+    ): { build: string; log: string } => {
+        writeFileSync(log, "");
+        const directory = join(native, `build-${name}`);
+        run([
+            "-S",
+            native,
+            "-B",
+            directory,
+            "-G",
+            "Ninja",
+            `-DCMAKE_MAKE_PROGRAM=${windows.ninja}`,
+            `-DCMAKE_CXX_COMPILER=${windows.compiler}`,
+            `-DBBLITE_GENERATED_DIR=${tree(native, name)}`,
+            `-DBBLITE_CCACHE=${tools.ccache}`,
+            `-DBBLITE_NATIVE_CACHE_DIR=${join(root, "cache")}`,
+            "-DCMAKE_BUILD_TYPE=Release",
+        ]);
+        run(["--build", directory]);
+        assert.equal(
+            execFileSync(join(directory, "check.exe"), { encoding: "utf8" }),
+            "45",
+        );
+        return { build: directory, log: readFileSync(log, "utf8") };
+    };
+    const compiles = (text: string): string[] =>
+        [
+            ...text.matchAll(
+                /Result: (direct_cache_hit|preprocessed_cache_hit|cache_miss|preprocessor_error)\b/g,
+            ),
+        ].map((match) => match[1]!);
+
+    const checkoutA = checkout("checkout-a");
+    // A miss preprocesses each user with the PCH's source included as text.
+    const first = build(checkoutA, "first");
+    assert.deepEqual(compiles(first.log), [
+        "cache_miss",
+        "cache_miss",
+        "cache_miss",
+    ]);
+    // The PCH, a unit using it and the module are each one entry.
+    const second = build(checkoutA, "second");
+    assert.deepEqual(compiles(second.log), [
+        "direct_cache_hit",
+        "direct_cache_hit",
+        "direct_cache_hit",
+    ]);
+
+    // The PCH records the absolute paths it was built from, so another
+    // checkout builds its own rather than one naming the first's files.
+    const other = build(checkout("checkout-b"), "first");
+    assert.ok(compiles(other.log).includes("cache_miss"));
+    const pch = readdirSync(join(other.build, "CMakeFiles/bblite_pch.dir"), {
+        recursive: true,
+        encoding: "utf8",
+    }).find((path) => /bblite_pch-[0-9a-f]{16}\.cxx\.obj$/.test(path));
+    assert.ok(pch, "the precompiled header is the PCH target's object");
+    const bytes = readFileSync(
+        join(other.build, "CMakeFiles/bblite_pch.dir", pch),
+        "latin1",
+    );
+    assert.ok(bytes.includes("checkout-b"));
+    assert.ok(!bytes.includes("checkout-a"));
+});

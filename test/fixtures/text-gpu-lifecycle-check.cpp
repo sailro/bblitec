@@ -1,4 +1,5 @@
 #include "text-resource-ops.hpp"
+#include "upstream_text_renderable.hpp"
 #include "statement-probe.hpp"
 int main() {
     Ops ops;

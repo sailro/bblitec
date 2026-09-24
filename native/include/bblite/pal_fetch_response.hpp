@@ -19,10 +19,8 @@ using HttpResponse = js::Ref<HttpResponseData>;
 inline std::string decode_http_text(const std::vector<std::uint8_t>& bytes) {
     if (bytes.empty())
         return {};
-    std::string_view input(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    if (input.starts_with("\xef\xbb\xbf"))
-        input.remove_prefix(3);
-    return js::decode_utf8(input);
+    return js::decode_utf8_removing_bom(
+        std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
 
 inline bool http_response_ok(const HttpResponse& response) {

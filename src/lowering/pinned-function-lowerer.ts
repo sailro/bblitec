@@ -699,7 +699,7 @@ export function lowerPinnedFunctionParts(
                         "slice supplies none.",
                 );
             }
-            bindings.set(spec.pinned, absentBinding());
+            bindings.set(spec.pinned, absentBinding("undefined"));
             return;
         }
         bindings.set(

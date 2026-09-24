@@ -415,6 +415,37 @@ struct MeshHandle {
     [[nodiscard]] bool operator==(const MeshHandle&) const = default;
 };
 
+/** The (slot, generation) of each mesh whose last table name ended. */
+using ReleasedMeshNames = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+
+/**
+ * An engine table's name for a mesh. The pin's tables hold the Mesh object,
+ * so a mesh `removeFromScene` disposed stays reachable through them and they
+ * keep reading its last state: a shadow generator's caster fit its bounds
+ * and world, a physics body its pose, a gizmo its attached node. Every
+ * table that reads a mesh this way holds a share of one lease per record
+ * (`name_mesh`); a retired record keeps its slot while any share is left,
+ * and the lease's end queues the slot for `reclaim_mesh_names`.
+ */
+struct MeshNameLease {
+    std::weak_ptr<ReleasedMeshNames> released;
+    std::uint32_t slot = invalid_handle;
+    std::uint32_t generation = 0;
+
+    MeshNameLease(std::weak_ptr<ReleasedMeshNames> queue, MeshHandle mesh)
+        : released(std::move(queue)), slot(mesh.value), generation(mesh.generation) {}
+    MeshNameLease(const MeshNameLease&) = delete;
+    MeshNameLease& operator=(const MeshNameLease&) = delete;
+    ~MeshNameLease() {
+        if (const auto queue = released.lock()) {
+            queue->emplace_back(slot, generation);
+        }
+    }
+};
+
+/** One table's share of a mesh's name lease. */
+using MeshName = std::shared_ptr<const MeshNameLease>;
+
 struct MaterialHandle {
     std::uint32_t value = invalid_handle;
 
@@ -1994,7 +2025,6 @@ struct ModelGeometry {
      */
     bool has_uvs = true;
     bool has_vertex_colors = false;
-    bool flat_normals = false;
     /** The object-local box `Mesh.boundMin`/`boundMax` hold. */
     Vec3 bounds_min{};
     Vec3 bounds_max{};
@@ -2057,6 +2087,15 @@ struct TransformNodeRecord {
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     bool has_rotation_quaternion = false;
     Vec3 scaling{1.0f, 1.0f, 1.0f};
+    /**
+     * `SceneNode._localMatrix`: a glTF `matrix` node's raw local, or the
+     * exact affine local setParent keeps. While set it IS the local
+     * transform and the TRS lanes are ignored; a TRS write clears it unless
+     * `local_matrix_locked` (`_localMatrixLocked`) holds, which only
+     * setParent releases.
+     */
+    std::optional<std::array<float, 16>> local_matrix;
+    bool local_matrix_locked = false;
     /** The node this one hangs under, or none — `IParentable.parent`. */
     TransformNodeHandle parent{};
     /**
@@ -2119,6 +2158,8 @@ struct MeshRecord {
     // Scene-code boundMin/boundMax replace the corresponding object-local
     // bound carried by the pinned Mesh. Keep each side optional because the
     // public object permits either property to be assigned independently.
+    // Retirement releases the geometry but not the Mesh's own bounds, so it
+    // moves the geometry's box here (`retire_mesh_record`).
     bool has_bounds_min_override = false;
     bool has_bounds_max_override = false;
     Vec3 bounds_min_override{};
@@ -2172,6 +2213,8 @@ struct MeshRecord {
     bool retired = false;
     /** Whether `offer_retired_mesh_slot` offered this retired record's slot. */
     bool slot_offered = false;
+    /** The lease the tables that name this mesh share (`name_mesh`). */
+    std::weak_ptr<const MeshNameLease> names;
     /** Bumped each time `store_mesh_record` reuses this slot. */
     std::uint32_t generation = 0;
     /**
@@ -3181,6 +3224,16 @@ struct AssetRecord {
     Vec4d root_rotation_quaternion{0, 0, 0, 1};
     double root_quaternion_version = 0;
     double root_synced_quaternion_version = -1;
+    /**
+     * The pin's own hierarchy (`buildNodeHierarchy`), carried when scene
+     * code writes imported node transforms: the synthetic `__root__`, whose
+     * TRS is the root edit above, and one transform node per glTF node,
+     * indexed by node, under which each primitive hangs as an identity-TRS
+     * child. Empty otherwise, when the loaded worlds are flattened onto the
+     * meshes and the root edit composes as their outer transform.
+     */
+    TransformNodeHandle root_node{};
+    std::vector<TransformNodeHandle> nodes;
     CameraHandle camera{};
     Color4 clear_color{};
     bool has_camera = false;
@@ -3765,6 +3818,8 @@ struct Engine {
      */
     std::shared_ptr<ReleasedTransformNodes> released_transform_nodes =
         std::make_shared<ReleasedTransformNodes>();
+    /** Queued by `MeshNameLease`, drained by `reclaim_mesh_names`; declared first for the same reason. */
+    std::shared_ptr<ReleasedMeshNames> released_mesh_names = std::make_shared<ReleasedMeshNames>();
     /** Realm allocations publish a weak owner for APIs reached through scene borrows. */
     std::weak_ptr<Engine> realm_owner;
     std::unordered_map<std::uint32_t, std::shared_ptr<MeshMaterialSceneOwners>>
@@ -4230,10 +4285,10 @@ inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
 /**
  * The record a table's handle names, or null once a later mesh took the
  * slot of the disposed mesh it named. The pin keeps writing a disposed mesh
- * a table still names -- a physics body's pose, an animation target, a
+ * a table still names -- an animation target, a skeleton's palette, a
  * deformation. While its record is retired but still in its slot, the
- * write lands on it, and a child still parented under it follows; a slot
- * is reused only once no mesh composes under it
+ * write lands on it, and a child or a table that reads it follows; a slot
+ * is reused only once no mesh composes under it and no reader names it
  * (`offer_retired_mesh_slot`), so a writer that finds no record skips a
  * write nothing can observe.
  */
@@ -4383,18 +4438,59 @@ inline void release_unowned_geometry(Engine& engine, std::uint32_t geometry) {
 
 /**
  * Offers a retired mesh's slot for reuse once no live mesh composes its
- * world under it. The pin keeps a disposed parent alive for as long as a
- * child's `parent` names it, and that child keeps drawing under the
- * parent's last world matrix; every other table that names a disposed mesh
- * (a traversal `children` list, a loader's asset tables, a physics body,
- * an animation target) holds its handle, whose generation tells it apart
- * from the slot's next occupant.
+ * world under it and no table that reads it names it (`name_mesh`). The pin
+ * keeps a disposed parent alive for as long as a child's `parent` names it,
+ * and that child keeps drawing under the parent's last world matrix. A table
+ * that only writes a disposed mesh or compares it (a traversal `children`
+ * list, a loader's asset tables, an animation target, a light's mesh lists)
+ * holds its handle, whose generation tells it apart from the slot's next
+ * occupant: every reader of those writes keeps the slot itself.
  */
 inline void offer_retired_mesh_slot(Engine& engine, MeshHandle mesh) {
     MeshRecord* record = handle_find(engine.meshes, mesh);
-    if (record && record->retired && !record->slot_offered && record->parented_meshes.empty()) {
+    if (record && record->retired && !record->slot_offered && record->parented_meshes.empty() &&
+        record->names.expired()) {
         record->slot_offered = true;
         engine.free_mesh_slots.push_back(mesh.value);
+    }
+}
+
+/**
+ * A share of `mesh`'s name lease for a table that keeps reading it after
+ * `removeFromScene` (`MeshNameLease`). A retired mesh named again takes its
+ * slot back if it was offered; one whose slot a later mesh already took
+ * refuses, as every touch through such a kept handle does.
+ */
+inline MeshName name_mesh(Engine& engine, MeshHandle mesh) {
+    MeshRecord& record = handle_at(engine.meshes, mesh);
+    if (MeshName shared = record.names.lock()) {
+        return shared;
+    }
+    if (record.slot_offered) {
+        std::erase(engine.free_mesh_slots, mesh.value);
+        record.slot_offered = false;
+    }
+    MeshName lease = std::make_shared<const MeshNameLease>(engine.released_mesh_names, mesh);
+    record.names = lease;
+    return lease;
+}
+
+inline std::vector<MeshName> name_meshes(Engine& engine, const std::vector<MeshHandle>& meshes) {
+    std::vector<MeshName> names;
+    names.reserve(meshes.size());
+    for (const MeshHandle mesh : meshes) {
+        names.push_back(name_mesh(engine, mesh));
+    }
+    return names;
+}
+
+/** Offers the slots of the retired meshes whose last table name ended. */
+inline void reclaim_mesh_names(Engine& engine) {
+    ReleasedMeshNames& released = *engine.released_mesh_names;
+    while (!released.empty()) {
+        const auto [slot, generation] = released.back();
+        released.pop_back();
+        offer_retired_mesh_slot(engine, MeshHandle{slot, generation});
     }
 }
 
@@ -4441,6 +4537,9 @@ inline void require_live_mesh_parent(const MeshRecord& parent) {
 inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
     record.composition_feature_row =
         stored_mesh_composition_row(engine, record.composition_feature_row);
+    // A clone copies its source's record, not the tables naming the source.
+    record.names.reset();
+    reclaim_mesh_names(engine);
     if (!engine.free_mesh_slots.empty()) {
         const std::uint32_t slot = engine.free_mesh_slots.back();
         engine.free_mesh_slots.pop_back();
@@ -4459,7 +4558,10 @@ inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
  * `removeFromScene` taking a mesh out of its last scene (`disposeMeshGpu`):
  * the record is retired and gives up its claim on its geometry, whose
  * arrays and slot go with the last claim, and its own slot is offered once
- * no live mesh composes under it (`offer_retired_mesh_slot`).
+ * no live mesh composes under it and no table reads it
+ * (`offer_retired_mesh_slot`). `disposeMeshGpu` destroys GPU buffers only,
+ * so the Mesh keeps its `boundMin`/`boundMax`: the geometry's box moves
+ * onto the record's own bound lanes for the tables that still read it.
  */
 inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
     MeshRecord& record = handle_at(engine.meshes, mesh);
@@ -4470,6 +4572,14 @@ inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
     const std::uint32_t geometry = std::exchange(record.geometry, invalid_handle);
     if (geometry < engine.geometries.size()) {
         ModelGeometry& shared = engine.geometries[geometry];
+        if (!record.has_bounds_min_override) {
+            record.bounds_min_override = shared.bounds_min;
+            record.has_bounds_min_override = true;
+        }
+        if (!record.has_bounds_max_override) {
+            record.bounds_max_override = shared.bounds_max;
+            record.has_bounds_max_override = true;
+        }
         if (shared.owners > 1) {
             --shared.owners;
         } else {
@@ -5015,6 +5125,9 @@ struct SceneState {
         visitor(disposables);
         visitor(animation_seekers);
         visitor(deferred_builders);
+#if BBLITE_HAS_TEXT
+        visitor(text_renderables);
+#endif
     }
 };
 
@@ -6334,6 +6447,8 @@ void clear_interval(Engine& engine, double id);
 void set_mesh_parent(Engine& engine, MeshHandle child, MeshHandle parent);
 void set_mesh_parent(Engine& engine, MeshHandle child, TransformNodeHandle parent);
 void set_asset_root_parent(Engine& engine, AssetHandle child, TransformNodeHandle parent);
+/** The same setParent over a transform-node child; none detaches it. */
+void reparent_transform_node(Engine& engine, TransformNodeHandle child, TransformNodeHandle parent);
 /** src/scene/visibility.ts setMeshVisible cascade. */
 void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
 [[nodiscard]] std::vector<float> mesh_cpu_positions(const Engine& engine, MeshHandle mesh);

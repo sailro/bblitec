@@ -62,10 +62,12 @@ struct SpriteLayerResources {
     std::uint64_t uploaded_version = 0;
     std::uint64_t pipeline_version = 0;
     bool uploaded = false;
-    // Where this layer's fragment stage kept its two uniform blocks, from
-    // the sidecar the shader step wrote beside it. A custom body that reads
-    // neither leaves both at -1.
-    int layer_block_slot = 0;
+    // Where this layer's stages kept the layer block and the fx block,
+    // from the sidecars the shader step wrote beside the program's two
+    // stages. A custom body that reads neither leaves both fragment slots
+    // at -1.
+    int vertex_layer_block_slot = -1;
+    int layer_block_slot = -1;
     int fx_block_slot = -1;
     // The custom shader's own clock: seconds since this layer's first
     // frame, which the pin accumulates inside the layer's fx attachment.
@@ -138,23 +140,18 @@ using SceneSpritePass =
 inline OwnedSdlPipeline
 create_sprite_layer_pipeline(SDL_GPUDevice* device, const SpriteBlendDescriptor& blend, bool scroll,
                              bool has_depth, bool depth_write, bool alpha_to_coverage,
-                             std::uint32_t custom_shader, const PinnedStageSlots& slots,
-                             SDL_GPUTextureFormat target_format, SDL_GPUTextureFormat depth_format,
-                             SDL_GPUSampleCount sample_count, std::uint32_t instance_stride_bytes) {
-    auto vertex_shader =
-        load_shader(device,
-                    has_depth ? (scroll ? "sprite_depth_uvscroll.vert" : "sprite_depth.vert")
-                              : (scroll ? "sprite_uvscroll.vert" : "sprite.vert"),
-                    SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, "mainVertex");
-    // The custom program replaces the fragment stage alone -- the pin
-    // composes it from the same prologue -- so it pairs with whichever
-    // vertex stage the layout chose, and adds the fx block as a second
-    // fragment uniform.
-    const std::string fragment_name = sprite_fragment_shader_name(custom_shader);
-    auto fragment_shader =
-        load_shader(device, fragment_name.c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-                    static_cast<std::uint32_t>(slots.textures.size()),
-                    static_cast<std::uint32_t>(slots.uniforms.size()), "mainFragment");
+                             const std::string& program_stem, SDL_GPUTextureFormat target_format,
+                             SDL_GPUTextureFormat depth_format, SDL_GPUSampleCount sample_count,
+                             std::uint32_t instance_stride_bytes) {
+    // The program's one module, both stages compiled from it and each
+    // created from its own sidecar: the entry point the module declares
+    // and the slots the compaction left.
+    PinnedStage vertex_stage =
+        load_pinned_stage(device, program_stem + ".vert", SDL_GPU_SHADERSTAGE_VERTEX);
+    PinnedStage fragment_stage =
+        load_pinned_stage(device, program_stem + ".frag", SDL_GPU_SHADERSTAGE_FRAGMENT);
+    auto& vertex_shader = vertex_stage.shader;
+    auto& fragment_shader = fragment_stage.shader;
 
     // The generated instance layout (sprite_layer.hpp, from
     // sprite-pipeline.ts): instance-stepped attributes at the pinned byte
@@ -242,15 +239,33 @@ create_sprite_layer_pipeline(SDL_GPUDevice* device, const SpriteBlendDescriptor&
     return pipeline;
 }
 
-inline OwnedSdlPipeline
-create_sprite_layer_pipeline(SDL_GPUDevice* device, const Sprite2DLayerRecord& layer,
-                             const PinnedStageSlots& slots, SDL_GPUTextureFormat target_format,
-                             SDL_GPUTextureFormat depth_format, SDL_GPUSampleCount sample_count) {
+inline OwnedSdlPipeline create_sprite_layer_pipeline(SDL_GPUDevice* device,
+                                                     const Sprite2DLayerRecord& layer,
+                                                     SDL_GPUTextureFormat target_format,
+                                                     SDL_GPUTextureFormat depth_format,
+                                                     SDL_GPUSampleCount sample_count) {
     const SpriteLayerPipelinePlan plan = sprite_layer_pipeline_plan(layer);
-    return create_sprite_layer_pipeline(device, layer.blend, plan.scroll, plan.has_depth,
-                                        plan.depth_write, plan.alpha_to_coverage,
-                                        layer.custom_shader, slots, target_format, depth_format,
-                                        sample_count, plan.instance_stride_bytes);
+    return create_sprite_layer_pipeline(
+        device, layer.blend, plan.scroll, plan.has_depth, plan.depth_write, plan.alpha_to_coverage,
+        sprite_program_stem(layer.custom_shader, plan), target_format, depth_format, sample_count,
+        plan.instance_stride_bytes);
+}
+
+/**
+ * Where a layer's program keeps its uniform blocks, read from the two
+ * stages' sidecars: the layer block in each stage that reads it, and the
+ * fx block in the fragment. Returns the fragment's slots, which also
+ * decide the textures the layer binds.
+ */
+inline PinnedStageSlots read_sprite_layer_slots(const Sprite2DLayerRecord& layer,
+                                                SpriteLayerResources& gpu) {
+    const std::string stem =
+        sprite_program_stem(layer.custom_shader, sprite_layer_pipeline_plan(layer));
+    PinnedStageSlots slots = read_pinned_stage_slots(stem + ".frag");
+    gpu.vertex_layer_block_slot = stage_uniform_slot(read_pinned_stage_slots(stem + ".vert"), "L");
+    gpu.layer_block_slot = stage_uniform_slot(slots, "L");
+    gpu.fx_block_slot = stage_uniform_slot(slots, "fx");
+    return slots;
 }
 
 inline SpriteAtlasGpu& sprite_atlas_gpu(SDL_GPUDevice* device, Engine& engine,
@@ -316,15 +331,12 @@ build_sprite_layer_gpu(SDL_GPUDevice* device, Engine& engine, Sprite2DLayerHandl
     Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);
     SpriteLayerGpu gpu{device};
     gpu.layer = handle;
-    const std::string fragment_name = sprite_fragment_shader_name(layer.custom_shader);
-    const PinnedStageSlots slots = read_pinned_stage_slots(fragment_name);
-    gpu.layer_block_slot = stage_uniform_slot(slots, "L");
-    gpu.fx_block_slot = stage_uniform_slot(slots, "fx");
+    const PinnedStageSlots slots = read_sprite_layer_slots(layer, gpu);
     gpu.pipeline = shared_pipeline;
     gpu.pipeline_version = layer.pipeline_version;
     if (!gpu.pipeline) {
-        gpu.owned_pipeline = create_sprite_layer_pipeline(device, layer, slots, target_format,
-                                                          depth_format, sample_count);
+        gpu.owned_pipeline =
+            create_sprite_layer_pipeline(device, layer, target_format, depth_format, sample_count);
         gpu.pipeline = gpu.owned_pipeline.get();
     }
     SDL_GPUBufferCreateInfo buffer_info{};
@@ -416,10 +428,13 @@ inline void rebuild_sprite_layer_pipeline(SDL_GPUDevice* device, const Sprite2DL
                                           SpriteLayerGpu& gpu, SDL_GPUTextureFormat target_format,
                                           SDL_GPUTextureFormat depth_format,
                                           SDL_GPUSampleCount sample_count) {
-    const std::string fragment_name = sprite_fragment_shader_name(layer.custom_shader);
-    const PinnedStageSlots slots = read_pinned_stage_slots(fragment_name);
-    gpu.owned_pipeline = create_sprite_layer_pipeline(device, layer, slots, target_format,
-                                                      depth_format, sample_count);
+    // A permutation change moves the layer to another program, whose
+    // stages keep their blocks and textures at their own slots.
+    const PinnedStageSlots slots = read_sprite_layer_slots(layer, gpu);
+    gpu.bound_textures = select_sprite_fragment_textures(
+        slots, gpu.textures, layer.custom_texture_names, "sprite fragment shader");
+    gpu.owned_pipeline =
+        create_sprite_layer_pipeline(device, layer, target_format, depth_format, sample_count);
     gpu.pipeline = gpu.owned_pipeline.get();
     gpu.pipeline_version = layer.pipeline_version;
 }
@@ -531,7 +546,7 @@ inline void record_sprite_layer_gpu(SDL_GPUCommandBuffer* command, SDL_GPURender
     std::array<float, 16> ubo{};
     upstream::build_sprite_layer_ubo(layer, static_cast<float>(width), static_cast<float>(height),
                                      ubo);
-    SDL_PushGPUVertexUniformData(command, 0, ubo.data(), sizeof(ubo));
+    push_vertex_stage_uniform(command, gpu.vertex_layer_block_slot, ubo.data(), sizeof(ubo));
     push_stage_uniform(command, gpu.layer_block_slot, ubo.data(), sizeof(ubo));
     if (gpu.fx_block_slot >= 0) {
         std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
