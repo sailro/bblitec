@@ -171,18 +171,15 @@ WGPUCullMode dawn_cull_mode(upstream::RenderCullMode cull) {
 }
 
 /**
- * The pin's `executePassBody` opening, mirrored from the SDL backend: a
- * camera carrying a viewport narrows the pass to it, and one without
- * leaves the pass at the whole target the way `if (v)` leaves it.
+ * The pin's `executePassBody` and geometry `executeTask` opening
+ * (`_applyCameraViewport`), mirrored from the SDL backend: a camera
+ * carrying a viewport narrows the pass to it, and one without leaves the
+ * pass at the whole target the way `if (!v) return` leaves it.
  *
  * Set AFTER the pass begins, exactly where upstream sets it, so the load
  * operation has already cleared or loaded the whole attachment.
  */
-void set_pass_camera_viewport(WGPURenderPassEncoder pass, const Scene& scene, const Engine& engine,
-                              const CameraRecord* camera, std::uint32_t target_width,
-                              std::uint32_t target_height) {
-    const std::optional<PixelViewport> resolved =
-        scene_camera_viewport(engine, scene, camera, target_width, target_height);
+void set_pass_viewport(WGPURenderPassEncoder pass, const std::optional<PixelViewport>& resolved) {
     if (!resolved.has_value())
         return;
     const PixelViewport& rect = *resolved;
@@ -192,6 +189,22 @@ void set_pass_camera_viewport(WGPURenderPassEncoder pass, const Scene& scene, co
     wgpuRenderPassEncoderSetScissorRect(
         pass, static_cast<std::uint32_t>(rect.x), static_cast<std::uint32_t>(rect.y),
         static_cast<std::uint32_t>(rect.width), static_cast<std::uint32_t>(rect.height));
+}
+
+/** A scene's own pass: its camera's viewport composed into its surface pane. */
+void set_pass_camera_viewport(WGPURenderPassEncoder pass, const Scene& scene, const Engine& engine,
+                              const CameraRecord* camera, std::uint32_t target_width,
+                              std::uint32_t target_height) {
+    set_pass_viewport(pass,
+                      scene_camera_viewport(engine, scene, camera, target_width, target_height));
+}
+
+/** A render or geometry task's pass, over its own target's extent. */
+void set_task_camera_viewport(WGPURenderPassEncoder pass, const CameraRecord* camera,
+                              std::uint32_t target_width, std::uint32_t target_height) {
+    set_pass_viewport(pass,
+                      upstream::pass_camera_viewport(camera, static_cast<double>(target_width),
+                                                     static_cast<double>(target_height)));
 }
 
 // Vertex uniform bindings in group 1 mirror the SDL vertex uniform
@@ -10839,6 +10852,9 @@ public:
                                 target_record.swapchain
                                     ? 1u
                                     : task_sample_count(state, target_record.samples);
+                            // The camera the task's pass renders through: its
+                            // viewport narrows the pass (`executePassBody`).
+                            CameraRecord* const pass_camera = task_pass_camera(engine, task);
 #if BBLITE_HAS_TAA
                             if (task.source_scene != graph_scene.state ||
                                 task.render.scene_stages ||
@@ -10849,7 +10865,7 @@ public:
                             }
                             // `validate_temporal_source` refuses a task
                             // without a camera.
-                            CameraRecord* const source_camera = task_pass_camera(engine, task);
+                            CameraRecord* const source_camera = pass_camera;
                             validate_temporal_source(engine, task, source_camera,
                                                      render_task.draw_lists);
                             const CameraRecord& task_camera = *source_camera;
@@ -11000,6 +11016,8 @@ public:
                                 pass_descriptor.depthStencilAttachment = &depth_attachment;
                                 DawnRenderPass task_pass{
                                     wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+                                set_task_camera_viewport(task_pass, pass_camera, target.width,
+                                                         target.height);
                                 const auto depth_only_group =
                                     [&](const MeshHandle handle) -> WGPUBindGroup {
                                     DawnDepthOnlyDraw& draw =
@@ -11179,21 +11197,9 @@ public:
                             }
                             DawnRenderPass task_pass{
                                 wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+                            set_task_camera_viewport(task_pass, pass_camera, target.width,
+                                                     target.height);
                             WGPURenderPipeline bound_pipeline = nullptr;
-#if BBLITE_HAS_TAA
-                            if (task_camera.viewport) {
-                                const auto rectangle = upstream::resolve_camera_viewport(
-                                    task_camera, target.width, target.height);
-                                wgpuRenderPassEncoderSetViewport(
-                                    task_pass, static_cast<float>(rectangle.x),
-                                    static_cast<float>(rectangle.y),
-                                    static_cast<float>(rectangle.width),
-                                    static_cast<float>(rectangle.height), 0.0f, 1.0f);
-                                wgpuRenderPassEncoderSetScissorRect(task_pass, rectangle.x,
-                                                                    rectangle.y, rectangle.width,
-                                                                    rectangle.height);
-                            }
-#endif
 #if BBLITE_HAS_BILLBOARDS
                             const auto draw_task_billboards = [&](BillboardDepthMode mode) {
                                 for (const DawnBillboardPass& billboard : state.billboard_passes) {
@@ -11392,6 +11398,11 @@ public:
                             pass_descriptor.depthStencilAttachment = &depth_attachment;
                             DawnRenderPass task_pass{
                                 wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+                            // Over the task's own attachments, which the frame
+                            // graph allocates at the frame's extent.
+                            set_task_camera_viewport(task_pass,
+                                                     geometry_pass_camera(engine, graph_scene),
+                                                     width, height);
                             // Both are read only by the composed families' arms below,
                             // so a scene reaching neither leaves them untouched.
                             [[maybe_unused]] WGPURenderPipeline bound_pipeline = nullptr;

@@ -55,6 +55,7 @@ import { lowerRenderBucket } from "./render-bucket.js";
 import {
     geometryTaskCameraCpp,
     renderTaskPassCpp,
+    passCameraViewportCpp,
     transparentSortSkipCpp,
 } from "./render-task-pass.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
@@ -959,6 +960,8 @@ namespace bbl::upstream {${options.standardVertexAlpha ? lowerStandardMeshAlpha(
 ${renderTaskPassCpp(this.context)}
 
 ${geometryTaskCameraCpp(this.context)}
+
+${passCameraViewportCpp(this.context)}
 
 // ${this.context.provenance(transmissionFrameGraphModule, "executeRenderTaskLinear")}
 // The value the pin writes over toneMappingEnabled while a transmission

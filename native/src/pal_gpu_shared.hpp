@@ -383,9 +383,10 @@ inline PixelViewport scene_surface_extent(const Engine& engine, const Scene& sce
 }
 
 /**
- * Final viewport/scissor after composing the pass camera's viewport into its
- * pane: `_applyCameraViewport` reads `camera?.viewport`, so a camera-less
- * pass, like one whose camera has no viewport, keeps the whole pane.
+ * Final viewport/scissor of a scene's own pass: the pass camera's
+ * `_applyCameraViewport` rectangle (`upstream::pass_camera_viewport`)
+ * composed into the scene's surface pane. A camera-less pass, like one whose
+ * camera has no viewport, keeps the whole pane.
  */
 #if BBLITE_HAS_PBR_RENDERER
 inline std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, const Scene& scene,
@@ -394,19 +395,16 @@ inline std::optional<PixelViewport> scene_camera_viewport(const Engine& engine, 
                                                           std::uint32_t target_height) {
     const std::optional<PixelViewport> pane =
         scene_surface_pane(engine, scene, target_width, target_height);
-    const bool has_viewport = camera && camera->viewport.has_value();
     if (!pane.has_value()) {
-        if (!has_viewport)
-            return std::nullopt;
-        return upstream::resolve_camera_viewport(*camera, static_cast<double>(target_width),
-                                                 static_cast<double>(target_height));
+        return upstream::pass_camera_viewport(camera, static_cast<double>(target_width),
+                                              static_cast<double>(target_height));
     }
-    if (!has_viewport)
+    std::optional<PixelViewport> viewport = upstream::pass_camera_viewport(
+        camera, static_cast<double>(pane->width), static_cast<double>(pane->height));
+    if (!viewport.has_value())
         return pane;
-    PixelViewport viewport = upstream::resolve_camera_viewport(
-        *camera, static_cast<double>(pane->width), static_cast<double>(pane->height));
-    viewport.x += pane->x;
-    viewport.y += pane->y;
+    viewport->x += pane->x;
+    viewport->y += pane->y;
     return viewport;
 }
 #endif

@@ -4,6 +4,7 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const renderTaskModule = "src/frame-graph/render-task-base.ts";
 const sceneModule = "src/scene/scene-core.ts";
@@ -251,6 +252,106 @@ inline Color4 render_task_clear_color(
  */
 inline bool pass_scene_block_skips(const CameraRecord* camera) {
     return ${sceneBlockSkipCpp};
+}`;
+}
+
+/**
+ * camera.ts `_applyCameraViewport`, which every render task pass
+ * (`executePassBody`, a scene's own automatic task included) and geometry
+ * task pass (`executeTask`) calls on its own pass over its target's extent:
+ * the pixel rectangle its viewport and scissor are set to, or none for a
+ * pass camera without a viewport, which leaves the whole target. The pin
+ * clamps nothing here, unlike `resolveCameraViewport`.
+ */
+export function passCameraViewportCpp(context: LoweringContext): string {
+    const module = "src/camera/camera.ts";
+    const { file, declaration } = context.functionDeclaration(
+        module,
+        "_applyCameraViewport",
+    );
+    context.assertExpressionShape(
+        context.variableInitializer(declaration, "v"),
+        "camera?.viewport",
+        "_applyCameraViewport viewport",
+    );
+    const guard = bareReturnGuard(
+        context,
+        declaration,
+        1,
+        "_applyCameraViewport",
+    );
+    const statements = declaration.body?.statements ?? [];
+    const calls = statements.slice(6);
+    const expected = [
+        "pass.setViewport(x, y, width, height, 0, 1)",
+        "pass.setScissorRect(x, y, width, height)",
+    ];
+    if (
+        statements.length !== 8 ||
+        calls.some(
+            (statement, index) =>
+                !ts.isExpressionStatement(statement) ||
+                !context.expressionMatchesShape(
+                    statement.expression,
+                    expected[index]!,
+                ),
+        )
+    ) {
+        return context.contractError(
+            declaration,
+            "Expected _applyCameraViewport to compute x, y, width and height and set the pass viewport and scissor to them.",
+        );
+    }
+    const lane = (member: string): [string, PinnedBinding] => [
+        `v.${member}`,
+        { cpp: `camera->viewport->${member}`, type: "scalar" },
+    ];
+    const bindings = new Map<string, PinnedBinding>([
+        [
+            "v",
+            {
+                cpp: "camera->viewport",
+                type: "opaque",
+                absentCpp: "camera == nullptr || !camera->viewport.has_value()",
+            },
+        ],
+        lane("x"),
+        lane("y"),
+        lane("width"),
+        lane("height"),
+        ["targetWidth", { cpp: "target_width", type: "scalar" }],
+        ["targetHeight", { cpp: "target_height", type: "scalar" }],
+        ["x", { cpp: "x", type: "scalar" }],
+        ["y", { cpp: "y", type: "scalar" }],
+    ]);
+    const lower = (expression: ts.Expression): string =>
+        new PinnedNumericLowerer(file, {
+            bindings,
+            calls: pinnedNumericMathCalls(),
+        }).expression(expression);
+    const skips = lower(guard.expression);
+    const lanes = (["x", "y", "width", "height"] as const).map(
+        (name) =>
+            `    const double ${name} = ${lower(context.variableInitializer(declaration, name))};`,
+    );
+    return `// ${context.provenance(module, "_applyCameraViewport")}
+/**
+ * The rectangle a pass sets its viewport and scissor to over its target's
+ * extent; none for a pass camera without a viewport, which leaves the whole
+ * target. Every render task pass -- a scene's own included -- and every
+ * geometry task pass applies it.
+ */
+inline std::optional<PixelViewport> pass_camera_viewport(
+    const CameraRecord* camera,
+    double target_width,
+    double target_height) {
+    if (${skips}) return std::nullopt;
+${lanes.join("\n")}
+    return PixelViewport{
+        static_cast<std::int32_t>(x),
+        static_cast<std::int32_t>(y),
+        static_cast<std::int32_t>(width),
+        static_cast<std::int32_t>(height)};
 }`;
 }
 

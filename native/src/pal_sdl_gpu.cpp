@@ -145,20 +145,17 @@ namespace {
 }
 
 /**
- * The pin's `executePassBody` opening: a camera carrying a viewport
- * narrows the pass to it, and one without leaves the pass at the whole
- * target the way `if (v)` leaves it.
+ * The pin's `executePassBody` and geometry `executeTask` opening
+ * (`_applyCameraViewport`): a camera carrying a viewport narrows the pass
+ * to it, and one without leaves the pass at the whole target the way
+ * `if (!v) return` leaves it.
  *
  * Set AFTER the pass begins, exactly where upstream sets it, so the load
  * operation has already cleared or loaded the whole attachment -- a
  * split-screen base scene clears the target and draws its half, and the
  * overlay loads that and draws the other.
  */
-void set_pass_camera_viewport(SDL_GPURenderPass* pass, const Scene& scene, const Engine& engine,
-                              const CameraRecord* camera, std::uint32_t target_width,
-                              std::uint32_t target_height) {
-    const std::optional<PixelViewport> resolved =
-        scene_camera_viewport(engine, scene, camera, target_width, target_height);
+void set_pass_viewport(SDL_GPURenderPass* pass, const std::optional<PixelViewport>& resolved) {
     if (!resolved.has_value())
         return;
     const PixelViewport& rect = *resolved;
@@ -178,6 +175,22 @@ void set_pass_camera_viewport(SDL_GPURenderPass* pass, const Scene& scene, const
         static_cast<int>(rect.height),
     };
     SDL_SetGPUScissor(pass, &scissor);
+}
+
+/** A scene's own pass: its camera's viewport composed into its surface pane. */
+void set_pass_camera_viewport(SDL_GPURenderPass* pass, const Scene& scene, const Engine& engine,
+                              const CameraRecord* camera, std::uint32_t target_width,
+                              std::uint32_t target_height) {
+    set_pass_viewport(pass,
+                      scene_camera_viewport(engine, scene, camera, target_width, target_height));
+}
+
+/** A render or geometry task's pass, over its own target's extent. */
+void set_task_camera_viewport(SDL_GPURenderPass* pass, const CameraRecord* camera,
+                              std::uint32_t target_width, std::uint32_t target_height) {
+    set_pass_viewport(pass,
+                      upstream::pass_camera_viewport(camera, static_cast<double>(target_width),
+                                                     static_cast<double>(target_height)));
 }
 
 [[maybe_unused]] SDL_GPUCullMode gpu_cull_mode(upstream::RenderCullMode cull) {
@@ -8964,6 +8977,8 @@ public:
                                 task_depth.stencil_store_op = SDL_GPU_STOREOP_STORE;
                                 SdlRenderPass task_pass{
                                     SDL_BeginGPURenderPass(command, nullptr, 0, &task_depth)};
+                                set_task_camera_viewport(task_pass, task_camera, target.width,
+                                                         target.height);
                                 const std::size_t pipeline_index =
                                     target_record.samples == 4 ? 1u : 0u;
                                 for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
@@ -9081,26 +9096,25 @@ public:
                             prepared.target = target_info;
                             if (task_depth_pointer)
                                 prepared.depth = *task_depth_pointer;
-                            // `validate_temporal_source` refused a task
-                            // without a camera above.
-                            if (task_camera->viewport) {
-                                const auto rectangle = upstream::resolve_camera_viewport(
-                                    *task_camera, target.width, target.height);
+                            if (const std::optional<PixelViewport> rectangle =
+                                    upstream::pass_camera_viewport(
+                                        task_camera, static_cast<double>(target.width),
+                                        static_cast<double>(target.height))) {
                                 prepared.viewport =
-                                    SDL_GPUViewport{static_cast<float>(rectangle.x),
-                                                    static_cast<float>(rectangle.y),
-                                                    static_cast<float>(rectangle.width),
-                                                    static_cast<float>(rectangle.height),
+                                    SDL_GPUViewport{static_cast<float>(rectangle->x),
+                                                    static_cast<float>(rectangle->y),
+                                                    static_cast<float>(rectangle->width),
+                                                    static_cast<float>(rectangle->height),
                                                     0.0f,
                                                     1.0f};
-                                prepared.scissor = SDL_Rect{rectangle.x, rectangle.y,
-                                                            rectangle.width, rectangle.height};
+                                prepared.scissor = SDL_Rect{rectangle->x, rectangle->y,
+                                                            rectangle->width, rectangle->height};
                             }
                             upstream::sort_transparent_draws(
                                 handle_at(task_draw_lists, handle).transparent, engine,
                                 task_camera);
                             draw_scene(graph_scene, graph_meshes, nullptr, {}, {}, task_matrix,
-                                       task_camera, task_pass_matrices,
+                                       task_camera, task_pass_matrices, handle,
                                        handle_at(task_draw_lists, handle), nullptr, nullptr,
                                        nullptr, nullptr, nullptr, false, &prepared.draws,
                                        task.scene_uniforms,
@@ -9110,6 +9124,8 @@ public:
 #endif
                             SdlRenderPass task_pass{SDL_BeginGPURenderPass(command, &target_info, 1,
                                                                            task_depth_pointer)};
+                            set_task_camera_viewport(task_pass, task_camera, target.width,
+                                                     target.height);
                             upstream::sort_transparent_draws(
                                 handle_at(task_draw_lists, handle).transparent, engine,
                                 task_camera);
@@ -9297,6 +9313,10 @@ public:
                             SdlRenderPass task_pass{SDL_BeginGPURenderPass(
                                 command, target_infos.data(),
                                 static_cast<Uint32>(target_infos.size()), &task_depth)};
+                            // Over the task's own attachments, which the frame
+                            // graph allocates at the frame's extent.
+                            set_task_camera_viewport(task_pass, geometry_pass.camera, width,
+                                                     height);
                             SDL_PushGPUVertexUniformData(command, 0, geometry_matrix.data(),
                                                          sizeof(geometry_matrix));
                             upstream::sort_transparent_draws(
