@@ -147,7 +147,7 @@ and performance.
 | LW-9 | med | Pinned constants read 7 ways. | Public `pinnedConstant` family. | fixed |
 | LW-10 | low | Dead lowering exports. | Deleted. | fixed |
 | LW-11 | med | Pinned UBO-writer, glTF-leaf and SH-prescale scopes compute in float (`math_extreme_lane`, `scalarPrecision`, the deduced width) where the pin computes in double and rounds at the Float32Array store. | Pinned UBO-writer and SH-prescale scopes compute in double and narrow at the store; `math_extreme_lane`, `scalarPrecision` and the deduced width are deleted; environment option records are double. | fixed |
-| LW-12 | low | About 12 modules outside `src/lowering` still build their own `new LoweringContext(sharedUpstreamStore())` instead of `sharedPinnedContext()`. | Use the shared context. | open |
+| LW-12 | low | About 12 modules outside `src/lowering` still build their own `new LoweringContext(sharedUpstreamStore())` instead of `sharedPinnedContext()`. | Readers over the process's store use `sharedPinnedContext()` (45 constructions in 26 modules); a lowering over a caller's store (glTF specializer, generated-source writer) uses `pinnedContextOver(store)`; an architecture test fails on any construction outside `context.ts`. A context holds nothing beyond its store, so no site needed a fresh one. | fixed |
 
 ## Native PAL (NT)
 
@@ -266,6 +266,7 @@ and performance.
 | TL-30 | low | Android packages of Dawn builds lost `Dawn-provenance.json` when the notices moved to `package-notices.ts`. | The Android notice set carries it again for Dawn builds. | fixed |
 | TL-31 | med | Nothing detects a stale `bblite-tint`: a tool that no longer matches `tools/tint-sdl` silently writes an old sidecar format every checkout shares. | `tools/build-tint.ps1` records every source a build reads by path and SHA-256 in the tool's `provenance.json` and builds each source set into its own `artifacts/tools/tint/<identity>`; discovery uses only the build recording the checkout's own sources, `compile-shaders` refuses any other tool (`BBLITE_TINT_PATH` included), and the sources' digest keys the shader checkpoints. | fixed |
 | TL-32 | low | The render diff's shader-arm report can never match a pinned module deployed whole (backgrounds, sprites, billboards): the deployed `.native.wgsl` starts with a provenance comment the browser's module lacks. | `render-diff.ts` reads each deployed module through `withoutPinnedProvenance`, which drops the opening line only when it is the `// Generated from …` comment `LoweringContext.provenance` writes (one constant, `src/pinned-provenance.ts`); scene54's billboard and scene50's sprite modules pair with the browser's. | fixed |
+| TL-33 | low | Scene 41's `physics-debug-geometry.json` records `sourceAndAssets` over `dist/.build-stamp`, whose input is each compiler file's size and mtime, so a rebuild with identical bytes moves the receipt and scene 41's tree is never byte-neutral across compiler rebuilds. | Fingerprint the compiler by content. | open |
 
 ## Building (BD)
 
