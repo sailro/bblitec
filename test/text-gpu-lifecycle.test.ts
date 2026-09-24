@@ -110,6 +110,10 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         ["upstream_text_records", textRecordsHeader(context)],
         ["upstream_text", new TextLowerer(context).header()],
         ["upstream_text_gpu", new TextGpuLowerer(context).header()],
+        [
+            "upstream_text_renderable",
+            new TextLowerer(context).renderableHeader(),
+        ],
     ] as const) {
         writeFileSync(resolve(directory, "bblite", `${name}.hpp`), header);
         writeFileSync(
@@ -601,6 +605,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         "/EHsc",
         "/W4",
         "/WX",
+        "/DBBLITE_HAS_TEXT=1",
         `/I${resolve("native/include")}`,
         `/I${directory}`,
         resolve("test/fixtures/text-gpu-lifecycle-check.cpp"),

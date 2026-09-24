@@ -132,6 +132,23 @@ export interface RecordSpec {
      * takes any record with a style buffer).
      */
     readonly bases?: readonly string[];
+    /**
+     * Members the pin's object literals implement as getter/setter pairs
+     * (an Euler proxy's `x`), which the interface declares as properties:
+     * each is a `get_`/`set_` function pair on the struct.
+     */
+    readonly accessors?: ReadonlySet<string>;
+    /**
+     * Members an erased base interface declares -- one from a type-only
+     * module the source maps do not carry (`Renderable`) -- typed by the
+     * port, as `unresolved` types erased names.
+     */
+    readonly erased?: ReadonlyMap<string, MemberSpec>;
+    /**
+     * `module#Interface.member`: the struct is the type literal that
+     * member declares (an options object's anonymous quaternion).
+     */
+    readonly typeOf?: string;
 }
 
 /** A platform call a lowered body makes, by the pinned declaration it replaces. */
@@ -147,6 +164,18 @@ export interface CallAdapter {
         call: ts.CallExpression,
         local: (name: string) => string,
     ) => string | null;
+    /**
+     * The native shapes the platform takes its arguments as, by index,
+     * where they are not the pinned parameters' own (a scene hook takes
+     * its builder as the function the platform calls).
+     */
+    readonly parameters?: readonly (RecordShape | undefined)[];
+}
+
+/** A pinned module variable the platform owns, read as a native value. */
+export interface ModuleValue {
+    readonly shape: RecordShape;
+    readonly cpp: string;
 }
 
 export interface RecordSchema {
@@ -178,6 +207,12 @@ export interface RecordSchema {
      * namespace. Without it, a pinned export is a native export.
      */
     readonly exported?: ReadonlySet<string>;
+    /**
+     * Module variables the platform owns, keyed `module#name`: a read is
+     * the native value, a write refuses (the installed weight-variant
+     * resolver is the native pipeline's own).
+     */
+    readonly moduleValues?: ReadonlyMap<string, ModuleValue>;
 }
 
 interface ResolvedMember {
@@ -186,6 +221,16 @@ interface ResolvedMember {
     readonly shape: RecordShape;
     readonly access: (owner: string) => string;
     readonly call?: (owner: string, args: readonly string[]) => string;
+    /** A getter's read, for a member the pin implements with accessors. */
+    readonly get?: (owner: string) => string;
+    /** A setter's store, for a member the pin implements with accessors. */
+    readonly set?: (owner: string, value: string) => string;
+    /**
+     * How the struct stores the member: a field, a `get_`/`set_` function
+     * pair (`accessor`), or nothing (a class's accessor or method, which
+     * are lowered functions over the instance).
+     */
+    readonly storage: "field" | "accessor" | "none";
     /** The record whose struct declares the field (a base's, when inherited). */
     readonly declaredBy: string;
 }
@@ -195,13 +240,47 @@ interface ResolvedRecord {
     members(): ReadonlyMap<string, ResolvedMember>;
 }
 
+/**
+ * A pinned body lowered to one native function: a module function, a
+ * class's method, accessor or constructor (a class without one constructs
+ * from its declaration).
+ */
+export type PinnedCallable =
+    | ts.FunctionDeclaration
+    | ts.MethodDeclaration
+    | ts.GetAccessorDeclaration
+    | ts.SetAccessorDeclaration
+    | ts.ConstructorDeclaration
+    | ts.ClassDeclaration;
+
 /** A pinned function this model lowers. */
 interface LoweredFunction {
     readonly module: string;
+    /**
+     * The pinned name (`Class.member`, `Class.get member`, `Class.set
+     * member`, `Class.constructor` for a class's), with the argument
+     * shapes of a specialization.
+     */
     readonly name: string;
-    readonly declaration: ts.FunctionDeclaration;
+    readonly declaration: PinnedCallable;
     readonly cpp: string;
     readonly namespace: string;
+    /** The class record a member or constructor lowers over. */
+    readonly owner?: string;
+    /**
+     * Parameter shapes a call decided, by index: a parameter whose type a
+     * type-only module erased takes the argument's shape, and the function
+     * is lowered once per distinct signature (a native overload).
+     */
+    readonly parameters?: readonly (RecordShape | undefined)[];
+}
+
+/** One parameter of a lowered function's native signature. */
+interface NativeParameter {
+    readonly name: ts.Identifier;
+    readonly shape: RecordShape;
+    readonly optional: boolean;
+    readonly node: ts.ParameterDeclaration;
 }
 
 /**
@@ -223,8 +302,53 @@ const nullishFlags =
 
 /** The native namespace of a module's internal functions. */
 function detailNamespace(module: string): string {
-    const stem = posix.basename(module, ".ts");
+    // `_matrix-allocator.ts` is internal by its underscore; the native
+    // namespace already says so.
+    let stem = posix.basename(module, ".ts");
+    while (stem.startsWith("_")) stem = stem.slice(1);
     return `bbl::${stem.replaceAll("-", "_")}_detail`;
+}
+
+/** Whether a node is a function-like body the record model lowers. */
+function isFunctionLike(node: ts.Node): node is ts.FunctionLikeDeclaration {
+    return (
+        ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isArrowFunction(node) ||
+        ts.isMethodDeclaration(node) ||
+        ts.isGetAccessorDeclaration(node) ||
+        ts.isSetAccessorDeclaration(node) ||
+        ts.isConstructorDeclaration(node)
+    );
+}
+
+/** Whether an identifier is the name a declaration binds, not a use. */
+function isDeclarationName(node: ts.Identifier): boolean {
+    const parent = node.parent;
+    return (
+        (ts.isVariableDeclaration(parent) ||
+            ts.isParameter(parent) ||
+            ts.isFunctionDeclaration(parent) ||
+            ts.isFunctionExpression(parent) ||
+            ts.isBindingElement(parent) ||
+            ts.isPropertyAssignment(parent) ||
+            ts.isMethodDeclaration(parent) ||
+            ts.isGetAccessorDeclaration(parent) ||
+            ts.isSetAccessorDeclaration(parent) ||
+            ts.isPropertyDeclaration(parent) ||
+            ts.isPropertySignature(parent) ||
+            ts.isClassDeclaration(parent) ||
+            ts.isInterfaceDeclaration(parent)) &&
+        parent.name === node
+    );
+}
+
+/** The function-like a node sits in (a parameter belongs to its own). */
+function enclosingFunctionLike(node: ts.Node): ts.Node | undefined {
+    if (ts.isParameter(node)) return node.parent;
+    for (let current = node.parent; current; current = current.parent)
+        if (isFunctionLike(current)) return current;
+    return undefined;
 }
 
 function isExported(node: ts.Node): boolean {
@@ -250,16 +374,16 @@ function modulePathOf(file: ts.SourceFile): string {
  */
 export class PinnedRecordModel {
     private readonly records = new Map<string, ResolvedRecord>();
-    private readonly functions = new Map<
-        ts.FunctionDeclaration,
-        LoweredFunction
-    >();
+    /** Lowered functions by `module#name` (a specialization's name included). */
+    private readonly functions = new Map<string, LoweredFunction>();
     private readonly order: LoweredFunction[] = [];
     private readonly variables = new Map<
         ts.VariableDeclaration,
         ModuleVariable
     >();
     public readonly checker: ts.TypeChecker;
+    /** Environment structs named so far, so each has its own name. */
+    private environments = 0;
 
     public constructor(
         public readonly context: LoweringContext,
@@ -270,12 +394,18 @@ export class PinnedRecordModel {
         for (const spec of schema.records) {
             const resolved = this.resolveRecord(spec);
             for (const name of spec.pinned) this.records.set(name, resolved);
-            if (spec.returnOf)
+            if (spec.returnOf || spec.typeOf)
                 this.anonymous.set(
                     this.recordSource(spec).type,
                     spec.pinned[0]!,
                 );
         }
+    }
+
+    /** A fresh name for one lowered function's environment struct. */
+    public environmentName(entry: { cpp: string }): string {
+        this.environments += 1;
+        return `${entry.cpp}_environment_${this.environments}`;
     }
 
     /** Anonymous pinned object types a record is emitted from (a return type). */
@@ -324,13 +454,24 @@ export class PinnedRecordModel {
         return unresolved ?? this.shapeOf(type, declaration);
     }
 
-    /** The schema's shape for an unresolved annotation (`Mat4Storage`). */
+    /**
+     * The schema's shape for an annotation a type-only module erased part
+     * of (`Mat4Storage`, `Mat4 | null`, `() => Mat4`), read from the
+     * annotation the pin spells.
+     */
     public unresolvedShape(
         type: ts.Type,
         declaration: ts.Node,
     ): RecordShape | undefined {
-        if (!(type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)))
-            return undefined;
+        if (!this.erased(type)) return undefined;
+        // A method member's type is its whole signature, not the return
+        // annotation its declaration carries.
+        if (
+            (ts.isMethodSignature(declaration) ||
+                ts.isMethodDeclaration(declaration)) &&
+            type.getCallSignatures().length > 0
+        )
+            return this.functionShape(declaration);
         const annotation =
             ts.isParameter(declaration) ||
             ts.isVariableDeclaration(declaration) ||
@@ -338,18 +479,126 @@ export class PinnedRecordModel {
             ts.isPropertyDeclaration(declaration) ||
             ts.isFunctionDeclaration(declaration) ||
             ts.isMethodSignature(declaration) ||
+            ts.isMethodDeclaration(declaration) ||
+            ts.isGetAccessorDeclaration(declaration) ||
             ts.isAsExpression(declaration)
                 ? declaration.type
                 : undefined;
-        const name =
-            annotation &&
-            ts.isTypeReferenceNode(annotation) &&
-            ts.isIdentifier(annotation.typeName)
-                ? annotation.typeName.text
-                : undefined;
-        return name === undefined
-            ? undefined
-            : this.schema.unresolved?.get(name);
+        const shape = annotation ? this.annotationShape(annotation) : undefined;
+        // An optional member or parameter of an erased type may be absent.
+        const optional =
+            (ts.isParameter(declaration) ||
+                ts.isPropertySignature(declaration) ||
+                ts.isPropertyDeclaration(declaration)) &&
+            declaration.questionToken !== undefined;
+        return shape && optional ? optionalOf(shape) : shape;
+    }
+
+    /** A declared function's value shape: its parameters and result as declared. */
+    public functionShape(declaration: ts.SignatureDeclaration): RecordShape {
+        return {
+            kind: "function",
+            parameters: declaration.parameters.map((parameter) =>
+                this.declaredShape(
+                    this.checker.getTypeAtLocation(parameter.name),
+                    parameter,
+                ),
+            ),
+            result: this.returnShape(declaration),
+        };
+    }
+
+    /** Whether a checked type lost part of itself to an erased module. */
+    public erased(type: ts.Type, depth = 0): boolean {
+        if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return true;
+        if (depth > 3) return false;
+        if (type.isUnion())
+            return type.types.some((member) => this.erased(member, depth + 1));
+        const signatures = type.getCallSignatures();
+        if (signatures.length === 1 && type.getProperties().length === 0) {
+            const signature = signatures[0]!;
+            return (
+                this.erased(
+                    this.checker.getReturnTypeOfSignature(signature),
+                    depth + 1,
+                ) ||
+                signature.parameters.some((parameter) =>
+                    parameter.valueDeclaration
+                        ? this.erased(
+                              this.checker.getTypeOfSymbolAtLocation(
+                                  parameter,
+                                  parameter.valueDeclaration,
+                              ),
+                              depth + 1,
+                          )
+                        : false,
+                )
+            );
+        }
+        if (
+            type.flags & ts.TypeFlags.Object &&
+            (type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference
+        )
+            return this.checker
+                .getTypeArguments(type as ts.TypeReference)
+                .some((argument) => this.erased(argument, depth + 1));
+        return false;
+    }
+
+    /**
+     * An annotation's shape, erased names mapped by the schema: a union
+     * with `null`/`undefined` is optional, a function type maps its
+     * parameters and result, and anything the checker resolved is its
+     * checked shape.
+     */
+    private annotationShape(node: ts.TypeNode): RecordShape | undefined {
+        if (ts.isParenthesizedTypeNode(node))
+            return this.annotationShape(node.type);
+        if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) {
+            const name = node.typeName.text;
+            // `Readonly<Vec3>` is the erased `Vec3` itself.
+            if (name === "Readonly" && node.typeArguments?.length === 1)
+                return this.annotationShape(node.typeArguments[0]!);
+            const mapped = this.schema.unresolved?.get(name);
+            if (mapped) return mapped;
+        }
+        if (ts.isUnionTypeNode(node)) {
+            const present = node.types.filter(
+                (member) =>
+                    !(
+                        (ts.isLiteralTypeNode(member) &&
+                            member.literal.kind ===
+                                ts.SyntaxKind.NullKeyword) ||
+                        member.kind === ts.SyntaxKind.UndefinedKeyword
+                    ),
+            );
+            if (present.length !== 1) return undefined;
+            const shape = this.annotationShape(present[0]!);
+            return shape && present.length !== node.types.length
+                ? optionalOf(shape)
+                : shape;
+        }
+        if (ts.isFunctionTypeNode(node)) {
+            const parameters = node.parameters.map((parameter) =>
+                parameter.type
+                    ? this.annotationShape(parameter.type)
+                    : undefined,
+            );
+            const result = this.annotationShape(node.type);
+            if (!result || parameters.some((shape) => shape === undefined))
+                return undefined;
+            return {
+                kind: "function",
+                parameters: parameters.map((shape) => shape!),
+                result,
+            };
+        }
+        if (ts.isArrayTypeNode(node)) {
+            const element = this.annotationShape(node.elementType);
+            return element ? { kind: "array", element } : undefined;
+        }
+        const type = this.checker.getTypeFromTypeNode(node);
+        return this.erased(type) ? undefined : this.shapeOf(type, node);
     }
 
     /** The native form of a checked pinned type. */
@@ -471,11 +720,66 @@ export class PinnedRecordModel {
             // narrowed by its `update` tag) is that union's struct.
             const owner = this.unionRecordOf(type);
             if (owner !== undefined) return { kind: "record", name: owner };
+            // A fresh literal of an anonymous record's members (`rq ?? { x:
+            // 0, y: 0, z: 0, w: 1 }` under an options quaternion) is that
+            // record, as TypeScript's structural typing already says.
+            const structural = this.structuralRecordOf(type, site);
+            if (structural !== undefined)
+                return { kind: "record", name: structural };
         }
         return this.fail(
             site,
             `Pinned type '${this.checker.typeToString(type)}' has no native record representation.`,
         );
+    }
+
+    /**
+     * The one anonymous record (a return or member type literal) whose
+     * members `type` has exactly, with the same native shapes.
+     */
+    private structuralRecordOf(
+        type: ts.Type,
+        site: ts.Node,
+    ): string | undefined {
+        const properties = this.checker.getPropertiesOfType(type);
+        if (properties.length === 0 || type.getCallSignatures().length > 0)
+            return undefined;
+        const matches: string[] = [];
+        for (const [anonymousType, name] of this.anonymous) {
+            const expected = this.checker.getPropertiesOfType(anonymousType);
+            if (
+                expected.length !== properties.length ||
+                !expected.every((member) => {
+                    const actual = properties.find(
+                        (property) => property.name === member.name,
+                    );
+                    return (
+                        actual !== undefined &&
+                        this.cppType(
+                            this.shapeOf(
+                                this.checker.getTypeOfSymbolAtLocation(
+                                    actual,
+                                    site,
+                                ),
+                                site,
+                            ),
+                        ) ===
+                            this.cppType(
+                                this.shapeOf(
+                                    this.checker.getTypeOfSymbolAtLocation(
+                                        member,
+                                        site,
+                                    ),
+                                    site,
+                                ),
+                            )
+                    );
+                })
+            )
+                continue;
+            matches.push(name);
+        }
+        return matches.length === 1 ? matches[0] : undefined;
     }
 
     private unionArms: Map<ts.Type, string> | undefined;
@@ -485,7 +789,7 @@ export class PinnedRecordModel {
         if (!this.unionArms) {
             this.unionArms = new Map();
             for (const spec of this.schema.records) {
-                if (spec.native || spec.returnOf) continue;
+                if (spec.native || spec.returnOf || spec.typeOf) continue;
                 const source = this.recordSource(spec).type;
                 if (source.isUnion())
                     for (const arm of source.types)
@@ -606,7 +910,9 @@ export class PinnedRecordModel {
             case "typed":
                 return `bbl::js::TypedArray<${{ f32: "float", u32: "std::uint32_t", u8: "std::uint8_t" }[shape.element]}>`;
             case "function":
-                return `std::function<${this.cppType(shape.result)}(${shape.parameters.map((parameter) => this.cppType(parameter)).join(", ")})>`;
+                // A JavaScript function object: copies share its identity
+                // and its environment, which cycle collection traces.
+                return `bbl::js::Callback<${this.cppType(shape.result)}(${shape.parameters.map((parameter) => this.cppType(parameter)).join(", ")})>`;
             case "optional":
                 return nullableByRepresentation(shape.value, this)
                     ? this.cppType(shape.value)
@@ -657,14 +963,39 @@ export class PinnedRecordModel {
                 site: declaration,
             };
         }
+        if (spec.typeOf) {
+            const [module, path] = spec.typeOf.split("#");
+            const [owner, member] = path!.split(".");
+            const declaration = this.typed
+                .sourceFile(module!)
+                .statements.find(
+                    (statement): statement is ts.InterfaceDeclaration =>
+                        ts.isInterfaceDeclaration(statement) &&
+                        statement.name.text === owner,
+                )
+                ?.members.find(
+                    (candidate): candidate is ts.PropertySignature =>
+                        ts.isPropertySignature(candidate) &&
+                        candidate.name.getText() === member,
+                );
+            if (!declaration?.type)
+                throw new Error(
+                    `Pinned member type ${spec.typeOf} is not declared.`,
+                );
+            return {
+                type: this.checker.getTypeFromTypeNode(declaration.type),
+                site: declaration,
+            };
+        }
         const name = spec.pinned[0]!;
         for (const file of this.typed.program.getSourceFiles()) {
             if (!modulePathOf(file).startsWith("src/")) continue;
             for (const statement of file.statements) {
                 if (
                     (ts.isInterfaceDeclaration(statement) ||
-                        ts.isTypeAliasDeclaration(statement)) &&
-                    statement.name.text === name
+                        ts.isTypeAliasDeclaration(statement) ||
+                        ts.isClassDeclaration(statement)) &&
+                    statement.name?.text === name
                 ) {
                     const symbol = declaredSymbol(
                         this.checker,
@@ -682,13 +1013,17 @@ export class PinnedRecordModel {
 
     private recordMembers(spec: RecordSpec): Map<string, ResolvedMember> {
         const members = new Map<string, ResolvedMember>();
+        const pointer = (owner: string) =>
+            spec.reference ? `${owner}->` : `${owner}.`;
         const add = (
             name: string,
             shape: RecordShape,
             override?: MemberSpec,
+            field = override?.field ?? cppIdentifier(pinnedSnakeCase(name)),
         ) => {
-            const field =
-                override?.field ?? cppIdentifier(pinnedSnakeCase(name));
+            // A member the pin's literals implement with accessors is a
+            // getter/setter pair; the struct stores the two functions.
+            const accessor = spec.accessors?.has(name) === true;
             members.set(name, {
                 name,
                 field,
@@ -696,10 +1031,22 @@ export class PinnedRecordModel {
                 access:
                     override?.access ??
                     ((owner) =>
-                        spec.reference
-                            ? `${owner}->${field}`
-                            : `${owner}.${field}`),
+                        accessor
+                            ? this.fail(
+                                  this.recordSource(spec).site,
+                                  `Pinned accessor member '${name}' has no stored value.`,
+                              )
+                            : `${pointer(owner)}${field}`),
                 ...(override?.call ? { call: override.call } : {}),
+                ...(accessor
+                    ? {
+                          get: (owner: string) =>
+                              `${pointer(owner)}get_${field}()`,
+                          set: (owner: string, value: string) =>
+                              `${pointer(owner)}set_${field}(${value})`,
+                      }
+                    : {}),
+                storage: accessor ? "accessor" : "field",
                 declaredBy: spec.pinned[0]!,
             });
         };
@@ -709,6 +1056,8 @@ export class PinnedRecordModel {
             return members;
         }
         const { type, site } = this.recordSource(spec);
+        if (ts.isClassDeclaration(site))
+            return this.classMembers(spec, site, type);
         const variants = type.isUnion() ? type.types : [type];
         const collected = new Map<
             string,
@@ -772,6 +1121,14 @@ export class PinnedRecordModel {
                     site,
                     `Pinned record member '${name}' is not declared.`,
                 );
+        for (const [name, member] of spec.erased ?? []) {
+            if (members.has(name))
+                this.fail(
+                    site,
+                    `Pinned record member '${name}' is declared; it is not erased.`,
+                );
+            add(name, member.shape, member);
+        }
         for (const base of spec.bases ?? []) {
             for (const inherited of this.record(base).members().values()) {
                 const own = members.get(inherited.name);
@@ -786,22 +1143,154 @@ export class PinnedRecordModel {
                 members.set(inherited.name, inherited);
             }
         }
-        // Two pinned members may spell one native field (`runs` and
-        // `_runs`): the underscored one keeps a trailing underscore.
+        this.separateFields(members, (member, field) =>
+            add(
+                member.name,
+                member.shape,
+                spec.members?.get(member.name),
+                field,
+            ),
+        );
+        return members;
+    }
+
+    /**
+     * Two pinned members may spell one native field (`runs` and `_runs`,
+     * a class's `_x` behind its accessor `x`): the underscored one keeps a
+     * trailing underscore. Only stored members occupy a field name.
+     */
+    private separateFields(
+        members: Map<string, ResolvedMember>,
+        rename: (member: ResolvedMember, field: string) => void,
+    ): void {
         const fields = new Map<string, string>();
         for (const member of [...members.values()]) {
+            if (member.storage !== "field") continue;
             const other = fields.get(member.field);
             if (other !== undefined) {
                 const renamed = member.name.startsWith("_")
                     ? member
                     : members.get(other)!;
-                add(renamed.name, renamed.shape, {
-                    shape: renamed.shape,
-                    field: `${renamed.field}_`,
-                });
+                rename(renamed, `${renamed.field}_`);
             }
             fields.set(member.field, member.name);
         }
+    }
+
+    /**
+     * A class's members: its property declarations are the struct's
+     * fields; its accessors and methods are functions lowered over the
+     * instance, called by name.
+     */
+    private classMembers(
+        spec: RecordSpec,
+        declaration: ts.ClassDeclaration,
+        type: ts.Type,
+    ): Map<string, ResolvedMember> {
+        if (!spec.reference)
+            this.fail(declaration, "A pinned class is shared by identity.");
+        if (
+            declaration.heritageClauses?.some(
+                (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+            )
+        )
+            this.fail(declaration, "Pinned class inheritance is not lowered.");
+        const members = new Map<string, ResolvedMember>();
+        const record = spec.pinned[0]!;
+        for (const property of this.checker.getPropertiesOfType(type)) {
+            const name = property.getName();
+            if (spec.omit?.has(name)) continue;
+            const declarations = property.declarations ?? [];
+            const shapeOf = (site: ts.Node): RecordShape =>
+                spec.members?.get(name)?.shape ??
+                this.declaredShape(
+                    this.checker.getTypeOfSymbolAtLocation(property, site),
+                    site,
+                );
+            const base = {
+                name,
+                field: cppIdentifier(pinnedSnakeCase(name)),
+                declaredBy: record,
+            };
+            const getter = declarations.find(ts.isGetAccessorDeclaration);
+            const setter = declarations.find(ts.isSetAccessorDeclaration);
+            const method = declarations.find(ts.isMethodDeclaration);
+            const field = declarations.find(ts.isPropertyDeclaration);
+            // An accessor's or method's shape is read only when a lowered
+            // body uses it: a member nothing reaches may take a type a
+            // type-only module erased.
+            let lazy: RecordShape | undefined;
+            const lazyShape = (site: ts.Node) => () => (lazy ??= shapeOf(site));
+            if (getter || setter) {
+                const site = (getter ?? setter)!;
+                const shape = lazyShape(site);
+                members.set(name, {
+                    ...base,
+                    get shape() {
+                        return shape();
+                    },
+                    access: () =>
+                        this.fail(
+                            site,
+                            `Pinned accessor '${name}' has no stored value.`,
+                        ),
+                    ...(getter
+                        ? {
+                              get: (owner: string) =>
+                                  `${this.qualified(this.lowered(getter))}(${owner})`,
+                          }
+                        : {}),
+                    ...(setter
+                        ? {
+                              set: (owner: string, value: string) =>
+                                  `${this.qualified(this.lowered(setter))}(${owner}, ${value})`,
+                          }
+                        : {}),
+                    storage: "none",
+                });
+            } else if (method) {
+                const shape = lazyShape(method);
+                members.set(name, {
+                    ...base,
+                    get shape() {
+                        return shape();
+                    },
+                    access: () =>
+                        this.fail(
+                            method,
+                            `Pinned method '${name}' is read as a value.`,
+                        ),
+                    call: (owner, args) =>
+                        `${this.qualified(this.lowered(method))}(${[owner, ...args].join(", ")})`,
+                    storage: "none",
+                });
+            } else if (field) {
+                if (
+                    field.modifiers?.some(
+                        (modifier) =>
+                            modifier.kind === ts.SyntaxKind.StaticKeyword,
+                    )
+                )
+                    continue;
+                members.set(name, {
+                    ...base,
+                    shape: shapeOf(field),
+                    access: (owner) => `${owner}->${base.field}`,
+                    storage: "field",
+                });
+            } else
+                this.fail(
+                    declaration,
+                    `Pinned class member '${name}' is neither a field, an accessor nor a method.`,
+                );
+        }
+        this.separateFields(members, (member, field) =>
+            members.set(member.name, {
+                ...member,
+                field,
+                access: (owner) => `${owner}->${field}`,
+            }),
+        );
         return members;
     }
 
@@ -841,6 +1330,62 @@ export class PinnedRecordModel {
         return member;
     }
 
+    /**
+     * The native read of one member for a native caller (the compiler's
+     * text transforms): a stored member's field, an accessor's getter.
+     */
+    public memberRead(owner: string, record: string, name: string): string {
+        const member = this.member(record, name, this.recordSite(record));
+        return member.get ? member.get(owner) : member.access(owner);
+    }
+
+    /** The native store of one member for a native caller: a field, or a setter. */
+    public memberWrite(
+        owner: string,
+        record: string,
+        name: string,
+        value: string,
+    ): string {
+        const member = this.member(record, name, this.recordSite(record));
+        if (member.set) return member.set(owner, value);
+        if (member.storage !== "field")
+            return this.fail(
+                this.recordSite(record),
+                `Pinned member '${name}' of ${record} has no setter.`,
+            );
+        return `${member.access(owner)} = ${value}`;
+    }
+
+    /** The native call of one method member for a native caller. */
+    public memberCall(
+        owner: string,
+        record: string,
+        name: string,
+        args: readonly string[],
+    ): string {
+        const member = this.member(record, name, this.recordSite(record));
+        if (member.shape.kind !== "function")
+            return this.fail(
+                this.recordSite(record),
+                `Pinned member '${name}' of ${record} is not a method.`,
+            );
+        return member.call
+            ? member.call(owner, args)
+            : `${member.access(owner)}(${args.join(", ")})`;
+    }
+
+    /** The shape of one member, for a native caller. */
+    public memberShape(record: string, name: string): RecordShape {
+        return this.member(record, name, this.recordSite(record)).shape;
+    }
+
+    private recordSite(record: string): ts.Node {
+        const spec = this.record(record).spec;
+        return spec.native
+            ? this.typed.program.getSourceFiles()[0]!
+            : this.recordSource(spec).site;
+    }
+
     // ── Values the pin built at generation ─────────────────────────────
 
     /** The shape walk the generation child performs over these records. */
@@ -861,7 +1406,13 @@ export class PinnedRecordModel {
                             members,
                         };
                         for (const member of record.members().values())
-                            members.push([member.name, visit(member.shape)]);
+                            if (member.storage !== "none")
+                                members.push([
+                                    member.name,
+                                    member.storage === "accessor"
+                                        ? { kind: "function" }
+                                        : visit(member.shape),
+                                ]);
                     }
                     return { kind: "record", name: shape.name };
                 }
@@ -954,10 +1505,12 @@ export class PinnedRecordModel {
                         "Transported value record into a non-record.",
                     );
                 const record = this.record(to.name);
-                const members = [...record.members().values()].map(
-                    (member) =>
-                        `.${member.field} = ${value(transported.value[member.name] ?? null, member.shape)}`,
-                );
+                const members = [...record.members().values()]
+                    .filter((member) => member.storage === "field")
+                    .map(
+                        (member) =>
+                            `.${member.field} = ${value(transported.value[member.name] ?? null, member.shape)}`,
+                    );
                 return `bbl::${record.spec.cpp}{${members.join(", ")}}`;
             }
             if ("tuple" in transported)
@@ -1008,13 +1561,14 @@ export class PinnedRecordModel {
         for (const [id, record] of graph.records.entries()) {
             const resolved = this.record(record.name);
             for (const member of resolved.members().values())
-                fills.push(
-                    `    ${member.access(`record_${id}`)} = ${value(record.fields[member.name] ?? null, member.shape)};`,
-                );
+                if (member.storage === "field")
+                    fills.push(
+                        `    ${member.access(`record_${id}`)} = ${value(record.fields[member.name] ?? null, member.shape)};`,
+                    );
         }
         const creations = graph.records.map(
             (record, id) =>
-                `    auto record_${id} = std::make_shared<bbl::${this.record(record.name).spec.cpp}>();`,
+                `    auto record_${id} = bbl::js::make_gc_shared<bbl::${this.record(record.name).spec.cpp}>();`,
         );
         return `[&] {\n${[...creations, ...lines, ...fills].join("\n")}\n    return ${root};\n}()`;
     }
@@ -1033,17 +1587,110 @@ export class PinnedRecordModel {
                 (base) => `bbl::${this.record(base).spec.cpp}`,
             );
             lines.push(
-                `// ${this.context.provenance(modulePathOf(site.getSourceFile()), spec.returnOf?.split("#")[1] ?? spec.pinned[0]!)}`,
+                `// ${this.context.provenance(modulePathOf(site.getSourceFile()), spec.returnOf?.split("#")[1] ?? spec.typeOf?.split("#")[1] ?? spec.pinned[0]!)}`,
                 `struct ${spec.cpp}${bases.length ? ` : ${bases.join(", ")}` : ""} {`,
             );
-            for (const member of record.members().values())
-                if (member.declaredBy === spec.pinned[0])
-                    lines.push(
-                        `    ${this.cppType(member.shape)} ${member.field}${memberInitializer(member.shape)};`,
-                    );
+            const traced: string[] = [];
+            for (const member of record.members().values()) {
+                if (member.storage === "none") continue;
+                const fields: (readonly [string, string])[] =
+                    member.storage === "accessor"
+                        ? [
+                              [
+                                  `get_${member.field}`,
+                                  this.cppType({
+                                      kind: "function",
+                                      parameters: [],
+                                      result: member.shape,
+                                  }),
+                              ],
+                              [
+                                  `set_${member.field}`,
+                                  this.cppType({
+                                      kind: "function",
+                                      parameters: [member.shape],
+                                      result: { kind: "void" },
+                                  }),
+                              ],
+                          ]
+                        : [[member.field, this.cppType(member.shape)]];
+                for (const [field, cpp] of fields) {
+                    if (member.declaredBy === spec.pinned[0])
+                        lines.push(
+                            `    ${cpp} ${field}${member.storage === "field" ? memberInitializer(member.shape) : "{}"};`,
+                        );
+                    if (
+                        member.storage === "accessor" ||
+                        !["number", "boolean", "string"].includes(
+                            member.shape.kind,
+                        )
+                    )
+                        traced.push(field);
+                }
+            }
+            // A struct that can hold a function -- whose environment may
+            // hold anything -- or itself can close a cycle: it describes its
+            // edges, so `make_gc_shared` registers it for cycle collection.
+            if (this.traced(spec.pinned[0]!) && traced.length > 0)
+                lines.push(
+                    "    void gc_trace(const bbl::js::TraceVisitor& visitor) const {",
+                    ...traced.map((field) => `        visitor(${field});`),
+                    "    }",
+                );
             lines.push("};");
         }
         return lines.join("\n");
+    }
+
+    private readonly tracedRecords = new Map<string, boolean>();
+
+    /**
+     * Whether a record's instances can close a reference cycle: its stored
+     * members reach a function (a closure's environment may hold anything)
+     * or the record itself.
+     */
+    public traced(name: string): boolean {
+        const start = this.recordKey(name);
+        const known = this.tracedRecords.get(start);
+        if (known !== undefined) return known;
+        const visited = new Set<string>();
+        const reaches = (shape: RecordShape): boolean => {
+            switch (shape.kind) {
+                case "function":
+                case "object":
+                    return true;
+                case "record": {
+                    const key = this.recordKey(shape.name);
+                    if (key === start) return true;
+                    // A native record's header describes its own edges.
+                    if (visited.has(key) || this.record(key).spec.native)
+                        return false;
+                    visited.add(key);
+                    return stored(key);
+                }
+                case "array":
+                case "set":
+                    return reaches(shape.element);
+                case "map":
+                    return reaches(shape.key) || reaches(shape.value);
+                case "weakmap":
+                case "optional":
+                    return reaches(shape.value);
+                case "variant":
+                    return shape.members.some(reaches);
+                default:
+                    return false;
+            }
+        };
+        const stored = (key: string): boolean =>
+            [...this.record(key).members().values()].some(
+                (member) =>
+                    member.storage === "accessor" ||
+                    (member.storage === "field" && reaches(member.shape)),
+            );
+        const result = stored(start);
+        this.tracedRecords.set(start, result);
+        return result;
     }
 
     // ── Functions and module state ──────────────────────────────────────
@@ -1080,28 +1727,171 @@ export class PinnedRecordModel {
             : undefined;
     }
 
-    /** Register a pinned function (and, lazily, what it reaches). */
-    public lowered(declaration: ts.FunctionDeclaration): LoweredFunction {
-        const existing = this.functions.get(declaration);
-        if (existing) return existing;
+    /**
+     * Register a pinned function (and, lazily, what it reaches): a module
+     * function, or a class's method, accessor or constructor.
+     * `parameters` specializes the parameters a type-only module erased
+     * to the shapes a call passes; each signature is its own overload.
+     */
+    public lowered(
+        declaration: PinnedCallable,
+        parameters?: readonly (RecordShape | undefined)[],
+    ): LoweredFunction {
         const module = modulePathOf(declaration.getSourceFile());
-        const name = declaration.name!.text;
+        const named = this.callableName(declaration);
+        const specialized = parameters?.some((shape) => shape !== undefined)
+            ? parameters
+            : undefined;
+        const name = specialized
+            ? `${named.name}(${specialized.map((shape) => (shape ? this.cppType(shape) : "_")).join(", ")})`
+            : named.name;
+        const key = `${module}#${name}`;
+        const existing = this.functions.get(key);
+        if (existing) return existing;
         const entry: LoweredFunction = {
             module,
             name,
             declaration,
-            cpp: cppIdentifier(pinnedSnakeCase(name)),
+            cpp: named.cpp,
             namespace: (
                 this.schema.exported
-                    ? this.schema.exported.has(`${module}#${name}`)
-                    : isExported(declaration)
+                    ? this.schema.exported.has(`${module}#${named.exported}`)
+                    : isExported(named.declared)
             )
                 ? "bbl"
                 : detailNamespace(module),
+            ...(named.owner !== undefined ? { owner: named.owner } : {}),
+            ...(specialized ? { parameters: specialized } : {}),
         };
-        this.functions.set(declaration, entry);
+        this.functions.set(key, entry);
         this.order.push(entry);
         return entry;
+    }
+
+    /**
+     * The pinned and native names of a callable: a class member's name is
+     * its class's and its own (`ObservableVec3.set x`,
+     * `observable_vec3_set_x`); `exported` is the name `schema.exported`
+     * lists (`ObservableVec3.x` for both its accessors).
+     */
+    private callableName(declaration: PinnedCallable): {
+        name: string;
+        cpp: string;
+        exported: string;
+        declared: ts.Node;
+        owner?: string;
+    } {
+        if (ts.isFunctionDeclaration(declaration)) {
+            if (!declaration.name || !ts.isSourceFile(declaration.parent))
+                return this.fail(
+                    declaration,
+                    "Pinned nested functions are closures, not module functions.",
+                );
+            const name = declaration.name.text;
+            return {
+                name,
+                cpp: cppIdentifier(pinnedSnakeCase(name)),
+                exported: name,
+                declared: declaration,
+            };
+        }
+        const owner = ts.isClassDeclaration(declaration)
+            ? declaration
+            : declaration.parent;
+        if (!ts.isClassDeclaration(owner) || !owner.name)
+            return this.fail(
+                declaration,
+                "Pinned methods and accessors outside a class are closures.",
+            );
+        const className = owner.name.text;
+        if (!this.records.has(className))
+            return this.fail(
+                owner,
+                `Pinned class ${className} is not a record of this model.`,
+            );
+        const stem = cppIdentifier(pinnedSnakeCase(className));
+        const base = {
+            declared: owner,
+            owner: this.recordKey(className),
+        };
+        if (
+            ts.isClassDeclaration(declaration) ||
+            ts.isConstructorDeclaration(declaration)
+        )
+            return {
+                ...base,
+                name: `${className}.constructor`,
+                cpp: `${stem}_construct`,
+                exported: `${className}.constructor`,
+            };
+        const member = declaration.name.getText();
+        const snake = pinnedSnakeCase(member);
+        if (ts.isGetAccessorDeclaration(declaration))
+            return {
+                ...base,
+                name: `${className}.get ${member}`,
+                cpp: `${stem}_get_${snake}`,
+                exported: `${className}.${member}`,
+            };
+        if (ts.isSetAccessorDeclaration(declaration))
+            return {
+                ...base,
+                name: `${className}.set ${member}`,
+                cpp: `${stem}_set_${snake}`,
+                exported: `${className}.${member}`,
+            };
+        return {
+            ...base,
+            name: `${className}.${member}`,
+            cpp: `${stem}_${snake}`,
+            exported: `${className}.${member}`,
+        };
+    }
+
+    /**
+     * A class member's declaration by name (`kind` picks an accessor's
+     * half), or the class's constructor (its declaration, when implicit).
+     */
+    public classMember(
+        module: string,
+        className: string,
+        member: string,
+        kind: "method" | "get" | "set" | "constructor",
+    ): PinnedCallable {
+        const owner = this.typed
+            .sourceFile(module)
+            .statements.find(
+                (statement): statement is ts.ClassDeclaration =>
+                    ts.isClassDeclaration(statement) &&
+                    statement.name?.text === className,
+            );
+        if (!owner)
+            throw new Error(
+                `Pinned class ${module}#${className} is not declared.`,
+            );
+        if (kind === "constructor")
+            return owner.members.find(ts.isConstructorDeclaration) ?? owner;
+        const found = owner.members.find(
+            (candidate) =>
+                candidate.name?.getText() === member &&
+                (kind === "get"
+                    ? ts.isGetAccessorDeclaration(candidate)
+                    : kind === "set"
+                      ? ts.isSetAccessorDeclaration(candidate)
+                      : ts.isMethodDeclaration(candidate)),
+        );
+        if (
+            !found ||
+            !(
+                ts.isGetAccessorDeclaration(found) ||
+                ts.isSetAccessorDeclaration(found) ||
+                ts.isMethodDeclaration(found)
+            )
+        )
+            throw new Error(
+                `Pinned ${kind} ${className}.${member} is not declared.`,
+            );
+        return found;
     }
 
     public qualified(entry: { namespace: string; cpp: string }): string {
@@ -1142,27 +1932,76 @@ export class PinnedRecordModel {
 
     /** The C++ parameter list of a lowered function. */
     private signature(entry: LoweredFunction, defaults: boolean): string {
+        const returns = this.returnShapeOf(entry);
+        const parameters = this.parametersOf(entry).map(
+            (parameter) =>
+                `${this.cppType(parameter.shape)} ${cppIdentifier(parameter.name.text)}${parameter.optional && defaults ? ` = ${this.absent(parameter.shape, parameter.node)}` : ""}`,
+        );
+        const self = this.selfShape(entry);
+        return `${this.cppType(returns)} ${entry.cpp}(${[
+            ...(self ? [`${this.cppType(self)} self`] : []),
+            ...parameters,
+        ].join(", ")})`;
+    }
+
+    /** The instance a class member lowers over, as its first parameter. */
+    public selfShape(entry: LoweredFunction): RecordShape | undefined {
+        return entry.owner !== undefined &&
+            !ts.isClassDeclaration(entry.declaration) &&
+            !ts.isConstructorDeclaration(entry.declaration)
+            ? { kind: "record", name: entry.owner }
+            : undefined;
+    }
+
+    /** A lowered function's pinned parameters with their native shapes. */
+    public parametersOf(entry: LoweredFunction): NativeParameter[] {
         const declaration = entry.declaration;
-        const returns = this.returnShape(declaration);
-        const parameters = declaration.parameters.map((parameter) => {
+        if (ts.isClassDeclaration(declaration)) return [];
+        return declaration.parameters.map((parameter, index) => {
             if (!ts.isIdentifier(parameter.name))
-                this.fail(parameter, "Pinned parameters must be named.");
+                return this.fail(parameter, "Pinned parameters must be named.");
             if (parameter.initializer)
                 this.fail(
                     parameter,
                     "Pinned default parameters are not lowered.",
                 );
-            const shape = this.declaredShape(
-                this.checker.getTypeAtLocation(parameter.name),
-                parameter,
-            );
-            const optional = parameter.questionToken !== undefined;
-            return `${this.cppType(shape)} ${cppIdentifier(parameter.name.text)}${optional && defaults ? ` = ${this.absent(shape, parameter)}` : ""}`;
+            if (ts.getModifiers(parameter)?.length)
+                this.fail(
+                    parameter,
+                    "Pinned parameter properties are not lowered.",
+                );
+            if (entry.owner !== undefined && parameter.name.text === "self")
+                this.fail(
+                    parameter,
+                    "A pinned method's parameter is named as its receiver.",
+                );
+            return {
+                name: parameter.name,
+                shape:
+                    entry.parameters?.[index] ??
+                    this.declaredShape(
+                        this.checker.getTypeAtLocation(parameter.name),
+                        parameter,
+                    ),
+                optional: parameter.questionToken !== undefined,
+                node: parameter,
+            };
         });
-        return `${this.cppType(returns)} ${entry.cpp}(${parameters.join(", ")})`;
     }
 
-    public returnShape(declaration: ts.FunctionDeclaration): RecordShape {
+    /** What a lowered function returns: a constructor returns its instance. */
+    public returnShapeOf(entry: LoweredFunction): RecordShape {
+        const declaration = entry.declaration;
+        if (
+            ts.isClassDeclaration(declaration) ||
+            ts.isConstructorDeclaration(declaration)
+        )
+            return { kind: "record", name: entry.owner! };
+        if (ts.isSetAccessorDeclaration(declaration)) return { kind: "void" };
+        return this.returnShape(declaration);
+    }
+
+    public returnShape(declaration: ts.SignatureDeclaration): RecordShape {
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         if (!signature)
             return this.fail(declaration, "Pinned function has no signature.");
@@ -1179,15 +2018,22 @@ export class PinnedRecordModel {
      * definitions, each group within its namespace.
      */
     public lower(
-        roots: readonly ts.FunctionDeclaration[],
+        roots: readonly PinnedCallable[],
         emit: (entry: { module: string; name: string }) => boolean = () => true,
     ): { declarations: string; definitions: string } {
         for (const root of roots) this.lowered(root);
-        const bodies = new Map<LoweredFunction, string>();
+        const bodies = new Map<
+            LoweredFunction,
+            { environments: string; body: string }
+        >();
         for (let index = 0; index < this.order.length; index += 1) {
             const entry = this.order[index]!;
             const lowerer = new RecordBodyLowerer(this, entry);
-            bodies.set(entry, lowerer.body());
+            const body = lowerer.body();
+            bodies.set(entry, {
+                environments: lowerer.environmentStructs(),
+                body,
+            });
         }
         const selected = this.order.filter((entry) => emit(entry));
         const grouped = <T>(
@@ -1249,8 +2095,10 @@ export class PinnedRecordModel {
         const definitions = grouped(
             selected,
             (entry) => entry.namespace,
-            (entry) =>
-                `// ${this.context.provenance(entry.module, entry.name)}\ninline ${this.signature(entry, false)} {\n${bodies.get(entry)!}\n}`,
+            (entry) => {
+                const { environments, body } = bodies.get(entry)!;
+                return `${environments}// ${this.context.provenance(entry.module, entry.name)}\ninline ${this.signature(entry, false)} {\n${body}\n}`;
+            },
         );
         return { declarations, definitions };
     }
@@ -1285,8 +2133,51 @@ function memberInitializer(shape: RecordShape): string {
 }
 
 interface Local {
-    readonly cpp: string;
     readonly storage: RecordShape;
+    /** The C++ name of a local its frame declares itself. */
+    readonly cpp?: string;
+    /** A binding closures capture: its field in its frame's environment. */
+    readonly captured?: {
+        readonly frame: Frame;
+        readonly field: string;
+        /** Its slot is a `LexicalBinding`: a closure may read it first. */
+        readonly temporal: boolean;
+    };
+}
+
+/**
+ * The environment of one function-like whose bindings closures capture:
+ * a struct holding them, allocated for cycle collection when the frame
+ * runs, and shared by every closure the frame creates -- one environment
+ * per invocation, as JavaScript's scope is.
+ */
+interface Environment {
+    readonly owner: Frame;
+    readonly struct: string;
+    /** The C++ name of the environment pointer inside its own frame. */
+    readonly variable: string;
+    readonly fields: {
+        readonly field: string;
+        readonly storage: RecordShape;
+        readonly temporal: boolean;
+    }[];
+    /** The defining frame's environment, reachable through `enclosing`. */
+    readonly enclosing?: Environment;
+}
+
+/** One function-like body being lowered: the function itself, or a closure in it. */
+interface Frame {
+    readonly node: ts.Node;
+    readonly returns: RecordShape;
+    /** The environment this frame's bindings live in, when closures capture them. */
+    environment?: Environment;
+    /** The defining frame's environment, as a closure receives it. */
+    readonly received?: {
+        readonly variable: string;
+        readonly environment: Environment;
+    };
+    /** The receiver a class member lowers over. */
+    readonly self?: string;
 }
 
 /** How a sink receives a converted value. */
@@ -1307,10 +2198,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private readonly names: Set<string>[] = [new Set()];
     private readonly declared = new Set<string>();
     private readonly substitutions = new Map<ts.Node, string>();
-    private readonly returns: RecordShape;
     private readonly source: ts.SourceFile;
     private temporaries = 0;
     private catchVariable: ts.Symbol | undefined;
+    /** Bindings a closure inside this function reads or writes. */
+    private readonly captured = new Set<ts.Symbol>();
+    /** Where the first closure over each captured binding is created. */
+    private readonly earliestCapture = new Map<ts.Symbol, number>();
+    /** The frames being lowered, innermost last. */
+    private readonly frames: Frame[] = [];
+    /** Environment struct definitions, in the order frames created them. */
+    private readonly environments: string[] = [];
 
     public constructor(
         private readonly model: PinnedRecordModel,
@@ -1330,20 +2228,23 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         };
         super(entry.declaration.getSourceFile(), scope);
         this.source = entry.declaration.getSourceFile();
-        this.returns = model.returnShape(entry.declaration);
-        for (const parameter of entry.declaration.parameters) {
-            const name = parameter.name;
-            if (!ts.isIdentifier(name))
-                this.refuse(name, "Pinned destructured parameter.");
+        this.findCaptures();
+        const self = model.selfShape(entry);
+        const constructs =
+            ts.isClassDeclaration(entry.declaration) ||
+            ts.isConstructorDeclaration(entry.declaration);
+        this.frames.push({
+            node: entry.declaration,
+            returns: model.returnShapeOf(entry),
+            ...(self || constructs ? { self: "self" } : {}),
+        });
+        if (self || constructs) this.names[0]!.add("self");
+        for (const parameter of model.parametersOf(entry))
             this.declare(
-                name,
-                model.declaredShape(
-                    model.checker.getTypeAtLocation(name),
-                    parameter,
-                ),
-                cppIdentifier(name.text),
+                parameter.name,
+                parameter.shape,
+                cppIdentifier(parameter.name.text),
             );
-        }
     }
 
     private get checker(): ts.TypeChecker {
@@ -1354,11 +2255,554 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return this.model.fail(node, message);
     }
 
+    private get frame(): Frame {
+        return this.frames[this.frames.length - 1]!;
+    }
+
+    private get returns(): RecordShape {
+        return this.frame.returns;
+    }
+
     public body(): string {
-        return this.statements(
-            this.entry.declaration.body!.statements,
+        const declaration = this.entry.declaration;
+        const lines = this.frameProlog(
+            ts.isClassDeclaration(declaration) ? [] : declaration.parameters,
+            ts.isClassDeclaration(declaration)
+                ? []
+                : (declaration.body?.statements ?? []),
             "    ",
-        ).join("\n");
+        );
+        if (
+            ts.isClassDeclaration(declaration) ||
+            ts.isConstructorDeclaration(declaration)
+        )
+            return this.constructorBody(lines);
+        return [
+            ...lines,
+            ...this.statements(
+                this.hoisted(declaration.body!.statements),
+                "    ",
+            ),
+        ].join("\n");
+    }
+
+    /** The environment structs this function's frames declared. */
+    public environmentStructs(): string {
+        return this.environments.map((struct) => `${struct}\n`).join("");
+    }
+
+    /**
+     * A constructor: the instance, its field initializers in declaration
+     * order, then the pin's constructor statements over it.
+     */
+    private constructorBody(prolog: readonly string[]): string {
+        const owner = this.entry.owner!;
+        const spec = this.model.record(owner).spec;
+        const declaration = this.entry.declaration;
+        const members = this.model.record(owner).members();
+        const classDeclaration = ts.isClassDeclaration(declaration)
+            ? declaration
+            : declaration.parent;
+        if (!ts.isClassDeclaration(classDeclaration))
+            return this.refuse(
+                declaration,
+                "Pinned constructor outside a class.",
+            );
+        const lines = [
+            `    auto self = bbl::js::make_gc_shared<bbl::${spec.cpp}>();`,
+            ...prolog,
+        ];
+        for (const member of classDeclaration.members) {
+            if (
+                !ts.isPropertyDeclaration(member) ||
+                !member.initializer ||
+                ts
+                    .getModifiers(member)
+                    ?.some(
+                        (modifier) =>
+                            modifier.kind === ts.SyntaxKind.StaticKeyword,
+                    )
+            )
+                continue;
+            const resolved = members.get(member.name.getText());
+            if (!resolved)
+                this.refuse(member, "Pinned class field is not represented.");
+            lines.push(
+                `    ${resolved.access("self")} = ${this.convert(member.initializer, resolved.shape)};`,
+            );
+        }
+        if (ts.isConstructorDeclaration(declaration) && declaration.body) {
+            const returns = this.model.context.findNodes(
+                declaration.body,
+                (node): node is ts.ReturnStatement =>
+                    ts.isReturnStatement(node) &&
+                    enclosingFunctionLike(node) === declaration,
+            );
+            if (returns.length > 0)
+                this.refuse(returns[0]!, "A pinned constructor returns early.");
+            lines.push(
+                ...this.statements(
+                    this.hoisted(declaration.body.statements),
+                    "    ",
+                ),
+            );
+        }
+        lines.push("    return self;");
+        return lines.join("\n");
+    }
+
+    // ── Closures ────────────────────────────────────────────────────────
+
+    /**
+     * Which bindings closures capture: every parameter, local or nested
+     * function a function-like other than its own reads or writes. A
+     * captured binding lives in its frame's environment, so the frame and
+     * all of its closures share it, as JavaScript's scope does.
+     */
+    private findCaptures(): void {
+        const root = this.entry.declaration;
+        const visit = (node: ts.Node): void => {
+            if (
+                ts.isIdentifier(node) &&
+                !isDeclarationName(node) &&
+                !(
+                    ts.isPropertyAccessExpression(node.parent) &&
+                    node.parent.name === node
+                )
+            ) {
+                const symbol = declaredSymbol(this.checker, node);
+                const declaration =
+                    symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+                if (
+                    symbol &&
+                    declaration &&
+                    this.isBinding(declaration) &&
+                    declaration !== root &&
+                    this.within(root, declaration) &&
+                    enclosingFunctionLike(declaration) !==
+                        enclosingFunctionLike(node)
+                ) {
+                    this.captured.add(symbol);
+                    if (!this.topLevel(declaration))
+                        this.refuse(
+                            node,
+                            "A pinned closure captures a block-scoped binding.",
+                        );
+                    if (ts.isBindingElement(declaration))
+                        this.refuse(
+                            node,
+                            "A pinned closure captures a destructured binding.",
+                        );
+                    const created = this.creation(
+                        node,
+                        enclosingFunctionLike(declaration)!,
+                    );
+                    this.earliestCapture.set(
+                        symbol,
+                        Math.min(
+                            created,
+                            this.earliestCapture.get(symbol) ?? created,
+                        ),
+                    );
+                }
+            }
+            if (
+                node.kind === ts.SyntaxKind.ThisKeyword &&
+                !ts.isClassDeclaration(root) &&
+                enclosingFunctionLike(node) !== root
+            )
+                this.refuse(node, "A pinned closure reads `this`.");
+            ts.forEachChild(node, visit);
+        };
+        // An implicit constructor runs its class's field initializers only.
+        if (ts.isClassDeclaration(root)) {
+            for (const member of root.members)
+                if (ts.isPropertyDeclaration(member) && member.initializer)
+                    visit(member.initializer);
+            return;
+        }
+        ts.forEachChild(root, visit);
+    }
+
+    /**
+     * Where the closure through which `node` reaches `owner`'s binding is
+     * created in `owner`'s body: the closure `owner` itself creates (a
+     * nested function exists from the frame's start, hoisted).
+     */
+    private creation(node: ts.Node, owner: ts.Node): number {
+        let closure: ts.Node = node;
+        for (
+            let current = enclosingFunctionLike(node);
+            current && current !== owner;
+            current = enclosingFunctionLike(current)
+        )
+            closure = current;
+        return ts.isFunctionDeclaration(closure)
+            ? owner.getStart()
+            : closure.getStart();
+    }
+
+    /**
+     * Whether a captured `let`/`const` can be read by a closure before its
+     * declaration runs (a closure created, or a function hoisted, above
+     * it): its environment slot is then a `bbl::js::LexicalBinding`, and
+     * such a read throws, as JavaScript's temporal dead zone does.
+     */
+    private temporal(symbol: ts.Symbol, declaration: ts.Node): boolean {
+        return (
+            ts.isVariableDeclaration(declaration) &&
+            (this.earliestCapture.get(symbol) ?? Infinity) <
+                declaration.getStart()
+        );
+    }
+
+    /** A declaration that binds a name in a function's scope. */
+    private isBinding(declaration: ts.Node): boolean {
+        return (
+            ts.isParameter(declaration) ||
+            ts.isVariableDeclaration(declaration) ||
+            ts.isBindingElement(declaration) ||
+            (ts.isFunctionDeclaration(declaration) &&
+                !ts.isSourceFile(declaration.parent))
+        );
+    }
+
+    private within(root: ts.Node, node: ts.Node): boolean {
+        for (
+            let current: ts.Node | undefined = node;
+            current;
+            current = current.parent
+        )
+            if (current === root) return true;
+        return false;
+    }
+
+    /** Whether a binding is declared at its function's top level. */
+    private topLevel(declaration: ts.Node): boolean {
+        if (ts.isParameter(declaration)) return true;
+        const owner = enclosingFunctionLike(declaration);
+        const body = owner && isFunctionLike(owner) ? owner.body : undefined;
+        let statement: ts.Node = declaration;
+        while (
+            statement.parent &&
+            !ts.isBlock(statement.parent) &&
+            !ts.isSourceFile(statement.parent)
+        ) {
+            if (isFunctionLike(statement.parent)) return false;
+            statement = statement.parent;
+        }
+        return statement.parent === body;
+    }
+
+    /** A frame's statements with its nested function declarations hoisted out. */
+    private hoisted(statements: readonly ts.Statement[]): ts.Statement[] {
+        return statements.filter(
+            (statement) => !ts.isFunctionDeclaration(statement),
+        );
+    }
+
+    /**
+     * What a frame does before its first statement: allocate its
+     * environment, move captured parameters into it, and create its
+     * nested functions -- hoisted, as JavaScript does -- before anything
+     * can call them.
+     */
+    private frameProlog(
+        parameters: readonly ts.ParameterDeclaration[],
+        statements: readonly ts.Statement[],
+        indent: string,
+    ): string[] {
+        const frame = this.frame;
+        const owned = (declaration: ts.Node): boolean =>
+            enclosingFunctionLike(declaration) === frame.node;
+        const bindings: {
+            name: ts.Identifier;
+            storage: () => RecordShape;
+        }[] = [];
+        for (const parameter of parameters)
+            if (ts.isIdentifier(parameter.name)) {
+                const name = parameter.name;
+                bindings.push({ name, storage: () => this.localStorage(name) });
+            }
+        const functions: ts.FunctionDeclaration[] = [];
+        for (const statement of statements) {
+            if (ts.isFunctionDeclaration(statement)) {
+                const name = statement.name;
+                if (!name || !statement.body)
+                    return this.refuse(
+                        statement,
+                        "Pinned nested function shape.",
+                    );
+                functions.push(statement);
+                bindings.push({
+                    name,
+                    storage: () =>
+                        this.model.shapeOf(this.typeAt(name), statement),
+                });
+            }
+            if (ts.isVariableStatement(statement))
+                for (const declaration of statement.declarationList
+                    .declarations)
+                    if (ts.isIdentifier(declaration.name))
+                        bindings.push({
+                            name: declaration.name,
+                            storage: () => this.storageOf(declaration),
+                        });
+        }
+        const capturedHere = bindings
+            .filter(({ name }) => {
+                const symbol = declaredSymbol(this.checker, name);
+                const declaration =
+                    symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+                return (
+                    symbol !== undefined &&
+                    this.captured.has(symbol) &&
+                    declaration !== undefined &&
+                    owned(declaration)
+                );
+            })
+            .map(({ name, storage }) => ({ name, storage: storage() }));
+        const lines: string[] = [];
+        if (capturedHere.length > 0) {
+            const struct = this.model.environmentName(this.entry);
+            const variable = this.temporary("environment");
+            const fields: {
+                field: string;
+                storage: RecordShape;
+                temporal: boolean;
+            }[] = [];
+            const taken = new Set(["enclosing", "gc_trace"]);
+            const environment: Environment = {
+                owner: frame,
+                struct,
+                variable,
+                fields,
+                ...(frame.received
+                    ? { enclosing: frame.received.environment }
+                    : {}),
+            };
+            frame.environment = environment;
+            // A captured parameter moves into the environment it shares.
+            const moves: string[] = [];
+            for (const { name, storage } of capturedHere) {
+                let field = cppIdentifier(name.text);
+                while (taken.has(field)) field = `${field}_`;
+                taken.add(field);
+                const symbol = declaredSymbol(this.checker, name)!;
+                const temporal = this.temporal(symbol, name.parent);
+                fields.push({ field, storage, temporal });
+                const parameter = this.locals.get(symbol);
+                if (ts.isParameter(name.parent) && parameter?.cpp)
+                    moves.push(
+                        `${indent}${variable}->${field} = ${parameter.cpp};`,
+                    );
+                this.locals.set(symbol, {
+                    storage,
+                    captured: { frame, field, temporal },
+                });
+            }
+            this.environments.push(this.environmentStruct(environment));
+            lines.push(
+                `${indent}auto ${variable} = bbl::js::make_gc_shared<${struct}>();`,
+            );
+            if (frame.received)
+                lines.push(
+                    `${indent}${variable}->enclosing = ${frame.received.variable};`,
+                );
+            lines.push(...moves);
+        }
+        for (const declaration of functions) {
+            const symbol = declaredSymbol(this.checker, declaration.name!)!;
+            const storage = this.model.shapeOf(
+                this.typeAt(declaration.name!),
+                declaration,
+            );
+            if (storage.kind !== "function")
+                this.refuse(declaration, "Pinned nested function type.");
+            const value = this.closure(declaration, storage, indent);
+            const local = this.locals.get(symbol);
+            if (local?.captured)
+                lines.push(`${indent}${this.localCpp(local)} = ${value};`);
+            else
+                lines.push(
+                    `${indent}${this.cpp(storage)} ${this.declare(declaration.name!, storage)} = ${value};`,
+                );
+        }
+        return lines;
+    }
+
+    /** The indent of a closure's closing brace, by how deeply it nests. */
+    private closureIndent(): string {
+        return "    ".repeat(this.frames.length);
+    }
+
+    /** The struct one frame's environment is. */
+    private environmentStruct(environment: Environment): string {
+        const lines = [`struct ${environment.struct} {`];
+        const traced: string[] = [];
+        if (environment.enclosing) {
+            lines.push(
+                `    std::shared_ptr<${environment.enclosing.struct}> enclosing{};`,
+            );
+            traced.push("enclosing");
+        }
+        for (const { field, storage, temporal } of environment.fields) {
+            lines.push(
+                temporal
+                    ? `    bbl::js::LexicalBinding<${this.cpp(storage)}> ${field}{};`
+                    : `    ${this.cpp(storage)} ${field}${memberInitializer(storage)};`,
+            );
+            if (!["number", "boolean", "string"].includes(storage.kind))
+                traced.push(field);
+        }
+        if (traced.length > 0)
+            lines.push(
+                "    void gc_trace(const bbl::js::TraceVisitor& visitor) const {",
+                ...traced.map((field) => `        visitor(${field});`),
+                "    }",
+            );
+        lines.push("};");
+        return lines.join("\n");
+    }
+
+    /** A binding's storage, before or after its frame declared it. */
+    private localStorage(name: ts.Identifier): RecordShape {
+        const symbol = declaredSymbol(this.checker, name);
+        const local = symbol ? this.locals.get(symbol) : undefined;
+        if (local) return local.storage;
+        const declaration = name.parent;
+        if (ts.isParameter(declaration))
+            return this.model.declaredShape(this.typeAt(name), declaration);
+        return this.refuse(name, "Pinned binding has no storage.");
+    }
+
+    /** The native spelling of a local where the current frame reads it. */
+    private localCpp(local: Local): string {
+        if (!local.captured) return local.cpp!;
+        const slot = this.localSlot(local);
+        return local.captured.temporal ? `${slot}.get()` : slot;
+    }
+
+    /** A captured binding's environment slot, as the current frame reaches it. */
+    private localSlot(local: Local): string {
+        if (!local.captured) return local.cpp!;
+        const frame = this.frame;
+        let environment = frame.environment ?? frame.received?.environment;
+        let path =
+            frame.environment?.variable ?? frame.received?.variable ?? "";
+        while (environment && environment.owner !== local.captured.frame) {
+            path = `${path}->enclosing`;
+            environment = environment.enclosing;
+        }
+        if (!environment)
+            return this.refuse(
+                frame.node,
+                "A pinned closure reads a binding outside its environments.",
+            );
+        return `${path}->${local.captured.field}`;
+    }
+
+    /**
+     * A function value from a pinned arrow, function expression, method,
+     * accessor or nested function: a `bbl::js::Callback` whose invoker
+     * receives the environment it closes over. `to` is the function the
+     * callers see; a closure that declares fewer parameters ignores the
+     * rest, as JavaScript does.
+     */
+    private closure(
+        node: ts.FunctionLikeDeclaration,
+        to: RecordShape,
+        indent: string,
+    ): string {
+        if (to.kind !== "function")
+            return this.refuse(node, `Pinned function as ${this.cpp(to)}.`);
+        if (node.parameters.length > to.parameters.length)
+            return this.refuse(
+                node,
+                "A pinned closure takes more parameters than its callers pass.",
+            );
+        if (
+            (ts.isFunctionDeclaration(node) ||
+                ts.isFunctionExpression(node) ||
+                ts.isMethodDeclaration(node)) &&
+            (node.asteriskToken ||
+                ts
+                    .getModifiers(node)
+                    ?.some(
+                        (modifier) =>
+                            modifier.kind === ts.SyntaxKind.AsyncKeyword,
+                    ))
+        )
+            return this.refuse(node, "Pinned generator or async closure.");
+        const outer = this.frame;
+        const visible = outer.environment ?? outer.received?.environment;
+        const visibleVariable =
+            outer.environment?.variable ?? outer.received?.variable;
+        const received = visible
+            ? { variable: this.temporary("environment"), environment: visible }
+            : undefined;
+        const inner = `${indent}    `;
+        this.frames.push({
+            node,
+            returns: to.result,
+            ...(received ? { received } : {}),
+        });
+        this.names.push(new Set());
+        try {
+            return this.withBindings(() => {
+                const parameters = to.parameters.map((shape, index) => {
+                    const parameter = node.parameters[index];
+                    if (!parameter)
+                        return `[[maybe_unused]] ${this.cpp(shape)} ${this.temporary("unused")}`;
+                    if (
+                        !ts.isIdentifier(parameter.name) ||
+                        parameter.initializer
+                    )
+                        return this.refuse(
+                            parameter,
+                            "Pinned closure parameter shape.",
+                        );
+                    return `${this.cpp(shape)} ${this.declare(parameter.name, shape)}`;
+                });
+                const body = node.body;
+                if (!body)
+                    return this.refuse(node, "Pinned closure has no body.");
+                const statements = ts.isBlock(body) ? body.statements : [];
+                const lines = [
+                    ...this.frameProlog(node.parameters, statements, inner),
+                ];
+                if (ts.isBlock(body))
+                    lines.push(
+                        ...this.statements(
+                            this.hoisted(body.statements),
+                            inner,
+                        ),
+                    );
+                else if (to.result.kind === "void") {
+                    const effect = this.effect(this.skipParentheses(body));
+                    if (effect !== null) lines.push(`${inner}${effect};`);
+                } else
+                    lines.push(
+                        `${inner}return ${this.convert(body, to.result)};`,
+                    );
+                const signature = [
+                    ...(received
+                        ? [
+                              `std::shared_ptr<${received.environment.struct}>& ${received.variable}`,
+                          ]
+                        : []),
+                    ...parameters,
+                ].join(", ");
+                const lambda = `[](${signature}) -> ${this.cpp(to.result)} {\n${lines.join("\n")}\n${indent}}`;
+                return received
+                    ? `${this.cpp(to)}(bbl::js::make_closure(${visibleVariable}, ${lambda}))`
+                    : `${this.cpp(to)}(${lambda})`;
+            });
+        } finally {
+            this.frames.pop();
+            const closed = this.names.pop()!;
+            for (const name of closed) this.declared.delete(name);
+        }
     }
 
     /**
@@ -1380,7 +2824,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 unread = false;
             ts.forEachChild(node, visit);
         };
-        visit(this.entry.declaration.body!);
+        visit(this.entry.declaration);
         return unread;
     }
 
@@ -1406,6 +2850,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
      */
     private adapterArgument(node: ts.CallExpression, index: number): string {
         const argument = node.arguments[index];
+        const platform = this.adapterOf(node)?.parameters?.[index];
+        if (platform)
+            return argument
+                ? this.convert(argument, platform)
+                : this.model.absent(optionalOf(platform), node);
         const callee = this.skipParentheses(node.expression);
         const declaration = this.model.declarationOf(
             ts.isPropertyAccessExpression(callee) ? callee.name : callee,
@@ -1497,6 +2946,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     private shapeAt(node: ts.Node): RecordShape {
+        // A class member's `this` is its instance (the checker's polymorphic
+        // `this` type names no record).
+        if (node.kind === ts.SyntaxKind.ThisKeyword && this.entry.owner)
+            return { kind: "record", name: this.entry.owner };
+        if (ts.isIdentifier(node)) {
+            const declaration = this.model.declarationOf(node);
+            const platform = declaration
+                ? this.moduleValue(declaration)
+                : undefined;
+            if (platform) return platform.shape;
+        }
         const type = this.typeAt(node);
         // A record's member is the shape its record declares, whether the
         // checker spells the member's type by name or anonymously (a
@@ -1511,11 +2971,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                         node.name.text,
                         node,
                     );
-                    const nullish = type.isUnion()
-                        ? type.types.some(
-                              (part) => (part.flags & nullishFlags) !== 0,
-                          )
-                        : (type.flags & nullishFlags) !== 0;
+                    // An erased member type says nothing of absence: the
+                    // member's own shape and the chain decide.
+                    const nullish =
+                        type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)
+                            ? member.shape.kind === "optional" ||
+                              ts.isOptionalChain(node)
+                            : type.isUnion()
+                              ? type.types.some(
+                                    (part) => (part.flags & nullishFlags) !== 0,
+                                )
+                              : (type.flags & nullishFlags) !== 0;
                     return nullish
                         ? optionalOf(member.shape)
                         : this.stripOptional(member.shape);
@@ -1524,7 +2990,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         }
         if (this.containsAny(type)) {
             const structural = this.structuralShape(node);
-            if (structural) return structural;
+            // An optional chain's value may be absent whatever it reads.
+            if (structural)
+                return ts.isOptionalChain(node)
+                    ? optionalOf(structural)
+                    : structural;
         }
         return this.model.shapeOf(type, node);
     }
@@ -1536,6 +3006,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     private recordShapeOf(node: ts.Expression): RecordShape | undefined {
+        if (node.kind === ts.SyntaxKind.ThisKeyword && this.entry.owner)
+            return { kind: "record", name: this.entry.owner };
         if (ts.isPropertyAccessExpression(node)) {
             const owner = this.recordOwner(node.expression);
             const member =
@@ -1551,21 +3023,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             : undefined;
     }
 
-    private containsAny(type: ts.Type, depth = 0): boolean {
-        if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return true;
-        if (depth > 3) return false;
-        if (type.isUnion())
-            return type.types.some((member) =>
-                this.containsAny(member, depth + 1),
-            );
-        if (
-            type.flags & ts.TypeFlags.Object &&
-            (type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference
-        )
-            return this.checker
-                .getTypeArguments(type as ts.TypeReference)
-                .some((argument) => this.containsAny(argument, depth + 1));
-        return false;
+    private containsAny(type: ts.Type): boolean {
+        return this.model.erased(type);
     }
 
     /**
@@ -1603,18 +3062,53 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (local) return local.storage;
             const declaration =
                 symbol?.valueDeclaration ?? symbol?.declarations?.[0];
-            if (
-                declaration &&
-                ts.isVariableDeclaration(declaration) &&
-                declaration.initializer
-            ) {
-                // A local not yet declared: its initializer decides.
+            if (declaration && ts.isVariableDeclaration(declaration)) {
+                // A local not yet declared: its annotation or initializer decides.
                 if (!ts.isSourceFile(declaration.parent.parent.parent))
-                    return this.structuralShape(declaration.initializer);
+                    return this.storageOf(declaration);
                 return this.model.variable(declaration).shape;
             }
+            if (declaration && ts.isParameter(declaration))
+                return this.model.unresolvedShape(
+                    this.typeAt(declaration.name),
+                    declaration,
+                );
+            // A module function as a value: its declared signature.
+            if (
+                declaration &&
+                ts.isFunctionDeclaration(declaration) &&
+                ts.isSourceFile(declaration.parent)
+            )
+                return this.model.functionShape(declaration);
             return undefined;
         }
+        // A function value's call: its declared result.
+        if (ts.isCallExpression(node)) {
+            const callee = this.skipParentheses(node.expression);
+            const declaration =
+                ts.isIdentifier(callee) || ts.isPropertyAccessExpression(callee)
+                    ? this.model.declarationOf(
+                          ts.isPropertyAccessExpression(callee)
+                              ? callee.name
+                              : callee,
+                      )
+                    : undefined;
+            if (
+                declaration &&
+                ts.isFunctionDeclaration(declaration) &&
+                ts.isSourceFile(declaration.parent)
+            )
+                return this.model.returnShape(declaration);
+            if (!ts.isPropertyAccessExpression(callee)) {
+                const shape = this.stripOptional(this.shapeAt(callee));
+                if (shape.kind === "function") return shape.result;
+            }
+        }
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        )
+            return this.shapeAt(node.right);
         if (ts.isPropertyAccessExpression(node)) {
             const owner = this.stripOptional(this.shapeAt(node.expression));
             if (owner.kind === "record")
@@ -1738,6 +3232,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const unwrapped = this.skipParentheses(node);
         if (this.isAbsentLiteral(unwrapped))
             return this.model.absent(to, unwrapped);
+        if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped))
+            return this.closure(
+                unwrapped,
+                this.stripOptional(to),
+                this.closureIndent(),
+            );
         if (ts.isObjectLiteralExpression(unwrapped))
             return this.objectLiteral(unwrapped, to);
         if (ts.isArrayLiteralExpression(unwrapped))
@@ -1757,7 +3257,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.nullish(unwrapped, to);
         if (ts.isIdentifier(unwrapped)) {
             const declaration = this.model.declarationOf(unwrapped);
-            if (declaration && ts.isFunctionDeclaration(declaration))
+            if (
+                declaration &&
+                ts.isFunctionDeclaration(declaration) &&
+                ts.isSourceFile(declaration.parent)
+            )
                 return this.coerce(
                     this.functionReference(unwrapped, declaration),
                     this.shapeAt(unwrapped),
@@ -1843,6 +3347,17 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const substituted = this.substitutions.get(node);
         if (substituted !== undefined) return substituted;
         if (ts.isIdentifier(node)) return this.identifier(node);
+        if (node.kind === ts.SyntaxKind.ThisKeyword) {
+            const self = this.frames[0]!.self;
+            if (!self || this.frames.length > 1)
+                return this.refuse(
+                    node,
+                    "Pinned `this` outside a class member.",
+                );
+            return self;
+        }
+        if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
+            return this.closure(node, this.shapeAt(node), this.closureIndent());
         if (
             ts.isStringLiteral(node) ||
             ts.isNoSubstitutionTemplateLiteral(node)
@@ -1888,7 +3403,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         // `{ data }` names the property; its value is the local `data`.
         const symbol = declaredSymbol(this.checker, node);
         const local = symbol ? this.locals.get(symbol) : undefined;
-        if (local) return this.narrowed(local.cpp, local.storage, node);
+        if (local)
+            return this.narrowed(this.localCpp(local), local.storage, node);
         const declaration = this.model.declarationOf(node);
         if (!declaration) return undefined;
         // The ES library's numeric globals.
@@ -1898,6 +3414,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             if (node.text === "Infinity")
                 return "std::numeric_limits<double>::infinity()";
         }
+        const platform = this.moduleValue(declaration);
+        if (platform) return platform.cpp;
         if (ts.isFunctionDeclaration(declaration))
             return this.functionReference(node, declaration);
         if (
@@ -1963,7 +3481,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 site,
                 `Pinned adapter needs the local '${name}'.`,
             );
-        return found[0]![1].cpp;
+        return this.localCpp(found[0]![1]);
+    }
+
+    /** A module variable the platform owns (`schema.moduleValues`). */
+    private moduleValue(declaration: ts.Declaration): ModuleValue | undefined {
+        const key = this.model.keyOf(declaration);
+        return key !== undefined && ts.isVariableDeclaration(declaration)
+            ? this.model.schema.moduleValues?.get(key)
+            : undefined;
     }
 
     private omittedReason(node: ts.Identifier): string | undefined {
@@ -2055,6 +3581,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
 
     private binaryValue(node: ts.BinaryExpression): string | undefined {
         const kind = node.operatorToken.kind;
+        // `a = b` as a value (`m[0] = m[5] = 1`): the stored value, once.
+        if (kind === ts.SyntaxKind.EqualsToken) {
+            const place = this.place(node.left);
+            const type = this.cpp(place.storage);
+            const assigned = this.temporary("assigned");
+            return `[&]() -> ${type} { ${type} ${assigned} = ${this.convert(node.right, place.storage)}; ${place.store(assigned)}; return ${assigned}; }()`;
+        }
         if (kind === ts.SyntaxKind.QuestionQuestionToken)
             return this.nullish(node, this.shapeAt(node));
         if (
@@ -2220,8 +3753,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         switch (shape.kind) {
             case "record": {
                 const member = this.model.member(shape.name, name, node);
+                if (member.storage !== "field" && !member.get)
+                    return this.refuse(
+                        node,
+                        `Pinned member '${name}' has no getter.`,
+                    );
                 return this.narrowed(
-                    member.access(value()),
+                    member.get ? member.get(value()) : member.access(value()),
                     member.shape,
                     node,
                 );
@@ -2375,10 +3913,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private chainRest(node: ts.Expression): string {
         if (ts.isPropertyAccessExpression(node)) {
             const shape = this.ownerShape(node.expression);
-            if (shape.kind === "record")
-                return this.model
-                    .member(shape.name, node.name.text, node)
-                    .access(this.chainOwner(node.expression));
+            if (shape.kind === "record") {
+                const member = this.model.member(
+                    shape.name,
+                    node.name.text,
+                    node,
+                );
+                const owner = this.chainOwner(node.expression);
+                return member.get ? member.get(owner) : member.access(owner);
+            }
             return this.propertyRead(node, true);
         }
         if (ts.isCallExpression(node)) return this.callValue(node, true);
@@ -2468,45 +4011,97 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             const method = this.method(node, callee);
             if (method !== undefined) return method;
         }
-        if (
-            declaration &&
-            ts.isFunctionDeclaration(declaration) &&
-            declaration.body
-        ) {
-            const entry = this.model.lowered(declaration);
-            return `${this.model.qualified(entry)}(${this.arguments(node, declaration)})`;
-        }
+        // A local function (a parameter, a closure, a nested function).
         if (ts.isIdentifier(callee)) {
             const symbol = declaredSymbol(this.checker, callee);
             const local = symbol ? this.locals.get(symbol) : undefined;
-            const storage = local?.storage;
-            if (local && storage?.kind === "function") {
-                const { parameters } = storage;
-                return `${local.cpp}(${node.arguments.map((argument, index) => this.convert(argument, parameters[index]!)).join(", ")})`;
-            }
+            if (local)
+                return this.functionValueCall(
+                    node,
+                    this.localCpp(local),
+                    local.storage,
+                );
         }
+        if (
+            declaration &&
+            ts.isFunctionDeclaration(declaration) &&
+            ts.isSourceFile(declaration.parent) &&
+            declaration.body
+        ) {
+            const entry = this.model.lowered(
+                declaration,
+                this.specialization(node, declaration),
+            );
+            return `${this.model.qualified(entry)}(${this.arguments(node, entry)})`;
+        }
+        // A computed function value (`(_allocate ?? _defaultAllocate)()`).
+        if (!ts.isPropertyAccessExpression(callee))
+            return this.functionValueCall(
+                node,
+                this.value(callee),
+                this.shapeAt(callee),
+            );
         return this.refuse(
             node,
             `Pinned call '${callee.getText(this.source)}' has no native lowering.`,
         );
     }
 
-    /** Arguments converted to a pinned declaration's parameter shapes. */
-    private arguments(
+    /** A call of a function value: its arguments as its parameters. */
+    private functionValueCall(
+        node: ts.CallExpression,
+        callee: string,
+        storage: RecordShape,
+    ): string {
+        const shape = this.stripOptional(storage);
+        if (shape.kind !== "function")
+            return this.refuse(node, "Pinned call of a non-function value.");
+        if (node.arguments.length > shape.parameters.length)
+            return this.refuse(node, "Pinned call passes extra arguments.");
+        const args = shape.parameters.map((parameter, index) => {
+            const argument = node.arguments[index];
+            return argument
+                ? this.convert(argument, parameter)
+                : this.model.absent(parameter, node);
+        });
+        return `${callee}(${args.join(", ")})`;
+    }
+
+    /**
+     * The shapes a call's arguments give the parameters a type-only
+     * module erased (a structural `Vec3` that receives an `ObservableVec3`):
+     * the callee is lowered once per distinct signature.
+     */
+    private specialization(
         node: ts.CallExpression,
         declaration: ts.FunctionDeclaration,
-    ): string {
-        if (node.arguments.length > declaration.parameters.length)
+    ): (RecordShape | undefined)[] {
+        return declaration.parameters.map((parameter, index) => {
+            const type = this.checker.getTypeAtLocation(parameter.name);
+            if (
+                !this.containsAny(type) ||
+                this.model.unresolvedShape(type, parameter) !== undefined
+            )
+                return undefined;
+            const argument = node.arguments[index];
+            if (!argument)
+                return this.refuse(
+                    node,
+                    "A pinned erased parameter needs an argument to take its shape from.",
+                );
+            return this.shapeAt(argument);
+        });
+    }
+
+    /** Arguments converted to a lowered function's parameter shapes. */
+    private arguments(node: ts.CallExpression, entry: LoweredFunction): string {
+        const parameters = this.model.parametersOf(entry);
+        if (node.arguments.length > parameters.length)
             return this.refuse(node, "Pinned call passes extra arguments.");
         return node.arguments
-            .map((argument, index) => {
-                const parameter = declaration.parameters[index]!;
-                const shape = this.model.declaredShape(
-                    this.checker.getTypeAtLocation(parameter.name),
-                    parameter,
-                );
-                return this.convert(argument, shape);
-            })
+            .map((argument, index) =>
+                this.convert(argument, parameters[index]!.shape),
+            )
             .join(", ");
     }
 
@@ -2759,11 +4354,15 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     ts.isStringLiteral(property.name))
                     ? property.name.text
                     : this.refuse(property, "Pinned record literal member.");
-            // A tag the port does not store (`_kind: "text-layer"`); only a
-            // literal, so dropping it drops no evaluation.
-            if (this.model.record(record).spec.omit?.has(name)) {
+            // A tag the port does not store (`_kind: "text-layer"`), or a
+            // function it does not represent; dropping either drops no
+            // evaluation.
+            const spec = this.model.record(record).spec;
+            if (spec.omit?.has(name)) {
                 if (
                     !ts.isMethodDeclaration(property) &&
+                    !ts.isGetAccessorDeclaration(property) &&
+                    !ts.isSetAccessorDeclaration(property) &&
                     !(
                         ts.isPropertyAssignment(property) &&
                         this.inert(property.initializer)
@@ -2776,6 +4375,41 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 return "";
             }
             const member = this.model.member(record, name, property);
+            const indent = this.closureIndent();
+            if (
+                ts.isGetAccessorDeclaration(property) ||
+                ts.isSetAccessorDeclaration(property)
+            ) {
+                if (member.storage !== "accessor")
+                    return this.refuse(
+                        property,
+                        `Pinned accessor '${name}' implements a member the port stores.`,
+                    );
+                const getter = ts.isGetAccessorDeclaration(property);
+                const pointer = spec.reference ? "->" : ".";
+                return `${owner}${pointer}${getter ? "get" : "set"}_${member.field} = ${this.closure(
+                    property,
+                    getter
+                        ? {
+                              kind: "function",
+                              parameters: [],
+                              result: member.shape,
+                          }
+                        : {
+                              kind: "function",
+                              parameters: [member.shape],
+                              result: { kind: "void" },
+                          },
+                    indent,
+                )};`;
+            }
+            if (member.storage === "accessor")
+                return this.refuse(
+                    property,
+                    `Pinned member '${name}' is implemented with accessors elsewhere.`,
+                );
+            if (ts.isMethodDeclaration(property))
+                return `${member.access(owner)} = ${this.closure(property, member.shape, indent)};`;
             const initializer = ts.isShorthandPropertyAssignment(property)
                 ? property.name
                 : ts.isPropertyAssignment(property)
@@ -2844,8 +4478,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const spec = this.model.record(shape.name).spec;
         const name = this.temporary("record");
         const writes = this.propertyWrites(node, shape.name, name);
+        // A record that can close a cycle joins cycle collection; any
+        // other `make_gc_shared` releases by reference counting alone.
         const created = spec.reference
-            ? `auto ${name} = std::make_shared<bbl::${spec.cpp}>();`
+            ? `auto ${name} = bbl::js::make_gc_shared<bbl::${spec.cpp}>();`
             : `bbl::${spec.cpp} ${name}{};`;
         return `[&] { ${created} ${writes.filter((write) => write.length > 0).join(" ")} return ${name}; }()`;
     }
@@ -2878,8 +4514,43 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         to: RecordShape,
     ): string | undefined {
         if (!ts.isIdentifier(node.expression)) return undefined;
-        const name = node.expression.text;
         const args = node.arguments ?? [];
+        const declaration = this.model.declarationOf(node.expression);
+        // A pinned class the schema represents constructs through its
+        // lowered constructor.
+        if (
+            declaration &&
+            ts.isClassDeclaration(declaration) &&
+            declaration.name &&
+            this.model.isRecordName(declaration.name.text)
+        ) {
+            const constructor =
+                declaration.members.find(ts.isConstructorDeclaration) ??
+                declaration;
+            const entry = this.model.lowered(constructor);
+            const parameters = this.model.parametersOf(entry);
+            if (args.length > parameters.length)
+                return this.refuse(
+                    node,
+                    "Pinned construction passes extra arguments.",
+                );
+            return this.coerce(
+                `${this.model.qualified(entry)}(${args.map((argument, index) => this.convert(argument, parameters[index]!.shape)).join(", ")})`,
+                { kind: "record", name: entry.owner! },
+                to,
+                node,
+            );
+        }
+        // `new F32(16)`: the pin's short alias of a library constructor.
+        const name =
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            declaration.initializer &&
+            ts.isIdentifier(declaration.initializer) &&
+            !declaration.getSourceFile().isDeclarationFile
+                ? declaration.initializer.text
+                : node.expression.text;
         const shape = this.stripOptional(to);
         switch (name) {
             case "WeakSet":
@@ -2965,13 +4636,20 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (ts.isIdentifier(node)) {
             const symbol = declaredSymbol(this.checker, node);
             const local = symbol ? this.locals.get(symbol) : undefined;
-            if (local)
+            if (local) {
+                const cpp = this.localCpp(local);
                 return {
-                    cpp: local.cpp,
+                    cpp,
                     storage: local.storage,
-                    store: (value) => `${local.cpp} = ${value}`,
+                    store: (value) => `${cpp} = ${value}`,
                 };
+            }
             const declaration = this.model.declarationOf(node);
+            if (declaration && this.moduleValue(declaration))
+                return this.refuse(
+                    node,
+                    "Pinned write to a module variable the platform owns.",
+                );
             if (
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&
@@ -3001,7 +4679,21 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     "Pinned member write to a non-record.",
                 );
             const member = this.model.member(shape.name, node.name.text, node);
-            const cpp = member.access(this.presentValue(node.expression));
+            const owner = this.presentValue(node.expression);
+            // A setter stores through its function; no lvalue to update.
+            if (member.set) {
+                const set = member.set;
+                return {
+                    storage: member.shape,
+                    store: (value) => set(owner, value),
+                };
+            }
+            if (member.storage !== "field")
+                return this.refuse(
+                    node,
+                    `Pinned member '${node.name.text}' has no setter.`,
+                );
+            const cpp = member.access(owner);
             return {
                 cpp,
                 storage: member.shape,
@@ -3124,29 +4816,97 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     ): string[] {
         if (ts.isObjectBindingPattern(declaration.name))
             return this.destructured(declaration, declaration.name, indent);
+        if (ts.isArrayBindingPattern(declaration.name))
+            return this.tupleDestructured(
+                declaration,
+                declaration.name,
+                indent,
+            );
         if (!ts.isIdentifier(declaration.name))
             return this.refuse(
                 declaration,
                 "Pinned destructuring declaration.",
             );
         if (this.omittedReason(declaration.name)) return [];
-        const declared = this.checker.getTypeAtLocation(declaration.name);
-        const storage =
-            this.model.unresolvedShape(declared, declaration) ??
-            (this.containsAny(declared) && declaration.initializer
-                ? this.structuralShape(declaration.initializer)
-                : undefined) ??
-            this.model.shapeOf(declared, declaration);
+        const symbol = declaredSymbol(this.checker, declaration.name);
+        const captured = symbol ? this.locals.get(symbol) : undefined;
+        const storage = captured?.captured
+            ? captured.storage
+            : this.storageOf(declaration);
         const initializer = declaration.initializer;
         const value = initializer
             ? this.convert(initializer, storage)
             : storage.kind === "number"
               ? "0"
               : `${this.cpp(storage)}{}`;
+        // A captured binding already lives in its frame's environment.
+        if (captured?.captured)
+            return [
+                captured.captured.temporal
+                    ? `${indent}${this.localSlot(captured)}.initialize(${value});`
+                    : `${indent}${this.localCpp(captured)} = ${value};`,
+            ];
         const cpp = this.declare(declaration.name, storage);
         return [
             `${indent}${this.mayBeUnread(declaration.name) ? "[[maybe_unused]] " : ""}${this.cpp(storage)} ${cpp} = ${value};`,
         ];
+    }
+
+    /** A local's storage: its erased annotation, its initializer's shape, or its type's. */
+    private storageOf(declaration: ts.VariableDeclaration): RecordShape {
+        const declared = this.checker.getTypeAtLocation(declaration.name);
+        return (
+            this.model.unresolvedShape(declared, declaration) ??
+            (this.containsAny(declared) && declaration.initializer
+                ? this.structuralShape(declaration.initializer)
+                : undefined) ??
+            this.model.shapeOf(declared, declaration)
+        );
+    }
+
+    /** `const [a, b] = tuple`: the tuple once, then each element. */
+    private tupleDestructured(
+        declaration: ts.VariableDeclaration,
+        pattern: ts.ArrayBindingPattern,
+        indent: string,
+    ): string[] {
+        const initializer = declaration.initializer;
+        if (!initializer)
+            return this.refuse(
+                declaration,
+                "Pinned destructuring needs a value.",
+            );
+        const shape = this.stripOptional(this.shapeAt(initializer));
+        if (shape.kind !== "tuple")
+            return this.refuse(
+                initializer,
+                "Pinned array destructuring of a non-tuple.",
+            );
+        const source = this.temporary("destructured");
+        const lines = [
+            `${indent}const ${this.cpp(shape)} ${source} = ${this.convert(initializer, shape)};`,
+        ];
+        for (const [index, element] of pattern.elements.entries()) {
+            if (ts.isOmittedExpression(element)) continue;
+            if (
+                element.dotDotDotToken ||
+                element.initializer ||
+                !ts.isIdentifier(element.name)
+            )
+                return this.refuse(element, "Pinned destructuring element.");
+            const value = `bbl::pinned::tuple_at(${source}, ${index}.0)`;
+            const symbol = declaredSymbol(this.checker, element.name);
+            const captured = symbol ? this.locals.get(symbol) : undefined;
+            if (captured?.captured) {
+                lines.push(`${indent}${this.localCpp(captured)} = ${value};`);
+                continue;
+            }
+            const cpp = this.declare(element.name, { kind: "number" });
+            lines.push(
+                `${indent}${this.mayBeUnread(element.name) ? "[[maybe_unused]] " : ""}double ${cpp} = ${value};`,
+            );
+        }
+        return lines;
     }
 
     /** `const { _a: a, b } = value`: the value once, then each named member. */

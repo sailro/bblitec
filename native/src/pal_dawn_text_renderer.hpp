@@ -5,7 +5,7 @@
 namespace bbl::pal {
 
 /** Point the engine surface at this frame's Dawn device, size and format, then
- *  run the pin's update for every registered text renderer. */
+ *  run every registered text renderer's `_update`, the pin's closure. */
 inline void update_dawn_text_renderers(Engine& engine, DawnTextRenderer& text, double width,
                                        double height) {
     const auto& surface = bbl::text_surface(engine);
@@ -14,10 +14,10 @@ inline void update_dawn_text_renderers(Engine& engine, DawnTextRenderer& text, d
     surface->format = dawn_text_format_name(text.device->color_format);
     const auto renderers = surface->rendering_contexts;
     for (std::size_t index = 0; index < renderers.size(); ++index)
-        text_renderer_detail::text_renderer_update(renderers[index]);
+        renderers[index]->update();
 }
 
-/** Record every registered text renderer's pass into `target`. */
+/** Record every registered text renderer's pass into `target` through its `_record`. */
 inline void record_dawn_text_renderers(Engine& engine, DawnTextRenderer& text,
                                        WGPUCommandEncoder encoder, WGPUTextureView target) {
     const auto& surface = bbl::text_surface(engine);
@@ -31,7 +31,7 @@ inline void record_dawn_text_renderers(Engine& engine, DawnTextRenderer& text,
     });
     const auto renderers = surface->rendering_contexts;
     for (std::size_t index = 0; index < renderers.size(); ++index)
-        static_cast<void>(text_renderer_detail::text_renderer_record(renderers[index]));
+        static_cast<void>(renderers[index]->record());
 }
 
 } // namespace bbl::pal

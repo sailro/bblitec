@@ -44,18 +44,9 @@ using TextRun = std::shared_ptr<GlyphRun>;
 using TextRunRef = std::variant<double, TextRun>;
 struct TextLayoutFont;
 struct TextRenderableGpu;
+struct TextRenderableState;
+using TextRenderable = std::shared_ptr<TextRenderableState>;
 
-struct TextQuaternion {
-    double x = 0, y = 0, z = 0, w = 1;
-};
-struct TextRenderableOptions {
-    std::optional<Vec3d> position;
-    std::optional<TextQuaternion> rotation_quaternion;
-    std::optional<Vec3d> scaling;
-    std::optional<double> opacity;
-    std::optional<bool> ignore_depth;
-    std::optional<double> order;
-};
 /** The pin's `RenderTargetSignature`, as a scene pass describes its target. */
 struct TextTargetSignature {
     std::optional<std::string> color_format;
@@ -63,26 +54,6 @@ struct TextTargetSignature {
     std::optional<std::string> depth_compare;
     double sample_count = 1;
 };
-struct TextRenderableState {
-    TextData data;
-    Vec3d position;
-    TextQuaternion rotation_quaternion;
-    Vec3d scaling;
-    Vec3d rotation;
-    double quaternion_version = 0;
-    double synced_quaternion_version = -1;
-    double world_version = 0;
-    bool world_cached = false;
-    js::TypedArray<float> world = js::TypedArray<float>(16);
-    bool wm_dirty = true;
-    double opacity = 1;
-    bool ignore_depth = false;
-    double order = 200;
-    bool is_transparent = true;
-    double version = 0;
-    std::shared_ptr<TextRenderableGpu> gpu;
-};
-using TextRenderable = std::shared_ptr<TextRenderableState>;
 
 /** The scene camera as the pin's text uniform update reads it. */
 struct TextCameraInput {
@@ -97,6 +68,57 @@ struct TextDrawUpdateContext {
     double target_width = 0;
     double target_height = 0;
 };
+
+/**
+ * The pin's `DrawBinding` (`render/renderable.ts` is type-only, so the
+ * port declares it): what a text renderable's `bind` returns, whose
+ * `update` and `draw` are the pin's own closures.
+ */
+struct TextDrawBinding {
+    TextRenderable renderable;
+    TextGpuHandle pipeline;
+    js::Callback<double(TextGpuEncoderHandle, TextSurfaceHandle)> draw;
+    js::Callback<void(TextDrawUpdateContext)> update;
+};
+using TextDrawBindingHandle = std::shared_ptr<TextDrawBinding>;
+
+/**
+ * The pin's `IWorldMatrixProvider` (`scene/parentable.ts` is type-only):
+ * a text renderable's world state is never parented, so nothing the
+ * lowered program runs constructs one.
+ */
+struct WorldMatrixProvider {
+    js::TypedArray<float> world_matrix;
+    double world_matrix_version = 0;
+};
+
+#if BBLITE_HAS_TEXT
+/**
+ * `addDeferredSceneRenderables` over the native scene: its deferred-builder
+ * queue runs the pin's builder after construction, publishes the text
+ * renderables the builder returned and adopts its disposer. The builder's
+ * failure rejects the scene's registration, as the pin's async builder does.
+ */
+template <class Build> void add_deferred_text_renderables(Scene& scene, Build build) {
+    if (scene.disposed)
+        throw std::runtime_error(
+            "Text attachment after scene disposal requires the pinned async late-cleanup "
+            "lifecycle.");
+    const std::weak_ptr<SceneState> owner = scene.state;
+    scene.deferred_builders.emplace_back(
+        [owner, build = std::move(build)] {
+            const auto state = owner.lock();
+            if (!state)
+                return;
+            const auto built = build();
+            for (const auto& renderable : built.renderables)
+                state->text_renderables.push_back(renderable);
+            if (built.dispose)
+                state->disposables.push_back(built.dispose);
+        },
+        SceneDeferredFailure::promise_rejection);
+}
+#endif
 
 } // namespace bbl
 

@@ -264,6 +264,7 @@ const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
     log: "std::log",
     cos: "std::cos",
     acos: "std::acos",
+    asin: "std::asin",
     atan2: "std::atan2",
     sin: "std::sin",
     tan: "std::tan",
