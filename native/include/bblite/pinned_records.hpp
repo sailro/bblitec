@@ -3,8 +3,11 @@
 // JavaScript semantics the record lowerer (src/lowering/pinned-record-lowerer.ts)
 // spells over the runtime's containers: absence as null handles and empty
 // optionals, lazy `??`, Array/TypedArray reads past the end and a stable
-// comparator sort.
+// comparator sort. Closures are `js::Callback`s over environment structs,
+// whose captured bindings a closure may read before their declaration are
+// `js::LexicalBinding`s.
 
+#include <bblite/js_binding.hpp>
 #include <bblite/js_data.hpp>
 
 #include <algorithm>
@@ -55,6 +58,9 @@ template <class T> [[nodiscard]] bool truthy(const std::shared_ptr<T>& value) {
 template <class R, class... A> [[nodiscard]] bool truthy(const std::function<R(A...)>& value) {
     return static_cast<bool>(value);
 }
+template <class R, class... A> [[nodiscard]] bool truthy(const js::Callback<R(A...)>& value) {
+    return static_cast<bool>(value);
+}
 
 /** A value the pin proved present (`x!`, a guarded optional). */
 template <class T> [[nodiscard]] T& present(std::optional<T>& value) {
@@ -92,6 +98,7 @@ template <class L, class F> decltype(auto) nullish_assign(L& slot, F make) {
 template <class T> struct AbsentAsNull : std::false_type {};
 template <class T> struct AbsentAsNull<std::shared_ptr<T>> : std::true_type {};
 template <class R, class... A> struct AbsentAsNull<std::function<R(A...)>> : std::true_type {};
+template <class R, class... A> struct AbsentAsNull<js::Callback<R(A...)>> : std::true_type {};
 
 /** `map.get(key)`: null for an absent handle, an empty optional otherwise. */
 template <class K, class V, class Q>

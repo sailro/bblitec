@@ -23,7 +23,6 @@ export function pinnedQuaternionHeader(context: LoweringContext): string {
 /** The pin's quaternion conversions, shared by observable transform adapters. */
 export function pinnedQuaternionMath(context: LoweringContext): string {
     const calls = pinnedNumericMathCalls();
-    calls.set("Math.asin", (args) => `std::asin(${args.join(", ")})`);
     return (
         [
             ["eulerXYZToQuatTuple", "euler_to_quat", ["rx", "ry", "rz"], 4],
