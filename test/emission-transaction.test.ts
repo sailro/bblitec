@@ -70,7 +70,7 @@ test("opening a transaction copies nothing and a rollback replays only the probe
     const before = emissionTransactionStatistics();
     new EmissionTransaction().run(() => false, Boolean);
     const idle = emissionTransactionStatistics();
-    assert.equal(idle.journaledWrites, before.journaledWrites);
+    assert.equal(idle.journaledSlots, before.journaledSlots);
     decline(() => {
         counter.next = 1;
         counter.next = 1;
@@ -82,10 +82,16 @@ test("opening a transaction copies nothing and a rollback replays only the probe
         {
             transactions: after.transactions - before.transactions,
             rollbacks: after.rollbacks - before.rollbacks,
-            journaledWrites: after.journaledWrites - before.journaledWrites,
-            undoneWrites: after.undoneWrites - before.undoneWrites,
+            journaledSlots: after.journaledSlots - before.journaledSlots,
+            restoredContainers:
+                after.restoredContainers - before.restoredContainers,
         },
-        { transactions: 2, rollbacks: 2, journaledWrites: 2, undoneWrites: 2 },
+        {
+            transactions: 2,
+            rollbacks: 2,
+            journaledSlots: 2,
+            restoredContainers: 2,
+        },
     );
     assert.equal(counter.next, 0);
     assert.deepEqual([...map], [["kept", 1]]);
@@ -249,12 +255,12 @@ test("records restore a deleted key to its place in the key order", () => {
 });
 
 test("containers created inside a probe journal only writes of transactions they predate", () => {
-    const before = emissionTransactionStatistics().journaledWrites;
+    const before = emissionTransactionStatistics().journaledSlots;
     let born: EmissionMap<string, number> | undefined;
     new EmissionTransaction().run(() => {
         born = new EmissionMap();
         born.set("inside", 1);
-        assert.equal(emissionTransactionStatistics().journaledWrites, before);
+        assert.equal(emissionTransactionStatistics().journaledSlots, before);
         new EmissionTransaction().run(() => {
             born!.set("nested", 2);
             return false;
@@ -262,9 +268,79 @@ test("containers created inside a probe journal only writes of transactions they
         assert.deepEqual([...born], [["inside", 1]]);
         return true;
     }, Boolean);
-    assert.equal(emissionTransactionStatistics().journaledWrites, before + 1);
+    assert.equal(emissionTransactionStatistics().journaledSlots, before + 1);
     decline(() => born!.delete("inside"));
     assert.deepEqual([...born!], [["inside", 1]]);
+});
+
+test("a transaction saves each slot's original once, and nothing for slots past an array's starting length", () => {
+    const counter = new Counter();
+    const map = new EmissionMap<string, number>([["kept", 0]]);
+    const set = new EmissionSet<number>();
+    const stack = emissionArray<number>([0]);
+    const before = emissionTransactionStatistics().journaledSlots;
+    decline(() => {
+        for (let index = 1; index <= 100; ++index) {
+            counter.next = index;
+            map.set("kept", index);
+            set.add(1);
+            stack.push(index);
+            stack.pop();
+            stack[0] = index;
+        }
+        assert.equal(
+            emissionTransactionStatistics().journaledSlots - before,
+            4,
+        );
+    });
+    assert.equal(counter.next, 0);
+    assert.deepEqual([...map], [["kept", 0]]);
+    assert.deepEqual([...set], []);
+    assert.deepEqual([...stack], [0]);
+});
+
+test("a commit keeps the enclosing transaction's older originals", () => {
+    const counter = new Counter();
+    const map = new EmissionMap<string, number>([
+        ["a", 0],
+        ["b", 0],
+    ]);
+    const stack = emissionArray<number>([0, 1, 2]);
+    decline(() => {
+        counter.next = 1;
+        map.set("a", 1);
+        stack.push(3);
+        new EmissionTransaction().run(() => {
+            counter.next = 2;
+            map.set("a", 2);
+            map.set("b", 2);
+            stack.length = 1;
+            return true;
+        }, Boolean);
+        counter.next = 3;
+        map.set("b", 3);
+        map.delete("a");
+        stack.push(9);
+    });
+    assert.equal(counter.next, 0);
+    assert.deepEqual(
+        [...map],
+        [
+            ["a", 0],
+            ["b", 0],
+        ],
+    );
+    assert.deepEqual([...stack], [0, 1, 2]);
+});
+
+test("writable() refuses a journaled container", () => {
+    decline(() => {
+        assert.throws(
+            () => writable(emissionArray([1])),
+            /journaled container/,
+        );
+        assert.throws(() => writable(new EmissionMap()), /journaled container/);
+    });
 });
 
 test("a plain object written without writable() is not rolled back", () => {
