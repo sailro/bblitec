@@ -1367,11 +1367,9 @@ SDL_GPUTextureFormat geometry_texture_format(const GeometryTextureDescription& d
  * enum. The Dawn sibling reads the same `pinned_vertex_input` table; only the
  * enum residue and the buffer slot differ.
  */
-bool append_variant_attribute(std::string_view name, Uint32 location, bool uses_local_position,
-                              std::vector<SDL_GPUVertexAttribute>& attributes,
-                              bool uses_local_normal = false) {
-    const PinnedVertexInput input =
-        pinned_vertex_input(name, uses_local_position, uses_local_normal);
+bool append_variant_attribute(std::string_view name, Uint32 location,
+                              std::vector<SDL_GPUVertexAttribute>& attributes) {
+    const PinnedVertexInput input = pinned_vertex_input(name);
     if (!input.mapped)
         return false;
     SDL_GPUVertexAttribute attribute{};
@@ -1998,8 +1996,7 @@ pinned_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPi
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::PbrVariantAttribute& input =
             upstream::pbr_variant_attributes[entry.first_attribute + index];
-        if (!append_variant_attribute(input.name, input.location, entry.uses_local_position,
-                                      attributes)) {
+        if (!append_variant_attribute(input.name, input.location, attributes)) {
             gpu_error(("pinned variant declares an unmapped vertex input '" +
                        std::string(input.name) + "'.")
                           .c_str());
@@ -2556,9 +2553,7 @@ node_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPipe
     for (std::size_t index = 0; index < view.attribute_count; ++index) {
         const upstream::NodeVariantAttribute& input =
             upstream::node_variant_attributes[view.first_attribute + index];
-        if (!append_variant_attribute(input.name, input.location,
-                                      node_uses_local_attributes(geometry_variant), attributes,
-                                      node_uses_local_attributes(geometry_variant))) {
+        if (!append_variant_attribute(input.name, input.location, attributes)) {
             gpu_error(("node variant declares an unmapped vertex input '" +
                        std::string(input.name) + "'.")
                           .c_str());
@@ -2641,7 +2636,6 @@ node_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPipe
         receipt.id = state.node_capture.allocate(pipeline.get(), "node-pipeline");
         receipt.variant = static_cast<std::uint32_t>(variant);
         receipt.geometry_variant = geometry_view ? static_cast<int>(geometry_variant) : -1;
-        receipt.uses_local_attributes = node_uses_local_attributes(geometry_variant);
         receipt.color_target_count = info.target_info.num_color_targets;
         receipt.samples = 1u << static_cast<unsigned>(info.multisample_state.sample_count);
         receipt.topology =
@@ -3333,8 +3327,7 @@ standard_variant_pipeline(GpuState& state, std::size_t variant, upstream::Render
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::StandardVariantAttribute& input =
             upstream::standard_variant_attributes[entry.first_attribute + index];
-        if (!append_variant_attribute(input.name, input.location, entry.uses_local_position,
-                                      attributes)) {
+        if (!append_variant_attribute(input.name, input.location, attributes)) {
             gpu_error(("standard variant declares an unmapped vertex input '" +
                        std::string(input.name) + "'.")
                           .c_str());
@@ -3412,8 +3405,6 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
                            const std::vector<std::uint8_t>& pinned_lights,
                            const upstream::RenderDrawCommand& draw, const GpuMesh& mesh,
                            const MaterialRecord* material, std::size_t variant,
-                           // The geometry task's velocity history, updated for this frame.
-                           const PinnedVelocityHistory* velocity_history = nullptr,
                            // The feature word the selector already derived for this draw
                            // (`standard_variant_key`), passed through rather than re-derived.
                            std::uint32_t features, SDL_GPUGraphicsPipeline*& bound_pipeline,
@@ -3421,6 +3412,8 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
                            const PinnedGeometryParams* geometry_params = nullptr,
                            StandardRenderTextures render_textures = {},
                            SDL_GPUBuffer* geometry_params_buffer = nullptr,
+                           // The geometry task's velocity history, updated for this frame.
+                           const PinnedVelocityHistory* velocity_history = nullptr,
                            // Drawing the shadow map, so the pipeline renders standard-Z into the
                            // generator's own single-sample depth32float target.
                            bool shadow_pass = false,
@@ -7014,10 +7007,13 @@ public:
         vertex_buffers[0].slot = 0;
         vertex_buffers[0].pitch = sizeof(GpuVertex);
         vertex_buffers[0].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+        // The shared material stage's `VertexInput`, at the locations it
+        // declares; deformation appends joints, weights and the morph deltas
+        // at 8-15 exactly like the Dawn backend.
 #if BBLITE_GPU_DEFORMATION
-        constexpr Uint32 base_attribute_count = 16;
+        constexpr Uint32 base_attribute_count = 14;
 #else
-        constexpr Uint32 base_attribute_count = 8;
+        constexpr Uint32 base_attribute_count = 6;
 #endif
         std::array<SDL_GPUVertexAttribute,
 #if BBLITE_GPU_INSTANCING
@@ -7028,24 +7024,35 @@ public:
                    >
             attributes{};
         constexpr Uint32 attribute_count = static_cast<Uint32>(attributes.size());
-        attributes[0] = SDL_GPUVertexAttribute{0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0};
-        attributes[1] = SDL_GPUVertexAttribute{1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 12};
-        attributes[2] = SDL_GPUVertexAttribute{2, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 24};
-        attributes[3] = SDL_GPUVertexAttribute{3, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 40};
-        attributes[4] = SDL_GPUVertexAttribute{4, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 48};
-        attributes[5] = SDL_GPUVertexAttribute{5, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 60};
-        attributes[6] = SDL_GPUVertexAttribute{6, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 68};
-        attributes[7] = SDL_GPUVertexAttribute{7, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 84};
+        {
+            Uint32 next = 0;
+            const auto attribute = [&](Uint32 location, SDL_GPUVertexElementFormat format,
+                                       std::size_t offset) {
+                attributes[next++] =
+                    SDL_GPUVertexAttribute{location, 0, format, static_cast<Uint32>(offset)};
+            };
+            attribute(0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, position));
+            attribute(1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, normal));
+            attribute(2, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, offsetof(GpuVertex, tangent));
+            attribute(3, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv));
+            attribute(5, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, offsetof(GpuVertex, uv2));
+            attribute(6, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, offsetof(GpuVertex, color));
 #if BBLITE_GPU_DEFORMATION
-        attributes[8] = SDL_GPUVertexAttribute{8, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 96};
-        attributes[9] = SDL_GPUVertexAttribute{9, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, 112};
-        attributes[10] = SDL_GPUVertexAttribute{10, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 128};
-        attributes[11] = SDL_GPUVertexAttribute{11, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 140};
-        attributes[12] = SDL_GPUVertexAttribute{12, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 152};
-        attributes[13] = SDL_GPUVertexAttribute{13, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 164};
-        attributes[14] = SDL_GPUVertexAttribute{14, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 176};
-        attributes[15] = SDL_GPUVertexAttribute{15, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 188};
+            attribute(8, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, offsetof(GpuVertex, joints));
+            attribute(9, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, offsetof(GpuVertex, weights));
+            attribute(10, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+                      offsetof(GpuVertex, morph_position_0));
+            attribute(11, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3,
+                      offsetof(GpuVertex, morph_position_1));
+            attribute(12, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, morph_normal_0));
+            attribute(13, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, morph_normal_1));
+            attribute(14, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, morph_tangent_0));
+            attribute(15, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, morph_tangent_1));
 #endif
+            if (next != base_attribute_count) {
+                throw std::logic_error("The shared stage's vertex table lost a lane.");
+            }
+        }
 #if BBLITE_GPU_INSTANCING
         vertex_buffers[1].slot = 1;
         vertex_buffers[1].pitch = sizeof(std::array<float, 16>);
@@ -8402,6 +8409,10 @@ public:
                                                     geometry_params,
                                                 [[maybe_unused]] SDL_GPUBuffer*
                                                     geometry_params_buffer,
+                                                // A geometry task's velocity
+                                                // history, updated for the frame.
+                                                [[maybe_unused]] const PinnedVelocityHistory*
+                                                    velocity_history,
                                                 // Set when this pass renders one
                                                 // generator's shadow map: the
                                                 // pass block takes the light's
@@ -8409,10 +8420,6 @@ public:
                                                 // renders standard-Z.
                                                 [[maybe_unused]] const ShadowGeneratorRecord*
                                                     shadow_generator = nullptr,
-                                                // A geometry task's velocity
-                                                // history, updated for the frame.
-                                                [[maybe_unused]] const PinnedVelocityHistory*
-                                                    velocity_history,
                                                 [[maybe_unused]] bool draw_scene_billboard_stages =
                                                     false
 #if BBLITE_HAS_TAA
@@ -9355,6 +9362,10 @@ public:
                             upstream::sort_transparent_draws(
                                 handle_at(task_draw_lists, handle).transparent, engine,
                                 *graph_camera);
+#if BBLITE_STANDARD_VARIANTS > 0
+                            update_pinned_velocity_frame(geometry.velocity, graph_scene, engine,
+                                                         graph_plan.items);
+#endif
                             draw_scene(graph_scene, graph_meshes, task_pass, {}, {}, graph_matrix,
                                        graph_camera, graph_pass_matrices,
                                        handle_at(task_draw_lists, handle), &task, &geometry_params,
@@ -9362,10 +9373,6 @@ public:
 #if BBLITE_GEOMETRY_TASK_FAMILIES
                             // The previous view-projection is a property of the
                             // TASK, tracked only when a composed family reads it.
-#if BBLITE_STANDARD_VARIANTS > 0
-                            update_pinned_velocity_frame(geometry.velocity, graph_scene, engine,
-                                                         graph_plan.items);
-#endif
                             geometry.previous_view_projection = graph_matrix;
 #endif
                             task_pass.end();

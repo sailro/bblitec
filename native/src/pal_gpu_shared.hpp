@@ -842,10 +842,8 @@ struct GpuVertex {
     float normal[3];
     float tangent[4];
     float uv[2];
-    float local_position[3];
     float uv2[2];
     float color[4];
-    float local_normal[3];
 #if BBLITE_GPU_DEFORMATION
     float joints[4];
     float weights[4];
@@ -865,11 +863,11 @@ struct GpuVertex {
 #endif
 };
 #if BBLITE_GPU_DEFORMATION && (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON)
-static_assert(sizeof(GpuVertex) == 216);
+static_assert(sizeof(GpuVertex) == 192);
 #elif BBLITE_GPU_DEFORMATION
-static_assert(sizeof(GpuVertex) == 200);
+static_assert(sizeof(GpuVertex) == 176);
 #else
-static_assert(sizeof(GpuVertex) == 96);
+static_assert(sizeof(GpuVertex) == 72);
 #endif
 
 /**
@@ -1562,9 +1560,8 @@ private:
  * these bytes -- it reaches the vertex stage through the mesh block
  * (`mesh_block_world`) -- so a transform-only change uploads nothing.
  *
- * The two `local_*` lanes repeat the position and the normal for the
- * geometry arms that name them; the morph lanes carry the geometry's first
- * two targets for the vertex-attribute morph transport.
+ * The morph lanes carry the geometry's first two targets for the
+ * vertex-attribute morph transport.
  */
 inline std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
                                                 [[maybe_unused]] const MeshRecord& mesh) {
@@ -1586,10 +1583,8 @@ inline std::vector<GpuVertex> mesh_gpu_vertices(const ModelGeometry& geometry,
             {vertex.normal.x, vertex.normal.y, vertex.normal.z},
             {vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w},
             {vertex.uv.x, vertex.uv.y},
-            {vertex.position.x, vertex.position.y, vertex.position.z},
             {vertex.uv2.x, vertex.uv2.y},
             {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
-            {vertex.normal.x, vertex.normal.y, vertex.normal.z},
 #if BBLITE_GPU_DEFORMATION
             {
                 static_cast<float>(vertex.joints[0]),
@@ -2030,45 +2025,7 @@ inline std::optional<std::array<float, 16>> shader_world_view(const std::array<f
     return view ? std::optional<std::array<float, 16>>{upstream::matrix_product(*view, world)}
                 : std::nullopt;
 }
-
-/**
- * One background-plan vertex (the skybox and ground quads) in GpuVertex
- * layout: the local-normal lane mirrors the normal, and the local-position
- * lane and every deformation lane stay zero. Both backends upload the plan quads from this one
- * packing, so the vertex bytes cannot differ between them.
- */
 #endif
-
-inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
-    return GpuVertex{
-        {vertex.position.x, vertex.position.y, vertex.position.z},
-        {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-        {
-            vertex.tangent.x,
-            vertex.tangent.y,
-            vertex.tangent.z,
-            vertex.tangent.w,
-        },
-        {vertex.uv.x, vertex.uv.y},
-        {}, // local position
-        {vertex.uv2.x, vertex.uv2.y},
-        {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
-        {vertex.normal.x, vertex.normal.y, vertex.normal.z},
-#if BBLITE_GPU_DEFORMATION
-        {}, // joints
-        {}, // weights
-        {}, // morph position 0
-        {}, // morph position 1
-        {}, // morph normal 0
-        {}, // morph normal 1
-        {}, // morph tangent 0
-        {}, // morph tangent 1
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
-        {}, // integer joint indices
-#endif
-#endif
-    };
-}
 
 /**
  * Whether a live pool has outgrown the instance buffers its registration
@@ -2124,13 +2081,10 @@ struct PinnedVertexInput {
 };
 
 /**
- * Resolve one declared input. `local_position` is the arm a LOCAL_POSITION
- * geometry variant takes: its varying reads the raw attribute, so the draw
- * binds the vertex's local lanes and its mesh block carries the real node
- * world.
+ * Resolve one declared input onto the vertex's own lanes, which hold the
+ * geometry's local values for every family and view.
  */
-inline PinnedVertexInput pinned_vertex_input(std::string_view name, bool uses_local_position,
-                                             bool uses_local_normal = false) {
+inline PinnedVertexInput pinned_vertex_input(std::string_view name) {
     const auto at = [](VertexInputLane lane, std::size_t offset) {
         return PinnedVertexInput{
             lane,
@@ -2140,12 +2094,10 @@ inline PinnedVertexInput pinned_vertex_input(std::string_view name, bool uses_lo
         };
     };
     if (name == "position") {
-        return at(VertexInputLane::float3, uses_local_position ? offsetof(GpuVertex, local_position)
-                                                               : offsetof(GpuVertex, position));
+        return at(VertexInputLane::float3, offsetof(GpuVertex, position));
     }
     if (name == "normal") {
-        return at(VertexInputLane::float3, uses_local_normal ? offsetof(GpuVertex, local_normal)
-                                                             : offsetof(GpuVertex, normal));
+        return at(VertexInputLane::float3, offsetof(GpuVertex, normal));
     }
     if (name == "tangent") {
         return at(VertexInputLane::float4, offsetof(GpuVertex, tangent));
@@ -2373,20 +2325,6 @@ inline constexpr bool node_slot_is_caster(std::size_t) { return false; }
  *  outside the guard because every node draw site names it, and checked
  *  against the generated spelling where that exists. */
 inline constexpr std::size_t no_node_geometry_variant = npos;
-
-inline bool node_uses_local_attributes(std::size_t geometry_variant) {
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-    if (geometry_variant == no_node_geometry_variant)
-        return false;
-    if (geometry_variant >= upstream::node_geometry_variants.size()) {
-        throw std::out_of_range("Invalid node geometry view.");
-    }
-    return true;
-#else
-    (void)geometry_variant;
-    return false;
-#endif
-}
 
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
 static_assert(no_node_geometry_variant == upstream::node_no_geometry_variant,

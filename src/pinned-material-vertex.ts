@@ -611,7 +611,9 @@ export function pinnedMaterialVertex(
             arguments: [path("worldTangent"), path("input", "tangent", "w")],
         }),
         assign("output.uv", bind(output("uv"))),
-        ...["localPosition", "uv2", "color"].map((name) =>
+        // The local position is the raw attribute, before any morph.
+        assign("output.localPosition", path("input", "position")),
+        ...["uv2", "color"].map((name) =>
             assign(`output.${name}`, path("input", name)),
         ),
         assign("output.bitangent", path("worldBitangent")),

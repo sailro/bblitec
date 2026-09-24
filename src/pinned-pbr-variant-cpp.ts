@@ -20,17 +20,14 @@ import { createHash } from "node:crypto";
 import ts from "typescript";
 import { floatLiteral } from "./cpp-literals.js";
 import {
-    forEachShaderStatement,
     parseWgslStructMembers,
     reflectWgslBindingStruct,
     reflectWgslBindings,
     reflectWgslModule,
     reflectWgslStruct,
     sameWgslMembers,
-    statementSome,
     wgslAttributeInteger,
     wgslEntryPoints,
-    wgslFunctionStatements,
     wgslSamplesTexture,
     wgslStructLayout,
     type WgslMemberSyntax,
@@ -606,50 +603,6 @@ function variantColorOutput(fragmentWgsl: string): VariantColorOutput {
               ? 1
               : 0,
     };
-}
-
-/**
- * Whether a composed vertex stage carries the geometry LOCAL_POSITION arm,
- * whose varying reads the raw `position` attribute; both variant tables
- * bind the local vertex lanes for it off this one answer. A stage that
- * declares the varying but never stores it is a pin change to read, not a
- * `false`.
- */
-function variantUsesLocalPosition(vertexWgsl: string): boolean {
-    const module = reflectWgslModule(vertexWgsl);
-    let stored = false;
-    let mentioned = module.declarations.some(
-        (declaration) =>
-            declaration.kind === "struct" &&
-            declaration.members.some(({ name }) => name === "vLocalPos"),
-    );
-    for (const statements of wgslFunctionStatements(module)) {
-        forEachShaderStatement(statements, (statement) => {
-            stored ||=
-                statement.kind === "assign" &&
-                statement.operator === undefined &&
-                statement.target.kind === "path" &&
-                statement.target.parts.join(".") === "out.vLocalPos" &&
-                statement.value.kind === "path" &&
-                statement.value.parts.join(".") === "position";
-        });
-        mentioned ||= statements.some((statement) =>
-            statementSome(
-                statement,
-                (expression) =>
-                    (expression.kind === "path" &&
-                        expression.parts.includes("vLocalPos")) ||
-                    (expression.kind === "member" &&
-                        expression.member === "vLocalPos"),
-            ),
-        );
-    }
-    if (!stored && mentioned) {
-        throw new Error(
-            "Pinned vertex stage declares vLocalPos without storing the raw position into it.",
-        );
-    }
-    return stored;
 }
 
 /** One vertex input a variant's own vertex stage declares. */
@@ -1902,10 +1855,6 @@ export function pinnedPbrVariantsHeader(
                 }, ` +
                 `${noColorOutput ? "true" : "false"}, ` +
                 `${colorTargetCount}, ` +
-                // The geometry LOCAL_POSITION arm's varying reads the raw
-                // `position` attribute, which this backend maps onto the
-                // vertex's local lanes.
-                `${variantUsesLocalPosition(variant.vertexWgsl) ? "true" : "false"}, ` +
                 `${
                     bindings.some((binding) => binding.name === "shadowParams")
                         ? "true"
@@ -2049,10 +1998,6 @@ struct PbrVariantEntry {
      *  zero for a depth-only view, and the attachment count (plus the
      *  optional trailing colour) for a geometry-output MRT arm. */
     std::size_t color_target_count;
-    /** Whether the vertex stage carries the LOCAL_POSITION varying, which
-     *  reads the raw \`position\` attribute: the PAL binds the vertex's
-     *  local lanes for such variants. */
-    bool uses_local_position;
     /** An ESM caster view's fragment returns the exponential depth, so its
      *  pipeline's colour target is the generator's map rather than the
      *  frame. Reflected from the one thing that view adds -- the
@@ -3214,11 +3159,7 @@ export function pinnedStandardVariantsHeader(
                 `${shadowRows.length}, ${shadowBindings.length}, ` +
                 `${attributeRows.length}, ${attributes.length}, ` +
                 `${noColorOutput ? "true" : "false"}, ` +
-                `${colorTargetCount}, ` +
-                // The LOCAL_POSITION geometry arm reads the raw position
-                // attribute for its varying, so the draw binds the local
-                // vertex lanes for it.
-                `${variantUsesLocalPosition(variant.vertexWgsl) ? "true" : "false"}},`,
+                `${colorTargetCount}},`,
         );
         for (const attribute of attributes) {
             attributeRows.push(
@@ -3357,9 +3298,6 @@ struct StandardVariantEntry {
     /** One for a colour pass, zero for a depth-only view, the attachment
      *  count (plus the optional trailing colour) for a geometry MRT arm. */
     std::size_t color_target_count;
-    /** A LOCAL_POSITION geometry variant's varying reads the raw position
-     *  attribute, so its draw binds the local vertex lanes. */
-    bool uses_local_position;
 };
 
 ${cpp.table("StandardVariantEntry", "standard_variants", variants.length, `${table.join("\n")}`)}

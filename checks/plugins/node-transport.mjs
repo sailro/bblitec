@@ -181,7 +181,6 @@ import {
  *     geometryVariant: number,
  *     colorTargetCount: number,
  *     samples: number,
- *     usesLocalAttributes: boolean,
  *     topology: string,
  *     cullMode: string,
  *     frontFace: string,
@@ -907,11 +906,10 @@ function checkScene149Native(capture, reference, { allowStale = false } = {}) {
             );
             ubos.add(draw.meshUniform);
         } else assert.equal(draw.group, 0);
-        assert.equal(
-            pipeline.usesLocalAttributes,
-            pipeline.colorTargetCount !== 1,
-        );
-        if (!pipeline.usesLocalAttributes) continue;
+        // A geometry view (-1 is the colour view) writes the MRT targets.
+        const geometryView = pipeline.geometryVariant !== -1;
+        assert.equal(geometryView, pipeline.colorTargetCount !== 1);
+        if (!geometryView) continue;
         ++geometryDraws;
         assert.deepEqual(
             pipeline.attributes.map((attribute) => attribute.name).sort(),
@@ -1181,7 +1179,7 @@ async function checkNodeLocal(browserCapture, captures) {
             return pipeline;
         };
         const geometry = gpu.draws.filter(
-            (draw) => drawPipeline(draw).usesLocalAttributes,
+            (draw) => drawPipeline(draw).geometryVariant !== -1,
         );
         assert.equal(geometry.length, 6);
         /** @type {Set<number>} */
@@ -1228,7 +1226,7 @@ async function checkNodeLocal(browserCapture, captures) {
                 assert(draw.group && draw.meshUniform);
                 meshUbos.add(draw.meshUniform);
             } else assert.equal(draw.group, 0);
-            if (!pipeline.usesLocalAttributes) continue;
+            if (pipeline.geometryVariant === -1) continue;
             views.add(pipeline.geometryVariant);
             assert.equal(pipeline.colorTargetCount, 2);
             const object = expected[draw.mesh];

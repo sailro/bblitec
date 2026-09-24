@@ -328,7 +328,7 @@ int main() {
     vertex.position = {-1.25f, 2.75f, 0.6f}; vertex.normal = {-0.0f, 0.3f, 2.75f};
     const auto packed = mesh_gpu_vertices(geometry, record);
     for (const auto name : {"position", "normal"}) {
-        const auto input = pinned_vertex_input(name, false);
+        const auto input = pinned_vertex_input(name);
         const void* expected = std::string_view(name) == "position"
             ? static_cast<const void*>(&vertex.position) : &vertex.normal;
         assert(input.mapped && input.stream == VertexInputStream::vertex);

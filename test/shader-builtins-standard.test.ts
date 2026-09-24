@@ -188,7 +188,6 @@ test("shared vertex projections preserve every PAL binding, varying and optional
                 1,
                 2,
                 3,
-                4,
                 5,
                 6,
                 ...(deformation
@@ -676,7 +675,6 @@ test("the executed pin and specialized stages agree on weighted positions and ma
             normal: [0, 1, 0],
             tangent: [1, 0, 0, -1],
             uv: [0.2, 0.8],
-            localPosition: [-2, 3, 4],
             uv2: [0.6, 0.1],
             color: [0.25, 0.5, 0.75, 1],
             joints: [3, 1, 0, 2],
@@ -788,8 +786,10 @@ test("the executed pin and specialized stages agree on weighted positions and ma
                   world,
               );
         agree(actual, expected);
-        for (const name of ["uv", "localPosition", "uv2", "color"])
+        for (const name of ["uv", "uv2", "color"])
             assert.deepEqual(field(actual, name), input[name]);
+        // The local position is the raw attribute, before any morph.
+        assert.deepEqual(field(actual, "localPosition"), input.position);
         if (deformation) {
             // A draw the deformation arm skips is the plain template's.
             const gated = new Map(scope);

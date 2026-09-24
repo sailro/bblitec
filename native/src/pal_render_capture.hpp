@@ -1736,7 +1736,6 @@ inline void write_node_gpu_capture(JsonWriter& json, const NodeGpuCapture& captu
         json.field("geometryVariant", pipeline.geometry_variant);
         json.field("colorTargetCount", pipeline.color_target_count);
         json.field("samples", pipeline.samples);
-        json.field("usesLocalAttributes", pipeline.uses_local_attributes);
         json.field("topology", pipeline.topology);
         json.field("cullMode", pipeline.cull_mode);
         json.field("frontFace", pipeline.front_face);
