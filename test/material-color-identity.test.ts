@@ -258,13 +258,13 @@ test("numeric material reads refuse a co-reached tuple color producer in either 
     }
 });
 
-test("object colors are not the pinned tuple API and refuse at generation", () => {
+test("an object colour is admitted only where the position's type is an object", () => {
     const prefix = `import {createEngine,createPbrMaterial,createStandardMaterial,createSceneContext,createHemisphericLight,setPbrEmissive,setPbrUnlit,setShadowOnly,setFog,registerScene} from "@babylonjs/lite";
         async function main(){const engine=await createEngine({});const scene=createSceneContext(engine);`;
     const rgba =
-        /PBR baseColorFactor is the pin's \[r, g, b, a\] number tuple; a \{ r, g, b, a \} object is not the pinned API/;
+        /This colour is the pin's \[r, g, b, a\] number tuple; a \{ r, g, b, a \} object is not the pinned API/;
     const rgb =
-        /RGB colours are \[r, g, b\] number tuples; a \{ r, g, b \} object is not the pinned API/;
+        /This colour is the pin's \[r, g, b\] number tuple; a \{ r, g, b \} object is not the pinned API/;
     for (const [statements, refusal] of [
         [`createPbrMaterial({baseColorFactor:{r:1,g:1,b:1,a:1}});`, rgba],
         [
@@ -301,7 +301,9 @@ test("object colors are not the pinned tuple API and refuse at generation", () =
     assert.doesNotThrow(() =>
         compileSource(
             `${prefix}setPbrEmissive(createPbrMaterial({baseColorFactor:[1,1,1,1]}),[1,0,0]);` +
-                `setFog(scene,{mode:1,density:.1,start:0,end:1,color:[1,1,1]});}`,
+                `setFog(scene,{mode:1,density:.1,start:0,end:1,color:[1,1,1]});` +
+                // The pin types a clear colour as a GPUColorDict object.
+                `scene.clearColor={r:0,g:0,b:0,a:1};}`,
         ),
     );
 });

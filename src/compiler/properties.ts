@@ -61,6 +61,7 @@ import { isAssignmentOperator } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
 import {
     optionalPresentCpp,
+    presenceFlagCpp,
     valueForKind,
     type Feature,
     type GeometryOutputTaskManifest,
@@ -2698,17 +2699,18 @@ export class PropertyAccessLowerer {
         expression: ts.PropertyAccessExpression,
     ): Value {
         const ownerPresent =
-            owner.optionalFoundCpp ??
+            presenceFlagCpp(owner) ??
             (expression.questionDotToken &&
             owner.dataType?.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(owner.dataType.name)
                 ? `static_cast<bool>(${owner.cpp})`
                 : undefined);
         if (ownerPresent === undefined) return value;
+        const valuePresent = presenceFlagCpp(value);
         const present =
-            value.optionalFoundCpp === undefined
+            valuePresent === undefined
                 ? ownerPresent
-                : `(${ownerPresent} && ${value.optionalFoundCpp})`;
+                : `(${ownerPresent} && ${valuePresent})`;
         return { ...value, optionalFoundCpp: present };
     }
 

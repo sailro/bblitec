@@ -9,7 +9,7 @@ import {
     EmissionWeakMap,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import type { DataStructField, DataType } from "./data-types.js";
@@ -169,14 +169,12 @@ export function staticClassMember(
     name: ts.MemberName,
 ): { table: ClassMemberTable; name: string } | undefined {
     if (!ts.isIdentifier(owner)) return undefined;
-    const member = checker
-        .getSymbolAtLocation(name)
-        ?.declarations?.find(
-            (candidate): candidate is ts.ClassElement =>
-                ts.isClassElement(candidate) &&
-                ts.isClassDeclaration(candidate.parent) &&
-                isStaticMember(candidate),
-        );
+    const member = resolvedSymbol(checker, name)?.declarations?.find(
+        (candidate): candidate is ts.ClassElement =>
+            ts.isClassElement(candidate) &&
+            ts.isClassDeclaration(candidate.parent) &&
+            isStaticMember(candidate),
+    );
     if (!member || !ts.isClassDeclaration(member.parent)) return undefined;
     return { table: classMemberTable(member.parent), name: name.text };
 }
@@ -1769,8 +1767,7 @@ export class ClassLowerer {
             if (ts.isSpreadAssignment(node)) {
                 const spread = this.context.unwrap(node.expression);
                 if (ts.isIdentifier(spread)) {
-                    const symbol =
-                        this.context.checker.getSymbolAtLocation(spread);
+                    const symbol = declaredSymbol(this.context.checker, spread);
                     if (symbol) symbols.add(symbol);
                 }
             }
@@ -1869,7 +1866,8 @@ export class ClassLowerer {
             // The declared parameter type is the sink. A compile-time
             // object record passed to a struct parameter must materialize
             // as that struct before constructor field wiring observes it.
-            const parameterSymbol = this.context.checker.getSymbolAtLocation(
+            const parameterSymbol = declaredSymbol(
+                this.context.checker,
                 parameter.name,
             );
             const spreadUse =

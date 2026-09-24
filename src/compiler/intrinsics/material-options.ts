@@ -41,10 +41,6 @@ import {
 // asserts each discarded pinned default against this table, and the
 // defaults below read the same entries, so the record seed IS the number
 // the assert pins.
-// The pin's own `?? d` fallbacks, stated once: the UBO-writer lowerer
-// asserts each discarded pinned default against this table, and the
-// defaults below read the same entries, so the record seed IS the number
-// the assert pins.
 import {
     pinnedDefaultColor3,
     pinnedDefaultColor3Cpp,
@@ -55,6 +51,7 @@ import {
     type PinnedMaterialDefaultName,
 } from "../../lowering/pinned-material-defaults.js";
 import { floatLiteral } from "../../cpp-literals.js";
+import { isGlobalUndefined } from "../symbols.js";
 
 /** One pinned scalar default, in the two forms a setter resolves. */
 function pinnedScalarDefault(name: PinnedMaterialDefaultName): {
@@ -74,6 +71,7 @@ export interface MaterialOptionContext
         Pick<
             LoweringServices,
             | "sceneManifest"
+            | "checker"
             | "compileValue"
             | "compileForDataSink"
             | "noteMaterialColorRead"
@@ -708,8 +706,6 @@ export function compilePbrMaterialOptions(
 /**
  * The array's presence selects a UBO field; its contents remain runtime
  * numbers. Retain its storage and preserve static metadata when available.
- * The pin types the option as a number tuple, so a `{ r, g, b, a }` object
- * refuses rather than lowering to a colour the browser would never read.
  */
 function compilePbrBaseColorFactor(
     context: MaterialOptionContext,
@@ -764,10 +760,9 @@ function compilePbrBaseColorFactor(
             );
         channels = resolved.elements;
     } else if (ts.isObjectLiteralExpression(resolved)) {
-        context.fail(
-            expression,
-            "PBR baseColorFactor is the pin's [r, g, b, a] number tuple; a { r, g, b, a } object is not the pinned API.",
-        );
+        // An object carries no array storage to retain; whether it is a
+        // colour at all is the colour compiler's one shape decision.
+        return { cpp: context.compileColor4(expression), storageCpp: "{}" };
     }
     if (!channels) {
         return {
@@ -804,11 +799,7 @@ function optionalRecordOption(
 ): Value | undefined {
     if (!expression) return undefined;
     const resolved = context.resolveStaticExpression(expression);
-    if (
-        ts.isIdentifier(resolved) &&
-        resolved.text === "undefined" &&
-        !context.bindings.lookupOptional(resolved)
-    ) {
+    if (isGlobalUndefined(context.checker, resolved)) {
         return undefined;
     }
     if (

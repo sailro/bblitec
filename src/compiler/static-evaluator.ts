@@ -31,10 +31,15 @@ function objectIdentityCallArgument(
 }
 import { EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
-import { isStringValue, type Value } from "./types.js";
+import { isStringValue, presenceCpp, type Value } from "./types.js";
 import type { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
-import { libraryGlobal, type LibraryGlobal } from "./symbols.js";
+import {
+    declaredSymbol,
+    isGlobalUndefined,
+    libraryGlobal,
+    type LibraryGlobal,
+} from "./symbols.js";
 import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
     doubleLiteral as cppDoubleLiteral,
@@ -45,6 +50,7 @@ import {
     staticNumberValue,
 } from "./option-helpers.js";
 import { isJsonValue } from "./json-bridge.js";
+import { excludesObjectColour } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
 import {
     isAssignmentExpression,
@@ -138,6 +144,10 @@ export class StaticEvaluator {
         private readonly pinnedWgslTemplate: (
             expression: ts.Expression,
         ) => ts.TemplateLiteral | undefined,
+        /** `DataLowerer.truthinessCondition`: a compiled value's truthiness. */
+        private readonly truthinessCondition: (
+            value: Value,
+        ) => string | undefined,
     ) {}
 
     /** See `libraryGlobal` (symbols.ts). */
@@ -304,14 +314,34 @@ export class StaticEvaluator {
                 .map((element) => this.compileNumber(element))
                 .join(", ")}}`;
         }
-        // Every RGB option and field of the pin is a number tuple (its
-        // `Color3` object type is flow-graph data only), so an object is a
-        // colour the browser would read as undefined channels.
+        if (ts.isObjectLiteralExpression(unwrapped)) {
+            this.requireObjectColour(expression, unwrapped, ["r", "g", "b"]);
+            return `bbl::Color3{${["r", "g", "b"]
+                .map((channel) => this.requiredObjectNumber(unwrapped, channel))
+                .join(", ")}}`;
+        }
+        this.fail(unwrapped, "Expected a Color3 array [r, g, b].");
+    }
+
+    /**
+     * The one colour-shape decision: an object of named channels is not a
+     * colour where the position's own type rules it out
+     * (`excludesObjectColour`, from the checker's contextual type at the
+     * use). Where the pin types a number tuple -- every RGB option and
+     * field, `baseColorFactor` -- the browser would read the object as
+     * undefined channels, so it refuses.
+     */
+    private requireObjectColour(
+        expression: ts.Expression,
+        object: ts.ObjectLiteralExpression,
+        channels: readonly string[],
+    ): void {
+        if (!excludesObjectColour(this.checker.getContextualType(expression)))
+            return;
+        const names = channels.join(", ");
         this.fail(
-            unwrapped,
-            ts.isObjectLiteralExpression(unwrapped)
-                ? "Babylon Lite RGB colours are [r, g, b] number tuples; a { r, g, b } object is not the pinned API."
-                : "Expected a Color3 array [r, g, b].",
+            object,
+            `This colour is the pin's [${names}] number tuple; a { ${names} } object is not the pinned API.`,
         );
     }
 
@@ -341,16 +371,11 @@ export class StaticEvaluator {
                 .join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
-            return `bbl::Color4{${this.requiredObjectNumber(
-                unwrapped,
-                "r",
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "g",
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "b",
-            )}, ${this.requiredObjectNumber(unwrapped, "a")}}`;
+            const channels = ["r", "g", "b", "a"];
+            this.requireObjectColour(expression, unwrapped, channels);
+            return `bbl::Color4{${channels
+                .map((channel) => this.requiredObjectNumber(unwrapped, channel))
+                .join(", ")}}`;
         }
         this.fail(
             unwrapped,
@@ -383,25 +408,13 @@ export class StaticEvaluator {
                 // time generation succeeds the guard is settled.
                 return "true";
             }
-            if (value.truthinessCpp) {
-                return value.truthinessCpp;
-            }
-            if (value.optionalFoundCpp) {
-                // A handle a search produced: upstream's `find` returns
-                // `undefined` when nothing matched, so the truthiness a
-                // scene tests is whether it did.
-                return value.optionalFoundCpp;
-            }
-            if (value.kind !== "boolean") {
-                this.fail(
-                    unwrapped,
-                    `Expected boolean, received ${value.kind}.`,
-                );
-            }
-            if (value.staticBoolean !== undefined) {
-                return value.staticBoolean ? "true" : "false";
-            }
-            return value.cpp;
+            // A boolean position reads its operand's JavaScript truthiness
+            // (`!!count`): a handle a search produced is truthy when found,
+            // and a boolean an unchecked element read produced is truthy
+            // when present AND true -- the one truthiness rule's answers.
+            const truthiness = this.truthinessCondition(value);
+            if (truthiness !== undefined) return truthiness;
+            this.fail(unwrapped, `Expected boolean, received ${value.kind}.`);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
@@ -1081,11 +1094,7 @@ export class StaticEvaluator {
             if (value.kind === "json-null") {
                 return expression.right;
             }
-            if (
-                isJsonValue(value) ||
-                value.optionalFoundCpp !== undefined ||
-                (value.kind === "data" && value.dataType?.kind === "optional")
-            ) {
+            if (isJsonValue(value) || presenceCpp(value) !== undefined) {
                 return undefined;
             }
             return expression.left;
@@ -1115,9 +1124,7 @@ export class StaticEvaluator {
                 }
                 if (
                     isJsonValue(property) ||
-                    property.optionalFoundCpp !== undefined ||
-                    (property.kind === "data" &&
-                        property.dataType?.kind === "optional")
+                    presenceCpp(property) !== undefined
                 ) {
                     return undefined;
                 }
@@ -1217,7 +1224,7 @@ export class StaticEvaluator {
      */
     private isWrittenThrough(declaration: ts.VariableDeclaration): boolean {
         const symbol = ts.isIdentifier(declaration.name)
-            ? this.checker.getSymbolAtLocation(declaration.name)
+            ? declaredSymbol(this.checker, declaration.name)
             : undefined;
         if (symbol === undefined) {
             return true;
@@ -1228,7 +1235,7 @@ export class StaticEvaluator {
         }
         const namesBinding = (node: ts.Node): boolean =>
             ts.isIdentifier(node) &&
-            this.checker.getSymbolAtLocation(node) === symbol;
+            declaredSymbol(this.checker, node) === symbol;
         const throughBinding = (node: ts.Node): boolean =>
             (ts.isPropertyAccessExpression(node) ||
                 ts.isElementAccessExpression(node)) &&
@@ -1463,12 +1470,7 @@ export class StaticEvaluator {
     public staticTextValue(expression: ts.Expression): string | undefined {
         const unwrapped = this.resolveStaticExpression(expression);
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return "null";
-        if (
-            ts.isIdentifier(unwrapped) &&
-            unwrapped.text === "undefined" &&
-            !this.lookupOptional(unwrapped)
-        )
-            return "undefined";
+        if (isGlobalUndefined(this.checker, unwrapped)) return "undefined";
         if (
             ts.isStringLiteral(unwrapped) ||
             ts.isNoSubstitutionTemplateLiteral(unwrapped)

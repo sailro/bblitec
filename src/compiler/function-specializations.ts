@@ -6,6 +6,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 
 export interface FunctionEmissionScope {
     readonly lexical: object;
@@ -145,7 +146,7 @@ function dependencyIdentifiers(
             fn.body,
             (node) => {
                 if (ts.isIdentifier(node)) {
-                    const symbol = checker.getSymbolAtLocation(node);
+                    const symbol = declaredSymbol(checker, node);
                     if (symbol && !identifiers.has(symbol))
                         identifiers.set(symbol, node);
                 }
@@ -163,9 +164,8 @@ function dependencyIdentifiers(
                         visitFunction(called);
                 }
                 if (ts.isPropertyAccessExpression(node)) {
-                    for (const declaration of checker.getSymbolAtLocation(
-                        node.name,
-                    )?.declarations ?? []) {
+                    for (const declaration of resolvedSymbol(checker, node)
+                        ?.declarations ?? []) {
                         if (
                             ts.isGetAccessorDeclaration(declaration) ||
                             ts.isSetAccessorDeclaration(declaration)
@@ -205,7 +205,7 @@ export function functionDependencies(
     ].flatMap((identifier) => {
         const value = context.bindings.lookupOptional(identifier);
         return value
-            ? [[context.checker.getSymbolAtLocation(identifier), value]]
+            ? [[declaredSymbol(context.checker, identifier), value]]
             : [];
     });
 }

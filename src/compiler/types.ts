@@ -6,8 +6,11 @@ import type { Value } from "./values/model.js";
 export type { Value } from "./values/model.js";
 export {
     nativeDataMetadata,
+    objectTruthinessCpp,
     optionalPresentCpp,
     presenceCpp,
+    presenceFlagCpp,
+    statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
 } from "./values/model.js";

@@ -3,6 +3,7 @@ import {
     isStringValue,
     optionalPresentCpp,
     presenceCpp,
+    presenceFlagCpp,
     valueForKind,
 } from "./compiler/types.js";
 import {
@@ -927,6 +928,7 @@ class Compiler implements LoweringServices {
             () => this.reachJsData(),
             (value, arity) => this.bindings.bindDataTuple(value, arity),
             (expression) => this.symbols.pinnedWgslTemplate(expression),
+            (value) => this.dataLowerer.truthinessCondition(value),
         );
     }
 
@@ -7529,9 +7531,9 @@ class Compiler implements LoweringServices {
      */
     public optionalResourceCpp(value: Value): string {
         const cpp = value.ownedEngineCpp ?? value.cpp;
-        return value.optionalFoundCpp !== undefined &&
-            value.optionalFoundCpp !== "true"
-            ? `(${value.optionalFoundCpp} ? std::optional{${cpp}} : std::nullopt)`
+        const found = presenceFlagCpp(value);
+        return found !== undefined && found !== "true"
+            ? `(${found} ? std::optional{${cpp}} : std::nullopt)`
             : cpp;
     }
 
@@ -10300,7 +10302,7 @@ class Compiler implements LoweringServices {
             )
                 return;
             const properties = ts.isPropertyAccessExpression(node)
-                ? [this.checker.getSymbolAtLocation(node.name)]
+                ? [resolvedSymbol(this.checker, node)]
                 : ts.isElementAccessExpression(node)
                   ? this.checker
                         .getTypeAtLocation(node.expression)

@@ -3,6 +3,7 @@ import type { LoweringServices } from "../lowering-services.js";
 /** Static shaping executes the pin; native text entities retain the resulting bytes. */
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
+import { isGlobalUndefined } from "../symbols.js";
 import {
     materializePinnedText,
     textSha256,
@@ -788,10 +789,8 @@ function omitted(
     context: TextIntrinsicContext,
     expression: ts.Expression,
 ): boolean {
-    const node = context.resolveStaticExpression(expression);
-    return (
-        ts.isIdentifier(node) &&
-        node.text === "undefined" &&
-        !context.bindings.lookupOptional(node)
+    return isGlobalUndefined(
+        context.checker,
+        context.resolveStaticExpression(expression),
     );
 }

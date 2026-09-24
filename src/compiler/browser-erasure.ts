@@ -57,6 +57,14 @@ export function isNumberParserCallee(
     );
 }
 
+/** The library timer functions `platform-calls.ts` and `compileDeferredCallback` lower. */
+const PLATFORM_TIMER_FUNCTIONS: ReadonlySet<string> = new Set([
+    "setTimeout",
+    "clearTimeout",
+    "setInterval",
+    "clearInterval",
+]);
+
 const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "record",
     "audio-engine",
@@ -965,25 +973,26 @@ export class BrowserErasure {
     }
 
     /**
-     * `setTimeout(callback, 0)` -- bare or through `window`.
-     *
-     * Every other `window.*` call erases, because the browser service
-     * behind it has no native counterpart. This one has: a zero-delay
-     * timeout is "run this once, after the current turn", and the frame
-     * conductor already has that boundary. So it is recognized here and
-     * lowered rather than erased -- which is what lets a scene's own
-     * freeze (`setTimeout(() => stopEngine(engine), 0)`) reach the native
-     * loop instead of being silently dropped.
-     *
-     * The reached slice is a zero delay. Seventeen of the corpus's
-     * twenty-one call sites pass exactly 0; the four that do not (scenes
-     * 44, 48, 156 and 173 -- a drop, a kick and two fades, all real
-     * waits) are a timer this runtime does not carry, and they refuse at
-     * the call rather than being rounded to the next frame, which would
-     * be a different scene.
+     * `setTimeout(callback, delay)` -- bare or through `window`. The frame
+     * conductor implements it (`compileDeferredCallback`), which is what
+     * lets a scene's own freeze (`setTimeout(() => stopEngine(engine), 0)`)
+     * reach the native loop instead of being silently dropped.
      */
     public isDeferredCallbackCall(call: ts.CallExpression): boolean {
         return this.context.libraryGlobal(call.expression) === "setTimeout";
+    }
+
+    /**
+     * A call of one of the timer functions the frame conductor implements,
+     * bare or through the global object. Every other `window.*` call
+     * erases, because the browser service behind it has no native
+     * counterpart; these have one, so `window.clearTimeout(id)` cancels
+     * exactly as `clearTimeout(id)` does.
+     */
+    private isPlatformTimerCall(call: ts.CallExpression): boolean {
+        return PLATFORM_TIMER_FUNCTIONS.has(
+            this.context.libraryGlobal(call.expression) ?? "",
+        );
     }
 
     private isBrowserOnlyNode(expression: ts.Expression): boolean {
@@ -1058,10 +1067,9 @@ export class BrowserErasure {
         }
         if (
             ts.isCallExpression(unwrapped) &&
-            this.isDeferredCallbackCall(unwrapped)
-        ) {
+            this.isPlatformTimerCall(unwrapped)
+        )
             return false;
-        }
         if (
             ts.isCallExpression(unwrapped) &&
             unwrapped.arguments.length === 0 &&

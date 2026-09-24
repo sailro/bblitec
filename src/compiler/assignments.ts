@@ -2199,6 +2199,7 @@ import { staticNumberValue } from "./option-helpers.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
+import { isGlobalUndefined } from "./symbols.js";
 import {
     emitDeterministicRandomInstall,
     type DeterministicRandomContext,
@@ -2240,7 +2241,7 @@ function compileMeshPrimitiveState(
     const node = context.unwrap(expression);
     if (ts.isConditionalExpression(node))
         return `(${context.compileBoolean(node.condition)} ? ${compileMeshPrimitiveState(context, node.whenTrue)} : ${compileMeshPrimitiveState(context, node.whenFalse)})`;
-    if (ts.isIdentifier(node) && node.text === "undefined")
+    if (isGlobalUndefined(context.checker, node))
         return "std::optional<bbl::MeshPrimitiveState>{}";
     const object = node;
     if (!ts.isObjectLiteralExpression(object))
@@ -2303,7 +2304,7 @@ function validateMeshPrimitiveFeatures(
         validateMeshPrimitiveFeatures(context, node.whenFalse);
         return;
     }
-    if (ts.isIdentifier(node) && node.text === "undefined") return;
+    if (isGlobalUndefined(context.checker, node)) return;
     let value = staticNumberValue(context, node);
     if (
         value === undefined &&
@@ -2816,11 +2817,11 @@ function emitLocalMatrixAssignment(
             expression,
             "imported root local matrix",
         );
-        const value = context.unwrap(expression.right);
         if (
-            !ts.isIdentifier(value) ||
-            value.text !== "undefined" ||
-            context.bindings.lookupOptional(value)
+            !isGlobalUndefined(
+                context.checker,
+                context.unwrap(expression.right),
+            )
         ) {
             context.fail(
                 expression.right,

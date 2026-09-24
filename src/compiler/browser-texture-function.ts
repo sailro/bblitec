@@ -145,12 +145,16 @@ export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
     });
 }
 
-/** The module-scope `VariableDeclaration` an identifier names, if any. */
+/**
+ * Whether an identifier names a module-scope `VariableDeclaration`, its
+ * own module's or, through an import, another's: both are state that
+ * outlives one call.
+ */
 function namesModuleScopeBinding(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): boolean {
-    const symbol = checker.getSymbolAtLocation(identifier);
+    const symbol = resolvedSymbol(checker, identifier);
     return (symbol?.declarations ?? []).some(
         (declaration) =>
             ts.isVariableDeclaration(declaration) &&

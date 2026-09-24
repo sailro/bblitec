@@ -1234,14 +1234,10 @@ function compileMeshOptionalStreams(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
 ) {
-    // The demo modules skip optional slots with literal
-    // `undefined`, which parses as an identifier expression.
+    // The demo modules skip optional slots with literal `undefined`.
     const isUndefinedArgument = (
         argument: ts.Expression | undefined,
-    ): boolean =>
-        !argument ||
-        argument.kind === ts.SyntaxKind.UndefinedKeyword ||
-        (ts.isIdentifier(argument) && argument.text === "undefined");
+    ): boolean => !argument || context.symbols.isGlobalUndefined(argument);
     // The pin's four optional streams, in its own argument order:
     // uvs, uv2s, tangents, colors. A call that omits one, or hands
     // it a literal `undefined`, settles here. One that hands it a

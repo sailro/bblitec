@@ -1,6 +1,6 @@
 import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 // `Math.random = <arrow>`: the deterministic seed a scene installs before
 // stepping a node-particle simulation.
 //
@@ -174,17 +174,17 @@ function capturedDeclarations(
     const declared = new EmissionSet<ts.Symbol>();
     const collectDeclared = (node: ts.Node): void => {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
-            const symbol = checker.getSymbolAtLocation(node.name);
+            const symbol = declaredSymbol(checker, node.name);
             if (symbol) declared.add(symbol);
         }
         // A factory's parameters are bound by the call, and its own name
         // binds the declaration itself; neither is closed over.
         if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
-            const symbol = checker.getSymbolAtLocation(node.name);
+            const symbol = declaredSymbol(checker, node.name);
             if (symbol) declared.add(symbol);
         }
         if (ts.isFunctionDeclaration(node) && node.name) {
-            const symbol = checker.getSymbolAtLocation(node.name);
+            const symbol = declaredSymbol(checker, node.name);
             if (symbol) declared.add(symbol);
         }
         ts.forEachChild(node, collectDeclared);
@@ -198,7 +198,9 @@ function capturedDeclarations(
         }
         if (ts.isIdentifier(node)) {
             if (context.libraryGlobal(node) === "Math") return;
-            const symbol = checker.getSymbolAtLocation(node);
+            // The arrow's own lexical locals: an imported name is not a
+            // declaration beside it the driver can re-declare.
+            const symbol = declaredSymbol(checker, node);
             if (!symbol || declared.has(symbol)) return;
             const declaration = symbol.valueDeclaration;
             if (

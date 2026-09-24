@@ -15,7 +15,12 @@ import {
 import { emitReachableStatements } from "./loop-control.js";
 import { arrayReturnStorage } from "./array-return-storage.js";
 import { cppIdentifier, cppIdentifierPattern } from "../cpp-literals.js";
-import { libraryGlobal, resolvedSymbol } from "./symbols.js";
+import {
+    declaredSymbol,
+    isNullishLiteral,
+    libraryGlobal,
+    resolvedSymbol,
+} from "./symbols.js";
 import {
     dataTypesEqual,
     isTypedArrayType,
@@ -694,10 +699,7 @@ export class NativeFunctionLowerer {
             return true;
         }
         const unwrapped = this.context.unwrap(argument);
-        if (
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) && unwrapped.text === "undefined")
-        ) {
+        if (isNullishLiteral(this.context.checker, unwrapped)) {
             return true;
         }
         const argumentType = this.context.dataTypes.fromTsType(
@@ -895,7 +897,7 @@ export class NativeFunctionLowerer {
         symbols: Set<ts.Symbol>,
     ): void {
         if (ts.isIdentifier(name)) {
-            const symbol = this.context.checker.getSymbolAtLocation(name);
+            const symbol = declaredSymbol(this.context.checker, name);
             if (symbol) symbols.add(symbol);
             return;
         }
@@ -910,7 +912,7 @@ export class NativeFunctionLowerer {
     ): boolean {
         const node = unwrapExpression(target);
         if (ts.isIdentifier(node)) {
-            const symbol = this.context.checker.getSymbolAtLocation(node);
+            const symbol = declaredSymbol(this.context.checker, node);
             return symbol !== undefined && locals.has(symbol);
         }
         if (ts.isElementAccessExpression(node)) {
@@ -1015,9 +1017,7 @@ export class NativeFunctionLowerer {
                         node.parent.expression === node
                     )
                         return false;
-                    const symbol = this.context.checker.getSymbolAtLocation(
-                        node.name,
-                    );
+                    const symbol = resolvedSymbol(this.context.checker, node);
                     return !symbol?.declarations?.every(
                         (declaration) =>
                             ts.isPropertySignature(declaration) ||
@@ -1534,9 +1534,7 @@ export class NativeFunctionLowerer {
             method.parameters
                 .map((parameter) =>
                     ts.isIdentifier(parameter.name)
-                        ? this.context.checker.getSymbolAtLocation(
-                              parameter.name,
-                          )
+                        ? declaredSymbol(this.context.checker, parameter.name)
                         : undefined,
                 )
                 .filter((symbol): symbol is ts.Symbol => symbol !== undefined),
@@ -1546,7 +1544,7 @@ export class NativeFunctionLowerer {
                 return true;
             }
             if (ts.isIdentifier(node)) {
-                const symbol = this.context.checker.getSymbolAtLocation(node);
+                const symbol = declaredSymbol(this.context.checker, node);
                 if (symbol && parameterSymbols.has(symbol)) {
                     return true;
                 }
@@ -1853,14 +1851,14 @@ export class NativeFunctionLowerer {
                   ? callback.parent.name
                   : undefined;
             const symbol = name
-                ? this.context.checker.getSymbolAtLocation(name)
+                ? declaredSymbol(this.context.checker, name)
                 : undefined;
             if (!name || !symbol) return false;
             return !someAnalysisNode(declaration, (node) => {
                 if (
                     ts.isIdentifier(node) &&
                     node !== name &&
-                    this.context.checker.getSymbolAtLocation(node) === symbol
+                    declaredSymbol(this.context.checker, node) === symbol
                 ) {
                     const parent = node.parent;
                     if (

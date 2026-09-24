@@ -12,22 +12,9 @@ import type { LoweringServices } from "./lowering-services.js";
 // The dynamic value stays where the parse put it. It is produced by
 // `JSON.parse` and by reads that descend into one, and it converts at a
 // sink (a number, a string, a condition) exactly where JavaScript coerces.
-
-// The JSON bridge: `JSON.stringify` over the plain-data model, and
-// `JSON.parse` plus the surface a parsed document is interrogated with.
-//
-// Neither half knows an application. `stringify` takes whatever data type
-// its argument already has and registers the records it reaches so their
-// codecs are generated beside them; `parse` produces the model's one
-// dynamic value, and every read over that value answers the way the
-// browser's does -- a missing property is `undefined`, a wrong-typed one
-// fails its guard rather than the program.
-//
-// The dynamic value stays where the parse put it. It is produced by
-// `JSON.parse` and by reads that descend into one, and it converts at a
-// sink (a number, a string, a condition) exactly where JavaScript coerces.
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
+import { isNullishLiteral } from "./symbols.js";
 
 import type { DataType } from "./data-types.js";
 import type { Value } from "./types.js";
@@ -180,13 +167,7 @@ function compileStringify(
     context.expectArgumentCount(call, 1, 3);
     const replacer = call.arguments[1];
     if (replacer !== undefined) {
-        const unwrapped = context.unwrap(replacer);
-        const isNothing =
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) &&
-                unwrapped.text === "undefined" &&
-                !context.bindings.lookupOptional(unwrapped));
-        if (!isNothing) {
+        if (!isNullishLiteral(context.checker, context.unwrap(replacer))) {
             context.fail(
                 replacer,
                 "JSON.stringify lowers with no replacer; a replacer " +

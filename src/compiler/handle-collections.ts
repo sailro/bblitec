@@ -1,4 +1,4 @@
-import { valueForKind, withNativeMetadata } from "./types.js";
+import { presenceFlagCpp, valueForKind, withNativeMetadata } from "./types.js";
 import type { ValueBase } from "./types.js";
 // Handle collections carry engine identity, generation-known members and asset traversal contracts.
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
@@ -12,7 +12,11 @@ import {
     resolveFunctionDeclaration,
     tryResolveFunctionDeclaration,
 } from "./user-functions.js";
-import { CompilerSymbols, type LibraryGlobal } from "./symbols.js";
+import {
+    CompilerSymbols,
+    isNullishLiteral,
+    type LibraryGlobal,
+} from "./symbols.js";
 import {
     argumentAt,
     identifierText,
@@ -1802,8 +1806,9 @@ export class HandleCollections {
                 );
                 context.expectKind(selected, "material", selector.body);
                 assetPbrMaterial = selected.assetPbrMaterial === true;
-                if (selected.optionalFoundCpp) {
-                    context.emit(`if (${selected.optionalFoundCpp}) {`);
+                const selectedFound = presenceFlagCpp(selected);
+                if (selectedFound) {
+                    context.emit(`if (${selectedFound}) {`);
                     context.increaseIndent();
                 }
                 context.bindings.bindLocalValue(predicateParameter, selected);
@@ -1817,7 +1822,7 @@ export class HandleCollections {
                 context.emit("break;");
                 context.decreaseIndent();
                 context.emit("}");
-                if (selected.optionalFoundCpp) {
+                if (selectedFound) {
                     context.decreaseIndent();
                     context.emit("}");
                 }
@@ -1937,7 +1942,7 @@ export class HandleCollections {
         if (
             !declaration ||
             !ts.isFunctionDeclaration(declaration) ||
-            !isAssetSkinnedDescendantSearch(declaration)
+            !isAssetSkinnedDescendantSearch(this.context.checker, declaration)
         ) {
             return undefined;
         }
@@ -2632,12 +2637,8 @@ function isAssetDescendantNameSearch(
     const name = declaration.parameters[1]!.name;
     if (!ts.isIdentifier(root) || !ts.isIdentifier(name)) return false;
     if (
-        new EmissionSet([
-            declaration.name.text,
-            root.text,
-            name.text,
-            "undefined",
-        ]).size !== 4
+        new EmissionSet([declaration.name.text, root.text, name.text]).size !==
+        3
     ) {
         return false;
     }
@@ -2677,8 +2678,7 @@ function isAssetDescendantNameSearch(
     if (
         [declaration.name, root, name].some(
             (identifier) => identifier.text === child.text,
-        ) ||
-        child.text === "undefined"
+        )
     ) {
         return false;
     }
@@ -2696,8 +2696,7 @@ function isAssetDescendantNameSearch(
     if (
         [declaration.name, root, name, child].some(
             (identifier) => identifier.text === hit.name.text,
-        ) ||
-        hit.name.text === "undefined"
+        )
     ) {
         return false;
     }
@@ -2729,19 +2728,7 @@ function isAssetDescendantNameSearch(
     if (!ts.isReturnStatement(miss!) || !miss.expression) {
         return false;
     }
-    const missValue = unwrapWalkExpression(miss.expression);
-    return (
-        missValue.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(missValue) &&
-            missValue.text === "undefined" &&
-            checker.getSymbolAtLocation(missValue) ===
-                checker.resolveName(
-                    "undefined",
-                    undefined,
-                    ts.SymbolFlags.Value,
-                    false,
-                ))
-    );
+    return isNullishLiteral(checker, unwrapWalkExpression(miss.expression));
 }
 
 /**
@@ -2766,6 +2753,7 @@ function isAssetDescendantNameSearch(
  * site by the inliner, exactly as the name search's sibling is.
  */
 function isAssetSkinnedDescendantSearch(
+    checker: ts.TypeChecker,
     declaration: ts.FunctionDeclaration,
 ): boolean {
     if (
@@ -2786,10 +2774,7 @@ function isAssetSkinnedDescendantSearch(
         return false;
     }
     const root = declaration.parameters[0]!.name;
-    if (
-        new EmissionSet([declaration.name.text, root.text, "undefined"])
-            .size !== 3
-    ) {
+    if (new EmissionSet([declaration.name.text, root.text]).size !== 2) {
         return false;
     }
     const [alias, selfArm, walk, miss] = declaration.body.statements;
@@ -2803,8 +2788,7 @@ function isAssetSkinnedDescendantSearch(
         !ts.isVariableStatement(alias!) ||
         (alias.declarationList.flags & ts.NodeFlags.Const) === 0 ||
         !isIdentifierRead(aliasDeclaration.initializer, root) ||
-        aliasDeclaration.name.text === declaration.name.text ||
-        aliasDeclaration.name.text === "undefined"
+        aliasDeclaration.name.text === declaration.name.text
     ) {
         return false;
     }
@@ -2857,8 +2841,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         [declaration.name, root, self].some(
             (identifier) => identifier.text === child.text,
-        ) ||
-        child.text === "undefined"
+        )
     ) {
         return false;
     }
@@ -2872,8 +2855,7 @@ function isAssetSkinnedDescendantSearch(
         (loopStatements[0].declarationList.flags & ts.NodeFlags.Const) === 0 ||
         [declaration.name, root, self, child].some(
             (identifier) => identifier.text === hit.name.text,
-        ) ||
-        hit.name.text === "undefined"
+        )
     ) {
         return false;
     }
@@ -2902,11 +2884,7 @@ function isAssetSkinnedDescendantSearch(
     }
 
     if (!ts.isReturnStatement(miss!) || !miss.expression) return false;
-    const missValue = unwrapWalkExpression(miss.expression);
-    return (
-        missValue.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(missValue) && missValue.text === "undefined")
-    );
+    return isNullishLiteral(checker, unwrapWalkExpression(miss.expression));
 }
 
 /**

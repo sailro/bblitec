@@ -7,7 +7,7 @@ import {
 } from "./intrinsics/character-controller.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
-import type { Value } from "./types.js";
+import { presenceFlagCpp, type Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
 import { emitDomEventListener } from "./dom-listeners.js";
@@ -124,6 +124,19 @@ interface PlatformCallContext
             | "unwrap"
         > {}
 
+/**
+ * An operation on a value that may be absent (an element a lookup may not
+ * have found): it runs only when present, else yields `absent`.
+ */
+function whenPresent(
+    value: Value,
+    operation: string,
+    absent = "static_cast<void>(0)",
+): string {
+    const found = presenceFlagCpp(value);
+    return found ? `(${found} ? ${operation} : ${absent})` : operation;
+}
+
 export class PlatformCalls {
     public constructor(
         private readonly context: PlatformCallContext,
@@ -223,9 +236,9 @@ export class PlatformCalls {
             const value = this.compileUiCall(call, callee);
             if (value) return value;
         }
-        const global = ts.isIdentifier(callee)
-            ? this.context.libraryGlobal(callee)
-            : undefined;
+        // Bare or through the global object (`window.clearTimeout`): the
+        // same library function either way.
+        const global = this.context.libraryGlobal(callee);
         if (global !== undefined) {
             if (global === "isFinite") {
                 this.context.expectArgumentCount(call, 1, 1);
@@ -1290,9 +1303,7 @@ export class PlatformCalls {
             const focus = `bbl::ui_focus(${engine}, ${element.cpp})`;
             return {
                 kind: "void",
-                cpp: element.optionalFoundCpp
-                    ? `(${element.optionalFoundCpp} ? ${focus} : static_cast<void>(0))`
-                    : focus,
+                cpp: whenPresent(element, focus),
             };
         }
         if (element && callee.name.text === "click") {
@@ -1334,7 +1345,7 @@ export class PlatformCalls {
                 callee.name.text,
                 this.context.requireEngine(element, call),
                 element.cpp,
-                element.optionalFoundCpp,
+                presenceFlagCpp(element),
             );
         }
         if (element && callee.name.text === "querySelector") {
@@ -1468,13 +1479,12 @@ export class PlatformCalls {
             this.context.reachJsData();
             return {
                 kind: "data",
-                cpp: element.optionalFoundCpp
-                    ? `(${element.optionalFoundCpp} ? ` +
-                      `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
-                      `${this.context.cppString(matched[1]!)}) : ` +
-                      "bbl::js::Array<bbl::UiElementHandle>{})"
-                    : `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
-                      `${this.context.cppString(matched[1]!)})`,
+                cpp: whenPresent(
+                    element,
+                    `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
+                        `${this.context.cppString(matched[1]!)})`,
+                    "bbl::js::Array<bbl::UiElementHandle>{}",
+                ),
                 dataType: {
                     kind: "vector",
                     element: {
@@ -1665,11 +1675,10 @@ export class PlatformCalls {
             this.ui.recordUiStaticRemoval(element);
             return {
                 kind: "void",
-                cpp: element.optionalFoundCpp
-                    ? `(${element.optionalFoundCpp} ? ` +
-                      `bbl::ui_remove(${engine}, ${element.cpp}) : ` +
-                      "static_cast<void>(0))"
-                    : `bbl::ui_remove(${engine}, ${element.cpp})`,
+                cpp: whenPresent(
+                    element,
+                    `bbl::ui_remove(${engine}, ${element.cpp})`,
+                ),
             };
         }
         if (element && callee.name.text === "getBoundingClientRect") {
@@ -1780,9 +1789,7 @@ export class PlatformCalls {
                     `${this.context.cppString(name)}, ${enabled})`;
                 return {
                     kind: "void",
-                    cpp: classElement.optionalFoundCpp
-                        ? `(${classElement.optionalFoundCpp} ? ${mutation} : static_cast<void>(0))`
-                        : mutation,
+                    cpp: whenPresent(classElement, mutation),
                 };
             }
         }

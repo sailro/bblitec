@@ -1,4 +1,9 @@
-import { isStringValue, optionalPresentCpp, valueForKind } from "./types.js";
+import {
+    isStringValue,
+    optionalPresentCpp,
+    presenceFlagCpp,
+    valueForKind,
+} from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import {
     emissionArray,
@@ -59,6 +64,7 @@ import { documentEngine } from "./window-events.js";
 import { registerUiImageAsset } from "./assets.js";
 import { primaryCanvasIds } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { declaredSymbol } from "./symbols.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
 import {
@@ -355,7 +361,7 @@ export class UiProjection {
                     cpp: `(*${value.cpp})`,
                     dataType: value.dataType.inner,
                     optionalFoundCpp:
-                        value.optionalFoundCpp ?? optionalPresentCpp(value.cpp),
+                        presenceFlagCpp(value) ?? optionalPresentCpp(value.cpp),
                     engineCpp: value.engineCpp ?? this.documentEngine(owner),
                 }),
             );
@@ -1834,10 +1840,12 @@ export class UiProjection {
     ): boolean {
         let target = this.context.unwrap(expression);
         if (ts.isIdentifier(target)) {
-            const declaration =
-                this.context.checker.getSymbolAtLocation(
-                    target,
-                )?.valueDeclaration;
+            // The alias the read's own scope declares: its initializer is
+            // compiled here, so an import's is not one to follow.
+            const declaration = declaredSymbol(
+                this.context.checker,
+                target,
+            )?.valueDeclaration;
             if (
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&

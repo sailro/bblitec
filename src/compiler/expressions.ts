@@ -32,6 +32,7 @@ import { doubleLiteral } from "../cpp-literals.js";
 import { syntaxKindName } from "../source-location.js";
 import {
     aliasTarget,
+    declaredSymbol,
     isAbsentTypeofIdentifier,
     resolvedSymbol,
 } from "./symbols.js";
@@ -114,7 +115,9 @@ import {
     booleanValue,
     commonResourceValue,
     isStringValue,
+    objectTruthinessCpp,
     presenceCpp,
+    presenceFlagCpp,
     staticStringValue,
 } from "./types.js";
 import { recordAt } from "./record-access.js";
@@ -605,7 +608,7 @@ export class ExpressionLowerer {
                     dataType: { kind: "number" },
                 };
             }
-            if (unwrapped.text === "undefined") {
+            if (this.context.symbols.isGlobalUndefined(unwrapped)) {
                 return { kind: "json-null", cpp: "std::nullopt" };
             }
             const numeric = this.context.libraryGlobal(unwrapped);
@@ -674,8 +677,9 @@ export class ExpressionLowerer {
             if (mathFunction) return mathFunction;
             const audioPrototype = audioPrototypeValue(this.context, unwrapped);
             if (audioPrototype) return audioPrototype;
-            const member = this.context.checker.getSymbolAtLocation(
-                unwrapped.name,
+            const member = resolvedSymbol(
+                this.context.checker,
+                unwrapped,
             )?.valueDeclaration;
             const constant =
                 member && ts.isEnumMember(member)
@@ -1119,7 +1123,7 @@ export class ExpressionLowerer {
             const truthiness = this.context.probeEmission(
                 () => {
                     leftValue = this.compileValue(unwrapped.left);
-                    return this.context.dataLowerer.conditionFromValue(
+                    return this.context.dataLowerer.truthinessCondition(
                         leftValue,
                     );
                 },
@@ -1184,13 +1188,13 @@ export class ExpressionLowerer {
                 };
             }
             if (
-                ts.isIdentifier(expression) &&
-                (expression.text === "undefined" ||
+                this.context.symbols.isGlobalUndefined(expression) ||
+                (ts.isIdentifier(expression) &&
                     isAbsentTypeofIdentifier(
                         this.context.checker,
                         expression,
-                    )) &&
-                !this.context.bindings.lookupOptional(expression)
+                    ) &&
+                    !this.context.bindings.lookupOptional(expression))
             ) {
                 return {
                     kind: "string",
@@ -2128,10 +2132,10 @@ export class ExpressionLowerer {
             absent.cpp.length === 0 &&
             present.kind !== "json-null" &&
             present.cpp.length > 0 &&
-            present.optionalFoundCpp !== undefined
+            presenceFlagCpp(present) !== undefined
                 ? {
                       ...present,
-                      optionalFoundCpp: `(${found} && ${present.optionalFoundCpp})`,
+                      optionalFoundCpp: `(${found} && ${presenceFlagCpp(present)})`,
                   }
                 : undefined;
         if (whenTrue.kind !== whenFalse.kind) {
@@ -2170,14 +2174,13 @@ export class ExpressionLowerer {
         } else {
             delete conditional.nativeLvalue;
         }
-        if (
-            whenTrue.optionalFoundCpp !== undefined ||
-            whenFalse.optionalFoundCpp !== undefined
-        ) {
+        const trueFound = presenceFlagCpp(whenTrue);
+        const falseFound = presenceFlagCpp(whenFalse);
+        if (trueFound !== undefined || falseFound !== undefined) {
             conditional.optionalFoundCpp =
                 `(${condition} ? ` +
-                `${whenTrue.optionalFoundCpp ?? "true"} : ` +
-                `${whenFalse.optionalFoundCpp ?? "true"})`;
+                `${trueFound ?? "true"} : ` +
+                `${falseFound ?? "true"})`;
         }
         if (whenTrue.staticNumber !== whenFalse.staticNumber) {
             delete conditional.staticNumber;
@@ -2675,11 +2678,7 @@ export class ExpressionLowerer {
                     this.context.cppString(text),
                 );
             }
-            if (
-                ts.isIdentifier(argument) &&
-                argument.text === "undefined" &&
-                !this.context.bindings.lookupOptional(argument)
-            ) {
+            if (this.context.symbols.isGlobalUndefined(argument)) {
                 return staticStringValue("undefined", (text) =>
                     this.context.cppString(text),
                 );
@@ -3128,7 +3127,7 @@ export class ExpressionLowerer {
                     this.inRuntimeControlFlow(() => {
                         const result = invoke(element, index);
                         condition =
-                            this.context.dataLowerer.conditionFromValue(
+                            this.context.dataLowerer.truthinessCondition(
                                 result,
                             ) ??
                             this.context.fail(
@@ -3894,11 +3893,9 @@ export class ExpressionLowerer {
             // needing a per-kind truthiness rule. Scene 140 writes
             // `const sg = noShadows ? null : createPcf(...)` and then
             // `if (sg)`, with `noShadows` folded from its query.
-            const droppedNode = this.context.unwrap(dropped);
-            const droppedIsNullish =
-                droppedNode.kind === ts.SyntaxKind.NullKeyword ||
-                (ts.isIdentifier(droppedNode) &&
-                    droppedNode.text === "undefined");
+            const droppedIsNullish = this.context.symbols.isNullishLiteral(
+                this.context.unwrap(dropped),
+            );
             // Only for a RESOURCE, because `optionalFoundCpp` means
             // presence and the consumers read it as truthiness. Those
             // two agree for a handle -- a mesh that exists is truthy
@@ -3914,8 +3911,7 @@ export class ExpressionLowerer {
             if (
                 droppedIsNullish &&
                 survivorIsResource &&
-                selected.optionalFoundCpp === undefined &&
-                selected.truthinessCpp === undefined
+                objectTruthinessCpp(selected) === undefined
             ) {
                 return { ...selected, optionalFoundCpp: "true" };
             }
@@ -4055,15 +4051,10 @@ export class ExpressionLowerer {
                 guard.operatorToken.kind ===
                     ts.SyntaxKind.ExclamationEqualsToken;
             if ((!equal && !unequal) || truth === equal) return value;
-            const absent = (node: ts.Expression): boolean => {
-                const operand = this.context.unwrap(node);
-                return (
-                    operand.kind === ts.SyntaxKind.NullKeyword ||
-                    (ts.isIdentifier(operand) &&
-                        operand.text === "undefined" &&
-                        !this.context.bindings.lookupOptional(operand))
+            const absent = (node: ts.Expression): boolean =>
+                this.context.symbols.isNullishLiteral(
+                    this.context.unwrap(node),
                 );
-            };
             const tested = absent(guard.left)
                 ? this.context.unwrap(guard.right)
                 : absent(guard.right)
@@ -4071,8 +4062,8 @@ export class ExpressionLowerer {
                   : undefined;
             return tested &&
                 ts.isIdentifier(tested) &&
-                this.context.checker.getSymbolAtLocation(tested) ===
-                    this.context.checker.getSymbolAtLocation(selected)
+                declaredSymbol(this.context.checker, tested) ===
+                    declaredSymbol(this.context.checker, selected)
                 ? this.context.dataLowerer.narrowOptional(
                       value,
                       expression,
@@ -4888,7 +4879,7 @@ export class ExpressionLowerer {
                 callee.name.text === "updateData"
             ) {
                 this.context.expectArgumentCount(call, 1, 1);
-                if (instance.optionalFoundCpp) {
+                if (presenceFlagCpp(instance)) {
                     this.context.fail(
                         call,
                         "updateData requires a present splat cloud.",
@@ -5019,7 +5010,7 @@ export class ExpressionLowerer {
             }
             if (instance && declaration) {
                 const optionalFound =
-                    instance.optionalFoundCpp ??
+                    presenceFlagCpp(instance) ??
                     (instance.dataType?.kind === "struct" &&
                     this.context.dataTypes.isReferenceStruct(
                         instance.dataType.name,
