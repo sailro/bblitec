@@ -980,13 +980,7 @@ class GeneratedSourceWriter {
             "upstream/include/bblite/upstream/material_texture_slots.hpp",
             materialTextureSlotsHeader(
                 {
-                    // The pair after the base slots serves the refraction
-                    // map and the thickness map. The translucency fragment
-                    // binds the same thickness pair without refracting, so
-                    // a composed thickness binding reaches the pair too.
-                    transmission:
-                        transmission ||
-                        pbrBindingNames.has("thicknessTexture_"),
+                    transmission,
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     iridescence: options.iridescence,
