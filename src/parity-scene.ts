@@ -502,9 +502,15 @@ export interface MemorySummary {
     /** Least-squares working-set slope after warm-up, MB per 1,000 frames. */
     slopeMbPer1000Frames: number;
     maxSlopeMb: number;
-    /** Mesh records the scene no longer draws (`mesh_records - scene_meshes`). */
+    /**
+     * Mesh records past the most the scene has drawn at once so far
+     * (`mesh_records` minus the running maximum of `scene_meshes`).
+     */
     orphanMeshRecords: MemoryCounterTrend;
-    /** Geometry records holding no vertices (`geometry_records - live_geometries`). */
+    /**
+     * Geometry records past the most that held vertices at once so far
+     * (`geometry_records` minus the running maximum of `live_geometries`).
+     */
     orphanGeometryRecords: MemoryCounterTrend;
     gcNodes: MemoryCounterTrend;
     /** Why the run failed; empty when it passed. */
@@ -535,6 +541,20 @@ function counterTrend(
     };
 }
 
+/** Each sample's running maximum of `value` over the run up to it. */
+function runningMaximum(
+    samples: readonly MemorySample[],
+    value: (sample: MemorySample) => number,
+): Map<MemorySample, number> {
+    const result = new Map<MemorySample, number>();
+    let peak = 0;
+    for (const sample of samples) {
+        peak = Math.max(peak, value(sample));
+        result.set(sample, peak);
+    }
+    return result;
+}
+
 function slopePer1000Frames(window: readonly MemorySample[]): number {
     const frames = window.map((sample) => sample.frame);
     const values = window.map((sample) => sample.workingSetMb);
@@ -555,10 +575,11 @@ function slopePer1000Frames(window: readonly MemorySample[]): number {
  * when any of these holds:
  *   - the working set trends upward faster than `maxSlopeMb` per 1,000
  *     frames (least squares, so one late spike does not decide);
- *   - engine mesh records the scene no longer draws, or geometry records
- *     holding no vertices, pile up: the last third's floor is above the
- *     first third's — records a correct program retires are reused, so
- *     their surplus stays level;
+ *   - engine mesh or geometry records pile up past the most meshes the
+ *     scene has drawn (geometries have held vertices) at once: the last
+ *     third's floor is above the first third's — records a correct
+ *     program retires are reused, so the tables never outgrow that
+ *     high-water, however far the scene's own count dips below it;
  *   - GC nodes rise steadily: each third's floor above the previous one's,
  *     by more than `gcNodeRiseShare` of the first floor.
  * Undefined when the run printed too few lines to judge (a loop without
@@ -586,13 +607,21 @@ export function summarizeMemoryProfile(
         return undefined;
     const growthMb = last.workingSetMb - settled.workingSetMb;
     const slope = slopePer1000Frames(window);
+    const sceneMeshPeak = runningMaximum(
+        samples,
+        (sample) => sample.sceneMeshes,
+    );
+    const liveGeometryPeak = runningMaximum(
+        samples,
+        (sample) => sample.liveGeometries,
+    );
     const orphanMeshRecords = counterTrend(
         window,
-        (sample) => sample.meshRecords - sample.sceneMeshes,
+        (sample) => sample.meshRecords - sceneMeshPeak.get(sample)!,
     );
     const orphanGeometryRecords = counterTrend(
         window,
-        (sample) => sample.geometryRecords - sample.liveGeometries,
+        (sample) => sample.geometryRecords - liveGeometryPeak.get(sample)!,
     );
     const gcNodes = counterTrend(window, (sample) => sample.gcNodes);
     const failures: string[] = [];

@@ -150,6 +150,28 @@ test("fails retired mesh and geometry records that pile up while the working set
         })),
     );
     assert.equal(summarizeMemoryProfile(growing, 2)?.passed, true);
+    // A table that reuses retired slots holds as many records as the
+    // scene's most meshes at once, however far its count later dips.
+    const pooled = parseMemoryProfile(
+        run((index) => ({
+            meshRecords: 44,
+            sceneMeshes: index === 5 ? 44 : 40,
+            geometryRecords: 44,
+            liveGeometries: index === 5 ? 44 : 40,
+        })),
+    );
+    assert.equal(summarizeMemoryProfile(pooled, 2)?.passed, true);
+    // Past that high-water the same dip still leaks.
+    const leaking = parseMemoryProfile(
+        run((index) => ({
+            meshRecords: 44 + index * 3,
+            sceneMeshes: index === 5 ? 44 : 40,
+        })),
+    );
+    assert.match(
+        formatMemorySummary("demo", summarizeMemoryProfile(leaking, 2)),
+        /FAILED: mesh records the scene no longer draws pile up/,
+    );
 });
 
 test("fails GC nodes that rise steadily, not a collection sawtooth", () => {
