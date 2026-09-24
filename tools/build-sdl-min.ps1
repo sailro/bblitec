@@ -95,6 +95,18 @@ if ($LASTEXITCODE -ne 0) {
 }
 Sync-PatchedCheckout $source $repository $tagCommit "SDL $tag" sdl3 @("trimmed") $CMake | Out-Null
 
+# SDL's surface code is linked whole through its blitter tables. The engine
+# only converts decoded images (SDL_ConvertSurface, never blending): keep the
+# indexed and N-to-N converters SDL_image's formats reach and compile out the
+# blending, modulating and scaling blitters, RLE, YUV and SDL's own stb_image
+# loader (SDL_internal.h's lean switches; the generic converter remains).
+# SDL's targets drop /D flags given through CMAKE_C_FLAGS*, so the defines
+# reach them as compile definitions from a project include.
+$surfaceDefines = @("SDL_LEAN_AND_MEAN", "SDL_HAVE_BLIT_0", "SDL_HAVE_BLIT_1", "SDL_HAVE_BLIT_N", "SDL_DISABLE_STB")
+New-Item -ItemType Directory -Path $build -Force | Out-Null
+$surfaceInclude = Join-Path $build "bblite-surface-definitions.cmake"
+Set-ArtifactContent $surfaceInclude "add_compile_definitions($($surfaceDefines -join ' '))`n"
+
 # One table drives the configure and the check after it: every entry is
 # passed as "-D<name>=<value>" and read back from the cache CMake wrote,
 # so an option that reached CMake as PowerShell text instead of its value
@@ -125,17 +137,6 @@ $sdlOptions = [ordered]@{
     SDL_RENDER = "OFF"
     SDL_VIDEO = "ON"
 }
-# SDL's surface code is linked whole through its blitter tables. The engine
-# only converts decoded images (SDL_ConvertSurface, never blending): keep the
-# indexed and N-to-N converters SDL_image's formats reach and compile out the
-# blending, modulating and scaling blitters, RLE, YUV and SDL's own stb_image
-# loader (SDL_internal.h's lean switches; the generic converter remains).
-# SDL's targets drop /D flags given through CMAKE_C_FLAGS*, so the defines
-# reach them as compile definitions from a project include.
-$surfaceDefines = @("SDL_LEAN_AND_MEAN", "SDL_HAVE_BLIT_0", "SDL_HAVE_BLIT_1", "SDL_HAVE_BLIT_N", "SDL_DISABLE_STB")
-New-Item -ItemType Directory -Path $build -Force | Out-Null
-$surfaceInclude = Join-Path $build "bblite-surface-definitions.cmake"
-Set-ArtifactContent $surfaceInclude "add_compile_definitions($($surfaceDefines -join ' '))`n"
 $configureArguments = @(
     "-S", $source,
     "-B", $build,
