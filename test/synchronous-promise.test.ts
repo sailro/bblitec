@@ -198,6 +198,30 @@ test("pending activations refuse uses that need a pending promise value", () => 
         void main();`,
         /async Promise executor/,
     );
+    refusal(
+        `async function main(): Promise<void> {
+            await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+        void main();`,
+        /settled from a timer or frame callback/,
+    );
+    refusal(
+        `async function main(): Promise<void> {
+            let polls = 0;
+            await new Promise<void>((resolve) => {
+                const poll = (): void => {
+                    if (++polls > 3) {
+                        resolve();
+                        return;
+                    }
+                    queueMicrotask(poll);
+                };
+                poll();
+            });
+        }
+        void main();`,
+        /settled from a timer or frame callback/,
+    );
 });
 
 test("absent global members fold through aliases and typeof", () => {

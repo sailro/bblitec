@@ -885,7 +885,7 @@ ${
 }\
 ${projection.audioSessionReached ? "        auto bbl_audio_session = std::make_shared<bbl::pal::AudioSession>();\n" : ""}${seedRandom}${body.join("\n")}
         return 0;
-    }${projection.pendingActivations ? " catch (const bbl::js::PendingActivation&) {\n        // The entry awaited a promise nothing settled: it has no more work.\n        return 0;\n    }" : ""} catch (const std::exception& error) {
+    }${projection.pendingActivations ? ' catch (const bbl::js::PendingActivation&) {\n        std::cerr << "Babylon Lite native error: the entry awaited a constructed promise still pending, which the synchronous lowering cannot resume.\\n";\n        return 1;\n    }' : ""} catch (const std::exception& error) {
         std::cerr << "Babylon Lite native error: " << error.what() << '\\n';
         return 1;
     }

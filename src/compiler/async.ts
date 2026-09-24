@@ -58,6 +58,14 @@ export class PendingActivationsRequired extends Error {
     }
 }
 
+/** Library schedulers whose callbacks never run before the call returns. */
+const DEFERRED_SCHEDULERS: ReadonlySet<string> = new Set([
+    "queueMicrotask",
+    "requestAnimationFrame",
+    "setInterval",
+    "setTimeout",
+]);
+
 /** Async activation and reaction lowering share the compiler's managed captures. */
 export class AsyncLowerer {
     private depth = 0;
@@ -609,10 +617,84 @@ export class AsyncLowerer {
                 "A constructed promise is awaited or returned where it is created; " +
                     "the synchronous lowering has no pending promise value to store.",
             );
+        const deferred = this.deferredSettlement(node);
+        if (deferred)
+            return this.context.fail(
+                deferred,
+                "A constructed promise settled from a timer or frame callback resumes " +
+                    "after its executor returns, which the synchronous lowering cannot.",
+            );
         if (!this.context.options.pendingActivations)
             throw new PendingActivationsRequired();
         this.context.pendingActivations();
         return this.compileConstructor(node, true);
+    }
+
+    /**
+     * A scheduler call in the executor whose callback names a resolving
+     * function: a timer or frame callback always runs after the executor
+     * returns, so the await would find the promise pending and end an
+     * activation JavaScript resumes.
+     */
+    private deferredSettlement(
+        node: ts.NewExpression,
+    ): ts.CallExpression | undefined {
+        const context = this.context;
+        const executor = node.arguments?.[0]
+            ? context.unwrap(node.arguments[0])
+            : undefined;
+        if (
+            !executor ||
+            (!ts.isArrowFunction(executor) &&
+                !ts.isFunctionExpression(executor))
+        )
+            return undefined;
+        const resolving = new Set(
+            executor.parameters.flatMap((parameter) => {
+                const symbol = context.checker.getSymbolAtLocation(
+                    parameter.name,
+                );
+                return symbol ? [symbol] : [];
+            }),
+        );
+        // A callback names a resolving function directly or through a local
+        // function the executor declares (`const poll = () => ...`).
+        const visited = new Set<ts.Node>();
+        const namesResolving = (root: ts.Node): boolean =>
+            someAnalysisNode(root, (candidate) => {
+                if (!ts.isIdentifier(candidate)) return false;
+                const symbol = context.checker.getSymbolAtLocation(candidate);
+                if (symbol === undefined) return false;
+                if (resolving.has(symbol)) return true;
+                const declaration = symbol.valueDeclaration;
+                const local =
+                    declaration &&
+                    declaration.pos >= executor.pos &&
+                    declaration.end <= executor.end &&
+                    declaration.getSourceFile() === executor.getSourceFile()
+                        ? ts.isVariableDeclaration(declaration)
+                            ? declaration.initializer
+                            : ts.isFunctionDeclaration(declaration)
+                              ? declaration
+                              : undefined
+                        : undefined;
+                if (!local || visited.has(local)) return false;
+                visited.add(local);
+                return namesResolving(local);
+            });
+        let found: ts.CallExpression | undefined;
+        someAnalysisNode(executor.body, (candidate) => {
+            if (
+                ts.isCallExpression(candidate) &&
+                DEFERRED_SCHEDULERS.has(
+                    context.libraryGlobal(candidate.expression) ?? "",
+                ) &&
+                candidate.arguments.some(namesResolving)
+            )
+                found = candidate;
+            return found !== undefined;
+        });
+        return found;
     }
 
     private synchronousPromiseType(
