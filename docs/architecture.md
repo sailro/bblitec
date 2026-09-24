@@ -72,9 +72,10 @@ belong to scene identity. Property and glTF animation retain separate playback c
 
 ## Runtime and memory
 
-- Handles index engine records; resolve them again after storage growth. A mesh handle carries its slot's
-  generation: a retired mesh's record and geometry slots are reused, and add, clone and checked `handle_at`
-  refuse the old handle.
+- Handles reach engine records only through `bbl::handle_at`; resolve them again after storage growth. A mesh
+  handle carries its slot's generation: a retired mesh's record and geometry slots are reused, and every build
+  refuses an index past its table and a mesh handle whose slot a later mesh holds
+  ([fidelity](fidelity.md#semantic-contract)). BBLITE_CHECKED_HANDLES adds the call site to the refusal.
 - RAII owns locals. Shared containers and `bbl::js::Ref<T>` preserve JS identity.
 - Computed method receivers retain their selected owner through callbacks and cycle collection.
 - Closures retain referenced cells; suspended calls own their live locals.
