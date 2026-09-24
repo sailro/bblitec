@@ -351,6 +351,10 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
     // forces a dependent one) are admitted to the trim table.
     assert.match(script, /Get-MaintainedPatches sdl3 @\("trimmed"\)/);
     assert.match(script, /Get-PatchRecord sdl3 \$sdlVersion \$patches/);
+    // A warm workspace that already holds the tag with this series staged is
+    // not reset and re-patched, which would recompile the whole library.
+    assert.match(script, /applied-series\.txt/);
+    assert.match(script, /git -C \$source write-tree/);
     assert.doesNotMatch(script, /SDL_(MISC|LOCALE) =/);
     assert.match(script, /-notin @\("BOOL", "INTERNAL"\)/);
     assert.ok(existsSync("native/patches/sdl3/0009-static-no-dynapi.patch"));
