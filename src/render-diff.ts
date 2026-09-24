@@ -117,7 +117,7 @@ export interface ShaderArmReport {
 }
 
 /** One native bone-palette matrix looked up among the browser's float
- *  texture uploads, mirror map applied. */
+ *  texture uploads. */
 export interface PaletteCorrespondence {
     native: string;
     match: "exact" | "divergent";
@@ -131,10 +131,9 @@ export interface PaletteCorrespondence {
  * matrices as an Nx1 rgba32float texture — four texels per matrix — and
  * the instrumented capture keeps those texels' raw bytes; the native
  * capture carries the same matrices CPU-side in its `pinnedMeshBlocks`,
- * stored under the native mirror convention. Each native matrix is
- * pushed through the documented mirror map and looked up among the
+ * as the pin computes them. Each native matrix is looked up among the
  * uploaded ones, so the skinning comparison is a verdict rather than a
- * by-eye hexfloat diff with a sign-flip caveat.
+ * by-eye hexfloat diff.
  */
 export interface TexturePaletteReport {
     floatUploads: Array<{
@@ -744,21 +743,6 @@ export interface TextureUpload {
     sample?: unknown;
 }
 
-/**
- * The mirror similarity map: negate column-major indexes 1, 2, 3, 4, 8
- * and 12 — the `diag(-1, 1, 1)` conjugation that relates every native
- * matrix to the browser's. Applying it
- * is what turns the "a sign-flipped lane is not a finding" counsel into
- * a mechanical match.
- */
-export function mirrorMatrixConvention(values: readonly number[]): number[] {
-    const mirrored = [...values];
-    for (const index of [1, 2, 3, 4, 8, 12]) {
-        if (index < mirrored.length) mirrored[index] = -mirrored[index]!;
-    }
-    return mirrored;
-}
-
 /** `undefined` when the capture predates `tex-uploads.json`; an
  *  unreadable file reads as an empty record rather than a crash. */
 export function readTextureUploads(
@@ -833,17 +817,16 @@ export function texturePaletteReport(
             if (seen.has(signature)) continue;
             seen.add(signature);
             const name = `pinned mesh[${block.meshIndex}] ${label}`;
-            const mirrored = mirrorMatrixConvention(matrix);
             let matched: UniformField | undefined;
             let nearest: UniformField | undefined;
             let nearestDelta = Number.POSITIVE_INFINITY;
             for (const candidate of candidates) {
-                if (candidate.values.length !== mirrored.length) continue;
-                if (agrees(mirrored, candidate.values, mirrored.length)) {
+                if (candidate.values.length !== matrix.length) continue;
+                if (agrees(matrix, candidate.values, matrix.length)) {
                     matched = candidate;
                     break;
                 }
-                const delta = maxDelta(mirrored, candidate.values);
+                const delta = maxDelta(matrix, candidate.values);
                 if (delta < nearestDelta) {
                     nearestDelta = delta;
                     nearest = candidate;
@@ -855,7 +838,7 @@ export function texturePaletteReport(
                           native: name,
                           match: "exact",
                           browser: matched.name,
-                          maxDelta: maxDelta(mirrored, matched.values),
+                          maxDelta: maxDelta(matrix, matched.values),
                       }
                     : {
                           native: name,
@@ -1556,9 +1539,9 @@ export function buildRenderDiff(
         ) ?? [];
     if (unmatchedPalettes.length > 0) {
         findings.push(
-            `${unmatchedPalettes.length} native bone-palette matrix(es) appear in no browser float-texture upload ` +
-                `(mirror map applied): ${unmatchedPalettes.map((entry) => entry.native).join(", ")}. ` +
-                "The two sides disagree on skinning state at this pose — BBLITE_DEFORMATION_DUMP prints the native palettes in full.",
+            `${unmatchedPalettes.length} native bone-palette matrix(es) appear in no browser float-texture upload: ` +
+                `${unmatchedPalettes.map((entry) => entry.native).join(", ")}. ` +
+                "The two sides disagree on skinning state at this pose.",
         );
     }
     if (findings.length === 0) {
@@ -1733,12 +1716,10 @@ export function formatRenderDiff(report: RenderDiffReport, limit = 30): string {
         }
         if (report.pinned.meshBlocks.length > 0) {
             lines.push(
-                "  Mesh worlds ride the native mirror convention (negate " +
-                    "column-major 1, 2, 3, 4, 8 and 12): " +
-                    "a sign-flipped lane against the browser's is that " +
-                    "documented difference, not a finding." +
+                "  Mesh worlds and bone palettes are the pin's own matrices: " +
+                    "a lane that differs from the browser's is a finding." +
                     (report.texturePalettes
-                        ? " Bone palettes are matched with that map applied, under 'Texture palettes' below."
+                        ? " Bone palettes are matched under 'Texture palettes' below."
                         : ""),
             );
         }
@@ -1750,8 +1731,8 @@ export function formatRenderDiff(report: RenderDiffReport, limit = 30): string {
         lines.push("");
         lines.push(
             "Texture palettes (browser skins upload bone matrices as rgba32float " +
-                "texels; each native palette matrix is looked up with the mirror " +
-                `map applied): ${palettes.floatUploads.length} float upload(s), ` +
+                "texels; each native palette matrix is looked up among them): " +
+                `${palettes.floatUploads.length} float upload(s), ` +
                 `${palettes.colorUploads} color texel upload(s), ` +
                 `${palettes.externalImages} external image(s) beside them`,
         );
@@ -1766,7 +1747,7 @@ export function formatRenderDiff(report: RenderDiffReport, limit = 30): string {
         for (const entry of palettes.palettes.slice(0, limit)) {
             lines.push(
                 entry.match === "exact"
-                    ? `  ${entry.native} == ${entry.browser}  (mirror applied, delta ${entry.maxDelta?.toExponential(3) ?? "0"})`
+                    ? `  ${entry.native} == ${entry.browser}  (delta ${entry.maxDelta?.toExponential(3) ?? "0"})`
                     : `  ${entry.native} matches NO uploaded matrix` +
                           (entry.browser
                               ? `  (nearest ${entry.browser}, delta ${entry.maxDelta?.toExponential(3)})`

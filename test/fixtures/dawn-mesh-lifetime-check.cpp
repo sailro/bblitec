@@ -141,7 +141,8 @@ struct DawnState {
                pinned_lights_uniforms = nullptr, pinned_scene_uniforms = nullptr,
                skybox_uniforms = nullptr, skybox_matrix = nullptr, skybox_indices = nullptr,
                skybox_vertices = nullptr, ground_uniforms = nullptr, ground_indices = nullptr,
-               ground_vertices = nullptr, view_projection = nullptr;
+               ground_vertices = nullptr, view_projection = nullptr,
+               background_mesh_world_uniform = nullptr;
     WGPUTextureView transmission_color_view = nullptr, skybox_texture_view = nullptr,
                     ground_texture_view = nullptr, brdf_view = nullptr,
                     environment_cube_view = nullptr, normal_flat_view = nullptr,

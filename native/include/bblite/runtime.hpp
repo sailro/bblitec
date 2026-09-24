@@ -1894,7 +1894,6 @@ struct ModelVertex {
     Vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
     Vec2 uv{};
     Vec2 uv2{};
-    Vec3 local_position{};
     Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
     std::array<std::uint16_t, 4> joints{};
     Vec4 weights{};
@@ -1911,28 +1910,6 @@ struct LineSystemData {
     std::vector<std::uint32_t> indices;
     std::vector<float> colors;
     std::vector<std::uint32_t> line_point_counts;
-};
-
-/**
- * Which space a geometry's `vertices[].position` lane is already in.
- *
- * `PrimitiveKind` does not answer this — it names the producer's vertex
- * convention, and `createMeshFromData` records `gltf` while keeping local
- * vertices.
- * A consumer that needs each vertex's world position has to compose what
- * is missing, so the producer records what it baked:
- *
- * - `local`: the builder's own vertices, with the node transform still on
- *   the `MeshRecord` (every factory mesh).
- * - `world`: the glTF loader's static arm, which multiplied each position
- *   through the mirrored node world before storing it.
- * - `mirrored_local`: the glTF loader's animated and instanced arms, which
- *   apply the RH-to-LH mirror but leave the node matrix for the draw.
- */
-enum class VertexSpace : std::uint8_t {
-    local,
-    world,
-    mirrored_local,
 };
 
 /**
@@ -1962,8 +1939,7 @@ struct MeshPrimitiveState {
 
 /**
  * One morph target of `ModelGeometry::morph_positions`/`morph_normals`, read
- * as the pin's flat `Float32Array` lanes (`deltas[v * 3 + k]`) in native
- * vertex space: the x lane carries the mirror the vertex attributes carry.
+ * as the pin's flat `Float32Array` lanes (`deltas[v * 3 + k]`).
  */
 struct MorphTargetLanes {
     const std::vector<std::vector<Vec3>>& targets;
@@ -1972,7 +1948,7 @@ struct MorphTargetLanes {
         const Vec3& delta = targets.at(target).at(lane / 3);
         switch (lane % 3) {
         case 0:
-            return -delta.x;
+            return delta.x;
         case 1:
             return delta.y;
         default:
@@ -1984,12 +1960,12 @@ struct MorphTargetLanes {
 struct ModelGeometry {
     /** Source procedural streams own one tightly packed allocation. */
     bool owned_packed_geometry = false;
+    /**
+     * The mesh's own local vertex lanes, which the GPU receives unchanged:
+     * a node's world reaches the vertex stage as `mesh.world`, never through
+     * these (`upstream::mesh_world_matrix`).
+     */
     std::vector<ModelVertex> vertices;
-    std::vector<ModelVertex> bind_vertices;
-    // Source NORMAL values for a draw that reads raw local attributes.
-    // Imported bind_vertices may already normalize/mirror them; keep this
-    // optional lane independently, without duplicating the full vertex.
-    std::vector<Vec3> local_normals;
     /** The loader reversed source triangles for its baked material convention. */
     bool source_indices_reversed = false;
     std::vector<std::vector<Vec3>> morph_positions;
@@ -2012,7 +1988,6 @@ struct ModelGeometry {
     std::vector<std::vector<Vec3>> morph_normals;
     std::vector<std::vector<Vec3>> morph_tangents;
     std::vector<std::uint32_t> indices;
-    VertexSpace vertex_space = VertexSpace::local;
     MeshTopology topology = MeshTopology::triangles;
     bool has_tangents = false;
     /**
@@ -2029,15 +2004,9 @@ struct ModelGeometry {
     bool has_uvs = true;
     bool has_vertex_colors = false;
     bool flat_normals = false;
+    /** The object-local box `Mesh.boundMin`/`boundMax` hold. */
     Vec3 bounds_min{};
     Vec3 bounds_max{};
-    // Where the box above sits in the world. A static primitive bakes its
-    // node transform into its vertices, so the two agree; an animated one
-    // keeps local vertices and receives its node matrix per frame, which
-    // leaves `bounds_*` local. Camera framing needs the world box either
-    // way, so the loader records it separately.
-    Vec3 world_bounds_min{};
-    Vec3 world_bounds_max{};
     /** Bumped after each in-place procedural position upload. */
     std::uint64_t position_version = 0;
     /**
@@ -2072,8 +2041,6 @@ template <typename T> void release_storage(std::vector<T>& storage) {
  */
 inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
-    release_storage(geometry.bind_vertices);
-    release_storage(geometry.local_normals);
     geometry.source_indices_reversed = false;
     release_storage(geometry.morph_positions);
 #if BBLITE_SHADOW_MORPH_BOUNDS
@@ -2119,14 +2086,8 @@ struct TransformNodeRecord {
      */
     std::vector<MeshHandle> parented_meshes;
     std::vector<TransformNodeHandle> parented_nodes;
-    /** Bumped by every transform write, which is what re-bakes a child. */
+    /** Bumped by every transform write, which is what a child's world recomposes against. */
     std::uint64_t transform_version = 0;
-};
-
-struct ImportedMeshTrs {
-    Vec3 position{};
-    Vec3 rotation{};
-    Vec3 scaling{1, 1, 1};
 };
 
 struct MeshRecord {
@@ -2184,16 +2145,21 @@ struct MeshRecord {
     /** The world-matrix state's private child registry for dirty pushes. */
     std::vector<MeshHandle> parented_meshes;
     /**
-     * Runtime simulation moves this hierarchy every frame. Its immutable
-     * local vertices stay on the GPU and the renderer supplies the live
-     * world matrix per draw instead of rebaking and re-uploading them.
+     * The world of the scene node this record composes under when that node
+     * has no record of its own: an imported asset's node chain, RH-to-LH
+     * root included (`gltf-parser.ts#computeNodeWorldMatrix`), or a .babylon
+     * mesh's parent nodes. A loader writes it; an animated glTF node's pose
+     * pass rewrites it. Absent for every factory mesh, whose world is its
+     * own TRS under its parents.
      */
-    bool gpu_world_transform = false;
-    /** A static imported mesh restored to its authored local vertex stream. */
-    bool live_imported_transform = false;
-    /** cloneMeshNode starts a fresh world state over the source local attributes. */
+    std::optional<std::array<float, 16>> parent_world;
+    /**
+     * `cloneMeshNode` left the imported hierarchy behind: the clone keeps
+     * its source's local lanes but no longer inherits the root mirror the
+     * loader's index winding was reconciled against, so it draws the
+     * source index order.
+     */
     bool detached_imported_mesh = false;
-    std::optional<ImportedMeshTrs> imported_clone_trs;
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
     std::optional<double> topology_index;
@@ -2233,15 +2199,15 @@ struct MeshRecord {
     // later imports, so every original receives a stable row and every clone
     // inherits its source row before the first render plan is built.
     std::uint32_t composition_feature_row = invalid_handle;
-    // A cloned imported root remains an outer scene-node transform. Unlike
-    // ordinary mesh TRS this is applied by the draw world after deformation,
-    // matching a clone whose mesh retains the source skeleton/morph resource.
+    // An imported root's edit relative to the root the loader composed into
+    // `parent_world`: the loaded root is the pin's `__root__` transform node,
+    // which this port does not keep, so its live TRS rides every record of
+    // the asset and composes on the left of `parent_world`.
     Vec3d outer_position{};
     Vec3d outer_rotation{};
     Vec3d outer_scaling{1, 1, 1};
     Vec4d outer_rotation_quaternion{0, 0, 0, 1};
     bool outer_has_rotation_quaternion = false;
-    float baked_world_scale = 1.0f;
     std::uint64_t transform_version = 0;
     bool has_rotation_quaternion = false;
     bool gpu_deformation = false;
@@ -2265,20 +2231,9 @@ struct MeshRecord {
      */
     bool skinned = false;
     /**
-     * Whether this record's palette came from `createSkeleton` in scene
-     * code rather than from the glTF pose pass.
-     *
-     * The pin composes one thing for both -- `finalWorld = mesh.world *
-     * influence` -- but the loader folds `invMeshWorld` into every palette
-     * entry it writes and leaves the record's TRS at rest, so its draw
-     * passes the identity as `mesh.world`. A scene that writes its own
-     * bone matrices folds nothing: its palette is the bones alone and its
-     * mesh keeps its transform, so the draw passes the record's live world
-     * beside the palette and the CPU vertex bake leaves the vertices
-     * local. Both readers are in `pal_gpu_shared.hpp`.
+     * Whether scene code attached morph targets (`createMorphTargets`):
+     * deformation picking keys its morph projection on the attachment.
      */
-    bool scene_skeleton = false;
-    /** Scene-authored morph deltas and vertices share native local space. */
     bool scene_morph_targets = false;
     bool has_vertex_alpha = false;
     /**
@@ -2307,11 +2262,6 @@ struct MeshRecord {
      * record here; a scene that did would need the per-scene map.
      */
     bool mirrored_seen = false;
-    // Whether the loader stored this mesh's vertices through the native X
-    // mirror. Babylon composes its own vertex stage against unmirrored data and
-    // carries the mirror in the mesh block's world matrix, so a PAL binding
-    // those stages needs the sign to convert between the two.
-    bool mirrored_x = false;
     // Optional Mesh.renderOrder. The pinned renderer supplies its family
     // default only when this field was never assigned.
     bool has_render_order = false;
@@ -2337,27 +2287,6 @@ struct MeshRecord {
      * last streamed, so a still skeleton costs no upload.
      */
     std::uint64_t bone_matrices_version = 0;
-    /**
-     * The animated node's own world matrix, in this port's convention.
-     *
-     * A skinned mesh's transform travels inside its palette, so
-     * `mesh_world_matrix` answers the identity for one and the record's
-     * TRS stays at rest. That is right for every draw -- applying the
-     * transform twice is exactly what `pinned_draw_conventions` avoids --
-     * and wrong for one reader: the pin's detailed pick transforms the
-     * REST normal by `mesh.worldMatrix`, which is this node world and
-     * deliberately NOT the skin. Written by the glTF pose pass only for a
-     * build whose picker draws the deform projection, and read only
-     * there.
-     */
-    std::array<float, 16> deform_node_world{
-        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-    };
-    std::array<float, 16> instance_parent_matrix{
-        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-    };
     std::vector<std::array<float, 16>> instance_matrices;
     // Thin-instance pool state mirroring the pinned ThinInstanceData:
     // instance_matrices holds the fixed capacity pool, instance_count is
@@ -2389,6 +2318,11 @@ struct MeshRecord {
     // so the flag records the opt-in and keeps its renderable in the pin's
     // live direct-draw path: it does not enable a native compute culler.
     bool thin_instance_gpu_culling = false;
+    // Whether the pin's `_expandWorldBounds` hook is installed: framing and
+    // scene sizing then take `worldMatrix x instanceMatrix x localBounds`
+    // over every instance. `enableThinInstanceWorldBounds` installs it, which
+    // only the glTF GPU-instancing feature calls, on every mesh it instances.
+    bool thin_instance_world_bounds = false;
     // The per-instance RGBA stream `setThinInstanceColors` bound, as the
     // pin's own tightly-packed float4 rows. Empty where the mesh has none.
     std::vector<float> instance_colors;
@@ -2410,18 +2344,6 @@ struct MeshRecord {
 
 inline bool has_instance_colors(const MeshRecord& mesh) {
     return mesh.instance_color_source || !mesh.instance_colors.empty();
-}
-
-inline ModelVertex detached_imported_vertex(const MeshRecord& mesh, const ModelGeometry& geometry,
-                                            std::size_t index) {
-    ModelVertex vertex = geometry.bind_vertices.at(index);
-    vertex.position = geometry.vertices.at(index).local_position;
-    if (mesh.primitive == PrimitiveKind::gltf) {
-        vertex.normal.x = -vertex.normal.x;
-        vertex.tangent.x = -vertex.tangent.x;
-        vertex.tangent.w = -vertex.tangent.w;
-    }
-    return vertex;
 }
 
 inline void apply_mesh_bound_overrides(const MeshRecord& mesh, Vec3& minimum, Vec3& maximum) {
@@ -5460,20 +5382,15 @@ void set_thin_instance_colors(Engine& engine, MeshHandle mesh, const js::F32Arra
 void set_thin_instance_color(Engine& engine, MeshHandle mesh, double index, double r, double g,
                              double b, double a);
 void set_thin_instance_cull_bounds_pad(Engine& engine, MeshHandle mesh, double pad);
-/** Restore a baked imported mesh's local pivot before replacing its rotation. */
-void prepare_imported_mesh_quaternion_write(Engine& engine, MeshHandle mesh);
 /**
- * Mark a mesh's baked transform dirty, including every mesh whose world
- * matrix depends on it through setParent.
+ * Mark a mesh's transform dirty, including every mesh whose world matrix
+ * depends on it through setParent.
  */
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh);
-/** Keep a runtime-moving mesh subtree local and publish its draw world. */
-void mark_mesh_runtime_transform(Engine& engine, MeshHandle mesh);
 /** The same one level up, recursing into both of a node's child arms. */
-void mark_transform_node_runtime_transform(Engine& engine, TransformNodeHandle node);
-/** Install a mesh quaternion in the coordinate basis its vertices use. */
-void set_mesh_rotation_quaternion(Engine& engine, MeshHandle mesh, Vec4 quaternion,
-                                  bool runtime_transform);
+void mark_transform_node_dirty(Engine& engine, TransformNodeHandle node);
+/** Install a mesh quaternion as its rotation source of truth. */
+void set_mesh_rotation_quaternion(Engine& engine, MeshHandle mesh, Vec4 quaternion);
 void flatten_line_attributes(const std::vector<std::vector<Vec3>>& lines,
                              const std::vector<std::vector<Vec4>>& colors, std::size_t vertex_count,
                              std::vector<float>& positions, std::vector<float>& out_colors,
@@ -5697,18 +5614,15 @@ void set_directional_light_direction(Engine& engine, LightHandle light, Vec3 dir
 // src/scene/transform-node.ts createTransformNode: a SceneNode with the
 // pinned factory's own TRS defaults. Its setters take the same shape the
 // light vector setters take -- the field write plus the version bump a
-// child re-bakes against -- because upstream both are ObservableVec3 writes
+// child's world recomposes against -- because upstream both are ObservableVec3 writes
 // on a node whose world matrix is lazily recomposed.
 TransformNodeHandle create_transform_node(Engine& engine, std::string name, Vec3d position,
                                           Vec4 rotation_quaternion, Vec3 scaling);
-void set_transform_node_position(Engine& engine, TransformNodeHandle node, Vec3d position,
-                                 bool runtime_transform = false);
-void set_transform_node_scaling(Engine& engine, TransformNodeHandle node, Vec3 scaling,
-                                bool runtime_transform = false);
-void set_transform_node_rotation(Engine& engine, TransformNodeHandle node, Vec3 rotation,
-                                 bool runtime_transform = false);
-void set_transform_node_rotation_quaternion(Engine& engine, TransformNodeHandle node, Vec4 rotation,
-                                            bool runtime_transform = false);
+void set_transform_node_position(Engine& engine, TransformNodeHandle node, Vec3d position);
+void set_transform_node_scaling(Engine& engine, TransformNodeHandle node, Vec3 scaling);
+void set_transform_node_rotation(Engine& engine, TransformNodeHandle node, Vec3 rotation);
+void set_transform_node_rotation_quaternion(Engine& engine, TransformNodeHandle node,
+                                            Vec4 rotation);
 // `child.parent = node` drives the transform math; `node.children.push`
 // only fills the traversal list. Upstream keeps them apart in exactly this
 // way, so each is its own entry point.
@@ -5736,7 +5650,7 @@ void push_mesh_child(Engine& engine, MeshHandle mesh, MeshHandle child);
 // `transform_node_world` already composes the chain, and
 // `mark_transform_node_dirty` already recurses into `parented_nodes`; this
 // is the write that fills that list, so a node moved under a parent
-// re-bakes the meshes beneath it.
+// dirties the meshes beneath it.
 void set_transform_node_parent(Engine& engine, TransformNodeHandle node,
                                TransformNodeHandle parent);
 void push_transform_node_child(Engine& engine, TransformNodeHandle node, MeshHandle child);
@@ -6009,23 +5923,18 @@ Vec3d scene_node_position(Engine& engine, const SceneNodeHandle& node);
 Vec3 scene_node_rotation(Engine& engine, const SceneNodeHandle& node);
 Vec3 scene_node_scaling(Engine& engine, const SceneNodeHandle& node);
 Vec4 scene_node_rotation_quaternion(Engine& engine, const SceneNodeHandle& node);
-void set_scene_node_position(Engine& engine, const SceneNodeHandle& node, Vec3d value,
-                             bool runtime_transform);
-void set_scene_node_rotation(Engine& engine, const SceneNodeHandle& node, Vec3 value,
-                             bool runtime_transform);
-void set_scene_node_scaling(Engine& engine, const SceneNodeHandle& node, Vec3 value,
-                            bool runtime_transform);
-void set_scene_node_rotation_quaternion(Engine& engine, const SceneNodeHandle& node, Vec4 value,
-                                        bool runtime_transform);
+void set_scene_node_position(Engine& engine, const SceneNodeHandle& node, Vec3d value);
+void set_scene_node_rotation(Engine& engine, const SceneNodeHandle& node, Vec3 value);
+void set_scene_node_scaling(Engine& engine, const SceneNodeHandle& node, Vec3 value);
+void set_scene_node_rotation_quaternion(Engine& engine, const SceneNodeHandle& node, Vec4 value);
 void set_scene_node_position_component(Engine& engine, const SceneNodeHandle& node,
-                                       std::size_t component, double value, bool runtime_transform);
+                                       std::size_t component, double value);
 void set_scene_node_rotation_component(Engine& engine, const SceneNodeHandle& node,
-                                       std::size_t component, float value, bool runtime_transform);
+                                       std::size_t component, float value);
 void set_scene_node_scaling_component(Engine& engine, const SceneNodeHandle& node,
-                                      std::size_t component, float value, bool runtime_transform);
+                                      std::size_t component, float value);
 void set_scene_node_rotation_quaternion_component(Engine& engine, const SceneNodeHandle& node,
-                                                  std::size_t component, float value,
-                                                  bool runtime_transform);
+                                                  std::size_t component, float value);
 void remove_from_scene(Scene& scene, MeshHandle mesh);
 void remove_from_scene(Scene& scene, LightHandle light);
 void on_before_render(Scene& scene, js::Callback<void(float)> callback);

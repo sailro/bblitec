@@ -828,7 +828,6 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
     json.handle("geometry", mesh.geometry);
     json.field("visible", mesh.visible);
     json.field("receivesShadows", mesh.receives_shadows);
-    json.field("bakedWorldScale", mesh.baked_world_scale);
     json.field("clockwiseFrontFace", mesh.clockwise_front_face);
     json.field("gpuDeformation", mesh.gpu_deformation);
     json.field("boneMatrixCount", mesh.bone_matrices.size());
@@ -857,8 +856,6 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
         json.field("morphTargets", geometry.morph_positions.size());
         json.field("boundsMin", geometry.bounds_min);
         json.field("boundsMax", geometry.bounds_max);
-        json.field("worldBoundsMin", geometry.world_bounds_min);
-        json.field("worldBoundsMax", geometry.world_bounds_max);
         json.end_object();
     }
     json.end_object();
@@ -971,7 +968,7 @@ inline void write_draw_uniforms(JsonWriter& json, const Scene& scene, const Engi
             draw.item.mesh.value < engine.meshes.size()) {
             const MaterialRecord& material = handle_at(engine.materials, draw.item.material);
             const ShaderDrawMatrices shader_matrices(
-                engine, handle_at(engine.meshes, draw.item.mesh), pass_matrices);
+                scene, engine, handle_at(engine.meshes, draw.item.mesh), pass_matrices);
             const ShaderPassMatrices shader_pass_matrices = shader_matrices.apply(pass_matrices);
             const upstream::ShaderVariantInfo& info =
                 upstream::shader_variant_info(draw.item.shader_variant);
@@ -2073,9 +2070,8 @@ inline void write_render_capture(const std::string& path, const char* backend, c
                 if (variant == npos)
                     continue;
                 const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-                const PinnedDrawConventions conventions = pinned_draw_conventions(variant, record);
                 const upstream::MeshUniforms block =
-                    pinned_draw_mesh_block(scene, engine, draw, variant, conventions);
+                    pinned_mesh_block(scene, engine, draw.item.mesh.value);
                 json.begin_object();
                 json.field("meshIndex", draw.item.mesh.value);
                 json.field("stage", stage);

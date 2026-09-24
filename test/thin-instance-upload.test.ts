@@ -7,7 +7,6 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
-import { pinnedShadowHeader } from "../src/lowering/shadow-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
@@ -18,7 +17,7 @@ import {
 const tools = optionalNativeFixtureTools(false);
 
 test(
-    "draw and shadow worlds preserve hierarchy, clone transforms and root mirroring",
+    "draw and shadow worlds are the pinned worldMatrix over loaded, parented and edited roots",
     { skip: !tools },
     async () => {
         interface Vector {
@@ -117,6 +116,9 @@ test(
         const matrix = (value: ArrayLike<number>): string =>
             `std::array<float, 16>{${Array.from(value, float).join(",")}}`;
         const rows: string[] = [];
+        // A loaded record: its node's world as the parent world, its own TRS
+        // and the imported root's edit on the left. A thin-instance pool
+        // draws the same world; its matrices compose in the vertex stage.
         for (const pooled of [false, true])
             for (const moved of [false, true])
                 for (const cloned of [false, true]) {
@@ -136,36 +138,36 @@ test(
                         rotation,
                         scaling,
                     );
-                    let expected = pooled ? multiply(parent, local) : parent;
-                    if (cloned)
-                        expected = multiply(
-                            new Float32Array(
-                                composeTrsLocalMatrix(outer, identity, unit),
-                            ),
-                            expected,
-                        );
-                    expected = expected.slice();
-                    for (let lane = 0; lane < 4; ++lane)
-                        expected[lane] = -expected[lane]!;
+                    const root = cloned
+                        ? multiply(
+                              new Float32Array(
+                                  composeTrsLocalMatrix(outer, identity, unit),
+                              ),
+                              parent,
+                          )
+                        : parent;
+                    const expected = multiply(root, local);
                     rows.push(`{
             MeshRecord record;
             record.thin_instanced = ${pooled};
             record.instance_matrices.resize(1);
-            record.instance_parent_matrix = ${matrix(parent)};
+            record.parent_world = ${matrix(parent)};
             record.position = {${position.x}, ${position.y}, ${position.z}};
             record.scaling = {${scaling.x}, ${scaling.y}, ${scaling.z}};
             record.has_rotation_quaternion = true;
             record.rotation_quaternion = {${[rotation.x, rotation.y, rotation.z, rotation.w].map(float).join(",")}};
             record.outer_position = {${outer.x}, ${outer.y}, ${outer.z}};
             const auto expected = ${matrix(expected)};
-            check(pinned_instanced_world(record, scene, engine), expected);
-            for (bool local_position : {false, true})
-                check(pinned_draw_world(false, false, local_position, record, scene, engine), expected);
+            check(upstream::mesh_world_matrix(engine, record), expected);
+            check(mesh_block_world(scene, engine, record), expected);
             record.outer_position.x += 5;
             auto updated = expected; updated[12] += 5;
-            check(pinned_draw_world(false, false, false, record, scene, engine), updated);
+            check(mesh_block_world(scene, engine, record), updated);
         }`);
                 }
+        // The double-width composition the shadow fit takes. A parented
+        // record composes under its parent; the imported root's edit reaches
+        // it through the chain's root record.
         for (const parentKind of ["none", "mesh", "transform"])
             for (const cloned of [false, true]) {
                 const position = { x: 5000000.125, y: -7000000.0625, z: 11 };
@@ -191,7 +193,7 @@ test(
                                   new Float32Array(local),
                               ),
                           );
-                if (cloned) {
+                if (cloned && parentKind === "none") {
                     const [x, y, z, w] = eulerXYZToQuatTuple(0.25, -0.5, 0.75);
                     const outer = composeWide(
                         { x: -31, y: 37, z: 41 },
@@ -211,7 +213,7 @@ test(
             ${parentKind === "none" ? "" : `record.${parentKind === "mesh" ? "parent = MeshHandle" : "transform_parent = TransformNodeHandle"}{0};`}
             ${cloned ? "record.outer_position = {-31,37,41}; record.outer_rotation = {.25f,-.5f,.75f};" : ""}
             const auto expected = std::array<double, 16>{${Array.from(expected).join(",")}};
-            const auto actual = upstream::shadow_caster_world(engine, record);
+            const auto actual = upstream::mesh_world_matrix_f64(engine, record);
             for (std::size_t lane = 0; lane < 16; ++lane)
                 assert(std::abs(actual[lane] - expected[lane]) <= 1e-12 * std::max(1.0, std::abs(expected[lane])));
         }`);
@@ -227,27 +229,12 @@ test(
             "std::array<float, 16> mesh_local_matrix(",
             "std::array<float, 16> transform_node_local_matrix(",
             "std::array<float, 16> transform_node_world(",
+            "std::optional<std::array<float, 16>> mesh_root_world(",
             "std::array<float, 16> mesh_world_matrix(",
-            "std::array<float, 16> build_instance_parent_world(",
-            "std::array<double, 16> apply_mesh_outer_transform(",
+            "std::array<double, 16> mesh_world_matrix_f64(",
         ]
             .map((signature) => cppFunction(renderer, signature))
             .join("\n");
-        const shadow = pinnedShadowHeader(context);
-        const helpers = [
-            "outer_draw_world",
-            "draw_world",
-            "scene_deformation_draw_world",
-            "deformed_draw_world",
-            "instance_parent_draw_world",
-            "pinned_identity_world",
-            "pinned_x_mirrored_world",
-            "pinned_mesh_world",
-            "pinned_instanced_world",
-            "pinned_draw_world",
-        ].map((name) =>
-            cppFunction(shared, `inline std::array<float, 16> ${name}(`),
-        );
         writeFileSync(join(output, "matrix.hpp"), pinnedMatrixHeader(context));
         writeFileSync(
             join(output, "world.hpp"),
@@ -264,12 +251,9 @@ test(
 #include <cassert>
 namespace bbl::upstream {
 ${upstream}
-${cppFunction(shadow, "inline std::array<double, 16> shadow_caster_local(")}
-${cppFunction(shadow, "inline std::array<double, 16> shadow_caster_world(")}
 }
 namespace bbl::pal {
-${cppFunction(shared, "inline bool pinned_record_instanced(")}
-${helpers.join("\n")}
+${cppFunction(shared, "inline std::array<float, 16> mesh_block_world(")}
 }
 void check(const std::array<float, 16>& actual, const std::array<float, 16>& expected) {
     for (std::size_t lane = 0; lane < 16; ++lane)
@@ -320,7 +304,6 @@ test(
         const helpers = [
             "inline bool thin_instance_pool_grew(",
             "inline std::size_t thin_instance_active_count(\n",
-            "inline void pinned_instance_matrices(",
             "inline std::vector<float> instance_colors_for_upload(",
         ]
             .map((signature) => cppFunction(shared, signature))
@@ -337,7 +320,6 @@ test(
             return `void update_${backend}(const MeshRecord& mesh, UploadedMesh& ${backend === "dawn" ? "dawn_mesh" : "gpu_mesh"}) {
             [[maybe_unused]] State state;
             [[maybe_unused]] Uploads frame_buffer_uploads;
-            std::vector<std::array<float, 16>> pinned_instance_scratch;
             ${block}
         }`;
         });

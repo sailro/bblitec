@@ -858,7 +858,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "mesh:clone": {
         provenance:
             "src/scene/transform-node.ts#cloneMeshNode; src/mesh/mesh.ts#initMeshTransform",
-        consumers: CMAKE,
+        consumers: INVENTORY,
     },
     "mesh:geometry-access": {
         provenance: "src/mesh/mesh.ts retained CPU geometry + worldMatrix",
@@ -2628,21 +2628,6 @@ function emitOptionRows(
         .join(", ");
     return [
         row(
-            "animatedWorldBounds",
-            "emit-option",
-            emit.animatedWorldBounds,
-            emit.animatedWorldBounds
-                ? "a glTF asset carries animations, so the loader records " +
-                      "live world boxes"
-                : "no glTF asset carries animations",
-            "native-architecture: upstream recomputes node worlds live and " +
-                "composes boxes per frame (expandWorldAabbForMesh — " +
-                "src/scene/scene-camera.ts, src/mesh/mesh-world-bounds.ts); " +
-                "this port bakes static node matrices, so default framing " +
-                "reads recorded live boxes for animated assets",
-            ["loader flag"],
-        ),
-        row(
             "nonTrianglePrimitives",
             "emit-option",
             emit.nonTrianglePrimitives,
@@ -2653,7 +2638,7 @@ function emitOptionRows(
             "src/loader-gltf/gltf-feature-registry.ts primitive row, the " +
                 "anyPrimitive(mode !== 4) half -> gltf-feature-primitive.js; " +
                 "the hasNegDetNode half is unconditional inline code in the " +
-                "generated loader (mirrored_x)",
+                "generated loader (clockwise_front_face)",
             ["loader flag"],
         ),
         plannedRow(

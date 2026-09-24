@@ -408,7 +408,7 @@ test("a body's integrated pose writes the two fields the pin writes", () => {
     assert.match(writer, /mesh\.rotation_quaternion = rotation;/);
     assert.match(
         writer,
-        /mark_mesh_runtime_transform\(engine, mesh_slot_handle\(engine, node\.value\)\);/,
+        /mark_mesh_dirty\(engine, mesh_slot_handle\(engine, node\.value\)\);/,
     );
     assert.doesNotMatch(lowered.source, /mark_physics_mesh_dirty/);
 });

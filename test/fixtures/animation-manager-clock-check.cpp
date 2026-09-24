@@ -7,7 +7,7 @@
 #include <vector>
 
 namespace bbl {
-void mark_mesh_runtime_transform(Engine&, MeshHandle) {}
+void mark_mesh_dirty(Engine&, MeshHandle) {}
 } // namespace bbl
 
 struct Observation {

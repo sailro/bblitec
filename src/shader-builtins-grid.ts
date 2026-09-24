@@ -17,10 +17,10 @@
  *   flatten into the plan's `GridUniforms` vec4s (`mainColor` ->
  *   `mainColor.rgb`, `gridOffset` -> `gridOffsetVisibility.xyz`,
  *   `visibility` -> `gridOffsetVisibility.w`).
- * - The vertex stage folds the pin's `projection*(view*(world*position))`
- *   into the plan's premultiplied view-projection over the pre-transformed
- *   world-space position attribute, and reads the object-space position and
- *   normal from the shared model vertex layout's dedicated attributes.
+ * - The vertex stage folds the pin's `projection*(view*...)` into the plan's
+ *   premultiplied view-projection, keeps `world` as the draw's own mesh
+ *   block, and reads the object-space position and normal from the shared
+ *   model vertex layout's dedicated attributes.
  *
  * A builder whose parameters no longer match the bound options refuses
  * naming the pinned declaration, and any built string missing a piece this
@@ -266,6 +266,9 @@ ${fragment.trim()}
 export function gridVertexWgsl(
     provenance: string,
     gridMaterial: ts.SourceFile,
+    // The mesh block's binding in the shared vertex group, after the scene
+    // matrix and, where deformation compiles, its block.
+    meshBinding = 1,
 ): string {
     const built = new PinnedShaderBuilders(
         new GridSourceContext(gridMaterial),
@@ -275,16 +278,15 @@ export function gridVertexWgsl(
         new Map([["hasOpacity", hasOpacity]]),
     );
     // The pinned shader system multiplies three matrices right to left; the
-    // plan premultiplies view-projection and pre-transforms the position
-    // attribute by the world matrix, so the fold below is exact. The pin's
-    // `input.position`/`input.normal` are object-space; natively they live in
-    // the shared model layout's dedicated attributes.
+    // plan premultiplies view-projection and binds the world as the draw's
+    // mesh block. The pin's `input.position`/`input.normal` are object-space;
+    // natively they live in the shared model layout's dedicated attributes.
     const transform =
         "shaderSystem.projection*(shaderSystem.view*(shaderSystem.world*vec4<f32>(input.position,1.0)))";
     requireText(built, transform, "vertex transform");
     let vertex = built.replace(
         transform,
-        "uniforms.viewProjection*vec4<f32>(input.position,1.0)",
+        "uniforms.viewProjection*(mesh.world*vec4<f32>(input.position,1.0))",
     );
     vertex = vertex.replace(
         requireText(
@@ -311,6 +313,11 @@ struct VertexUniforms {
     viewProjection: mat4x4<f32>,
 }
 @group(1) @binding(0) var<uniform> uniforms: VertexUniforms;
+
+struct MeshUniforms {
+    world: mat4x4<f32>,
+}
+@group(1) @binding(${meshBinding}) var<uniform> mesh: MeshUniforms;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,

@@ -33,7 +33,6 @@ import {
     readMeshSetup,
     type GltfMeshSetup,
     type RecordedMeshSetup,
-    type SourceWorldBounds,
 } from "./gltf-mesh-setup.js";
 import {
     packageGltfLight,
@@ -172,6 +171,11 @@ export type GltfConstructedMaterialPlan = Pick<
 >;
 export interface GltfLoadFeatures {
     cameras?: boolean;
+    /**
+     * Scene code writes SceneNode transforms, so each static primitive
+     * carries its glTF node's own TRS and parent world.
+     */
+    nodeTransforms?: boolean;
 }
 type CoreMaterial = object;
 type Material = object;
@@ -259,7 +263,6 @@ interface SourceLoader {
     __enableGltfCameras?(): void;
     __cameraMatrices?: SourceCameraMatrices;
     __getPunctualLight(json: JsonObject, index: number): object | undefined;
-    __worldBounds: SourceWorldBounds;
     __addToScene(scene: object, entity: object): void;
     __applyPreparedAssets(
         features: MeshFeature[],
@@ -664,7 +667,7 @@ async function recordingLoader(
     );
     // Core material records are opaque to extraction. Their actual assembler
     // and the replaced PBR constructor both execute in the generated loader.
-    const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport __visibilityFeature from ${JSON.stringify(visibility)};\nimport __lightFeature from ${JSON.stringify(lights)};\n${cameraImports}\nimport {getGltfPunctualLight as __getPunctualLight} from ${JSON.stringify(lightState)};\nimport * as __worldBounds from ${JSON.stringify(sourceModule("src/mesh/mesh-world-bounds.ts"))};\nimport {addToScene as __addToScene} from ${JSON.stringify(scene)};`;
+    const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport __visibilityFeature from ${JSON.stringify(visibility)};\nimport __lightFeature from ${JSON.stringify(lights)};\n${cameraImports}\nimport {getGltfPunctualLight as __getPunctualLight} from ${JSON.stringify(lightState)};\nimport {addToScene as __addToScene} from ${JSON.stringify(scene)};`;
     const iblImports = `import __iblFeature from ${JSON.stringify(ibl.feature)};\nimport {resolveImage as __resolveIblImage} from ${JSON.stringify(ibl.assembly)};\nconst __iblShaders = ${JSON.stringify({ rgbdShader: ibl.rgbdShader, brdfShader: ibl.brdfShader })};\nimport __flowGraphFeature from ${JSON.stringify(flowGraphs)};\nimport * as __flowPathConverter from ${JSON.stringify(sourceModule("src/flow-graph/gltf/path-converter.ts"))};\nimport * as __animationBindingsSource from ${JSON.stringify(animation)};\nimport * as __animationPointerBridge from ${JSON.stringify(pointerBridge)};\nimport * as __animationControllerSource from ${JSON.stringify(gltfControllerBindingsSourceUrl(context))};\nimport __animationFeature from ${JSON.stringify(animations)};`;
     const loader = (await import(
         pinnedModuleTextUrl(
@@ -702,7 +705,6 @@ async function recordingLoader(
                 "__animationFeature",
                 ...cameraExports,
                 "__getPunctualLight",
-                "__worldBounds",
             ],
             new Map([
                 ["./gltf-feature-registry.js", registry],
@@ -1059,7 +1061,11 @@ export async function recordMeshPlan(
                 geometry,
                 name: mesh.name,
                 flatNormal: mesh._flatNormal === true,
-                setup: packageMeshSetup(mesh, loader.__worldBounds, packer),
+                setup: packageMeshSetup(
+                    mesh,
+                    packer,
+                    options.nodeTransforms === true,
+                ),
                 ...packageMeshDeformation(
                     mesh,
                     input._vertexCount,

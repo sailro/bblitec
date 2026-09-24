@@ -2295,27 +2295,24 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     std::vector<Vec3> position_deltas(
         count,
         Vec3{});
+    // A missing normal stream leaves positive zero in the pin's F32 payload.
     std::vector<Vec3> normal_deltas(
         count,
-        // A missing normal stream leaves positive zero in the pin's F32
-        // payload; the shared X mirror must recover that same zero sign.
-        Vec3{-0.0f, 0.0f, 0.0f});
+        Vec3{});
     for (
         std::size_t index = 0;
         index < count;
         ++index) {
-        // The shared GPU upload mirrors glTF source-space deltas on X.
-        // Primitive data is already in native space, so store the inverse
-        // mirror here and let that one upload contract restore the source
-        // delta for both paths.
+        // The deltas stay the pin's lanes: the GPU upload carries them
+        // unchanged, as it does a loaded primitive's.
         position_deltas[index] = Vec3{
-            -positions[index * 3],
+            positions[index * 3],
             positions[index * 3 + 1],
             positions[index * 3 + 2],
         };
         if (!normals.empty()) {
             normal_deltas[index] = Vec3{
-                -normals[index * 3],
+                normals[index * 3],
                 normals[index * 3 + 1],
                 normals[index * 3 + 2],
             };
@@ -2448,7 +2445,6 @@ ${computeAabb}
                 colors[index * 4 + 2],
                 colors[index * 4 + 3]};
         }
-        vertex.local_position = vertex.position;
     }
     geometry.indices = indices;
     geometry.has_tangents = !tangents.empty();
@@ -2548,7 +2544,6 @@ void update_mesh_positions(
             positions[source],
             positions[source + 1],
             positions[source + 2]};
-        vertex.local_position = vertex.position;
     }
     ++geometry.position_version;
     ++record.transform_version;

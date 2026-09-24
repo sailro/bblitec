@@ -532,7 +532,6 @@ export interface AssignmentContext
             | "isNativeUiValueExpression"
             | "emit"
             | "allocateTemporaryCppName"
-            | "meshTransformDirtyEntry"
             | "reachFeature"
             | "reachJsData"
             | "noteLegacyDiffuseColorWrite"
@@ -1844,9 +1843,6 @@ export function emitPropertyAssignment(
                 );
             }
             const engine = context.requireEngine(mesh, expression);
-            const runtimeTransform =
-                context.meshTransformDirtyEntry() ===
-                "mark_mesh_runtime_transform";
             if (mesh.kind === "scene-node") {
                 context.reachFeature("scene:node-transforms", expression);
                 const target = context.allocateTemporaryCppName(
@@ -1878,8 +1874,7 @@ export function emitPropertyAssignment(
                     : right;
                 context.emit(
                     `bbl::${trsVector.sceneNodeComponentSetter}(` +
-                        `${engine}, ${target}, ${axis}u, ${replacement}, ` +
-                        `${runtimeTransform});`,
+                        `${engine}, ${target}, ${axis}u, ${replacement});`,
                 );
                 return;
             }
@@ -1906,7 +1901,7 @@ export function emitPropertyAssignment(
                                 : `${vectorRead}.${lane}`,
                         )
                         .join(", ") +
-                    `}, ${runtimeTransform});`,
+                    `});`,
             );
             return;
         }
@@ -1994,13 +1989,10 @@ export function emitPropertyAssignment(
                 record.collection === "meshes" ? trsVector.precision : "float",
             )};`,
         );
-        // Ordinary geometry bakes the full parent chain into its uploaded
-        // vertices. A parent-only write therefore has to dirty descendants as
-        // well as the mesh itself; mark_mesh_dirty owns that recursive contract.
+        // The world-matrix state's `markLocalDirty`: mark_mesh_dirty pushes
+        // it through the subtree the parent setter registered.
         if (record.bumpsTransformVersion) {
-            context.emit(
-                `bbl::${context.meshTransformDirtyEntry()}(${engine}, ${mesh.cpp});`,
-            );
+            context.emit(`bbl::mark_mesh_dirty(${engine}, ${mesh.cpp});`);
         }
         return;
     }

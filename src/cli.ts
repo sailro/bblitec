@@ -335,6 +335,7 @@ async function materializeAsset(
     outputPath: string,
     assetPayloads: ReadonlyMap<string, string>,
     sourceTextureReads = false,
+    nodeTransforms = false,
     meshWalks: NonNullable<CompileResult["manifest"]["meshWalks"]> = [],
     decoders: AssetDecoders = {},
 ): Promise<MaterializedAssetFacts | undefined> {
@@ -410,7 +411,7 @@ async function materializeAsset(
                     decoders,
                 ),
                 source,
-                { cameras: asset.gltfCameras === true },
+                { cameras: asset.gltfCameras === true, nodeTransforms },
                 decoders,
             ),
         );
@@ -508,7 +509,7 @@ async function materializeAsset(
             : await packageGltfLoadPlan(
                   bytes,
                   source,
-                  { cameras: asset.gltfCameras === true },
+                  { cameras: asset.gltfCameras === true, nodeTransforms },
                   decoders,
               ),
     );
@@ -830,6 +831,7 @@ async function main(): Promise<void> {
                 result.manifest.features.includes(
                     "material:source-texture-read",
                 ),
+                result.manifest.features.includes("scene:node-transforms"),
                 result.manifest.meshWalks,
                 decodersFor(asset),
             ),
@@ -1070,6 +1072,7 @@ async function main(): Promise<void> {
                 result.manifest.features.includes(
                     "material:source-texture-read",
                 ),
+                result.manifest.features.includes("scene:node-transforms"),
                 result.manifest.meshWalks,
             );
         }
@@ -1415,7 +1418,6 @@ async function main(): Promise<void> {
             ? { nodeParticleRegistrations }
             : {}),
         gpuDeformation,
-        animatedWorldBounds: specializationFeatures.animatedWorldBounds,
         morphStorage,
         nonTrianglePrimitives: specializationFeatures.nonTrianglePrimitives,
         // No scene API reaches KHR_gaussian_splatting, so the asset alone

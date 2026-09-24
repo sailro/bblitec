@@ -736,8 +736,6 @@ test(
             join(rendererIncludes, "renderer_plan.hpp"),
             `#pragma once
 namespace bbl::upstream {
-std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&);
-std::array<double, 16> apply_mesh_outer_transform(const MeshRecord&, const std::array<double, 16>&);
 std::array<float, 16> build_view_projection(const CameraRecord&, double);
 }
 `,

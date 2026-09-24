@@ -179,8 +179,7 @@ PhysicsShape create_physics_heightfield_from_ground(PhysicsWorldHandle world, Me
         const auto& vertices = engine.geometries[record.geometry].vertices;
         positions.reserve(vertices.size() * 3);
         for (const auto& vertex : vertices) {
-            const auto& position = record.detached_imported_mesh ? vertex.local_position : vertex.position;
-            positions.insert(positions.end(), {position.x, position.y, position.z});
+            positions.insert(positions.end(), {vertex.position.x, vertex.position.y, vertex.position.z});
         }
     }
     const auto resolved = pinned_ground_heightfield(positions, mesh_world_matrix(engine, record));

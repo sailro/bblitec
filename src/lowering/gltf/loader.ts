@@ -40,10 +40,7 @@ import {
     gltfAssetSceneSetupOrder,
 } from "./asset-scene-setup.js";
 import { lowerGltfGaussianSplatSetup } from "./gaussian-splat-setup.js";
-import {
-    lowerMatrixComposeCpp,
-    lowerMatrixNativeCpp,
-} from "./matrix-leaves.js";
+import { lowerMatrixComposeCpp, lowerRootedWorldCpp } from "./matrix-leaves.js";
 import { gltfMatrixReaderCpp } from "./local-matrix.js";
 import { lowerBoneControl } from "./bone-control.js";
 import { lowerGltfCamerasCpp } from "./cameras.js";
@@ -70,24 +67,22 @@ export interface GltfLoaderOptions {
     /**
      * A detailed pick draws this file's meshes through the pin's deform
      * vertex projection, which is the SKINNED arm alone: an animated
-     * mesh with no skin carries its own world in `bone_matrices[0]` and
-     * a zero weight quad, so the pin's blend would collapse it. That is
-     * the second reader of the per-record `skinned` flag, and the reason
-     * this widens the `vat`-only write above rather than replacing it.
+     * mesh with no skin moves through its world and draws the affine arm.
+     * That is the second reader of the per-record `skinned` flag, and the
+     * reason this widens the `vat`-only write above rather than replacing
+     * it.
      */
     deformPicking?: boolean;
     /** A composed skeleton variant carries the palette, lifting the
      *  transcribed 64-matrix cap. */
     pinnedSkeletonPalette?: boolean;
-    /** Scene code can attach a thin-instance pool after a static glTF
-     *  primitive was loaded, so retain that primitive's local vertices for
-     *  the instanced draw path instead of reusing its baked world vertices. */
-    dynamicThinInstances?: boolean;
-    /** Detached mesh clones retain the source local attributes. */
-    meshClones?: boolean;
-    /** Node geometry views bind the source NORMAL attribute beside a real
-     * world matrix, so retain it before the native bake/mirror/normalize. */
-    retainLocalNormals?: boolean;
+    /**
+     * Scene code writes a SceneNode transform (`scene:node-transforms`), so
+     * a static primitive's record also stands for its glTF node: the node's
+     * own TRS under its parent's world, with primitive-bearing parent nodes
+     * linked as mesh parents.
+     */
+    nodeTransforms?: boolean;
     /** Scene code reads the original public albedo Texture2D producer. */
     sourceTextureReads?: boolean;
     /** Hydrate source collector permutations observed on the pinned hierarchy. */
@@ -110,7 +105,6 @@ export interface GltfLoaderOptions {
      */
     interactivity?: boolean;
     animationPointer?: boolean;
-    animatedWorldBounds?: boolean;
     animationPointerMaterials?: boolean;
     /**
      * Any reached asset carries images the packager transcoded to a KTX1
@@ -228,46 +222,62 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
 
     /** Source loader bodies and their native storage adapters. */
     public lowerLoaderAdapter(options: GltfLoaderOptions = {}): LoweredSource {
-        if (options.retainLocalNormals) {
+        // The loader keeps each primitive's lanes as the file stores them:
+        // `buildTightGltfMesh` uploads the source positions, normals and
+        // tangents untransformed, and the node world reaches the vertex stage
+        // as `mesh.world`.
+        {
             const { declaration } = this.context.functionDeclaration(
                 "src/loader-gltf/load-gltf.ts",
                 "buildTightGltfMesh",
             );
             const data = declaration.parameters[1]?.name;
-            if (
-                !data ||
-                !ts.isIdentifier(data) ||
-                !this.context.hasNode(declaration, (node) => {
+            const uploadsSource = (buffer: string, lane: string): boolean =>
+                data !== undefined &&
+                ts.isIdentifier(data) &&
+                this.context.hasNode(declaration, (node) => {
                     if (
                         !ts.isPropertyAssignment(node) ||
                         !ts.isIdentifier(node.name) ||
-                        node.name.text !== "normalBuffer"
+                        node.name.text !== buffer
                     )
                         return false;
                     const call = this.context.unwrapExpression(
                         node.initializer,
                     );
+                    const direct = ts.isConditionalExpression(call)
+                        ? this.context.unwrapExpression(call.whenTrue)
+                        : call;
                     if (
-                        !ts.isCallExpression(call) ||
-                        !ts.isIdentifier(call.expression) ||
-                        call.expression.text !== "createMappedBuffer"
+                        !ts.isCallExpression(direct) ||
+                        !ts.isIdentifier(direct.expression) ||
+                        direct.expression.text !== "createMappedBuffer"
                     )
                         return false;
-                    const argument = call.arguments[1];
+                    const argument = direct.arguments[1];
                     if (!argument) return false;
                     const values = this.context.unwrapExpression(argument);
+                    const source = ts.isNonNullExpression(values)
+                        ? values.expression
+                        : values;
                     return (
-                        ts.isPropertyAccessExpression(values) &&
-                        ts.isIdentifier(values.expression) &&
-                        values.expression.text === data.text &&
-                        values.name.text === "_normals"
+                        ts.isPropertyAccessExpression(source) &&
+                        ts.isIdentifier(source.expression) &&
+                        source.expression.text === data.text &&
+                        source.name.text === lane
                     );
-                })
-            ) {
-                this.context.contractError(
-                    declaration,
-                    "Expected the glTF normal buffer to upload source _normals without transformation.",
-                );
+                });
+            for (const [buffer, lane] of [
+                ["positionBuffer", "_positions"],
+                ["normalBuffer", "_normals"],
+                ["tangentBuffer", "_tangents"],
+            ] as const) {
+                if (!uploadsSource(buffer, lane)) {
+                    this.context.contractError(
+                        declaration,
+                        `Expected the glTF ${buffer} to upload source ${lane} without transformation.`,
+                    );
+                }
             }
         }
         const modulePath = "src/loader-gltf/load-gltf.ts";
@@ -357,27 +367,13 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         );
         const matrixLocal = gltfMatrixReaderCpp();
         const matrixCompose = lowerMatrixComposeCpp(composeFile, true);
-        const matrixNative = lowerMatrixNativeCpp(parserFile);
+        const rootedWorld = lowerRootedWorldCpp(parserFile);
         const gltfCameras = options.gltfCameras
             ? lowerGltfCamerasCpp(parserFile)
             : { parentWriter: "", loading: "", poseRefresh: "" };
         const boneControl = options.boneControl
             ? lowerBoneControl(this.context)
             : { loading: "", entryPoints: "" };
-        // The refraction fragment's thickness scale the loader pre-bakes
-        // into record.baked_world_scale (gltf-loader-cpp.ts): the pinned
-        // read must stay the mesh world's longest basis column.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                this.context.functionDeclaration(
-                    "src/material/pbr/fragments/refraction-rtt-fragment.ts",
-                    "makeRefractionMod",
-                ).declaration,
-                "thicknessScaleLine",
-            ),
-            "hasVolume || hasThicknessMap ? `let ts=max(length(mesh.world[0].xyz),max(length(mesh.world[1].xyz),length(mesh.world[2].xyz)));` : ``",
-            "Pinned refraction thickness scale",
-        );
         return {
             modulePath,
             symbolName,
@@ -441,9 +437,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                         this.context,
                     ),
                     animationNodeRest: lowerGltfAnimationNodeRest(this.context),
-                    deformationState: gltfDeformationStateCpp(
-                        options.deformPicking === true,
-                    ),
+                    deformationState: gltfDeformationStateCpp(),
                     animationBindings: gltfAnimationBindingsCpp(),
                     materialAssembly: lowerGltfMaterialAssembly(this.context),
                     materialTextures: lowerGltfMaterialTextures(this.context),
@@ -463,7 +457,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     factorBake,
                     matrixLocal,
                     matrixCompose,
-                    matrixNative,
+                    rootedWorld,
                     gltfCameraParentWriter: gltfCameras.parentWriter,
                     gltfCameraLoading: gltfCameras.loading,
                     gltfCameraPoseRefresh: gltfCameras.poseRefresh,

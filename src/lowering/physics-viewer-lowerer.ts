@@ -85,7 +85,7 @@ void copy_physics_body_debug_transform(PhysicsBody body, Engine& engine, MeshHan
     record.rotation_quaternion = pose.rotation;
     record.has_rotation_quaternion = true;
     record.scaling = Vec3{1.0f, 1.0f, 1.0f};
-    mark_mesh_runtime_transform(engine, mesh);
+    mark_mesh_dirty(engine, mesh);
 }
 void unregister_physics_viewer_update(PhysicsViewer& viewer) {
     if (!viewer.registered) return;

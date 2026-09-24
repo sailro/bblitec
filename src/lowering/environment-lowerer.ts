@@ -420,6 +420,7 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
                     ? `${DDS_BACKGROUND_MODULE}#addDdsEnvironmentBackground`
                     : undefined,
             )}
+#include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 ${options.loadEnvironment ? "#include <bblite/upstream/env_parse.hpp>\n" : ""}#include <bblite/upstream/renderer_plan.hpp>
@@ -431,6 +432,7 @@ ${options.loadEnvironment ? "#include <bblite/upstream/env_parse.hpp>\n" : ""}#i
 #include <optional>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace bbl {
 
@@ -447,13 +449,16 @@ void expand_world_aabb_for_box(
     std::array<double, 3>& maximum,
     const Vec3& box_min,
     const Vec3& box_max,
-    const std::array<float, 16>& world) {
+    const std::array<float, 16>& world,
+    const MeshRecord& record) {
     WorldAabb acc{};
 ${worldAabbArrayCopies(this.context, "minimum", "maximum").load}
-    expand_world_aabb_for_mesh(acc, WorldAabbMesh{
-        std::array<float, 3>{box_min.x, box_min.y, box_min.z},
-        std::array<float, 3>{box_max.x, box_max.y, box_max.z},
-        world});
+    WorldAabbMesh mesh;
+    mesh.bound_min = std::array<float, 3>{box_min.x, box_min.y, box_min.z};
+    mesh.bound_max = std::array<float, 3>{box_max.x, box_max.y, box_max.z};
+    mesh.world_matrix = world;
+    read_thin_instance_world_bounds(mesh, record);
+    expand_world_aabb_for_mesh(acc, mesh);
 ${worldAabbArrayCopies(this.context, "minimum", "maximum").store}
 }
 
@@ -530,7 +535,8 @@ void apply_scene_size(Scene& scene, double requested_skybox_size) {
             bounds_max,
             geometry.bounds_min,
             geometry.bounds_max,
-            world);
+            world,
+            mesh);
     }
     scene.environment.ground_size = ${this.context.floatLiteral(sceneSize.groundDefault)};
     scene.environment.skybox_size =

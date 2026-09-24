@@ -126,7 +126,6 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
         postProcessShaders: [],
         postProcessComposites: [],
         gpuDeformation: false,
-        animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
         gaussianSplats: false,

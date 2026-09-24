@@ -6,7 +6,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import {
     GltfLowerer,
     lowerMatrixComposeCpp,
-    lowerMatrixNativeCpp,
+    lowerRootedWorldCpp,
     lowerShPrescaleCpp,
 } from "../src/lowering/gltf-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
@@ -213,20 +213,11 @@ const expectedMatrixCompose = `Matrix trs_matrix(
     return result;
 }`;
 
-const expectedMatrixNative = `Matrix native_matrix(const Matrix& matrix) {
-    Matrix result{};
-    for (std::size_t column = 0; column < 4; ++column) {
-        for (std::size_t row = 0; row < 4; ++row) {
-            const float row_sign = row == 0 ? -1.0f : 1.0f;
-            const float column_sign =
-                column == 0 ? -1.0f : 1.0f;
-            result[column * 4 + row] =
-                matrix[column * 4 + row] *
-                row_sign *
-                column_sign;
-        }
-    }
-    return result;
+const expectedRootedWorld = `const Matrix gltf_rh_to_lh_root{
+    -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+
+Matrix gltf_rooted_world(const Matrix& world) {
+    return upstream::matrix_product(gltf_rh_to_lh_root, world);
 }`;
 
 test("lowers the pinned matrix multiply through the shared translation", () => {
@@ -247,10 +238,10 @@ test("lowers the pinned TRS compose byte-identically to the shipped loader text"
     );
 });
 
-test("lowers the native change of basis byte-identically to the shipped loader text", () => {
+test("lowers the RH-to-LH root multiply byte-identically to the shipped loader text", () => {
     assert.equal(
-        lowerMatrixNativeCpp(pinnedFile(parserModule)),
-        expectedMatrixNative,
+        lowerRootedWorldCpp(pinnedFile(parserModule)),
+        expectedRootedWorld,
     );
 });
 
@@ -260,7 +251,7 @@ test("the emitted loader carries the source matrix helpers", () => {
     ).lowerLoaderAdapter();
     for (const segment of [
         lowerMatrixComposeCpp(pinnedFile(composeModule), true),
-        expectedMatrixNative,
+        expectedRootedWorld,
     ]) {
         assert.ok(
             adapter.source.includes(segment),
@@ -326,14 +317,17 @@ test("a moved RH-to-LH flip axis flows into the matrix adapter", () => {
         "new F32([-1, 0, 0, 0,  0, 1, 0, 0,",
         "new F32([1, 0, 0, 0,  0, -1, 0, 0,",
     );
-    const native = lowerMatrixNativeCpp(doctored);
-    assert.match(native, /row == 1 \? -1\.0f : 1\.0f;/);
+    const rooted = lowerRootedWorldCpp(doctored);
+    assert.match(
+        rooted,
+        /gltf_rh_to_lh_root\{\n {4}1\.0f, 0\.0f, 0\.0f, 0\.0f, 0\.0f, -1\.0f,/,
+    );
 });
 
 test("a root that stops flipping exactly one axis refuses", () => {
     assert.throws(
         () =>
-            lowerMatrixNativeCpp(
+            lowerRootedWorldCpp(
                 mutatedFile(
                     parserModule,
                     "F32([-1, 0, 0, 0,  0, 1,",

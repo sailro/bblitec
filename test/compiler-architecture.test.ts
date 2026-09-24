@@ -199,7 +199,7 @@ test("split lowerer barrels contain exports and families own their declarations"
         ["lowerAccessorNormalizationCpp", "gltf/accessor-normalization"],
         ["lowerShPrescaleCpp", "gltf/sh-prescale"],
         ["lowerMatrixComposeCpp", "gltf/matrix-leaves"],
-        ["lowerMatrixNativeCpp", "gltf/matrix-leaves"],
+        ["lowerRootedWorldCpp", "gltf/matrix-leaves"],
         ["lowerGltfMaterialProperties", "gltf/material-properties"],
         ["lowerGltfFactorBake", "gltf/factor-bake"],
         ["MeshBuilderLowerer", "factory/mesh-builders"],

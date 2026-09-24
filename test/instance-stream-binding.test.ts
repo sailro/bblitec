@@ -64,10 +64,9 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
             `void sdl_bind(const Engine& engine, const SdlMesh& mesh) {
             struct { MeshHandle mesh{0}; } item;
             const auto& pinned_record = engine.meshes[0];
-            SDL_GPURenderPass* pass = nullptr; SDL_GPUBuffer* pinned_vertices = mesh.vertices;
+            SDL_GPURenderPass* pass = nullptr;
             ${sdlDraw.slice(bindStart, bindEnd)} }`,
             cppRecord(dawn, "struct InstanceStreams {"),
-            "enum class InstanceMatrixSource { standard, pinned };",
             cppFunction(dawn, "InstanceStreams instance_streams_for("),
             cppFunction(dawn, "void encode_variant_draw("),
         ].join("\n"),

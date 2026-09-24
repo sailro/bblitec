@@ -205,10 +205,6 @@ struct GpuMeshResources {
     SharedShaderGeometry* shared_geometry = nullptr;
 
 #if BBLITE_PBR_VARIANTS > 0
-    // The same vertices in Babylon's own convention: X unmirrored and
-    // `tangent.w` back to its authored sign, paired with the mirroring world
-    // matrix in the pin's mesh block. `pinned_convention_vertices` states why.
-    SDL_GPUBuffer* pinned_vertices = nullptr;
 #if BBLITE_VAT
     // The baked vertex-animation texture: the bone palette's own row,
     // frameCount rows tall. Uploaded once -- the bake is settled before the
@@ -223,9 +219,6 @@ struct GpuMeshResources {
     std::uint64_t pinned_vat_instance_version = 0;
 #endif
 #endif
-    // The instance matrices in Babylon's own convention, for the pin's
-    // thin-instance arm. `pinned_instance_matrices` states the conversion.
-    SDL_GPUBuffer* pinned_instances = nullptr;
 #endif
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
     // Both material families sample the pin's rgba32float bone palette.
@@ -381,8 +374,6 @@ struct GpuMeshResources {
     std::uint32_t index_count = 0;
     std::uint32_t instance_count = 1;
     std::uint64_t position_version = 0;
-    std::uint64_t transform_version = 0;
-    bool gpu_world_transform = false;
 };
 struct GpuState;
 void release_gpu_mesh_resources(GpuState*, GpuMeshResources&) noexcept;
@@ -2316,20 +2307,13 @@ void draw_pinned_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPU
         bound_pipeline = variant_pipeline;
     }
     const upstream::PbrVariantEntry& variant_entry = upstream::pbr_variants[pinned_variant];
-    const MeshRecord& pinned_record = handle_at(engine.meshes, item.mesh);
-    // `pinned_draw_conventions` states the skinned, baked and
-    // palette-world contract these booleans carry.
-    const PinnedDrawConventions conventions =
-        pinned_draw_conventions(pinned_variant, pinned_record);
+    [[maybe_unused]] const MeshRecord& pinned_record = handle_at(engine.meshes, item.mesh);
     const upstream::MeshUniforms pinned_mesh =
-        pinned_draw_mesh_block(scene, engine, draw, pinned_variant, conventions);
+        pinned_mesh_block(scene, engine, draw.item.mesh.value);
     std::vector<std::uint8_t> pinned_material(variant_entry.material_ubo_bytes, 0);
     if (material) {
-        upstream::write_pbr_variant_material(
-            pinned_variant, *material, pinned_material.data(), pinned_material.size(),
-            // The refraction thickness scale the pin's fragment reads off
-            // its mesh world, whose scale this backend bakes into vertices.
-            pinned_record.baked_world_scale);
+        upstream::write_pbr_variant_material(pinned_variant, *material, pinned_material.data(),
+                                             pinned_material.size());
     }
     // Each block at the slot the remap assigned it. The
     // order is the `.slots` map's, because a stage can
@@ -2485,12 +2469,6 @@ void draw_pinned_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPU
                                 resource.sampler,
                             };
                         });
-    SDL_GPUBuffer* const pinned_vertices =
-        // Skinned and palette-world draws read the
-        // mirrored buffer; the palette carries the mirror
-        // on both sides, so unmirrored vertices would
-        // apply it three times.
-        conventions.mirrored_vertices ? mesh.vertices : mesh.pinned_vertices;
     // The thin-instance arm's second stream and the instance count; a
     // non-instanced variant binds neither and draws once.
     const bool instanced_draw = pinned_record_instanced(handle_at(engine.meshes, item.mesh));
@@ -2504,8 +2482,8 @@ void draw_pinned_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPU
         pinned_colors = mesh.instance_colors;
     }
 #endif
-    bind_composed_mesh_vertex_buffers(
-        pass, pinned_vertices, instanced_draw ? mesh.pinned_instances : nullptr, pinned_colors);
+    bind_composed_mesh_vertex_buffers(pass, mesh.vertices,
+                                      instanced_draw ? mesh.instances : nullptr, pinned_colors);
     const SDL_GPUBufferBinding pinned_index_binding{
         mesh.indices,
         0,
@@ -2781,8 +2759,8 @@ void draw_node_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPURe
         bound_pipeline = variant_pipeline;
     }
     const upstream::NodeVariantEntry& view = pal::node_slot_view(slot);
-    const upstream::NodeMeshUniforms node_mesh = node_mesh_block(
-        scene, engine, draw.item.mesh.value, node_uses_local_attributes(geometry_variant));
+    const upstream::NodeMeshUniforms node_mesh =
+        node_mesh_block(scene, engine, draw.item.mesh.value);
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     std::vector<std::uint8_t> captured_mesh_uniform;
 #endif
@@ -3500,11 +3478,8 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
     }
-    const upstream::StandardVariantEntry& entry = upstream::standard_variants[variant];
     const MeshRecord& record = handle_at(engine.meshes, item.mesh);
-    const upstream::MeshUniforms pinned_mesh = pinned_mesh_block(
-        scene, engine, standard_draw_world(record, entry.uses_local_position, scene, engine),
-        item.mesh.value);
+    const upstream::MeshUniforms pinned_mesh = pinned_mesh_block(scene, engine, item.mesh.value);
     const upstream::StandardMaterialUniforms material_block =
         standard_material_block(material, features);
     const upstream::StandardUvTransformUniforms uv_block = standard_uv_block(material, features);
@@ -3666,47 +3641,17 @@ struct ImageProcessingUniforms {
     float parameters[4];
 };
 
-#if BBLITE_GPU_INSTANCING
+// The shared material stage's `mesh` block, after its scene matrix and its
+// deformation block.
 #if BBLITE_GPU_DEFORMATION
-constexpr Uint32 instance_uniform_slot = 2;
+constexpr Uint32 mesh_world_uniform_slot = 2;
 #else
-constexpr Uint32 instance_uniform_slot = 1;
+constexpr Uint32 mesh_world_uniform_slot = 1;
 #endif
-#endif
-
-#if BBLITE_GPU_DEFORMATION
-// BBLITE_DEFORMATION_DUMP=<path> appends each mesh's first-frame bone
-// palette and morph weights as hexfloats for bit-level comparison
-// against instrumented browser captures.
-void dump_deformation_uniforms(std::uint32_t mesh, const DeformationUniforms& deformation) {
-    // Read here rather than from the frame options: this dump helper is
-    // called from the upload path, which is not handed them.
-    static const std::string dump_path = environment_variable("BBLITE_DEFORMATION_DUMP");
-    if (dump_path.empty())
-        return;
-    static std::vector<std::uint32_t> dumped;
-    for (const std::uint32_t existing : dumped) {
-        if (existing == mesh)
-            return;
-    }
-    dumped.push_back(mesh);
-    std::ofstream out(dump_path, std::ios::app);
-    out << "mesh " << mesh << "\n";
-    out << std::hexfloat;
-    for (std::size_t bone = 0; bone < deformation.bone_matrices.size(); ++bone) {
-        out << "bone " << bone;
-        for (const float value : deformation.bone_matrices[bone]) {
-            out << " " << value;
-        }
-        out << "\n";
-    }
-    out << "morph";
-    for (const float value : deformation.morph_weights) {
-        out << " " << value;
-    }
-    out << "\n";
-}
-#endif
+// The world the background quads draw under.
+constexpr std::array<float, 16> identity_mesh_world{
+    1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+};
 
 /** The SDL enumerator for one shared block format. */
 SDL_GPUTextureFormat compressed_texture_format(std::string_view name) {
@@ -4582,7 +4527,8 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
 void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint32_t height,
                                  const std::array<float, 16>& view_projection,
                                  const std::vector<upstream::RenderItem>& render_plan,
-                                 const Engine& engine, const std::string& path, bool cluster_ids) {
+                                 const Scene& scene, const Engine& engine, const std::string& path,
+                                 bool cluster_ids) {
     SDL_GPUTextureCreateInfo color_info{};
     color_info.type = SDL_GPU_TEXTURETYPE_2D;
     color_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -4663,6 +4609,10 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
                 SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
             }
 
+            const std::array<float, 16> world =
+                mesh_block_world(scene, engine, handle_at(engine.meshes, item.mesh));
+            SDL_PushGPUVertexUniformData(command, mesh_world_uniform_slot, world.data(),
+                                         sizeof(world));
             const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
             const SDL_GPUTextureSamplerBinding texture_binding{
                 mesh.base_color,
@@ -4691,12 +4641,6 @@ void release_gpu_mesh_resources([[maybe_unused]] GpuState* state, GpuMeshResourc
     } else if (mesh.shared_geometry) {
         release_shared_user(mesh.shared_geometry, "Shader geometry reference count underflow.");
     }
-#if BBLITE_PBR_VARIANTS > 0
-    if (mesh.pinned_vertices) {
-        SDL_ReleaseGPUBuffer(state->device, mesh.pinned_vertices);
-        mesh.pinned_vertices = nullptr;
-    }
-#endif
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
     if (mesh.pinned_bone_texture) {
         SDL_ReleaseGPUTexture(state->device, mesh.pinned_bone_texture);
@@ -4721,11 +4665,6 @@ void release_gpu_mesh_resources([[maybe_unused]] GpuState* state, GpuMeshResourc
     }
 #endif
 #endif
-    // Aliased to `instances` for thin-instanced meshes, owned otherwise.
-    if (mesh.pinned_instances && mesh.pinned_instances != mesh.instances) {
-        SDL_ReleaseGPUBuffer(state->device, mesh.pinned_instances);
-    }
-    mesh.pinned_instances = nullptr;
 #endif
     if (mesh.owns_geometry_buffers) {
         SDL_ReleaseGPUBuffer(state->device, mesh.indices);
@@ -5913,9 +5852,7 @@ GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::R
     }
     const auto& upload_indices = source_indices.empty() ? geometry.indices : source_indices;
     const bool shader_material = item.material_kind == upstream::RenderMaterialKind::shader;
-    const std::vector<GpuVertex> vertices =
-        shader_material ? local_vertices(engine, geometry, &mesh_record)
-                        : transformed_vertices(engine, geometry, mesh_record);
+    const std::vector<GpuVertex> vertices = mesh_gpu_vertices(geometry, mesh_record);
     const auto upload_mesh_buffer = [&, buffer_uploads](SDL_GPUBufferUsageFlags usage,
                                                         const void* data, std::size_t size) {
         return buffer_uploads ? buffer_uploads->upload(usage, data, size)
@@ -5971,14 +5908,6 @@ GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::R
         }
 #endif
     }
-#if BBLITE_PBR_VARIANTS > 0
-    if (item.material_kind == upstream::RenderMaterialKind::pbr) {
-        const std::vector<GpuVertex> pinned =
-            pinned_convention_vertices(vertices, mesh_record.mirrored_x);
-        gpu_mesh.pinned_vertices = upload_mesh_buffer(SDL_GPU_BUFFERUSAGE_VERTEX, pinned.data(),
-                                                      pinned.size() * sizeof(GpuVertex));
-    }
-#endif
 #if BBLITE_GPU_MORPH_STORAGE
     gpu_mesh.morph_deltas = state.empty_morph_deltas;
     gpu_mesh.morph_weights = state.empty_morph_weights;
@@ -6012,18 +5941,6 @@ GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::R
         gpu_mesh.instances = upload_mesh_buffer(
             SDL_GPU_BUFFERUSAGE_VERTEX | SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
             instance_matrices.data(), instance_matrices.size() * sizeof(instance_matrices.front()));
-#if BBLITE_PBR_VARIANTS > 0
-        // PBR's pinned vertex stream needs the mirror-conjugated
-        // matrix stream even for scene-code pools; Standard draws
-        // keep consuming `instances` above verbatim.
-        const std::vector<std::array<float, 16>> pinned_matrices =
-            pinned_instance_matrices(mesh_record);
-        if (!pinned_matrices.empty()) {
-            gpu_mesh.pinned_instances =
-                upload_mesh_buffer(SDL_GPU_BUFFERUSAGE_VERTEX, pinned_matrices.data(),
-                                   pinned_matrices.size() * sizeof(pinned_matrices.front()));
-        }
-#endif
         gpu_mesh.instance_count = mesh_record.thin_instanced
                                       ? mesh_record.instance_count
                                       : static_cast<std::uint32_t>(instance_matrices.size());
@@ -6046,9 +5963,7 @@ GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::R
     }
 #endif
     gpu_mesh.index_count = static_cast<std::uint32_t>(geometry.indices.size());
-    gpu_mesh.transform_version = mesh_record.transform_version;
     gpu_mesh.position_version = geometry.position_version;
-    gpu_mesh.gpu_world_transform = mesh_record.gpu_world_transform;
     const bool standard_material = item.material_kind == upstream::RenderMaterialKind::standard;
     const MaterialRecord* material = nullptr;
     if (item.material.value < engine.materials.size()) {
@@ -6681,9 +6596,6 @@ class SdlSceneRun {
         SurfaceCameraPointerState surface_pointer_state;
         CameraTraceState camera_trace_state;
         std::vector<float> shader_block_scratch;
-#if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
-        std::vector<std::array<float, 16>> pinned_instance_scratch;
-#endif
 #if BBLITE_HAS_PICKING
 #if BBLITE_HAS_BILLBOARDS
         BillboardPickContributor billboard_pick;
@@ -6712,7 +6624,6 @@ class SdlSceneRun {
         SDL_GPUTexture* swapchain = nullptr;
         Uint32 width = 0, height = 0;
         double start = 0, delta_ms = 0, updated = 0, uploaded = 0, acquired = 0;
-        std::size_t profile_transformed_meshes = 0, profile_transformed_vertices = 0;
         bool capture_ready = false, capture_frame = false, capture_ids = false,
              capture_clusters = false;
         PixelViewport surface_extent{};
@@ -6932,15 +6843,9 @@ public:
         }
         cpu_startup_mark("window-device");
 
+        // The scene matrix, the deformation block, and the mesh world.
         auto vertex_shader = load_shader(state.device, "pbr.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0,
-#if BBLITE_GPU_DEFORMATION && BBLITE_GPU_INSTANCING
-                                         3,
-#elif BBLITE_GPU_DEFORMATION || BBLITE_GPU_INSTANCING
-                                         2,
-#else
-                1,
-#endif
-                                         "mainVertex",
+                                         mesh_world_uniform_slot + 1, "mainVertex",
 #if BBLITE_GPU_MORPH_STORAGE
                                          2);
 #else
@@ -6974,10 +6879,10 @@ public:
         // variant-std-* modules, loaded lazily per variant.
         const bool use_standard_material = render_features.standard_material;
         const bool use_grid_material = render_features.grid_material;
-        auto grid_vertex_shader = use_grid_material
-                                      ? load_shader(state.device, "grid.vert",
-                                                    SDL_GPU_SHADERSTAGE_VERTEX, 0, 1, "mainVertex")
-                                      : nullptr;
+        auto grid_vertex_shader =
+            use_grid_material ? load_shader(state.device, "grid.vert", SDL_GPU_SHADERSTAGE_VERTEX,
+                                            0, mesh_world_uniform_slot + 1, "mainVertex")
+                              : nullptr;
         auto grid_fragment_shader =
             use_grid_material ? load_shader(state.device, "grid.frag", SDL_GPU_SHADERSTAGE_FRAGMENT,
                                             0, 1, "mainFragment")
@@ -8097,18 +8002,11 @@ public:
 #if BBLITE_HAS_TEXT
         [[maybe_unused]] auto& text_ops = *data_.text_ops;
 #endif
-#if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
-        [[maybe_unused]] auto& pinned_instance_scratch = data_.pinned_instance_scratch;
-#endif
         [[maybe_unused]] auto& frame_buffer_uploads = *data_.frame_buffer_uploads;
         [[maybe_unused]] const auto& delta_ms = current_frame().delta_ms;
         [[maybe_unused]] auto& uploaded = current_frame().uploaded;
         [[maybe_unused]] auto& width = current_frame().width;
         [[maybe_unused]] auto& height = current_frame().height;
-        [[maybe_unused]] auto& profile_transformed_meshes =
-            current_frame().profile_transformed_meshes;
-        [[maybe_unused]] auto& profile_transformed_vertices =
-            current_frame().profile_transformed_vertices;
         [[maybe_unused]] auto& surface_extent = current_frame().surface_extent;
         [[maybe_unused]] auto& frame_camera = current_frame().frame_camera;
         [[maybe_unused]] const auto& aspect = frame_camera.aspect;
@@ -8122,8 +8020,6 @@ public:
         [[maybe_unused]] auto& capture_frame = current_frame().capture_frame;
         [[maybe_unused]] auto& capture_ids = current_frame().capture_ids;
         [[maybe_unused]] auto& capture_clusters = current_frame().capture_clusters;
-        profile_transformed_meshes = 0;
-        profile_transformed_vertices = 0;
         trace_dynamic_frame(engine, delta_ms, frame);
 #if BBLITE_HAS_SPRITE_RENDERER
         // `_update` for every sprite context precedes every `_record`,
@@ -8154,12 +8050,12 @@ public:
             for (std::size_t index = 0;
                  index < sync_plan.items.size() && index < sync_meshes.size(); ++index) {
                 const upstream::RenderItem& item = sync_plan.items[index];
-                const MeshRecord& mesh = handle_at(engine.meshes, item.mesh);
-                GpuMesh& gpu_mesh = sync_meshes[index];
+                [[maybe_unused]] const MeshRecord& mesh = handle_at(engine.meshes, item.mesh);
+                [[maybe_unused]] GpuMesh& gpu_mesh = sync_meshes[index];
 #if BBLITE_GPU_INSTANCING
                 if (mesh.thin_instanced && gpu_mesh.instance_version != mesh.instance_version) {
                     // A pool that grew past what registration allocated
-                    // cannot be filled by an update: the three instance
+                    // cannot be filled by an update: the instance
                     // buffers are recreated at the new capacity, which is
                     // also a full upload, so the dirty-range write below is
                     // skipped for that frame. The old buffers are released
@@ -8172,37 +8068,11 @@ public:
                         thin_instance_pool_grew(mesh, gpu_mesh.instance_capacity);
                     if (recreated) {
                         const std::size_t rows = mesh.instance_matrices.size();
-                        SDL_GPUBuffer* const previous_instances = gpu_mesh.instances;
-                        SDL_ReleaseGPUBuffer(state.device, previous_instances);
+                        SDL_ReleaseGPUBuffer(state.device, gpu_mesh.instances);
                         gpu_mesh.instances = frame_buffer_uploads.upload(
                             SDL_GPU_BUFFERUSAGE_VERTEX | SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
                             mesh.instance_matrices.data(),
                             rows * sizeof(mesh.instance_matrices.front()));
-#if BBLITE_PBR_VARIANTS > 0
-                        // The PBR family's mirror-conjugated stream is
-                        // allocated for every pool registration saw, and its
-                        // draw predicate is the LIVE record -- so a mesh
-                        // registered with no pool at all, whose first
-                        // addThinInstance lands here, has none yet and would
-                        // bind a null buffer. Allocate it whenever the
-                        // record now instances, null included, rather than
-                        // only refreshing an existing one. A build with no
-                        // PBR variant compiles this out, so Standard pays
-                        // nothing for it.
-                        if (gpu_mesh.pinned_instances &&
-                            gpu_mesh.pinned_instances != previous_instances) {
-                            // Aliased to `instances` for some pools and
-                            // owned otherwise, exactly as release_gpu_mesh
-                            // reads it.
-                            SDL_ReleaseGPUBuffer(state.device, gpu_mesh.pinned_instances);
-                        }
-                        {
-                            pinned_instance_matrices(mesh, rows, pinned_instance_scratch);
-                            gpu_mesh.pinned_instances = frame_buffer_uploads.upload(
-                                SDL_GPU_BUFFERUSAGE_VERTEX, pinned_instance_scratch.data(),
-                                rows * sizeof(pinned_instance_scratch.front()));
-                        }
-#endif
 #if BBLITE_GPU_INSTANCE_COLORS
                         if (gpu_mesh.instance_colors) {
                             // The colour mirror is the scene's own array
@@ -8218,22 +8088,14 @@ public:
 #endif
                         gpu_mesh.instance_capacity = static_cast<std::uint32_t>(rows);
                     }
-                    // Re-upload the pinned dirty range [0, count) from
-                    // the record pool; slots past the active count keep
-                    // their previous contents and are never drawn.
+                    // Re-upload the dirty range [0, count) from the record
+                    // pool; slots past the active count keep their previous
+                    // contents and are never drawn.
                     const std::size_t active_count = thin_instance_active_count(mesh);
                     if (!recreated && active_count > 0) {
                         frame_buffer_uploads.update(
                             gpu_mesh.instances, mesh.instance_matrices.data(),
                             active_count * sizeof(mesh.instance_matrices.front()));
-#if BBLITE_PBR_VARIANTS > 0
-                        if (gpu_mesh.pinned_instances) {
-                            pinned_instance_matrices(mesh, active_count, pinned_instance_scratch);
-                            frame_buffer_uploads.update(
-                                gpu_mesh.pinned_instances, pinned_instance_scratch.data(),
-                                active_count * sizeof(pinned_instance_scratch.front()));
-                        }
-#endif
 #if BBLITE_GPU_INSTANCE_COLORS
                         if (gpu_mesh.instance_colors) {
                             const auto colors = instance_colors_for_upload(mesh);
@@ -8248,80 +8110,28 @@ public:
                     gpu_mesh.instance_version = mesh.instance_version;
                 }
 #endif
+                // The vertex buffer holds the geometry's local lanes, so only
+                // a position update rewrites it; a transform reaches the
+                // draw through its mesh block.
 #if BBLITE_MESH_POSITION_UPDATE
                 const ModelGeometry& geometry = engine.geometries[item.geometry];
                 if (gpu_mesh.position_version != geometry.position_version) {
-                    const std::vector<GpuVertex> vertices =
-                        item.material_kind == upstream::RenderMaterialKind::shader
-                            ? local_vertices(engine, geometry)
-                            : transformed_vertices(engine, geometry, mesh);
+                    const std::vector<GpuVertex> vertices = mesh_gpu_vertices(geometry, mesh);
                     frame_buffer_uploads.update(gpu_mesh.vertices, vertices.data(),
                                                 vertices.size() * sizeof(GpuVertex));
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
                     state.node_capture.update(gpu_mesh.vertices, vertices.data(),
                                               vertices.size() * sizeof(GpuVertex));
 #endif
-#if BBLITE_PBR_VARIANTS > 0
-                    if (gpu_mesh.pinned_vertices) {
-                        const std::vector<GpuVertex> pinned =
-                            pinned_convention_vertices(vertices, mesh.mirrored_x);
-                        frame_buffer_uploads.update(gpu_mesh.pinned_vertices, pinned.data(),
-                                                    pinned.size() * sizeof(GpuVertex));
-                    }
-#endif
                     gpu_mesh.position_version = geometry.position_version;
-                    // The upload used the current transform as well, so the
-                    // ordinary transform path has nothing left to publish.
-                    gpu_mesh.transform_version = mesh.transform_version;
-                    gpu_mesh.gpu_world_transform = mesh.gpu_world_transform;
                 }
 #endif
-                if (mesh.gpu_deformation && !engine.geometries[item.geometry].flat_normals) {
 #if BBLITE_GPU_MORPH_STORAGE
+                if (mesh.gpu_deformation) {
                     sync_morph_weights(frame_buffer_uploads, gpu_mesh,
                                        engine.geometries[item.geometry], mesh);
-#endif
-                    gpu_mesh.transform_version = mesh.transform_version;
-                    continue;
-                }
-                if (gpu_mesh.transform_version == mesh.transform_version &&
-                    gpu_mesh.gpu_world_transform == mesh.gpu_world_transform) {
-                    continue;
-                }
-                // Shader geometry stays local. Its transform version is
-                // consumed by the per-draw world/WVP uniform below, so a
-                // transform-only animation requires no buffer upload.
-                if (item.material_kind == upstream::RenderMaterialKind::shader) {
-                    gpu_mesh.gpu_world_transform = mesh.gpu_world_transform;
-                    gpu_mesh.transform_version = mesh.transform_version;
-                    continue;
-                }
-                if (mesh.gpu_world_transform && gpu_mesh.gpu_world_transform) {
-                    // Runtime simulation changes only the draw world. The
-                    // local vertex buffers uploaded for this mode are stable.
-                    gpu_mesh.transform_version = mesh.transform_version;
-                    continue;
-                }
-                const std::vector<GpuVertex> vertices =
-                    transformed_vertices(engine, engine.geometries[item.geometry], mesh);
-                ++profile_transformed_meshes;
-                profile_transformed_vertices += vertices.size();
-                frame_buffer_uploads.update(gpu_mesh.vertices, vertices.data(),
-                                            vertices.size() * sizeof(GpuVertex));
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                state.node_capture.update(gpu_mesh.vertices, vertices.data(),
-                                          vertices.size() * sizeof(GpuVertex));
-#endif
-#if BBLITE_PBR_VARIANTS > 0
-                if (gpu_mesh.pinned_vertices) {
-                    const std::vector<GpuVertex> pinned =
-                        pinned_convention_vertices(vertices, mesh.mirrored_x);
-                    frame_buffer_uploads.update(gpu_mesh.pinned_vertices, pinned.data(),
-                                                pinned.size() * sizeof(GpuVertex));
                 }
 #endif
-                gpu_mesh.transform_version = mesh.transform_version;
-                gpu_mesh.gpu_world_transform = mesh.gpu_world_transform;
             }
         };
         const bool overlays_updated = refresh_overlay_render_plans(
@@ -8750,12 +8560,6 @@ public:
                     [[maybe_unused]] const auto draw_task_skyboxes =
                         [&](SDL_GPURenderPass* task_pass, const std::array<float, 16>& task_matrix,
                             const CameraRecord& task_camera, double task_aspect) {
-#if BBLITE_GPU_INSTANCING
-                            const std::array<float, 16> identity_parent_world{
-                                1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-                                0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-                            };
-#endif
                             for (const SkyboxLayer layer : skybox_stage_order) {
                                 if (layer == SkyboxLayer::environment) {
                                     if (!state.skybox.enabled)
@@ -8813,9 +8617,6 @@ public:
                                         SDL_BindGPUVertexBuffers(
                                             task_pass, 0, vertex_bindings.data(),
                                             static_cast<Uint32>(vertex_bindings.size()));
-                                        SDL_PushGPUVertexUniformData(command, instance_uniform_slot,
-                                                                     identity_parent_world.data(),
-                                                                     sizeof(identity_parent_world));
                                     } else {
                                         const SDL_GPUBufferBinding vertex_binding{
                                             state.skybox.vertices,
@@ -8830,6 +8631,12 @@ public:
                                 };
                                 SDL_BindGPUVertexBuffers(task_pass, 0, &vertex_binding, 1);
 #endif
+                                    if (graph_scene.environment.skybox_uses_environment) {
+                                        SDL_PushGPUVertexUniformData(command,
+                                                                     mesh_world_uniform_slot,
+                                                                     identity_mesh_world.data(),
+                                                                     sizeof(identity_mesh_world));
+                                    }
 #if BBLITE_GPU_MORPH_STORAGE
                                     if (graph_scene.environment.skybox_uses_environment) {
                                         const std::array<SDL_GPUBuffer*, 2> morph_storage{
@@ -8951,10 +8758,6 @@ public:
                                 state.ground_sampler,
                             };
 #if BBLITE_GPU_INSTANCING
-                            const std::array<float, 16> identity_parent_world{
-                                1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-                                0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-                            };
                             const std::array<SDL_GPUBufferBinding, 2> vertex_bindings{
                                 SDL_GPUBufferBinding{
                                     state.background.vertices,
@@ -8967,9 +8770,6 @@ public:
                             };
                             SDL_BindGPUVertexBuffers(task_pass, 0, vertex_bindings.data(),
                                                      static_cast<Uint32>(vertex_bindings.size()));
-                            SDL_PushGPUVertexUniformData(command, instance_uniform_slot,
-                                                         identity_parent_world.data(),
-                                                         sizeof(identity_parent_world));
 #else
                         const SDL_GPUBufferBinding vertex_binding{
                             state.background.vertices,
@@ -8977,6 +8777,9 @@ public:
                         };
                         SDL_BindGPUVertexBuffers(task_pass, 0, &vertex_binding, 1);
 #endif
+                            SDL_PushGPUVertexUniformData(command, mesh_world_uniform_slot,
+                                                         identity_mesh_world.data(),
+                                                         sizeof(identity_mesh_world));
 #if BBLITE_GPU_MORPH_STORAGE
                             const std::array<SDL_GPUBuffer*, 2> morph_storage{
                                 state.empty_morph_deltas,
@@ -9315,7 +9118,8 @@ public:
                                             "Shader draw has an invalid material.");
                                     }
                                     const ShaderDrawMatrices shader_matrices(
-                                        engine, handle_at(engine.meshes, draw_item.mesh),
+                                        draw_context, engine,
+                                        handle_at(engine.meshes, draw_item.mesh),
                                         draw_pass_matrices);
                                     const ShaderPassMatrices shader_pass_matrices =
                                         shader_matrices.apply(draw_pass_matrices);
@@ -9384,28 +9188,14 @@ public:
                                                                      sizeof(draw_matrix));
                                         scene_matrix_bound = true;
                                     }
-#if BBLITE_GPU_DEFORMATION
-                                    if (!grid_bucket) {
-                                        const DeformationUniforms deformation =
-                                            build_deformation_uniforms(
-                                                handle_at(engine.meshes, draw_item.mesh),
-                                                engine.geometries[draw_item.geometry].flat_normals);
-                                        SDL_PushGPUVertexUniformData(command, 1, &deformation,
-                                                                     sizeof(deformation));
-                                    }
-#endif
-#if BBLITE_GPU_INSTANCING
-                                    if (!grid_bucket) {
-                                        const std::array<float, 16> parent_world =
-                                            instance_parent_draw_world(
-                                                handle_at(engine.meshes, draw_item.mesh),
-                                                draw_context, engine);
-                                        SDL_PushGPUVertexUniformData(command, instance_uniform_slot,
-                                                                     parent_world.data(),
-                                                                     sizeof(parent_world));
-                                    }
-#endif
                                     if (grid_bucket) {
+                                        // The grid stage's own `mesh` block.
+                                        const std::array<float, 16> grid_world = mesh_block_world(
+                                            draw_context, engine,
+                                            handle_at(engine.meshes, draw_item.mesh));
+                                        SDL_PushGPUVertexUniformData(
+                                            command, mesh_world_uniform_slot, grid_world.data(),
+                                            sizeof(grid_world));
                                         const upstream::GridUniforms fragment =
                                             upstream::build_grid_uniforms(engine, draw_item);
                                         SDL_PushGPUFragmentUniformData(command, 0, &fragment,
@@ -10431,12 +10221,6 @@ public:
             // composed fragments sample.
             bool transmission_copied = false;
 #endif
-#if BBLITE_GPU_INSTANCING
-            const std::array<float, 16> identity_parent_world{
-                1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-                0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-            };
-#endif
             const auto draw_skybox = [&] {
                 if (!state.skybox.enabled)
                     return;
@@ -10483,9 +10267,6 @@ public:
                     };
                     SDL_BindGPUVertexBuffers(pass, 0, skybox_vertex_bindings.data(),
                                              static_cast<Uint32>(skybox_vertex_bindings.size()));
-                    SDL_PushGPUVertexUniformData(command, instance_uniform_slot,
-                                                 identity_parent_world.data(),
-                                                 sizeof(identity_parent_world));
                 } else {
                     const SDL_GPUBufferBinding vertex_binding{
                         state.skybox.vertices,
@@ -10497,6 +10278,11 @@ public:
                 const SDL_GPUBufferBinding vertex_binding{state.skybox.vertices, 0};
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
 #endif
+                if (scene.environment.skybox_uses_environment) {
+                    SDL_PushGPUVertexUniformData(command, mesh_world_uniform_slot,
+                                                 identity_mesh_world.data(),
+                                                 sizeof(identity_mesh_world));
+                }
 #if BBLITE_GPU_MORPH_STORAGE
                 if (scene.environment.skybox_uses_environment) {
                     const std::array<SDL_GPUBuffer*, 2> morph_storage{
@@ -10766,7 +10552,8 @@ public:
                             throw std::runtime_error("Shader draw has an invalid material.");
                         }
                         const ShaderDrawMatrices shader_matrices(
-                            engine, handle_at(engine.meshes, item.mesh), frame_pass_matrices);
+                            *pass_scene, engine, handle_at(engine.meshes, item.mesh),
+                            frame_pass_matrices);
                         const ShaderPassMatrices shader_pass_matrices =
                             shader_matrices.apply(frame_pass_matrices);
                         // Per-stage blocks from the generated variant
@@ -10819,25 +10606,12 @@ public:
                                                          sizeof(*pass_matrix));
                             scene_matrix_bound = true;
                         }
-#if BBLITE_GPU_DEFORMATION
-                        if (item.material_kind != upstream::RenderMaterialKind::grid) {
-                            const DeformationUniforms deformation = build_deformation_uniforms(
-                                handle_at(engine.meshes, item.mesh),
-                                engine.geometries[item.geometry].flat_normals);
-                            dump_deformation_uniforms(item.mesh.value, deformation);
-                            SDL_PushGPUVertexUniformData(command, 1, &deformation,
-                                                         sizeof(deformation));
-                        }
-#endif
-#if BBLITE_GPU_INSTANCING
-                        if (item.material_kind != upstream::RenderMaterialKind::grid) {
-                            const std::array<float, 16> parent_world = instance_parent_draw_world(
-                                handle_at(engine.meshes, item.mesh), *pass_scene, engine);
-                            SDL_PushGPUVertexUniformData(command, instance_uniform_slot,
-                                                         parent_world.data(), sizeof(parent_world));
-                        }
-#endif
                         if (item.material_kind == upstream::RenderMaterialKind::grid) {
+                            // The grid stage's own `mesh` block.
+                            const std::array<float, 16> grid_world = mesh_block_world(
+                                *pass_scene, engine, handle_at(engine.meshes, item.mesh));
+                            SDL_PushGPUVertexUniformData(command, mesh_world_uniform_slot,
+                                                         grid_world.data(), sizeof(grid_world));
                             const upstream::GridUniforms fragment =
                                 upstream::build_grid_uniforms(engine, item);
                             SDL_PushGPUFragmentUniformData(command, 0, &fragment, sizeof(fragment));
@@ -10892,13 +10666,13 @@ public:
                 };
                 SDL_BindGPUVertexBuffers(pass, 0, ground_vertex_bindings.data(),
                                          static_cast<Uint32>(ground_vertex_bindings.size()));
-                SDL_PushGPUVertexUniformData(command, instance_uniform_slot,
-                                             identity_parent_world.data(),
-                                             sizeof(identity_parent_world));
 #else
                 const SDL_GPUBufferBinding vertex_binding{state.background.vertices, 0};
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
 #endif
+                SDL_PushGPUVertexUniformData(command, mesh_world_uniform_slot,
+                                             identity_mesh_world.data(),
+                                             sizeof(identity_mesh_world));
 #if BBLITE_GPU_MORPH_STORAGE
                 const std::array<SDL_GPUBuffer*, 2> morph_storage{
                     state.empty_morph_deltas,
@@ -11286,13 +11060,13 @@ public:
         finish_compute_frame_prefix(engine);
 #endif
         if (capture_ids) {
-            save_geometry_id_buffer_png(state, width, height, matrix, render_plan.items, engine,
-                                        id_buffer_path, false);
+            save_geometry_id_buffer_png(state, width, height, matrix, render_plan.items, scene,
+                                        engine, id_buffer_path, false);
             captures.id_buffer_saved = true;
         }
         if (capture_clusters) {
-            save_geometry_id_buffer_png(state, width, height, matrix, render_plan.items, engine,
-                                        cluster_buffer_path, true);
+            save_geometry_id_buffer_png(state, width, height, matrix, render_plan.items, scene,
+                                        engine, cluster_buffer_path, true);
             captures.cluster_buffer_saved = true;
         }
 #if BBLITE_DEVICE_RECOVERY
@@ -11332,10 +11106,6 @@ public:
         [[maybe_unused]] const auto& updated = current_frame().updated;
         [[maybe_unused]] const auto& uploaded = current_frame().uploaded;
         [[maybe_unused]] const auto& acquired = current_frame().acquired;
-        [[maybe_unused]] auto& profile_transformed_meshes =
-            current_frame().profile_transformed_meshes;
-        [[maybe_unused]] auto& profile_transformed_vertices =
-            current_frame().profile_transformed_vertices;
         finish_frame(engine);
         ++frame;
         const double end = monotonic_milliseconds();
@@ -11351,8 +11121,7 @@ public:
             // phase, so this line never carried the field.
             print_cpu_frame_profile(completed_frame, end - start, acquired - start,
                                     updated - acquired, uploaded - updated, std::nullopt,
-                                    end - uploaded, render_plan.items.size(), draw_commands,
-                                    profile_transformed_meshes, profile_transformed_vertices);
+                                    end - uploaded, render_plan.items.size(), draw_commands);
         }
         if (mem_profile && completed_frame % memory_profile_frames == 0) {
             print_memory_frame_profile(completed_frame, engine, scene, state.meshes,

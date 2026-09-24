@@ -295,11 +295,16 @@ test("builds the grid WGSL by executing the pinned template functions", () => {
     const fragment = gridFragmentWgsl("p", file);
 
     // Vertex: the pin's pass-throughs over the native attribute layout, with
-    // the three-matrix product folded into the plan's view-projection.
+    // view and projection folded into the plan's view-projection and the
+    // world read from the draw's mesh block.
     assert.ok(
         vertex.includes(
-            "out.position=uniforms.viewProjection*vec4<f32>(input.position,1.0);",
+            "out.position=uniforms.viewProjection*(mesh.world*vec4<f32>(input.position,1.0));",
         ),
+    );
+    assert.match(
+        vertex,
+        /@group\(1\) @binding\(1\) var<uniform> mesh: MeshUniforms;/,
     );
     assert.ok(vertex.includes("out.vPosition=input.localPosition;"));
     assert.ok(vertex.includes("out.vNormal=input.localNormal;"));

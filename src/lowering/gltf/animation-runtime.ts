@@ -241,10 +241,8 @@ ${cameraRefresh}
             const auto& binding=animation_runtime->meshes.at(index);
             auto& mesh=engine.meshes.at(binding.mesh);
 ${options.vat ? `            if(mesh.has_vat)return;` : ""}
-            auto& geometry=engine.geometries.at(binding.geometry);
-            const auto& world=animation_runtime->nodes.at(binding.node).world;
-            publish_gltf_deformation(mesh,geometry,world,binding.initial_joint_matrices,
-                binding.skin<animation_runtime->skins.size(),binding.morph_default_weights);
+            publish_gltf_deformation(mesh,gltf_rooted_world(animation_runtime->nodes.at(binding.node).world),
+                binding.initial_joint_matrices,binding.skin<animation_runtime->skins.size(),binding.morph_default_weights);
         };
         animation_runtime->publish_pose=[animation_runtime=animation_runtime.get(),refresh_live_worlds,publish_mesh]() {
             refresh_live_worlds();
@@ -257,7 +255,7 @@ ${options.vat ? `            if(mesh.has_vat)return;` : ""}
                 auto& matrices=binding.initial_joint_matrices;
                 matrices.resize(static_cast<std::size_t>(skeleton.boneCount));
                 for(std::size_t bone=0;bone<matrices.size();++bone)
-                    matrices[bone]=upstream::matrix_product(binding.initial_mesh_world,gltf_animation_matrix(values,bone));
+                    matrices[bone]=gltf_animation_matrix(values,bone);
             }
         };
         animation_runtime->evaluate_pose=[animation_runtime=animation_runtime.get(),&engine]
@@ -443,12 +441,12 @@ ${
         };
         asset.animation_has_skeleton=[skeleton_binding](MeshHandle mesh){return skeleton_binding(mesh).first!=nullptr;};
         asset.animation_bone_palette=[skeleton_binding](MeshHandle mesh) {
-            const auto [skeleton,binding]=skeleton_binding(mesh);
+            auto* const skeleton=skeleton_binding(mesh).first;
             if(!skeleton)throw std::runtime_error("VAT source skeleton binding is absent.");
             std::vector<Matrix> result;
             result.reserve(static_cast<std::size_t>(skeleton->boneCount));
             for(std::size_t bone=0;bone<static_cast<std::size_t>(skeleton->boneCount);++bone)
-                result.push_back(native_matrix(upstream::matrix_product(binding->initial_mesh_world,gltf_animation_matrix(*skeleton->boneMatrices,bone))));
+                result.push_back(gltf_animation_matrix(*skeleton->boneMatrices,bone));
             return result;
         };
         asset.animation_cpu_go_to_frame=[animation_runtime](std::size_t index,double frame) {

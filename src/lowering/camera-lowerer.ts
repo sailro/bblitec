@@ -696,10 +696,7 @@ CameraHandle create_banked_free_camera(
         };
     }
 
-    public lowerDefaultFactory(
-        nodeVisibility = false,
-        animatedWorldBounds = false,
-    ): LoweredSource {
+    public lowerDefaultFactory(nodeVisibility = false): LoweredSource {
         const modulePath = "src/scene/scene-camera.ts";
         const symbolName = "createDefaultCamera";
         const { file, declaration } = this.context.functionDeclaration(
@@ -814,12 +811,12 @@ CameraHandle create_banked_free_camera(
                           "Expected createDefaultCamera to return its camera.",
                       ),
         });
-        const bounds = animatedWorldBounds ? "world_bounds" : "bounds";
         return {
             modulePath,
             symbolName,
             header: "",
             source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
@@ -829,22 +826,18 @@ CameraHandle create_banked_free_camera(
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <vector>
 
 namespace bbl {
 namespace {
 
 ${lowerWorldAabbHelpers(this.context, { emptyAccumulator: true })}
 
-// The Mesh members the framing reads, off the native record. A loaded glTF
-// primitive keeps its node world baked into its vertices, so its box is
-// that world box (the live one an animated asset records) under the
-// record's own identity transform; a createMeshFromData mesh -- every
-// factory's -- keeps its local box. A .babylon mesh has neither bound
-// upstream (load-babylon.ts builds it without them), so it frames nothing
-// unless the scene assigns them. A scene may replace either public bound.
-// The world matrix is the record's composition under its parents, with an
-// imported clone root's outer transform on the left, as the draw path
-// applies it.
+// The Mesh members the framing reads, off the native record: a loaded glTF
+// primitive's object-local box, and \`mesh.worldMatrix\`. A .babylon mesh has
+// neither bound upstream (load-babylon.ts builds it without them), so it
+// frames nothing unless the scene assigns them. A scene may replace either
+// public bound.
 WorldAabbMesh default_camera_world_aabb_mesh(const Engine& engine, MeshHandle handle) {
     WorldAabbMesh result{};
     if (handle.value >= engine.meshes.size()) return result;
@@ -853,15 +846,13 @@ WorldAabbMesh default_camera_world_aabb_mesh(const Engine& engine, MeshHandle ha
         return std::array<float, 3>{value.x, value.y, value.z};
     };
     if (mesh.primitive == PrimitiveKind::gltf && mesh.geometry < engine.geometries.size()) {
-        result.bound_min = lanes(engine.geometries[mesh.geometry].${bounds}_min);
-        result.bound_max = lanes(engine.geometries[mesh.geometry].${bounds}_max);
+        result.bound_min = lanes(engine.geometries[mesh.geometry].bounds_min);
+        result.bound_max = lanes(engine.geometries[mesh.geometry].bounds_max);
     }
     if (mesh.has_bounds_min_override) result.bound_min = lanes(mesh.bounds_min_override);
     if (mesh.has_bounds_max_override) result.bound_max = lanes(mesh.bounds_max_override);
-    const std::array<float, 16> world = upstream::mesh_world_matrix(engine, mesh);
-    result.world_matrix = upstream::outer_transform_is_identity(mesh)
-        ? world
-        : upstream::matrix_product(upstream::outer_transform_matrix(mesh), world);
+    result.world_matrix = upstream::mesh_world_matrix(engine, mesh);
+    read_thin_instance_world_bounds(result, mesh);
     return result;
 }
 

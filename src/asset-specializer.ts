@@ -659,8 +659,6 @@ export function gltfHasCompressedImages(document: JsonRecord): boolean {
 
 export interface AssetSpecializationFeatures {
     gpuDeformation: boolean;
-    /** Deformed primitives retain local vertices and a separate world box for framing. */
-    animatedWorldBounds: boolean;
     morphStorage: boolean;
     /**
      * Joints in the largest skin any reached asset carries. Compared at
@@ -734,7 +732,6 @@ export function emitAssetSpecializations(
     if (gltfAssets.length === 0) {
         return {
             gpuDeformation: false,
-            animatedWorldBounds: false,
             morphStorage: false,
             maxSkinJoints: 0,
             nonTrianglePrimitives: false,
@@ -804,7 +801,6 @@ export function emitAssetSpecializations(
     );
     return {
         gpuDeformation: deformed,
-        animatedWorldBounds: deformed,
         // Babylon Lite has one morph mechanism -- the uncapped storage-buffer
         // path -- and the composed morph variants read it, so any morph
         // target at all compiles it in. The two-slot vertex-attribute slice
@@ -818,7 +814,7 @@ export function emitAssetSpecializations(
         // Off, the generated loader carries no topology handling at all,
         // which is where upstream keeps it. The negative-determinant half of
         // the pinned primitive feature is unconditional inline code in the
-        // generated loader (`mirrored_x`).
+        // generated loader (`clockwise_front_face`).
         nonTrianglePrimitives: anyAsset(
             ({ loader }) => loader.nonTrianglePrimitives,
         ),

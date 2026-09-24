@@ -168,7 +168,7 @@ export function lowerRotationPointerDrag(context: LoweringContext): string {
     calls.set(
         "rq.set",
         (args) =>
-            `set_mesh_rotation_quaternion(engine, handle, Vec4{${args.map((arg) => `static_cast<float>(${arg})`).join(", ")}}, true)`,
+            `set_mesh_rotation_quaternion(engine, handle, Vec4{${args.map((arg) => `static_cast<float>(${arg})`).join(", ")}})`,
     );
 
     const translated = lowerPinnedBody(

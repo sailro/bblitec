@@ -250,7 +250,7 @@ test("initial palettes come from source construction, independent of clips and i
     );
 });
 
-test("static skin and morph assets activate native deformation and world bounds", async () => {
+test("static skin and morph assets activate native deformation", async () => {
     const directory = resolve(
         "artifacts/test-gltf-initial-deformation-features",
     );
@@ -278,29 +278,17 @@ test("static skin and morph assets activate native deformation and world bounds"
                 gltfAssetDocuments(directory, assets),
             );
             assert.equal(features.gpuDeformation, skinned || morphed);
-            assert.equal(features.animatedWorldBounds, skinned || morphed);
             assert.equal(features.morphStorage, morphed);
         }
 });
 
-test("native initial deformation carries source palette products and static morph weights in native coordinates", async (t) => {
+test("native initial deformation carries the source palette and static morph weights under the node world", async (t) => {
     const native = optionalNativeFixtureTools();
     if (!native) {
         t.skip("Native fixture compiler unavailable.");
         return;
     }
     const context = new LoweringContext();
-    const { multiplyMat4IntoBuffer } = await importPinnedModule<{
-        multiplyMat4IntoBuffer(
-            this: void,
-            out: Float32Array,
-            offset: number,
-            left: Float32Array,
-            leftOffset: number,
-            right: Float32Array,
-            rightOffset: number,
-        ): void;
-    }>("math/multiply-mat4-into-buffer.js");
     const cases: object[] = [];
     for (const [skinned, morphed, animated] of [
         [true, false, false],
@@ -312,31 +300,24 @@ test("native initial deformation carries source palette products and static morp
         const { document, bin } = fixture(skinned!, morphed!, animated);
         const bytes = await packageGltfMeshPlan(document, bin);
         const mesh = packagedGltfMeshPlan(document).meshes[0]!;
-        const sourceWorld = Float32Array.from(
+        // The pin's mesh.worldMatrix, root mirror included, as packaged.
+        const world = Float32Array.from(
             readPackedGltfAttribute(document, bytes, mesh.setup.world),
-        );
-        const world = sourceWorld.map((value, index) =>
-            index % 4 === 0 ? -value : value,
         );
         const palette = mesh.skin
             ? Float32Array.from(
                   readPackedGltfAttribute(document, bytes, mesh.skin.matrices),
               )
             : new Float32Array();
+        // The palette is the pin's computeBoneTextureData output, uploaded
+        // as it stands: the vertex stage composes it under the mesh world.
         const matrices = [];
-        for (let bone = 0; bone < (mesh.skin?.boneCount ?? 1); ++bone) {
-            const result = new Float32Array(16);
-            if (mesh.skin)
-                multiplyMat4IntoBuffer(result, 0, world, 0, palette, bone * 16);
-            else result.set(world);
-            for (let column = 0; column < 4; ++column)
-                for (let row = 0; row < 4; ++row)
-                    result[column * 4 + row] =
-                        result[column * 4 + row]! *
-                        (row === 0 ? -1 : 1) *
-                        (column === 0 ? -1 : 1);
-            matrices.push([...new Uint32Array(result.buffer)]);
-        }
+        for (let bone = 0; bone < (mesh.skin?.boneCount ?? 0); ++bone)
+            matrices.push([
+                ...new Uint32Array(
+                    palette.slice(bone * 16, bone * 16 + 16).buffer,
+                ),
+            ]);
         // JSON numbers erase -0; transport matrix lanes as bits, as the GLB does.
         cases.push({
             animated,
@@ -380,11 +361,12 @@ test("native initial deformation carries source palette products and static morp
 #include "pinned_world_transform.hpp"
 #include <bit>
 #include <cassert>
+#include <cstring>
 #include <fstream>
 namespace bbl {
 using Matrix = std::array<float, 16>;
 using JsonObject = ts::JsonValue::Object;
-${["const ts::JsonValue& required(", "const ts::JsonValue* optional(", "std::size_t unsigned_value(", "Matrix native_matrix(", "void publish_gltf_deformation("].map((signature) => cppFunction(loader, signature)).join("\n")}
+${["const ts::JsonValue& required(", "const ts::JsonValue* optional(", "std::size_t unsigned_value(", "void publish_gltf_deformation("].map((signature) => cppFunction(loader, signature)).join("\n")}
 void check(const nlohmann::json& input) {
     const auto doc = ts::JsonValue::from_native(input.at("mesh")); const auto& planned = doc.as_object();
     const auto* planned_skin = optional(planned, "skin"); const auto* planned_morph = optional(planned, "morph");
@@ -413,9 +395,14 @@ ${initialize}
     assert(result.morph_storage_weights == morph_default_weights);
     for (std::size_t target = 0; target < result.morph_weights.size(); ++target)
         assert(result.morph_weights[target] == (target < morph_default_weights.size() ? morph_default_weights[target] : 0.0f));
-    assert(result.bone_matrices_version == 1 && result.transform_version == 1);
-    const auto expected_world = native_matrix(mesh_world);
-    assert(result.deform_node_world == expected_world);
+    assert(result.transform_version == 1);
+    if (planned_skin) {
+        // A skinned record keeps the node world its load recorded.
+        assert(result.bone_matrices_version == 1 && !result.parent_world);
+    } else {
+        assert(result.bone_matrices_version == 0 && result.parent_world);
+        assert(std::memcmp(result.parent_world->data(), mesh_world.data(), sizeof(Matrix)) == 0);
+    }
 }
 }
 int main() { nlohmann::json cases; std::ifstream("cases.json") >> cases; for (const auto& row : cases) bbl::check(row); }

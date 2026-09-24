@@ -10,21 +10,11 @@
 // picks at all: it has no triangles to intersect, and its own pass draws
 // the same splats it draws for the frame with the pick colour substituted.
 //
-// Two contracts are this port's rather than the pin's, and both come from
-// where the world transform lives:
-//
-//   * an ordinary mesh's vertices are baked to WORLD space here
-//     (`transformed_vertices`), while the pin keeps them local and multiplies
-//     by `mesh.worldMatrix` in the pick vertex stage. So the mesh block
-//     carries the IDENTITY for a baked mesh -- the same positions reach the
-//     shader either way. A thin-instanced or floating-origin mesh keeps
-//     local vertices precisely because its transform travels as a matrix,
-//     and neither is composed with picking by any reached scene, so both
-//     refuse rather than picking the wrong geometry.
-//   * the position stream is the renderer's interleaved `GpuVertex` buffer
-//     read at its own stride rather than a second position-only upload. The
-//     pin binds `gpu.positionBuffer`; these are the same numbers at a
-//     different pitch.
+// One contract is this port's rather than the pin's: the position stream is
+// the renderer's interleaved `GpuVertex` buffer read at its own stride
+// rather than a second position-only upload. The pin binds
+// `gpu.positionBuffer`; these are the same local numbers at a different
+// pitch, and the mesh block carries `mesh.worldMatrix` as the pin's does.
 
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_detailed_picking.hpp>

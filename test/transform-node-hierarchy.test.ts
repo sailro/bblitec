@@ -156,7 +156,11 @@ test("emits a depth-first ordered TransformNode traversal", () => {
     const addMeshStart = source.indexOf(
         "void add_to_scene(Scene& scene, MeshHandle mesh)",
     );
-    const addMeshEnd = source.indexOf("// A static glTF mesh", addMeshStart);
+    const addMeshEnd = source.indexOf(
+        "void set_mesh_rotation_quaternion(",
+        addMeshStart,
+    );
+    assert.ok(addMeshStart >= 0 && addMeshEnd > addMeshStart);
     const addMesh = source.slice(addMeshStart, addMeshEnd);
     assert.match(addMesh, /scene\.meshes\.push_back\(mesh\);/);
     assert.doesNotMatch(addMesh, /find|none_of|unique/);

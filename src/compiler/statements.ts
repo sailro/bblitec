@@ -97,7 +97,6 @@ export interface StatementLoweringContext extends Pick<
     | "isRuntimeResourceConstruction"
     | "emitNativeReturn"
     | "emitNativeThrow"
-    | "meshTransformDirtyEntry"
     | "captureEmittedLines"
     | "canShareFunctionBody"
     | "useNativeValue"
@@ -3527,9 +3526,6 @@ export class StatementLowerer {
                 `${transform.sourceProperty}.set`,
                 transform.precision,
             ).join(", ")}}`;
-            const runtimeTransform =
-                context.meshTransformDirtyEntry() ===
-                "mark_mesh_runtime_transform";
             context.emit(
                 `bbl::${
                     target.kind === "scene-node"
@@ -3537,7 +3533,7 @@ export class StatementLowerer {
                         : transform.transformNodeSetter
                 }(` +
                     `${context.requireEngine(target, call)}, ` +
-                    `${targetCpp}, ${vector}, ${runtimeTransform});`,
+                    `${targetCpp}, ${vector});`,
             );
             return true;
         }
@@ -3553,13 +3549,10 @@ export class StatementLowerer {
         );
         const vector = `${transform.cppType}{${components.join(", ")}}`;
         const engine = context.requireEngine(target, call);
-        const runtimeTransform =
-            context.meshTransformDirtyEntry() === "mark_mesh_runtime_transform";
         if (transform.meshSetter) {
             context.emit(
                 `bbl::${transform.meshSetter}(` +
-                    `${engine}, ${target.cpp}, ${vector}, ` +
-                    `${runtimeTransform});`,
+                    `${engine}, ${target.cpp}, ${vector});`,
             );
             return true;
         }
@@ -3567,13 +3560,9 @@ export class StatementLowerer {
             `${recordAt(`${engine}.meshes`, target.cpp)}.` +
                 `${transform.nativeField} = ${vector};`,
         );
-        // Baked ordinary geometry includes its parent world matrix. Mark
-        // the complete dependent subtree so parent-only motion re-uploads
-        // children as well as the mesh directly written here.
-        context.emit(
-            `bbl::${context.meshTransformDirtyEntry()}(` +
-                `${engine}, ${target.cpp});`,
-        );
+        // The world-matrix state's `markLocalDirty`, pushed through the
+        // subtree the parent setter registered.
+        context.emit(`bbl::mark_mesh_dirty(${engine}, ${target.cpp});`);
         return true;
     }
 

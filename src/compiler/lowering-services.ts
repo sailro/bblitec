@@ -409,8 +409,6 @@ export interface LoweringServices {
     compileVec2(expression: ts.Expression): string;
     compileVec4(expression: ts.Expression): string;
     compileBoolean(expression: ts.Expression): string;
-    meshTransformDirtyEntry():
-        "mark_mesh_dirty" | "mark_mesh_runtime_transform";
     compileFrameCallback(
         expression: ts.Expression,
         signature?: FrameCallbackSignature,

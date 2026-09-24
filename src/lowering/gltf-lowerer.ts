@@ -8,6 +8,6 @@ export {
 } from "./gltf/sh-prescale.js";
 export {
     lowerMatrixComposeCpp,
-    lowerMatrixNativeCpp,
+    lowerRootedWorldCpp,
 } from "./gltf/matrix-leaves.js";
 export { lowerGltfFactorBake } from "./gltf/factor-bake.js";

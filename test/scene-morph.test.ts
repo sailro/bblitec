@@ -299,7 +299,7 @@ test("direct morph replacement refuses the pin's independently retained detached
 
 const tools = optionalNativeFixtureTools(false);
 test(
-    "native direct morph storage matches pin bytes and keeps deformation before live world",
+    "native direct morph storage matches pin bytes and composes deformation under the mesh world",
     { skip: !tools },
     async () => {
         const pin = await importPinnedModule<PinMorphModule>(
@@ -417,12 +417,13 @@ ${mirroredStructFromWgsl("NodeMeshUniforms", meshBody, "material/node/node-pipel
 inline constexpr std::size_t pinned_max_lights = ${MAX_LIGHTS}u;
 ${cppDefinition(renderPlan, "bool light_affects_mesh(")}
 ${[
-    "mesh_local_matrix(const MeshRecord&",
-    "transform_node_local_matrix(",
-    "transform_node_world(",
-    "mesh_world_matrix(",
+    "std::array<float, 16> mesh_local_matrix(const MeshRecord&",
+    "std::array<float, 16> transform_node_local_matrix(",
+    "std::array<float, 16> transform_node_world(",
+    "std::optional<std::array<float, 16>> mesh_root_world(",
+    "std::array<float, 16> mesh_world_matrix(",
 ]
-    .map((name) => cppDefinition(renderPlan, `std::array<float, 16> ${name}`))
+    .map((name) => cppDefinition(renderPlan, name))
     .join("\n")}
 }
 namespace bbl {
@@ -431,23 +432,10 @@ ${cppDefinition(factories, "void set_morph_target_weights(")}
 }
 namespace bbl::pal {
 ${cppRecord(pal, "struct GpuVertex {")}
-${cppRecord(pal, "struct PinnedDrawConventions {")}
-// Stand-ins for generated variant metadata; execute the shared selection body.
-bool pinned_variant_skeleton(std::size_t variant) { return variant == 1; }
-bool pinned_variant_vat(std::size_t) { return false; }
-${cppDefinition(pal, "inline PinnedDrawConventions pinned_draw_conventions(")}
 ${[
-    "std::array<float, 16> outer_draw_world(",
-    "std::array<float, 16> draw_world(",
-    "std::array<float, 16> scene_deformation_draw_world(",
-    "std::array<float, 16> deformed_draw_world(",
+    "std::array<float, 16> mesh_block_world(",
     "int pick_mesh_projection(",
-    "std::vector<GpuVertex> transformed_vertices(",
-    "std::array<float, 16> pinned_mesh_world(",
-    "std::array<float, 16> pinned_identity_world(",
-    "std::array<float, 16> pinned_x_mirrored_world(",
-    "std::array<float, 16> pinned_draw_world(",
-    "std::array<float, 16> standard_draw_world(",
+    "std::vector<GpuVertex> mesh_gpu_vertices(",
     "std::vector<float> morph_weight_values(",
     "std::vector<std::uint8_t> pack_morph_weights(",
 ]
@@ -469,58 +457,30 @@ ${checks.join("\n")}
     auto& record = engine.meshes[0];
     record.position = {-1.65f, 0.42f, 0.0f}; record.scaling = {2.0f, 3.0f, 4.0f};
     record.rotation = {0.2f, -0.3f, 0.4f};
-    record.gpu_world_transform = true;
     auto& vertex = engine.geometries[0].vertices[0];
     vertex.position = {-0.55f, 0.46f, 0.125f}; vertex.normal = {0.0f, 0.0f, 1.0f};
     bbl::Scene scene;
+    // A deformed draw uploads the source lanes and carries the mesh world;
+    // the palette and the morph compose inside the vertex stage, as the
+    // pin's finalWorld does.
     for (const bool skinned : {false, true}) {
-        record.scene_skeleton = skinned;
         record.skinned = skinned; record.pinned_bone_palette = skinned;
         assert(bbl::pal::pick_mesh_projection(engine, record) == (skinned ? 2 : 1));
-        const auto conventions = bbl::pal::pinned_draw_conventions(skinned ? 1u : 0u, record);
-        assert(conventions.mirrored_vertices && conventions.skeleton_draw == skinned);
-        const auto packed = bbl::pal::transformed_vertices(engine, engine.geometries[0], record);
+        const auto packed = bbl::pal::mesh_gpu_vertices(engine.geometries[0], record);
         assert(packed[0].position[0] == vertex.position.x && packed[0].position[1] == vertex.position.y && packed[0].position[2] == vertex.position.z);
         const auto expected = bbl::upstream::mesh_world_matrix(engine, record);
-        assert(bbl::pal::pinned_draw_world(skinned, false, false, record, scene, engine) == expected);
-        assert(bbl::pal::deformed_draw_world(skinned, record, scene, engine) == expected);
-        assert(bbl::pal::standard_draw_world(record, false, scene, engine) == expected);
+        assert(bbl::pal::mesh_block_world(scene, engine, record) == expected);
         record.position.x += 0.25f;
     }
-    // NME colour and caster views bind this same block. The old identity
-    // lost an authored translation once morph vertices stopped being baked;
-    // a live-world record happened to mask it. Exercise both storage arms.
-    record.scene_skeleton = false; record.skinned = false;
-    for (const bool live_world : {false, true}) {
-        record.gpu_world_transform = live_world;
-        const auto expected = bbl::upstream::mesh_world_matrix(engine, record);
-        const auto block = bbl::pal::node_mesh_block(scene, engine, 0);
-        assert(block.world == expected);
-        const auto packed = bbl::pal::transformed_vertices(engine, engine.geometries[0], record);
-        const auto deltas = bbl::upstream::pack_morph_deltas(engine.geometries[0]);
-        for (const float weight : {0.0f, 0.75f}) {
-            const bbl::Vec3 deformed{packed[0].position[0] + weight * deltas[0],
-                packed[0].position[1] + weight * deltas[1], packed[0].position[2] + weight * deltas[2]};
-            const auto actual = bbl::upstream::transform_position(block.world, deformed);
-            const auto wanted = bbl::upstream::transform_position(expected, deformed);
-            assert(actual.x == wanted.x && actual.y == wanted.y && actual.z == wanted.z);
-        }
-        record.position.x += 0.25f;
-    }
-    record.scene_skeleton = false; record.scene_morph_targets = false; record.gpu_world_transform = false;
-    const auto plain = bbl::pal::transformed_vertices(engine, engine.geometries[0], record);
-    assert(!bbl::pal::pinned_draw_conventions(0, record).mirrored_vertices);
-    assert(plain[0].position[0] != vertex.position.x);
-    assert(bbl::pal::pinned_draw_world(false, false, false, record, scene, engine) == bbl::pal::pinned_mesh_world());
-    assert(bbl::pal::node_mesh_block(scene, engine, 0).world == bbl::pal::pinned_identity_world());
-    record.skinned = false; record.gpu_deformation = false; record.morph_storage_weights.clear();
+    // NME colour and caster views bind this same block.
+    record.skinned = false;
+    assert(bbl::pal::node_mesh_block(scene, engine, 0).world ==
+           bbl::upstream::mesh_world_matrix(engine, record));
+    record.scene_morph_targets = false;
+    record.gpu_deformation = false; record.morph_storage_weights.clear();
     assert(bbl::pal::pick_mesh_projection(engine, record) == -1);
     record.skinned = true;
     assert(bbl::pal::pick_mesh_projection(engine, record) == 0);
-    record.position = {}; record.scaling = {1, 1, 1}; record.rotation = {};
-    auto palette_world = bbl::pal::pinned_identity_world(); palette_world[12] = 2.5f;
-    record.bone_matrices = {palette_world};
-    assert(bbl::pal::deformed_draw_world(true, record, scene, engine) == bbl::pal::pinned_identity_world());
     // Imported morph attachments survive absent default weights and a
     // later all-zero pose; both must keep the same shader/binding layout.
     record.skinned = false; record.gpu_deformation = true;
@@ -531,7 +491,6 @@ ${checks.join("\n")}
     assert(bbl::pal::pick_mesh_projection(engine, record) == 2);
     record.skinned = false; record.morph_storage_weights = {0.0f};
     assert(bbl::pal::pick_mesh_projection(engine, record) == 1);
-    assert(bbl::pal::deformed_draw_world(false, record, scene, engine) == palette_world);
     record.skinned = true; record.pinned_bone_palette = false;
     bool refused = false;
     try { bbl::pal::pick_mesh_projection(engine, record); } catch (const std::runtime_error&) { refused = true; }

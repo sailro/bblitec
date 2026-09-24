@@ -592,7 +592,7 @@ export class SceneLowerer {
         // src/scene/transform-node.ts createTransformNode and the
         // ObservableVec3/ObservableQuat setters a scene writes on the node
         // it made. Each setter is the field write plus the version bump a
-        // child re-bakes against, which is what `markLocalDirty` does
+        // child's world recomposes against, which is what `markLocalDirty` does
         // upstream; the world itself is composed lazily in the render plan,
         // as `createWorldMatrixState` composes it there.
         const transformNodeSource = this.transformNodeSource(options);
@@ -745,35 +745,19 @@ void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
     }
 }
 
-// A transform written from a live callback or property animation changes
-// every frame. Keep that subtree's vertices local after its first such write
-// and move it through the per-draw world matrix; otherwise every dirty mark
-// rebuilds and uploads the complete baked vertex streams.
-void mark_mesh_runtime_transform(Engine& engine, MeshHandle mesh) {
-    if (mesh.value >= engine.meshes.size()) return;
-    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
-    record.gpu_world_transform = true;
-    ++record.transform_version;
-    for (const MeshHandle child : record.parented_meshes) {
-        mark_mesh_runtime_transform(engine, child);
-    }
-}
-
-// The same, one level up. A transform node written every frame -- a physics
-// body's pose, say -- invalidates both of its child arms, exactly as
-// mark_transform_node_dirty does: a node parented under it is as stale as
-// a mesh is.
-void mark_transform_node_runtime_transform(
+// The same one level up. A node reaches the record arena through a factory
+// or through a physics body's pose write, so the marker is unconditional.
+void mark_transform_node_dirty(
     Engine& engine,
     TransformNodeHandle node) {
     if (node.value >= engine.transform_nodes.size()) return;
     TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
     ++record.transform_version;
     for (const MeshHandle child : record.parented_meshes) {
-        mark_mesh_runtime_transform(engine, child);
+        mark_mesh_dirty(engine, child);
     }
     for (const TransformNodeHandle child : record.parented_nodes) {
-        mark_transform_node_runtime_transform(engine, child);
+        mark_transform_node_dirty(engine, child);
     }
 }
 `;
@@ -840,45 +824,26 @@ TransformNodeHandle create_transform_node(
         static_cast<std::uint32_t>(engine.transform_nodes.size() - 1)};
 }
 
-void mark_transform_node_dirty(
-    Engine& engine,
-    TransformNodeHandle node) {
-    if (node.value >= engine.transform_nodes.size()) return;
-    TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
-    ++record.transform_version;
-    for (const MeshHandle child : record.parented_meshes) {
-        mark_mesh_dirty(engine, child);
-    }
-    for (const TransformNodeHandle child : record.parented_nodes) {
-        mark_transform_node_dirty(engine, child);
-    }
-}
-
 void set_transform_node_position(
     Engine& engine,
     TransformNodeHandle node,
-    Vec3d position,
-    bool runtime_transform) {
+    Vec3d position) {
     ${recordAt("engine.transform_nodes", "node")}.position = position;
-    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
-    else mark_transform_node_dirty(engine, node);
+    mark_transform_node_dirty(engine, node);
 }
 
 void set_transform_node_scaling(
     Engine& engine,
     TransformNodeHandle node,
-    Vec3 scaling,
-    bool runtime_transform) {
+    Vec3 scaling) {
     ${recordAt("engine.transform_nodes", "node")}.scaling = scaling;
-    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
-    else mark_transform_node_dirty(engine, node);
+    mark_transform_node_dirty(engine, node);
 }
 
 void set_transform_node_rotation(
     Engine& engine,
     TransformNodeHandle node,
-    Vec3 rotation,
-    bool runtime_transform) {
+    Vec3 rotation) {
     TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
     record.rotation = rotation;
     // The pinned Euler proxy writes its quaternion source of truth. The
@@ -886,20 +851,17 @@ void set_transform_node_rotation(
     // this flag is false; pinnedTrsComposition performs eulerXYZToQuatTuple from the
     // upstream function before the matrix write.
     record.has_rotation_quaternion = false;
-    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
-    else mark_transform_node_dirty(engine, node);
+    mark_transform_node_dirty(engine, node);
 }
 
 void set_transform_node_rotation_quaternion(
     Engine& engine,
     TransformNodeHandle node,
-    Vec4 rotation,
-    bool runtime_transform) {
+    Vec4 rotation) {
     TransformNodeRecord& record = ${recordAt("engine.transform_nodes", "node")};
     record.rotation_quaternion = rotation;
     record.has_rotation_quaternion = true;
-    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
-    else mark_transform_node_dirty(engine, node);
+    mark_transform_node_dirty(engine, node);
 }
 
 // The parent SETTER is the pin's own _addChild trigger: it registers the
@@ -1130,10 +1092,11 @@ ${parentMatrixHelpers}
 void apply_parent_local(
     MeshRecord& record,
     const PinnedParentDecomposed& local) {
-    // Imported roots are flattened into an outer TRS beside each rendered
-    // leaf. Once setParent writes a decomposed local TRS, that override has
-    // served the same purpose as the pin's raw local matrix and must be
-    // cleared before the observable TRS becomes authoritative.
+    // An imported record's root edit and loaded parent world stand for the
+    // hierarchy it leaves. Once setParent writes a decomposed local TRS,
+    // they have served the same purpose as the pin's raw local matrix and
+    // must be cleared before the observable TRS becomes authoritative.
+    record.parent_world.reset();
     record.outer_position = Vec3d{};
     record.outer_rotation = Vec3d{};
     record.outer_scaling = {1, 1, 1};
@@ -1153,22 +1116,6 @@ void apply_parent_local(
         static_cast<float>(local.scale.x),
         static_cast<float>(local.scale.y),
         static_cast<float>(local.scale.z)};
-    // Static glTF leaves have their node world baked into their vertices.
-    // A newly live parent therefore belongs in the draw-world matrix rather
-    // than in another CPU vertex bake.
-    record.gpu_world_transform = true;
-}
-
-std::array<float, 16> parenting_world_matrix(
-    const Engine& engine,
-    const MeshRecord& record) {
-    const std::array<float, 16> local_world =
-        upstream::mesh_world_matrix(engine, record);
-    if (upstream::outer_transform_is_identity(record)) return local_world;
-    const auto outer_world = upstream::outer_transform_matrix(record);
-    std::array<float, 16> result{};
-    mat4_multiply_into(result, 0, outer_world, 0, local_world, 0);
-    return result;
 }
 
 bool is_mesh_child(
@@ -1285,7 +1232,7 @@ void apply_preserved_parent_local(
         child_record.outer_rotation = Vec3d{};
         child_record.outer_scaling = {1, 1, 1};
         child_record.outer_has_rotation_quaternion = false;
-        child_record.gpu_world_transform = true;
+        child_record.parent_world.reset();
         child_record.position = Vec3d{
             child_world[12], child_world[13], child_world[14]};
         mark_mesh_dirty(engine, child);
@@ -1384,7 +1331,7 @@ void set_mesh_parent(
     // The local TRS written below therefore preserves the visible transform,
     // including a mirrored signed scale, across attach and detach.
     const std::array<float, 16> child_world =
-        parenting_world_matrix(engine, child_record);
+        upstream::mesh_world_matrix(engine, child_record);
     const bool link_changed =
         child_record.parent != parent ||
         child_record.transform_parent.value < engine.transform_nodes.size();
@@ -1402,7 +1349,7 @@ void set_mesh_parent(
     }
 
     const std::array<float, 16> parent_world =
-        parenting_world_matrix(engine, ${recordAt("engine.meshes", "parent")});
+        upstream::mesh_world_matrix(engine, ${recordAt("engine.meshes", "parent")});
     apply_preserved_parent_local(
         engine, child, child_world, parent_world);
 }
@@ -1413,7 +1360,7 @@ void set_mesh_parent(
     TransformNodeHandle parent) {
     MeshRecord& child_record = ${recordAt("engine.meshes", "child")};
     const std::array<float, 16> child_world =
-        parenting_world_matrix(engine, child_record);
+        upstream::mesh_world_matrix(engine, child_record);
     const bool link_changed =
         child_record.transform_parent.value != parent.value ||
         child_record.parent.value < engine.meshes.size();
@@ -1531,14 +1478,9 @@ HierarchyInstancePoolHandle create_hierarchy_instance_pool(
                 "createHierarchyInstancePool source mesh already has thin instances");
         }
         // The pin snapshots mesh.worldMatrix, including edits to the imported
-        // root. The instance conjugation must use the same complete world as
-        // the draw, so root edits precede each authored instance transform.
+        // root: the instance conjugation uses the same world as the draw.
         const std::array<float, 16> mesh_world =
-            upstream::outer_transform_is_identity(mesh)
-                ? mesh.instance_parent_matrix
-                : upstream::matrix_product(
-                    upstream::outer_transform_matrix(mesh),
-                    mesh.instance_parent_matrix);
+            upstream::mesh_world_matrix(engine, mesh);
         const std::optional<std::array<float, 16>> inverse =
             mat4_invert(mesh_world);
         if (!inverse) {
@@ -1891,70 +1833,17 @@ ${options.nodeMaterials ? "    queue_node_material_group(scene, mesh);\n" : ""}\
 ${options.pbrSceneHooks ? "    queue_pbr_material_group(scene, mesh);\n" : ""}\
 }
 
-// A static glTF mesh normally bakes its node world into each vertex. Once
-// scene code replaces that node's quaternion, those baked vertices would
-// rotate around the flattened asset origin. Recover the node translation and
-// scale retained by the loader, route the draw through the local vertex lanes,
-// and let the caller install the replacement rotation immediately afterward.
-void prepare_imported_mesh_quaternion_write(
-    Engine& engine,
-    MeshHandle mesh) {
-    if (mesh.value >= engine.meshes.size()) {
-        throw std::runtime_error("Invalid imported mesh handle.");
-    }
-    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
-    if (
-        record.name.rfind("wheel", 0) != 0 ||
-        record.live_imported_transform ||
-        record.geometry >= engine.geometries.size() ||
-        engine.geometries[record.geometry].vertex_space !=
-            VertexSpace::world) {
-        return;
-    }
-    const std::array<float, 16>& matrix =
-        record.instance_parent_matrix;
-    record.position = Vec3d{
-        matrix[12], matrix[13], matrix[14]};
-    const auto column_length = [&matrix](std::size_t column) {
-        const std::size_t lane = column * 4;
-        return std::sqrt(
-            matrix[lane] * matrix[lane] +
-            matrix[lane + 1] * matrix[lane + 1] +
-            matrix[lane + 2] * matrix[lane + 2]);
-    };
-    record.scaling = Vec3{
-        column_length(0),
-        column_length(1),
-        column_length(2)};
-    record.rotation = Vec3{};
-    record.has_rotation_quaternion = false;
-    record.gpu_world_transform = true;
-    record.live_imported_transform = true;
-    ++record.transform_version;
-}
-
+// The observable quaternion's setter: the quaternion becomes the rotation
+// source of truth, as the pin's ObservableQuat is, and the world-matrix
+// state's \`markLocalDirty\` pushes through the registered subtree.
 void set_mesh_rotation_quaternion(
     Engine& engine,
     MeshHandle mesh,
-    Vec4 quaternion,
-    bool runtime_transform) {
-    prepare_imported_mesh_quaternion_write(engine, mesh);
+    Vec4 quaternion) {
     MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
-    if (record.live_imported_transform) {
-        // The loader mirrors glTF's local X coordinate before retaining the
-        // wheel vertices. Conjugating a rotation by that reflection keeps
-        // X-axis roll unchanged and reverses Y/Z rotation into the same
-        // basis, so steering and combined steer+roll remain coherent.
-        quaternion.y = -quaternion.y;
-        quaternion.z = -quaternion.z;
-    }
     record.rotation_quaternion = quaternion;
     record.has_rotation_quaternion = true;
-    if (runtime_transform) {
-        mark_mesh_runtime_transform(engine, mesh);
-    } else {
-        mark_mesh_dirty(engine, mesh);
-    }
+    mark_mesh_dirty(engine, mesh);
 }
 
 // src/scene/scene-remove.ts removeFromScene: drop the mesh from the
@@ -2083,6 +1972,20 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
             clone_animation(source_mesh, cloned_mesh);
         }
     }
+    // A node-transform import links records of primitive-bearing nodes as
+    // mesh parents; the clone's hierarchy links its own copies.
+    const auto cloned_handle = [&](MeshHandle source_mesh) {
+        const auto found = std::find(source_meshes.begin(), source_meshes.end(), source_mesh);
+        return found == source_meshes.end()
+            ? source_mesh
+            : clone.meshes[static_cast<std::size_t>(found - source_meshes.begin())];
+    };
+    for (const MeshHandle cloned_mesh : clone.meshes) {
+        MeshRecord& record = ${recordAt("engine.meshes", "cloned_mesh")};
+        record.parent = cloned_handle(record.parent);
+        for (MeshHandle& child : record.children) child = cloned_handle(child);
+        for (MeshHandle& child : record.parented_meshes) child = cloned_handle(child);
+    }
     const AssetHandle cloned_asset{
         static_cast<std::uint32_t>(engine.assets.size())};
     engine.assets.push_back(std::move(clone));
@@ -2121,40 +2024,14 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
             "and no reached scene clones a parented mesh.");
     }
     MeshRecord record = ${recordAt("engine.meshes", "mesh")};
-    if (!record.detached_imported_mesh && !engine.geometries.at(record.geometry).owned_packed_geometry) {
-        const ModelGeometry& geometry = engine.geometries.at(record.geometry);
-        if ((record.primitive == PrimitiveKind::gltf && geometry.vertex_space != VertexSpace::world) ||
-            geometry.bind_vertices.size() != geometry.vertices.size() || geometry.vertices.empty()) {
-            throw std::runtime_error("Detached imported mesh clones require retained static local geometry.");
-        }
+    if (record.parent_world) {
+        // The pin's clone starts a fresh world state with no parent: it
+        // keeps the imported mesh's local lanes and its own TRS but leaves
+        // the node hierarchy, root mirror included.
+        record.parent_world.reset();
         record.detached_imported_mesh = true;
-        record.live_imported_transform = false;
-        record.gpu_world_transform = false;
-        record.baked_world_scale = 1;
-        record.mirrored_x = false;
         record.clockwise_front_face = false;
         record.authored_clockwise_front_face = false;
-        if (record.imported_clone_trs) {
-            if (record.transform_version != 0) {
-                throw std::runtime_error("Cloning a transformed Babylon import requires retained source transform ownership.");
-            }
-            const auto& trs = *record.imported_clone_trs;
-            record.position = {trs.position.x, trs.position.y, trs.position.z};
-            record.rotation = trs.rotation;
-            record.scaling = trs.scaling;
-            record.has_rotation_quaternion = false;
-        }
-        Vec3 minimum = geometry.vertices.front().local_position;
-        Vec3 maximum = minimum;
-        for (const auto& vertex : geometry.vertices) {
-            const auto& p = vertex.local_position;
-            minimum = {std::min(minimum.x, p.x), std::min(minimum.y, p.y), std::min(minimum.z, p.z)};
-            maximum = {std::max(maximum.x, p.x), std::max(maximum.y, p.y), std::max(maximum.z, p.z)};
-        }
-        if (!record.has_bounds_min_override) record.bounds_min_override = minimum;
-        if (!record.has_bounds_max_override) record.bounds_max_override = maximum;
-        record.has_bounds_min_override = true;
-        record.has_bounds_max_override = true;
     }
     if (record.geometry < engine.geometries.size()) {
         ++engine.geometries[record.geometry].owners;
