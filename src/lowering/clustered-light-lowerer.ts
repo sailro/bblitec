@@ -59,9 +59,18 @@ export function clusteredLightMembers(
 /**
  * The pin's light record as the native `ClusteredLight` struct: a light a
  * pinned body indexes or iterates reads its members through this, in the
- * struct's own member order.
+ * struct's own member order. The struct carries a spot's cone too, so a
+ * point light's literal -- which the pin's `ClusteredPointLight` declares
+ * without one -- leaves those lanes zeroed.
  */
-export function clusteredLightShape(): PinnedRecordShape {
+export function clusteredLightShape(
+    context: LoweringContext,
+): PinnedRecordShape {
+    const point = new Set(
+        interfaceMembers(context, "ClusteredPointLight").map(
+            (member) => member.name,
+        ),
+    );
     return {
         cpp: "ClusteredLight",
         members: [...LIGHT_MEMBERS].map(([name, type]) => ({
@@ -71,8 +80,163 @@ export function clusteredLightShape(): PinnedRecordShape {
                     ["", { cpp: `${owner}.${name}`, type }],
                 ]),
             store: (value: string) => value,
+            ...(point.has(name)
+                ? {}
+                : { absent: type === "scalar" ? "0.0" : "{}" }),
         })),
     };
+}
+
+/** One member of a pinned clustered interface, own members after its bases'. */
+interface InterfaceMember {
+    readonly name: string;
+    readonly optional: boolean;
+    readonly type: ts.TypeNode;
+}
+
+function interfaceMembers(
+    context: LoweringContext,
+    name: string,
+): InterfaceMember[] {
+    const { file, declaration } = context.interfaceDeclaration(
+        clusteredModule,
+        name,
+    );
+    const inherited = (declaration.heritageClauses ?? [])
+        .flatMap((clause) => [...clause.types])
+        .flatMap((base) =>
+            ts.isIdentifier(base.expression)
+                ? interfaceMembers(context, base.expression.text)
+                : context.contractError(
+                      base,
+                      `Expected ${name} to extend a named interface.`,
+                  ),
+        );
+    const own = declaration.members.map((member): InterfaceMember => {
+        const memberName =
+            ts.isPropertySignature(member) && member.type
+                ? context.propertyName(member.name)
+                : undefined;
+        if (!ts.isPropertySignature(member) || !member.type || !memberName) {
+            return context.contractError(
+                member,
+                `Expected ${name} to declare typed properties only (${file.fileName}).`,
+            );
+        }
+        return {
+            name: memberName,
+            optional: member.questionToken !== undefined,
+            type: member.type,
+        };
+    });
+    return [...inherited, ...own];
+}
+
+/** One option a clustered factory's options interface declares. */
+interface ClusteredOptionField {
+    readonly name: string;
+    readonly optional: boolean;
+    /** A JavaScript number, or a `[number, number, number]` tuple. */
+    readonly kind: "number" | "vec3";
+}
+
+/**
+ * A clustered factory's options, read off the pin's own interface (bases
+ * first): the factories and the scene call site share this one list, so
+ * an option the pin adds or renames moves both.
+ */
+export function clusteredOptionFields(
+    context: LoweringContext,
+    name: string,
+): ClusteredOptionField[] {
+    return interfaceMembers(context, name).map((member) => {
+        const type = member.type;
+        const vec3 =
+            ts.isTupleTypeNode(type) &&
+            type.elements.length === 3 &&
+            type.elements.every(
+                (element) => element.kind === ts.SyntaxKind.NumberKeyword,
+            );
+        if (vec3 && member.optional) {
+            context.contractError(
+                type,
+                `Expected ${name}'s tuple option '${member.name}' to be required.`,
+            );
+        }
+        if (!vec3 && type.kind !== ts.SyntaxKind.NumberKeyword) {
+            context.contractError(
+                type,
+                `Expected ${name}'s option '${member.name}' to be a number or a three-number tuple.`,
+            );
+        }
+        return {
+            name: member.name,
+            optional: member.optional,
+            kind: vec3 ? "vec3" : "number",
+        };
+    });
+}
+
+/**
+ * The native options struct a clustered factory takes, in the interface's
+ * own order: a tuple as the compiler's `Vec3d`, a number as a double, an
+ * optional one absent until the scene names it.
+ */
+export function clusteredOptionsStruct(
+    context: LoweringContext,
+    name: string,
+): string {
+    const fields = clusteredOptionFields(context, name).map(
+        (field) =>
+            `    ${
+                field.kind === "vec3"
+                    ? "Vec3d"
+                    : field.optional
+                      ? "std::optional<double>"
+                      : "double"
+            } ${field.name}{};`,
+    );
+    return `// ${context.provenance(clusteredModule, name)}
+struct ${name} {
+${fields.join("\n")}
+};`;
+}
+
+/**
+ * The bindings a factory body reads its `options` through: a tuple as the
+ * `[number, number, number]` the pin stores, a number as itself, and an
+ * optional one nullish until the scene named it, so the pin's own `??`
+ * default is what an absent one takes.
+ */
+export function clusteredOptionBindings(
+    context: LoweringContext,
+    name: string,
+    owner: string,
+): [string, PinnedBinding][] {
+    return clusteredOptionFields(context, name).flatMap(
+        (field): [string, PinnedBinding][] => {
+            const member = `${owner}.${field.name}`;
+            const binding: PinnedBinding =
+                field.kind === "vec3"
+                    ? {
+                          cpp: `std::array<double, 3>{${["x", "y", "z"]
+                              .map((lane) => `${member}.${lane}`)
+                              .join(", ")}}`,
+                          type: "f64-buffer",
+                      }
+                    : field.optional
+                      ? {
+                            cpp: `(*${member})`,
+                            type: "scalar",
+                            nullish: `!${member}.has_value()`,
+                        }
+                      : { cpp: member, type: "scalar" };
+            return [
+                [`${owner}.${field.name}`, binding],
+                [`${owner}?.${field.name}`, binding],
+            ];
+        },
+    );
 }
 
 /**

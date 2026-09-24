@@ -312,7 +312,8 @@ Intensity and diffuse-color setters retain validation and unchanged-value behavi
 
 ### Clustered lights
 
-PBR clustered containers compose shaders at generation and update bins/data textures natively.
+PBR clustered containers compose shaders at generation. The container and light factories, the container's
+addition and its per-frame refresh are lowered from the pinned bodies; the refresh keys its camera by handle.
 
 ## Materials and material state
 

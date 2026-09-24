@@ -381,6 +381,19 @@ export interface PinnedBinding {
      */
     record?: PinnedRecordShape;
     /**
+     * The C++ test for this value being `null`/`undefined`, where the
+     * caller holds a nullable one (an optional option): `x ?? d` takes
+     * `d` exactly when it holds, and `cpp` is read only when it does not.
+     * Any other read refuses.
+     */
+    nullish?: string;
+    /**
+     * For an object binding, the C++ value JavaScript's `===` compares --
+     * the object's identity -- where `cpp` spells the object itself. A
+     * store from one identity-bound name into another stores the identity.
+     */
+    identity?: string;
+    /**
      * A value generation already knows. A `===` against a literal or a
      * module constant, a `typeof` test, a `switch` or a guard over one
      * folds to the arm it selects, and the untaken arm is never translated
@@ -451,6 +464,12 @@ export interface PinnedNumericScope {
     ) => readonly string[] | undefined;
     /** Identifiers already bound when the body starts (parameters, locals). */
     bindings: Map<string, PinnedBinding>;
+    /**
+     * The native struct an object literal declared under one of the pin's
+     * own type annotations is (`const light: ClusteredPointLight = {...}`),
+     * by the annotation's type name.
+     */
+    recordTypes?: ReadonlyMap<string, PinnedRecordShape>;
     /** Calls this body may make, as a C++ spelling per pinned callee. */
     calls: ReadonlyMap<string, PinnedCallSpelling>;
     /**
@@ -1731,6 +1750,25 @@ export class PinnedNumericLowerer {
                 continue;
             }
             const initializer = unwrapExpression(source);
+            // `const light: ClusteredPointLight = { ... }` -- one of the
+            // pin's object records, built as the native struct the caller
+            // named for its annotation and read through it afterwards.
+            const recordType =
+                declaration.type &&
+                ts.isTypeReferenceNode(declaration.type) &&
+                ts.isIdentifier(declaration.type.typeName)
+                    ? this.scope.recordTypes?.get(
+                          declaration.type.typeName.text,
+                      )
+                    : undefined;
+            if (recordType && ts.isObjectLiteralExpression(initializer)) {
+                lines.push(
+                    `${indent}${isConst ? "const " : ""}${recordType.cpp} ${cpp} = ` +
+                        `${this.recordValueOf(initializer, recordType)};`,
+                );
+                this.bindRecord(name, cpp, recordType);
+                continue;
+            }
             if (
                 this.scope.vec3Literal &&
                 ts.isObjectLiteralExpression(initializer)
@@ -2344,6 +2382,15 @@ export class PinnedNumericLowerer {
             : undefined;
     }
 
+    /** What `===` compares for an operand: its identity, or its value. */
+    private identityOf(expression: ts.Expression): string {
+        const node = unwrapExpression(expression);
+        return (
+            this.scope.bindings.get(node.getText(this.file))?.identity ??
+            this.expression(node)
+        );
+    }
+
     /** Bind `name` as one record of `shape`, with every member path. */
     private bindRecord(
         name: string,
@@ -2439,7 +2486,7 @@ export class PinnedNumericLowerer {
         const node = unwrapExpression(argument);
         if (!ts.isObjectLiteralExpression(node)) {
             const record = this.recordElement(node);
-            return record?.shape === shape
+            return record?.shape.cpp === shape.cpp
                 ? record.cpp
                 : this.fail(node, `${shape.cpp} value`);
         }
@@ -2588,6 +2635,17 @@ export class PinnedNumericLowerer {
             return `{${literal.elements
                 .map((element) => this.expression(element))
                 .join(", ")}}`;
+        }
+        // An object's identity is what a store between identity-bound
+        // names carries, as JavaScript's reference assignment does.
+        if (binding?.identity !== undefined) {
+            const source = ts.isIdentifier(literal)
+                ? this.scope.bindings.get(literal.text)
+                : undefined;
+            if (source?.identity === undefined) {
+                this.fail(value, "store of a value without an identity");
+            }
+            return source.identity;
         }
         // A boolean local takes truths only: a number stored into one would
         // convert silently where JavaScript would retype the variable.
@@ -3128,6 +3186,9 @@ export class PinnedNumericLowerer {
             const binding =
                 this.scope.bindings.get(node.text) ?? this.moduleConstant(node);
             if (!binding) this.fail(node, "identifier");
+            if (binding.nullish !== undefined) {
+                this.fail(node, "read of a nullable value outside '??'");
+            }
             // A view is a pointer; naming it bare would be an address.
             return binding.cpp;
         }
@@ -3744,6 +3805,10 @@ export class PinnedNumericLowerer {
         absentOverride?: string,
     ): string {
         const named = this.scope.bindings.get(node.getText(this.file));
+        // A nullable value is read only by the `??` that resolves it.
+        if (named?.nullish !== undefined) {
+            this.fail(node, "read of a nullable value outside '??'");
+        }
         if (named) return named.cpp;
         // `hi?.r ?? 0` where generation resolved `hi` to null: the pin's
         // own `??` default is the value, and a read with no default is a
@@ -4102,11 +4167,24 @@ export class PinnedNumericLowerer {
                     rhs = rightAbsent ?? "false";
                 const equal =
                     `(((${lhs}) && (${rhs})) || (!(${lhs}) && !(${rhs}) && ` +
-                    `(${this.expression(left)} == ${this.expression(right)})))`;
+                    `(${this.identityOf(left)} == ${this.identityOf(right)})))`;
                 return node.operatorToken.kind ===
                     ts.SyntaxKind.EqualsEqualsEqualsToken
                     ? equal
                     : `!${equal}`;
+            }
+            if (
+                this.scope.bindings.get(left.getText(this.file))?.identity !==
+                    undefined ||
+                this.scope.bindings.get(right.getText(this.file))?.identity !==
+                    undefined
+            ) {
+                return `(${this.identityOf(left)} ${
+                    node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken
+                        ? "=="
+                        : "!="
+                } ${this.identityOf(right)})`;
             }
         }
         // `(state._flag = true)` as a value: the store, whose value is what
@@ -4137,6 +4215,7 @@ export class PinnedNumericLowerer {
                     const head = this.scope.bindings.get(
                         unwrapExpression(spine.left).getText(this.file),
                     );
+                    if (head?.nullish !== undefined) break;
                     if (head) return head.cpp;
                     spine = unwrapExpression(spine.left);
                 }
@@ -4149,6 +4228,14 @@ export class PinnedNumericLowerer {
                 const resolved = this.scope.bindings.get(
                     left.getText(this.file),
                 );
+                // A nullable value the caller holds takes the pin's own
+                // default where it is absent, and is read only where not.
+                if (resolved?.nullish !== undefined) {
+                    return (
+                        `(${resolved.nullish} ? ${this.expression(node.right)} : ` +
+                        `${resolved.cpp})`
+                    );
+                }
                 if (resolved) return resolved.cpp;
                 if (!ts.isPropertyAccessExpression(left)) {
                     return this.fail(node, "'??' over a non-optional read");
