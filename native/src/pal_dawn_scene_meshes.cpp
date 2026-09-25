@@ -67,6 +67,36 @@ void sync_shader_storage_buffers(DawnState& state, const Engine& engine) {
         });
 }
 
+void write_mesh_stage_blocks(DawnState& state, const Scene& scene, const Engine& engine,
+                             const MeshRecord& mesh, const DawnMeshResources& gpu) {
+    const std::array<float, 16> world = mesh_block_world(scene, engine, mesh);
+    wgpuQueueWriteBuffer(state.queue, gpu.mesh_world_uniform, 0, world.data(), sizeof(world));
+#if BBLITE_GPU_DEFORMATION
+    const DeformationUniforms deformation = build_deformation_uniforms(mesh);
+    wgpuQueueWriteBuffer(state.queue, gpu.deformation_uniforms, 0, &deformation,
+                         sizeof(deformation));
+#endif
+}
+
+bool serve_mesh_stage_binding(WGPUBindGroupEntry& entry, WGPUBuffer view_projection,
+                              const DawnMeshResources& mesh) {
+    if (entry.binding == 0) {
+        entry.buffer = view_projection;
+        entry.size = 64;
+#if BBLITE_GPU_DEFORMATION
+    } else if (entry.binding == 1) {
+        entry.buffer = mesh.deformation_uniforms;
+        entry.size = sizeof(DeformationUniforms);
+#endif
+    } else if (entry.binding == mesh_world_uniform_binding) {
+        entry.buffer = mesh.mesh_world_uniform;
+        entry.size = 64;
+    } else {
+        return false;
+    }
+    return true;
+}
+
 DawnMeshBindings& diagnostic_bindings_for(DawnState& state, DawnMesh& mesh) {
     DawnMeshBindings& bindings = mesh.diagnostic_bindings;
     if (bindings.scene)
@@ -92,20 +122,8 @@ DawnMeshBindings& diagnostic_bindings_for(DawnState& state, DawnMesh& mesh) {
             wgpuDeviceCreateBindGroup(state.device, &descriptor), "diagnostic bind group")};
     };
     bindings.scene = group_for(1, [&](WGPUBindGroupEntry& entry) {
-        if (entry.binding == 0) {
-            entry.buffer = state.view_projection;
-            entry.size = 64;
-#if BBLITE_GPU_DEFORMATION
-        } else if (entry.binding == 1) {
-            entry.buffer = mesh.deformation_uniforms;
-            entry.size = sizeof(DeformationUniforms);
-#endif
-        } else if (entry.binding == mesh_world_uniform_binding) {
-            entry.buffer = mesh.mesh_world_uniform;
-            entry.size = 64;
-        } else {
+        if (!serve_mesh_stage_binding(entry, state.view_projection, mesh))
             unserved(1, entry.binding);
-        }
     });
     bindings.textures = group_for(2, [&](WGPUBindGroupEntry& entry) {
         const std::size_t slot = entry.binding / 2;

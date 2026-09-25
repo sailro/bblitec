@@ -1405,14 +1405,7 @@ public:
                 item.material_kind == upstream::RenderMaterialKind::shader) {
                 return;
             }
-            const std::array<float, 16> world = mesh_block_world(scene, engine, mesh);
-            wgpuQueueWriteBuffer(state.queue, gpu.mesh_world_uniform, 0, world.data(),
-                                 sizeof(world));
-#if BBLITE_GPU_DEFORMATION
-            const DeformationUniforms deformation = build_deformation_uniforms(mesh);
-            wgpuQueueWriteBuffer(state.queue, gpu.deformation_uniforms, 0, &deformation,
-                                 sizeof(deformation));
-#endif
+            write_mesh_stage_blocks(state, scene, engine, mesh, gpu);
         }
 
 #if BBLITE_MESH_POSITION_UPDATE
@@ -2832,47 +2825,45 @@ public:
                                     wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
                                 set_task_camera_viewport(task_pass, pass_camera, target.width,
                                                          target.height);
+                                // Group 1 is the shared stage's: the task's
+                                // view-projection beside the mesh's own
+                                // deformation and world blocks.
                                 const auto depth_only_group =
-                                    [&](const MeshHandle handle) -> WGPUBindGroup {
-                                    DawnDepthOnlyDraw& draw =
-                                        render_task.depth_only_draws[handle.value];
-                                    if (!draw.group) {
-                                        WGPUBufferDescriptor world_descriptor =
-                                            WGPU_BUFFER_DESCRIPTOR_INIT;
-                                        world_descriptor.size = 64;
-                                        world_descriptor.usage =
-                                            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-                                        draw.world = DawnBuffer{wgpuDeviceCreateBuffer(
-                                            state.device, &world_descriptor)};
-                                        if (!draw.world)
-                                            dawn_error("depth-only world buffer creation failed.");
-                                        DawnBindGroupLayout layout{
-                                            wgpuRenderPipelineGetBindGroupLayout(
-                                                depth_only_pipeline_for(state, false, samples,
-                                                                        target.depth_format),
-                                                1)};
-                                        std::array<WGPUBindGroupEntry, 2> entries{};
-                                        for (WGPUBindGroupEntry& group_entry : entries)
-                                            group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-                                        entries[0].binding = 0;
-                                        entries[0].buffer = render_task.view_projection;
-                                        entries[0].size = 64;
-                                        entries[1].binding = 1;
-                                        entries[1].buffer = draw.world;
-                                        entries[1].size = 64;
-                                        WGPUBindGroupDescriptor descriptor =
-                                            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-                                        descriptor.layout = layout;
-                                        descriptor.entryCount = entries.size();
-                                        descriptor.entries = entries.data();
-                                        draw.group = DawnBindGroup{
-                                            wgpuDeviceCreateBindGroup(state.device, &descriptor)};
+                                    [&](const MeshHandle handle,
+                                        const DawnMesh& mesh) -> WGPUBindGroup {
+                                    DawnDepthOnlyGroup& cached =
+                                        render_task.depth_only_groups[handle.value];
+                                    if (cached.group &&
+                                        cached.mesh_world == mesh.mesh_world_uniform)
+                                        return cached.group;
+                                    DawnBindGroupLayout layout{wgpuRenderPipelineGetBindGroupLayout(
+                                        depth_only_pipeline_for(state, false, samples,
+                                                                target.depth_format),
+                                        1)};
+                                    std::array<WGPUBindGroupEntry, mesh_world_uniform_binding + 1>
+                                        entries{};
+                                    for (std::uint32_t binding = 0; binding < entries.size();
+                                         ++binding) {
+                                        entries[binding] = WGPU_BIND_GROUP_ENTRY_INIT;
+                                        entries[binding].binding = binding;
+                                        if (!serve_mesh_stage_binding(entries[binding],
+                                                                      render_task.view_projection,
+                                                                      mesh)) {
+                                            dawn_error("the depth-only stage's group 1 has no "
+                                                       "binding " +
+                                                       std::to_string(binding) + ".");
+                                        }
                                     }
-                                    const std::array<float, 16> world = mesh_block_world(
-                                        graph_scene, engine, handle_at(engine.meshes, handle));
-                                    wgpuQueueWriteBuffer(state.queue, draw.world, 0, world.data(),
-                                                         sizeof(world));
-                                    return draw.group;
+                                    WGPUBindGroupDescriptor descriptor =
+                                        WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+                                    descriptor.layout = layout;
+                                    descriptor.entryCount = entries.size();
+                                    descriptor.entries = entries.data();
+                                    cached.group = DawnBindGroup{require_dawn_resource(
+                                        wgpuDeviceCreateBindGroup(state.device, &descriptor),
+                                        "depth-only bind group")};
+                                    cached.mesh_world = mesh.mesh_world_uniform;
+                                    return cached.group;
                                 };
                                 for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
                                     wgpuRenderPassEncoderSetPipeline(
@@ -2915,8 +2906,19 @@ public:
                                                 "scene.");
                                         }
                                         DawnMesh& mesh = graph_meshes[mesh_index];
+                                        // The row refresh keeps every other
+                                        // item's blocks current; a
+                                        // ShaderMaterial item's stage owns its
+                                        // own, so this draw writes them.
+                                        if (graph_plan.items[mesh_index].material_kind ==
+                                            upstream::RenderMaterialKind::shader) {
+                                            write_mesh_stage_blocks(
+                                                state, graph_scene, engine,
+                                                handle_at(engine.meshes, entry.mesh), mesh);
+                                        }
                                         wgpuRenderPassEncoderSetBindGroup(
-                                            task_pass, 1, depth_only_group(entry.mesh), 0, nullptr);
+                                            task_pass, 1, depth_only_group(entry.mesh, mesh), 0,
+                                            nullptr);
                                         wgpuRenderPassEncoderSetVertexBuffer(
                                             task_pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
 #if BBLITE_GPU_INSTANCING

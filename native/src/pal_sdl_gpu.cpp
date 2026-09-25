@@ -2756,8 +2756,9 @@ public:
                                         const std::array<float, 16> world =
                                             mesh_block_world(graph_scene, engine,
                                                              handle_at(engine.meshes, entry.mesh));
-                                        SDL_PushGPUVertexUniformData(command, 1, world.data(),
-                                                                     sizeof(world));
+                                        SDL_PushGPUVertexUniformData(command,
+                                                                     mesh_world_uniform_slot,
+                                                                     world.data(), sizeof(world));
                                         const SDL_GPUBufferBinding index_binding{
                                             mesh.indices,
                                             0,
