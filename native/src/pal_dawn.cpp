@@ -69,7 +69,7 @@ WGPUBuffer create_buffer(DawnState& state, WGPUBufferUsage usage, const void* da
     if (!buffer)
         dawn_error("wgpuDeviceCreateBuffer");
     if (data) {
-        wgpuQueueWriteBuffer(state.queue, buffer, 0, data, size);
+        DawnGpuDevice{state.queue}.write_buffer(buffer, 0, data, size);
     }
     return buffer.release();
 }
@@ -771,9 +771,9 @@ class DawnSceneRun {
                             }
                             shader_stage_block_floats(block, shader_pass_matrices, material,
                                                       shader_block_scratch);
-                            wgpuQueueWriteBuffer(state.queue, buffer, 0,
-                                                 shader_block_scratch.data(),
-                                                 shader_block_scratch.size() * sizeof(float));
+                            DawnGpuDevice{state.queue}.write_buffer(
+                                buffer, 0, shader_block_scratch.data(),
+                                shader_block_scratch.size() * sizeof(float));
                         };
                     write_stage_block(shader_info.vertex, draw_mesh.shader_vertex_uniforms);
                     write_stage_block(shader_info.fragment, draw_mesh.material_uniforms);
@@ -1410,14 +1410,15 @@ public:
         }
 
         void update_instances(DawnMesh& gpu, const MeshRecord& mesh, std::size_t active_count) {
-            wgpuQueueWriteBuffer(state.queue, gpu.instances, 0, mesh.instance_matrices.data(),
-                                 active_count * sizeof(mesh.instance_matrices.front()));
+            DawnGpuDevice{state.queue}.write_buffer(gpu.instances, 0, mesh.instance_matrices.data(),
+                                                    active_count *
+                                                        sizeof(mesh.instance_matrices.front()));
 #if BBLITE_GPU_INSTANCE_COLORS
             if (gpu.instance_colors) {
                 const auto colors = instance_colors_for_upload(mesh);
                 if (colors.size() >= active_count * 4) {
-                    wgpuQueueWriteBuffer(state.queue, gpu.instance_colors, 0, colors.data(),
-                                         active_count * 4 * sizeof(float));
+                    DawnGpuDevice{state.queue}.write_buffer(gpu.instance_colors, 0, colors.data(),
+                                                            active_count * 4 * sizeof(float));
                 }
             }
 #endif
@@ -1444,8 +1445,8 @@ public:
 
 #if BBLITE_MESH_POSITION_UPDATE
         void upload_vertices(DawnMesh& gpu, const std::vector<GpuVertex>& vertices) {
-            wgpuQueueWriteBuffer(state.queue, gpu.vertices, 0, vertices.data(),
-                                 vertices.size() * sizeof(GpuVertex));
+            DawnGpuDevice{state.queue}.write_buffer(gpu.vertices, 0, vertices.data(),
+                                                    vertices.size() * sizeof(GpuVertex));
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
             state.node_capture.update(gpu.vertices, vertices.data(),
                                       vertices.size() * sizeof(GpuVertex));
@@ -1666,7 +1667,8 @@ public:
 #if BBLITE_NODE_VARIANTS > 0
         [[maybe_unused]] auto& node_mesh_blocks = current_frame().node_mesh_blocks;
 #endif
-        wgpuQueueWriteBuffer(state.queue, state.view_projection, 0, matrix.data(), sizeof(matrix));
+        DawnGpuDevice{state.queue}.write_buffer(state.view_projection, 0, matrix.data(),
+                                                sizeof(matrix));
 #if BBLITE_PINNED_MATERIALS
         // The pin's per-pass blocks, before anything reads them: the scene block
         // the variants' vertex and fragment stages share, and the lights array
@@ -1696,12 +1698,12 @@ public:
                 data_.pass_blocks.scene(*overlay_scene));
             const upstream::SceneUniforms& overlay_scene_block = write_pass_scene_block(
                 data_.pass_blocks.scene(*overlay_scene), *overlay_scene, engine, overlay_pass);
-            wgpuQueueWriteBuffer(state.queue, overlay.scene_uniforms, 0, &overlay_scene_block,
-                                 sizeof(overlay_scene_block));
+            DawnGpuDevice{state.queue}.write_buffer(overlay.scene_uniforms, 0, &overlay_scene_block,
+                                                    sizeof(overlay_scene_block));
             const std::vector<std::uint8_t> overlay_lights =
                 pinned_lights_block(*overlay_scene, engine);
-            wgpuQueueWriteBuffer(state.queue, overlay.lights_uniforms, 0, overlay_lights.data(),
-                                 overlay_lights.size());
+            DawnGpuDevice{state.queue}.write_buffer(overlay.lights_uniforms, 0,
+                                                    overlay_lights.data(), overlay_lights.size());
         }
 #if BBLITE_SHADOW_RECEIVERS
         // The shadow generators' matrices and their receiver blocks, before
@@ -1884,8 +1886,8 @@ public:
                     // The port's own view-projection lane carries the pass's
                     // matrix, as the frame's and the SDL_GPU push do.
                     if (!shadow_task) {
-                        wgpuQueueWriteBuffer(state.queue, render_task.view_projection, 0,
-                                             task_matrix.data(), 64);
+                        DawnGpuDevice{state.queue}.write_buffer(render_task.view_projection, 0,
+                                                                task_matrix.data(), 64);
                     }
 #if BBLITE_SHADOW_RECEIVERS
                     // A shadow caster pass renders from the light. The pin gives
@@ -1914,10 +1916,11 @@ public:
                             graph_scene, engine, *task_camera, caster_view_projection);
                         shadow_block.view = caster_view;
                         task_pinned_frame_group(state, render_task, graph_lights);
-                        wgpuQueueWriteBuffer(state.queue, render_task.pinned_scene_uniforms, 0,
-                                             &shadow_block, sizeof(shadow_block));
-                        wgpuQueueWriteBuffer(state.queue, render_task.view_projection, 0,
-                                             caster_view_projection.data(), 64);
+                        DawnGpuDevice{state.queue}.write_buffer(render_task.pinned_scene_uniforms,
+                                                                0, &shadow_block,
+                                                                sizeof(shadow_block));
+                        DawnGpuDevice{state.queue}.write_buffer(render_task.view_projection, 0,
+                                                                caster_view_projection.data(), 64);
                         ShaderPassMatrices caster_pass_matrices{caster_view_projection.data(),
                                                                 &caster_view, nullptr};
                         caster_pass_matrices.camera_position = &task_camera_pass.camera_position;
@@ -1965,8 +1968,9 @@ public:
                             write_pass_scene_block(data_.pass_blocks.task(handle), graph_scene,
                                                    engine, task_camera, task_matrix);
                         task_pinned_frame_group(state, render_task, graph_lights);
-                        wgpuQueueWriteBuffer(state.queue, render_task.pinned_scene_uniforms, 0,
-                                             &task_scene_block, sizeof(task_scene_block));
+                        DawnGpuDevice{state.queue}.write_buffer(render_task.pinned_scene_uniforms,
+                                                                0, &task_scene_block,
+                                                                sizeof(task_scene_block));
                     }
 #endif
                     // A colour task's own draws, prepared under its own
@@ -2721,9 +2725,8 @@ public:
                                 task, source_camera, target.width, target.height,
                                 graph_extent.width, graph_extent.height,
                                 [&](const float* data, std::size_t bytes) {
-                                    wgpuQueueWriteBuffer(state.queue,
-                                                         render_task.pinned_scene_uniforms, 0, data,
-                                                         bytes);
+                                    DawnGpuDevice{state.queue}.write_buffer(
+                                        render_task.pinned_scene_uniforms, 0, data, bytes);
                                 });
                             const bool canvas_extent = task.render.canvas_size;
                             const CameraPassMatrices task_camera_pass = camera_pass_matrices(
@@ -2733,9 +2736,10 @@ public:
                                 canvas_extent ? graph_extent.height
                                               : static_cast<double>(target.height));
                             const ShaderPassMatrices matrices = task_camera_pass.pass();
-                            wgpuQueueWriteBuffer(state.queue, render_task.view_projection, 0,
-                                                 task_camera_pass.view_projection.data(),
-                                                 sizeof(task_camera_pass.view_projection));
+                            DawnGpuDevice{state.queue}.write_buffer(
+                                render_task.view_projection, 0,
+                                task_camera_pass.view_projection.data(),
+                                sizeof(task_camera_pass.view_projection));
                             write_material_uniforms(render_task.draw_lists.opaque, matrices);
                             write_material_uniforms(render_task.draw_lists.transparent, matrices);
                             upstream::sort_transparent_draws(render_task.draw_lists.transparent,
@@ -3508,8 +3512,7 @@ public:
                                                 extent.source_height,
                                                 [&](std::size_t offset, const float* data,
                                                     std::size_t bytes) {
-                                                    wgpuQueueWriteBuffer(
-                                                        state.queue,
+                                                    DawnGpuDevice{state.queue}.write_buffer(
                                                         gpu_source.pinned_scene_uniforms, offset,
                                                         data, bytes);
                                                 });

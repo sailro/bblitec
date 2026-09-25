@@ -299,7 +299,7 @@ function scope(
                 )
             )
                 return [
-                    `${indent}handle->write(static_cast<std::size_t>(start), {arena->buffer->data->data() + static_cast<std::size_t>(start), static_cast<std::size_t>(size)});`,
+                    `${indent}arena->buffer->run->device().write_buffer(handle, start, {arena->buffer->data->data() + static_cast<std::size_t>(start), static_cast<std::size_t>(size)});`,
                 ];
             return undefined;
         },

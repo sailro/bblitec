@@ -3,7 +3,7 @@
 struct Allocation final : bbl::pal::StorageBufferAllocation {
     std::vector<std::uint8_t> bytes;
     void destroy() override { bytes.clear(); }
-    void write(std::size_t offset, std::span<const std::uint8_t> value) override {
+    void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> value) override {
         std::copy(value.begin(), value.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset));
     }
 };

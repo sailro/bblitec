@@ -163,7 +163,7 @@ inline void write_dawn_billboard_task_scene(WGPUDevice device, WGPUQueue queue,
     auto found = pass.task_scenes.find(task);
     if (found == pass.task_scenes.end())
         found = pass.task_scenes.emplace(task, create_dawn_billboard_scene(device, pass)).first;
-    wgpuQueueWriteBuffer(queue, found->second.uniforms, 0, &scene_block, sizeof(scene_block));
+    DawnGpuDevice{queue}.write_buffer(found->second.uniforms, 0, &scene_block, sizeof(scene_block));
 }
 
 /** The scene group a task binds, written by `write_dawn_billboard_task_scene`. */
@@ -193,8 +193,9 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
         if (!pass.index_buffer) {
             dawn_error("wgpuDeviceCreateBuffer billboard indices");
         }
-        wgpuQueueWriteBuffer(queue, pass.index_buffer, 0, upstream::billboard_index_data.data(),
-                             static_cast<std::size_t>(descriptor.size));
+        DawnGpuDevice{queue}.write_buffer(pass.index_buffer, 0,
+                                          upstream::billboard_index_data.data(),
+                                          static_cast<std::size_t>(descriptor.size));
     }
 
     // The program ladder and the pass rules, decided once for both
@@ -400,12 +401,13 @@ inline void upload_dawn_billboard_pass(WGPUQueue queue, const Scene& scene, Engi
     const std::array<float, 16>& view = scene_block.view;
 
     // The pass's scene block, which the program binds at group 0.
-    wgpuQueueWriteBuffer(queue, pass.frame_scene.uniforms, 0, &scene_block, sizeof(scene_block));
+    DawnGpuDevice{queue}.write_buffer(pass.frame_scene.uniforms, 0, &scene_block,
+                                      sizeof(scene_block));
 
     std::array<float, upstream::billboard_system_ubo_bytes / 4> system_ubo{};
     upstream::build_billboard_system_ubo(system, system_ubo);
-    wgpuQueueWriteBuffer(queue, pass.system_uniforms, 0, system_ubo.data(),
-                         system_ubo.size() * sizeof(float));
+    DawnGpuDevice{queue}.write_buffer(pass.system_uniforms, 0, system_ubo.data(),
+                                      system_ubo.size() * sizeof(float));
 
     // The pin advances the clock in `_update`, before and regardless of
     // whether the sorted instance data moved.
@@ -414,7 +416,8 @@ inline void upload_dawn_billboard_pass(WGPUQueue queue, const Scene& scene, Engi
         std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
         upstream::build_sprite_fx_ubo(static_cast<float>(pass.elapsed_ms / 1000.0),
                                       system.shader_params, fx);
-        wgpuQueueWriteBuffer(queue, pass.fx_uniforms, 0, fx.data(), fx.size() * sizeof(float));
+        DawnGpuDevice{queue}.write_buffer(pass.fx_uniforms, 0, fx.data(),
+                                          fx.size() * sizeof(float));
     }
 
     // One gating rule for both backends (`billboard_needs_upload`): an
@@ -428,8 +431,8 @@ inline void upload_dawn_billboard_pass(WGPUQueue queue, const Scene& scene, Engi
     // scene's camera.
     upstream::billboard_upload_instances(system, scene_camera(engine, scene) != nullptr, view,
                                          pass.sorted, fo_offset);
-    wgpuQueueWriteBuffer(queue, pass.instances, 0, pass.sorted.data(),
-                         pass.sorted.size() * sizeof(float));
+    DawnGpuDevice{queue}.write_buffer(pass.instances, 0, pass.sorted.data(),
+                                      pass.sorted.size() * sizeof(float));
     stamp_billboard_upload(pass.upload_stamp, system, view, fo_offset);
 }
 

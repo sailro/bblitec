@@ -219,8 +219,8 @@ inline void encode_sdl_gpu_compute(SDL_GPUCommandBuffer* command, const ComputeD
             if (buffer.offset > bytes.size() || size > bytes.size() - buffer.offset ||
                 size > std::numeric_limits<Uint32>::max())
                 throw std::runtime_error("Compute uniform range exceeds allocation.");
-            SDL_PushGPUComputeUniformData(command, slot.index, bytes.data() + buffer.offset,
-                                          static_cast<Uint32>(size));
+            SdlGpuWriteDevice{}.write_compute_uniform(
+                command, slot.index, bytes.data() + buffer.offset, static_cast<Uint32>(size));
         } else if (slot.kind == 'r' || slot.kind == 'w') {
             const auto& buffer = std::get<ComputeBufferResource>(value);
             const auto handle = sdl_compute_resource<SdlStorageBuffer>(buffer.allocation).buffer;

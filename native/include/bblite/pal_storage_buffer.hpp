@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bblite/gpu_object.hpp>
 #include <cstdint>
 #include <cstddef>
 #include <memory>
@@ -33,10 +34,11 @@ struct StorageBufferDescriptor {
 };
 
 /** GPU handles and byte transport; source validation belongs to generated code. */
-struct StorageBufferAllocation {
+struct StorageBufferAllocation : GpuObject {
     virtual ~StorageBufferAllocation() = default;
-    virtual void destroy() = 0;
-    virtual void write(std::size_t offset, std::span<const std::uint8_t> bytes) = 0;
+    void destroy() override = 0;
+    virtual void write_buffer_bytes(std::size_t offset,
+                                    std::span<const std::uint8_t> bytes) override = 0;
 };
 
 class OffscreenRun;

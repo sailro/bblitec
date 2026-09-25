@@ -263,8 +263,9 @@ void record_cloud_pick_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pa
 
     std::array<float, 16> shear{};
     compute_cloud_pick_matrix(shear, sample_x, sample_y, width, height);
-    SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(state.pick_cloud_scene_slot),
-                                 shear.data(), static_cast<Uint32>(shear.size() * sizeof(float)));
+    SdlGpuWriteDevice{}.write_vertex_uniform(
+        command, static_cast<Uint32>(state.pick_cloud_scene_slot), shear.data(),
+        static_cast<Uint32>(shear.size() * sizeof(float)));
 
     upstream::SplatUniforms uniforms;
     upstream::write_splat_uniforms(
@@ -272,14 +273,14 @@ void record_cloud_pick_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pa
         upstream::build_view_matrix(upstream::camera_world_matrix(camera)),
         upstream::build_scene_projection(camera, width / height), width, height,
         record.texture_width, record.texture_height);
-    SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(state.pick_cloud_mesh_slot),
-                                 &uniforms, sizeof(uniforms));
+    SdlGpuWriteDevice{}.write_vertex_uniform(
+        command, static_cast<Uint32>(state.pick_cloud_mesh_slot), &uniforms, sizeof(uniforms));
 
     const std::array<float, 3> color = encode_pick_id_to_color(pick_id);
     const std::array<float, 4> picking_block{color[0], color[1], color[2], 0.0f};
-    SDL_PushGPUFragmentUniformData(command, static_cast<Uint32>(state.pick_cloud_color_slot),
-                                   picking_block.data(),
-                                   static_cast<Uint32>(picking_block.size() * sizeof(float)));
+    SdlGpuWriteDevice{}.write_fragment_uniform(
+        command, static_cast<Uint32>(state.pick_cloud_color_slot), picking_block.data(),
+        static_cast<Uint32>(picking_block.size() * sizeof(float)));
 
     SDL_GPUBufferBinding vertex_bindings[2]{};
     vertex_bindings[0].buffer = splat.quad;
@@ -442,8 +443,8 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
 #endif
     // Loop-invariant: pushed uniform state persists across draws,
     // and every cloud draw below rebinds its own slots.
-    SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(mesh_scene_slot), &scene_uniforms,
-                                 sizeof(scene_uniforms));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(mesh_scene_slot),
+                                             &scene_uniforms, sizeof(scene_uniforms));
     push_stage_uniform(command, frag_scene_slot, &scene_uniforms, sizeof(scene_uniforms));
 #if BBLITE_GPU_INSTANCING
     bool regular_pick_pipeline_bound = true;
@@ -473,10 +474,12 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                 gpu_error("a thin-instance pick candidate has no instance buffer");
             }
             SDL_BindGPUGraphicsPipeline(pass, state.pick_thin_pipeline);
-            SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(state.pick_thin_scene_slot),
-                                         &scene_uniforms, sizeof(scene_uniforms));
-            SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(state.pick_thin_uniform_slot),
-                                         &candidate.uniforms, sizeof(candidate.uniforms));
+            SdlGpuWriteDevice{}.write_vertex_uniform(
+                command, static_cast<Uint32>(state.pick_thin_scene_slot), &scene_uniforms,
+                sizeof(scene_uniforms));
+            SdlGpuWriteDevice{}.write_vertex_uniform(
+                command, static_cast<Uint32>(state.pick_thin_uniform_slot), &candidate.uniforms,
+                sizeof(candidate.uniforms));
             push_stage_uniform(command, state.pick_thin_frag_scene_slot, &scene_uniforms,
                                sizeof(scene_uniforms));
             push_stage_uniform(command, state.pick_thin_frag_mesh_slot, &candidate.uniforms,
@@ -500,8 +503,8 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                                         detailed ? state.pick_detailed_pipeline :
 #endif
                                                  state.pick_mesh_pipeline);
-            SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(mesh_scene_slot),
-                                         &scene_uniforms, sizeof(scene_uniforms));
+            SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(mesh_scene_slot),
+                                                     &scene_uniforms, sizeof(scene_uniforms));
             push_stage_uniform(command, frag_scene_slot, &scene_uniforms, sizeof(scene_uniforms));
             regular_pick_pipeline_bound = true;
 #if BBLITE_DEFORM_PICKING
@@ -524,7 +527,7 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                                                        :
 #endif
                                                        state.pick_mesh_pipeline);
-            SDL_PushGPUVertexUniformData(
+            SdlGpuWriteDevice{}.write_vertex_uniform(
                 command,
                 static_cast<Uint32>(deform_program ? deform_program->scene_slot : mesh_scene_slot),
                 &scene_uniforms, sizeof(scene_uniforms));
@@ -550,8 +553,8 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
                                });
         }
 #endif
-        SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(candidate_mesh_slot),
-                                     &candidate.uniforms, sizeof(candidate.uniforms));
+        SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(candidate_mesh_slot),
+                                                 &candidate.uniforms, sizeof(candidate.uniforms));
         push_stage_uniform(command, frag_mesh_slot, &candidate.uniforms,
                            sizeof(candidate.uniforms));
         SDL_GPUBufferBinding vertex_binding{};

@@ -68,6 +68,7 @@ private:
 
 /** The host retains the device until all producers and image leases end. */
 struct SdlOffscreenDevice final : OffscreenDevice {
+    const void* device_identity() const override { return device; }
 #if BBLITE_GPU_TASK_TIMING
     bool supports_gpu_timestamps() const override {
         return SDL_BBLiteGetGPUTimestampFrequency(device) != 0;

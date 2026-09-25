@@ -65,7 +65,8 @@ inline void write_procedural_sky_parameters(const std::shared_ptr<ProceduralSkyG
                                             std::span<const float> values) {
     if (!state || values.size_bytes() != state->parameter_byte_length)
         throw std::runtime_error("Procedural sky parameter buffer is not writable.");
-    state->parameter_buffer->write(
-        0, {reinterpret_cast<const std::uint8_t*>(values.data()), values.size_bytes()});
+    state->run->device().write_buffer(
+        state->parameter_buffer, 0,
+        {reinterpret_cast<const std::uint8_t*>(values.data()), values.size_bytes()});
 }
 } // namespace bbl

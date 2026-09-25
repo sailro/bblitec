@@ -54,9 +54,9 @@ void encode_post_process_pass(GpuState& state, SDL_GPUCommandBuffer* command,
     if (!uniforms.empty()) {
         const Uint32 bytes = static_cast<Uint32>(uniforms.size() * sizeof(float));
         if (prepared.vertex_uniforms)
-            SDL_PushGPUVertexUniformData(command, 0, uniforms.data(), bytes);
+            SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, uniforms.data(), bytes);
         if (prepared.fragment_uniforms)
-            SDL_PushGPUFragmentUniformData(command, 0, uniforms.data(), bytes);
+            SdlGpuWriteDevice{}.write_fragment_uniform(command, 0, uniforms.data(), bytes);
     }
     SdlRenderPass post_pass{SDL_BeginGPURenderPass(command, &prepared.target, 1, nullptr)};
     SDL_BindGPUGraphicsPipeline(post_pass, prepared.pipeline);
@@ -181,11 +181,12 @@ void record_screen_space_stage(GpuState& state, const ScreenSpaceTaskOptions& ta
     const upstream::ScreenSpaceShaderInfo& info =
         upstream::screen_space_shader_infos[program.stage];
     if (!program.vertex_slots.uniforms.empty()) {
-        SDL_PushGPUVertexUniformData(command, 0, uniforms, static_cast<Uint32>(info.uniform_bytes));
+        SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, uniforms,
+                                                 static_cast<Uint32>(info.uniform_bytes));
     }
     if (!program.fragment_slots.uniforms.empty()) {
-        SDL_PushGPUFragmentUniformData(command, 0, uniforms,
-                                       static_cast<Uint32>(info.uniform_bytes));
+        SdlGpuWriteDevice{}.write_fragment_uniform(command, 0, uniforms,
+                                                   static_cast<Uint32>(info.uniform_bytes));
     }
     SdlRenderPass pass{begin_screen_space_pass(command, target)};
     SDL_BindGPUGraphicsPipeline(pass, program.pipeline.get());

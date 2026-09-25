@@ -326,7 +326,7 @@ function operation(
             for (const [shape, cpp] of [
                 [
                     "engine._device.queue.writeBuffer(buffer._buffer!, byteOffset, data.buffer as ArrayBuffer, data.byteOffset, data.byteLength)",
-                    "buffer->allocation->write(static_cast<std::size_t>(offset), data);",
+                    "buffer->run->device().write_buffer(buffer->allocation, offset, data);",
                 ],
                 [
                     "buffer._data!.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), byteOffset)",

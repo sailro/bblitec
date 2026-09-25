@@ -57,7 +57,7 @@ void sync_shader_storage_buffers(DawnState& state, const Engine& engine) {
             return create_buffer(state, WGPUBufferUsage_Storage, bytes, size);
         },
         [&](WGPUBuffer buffer, const void* bytes, std::size_t size) {
-            wgpuQueueWriteBuffer(state.queue, buffer, 0, bytes, size);
+            DawnGpuDevice{state.queue}.write_buffer(buffer, 0, bytes, size);
         },
         [](const Engine::StorageBufferRecord& source) -> DawnState::ShaderStorageBuffer {
             if (!source.gpu || source.disposed)
@@ -78,11 +78,11 @@ void sync_shader_storage_buffers(DawnState& state, const Engine& engine) {
 void write_mesh_stage_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                              const MeshRecord& mesh, const DawnMeshResources& gpu) {
     const std::array<float, 16> world = mesh_block_world(scene, engine, mesh);
-    wgpuQueueWriteBuffer(state.queue, gpu.mesh_world_uniform, 0, world.data(), sizeof(world));
+    DawnGpuDevice{state.queue}.write_buffer(gpu.mesh_world_uniform, 0, world.data(), sizeof(world));
 #if BBLITE_GPU_DEFORMATION
     const DeformationUniforms deformation = build_deformation_uniforms(mesh);
-    wgpuQueueWriteBuffer(state.queue, gpu.deformation_uniforms, 0, &deformation,
-                         sizeof(deformation));
+    DawnGpuDevice{state.queue}.write_buffer(gpu.deformation_uniforms, 0, &deformation,
+                                            sizeof(deformation));
 #endif
 }
 

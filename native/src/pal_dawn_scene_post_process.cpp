@@ -46,7 +46,7 @@ void write_dawn_post_process_uniforms(DawnState& state, Engine& engine, TaskHand
     std::vector<float> data(program.uniform_size / sizeof(float), 0.0f);
     upstream::write_post_process_uniforms(engine, pass, extent.output_width, extent.output_height,
                                           extent.source_width, extent.source_height, data.data());
-    wgpuQueueWriteBuffer(state.queue, gpu.uniforms, 0, data.data(), program.uniform_size);
+    DawnGpuDevice{state.queue}.write_buffer(gpu.uniforms, 0, data.data(), program.uniform_size);
     pass.uniforms_dirty = false;
 }
 
@@ -195,7 +195,7 @@ void record_screen_space_stage(DawnState& state, const ScreenSpaceTaskOptions& t
         uniform_descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
         stage.uniforms = wgpuDeviceCreateBuffer(state.device, &uniform_descriptor);
     }
-    wgpuQueueWriteBuffer(state.queue, stage.uniforms, 0, uniforms, info.uniform_bytes);
+    DawnGpuDevice{state.queue}.write_buffer(stage.uniforms, 0, uniforms, info.uniform_bytes);
     if (!stage.group) {
         std::vector<WGPUBindGroupEntry> entries;
         for (std::size_t index = 0; index < info.binding_count; ++index) {

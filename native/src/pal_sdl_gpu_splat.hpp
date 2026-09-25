@@ -333,8 +333,8 @@ record_splat_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
         camera_position
 #endif
     );
-    SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(pass.uniform_slot), &uniforms,
-                                 sizeof(uniforms));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(pass.uniform_slot),
+                                             &uniforms, sizeof(uniforms));
     push_stage_uniform(command, pass.fragment_uniform_slot, &uniforms, sizeof(uniforms));
 
     SDL_GPUBufferBinding vertex_bindings[2]{};

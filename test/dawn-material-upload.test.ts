@@ -63,6 +63,7 @@ upstream::StandardUvTransformUniforms standard_uv_block(const MaterialRecord* ma
 upstream::StandardUvTxUniforms standard_uv_transform_block(const MaterialRecord* material) { return {material->value}; }
 std::array<unsigned,5> writes{};
 void wgpuQueueWriteBuffer(unsigned,WGPUBuffer buffer,std::size_t,const void*,std::size_t) { ++writes.at(buffer); }
+${readFileSync("test/fixtures/gpu-writer-recorder.hpp", "utf8")}
 ${["inline std::uint64_t material_ubo_version(", "void write_pinned_draw_blocks(", "void write_standard_draw_blocks("].map((signature) => cppFunction(implementation, signature)).join("\n")}
 int main() {
  Engine engine; Scene scene; DawnState state; DawnDrawState draw_state; upstream::RenderDrawCommand draw;

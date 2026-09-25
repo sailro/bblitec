@@ -409,25 +409,10 @@ inline void render_sprite_ui_sdl_gpu_frame(
         auto* texture = texture_owner.get();
         if (!texture)
             gpu_error("SDL_CreateGPUTexture UI source");
-        SDL_GPUTransferBufferCreateInfo transfer_info{};
-        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        transfer_info.size = static_cast<Uint32>(source_texture.rgba->size());
-        OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info),
-                                        {device}};
-        auto* transfer = transfer_owner.get();
-        if (!transfer)
-            gpu_error("SDL_CreateGPUTransferBuffer UI texture");
-        void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
-        if (!mapped)
-            gpu_error("SDL_MapGPUTransferBuffer UI texture");
-        std::memcpy(mapped, source_texture.rgba->data(), source_texture.rgba->size());
-        SDL_UnmapGPUTransferBuffer(device, transfer);
-        const SDL_GPUTextureTransferInfo source{transfer, 0, source_texture.width,
-                                                source_texture.height};
-        const SDL_GPUTextureRegion destination{
-            texture, 0, 0, 0, 0, 0, source_texture.width, source_texture.height, 1};
-        SDL_UploadToGPUTexture(copy, &source, &destination, false);
-        transfers.push_back(std::move(transfer_owner));
+        const SDL_GPUTextureRegion region{texture, 0, 0, 0, 0, 0, 0, 0, 1};
+        SdlCopyTextureDestination destination{device, copy, region, transfers};
+        SdlGpuWriteDevice{device}.write_texture(destination, *source_texture.rgba, {},
+                                                {source_texture.width, source_texture.height, 1});
         ui.textures.emplace(source_texture.id,
                             UiCachedTexture<SDL_GPUTexture*>{texture, source_texture.rgba});
         static_cast<void>(texture_owner.release());
@@ -479,8 +464,10 @@ inline void render_sprite_ui_sdl_gpu_frame(
                 gpu_error("SDL_BeginGPURenderPass UI");
             SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
             SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            SDL_PushGPUVertexUniformData(command, 0, projection.data(), sizeof(projection));
-            SDL_PushGPUVertexUniformData(command, 1, translation.data(), sizeof(translation));
+            SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(),
+                                                     sizeof(projection));
+            SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(),
+                                                     sizeof(translation));
             for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
                 const UiRenderDraw& draw = frame.draws[draw_index];
                 const std::optional<UiScissorRect> scissor =
@@ -531,8 +518,10 @@ inline void render_sprite_ui_sdl_gpu_frame(
             SDL_SetGPUScissor(composite_pass, &full_clip);
             const SDL_GPUTextureSamplerBinding layer_binding{ui.layer.texture, ui.sampler};
             SDL_BindGPUFragmentSamplers(composite_pass, 0, &layer_binding, 1);
-            SDL_PushGPUVertexUniformData(command, 0, projection.data(), sizeof(projection));
-            SDL_PushGPUVertexUniformData(command, 1, translation.data(), sizeof(translation));
+            SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(),
+                                                     sizeof(projection));
+            SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(),
+                                                     sizeof(translation));
             count_gpu_draw(SDL_DrawGPUIndexedPrimitives, composite_pass, 6, 1,
                            frame.composite_first_index, 0, 0);
             composite_pass.end();

@@ -79,13 +79,13 @@ inline void encode_sdl_gpu_prepared_draw(SDL_GPUCommandBuffer* command, SDL_GPUR
     SDL_BindGPUGraphicsPipeline(pass, draw.pipeline);
     for (std::size_t slot = 0; slot < draw.vertex_uniforms.size(); ++slot) {
         const auto& block = draw.vertex_uniforms[slot];
-        SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(slot), block.data(),
-                                     static_cast<Uint32>(block.size()));
+        SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(slot), block.data(),
+                                                 static_cast<Uint32>(block.size()));
     }
     for (std::size_t slot = 0; slot < draw.fragment_uniforms.size(); ++slot) {
         const auto& block = draw.fragment_uniforms[slot];
-        SDL_PushGPUFragmentUniformData(command, static_cast<Uint32>(slot), block.data(),
-                                       static_cast<Uint32>(block.size()));
+        SdlGpuWriteDevice{}.write_fragment_uniform(command, static_cast<Uint32>(slot), block.data(),
+                                                   static_cast<Uint32>(block.size()));
     }
     if (!draw.vertex_textures.empty())
         SDL_BindGPUVertexSamplers(pass, 0, draw.vertex_textures.data(),

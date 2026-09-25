@@ -95,7 +95,7 @@ inline void upload_dawn_clustered(WGPUDevice device, WGPUQueue queue, Engine& en
     sync_clustered_payloads(
         engine, container, gpu.uploaded, camera, target_width, target_height,
         [&](const void* bytes, std::size_t size) {
-            wgpuQueueWriteBuffer(queue, gpu.params, 0, bytes, size);
+            DawnGpuDevice{queue}.write_buffer(gpu.params, 0, bytes, size);
         },
         [&](ClusteredTexture slot, const void* bytes, std::size_t size,
             const ClusteredTextureWrite& write) {
@@ -107,7 +107,7 @@ inline void upload_dawn_clustered(WGPUDevice device, WGPUQueue queue, Engine& en
             layout.bytesPerRow = write.bytes_per_row;
             layout.rowsPerImage = write.rows_per_image;
             const WGPUExtent3D extent{write.width, write.height, 1};
-            wgpuQueueWriteTexture(queue, &destination, bytes, size, &layout, &extent);
+            DawnGpuDevice{queue}.write_texture(&destination, bytes, size, &layout, &extent);
         });
 }
 

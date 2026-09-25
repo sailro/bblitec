@@ -268,10 +268,9 @@ void release(GpuState& state) {
     if (state.pinned_bone_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.pinned_bone_sampler);
     }
-    if (state.pinned_float_transfer) {
-        SDL_ReleaseGPUTransferBuffer(state.device, state.pinned_float_transfer);
-        state.pinned_float_transfer = nullptr;
-        state.pinned_float_transfer_bytes = 0;
+    if (state.pinned_float_transfer.transfer) {
+        SDL_ReleaseGPUTransferBuffer(state.device, state.pinned_float_transfer.transfer);
+        state.pinned_float_transfer = {};
     }
 #endif
     if (state.sampler)
@@ -1958,8 +1957,8 @@ public:
                     sync_shader_storage_buffers(state, engine, frame_buffer_uploads);
                     frame_buffer_uploads.submit();
 #endif
-                    SDL_PushGPUVertexUniformData(command, 0, graph_matrix.data(),
-                                                 sizeof(graph_matrix));
+                    SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, graph_matrix.data(),
+                                                             sizeof(graph_matrix));
 
                     const auto target_texture = [&](RenderTargetHandle handle, bool sampled,
                                                     bool depth_only = false) {
@@ -2059,8 +2058,8 @@ public:
                                 command, task_pass, state.background_arm(*kind),
                                 write_pass_scene_block(pass_blocks.task(task_handle), graph_scene,
                                                        engine, task_camera, task_matrix));
-                            SDL_PushGPUVertexUniformData(command, 0, task_matrix.data(),
-                                                         sizeof(task_matrix));
+                            SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, task_matrix.data(),
+                                                                     sizeof(task_matrix));
                         };
 #endif
 #if BBLITE_HAS_BILLBOARDS
@@ -2406,13 +2405,13 @@ public:
                                                                       *material,
                                                                       shader_block_scratch);
                                             if (fragment_stage) {
-                                                SDL_PushGPUFragmentUniformData(
+                                                SdlGpuWriteDevice{}.write_fragment_uniform(
                                                     command, 0, shader_block_scratch.data(),
                                                     static_cast<Uint32>(
                                                         shader_block_scratch.size() *
                                                         sizeof(float)));
                                             } else {
-                                                SDL_PushGPUVertexUniformData(
+                                                SdlGpuWriteDevice{}.write_vertex_uniform(
                                                     command, 0, shader_block_scratch.data(),
                                                     static_cast<Uint32>(
                                                         shader_block_scratch.size() *
@@ -2524,8 +2523,8 @@ public:
                                     gpu_error("SDL_SubmitGPUCommandBuffer shadow prefix");
                                 command = std::exchange(surface_command, SdlGpuCommand{nullptr});
                                 begin_compute_frame_prefix(engine, true);
-                                SDL_PushGPUVertexUniformData(command, 0, graph_matrix.data(),
-                                                             sizeof(graph_matrix));
+                                SdlGpuWriteDevice{}.write_vertex_uniform(
+                                    command, 0, graph_matrix.data(), sizeof(graph_matrix));
                             }
                             continue;
                         }
@@ -2587,8 +2586,8 @@ public:
                                 task_camera_pass.view;
                             const ShaderPassMatrices task_pass_matrices = task_camera_pass.pass();
                             if (!shadow_task) {
-                                SDL_PushGPUVertexUniformData(command, 0, task_matrix.data(),
-                                                             sizeof(task_matrix));
+                                SdlGpuWriteDevice{}.write_vertex_uniform(
+                                    command, 0, task_matrix.data(), sizeof(task_matrix));
                             }
 #if BBLITE_SHADOW_RECEIVERS
                             if (task.render.shadow_generator.value <
@@ -2654,9 +2653,9 @@ public:
                                 SdlRenderPass shadow_pass{SDL_BeginGPURenderPass(
                                     command, target_record.has_color ? &shadow_color : nullptr,
                                     target_record.has_color ? 1u : 0u, &shadow_depth)};
-                                SDL_PushGPUVertexUniformData(command, 0,
-                                                             caster_view_projection.data(),
-                                                             sizeof(caster_view_projection));
+                                SdlGpuWriteDevice{}.write_vertex_uniform(
+                                    command, 0, caster_view_projection.data(),
+                                    sizeof(caster_view_projection));
                                 ShaderPassMatrices caster_pass_matrices{
                                     caster_view_projection.data(), &caster_view, nullptr};
                                 caster_pass_matrices.camera_position =
@@ -2932,8 +2931,8 @@ public:
                                     set_pass_camera_viewport(utility_pass, utility, engine,
                                                              utility_pass_camera.camera,
                                                              target.width, target.height);
-                                    SDL_PushGPUVertexUniformData(command, 0, utility_matrix.data(),
-                                                                 sizeof(utility_matrix));
+                                    SdlGpuWriteDevice{}.write_vertex_uniform(
+                                        command, 0, utility_matrix.data(), sizeof(utility_matrix));
                                     upstream::sort_transparent_draws(
                                         overlay_plans[layer].draw_lists.transparent, engine,
                                         utility_pass_camera.camera);
@@ -3052,8 +3051,8 @@ public:
                             // graph allocates at the frame's extent.
                             set_task_camera_viewport(task_pass, geometry_pass.camera, width,
                                                      height);
-                            SDL_PushGPUVertexUniformData(command, 0, geometry_matrix.data(),
-                                                         sizeof(geometry_matrix));
+                            SdlGpuWriteDevice{}.write_vertex_uniform(
+                                command, 0, geometry_matrix.data(), sizeof(geometry_matrix));
                             upstream::sort_transparent_draws(
                                 handle_at(task_draw_lists, handle).transparent, engine,
                                 geometry_pass.camera);
@@ -3419,7 +3418,7 @@ public:
                                                    : swapchain_format,
                               width, height);
             create_depth(state, width, height);
-            SDL_PushGPUVertexUniformData(command, 0, matrix.data(), sizeof(matrix));
+            SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, matrix.data(), sizeof(matrix));
 
             SDL_GPUColorTargetInfo color_info{};
             const bool multisampled = state.sample_count != SDL_GPU_SAMPLECOUNT_1;
@@ -3682,12 +3681,12 @@ public:
                                 shader_stage_block_floats(block, shader_pass_matrices, *material,
                                                           shader_block_scratch);
                                 if (fragment_stage) {
-                                    SDL_PushGPUFragmentUniformData(
+                                    SdlGpuWriteDevice{}.write_fragment_uniform(
                                         command, 0, shader_block_scratch.data(),
                                         static_cast<Uint32>(shader_block_scratch.size() *
                                                             sizeof(float)));
                                 } else {
-                                    SDL_PushGPUVertexUniformData(
+                                    SdlGpuWriteDevice{}.write_vertex_uniform(
                                         command, 0, shader_block_scratch.data(),
                                         static_cast<Uint32>(shader_block_scratch.size() *
                                                             sizeof(float)));
@@ -3855,8 +3854,8 @@ public:
                 pass = SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
                 set_pass_camera_viewport(pass, *overlay_scene, engine, overlay_pass.camera, width,
                                          height);
-                SDL_PushGPUVertexUniformData(command, 0, overlay_matrix.data(),
-                                             sizeof(overlay_matrix));
+                SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, overlay_matrix.data(),
+                                                         sizeof(overlay_matrix));
                 scene_matrix_bound = true;
                 for (const upstream::RenderStage stage : overlay_plans[layer].stages) {
                     switch (stage) {

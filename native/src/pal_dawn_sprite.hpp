@@ -566,8 +566,8 @@ inline DawnSpritePass create_dawn_sprite_pass(
         if (!pass.index_buffer) {
             dawn_error("wgpuDeviceCreateBuffer sprite indices");
         }
-        wgpuQueueWriteBuffer(queue, pass.index_buffer, 0, quad_indices.data(),
-                             sizeof(quad_indices));
+        DawnGpuDevice{queue}.write_buffer(pass.index_buffer, 0, quad_indices.data(),
+                                          sizeof(quad_indices));
     }
 
     pass.target_format = target_format;
@@ -617,8 +617,9 @@ inline void upload_dawn_sprite_layer(WGPUDevice device, WGPUQueue queue, Engine&
         const SpriteInstanceUpload transfer =
             resolve_sprite_instance_upload(engine, layer, gpu.uploaded, gpu.uploaded_version);
         if (transfer.size > 0) {
-            wgpuQueueWriteBuffer(queue, gpu.instances, transfer.destination_offset,
-                                 transfer.source + transfer.source_offset, transfer.size);
+            DawnGpuDevice{queue}.write_buffer(gpu.instances, transfer.destination_offset,
+                                              transfer.source + transfer.source_offset,
+                                              transfer.size);
             mark_sprite_dirty_range_consumed(layer);
         }
         gpu.uploaded = true;
@@ -628,7 +629,7 @@ inline void upload_dawn_sprite_layer(WGPUDevice device, WGPUQueue queue, Engine&
     upstream::build_sprite_layer_ubo(layer, static_cast<float>(width), static_cast<float>(height),
                                      ubo);
     if (!gpu.layer_ubo_uploaded || gpu.uploaded_layer_ubo != ubo) {
-        wgpuQueueWriteBuffer(queue, gpu.layer_uniforms, 0, ubo.data(), sizeof(ubo));
+        DawnGpuDevice{queue}.write_buffer(gpu.layer_uniforms, 0, ubo.data(), sizeof(ubo));
         gpu.uploaded_layer_ubo = ubo;
         gpu.layer_ubo_uploaded = true;
     }
@@ -639,7 +640,7 @@ inline void upload_dawn_sprite_layer(WGPUDevice device, WGPUQueue queue, Engine&
         std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
         upstream::build_sprite_fx_ubo(static_cast<float>(gpu.elapsed_ms / 1000.0),
                                       layer.shader_params, fx);
-        wgpuQueueWriteBuffer(queue, gpu.fx_uniforms, 0, fx.data(), sizeof(fx));
+        DawnGpuDevice{queue}.write_buffer(gpu.fx_uniforms, 0, fx.data(), sizeof(fx));
     }
 }
 
@@ -704,7 +705,8 @@ create_dawn_scene_sprite_pass(WGPUDevice device, WGPUQueue queue, DawnMipGenerat
     if (!pass.index_buffer) {
         dawn_error("wgpuDeviceCreateBuffer scene sprite indices");
     }
-    wgpuQueueWriteBuffer(queue, pass.index_buffer, 0, quad_indices.data(), sizeof(quad_indices));
+    DawnGpuDevice{queue}.write_buffer(pass.index_buffer, 0, quad_indices.data(),
+                                      sizeof(quad_indices));
     pass.layers.reserve(handles.size());
     for (const Sprite2DLayerHandle handle : handles) {
         const Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);

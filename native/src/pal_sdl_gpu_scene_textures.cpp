@@ -51,33 +51,12 @@ SDL_GPUTexture* upload_compressed_texture(SDL_GPUDevice* device,
     for (std::size_t level = 0; level < compressed.mips.size(); ++level) {
         const CompressedMipLevel& mip = compressed.mips[level];
         const CompressedMipCopy geometry = compressed_mip_copy(compressed, mip);
-        SDL_GPUTransferBufferCreateInfo transfer_info{};
-        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        transfer_info.size = static_cast<Uint32>(mip.bytes.size());
-        OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info),
-                                        {device}};
-        auto* transfer = transfer_owner.get();
-        if (!transfer)
-            gpu_error("SDL_CreateGPUTransferBuffer");
-        transfers.push_back(std::move(transfer_owner));
-        void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
-        if (!mapped)
-            gpu_error("SDL_MapGPUTransferBuffer");
-        std::memcpy(mapped, mip.bytes.data(), mip.bytes.size());
-        SDL_UnmapGPUTransferBuffer(device, transfer);
-        // Transfer strides stay block-aligned. Metal's destination extent
-        // must fit the logical mip, including tail levels smaller than a block.
-        SDL_GPUTextureTransferInfo source{transfer, 0, geometry.width, geometry.height};
-        SDL_GPUTextureRegion destination{texture,
-                                         static_cast<Uint32>(level),
-                                         0,
-                                         0,
-                                         0,
-                                         0,
-                                         metal ? mip.width : geometry.width,
-                                         metal ? mip.height : geometry.height,
-                                         1};
-        SDL_UploadToGPUTexture(copy, &source, &destination, false);
+        const SDL_GPUTextureRegion region{texture, static_cast<Uint32>(level), 0, 0, 0, 0, 0, 0, 1};
+        SdlCopyTextureDestination destination{device,    copy,           region,
+                                              transfers, geometry.width, geometry.height};
+        SdlGpuWriteDevice{device}.write_texture(
+            destination, mip.bytes, {},
+            {metal ? mip.width : geometry.width, metal ? mip.height : geometry.height, 1});
     }
     copy.end();
     if (!command.submit()) {
@@ -118,35 +97,9 @@ SDL_GPUTexture* upload_texture(SDL_GPUDevice* device, const TextureData& texture
     if (!texture)
         gpu_error("SDL_CreateGPUTexture");
 
-    SDL_GPUTransferBufferCreateInfo transfer_info{};
-    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    transfer_info.size = static_cast<Uint32>(image.rgba.size());
-    OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
-    auto* transfer = transfer_owner.get();
-    if (!transfer)
-        gpu_error("SDL_CreateGPUTransferBuffer");
-    void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
-    if (!mapped)
-        gpu_error("SDL_MapGPUTransferBuffer");
-    std::memcpy(mapped, image.rgba.data(), image.rgba.size());
-    SDL_UnmapGPUTransferBuffer(device, transfer);
-
-    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
-    if (!command)
-        gpu_error("SDL_AcquireGPUCommandBuffer");
-    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    SDL_GPUTextureTransferInfo source{transfer, 0, static_cast<Uint32>(image.width),
-                                      static_cast<Uint32>(image.height)};
-    SDL_GPUTextureRegion destination{
-        texture, 0, 0, 0, 0, 0, static_cast<Uint32>(image.width), static_cast<Uint32>(image.height),
-        1};
-    SDL_UploadToGPUTexture(copy, &source, &destination, false);
-    copy.end();
-    generate_texture_mipmaps(device, command, texture, texture_info.width, texture_info.height,
-                             texture_info.num_levels);
-    if (!command.submit())
-        gpu_error("SDL_SubmitGPUCommandBuffer");
-    transfer_owner.reset();
+    upload_2d_texture_into(device, texture, image.rgba.data(), image.rgba.size(),
+                           texture_info.width, texture_info.height, "material image",
+                           texture_info.num_levels);
     return texture_owner.release();
 }
 
@@ -190,35 +143,15 @@ SDL_GPUTexture* upload_cube_texture(SDL_GPUDevice* device,
         gpu_error("SDL_AcquireGPUCommandBuffer reflection cube");
     }
     SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    std::array<OwnedSdlTransfer, 6> transfers{};
+    std::vector<OwnedSdlTransfer> transfers;
+    transfers.reserve(images.size());
     for (std::size_t index = 0; index < images.size(); ++index) {
         const DecodedImage& image = images[index];
-        SDL_GPUTransferBufferCreateInfo transfer_info{};
-        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        transfer_info.size = static_cast<Uint32>(image.rgba.size());
-        transfers[index] =
-            OwnedSdlTransfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
-        if (!transfers[index]) {
-            gpu_error("SDL_CreateGPUTransferBuffer reflection cube");
-        }
-        void* mapped = SDL_MapGPUTransferBuffer(device, transfers[index].get(), false);
-        if (!mapped) {
-            gpu_error("SDL_MapGPUTransferBuffer reflection cube");
-        }
-        std::memcpy(mapped, image.rgba.data(), image.rgba.size());
-        SDL_UnmapGPUTransferBuffer(device, transfers[index].get());
-        const SDL_GPUTextureTransferInfo source{
-            transfers[index].get(),
-            0,
-            static_cast<Uint32>(width),
-            static_cast<Uint32>(height),
-        };
-        const SDL_GPUTextureRegion destination{
-            texture, 0, static_cast<Uint32>(index), 0,
-            0,       0, static_cast<Uint32>(width), static_cast<Uint32>(height),
-            1,
-        };
-        SDL_UploadToGPUTexture(copy, &source, &destination, false);
+        const SDL_GPUTextureRegion region{texture, 0, static_cast<Uint32>(index), 0, 0, 0, 0, 0, 1};
+        SdlCopyTextureDestination destination{device, copy, region, transfers};
+        SdlGpuWriteDevice{device}.write_texture(
+            destination, image.rgba, {},
+            {static_cast<Uint32>(width), static_cast<Uint32>(height), 1});
     }
     copy.end();
     generate_texture_mipmaps(device, command, texture, texture_info.width, texture_info.height,
@@ -320,37 +253,12 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
                 byte_size = decoded_half_pixels.size() * sizeof(std::uint16_t);
                 row_size = static_cast<std::size_t>(image_width) * 4 * sizeof(std::uint16_t);
             }
-            SDL_GPUTransferBufferCreateInfo transfer_info{};
-            transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-            transfer_info.size = static_cast<Uint32>(byte_size);
-            OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info),
-                                            {device}};
-            auto* transfer = transfer_owner.get();
-            if (!transfer)
-                gpu_error("SDL_CreateGPUTransferBuffer environment");
-            void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
-            if (!mapped)
-                gpu_error("SDL_MapGPUTransferBuffer environment");
-            for (int row = 0; row < image_height; ++row) {
-                const int source_row = environment.specular_rgba16f ? row : image_height - row - 1;
-                std::memcpy(
-                    static_cast<std::uint8_t*>(mapped) + static_cast<std::size_t>(row) * row_size,
-                    source_bytes + static_cast<std::size_t>(source_row) * row_size, row_size);
-            }
-            SDL_UnmapGPUTransferBuffer(device, transfer);
-            transfers.push_back(std::move(transfer_owner));
-            const SDL_GPUTextureTransferInfo source{transfer, 0, static_cast<Uint32>(image_width),
-                                                    static_cast<Uint32>(image_height)};
-            const SDL_GPUTextureRegion destination{texture,
-                                                   mip,
-                                                   face,
-                                                   0,
-                                                   0,
-                                                   0,
-                                                   static_cast<Uint32>(image_width),
-                                                   static_cast<Uint32>(image_height),
-                                                   1};
-            SDL_UploadToGPUTexture(copy, &source, &destination, false);
+            const SDL_GPUTextureRegion region{texture, mip, face, 0, 0, 0, 0, 0, 1};
+            SdlCopyTextureDestination destination{
+                device, copy, region, transfers, 0, 0, environment.specular_rgba16f ? 0 : row_size};
+            SdlGpuWriteDevice{device}.write_texture(
+                destination, {source_bytes, byte_size}, {},
+                {static_cast<Uint32>(image_width), static_cast<Uint32>(image_height), 1});
         }
     }
     copy.end();
@@ -393,23 +301,10 @@ SDL_GPUTexture* upload_dds_skybox(SDL_GPUDevice* device, const EnvironmentState&
     for_each_dds_skybox_level(environment, [&](std::uint32_t face, std::uint32_t mip,
                                                std::uint32_t size, std::size_t offset,
                                                std::size_t byte_size) {
-        SDL_GPUTransferBufferCreateInfo transfer_info{};
-        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        transfer_info.size = static_cast<Uint32>(byte_size);
-        OwnedSdlTransfer transfer_owner{SDL_CreateGPUTransferBuffer(device, &transfer_info),
-                                        {device}};
-        auto* transfer = transfer_owner.get();
-        if (!transfer)
-            gpu_error("SDL_CreateGPUTransferBuffer DDS skybox");
-        void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
-        if (!mapped)
-            gpu_error("SDL_MapGPUTransferBuffer DDS skybox");
-        std::memcpy(mapped, data.bytes.data() + offset, byte_size);
-        SDL_UnmapGPUTransferBuffer(device, transfer);
-        transfers.push_back(std::move(transfer_owner));
-        const SDL_GPUTextureTransferInfo source{transfer, 0, size, size};
-        const SDL_GPUTextureRegion destination{texture, mip, face, 0, 0, 0, size, size, 1};
-        SDL_UploadToGPUTexture(copy, &source, &destination, false);
+        const SDL_GPUTextureRegion region{texture, mip, face, 0, 0, 0, 0, 0, 1};
+        SdlCopyTextureDestination destination{device, copy, region, transfers};
+        SdlGpuWriteDevice{device}.write_texture(
+            destination, {data.bytes.data() + offset, byte_size}, {}, {size, size, 1});
     });
     copy.end();
     if (!command.submit())

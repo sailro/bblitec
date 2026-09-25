@@ -77,8 +77,8 @@ struct TextDrawUpdateContext {
  */
 struct TextDrawBinding {
     TextRenderable renderable;
-    TextGpuHandle pipeline;
-    js::Callback<double(TextGpuEncoderHandle, TextSurfaceHandle)> draw;
+    GpuHandle pipeline;
+    js::Callback<double(GpuEncoderHandle, TextSurfaceHandle)> draw;
     js::Callback<void(TextDrawUpdateContext)> update;
 };
 using TextDrawBindingHandle = std::shared_ptr<TextDrawBinding>;

@@ -35,7 +35,7 @@ ${lowerComputeUniformArena(context).source}
 struct Allocation final:bbl::pal::StorageBufferAllocation {
  std::vector<std::uint8_t> bytes;int writes=0,destroys=0;std::size_t last_offset=0,last_size=0;
  void destroy()override{++destroys;}
- void write(std::size_t offset,std::span<const std::uint8_t> data)override{++writes;last_offset=offset;last_size=data.size();std::copy(data.begin(),data.end(),bytes.begin()+static_cast<std::ptrdiff_t>(offset));}
+ void write_buffer_bytes(std::size_t offset,std::span<const std::uint8_t> data) override{++writes;last_offset=offset;last_size=data.size();std::copy(data.begin(),data.end(),bytes.begin()+static_cast<std::ptrdiff_t>(offset));}
 };
 struct Device final:bbl::pal::OffscreenDevice {
  std::shared_ptr<Allocation> last;

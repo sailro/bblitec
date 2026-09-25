@@ -366,8 +366,8 @@ void encode_image_processing(DawnState& state, WGPUCommandEncoder encoder,
         scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
         0.0f,
     };
-    wgpuQueueWriteBuffer(state.queue, state.image_processing_params, 0, params.data(),
-                         sizeof(params));
+    DawnGpuDevice{state.queue}.write_buffer(state.image_processing_params, 0, params.data(),
+                                            sizeof(params));
     WGPURenderPassColorAttachment color_attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
     color_attachment.view = surface_view;
     color_attachment.loadOp = WGPULoadOp_Clear;
@@ -660,11 +660,13 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
             if (cluster_ids) {
                 const DiagnosticClusterUniforms uniforms =
                     diagnostic_cluster_uniforms(current_cluster_base, alpha_options);
-                wgpuQueueWriteBuffer(state.queue, uniform_buffer, 0, &uniforms, sizeof(uniforms));
+                DawnGpuDevice{state.queue}.write_buffer(uniform_buffer, 0, &uniforms,
+                                                        sizeof(uniforms));
             } else {
                 const DiagnosticIdUniforms uniforms = diagnostic_id_uniforms(
                     static_cast<std::uint32_t>(mesh_index + 1), alpha_options);
-                wgpuQueueWriteBuffer(state.queue, uniform_buffer, 0, &uniforms, sizeof(uniforms));
+                DawnGpuDevice{state.queue}.write_buffer(uniform_buffer, 0, &uniforms,
+                                                        sizeof(uniforms));
             }
             WGPUBindGroupEntry uniform_entry = WGPU_BIND_GROUP_ENTRY_INIT;
             uniform_entry.binding = 0;

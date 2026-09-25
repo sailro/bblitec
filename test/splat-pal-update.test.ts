@@ -30,6 +30,7 @@ test(
         writeFileSync(
             join(output, "pal_update.hpp"),
             [
+                readFileSync("test/fixtures/gpu-writer-recorder.hpp", "utf8"),
                 cppFunction(sdl, "inline void sync_splat_data("),
                 cppFunction(sdl, "inline void upload_splat_pass("),
                 cppFunction(dawn, "inline void write_dawn_splat_texture("),

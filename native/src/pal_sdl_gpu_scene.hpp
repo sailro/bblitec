@@ -833,8 +833,7 @@ struct GpuState : SdlGpuDevice {
      * rows) streams through, grown to the largest upload and cycled by
      * SDL when a submitted upload still reads it.
      */
-    SDL_GPUTransferBuffer* pinned_float_transfer = nullptr;
-    std::uint32_t pinned_float_transfer_bytes = 0;
+    SdlTextureTransferCache pinned_float_transfer;
 #endif
 #if BBLITE_SHADOW_RECEIVERS
     /**

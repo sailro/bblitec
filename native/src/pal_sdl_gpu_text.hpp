@@ -37,7 +37,7 @@ inline const char* sdl_text_format_name(SDL_GPUTextureFormat format) {
  * reads. A uniform buffer is the bytes SDL pushes per draw; a bind group is
  * the resources SDL binds by the composed shader's own names.
  */
-struct SdlTextGpuDevice final : SdlTextGpuResources {
+struct SdlTextGpuDevice final : SdlTextGpuResources, TextPipelineProvider {
     std::shared_ptr<SdlTextSamplerLease> sampler;
     /** The target formats this device's passes draw into. */
     SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID;
@@ -88,7 +88,7 @@ struct SdlTextGpuDevice final : SdlTextGpuResources {
                                   const std::string& depth_compare) override {
         if (format != sdl_text_format_name(color_format))
             throw std::runtime_error("Text pipeline format differs from the SDL target: " + format);
-        const auto samples = text_gpu_u32(text_gpu_size(sample_count));
+        const auto samples = gpu_u32(gpu_size(sample_count));
         const bool has_depth = depth_stencil_format.has_value();
         const bool alpha_to_coverage =
             text_pipeline_alpha_to_coverage(sample_count, depth_write, owner_object);

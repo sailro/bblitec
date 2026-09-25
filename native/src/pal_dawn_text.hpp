@@ -40,7 +40,7 @@ inline const char* dawn_text_format_name(WGPUTextureFormat format) {
  * The pin's `GPUDevice` for text on Dawn: WebGPU objects over Dawn's own, and
  * the per-device pipeline cache `getOrCreateTextPipeline` reads.
  */
-struct DawnTextGpuDevice final : DawnTextGpuResources {
+struct DawnTextGpuDevice final : DawnTextGpuResources, TextPipelineProvider {
     /** The target formats this device's passes draw into. */
     WGPUTextureFormat color_format = WGPUTextureFormat_Undefined;
     WGPUTextureFormat depth_format = WGPUTextureFormat_Undefined;
@@ -95,9 +95,9 @@ struct DawnTextGpuDevice final : DawnTextGpuResources {
         quad->lease = retain_dawn_text_resource<DawnTextBufferLease>(
             owner, wgpuDeviceCreateBuffer(owner->device, &quad_info), "quad",
             sizeof(upstream::text_quad_corners));
-        wgpuQueueWriteBuffer(owner->queue, quad->lease->get(), 0,
-                             upstream::text_quad_corners.data(),
-                             sizeof(upstream::text_quad_corners));
+        DawnGpuDevice{owner->queue}.write_buffer(quad->lease->get(), 0,
+                                                 upstream::text_quad_corners.data(),
+                                                 sizeof(upstream::text_quad_corners));
         owner->capture.write(
             quad->lease->capture_id, 0u,
             {reinterpret_cast<const std::uint8_t*>(upstream::text_quad_corners.data()),
@@ -116,7 +116,7 @@ struct DawnTextGpuDevice final : DawnTextGpuResources {
         if (format != dawn_text_format_name(color_format))
             throw std::runtime_error("Text pipeline format differs from the Dawn target: " +
                                      format);
-        const auto samples = text_gpu_u32(text_gpu_size(sample_count));
+        const auto samples = gpu_u32(gpu_size(sample_count));
         const bool has_depth = depth_stencil_format.has_value();
         if (has_depth && *depth_stencil_format != dawn_text_format_name(depth_format))
             throw std::runtime_error("Text pipeline depth format differs from the Dawn target: " +

@@ -532,35 +532,10 @@ void sync_morph_weights(GpuBufferUploadBatch& uploads, GpuMesh& mesh, const Mode
 #if BBLITE_HAS_PBR_RENDERER && (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON)
 void upload_pinned_float_texture(GpuState& state, SDL_GPUTexture* texture, const float* data,
                                  std::uint32_t width, std::uint32_t height, std::uint32_t bytes) {
-    if (!state.pinned_float_transfer || state.pinned_float_transfer_bytes < bytes) {
-        if (state.pinned_float_transfer) {
-            SDL_ReleaseGPUTransferBuffer(state.device, state.pinned_float_transfer);
-        }
-        SDL_GPUTransferBufferCreateInfo transfer_info{};
-        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        transfer_info.size = bytes;
-        state.pinned_float_transfer = SDL_CreateGPUTransferBuffer(state.device, &transfer_info);
-        if (!state.pinned_float_transfer)
-            gpu_error("SDL_CreateGPUTransferBuffer");
-        state.pinned_float_transfer_bytes = bytes;
-    }
-    SDL_GPUTransferBuffer* transfer = state.pinned_float_transfer;
-    void* mapped = SDL_MapGPUTransferBuffer(state.device, transfer, true);
-    if (!mapped)
-        gpu_error("SDL_MapGPUTransferBuffer");
-    std::memcpy(mapped, data, bytes);
-    SDL_UnmapGPUTransferBuffer(state.device, transfer);
-    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(state.device)};
-    if (!command)
-        gpu_error("SDL_AcquireGPUCommandBuffer");
-    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    SDL_GPUTextureTransferInfo source{transfer, 0, width, height};
-    SDL_GPUTextureRegion destination{texture, 0, 0, 0, 0, 0, width, height, 1};
-    SDL_UploadToGPUTexture(copy, &source, &destination, true);
-    copy.end();
-    if (!command.submit()) {
-        gpu_error("SDL_SubmitGPUCommandBuffer");
-    }
+    SdlTextureDestination target{state.device, texture, 1, &state.pinned_float_transfer};
+    SdlGpuWriteDevice{state.device}.write_texture(
+        target, {reinterpret_cast<const std::uint8_t*>(data), bytes}, {0, width * 16u, height},
+        {width, height, 1});
 }
 
 SDL_GPUTexture* create_pinned_float_texture(GpuState& state, std::uint32_t width,

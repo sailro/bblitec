@@ -126,7 +126,7 @@ function ownerMethod(
                         "Storage queue upload",
                     );
                     return [
-                        `${indent}allocation->write(static_cast<std::size_t>(offset), data);`,
+                        `${indent}device->device().write_buffer(allocation, offset, data);`,
                         `${indent}++record.version;`,
                     ];
                 }

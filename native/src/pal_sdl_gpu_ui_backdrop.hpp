@@ -119,8 +119,8 @@ inline void render_ui_backdrop_sdl_gpu(SDL_GPUDevice* device, SDL_GPUCommandBuff
     const std::array<float, 16> projection{
         2.0f / frame.width, 0, 0, 0, 0, -2.0f / frame.height, 0, 0, 0, 0, 0.0001f, 0, -1, 1, 0, 1};
     const std::array<float, 2> translation{0, 0};
-    SDL_PushGPUVertexUniformData(command, 0, projection.data(), sizeof(projection));
-    SDL_PushGPUVertexUniformData(command, 1, translation.data(), sizeof(translation));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(), sizeof(projection));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(), sizeof(translation));
     const SDL_GPUBufferBinding vertex_binding{vertices, 0}, index_binding{indices, 0};
     const auto draw = [&](SDL_GPUTexture* output, SDL_GPUTexture* input, std::uint32_t first,
                           std::uint32_t count, bool composite) {

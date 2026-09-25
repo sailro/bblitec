@@ -9,10 +9,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 - [ ] Match live style rules through RmlUi instead of `UiSelectorMatcher` (`ui_selector_match.hpp`; `pal_ui_rml.cpp`), keeping authored-tree queries, generated nodes and input state; measure `Element::Matches` reparsing before caching it.
 - [ ] Replace the private `--bbl-crosshair` bridge and its fixed 22 px bar markup (`ui-projection.ts`; `pal_ui_rml.cpp`) with general layered-background projection.
 
-## Platform and runtime
-
-- [ ] Serve every pinned GPU writer through one WebGPU-shaped device, not a text-only one (`text_gpu.hpp`).
-
 ## Qualification
 
 - [ ] One captured-spawn variant beside `runChecked` for `package-demo.ts`, `package-output.ts`, `shipping-profile.ts` and `patch-inventory.ts`.

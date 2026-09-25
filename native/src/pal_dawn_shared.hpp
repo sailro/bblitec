@@ -152,7 +152,7 @@ inline WGPUTexture upload_dawn_rgba_texture(WGPUDevice device, WGPUQueue queue,
     layout.bytesPerRow = width * 4u;
     layout.rowsPerImage = height;
     const WGPUExtent3D size{width, height, 1};
-    wgpuQueueWriteTexture(queue, &destination, rgba, bytes, &layout, &size);
+    DawnGpuDevice{queue}.write_texture(&destination, rgba, bytes, &layout, &size);
     return texture.release();
 }
 
@@ -248,6 +248,7 @@ private:
 };
 
 struct DawnOffscreenDevice final : OffscreenDevice {
+    const void* device_identity() const override { return queue; }
 #if BBLITE_GPU_TASK_TIMING
     bool supports_gpu_timestamps() const override {
         return wgpuDeviceHasFeature(device, WGPUFeatureName_TimestampQuery) != 0;
@@ -1428,8 +1429,8 @@ inline void update_dawn_extra_texture(WGPUQueue queue, DawnSampledTexture& uploa
     layout.bytesPerRow = extra.width * 4u;
     layout.rowsPerImage = extra.height;
     const WGPUExtent3D size{extra.width, extra.height, 1};
-    wgpuQueueWriteTexture(queue, &destination, extra.rgba.data(), extra.rgba.size(), &layout,
-                          &size);
+    DawnGpuDevice{queue}.write_texture(&destination, extra.rgba.data(), extra.rgba.size(), &layout,
+                                       &size);
     uploaded.uploaded_version = extra.version;
 }
 

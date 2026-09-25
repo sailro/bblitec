@@ -345,11 +345,11 @@ inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder en
                                  WGPUBufferUsage_Vertex);
     ensure_sprite_ui_dawn_buffer(state.device, ui.indices, ui.index_capacity, index_bytes,
                                  WGPUBufferUsage_Index);
-    wgpuQueueWriteBuffer(state.queue, ui.vertices, 0, frame.vertices.data(), vertex_bytes);
-    wgpuQueueWriteBuffer(state.queue, ui.indices, 0, frame.indices.data(), index_bytes);
+    DawnGpuDevice{state.queue}.write_buffer(ui.vertices, 0, frame.vertices.data(), vertex_bytes);
+    DawnGpuDevice{state.queue}.write_buffer(ui.indices, 0, frame.indices.data(), index_bytes);
     const std::array<float, 4> screen{static_cast<float>(frame.width),
                                       static_cast<float>(frame.height), 0, 0};
-    wgpuQueueWriteBuffer(state.queue, ui.screen, 0, screen.data(), sizeof(screen));
+    DawnGpuDevice{state.queue}.write_buffer(ui.screen, 0, screen.data(), sizeof(screen));
 
     for (const UiRenderTexture& source : frame.textures) {
         if (ui.textures.contains(source.id) || !source.rgba)

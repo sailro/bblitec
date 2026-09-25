@@ -367,8 +367,8 @@ void write_shadow_generators(DawnState& state, const Scene& scene, Engine& engin
                 handle_at(state.shadow_uniforms, handle) =
                     create_buffer(state, WGPUBufferUsage_Uniform, block.bytes.data(), block.size);
             } else if (moved) {
-                wgpuQueueWriteBuffer(state.queue, handle_at(state.shadow_uniforms, handle), 0,
-                                     block.bytes.data(), block.size);
+                DawnGpuDevice{state.queue}.write_buffer(handle_at(state.shadow_uniforms, handle), 0,
+                                                        block.bytes.data(), block.size);
             }
         });
 }

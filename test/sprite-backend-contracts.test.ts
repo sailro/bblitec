@@ -71,6 +71,7 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
         "using DawnSceneSpritePass = FixtureRecord<DawnSceneSpritePassResources>;",
     ].join("\n");
     const functions = [
+        readFileSync("test/fixtures/gpu-writer-recorder.hpp", "utf8"),
         ...[
             "SpriteDirtyRange resolve_sprite_dirty_range(",
             "SpriteInstanceUpload resolve_sprite_instance_upload(",

@@ -43,6 +43,7 @@ void SDL_PushGPUVertexUniformData(SDL_GPUCommandBuffer*, std::uint32_t slot, con
     assert(bytes == (slot == mesh_world_uniform_slot ? 64 : sizeof(DeformationUniforms)));
     std::memcpy(&slots.at(slot), value, sizeof(float)); ++writes;
 }
+${readFileSync("test/fixtures/gpu-writer-recorder.hpp", "utf8")}
 ${helper}
 int main() {
     for (const MeshRecord mesh : {MeshRecord{2, 3}, MeshRecord{7, 11}}) {

@@ -290,10 +290,10 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
                                               source_width, source_height, gpu.uniforms.data());
         const Uint32 bytes = static_cast<Uint32>(gpu.uniforms.size() * sizeof(float));
         if (!program.vertex_slots.uniforms.empty()) {
-            SDL_PushGPUVertexUniformData(command, 0, gpu.uniforms.data(), bytes);
+            SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, gpu.uniforms.data(), bytes);
         }
         if (!program.fragment_slots.uniforms.empty()) {
-            SDL_PushGPUFragmentUniformData(command, 0, gpu.uniforms.data(), bytes);
+            SdlGpuWriteDevice{}.write_fragment_uniform(command, 0, gpu.uniforms.data(), bytes);
         }
     }
     SDL_GPUColorTargetInfo target{};

@@ -68,7 +68,9 @@ argument shape (one overload per signature). A bundled package's classes and cal
 `package#name` to native records and adapters: text-shaper's font, shaping buffers and `shapeInto` are
 HarfBuzz (`text_layout.hpp`). A lazy loader's root is the module function its
 `(await import(...)).name` returns. The pin's WebGPU calls lower one to one onto the device interface in
-`text_gpu.hpp`, which each backend implements. WGSL uses typed IR or explicit reflected-source contracts.
+`gpu.hpp`, shared by text, storage, uniform and scene uploads. Backend adapters preserve native
+batching and resource ownership; `text_gpu.hpp` owns text pipeline policy. WGSL uses typed IR or
+explicit reflected-source contracts.
 
 Namespace-scope application functions and constant tables compile in C++ translation units per owning source,
 listed in `manifest.json` as `sourceUnits`; a source whose code exceeds `unitMaximumWeight` compiles as

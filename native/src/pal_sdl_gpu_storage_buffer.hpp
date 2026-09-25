@@ -8,9 +8,12 @@ namespace bbl::pal {
 
 /** SDL materializes uniform bytes with PushGPUComputeUniformData at each dispatch. */
 struct SdlUniformBuffer final : StorageBufferAllocation {
+    SDL_GPUDevice* device = nullptr;
+    const void* device_identity() const override { return device; }
+    std::optional<std::size_t> buffer_capacity() const override { return bytes.size(); }
     std::vector<std::uint8_t> bytes;
     void destroy() override { bytes.clear(); }
-    void write(std::size_t offset, std::span<const std::uint8_t> source) override {
+    void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> source) override {
         if (offset > bytes.size() || source.size() > bytes.size() - offset)
             throw std::runtime_error("Uniform buffer write exceeds allocation.");
         std::copy(source.begin(), source.end(),
@@ -23,15 +26,15 @@ struct SdlStorageBuffer final : StorageBufferAllocation {
     SDL_GPUDevice* device;
     SDL_GPUBuffer* buffer = nullptr;
     std::size_t byte_length = 0;
+    const void* device_identity() const override { return device; }
+    std::optional<std::size_t> buffer_capacity() const override { return byte_length; }
     ~SdlStorageBuffer() override { destroy(); }
     void destroy() override {
         if (buffer)
             SDL_ReleaseGPUBuffer(device, std::exchange(buffer, nullptr));
     }
-    void write(std::size_t offset, std::span<const std::uint8_t> bytes) override {
-        GpuBufferUploadBatch uploads(device);
-        uploads.update(buffer, offset, bytes.data(), bytes.size());
-        uploads.submit();
+    void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
+        write_sdl_gpu_buffer(device, buffer, offset, bytes);
     }
 };
 
@@ -62,6 +65,7 @@ create_sdl_gpu_storage_buffer(SDL_GPUDevice* device, const StorageBufferDescript
     }
     if (role(StorageBufferRole::uniform)) {
         auto allocation = std::make_shared<SdlUniformBuffer>();
+        allocation->device = device;
         allocation->bytes = std::move(bytes);
         return allocation;
     }

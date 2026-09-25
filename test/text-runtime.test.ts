@@ -328,17 +328,17 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
 #include <stdexcept>
 using namespace bbl;
 /** A GPU object whose destroy() leaves its mark. */
-struct Marked final : TextGpuObject {
+struct Marked final : GpuObject {
     std::string* log = nullptr;
     char mark = 0;
     void destroy() override { *log += mark; }
 };
 /** The device the uniform tail writes through: each write's range and bytes. */
-struct UniformWrites final : TextGpuDevice {
+struct UniformWrites final : GpuDevice {
     std::ofstream& out;
-    TextGpuHandle target;
+    GpuHandle target;
     explicit UniformWrites(std::ofstream& output) : out(output) {}
-    void write_buffer(const TextGpuHandle& buffer, double offset, const js::ArrayBuffer& data,
+    void write_buffer(const GpuHandle& buffer, double offset, const js::ArrayBuffer& data,
                       double data_offset, double size) override {
         if (buffer != target) throw std::runtime_error("uniform target");
         const std::uint32_t prefix[] = {static_cast<std::uint32_t>(offset),static_cast<std::uint32_t>(size)};
@@ -346,11 +346,11 @@ struct UniformWrites final : TextGpuDevice {
         out.write(reinterpret_cast<const char*>(data.data()) + static_cast<std::size_t>(data_offset),
                   static_cast<std::streamsize>(size));
     }
-    TextGpuHandle create_buffer(const TextBufferDescriptor&) override { throw std::runtime_error("buffer"); }
-    TextGpuHandle create_texture(const TextTextureDescriptor&) override { throw std::runtime_error("texture"); }
-    TextGpuHandle create_bind_group(const TextBindGroupDescriptor&) override { throw std::runtime_error("group"); }
-    TextGpuEncoderHandle create_render_bundle_encoder(const TextRenderBundleEncoderDescriptor&) override { throw std::runtime_error("bundle"); }
-    void write_texture(const TextTexelCopyTextureInfo&, const js::ArrayBuffer&, const TextTexelCopyBufferLayout&, const TextExtent3D&) override { throw std::runtime_error("texture write"); }
+    GpuHandle create_buffer(const GpuBufferDescriptor&) override { throw std::runtime_error("buffer"); }
+    GpuHandle create_texture(const GpuTextureDescriptor&) override { throw std::runtime_error("texture"); }
+    GpuHandle create_bind_group(const GpuBindGroupDescriptor&) override { throw std::runtime_error("group"); }
+    GpuEncoderHandle create_render_bundle_encoder(const GpuRenderBundleEncoderDescriptor&) override { throw std::runtime_error("bundle"); }
+    void write_texture(const GpuTexelCopyTextureInfo&, const js::ArrayBuffer&, const GpuTexelCopyBufferLayout&, const GpuExtent3D&) override { throw std::runtime_error("texture write"); }
     TextPipelineSet text_pipeline(const std::string&, double, const bbl::js::Nullable<std::string>&, bool, const std::shared_ptr<const void>&, const std::string&) override { throw std::runtime_error("pipeline"); }
     TextPipelineDeviceCacheHandle text_pipeline_cache() override { throw std::runtime_error("cache"); }
 };
@@ -378,9 +378,9 @@ int main() {
     // The renderable's GPU record as \`ensureGpu\` creates it.
     auto gpu = std::make_shared<TextRenderableGpu>();
     gpu->device = device;
-    gpu->text_u = std::make_shared<TextGpuObject>();
+    gpu->text_u = std::make_shared<GpuObject>();
     device->target = gpu->text_u;
-    gpu->style_buf = std::make_shared<TextGpuObject>();
+    gpu->style_buf = std::make_shared<GpuObject>();
     gpu->style_buf->size = 32;
     gpu->instance_cap = 8;
     gpu->uploaded_data_version = gpu->uploaded_camera_version = gpu->uploaded_aspect = -1;
@@ -634,7 +634,7 @@ ${lowerMeshMaterialSetter(context)}
 ${bodies}
 }
 /** A GPU object whose destroy() leaves its mark. */
-struct Marked final : bbl::TextGpuObject {
+struct Marked final : bbl::GpuObject {
     std::string* log = nullptr;
     char mark = 0;
     void destroy() override { *log += mark; }
@@ -871,7 +871,7 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
 #include <iterator>
 std::vector<std::uint8_t> read(const std::string& path){std::ifstream input(path,std::ios::binary);return {std::istreambuf_iterator<char>(input),{}};}
 /** A GPU object whose destroy() leaves its mark. */
-struct Marked final : bbl::TextGpuObject {
+struct Marked final : bbl::GpuObject {
     std::string* log = nullptr;
     char mark = 0;
     void destroy() override { *log += mark; }
@@ -895,7 +895,7 @@ int main(){
     ${pinned.groups.map(([start, count, live], index) => `if(first->groups[${index}]->slot_start!=${start} || first->groups[${index}]->slot_count!=${count} || first->groups[${index}]->live_count!=${live}) return 5;`).join("\n")}
     std::string destroyed;
     for(auto& entry:first->storage->curve_sets){auto gpu=std::make_shared<SharedAtlasGpu>();gpu->curve_tex=marked(destroyed,'c');gpu->band_tex=marked(destroyed,'b');gpu->meta_buf=marked(destroyed,'m');entry.second->atlas->gpu=gpu;}
-    for(auto& group:first->groups)group->bind_group=std::make_shared<TextGpuObject>();
+    for(auto& group:first->groups)group->bind_group=std::make_shared<GpuObject>();
     auto rendered=create_text_renderable(first);first.reset();
     dispose_text_data(alias);
     if(!alias->groups.empty() || alias->instance_count!=0 || alias->style_count!=0 || !destroyed.empty() || alias->storage->curve_sets.size()!=${pinned.atlases})return 6;

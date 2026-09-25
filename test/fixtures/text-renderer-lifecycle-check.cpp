@@ -3,10 +3,10 @@
 #include <numbers>
 
 /** The JavaScript recorder's frame encoder: one event per render pass. */
-struct RecorderCommands final : TextGpuCommandEncoder {
+struct RecorderCommands final : GpuCommandEncoder {
     Ops& ops;
     explicit RecorderCommands(Ops& target) : ops(target) {}
-    TextGpuEncoderHandle begin_render_pass(const TextRenderPassDescriptor& descriptor) override {
+    GpuEncoderHandle begin_render_pass(const GpuRenderPassDescriptor& descriptor) override {
         const auto& color = descriptor.color_attachments[0];
         if (color.store_op != "store" || !color.clear_value)
             throw std::runtime_error("render pass descriptor");

@@ -203,8 +203,8 @@ inline void upload_dawn_effect_pass(WGPUQueue queue, Engine& engine, const DawnE
     // The symmetric size validation (shared GPU helpers): a short write
     // leaves a stale tail behind the declared size.
     require_effect_uniform_size(wrapper, pass.uniform_bytes);
-    wgpuQueueWriteBuffer(queue, pass.uniforms, 0, wrapper.uniform_values.data(),
-                         wrapper.uniform_values.size() * sizeof(float));
+    DawnGpuDevice{queue}.write_buffer(pass.uniforms, 0, wrapper.uniform_values.data(),
+                                      wrapper.uniform_values.size() * sizeof(float));
     wrapper.uniforms_dirty = false;
 }
 

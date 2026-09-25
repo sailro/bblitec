@@ -309,7 +309,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
         std::vector<float> data(program.uniform_size / 4u, 0.0f);
         upstream::write_post_process_uniforms(engine, pass, output_width, output_height,
                                               source_width, source_height, data.data());
-        wgpuQueueWriteBuffer(state.queue, gpu.uniforms, 0, data.data(), program.uniform_size);
+        DawnGpuDevice{state.queue}.write_buffer(gpu.uniforms, 0, data.data(), program.uniform_size);
         pass.uniforms_dirty = false;
     }
     WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;

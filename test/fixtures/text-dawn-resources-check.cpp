@@ -108,14 +108,6 @@ using namespace bbl::pal;
 // The WebGPU half of the Dawn text device, without its pipeline cache.
 struct Device final : DawnTextGpuResources {
     using DawnTextGpuResources::DawnTextGpuResources;
-    TextPipelineSet text_pipeline(const std::string&, double, const bbl::js::Nullable<std::string>&,
-                                  bool, const std::shared_ptr<const void>&,
-                                  const std::string&) override {
-        throw std::logic_error("no pipelines");
-    }
-    TextPipelineDeviceCacheHandle text_pipeline_cache() override {
-        throw std::logic_error("no pipelines");
-    }
 };
 
 js::ArrayBuffer bytes_of(std::size_t size, std::uint8_t first = 0) {
@@ -131,10 +123,10 @@ int main() {
     const auto owner = device->owner;
     const auto buffer = [&](const char* label, double size, std::uint32_t usage) {
         return device->create_buffer(
-            TextBufferDescriptor{std::string(label), size, static_cast<double>(usage | 0x08u)});
+            GpuBufferDescriptor{std::string(label), size, static_cast<double>(usage | 0x08u)});
     };
     struct Renderable {
-        TextGpuHandle uniform, instances, styles;
+        GpuHandle uniform, instances, styles;
     };
     Renderable first, second;
     for (auto* gpu : {&first, &second}) {
@@ -143,7 +135,7 @@ int main() {
         gpu->styles = buffer("text-styles", 32, text_buffer_usage_storage);
     }
     const auto texture = [&](const char* label, double rows) {
-        return device->create_texture(TextTextureDescriptor{
+        return device->create_texture(GpuTextureDescriptor{
             std::string(label), "rgba32float", {4, rows, 1}, 0x04 | 0x02 | 0x01});
     };
     const auto curves = texture("text-slug-curves", 2), bands = texture("text-slug-bands", 1);
@@ -158,18 +150,18 @@ int main() {
                         {4, TextBindingRole::styles}};
     // The pin's bind group: its own entries, in its own order.
     const auto group_of = [&](const Renderable& gpu) {
-        TextBindGroupDescriptor descriptor;
+        GpuBindGroupDescriptor descriptor;
         descriptor.layout = layout;
         descriptor.entries = {
-            TextBindGroupEntry{0, TextBufferBinding{gpu.uniform, {}, {}}},
-            TextBindGroupEntry{1, curves->create_view()},
-            TextBindGroupEntry{2, bands->create_view()},
-            TextBindGroupEntry{3, TextBufferBinding{metadata, {}, {}}},
-            TextBindGroupEntry{4, TextBufferBinding{gpu.styles, {}, {}}},
+            GpuBindGroupEntry{0, GpuBufferBinding{gpu.uniform, {}, {}}},
+            GpuBindGroupEntry{1, curves->create_view()},
+            GpuBindGroupEntry{2, bands->create_view()},
+            GpuBindGroupEntry{3, GpuBufferBinding{metadata, {}, {}}},
+            GpuBindGroupEntry{4, GpuBufferBinding{gpu.styles, {}, {}}},
         };
         return dawn_text_object<DawnTextGpuGroup>(device->create_bind_group(descriptor));
     };
-    const auto lease = [](const TextGpuHandle& handle) {
+    const auto lease = [](const GpuHandle& handle) {
         return dawn_text_object<DawnTextGpuBuffer>(handle)->lease;
     };
     auto captured = group_of(first);
@@ -184,8 +176,8 @@ int main() {
     device->write_buffer(first.uniform, 80, bytes_of(4, 1), 0, 4);
     assert(lease(first.uniform)->get()->bytes[80] == 1 &&
            lease(first.uniform)->get()->bytes[84] == 0);
-    device->write_texture(TextTexelCopyTextureInfo{curves}, bytes_of(128), {0.0, 64.0, 2.0},
-                          TextExtent3D{4, 2, 1});
+    device->write_texture(GpuTexelCopyTextureInfo{curves}, bytes_of(128), {0.0, 64.0, 2.0},
+                          GpuExtent3D{4, 2, 1});
     device->write_buffer(metadata, 0, bytes_of(4, 1), 0, 4);
 
     auto pipeline = std::make_shared<DawnTextGpuPipeline>();

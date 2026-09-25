@@ -80,10 +80,10 @@ void run_esm_blur(GpuState& state, SDL_GPUCommandBuffer* command, std::uint32_t 
         binding.sampler = state.shadow_filtering_sampler;
         SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
         // `BlurParams` is declared in both stages, so both are pushed.
-        SDL_PushGPUVertexUniformData(command, 0, direction.data(),
-                                     static_cast<Uint32>(direction.size() * sizeof(float)));
-        SDL_PushGPUFragmentUniformData(command, 0, direction.data(),
-                                       static_cast<Uint32>(direction.size() * sizeof(float)));
+        SdlGpuWriteDevice{}.write_vertex_uniform(
+            command, 0, direction.data(), static_cast<Uint32>(direction.size() * sizeof(float)));
+        SdlGpuWriteDevice{}.write_fragment_uniform(
+            command, 0, direction.data(), static_cast<Uint32>(direction.size() * sizeof(float)));
         count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
         pass.end();
     };

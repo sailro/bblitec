@@ -78,7 +78,7 @@ struct TextScenePass {
         update(input ? &*input : nullptr, width, height);
     }
 
-    double draw(const TextGpuEncoderHandle& pass, const TextSurfaceHandle& surface) const {
+    double draw(const GpuEncoderHandle& pass, const TextSurfaceHandle& surface) const {
         double count = 0;
         for (const auto& binding : bindings) {
             // The render pass task binds the binding's declared pipeline before

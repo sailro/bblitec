@@ -348,7 +348,8 @@ test(
         });
         writeFileSync(
             join(output, "updates.hpp"),
-            `namespace bbl { ${helpers}\n${refresh}\n${updates.join("\n")} }`,
+            `namespace bbl { ${readFileSync("test/fixtures/gpu-writer-recorder.hpp", "utf8")}
+${helpers}\n${refresh}\n${updates.join("\n")} }`,
         );
         const file = join(output, "check.cpp"),
             executable = join(output, "check.exe");

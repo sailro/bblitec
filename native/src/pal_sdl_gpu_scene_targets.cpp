@@ -510,7 +510,8 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
         color_owner.reset();
         gpu_error("SDL_AcquireGPUCommandBuffer ID buffer");
     }
-    SDL_PushGPUVertexUniformData(command, 0, view_projection.data(), sizeof(view_projection));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, view_projection.data(),
+                                             sizeof(view_projection));
 
     SDL_GPUColorTargetInfo target{};
     target.texture = color;
@@ -547,11 +548,11 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
             if (cluster_ids) {
                 const DiagnosticClusterUniforms uniforms =
                     diagnostic_cluster_uniforms(current_cluster_base, alpha_options);
-                SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
+                SdlGpuWriteDevice{}.write_fragment_uniform(command, 0, &uniforms, sizeof(uniforms));
             } else {
                 const DiagnosticIdUniforms uniforms = diagnostic_id_uniforms(
                     static_cast<std::uint32_t>(mesh_index + 1), alpha_options);
-                SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
+                SdlGpuWriteDevice{}.write_fragment_uniform(command, 0, &uniforms, sizeof(uniforms));
             }
 
             push_mesh_stage_blocks(command, scene, engine, handle_at(engine.meshes, item.mesh));

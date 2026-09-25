@@ -82,9 +82,24 @@ struct SdlTextUniform {
 };
 
 /** `GPUBuffer`: a device buffer, or a uniform buffer's pushed bytes. */
-struct SdlTextGpuBuffer final : TextGpuObject {
+struct SdlTextGpuBuffer final : GpuObject {
+    const void* device_identity() const override {
+        return uniform ? uniform->owner->device : lease->owner->device;
+    }
     std::shared_ptr<SdlTextBufferLease> lease;
     std::shared_ptr<SdlTextUniform> uniform;
+    std::optional<std::size_t> buffer_capacity() const override { return gpu_size(size); }
+    void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
+        if (uniform) {
+            uniform->check();
+            if (!bytes.empty())
+                std::memcpy(uniform->bytes.data() + offset, bytes.data(), bytes.size());
+            uniform->owner->capture.write(uniform->capture_id, offset, bytes);
+            return;
+        }
+        write_sdl_gpu_buffer(lease->owner->device, lease->get(), offset, bytes);
+        lease->owner->capture.write(lease->capture_id, offset, bytes);
+    }
     void destroy() override {
         if (lease)
             lease->retire();
@@ -93,28 +108,42 @@ struct SdlTextGpuBuffer final : TextGpuObject {
     }
 };
 /** A texture's default view: SDL binds the texture itself. */
-struct SdlTextGpuView final : TextGpuObject {
+struct SdlTextGpuView final : GpuObject {
     std::shared_ptr<SdlTextTextureLease> lease;
     /** A swapchain or capture target the frame owns. */
     SDL_GPUTexture* target = nullptr;
     SDL_GPUTexture* get() const { return lease ? lease->get() : target; }
 };
 /** `GPUTexture`. */
-struct SdlTextGpuTexture final : TextGpuObject {
+struct SdlTextGpuTexture final : GpuObject {
+    const void* device_identity() const override { return lease->owner->device; }
     std::shared_ptr<SdlTextTextureLease> lease;
+    void write_texture_bytes(std::span<const std::uint8_t> data,
+                             const GpuTextureWriteLayout& layout,
+                             const GpuWriteExtent& extent) override {
+        const auto row_bytes = layout.bytes_per_row.value_or(extent.width * 16u);
+        if (row_bytes != static_cast<std::size_t>(extent.width) * 16u ||
+            extent.depth_or_array_layers != 1)
+            throw std::runtime_error("Text atlas upload requires contiguous RGBA32F rows.");
+        const auto bytes = gpu_bytes(data, static_cast<double>(layout.offset),
+                                     static_cast<double>(row_bytes) * extent.height);
+        write_sdl_gpu_texture(lease->owner->device, lease->get(), bytes,
+                              {0, row_bytes, extent.height}, extent);
+        lease->owner->capture.write(lease->capture_id, 0u, bytes);
+    }
     void destroy() override { lease->retire(); }
-    TextGpuHandle create_view() override {
+    GpuHandle create_view() override {
         auto view = std::make_shared<SdlTextGpuView>();
         view->lease = lease;
         return view;
     }
 };
 /** `GPUBindGroupLayout`: the composed shader's binding roles. */
-struct SdlTextGpuLayout final : TextGpuObject {
+struct SdlTextGpuLayout final : GpuObject {
     std::vector<std::pair<std::uint32_t, TextBindingRole>> bindings;
 };
 /** `GPUBindGroup`: the resources SDL binds by the shader's own names. */
-struct SdlTextGpuGroup final : TextGpuObject {
+struct SdlTextGpuGroup final : GpuObject {
     std::shared_ptr<SdlTextUniform> uniform;
     std::shared_ptr<SdlTextBufferLease> styles, metadata;
     std::shared_ptr<SdlTextTextureLease> curves, bands;
@@ -130,13 +159,13 @@ struct SdlTextGpuGroup final : TextGpuObject {
     }
 };
 /** `GPURenderPipeline`. */
-struct SdlTextGpuPipeline final : TextGpuObject {
+struct SdlTextGpuPipeline final : GpuObject {
     std::shared_ptr<SdlTextPipelineLease> pipeline;
     PinnedStageSlots vertex_slots, fragment_slots;
     TextGpuDrawCapture capture;
 };
 
-template <class Object> std::shared_ptr<Object> sdl_text_object(const TextGpuHandle& handle) {
+template <class Object> std::shared_ptr<Object> sdl_text_object(const GpuHandle& handle) {
     auto object = std::dynamic_pointer_cast<Object>(handle);
     if (!object)
         throw std::runtime_error("Text GPU object belongs to another kind or device.");
@@ -144,7 +173,7 @@ template <class Object> std::shared_ptr<Object> sdl_text_object(const TextGpuHan
 }
 
 /** `GPURenderPassEncoder` over an SDL render pass. */
-struct SdlTextPassEncoder final : TextGpuEncoder {
+struct SdlTextPassEncoder final : GpuEncoder {
     std::shared_ptr<SdlTextDevice> owner;
     std::shared_ptr<SdlTextSamplerLease> sampler;
     SDL_GPUCommandBuffer* command = nullptr;
@@ -157,22 +186,22 @@ struct SdlTextPassEncoder final : TextGpuEncoder {
     std::vector<SDL_GPUBuffer*> storage_scratch;
     std::vector<std::uint8_t> pushed_uniform_bytes;
 
-    void set_pipeline(const TextGpuHandle& handle) override {
+    void set_pipeline(const GpuHandle& handle) override {
         current_pipeline = sdl_text_object<SdlTextGpuPipeline>(handle);
         SDL_BindGPUGraphicsPipeline(pass, current_pipeline->pipeline->get());
     }
-    void set_vertex_buffer(double slot, const TextGpuHandle& handle) override {
+    void set_vertex_buffer(double slot, const GpuHandle& handle) override {
         const auto buffer = sdl_text_object<SdlTextGpuBuffer>(handle);
         if (!buffer->lease)
             throw std::runtime_error("Text vertex buffer is a uniform buffer.");
         const SDL_GPUBufferBinding binding{buffer->lease->get(), 0};
-        const auto index = text_gpu_u32(text_gpu_size(slot));
+        const auto index = gpu_u32(gpu_size(slot));
         SDL_BindGPUVertexBuffers(pass, index, &binding, 1u);
         if (owner->capture.enabled())
             (index == 0 ? current_quad : current_instances) = buffer->lease;
     }
-    void set_bind_group(double index, const TextGpuHandle& handle) override {
-        if (text_gpu_size(index) != 0)
+    void set_bind_group(double index, const GpuHandle& handle) override {
+        if (gpu_size(index) != 0)
             throw std::runtime_error("Text bind groups bind at group 0.");
         const auto group = sdl_text_object<SdlTextGpuGroup>(handle);
         group->uniform->check();
@@ -211,10 +240,10 @@ struct SdlTextPassEncoder final : TextGpuEncoder {
     }
     void draw(double vertices, double instances, double first_vertex,
               double first_instance) override {
-        const auto count = text_gpu_u32(text_gpu_size(vertices)),
-                   instance_count = text_gpu_u32(text_gpu_size(instances)),
-                   first = text_gpu_u32(text_gpu_size(first_vertex)),
-                   first_instance_index = text_gpu_u32(text_gpu_size(first_instance));
+        const auto count = gpu_u32(gpu_size(vertices)),
+                   instance_count = gpu_u32(gpu_size(instances)),
+                   first = gpu_u32(gpu_size(first_vertex)),
+                   first_instance_index = gpu_u32(gpu_size(first_instance));
         SDL_DrawGPUPrimitives(pass, count, instance_count, first, first_instance_index);
         if (owner->capture.enabled()) {
             auto receipt = current_pipeline->capture;
@@ -231,7 +260,7 @@ struct SdlTextPassEncoder final : TextGpuEncoder {
             owner->capture.draw(std::move(receipt));
         }
     }
-    void execute_bundles(const js::Array<TextGpuHandle>& bundles) override {
+    void execute_bundles(const js::Array<GpuHandle>& bundles) override {
         replay_text_bundles(*this, bundles);
     }
     void end() override {
@@ -243,14 +272,14 @@ struct SdlTextPassEncoder final : TextGpuEncoder {
 };
 
 /** `GPUCommandEncoder` over the frame's SDL command buffer. */
-struct SdlTextCommandEncoder final : TextGpuCommandEncoder {
+struct SdlTextCommandEncoder final : GpuCommandEncoder {
     std::shared_ptr<SdlTextDevice> owner;
     std::shared_ptr<SdlTextSamplerLease> sampler;
     SDL_GPUCommandBuffer* command = nullptr;
     /** The format of the views this frame's passes target. */
     SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_INVALID;
 
-    TextGpuEncoderHandle begin_render_pass(const TextRenderPassDescriptor& descriptor) override {
+    GpuEncoderHandle begin_render_pass(const GpuRenderPassDescriptor& descriptor) override {
         if (descriptor.color_attachments.size() != 1)
             throw std::runtime_error("Text render passes have one color attachment.");
         const auto& color = descriptor.color_attachments[0];
@@ -289,17 +318,18 @@ struct SdlTextCommandEncoder final : TextGpuCommandEncoder {
  * writes and bind groups. A uniform buffer is the bytes SDL pushes per draw;
  * a bind group is the resources SDL binds by the composed shader's names.
  */
-struct SdlTextGpuResources : TextGpuDevice {
+struct SdlTextGpuResources : GpuDevice {
     std::shared_ptr<SdlTextDevice> owner = std::make_shared<SdlTextDevice>();
 
     SdlTextGpuResources(SDL_GPUDevice* device, bool capture) {
         owner->device = device;
         owner->capture = TextGpuCapture(capture);
     }
+    const void* device_identity() const override { return owner->device; }
     ~SdlTextGpuResources() override { owner->retire(); }
 
-    TextGpuHandle create_buffer(const TextBufferDescriptor& descriptor) override {
-        const auto bytes = text_gpu_size(descriptor.size);
+    GpuHandle create_buffer(const GpuBufferDescriptor& descriptor) override {
+        const auto bytes = gpu_size(descriptor.size);
         auto buffer = std::make_shared<SdlTextGpuBuffer>();
         buffer->size = descriptor.size;
         if (text_usage_has(descriptor.usage, text_buffer_usage_uniform)) {
@@ -312,7 +342,7 @@ struct SdlTextGpuResources : TextGpuDevice {
             return buffer;
         }
         SDL_GPUBufferCreateInfo info{};
-        info.size = text_gpu_u32(bytes);
+        info.size = gpu_u32(bytes);
         if (text_usage_has(descriptor.usage, text_buffer_usage_vertex))
             info.usage |= SDL_GPU_BUFFERUSAGE_VERTEX;
         if (text_usage_has(descriptor.usage, text_buffer_usage_storage))
@@ -323,40 +353,39 @@ struct SdlTextGpuResources : TextGpuDevice {
         return buffer;
     }
 
-    TextGpuHandle create_texture(const TextTextureDescriptor& descriptor) override {
+    GpuHandle create_texture(const GpuTextureDescriptor& descriptor) override {
         if (descriptor.format != "rgba32float" ||
             !text_usage_has(descriptor.usage, text_texture_usage_binding) ||
-            text_gpu_size(descriptor.size.depth_or_array_layers) != 1)
+            gpu_size(descriptor.size.depth_or_array_layers) != 1)
             throw std::runtime_error("Unmapped text texture descriptor.");
-        const auto width = text_gpu_size(descriptor.size.width),
-                   rows = text_gpu_size(descriptor.size.height);
+        const auto width = gpu_size(descriptor.size.width), rows = gpu_size(descriptor.size.height);
         auto texture = std::make_shared<SdlTextGpuTexture>();
         texture->lease = retain_sdl_gpu_text_resource<SdlTextTextureLease>(
             owner,
             create_frame_texture(owner->device, SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT,
-                                 SDL_GPU_SAMPLECOUNT_1, text_gpu_u32(width), text_gpu_u32(rows),
+                                 SDL_GPU_SAMPLECOUNT_1, gpu_u32(width), gpu_u32(rows),
                                  SDL_GPU_TEXTUREUSAGE_SAMPLER),
             text_resource_role(descriptor.label), width * rows * 4u * sizeof(float), width, rows);
         return texture;
     }
 
-    TextGpuHandle create_bind_group(const TextBindGroupDescriptor& descriptor) override {
+    GpuHandle create_bind_group(const GpuBindGroupDescriptor& descriptor) override {
         const auto layout = sdl_text_object<SdlTextGpuLayout>(descriptor.layout);
         auto group = std::make_shared<SdlTextGpuGroup>();
-        const auto resource = [&](std::uint32_t binding) -> const TextBindingResource& {
+        const auto resource = [&](std::uint32_t binding) -> const GpuBindingResource& {
             for (const auto& entry : descriptor.entries)
-                if (text_gpu_size(entry.binding) == binding)
+                if (gpu_size(entry.binding) == binding)
                     return entry.resource;
             throw std::runtime_error("Text bind group lacks a layout binding.");
         };
-        const auto buffer = [&](const TextBindingResource& value) {
-            const auto* binding = std::get_if<TextBufferBinding>(&value);
+        const auto buffer = [&](const GpuBindingResource& value) {
+            const auto* binding = std::get_if<GpuBufferBinding>(&value);
             if (!binding || binding->offset || binding->size)
                 throw std::runtime_error("Text buffer bindings bind whole buffers.");
             return sdl_text_object<SdlTextGpuBuffer>(binding->buffer);
         };
-        const auto view = [&](const TextBindingResource& value) {
-            const auto* handle = std::get_if<TextGpuHandle>(&value);
+        const auto view = [&](const GpuBindingResource& value) {
+            const auto* handle = std::get_if<GpuHandle>(&value);
             if (!handle)
                 throw std::runtime_error("Text texture binding is not a view.");
             return sdl_text_object<SdlTextGpuView>(*handle)->lease;
@@ -401,46 +430,9 @@ struct SdlTextGpuResources : TextGpuDevice {
         return group;
     }
 
-    TextGpuEncoderHandle
-    create_render_bundle_encoder(const TextRenderBundleEncoderDescriptor&) override {
+    GpuEncoderHandle
+    create_render_bundle_encoder(const GpuRenderBundleEncoderDescriptor&) override {
         return std::make_shared<TextBundleRecorder>();
-    }
-
-    void write_buffer(const TextGpuHandle& handle, double buffer_offset,
-                      const js::ArrayBuffer& data, double data_offset, double size) override {
-        const auto buffer = sdl_text_object<SdlTextGpuBuffer>(handle);
-        const auto bytes = text_gpu_bytes(data, data_offset, size);
-        const auto offset = text_gpu_size(buffer_offset);
-        if (buffer->uniform) {
-            auto& uniform = *buffer->uniform;
-            uniform.check();
-            if (offset > uniform.bytes.size() || bytes.size() > uniform.bytes.size() - offset)
-                throw std::runtime_error("Text uniform upload exceeds its allocation.");
-            std::memcpy(uniform.bytes.data() + offset, bytes.data(), bytes.size());
-            owner->capture.write(uniform.capture_id, offset, bytes);
-            return;
-        }
-        text_gpu_u32(offset);
-        text_gpu_u32(bytes.size());
-        GpuBufferUploadBatch uploads(owner->device);
-        uploads.update(buffer->lease->get(), offset, bytes.data(), bytes.size());
-        uploads.submit();
-        owner->capture.write(buffer->lease->capture_id, offset, bytes);
-    }
-
-    void write_texture(const TextTexelCopyTextureInfo& destination, const js::ArrayBuffer& data,
-                       const TextTexelCopyBufferLayout& layout, const TextExtent3D& size) override {
-        const auto texture = sdl_text_object<SdlTextGpuTexture>(destination.texture);
-        const auto width = text_gpu_size(size.width), rows = text_gpu_size(size.height);
-        const auto row_bytes = text_gpu_size(layout.bytes_per_row.value_or(0));
-        if (row_bytes != width * 4u * sizeof(float) ||
-            text_gpu_size(size.depth_or_array_layers) != 1)
-            throw std::runtime_error("Text atlas upload requires contiguous RGBA32F rows.");
-        const auto bytes =
-            text_gpu_bytes(data, layout.offset.value_or(0), static_cast<double>(row_bytes * rows));
-        upload_2d_texture_into(owner->device, texture->lease->get(), bytes.data(), bytes.size(),
-                               text_gpu_u32(width), text_gpu_u32(rows), "Text atlas upload");
-        owner->capture.write(texture->lease->capture_id, 0u, bytes);
     }
 };
 

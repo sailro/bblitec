@@ -35,34 +35,11 @@ inline const char* text_binding_role_name(TextBindingRole role) {
     throw std::runtime_error("Unknown text resource role.");
 }
 
-inline std::uint32_t text_gpu_u32(std::size_t value) {
-    if (value > std::numeric_limits<std::uint32_t>::max())
-        throw std::runtime_error("Text resource extent exceeds the native API's 32-bit range.");
-    return static_cast<std::uint32_t>(value);
-}
-
-/** A WebGPU count or offset the pin passes as a number: a non-negative integer. */
-inline std::size_t text_gpu_size(double value) {
-    if (!std::isfinite(value) || value < 0 || std::trunc(value) != value ||
-        value >= static_cast<double>(std::numeric_limits<std::uint32_t>::max()))
-        throw std::runtime_error("Text GPU extent is not a WebGPU size.");
-    return static_cast<std::size_t>(value);
-}
-
-/** `data[offset, offset + size)` of a written ArrayBuffer, as WebGPU validates it. */
-inline std::span<const std::uint8_t> text_gpu_bytes(const js::ArrayBuffer& data, double offset,
-                                                    double size) {
-    const auto start = text_gpu_size(offset), count = text_gpu_size(size);
-    if (start > data.byte_length() || count > data.byte_length() - start)
-        throw std::runtime_error("Text GPU write exceeds its source ArrayBuffer.");
-    return {data.data() + start, count};
-}
-
 /** GPUBufferUsage / GPUTextureUsage bits the text path creates with. */
 inline constexpr std::uint32_t text_buffer_usage_vertex = 0x20, text_buffer_usage_uniform = 0x40,
                                text_buffer_usage_storage = 0x80, text_texture_usage_binding = 0x04;
 [[nodiscard]] inline bool text_usage_has(double usage, std::uint32_t bit) {
-    return (static_cast<std::uint32_t>(text_gpu_size(usage)) & bit) != 0;
+    return (static_cast<std::uint32_t>(gpu_size(usage)) & bit) != 0;
 }
 
 /**
@@ -87,27 +64,27 @@ inline std::string_view text_resource_role(const bbl::js::Nullable<std::string>&
 }
 
 /** A recorded `GPURenderBundle`: the commands a pass replays. */
-struct TextRenderBundle : TextGpuObject {
+struct TextRenderBundle : GpuObject {
     enum class Op { pipeline, vertex_buffer, bind_group, draw };
     struct Command {
         Op op;
         double slot = 0;
-        TextGpuHandle resource;
+        GpuHandle resource;
         std::array<double, 4> draw{};
     };
     std::vector<Command> commands;
 };
 
 /** `GPURenderBundleEncoder`: records commands into a bundle. */
-struct TextBundleRecorder final : TextGpuEncoder {
+struct TextBundleRecorder final : GpuEncoder {
     std::shared_ptr<TextRenderBundle> bundle = std::make_shared<TextRenderBundle>();
-    void set_pipeline(const TextGpuHandle& pipeline) override {
+    void set_pipeline(const GpuHandle& pipeline) override {
         bundle->commands.push_back({TextRenderBundle::Op::pipeline, 0, pipeline, {}});
     }
-    void set_vertex_buffer(double slot, const TextGpuHandle& buffer) override {
+    void set_vertex_buffer(double slot, const GpuHandle& buffer) override {
         bundle->commands.push_back({TextRenderBundle::Op::vertex_buffer, slot, buffer, {}});
     }
-    void set_bind_group(double index, const TextGpuHandle& group) override {
+    void set_bind_group(double index, const GpuHandle& group) override {
         bundle->commands.push_back({TextRenderBundle::Op::bind_group, index, group, {}});
     }
     void draw(double vertices, double instances, double first_vertex,
@@ -117,7 +94,7 @@ struct TextBundleRecorder final : TextGpuEncoder {
                                     nullptr,
                                     {vertices, instances, first_vertex, first_instance}});
     }
-    TextGpuHandle finish() override {
+    GpuHandle finish() override {
         if (!bundle)
             throw std::runtime_error("Text render bundle encoder already finished.");
         return std::exchange(bundle, nullptr);
@@ -125,7 +102,7 @@ struct TextBundleRecorder final : TextGpuEncoder {
 };
 
 /** `pass.executeBundles(bundles)`: each bundle's commands, in order, on `pass`. */
-inline void replay_text_bundles(TextGpuEncoder& pass, const js::Array<TextGpuHandle>& bundles) {
+inline void replay_text_bundles(GpuEncoder& pass, const js::Array<GpuHandle>& bundles) {
     for (const auto& handle : bundles) {
         const auto bundle = std::dynamic_pointer_cast<TextRenderBundle>(handle);
         if (!bundle)

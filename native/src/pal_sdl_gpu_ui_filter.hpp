@@ -155,7 +155,8 @@ inline void render_ui_composite_sdl_gpu(SDL_GPUDevice* device, SDL_GPUCommandBuf
             {{textures.get(draw.input).value, sampler},
              {textures.get(draw.secondary).value, sampler}}};
         SDL_BindGPUFragmentSamplers(pass, 0, bindings.data(), static_cast<Uint32>(bindings.size()));
-        SDL_PushGPUFragmentUniformData(command, 0, &draw.uniforms, sizeof(draw.uniforms));
+        SdlGpuWriteDevice{}.write_fragment_uniform(command, 0, &draw.uniforms,
+                                                   sizeof(draw.uniforms));
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
         pass.end();
     }
@@ -175,8 +176,8 @@ inline void render_ui_composite_sdl_gpu(SDL_GPUDevice* device, SDL_GPUCommandBuf
     const std::array<float, 16> projection{
         2.0f / frame.width, 0, 0, 0, 0, -2.0f / frame.height, 0, 0, 0, 0, .0001f, 0, -1, 1, 0, 1};
     const std::array<float, 2> translation{0, 0};
-    SDL_PushGPUVertexUniformData(command, 0, projection.data(), sizeof(projection));
-    SDL_PushGPUVertexUniformData(command, 1, translation.data(), sizeof(translation));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(), sizeof(projection));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(), sizeof(translation));
     SDL_DrawGPUIndexedPrimitives(pass, composite.index_count, 1, composite.first_index, 0, 0);
     pass.end();
     textures.finish([&](auto& target) { target.release(device); });

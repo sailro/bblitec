@@ -201,8 +201,8 @@ inline void render_ui_composite_dawn(WGPUDevice device, WGPUQueue queue, WGPUCom
             resources_pass.uniform_group = require_dawn_resource(
                 wgpuDeviceCreateBindGroup(device, &group), "UI filter uniform group");
         }
-        wgpuQueueWriteBuffer(queue, resources_pass.buffer, 0, &draw.uniforms,
-                             sizeof(draw.uniforms));
+        DawnGpuDevice{queue}.write_buffer(resources_pass.buffer, 0, &draw.uniforms,
+                                          sizeof(draw.uniforms));
         const auto source_view = textures.get(draw.input).value.view;
         const auto shadow_view = textures.get(draw.secondary).value.view;
         if (!resources_pass.texture_group || resources_pass.source != source_view ||
