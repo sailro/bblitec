@@ -210,8 +210,8 @@ endfunction()
 # its text under the cache and read through -include-pch. Its creation is
 # cached without base_dir: the entry records this checkout's paths, so the
 # trees of this checkout share one PCH and its users' entries, and a PCH
-# naming another worktree's files is never handed out. On a miss ccache
-# preprocesses a user with the PCH's source included as text, so the users
+# naming another worktree's files is never handed out. Where ccache
+# preprocesses a user, the PCH's source is included as text, so the users
 # also read the folder of the PCH's generated headers. NAME is the PCH's own
 # object library; HEADERS are `<system>` spellings or absolute paths.
 function(bblite_shared_pch)

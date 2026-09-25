@@ -10,10 +10,14 @@ if(BBLITE_NATIVE_CACHE AND CMAKE_GENERATOR MATCHES "Ninja|Makefiles" AND NOT CMA
         # checkout of the same sources hits; the size covers several trees'
         # populations instead of evicting them in turn. The sloppiness lets
         # Clang precompiled-header users be cached (native/CMakeLists.txt);
-        # no native unit reads __DATE__ or __TIME__.
+        # no native unit reads __DATE__ or __TIME__. In depend mode a miss
+        # takes the unit's headers from the compiler's own dependency output
+        # instead of preprocessing the unit first, a pass that re-reads every
+        # header its precompiled header holds (about 0.4 s a unit); hits come
+        # from direct mode either way.
         get_filename_component(BBLITE_CACHE_BASE_DIR "${BBLITE_NATIVE_ROOT}/.." ABSOLUTE)
         set(CMAKE_CXX_COMPILER_LAUNCHER
-            "${BBLITE_CCACHE};cache_dir=${BBLITE_NATIVE_CACHE_DIR};namespace=bblite;base_dir=${BBLITE_CACHE_BASE_DIR};max_size=25G;sloppiness=pch_defines,time_macros,include_file_mtime,include_file_ctime")
+            "${BBLITE_CCACHE};cache_dir=${BBLITE_NATIVE_CACHE_DIR};namespace=bblite;base_dir=${BBLITE_CACHE_BASE_DIR};max_size=25G;depend_mode=true;sloppiness=pch_defines,time_macros,include_file_mtime,include_file_ctime")
         if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
             # ccache replays /showIncludes on a hit; it does not retain the
             # dependency file requested through CMake's -clang:-MF spelling.
