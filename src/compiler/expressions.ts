@@ -234,7 +234,7 @@ export interface ExpressionContext
             | "compileThinInstanceUploadHelper"
             | "compilePixelsTextureUpload"
             | "compileStaticFetch"
-            | "compileSynchronousPromise"
+            | "asyncActivations"
             | "compileBrowserTextureFunctionCall"
             | "compileExecutedUrlFunctionCall"
             | "compileStaticFetchMethod"
@@ -920,7 +920,9 @@ export class ExpressionLowerer {
                 !this.context.options.workers &&
                 this.context.libraryGlobal(unwrapped.expression) === "Promise"
             )
-                return this.context.compileSynchronousPromise(unwrapped);
+                return this.context.asyncActivations.compileSynchronousPromise(
+                    unwrapped,
+                );
             this.context.fail(unwrapped, "Unsupported constructor expression.");
         }
         if (ts.isElementAccessExpression(unwrapped)) {

@@ -1140,9 +1140,7 @@ export interface UserFunctionContext
             | "evaluationOrder"
             | "cppString"
             | "options"
-            | "withAsyncActivation"
-            | "compileAsyncCall"
-            | "compileAsyncReturn"
+            | "asyncActivations"
             | "withOwnedCallbackBody"
             | "checker"
             | "dataTypes"
@@ -1558,7 +1556,11 @@ export class UserFunctionLowerer {
         );
         return this.withCallTypeArguments(context, call, ir.declaration, () => {
             const asynchronous = inBodyScope(() =>
-                context.compileAsyncCall(ir.declaration, argumentValues, call),
+                context.asyncActivations.compileAsyncCall(
+                    ir.declaration,
+                    argumentValues,
+                    call,
+                ),
             );
             if (asynchronous) return asynchronous;
             const recursiveGroup = this.recursiveGroup(ir.declaration);
@@ -1946,7 +1948,7 @@ export class UserFunctionLowerer {
         return this.withCallTypeArguments(context, call, ir.declaration, () =>
             inBodyScope(
                 () =>
-                    context.compileAsyncCall(
+                    context.asyncActivations.compileAsyncCall(
                         ir.declaration,
                         argumentValues,
                         call,
@@ -3827,7 +3829,7 @@ export class UserFunctionLowerer {
         }
         const values = arguments_.slice(0, ir.parameters.length);
         if (!body?.coroutine) {
-            const asynchronous = context.compileAsyncCall(
+            const asynchronous = context.asyncActivations.compileAsyncCall(
                 ir.declaration,
                 values,
                 callNode,
@@ -4148,7 +4150,7 @@ export class UserFunctionLowerer {
                     if (!terminated && ir.returnExpression) {
                         if (asynchronous) {
                             context.emit(
-                                `co_return ${context.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
+                                `co_return ${context.asyncActivations.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
                             );
                         } else if (!bodyResult) {
                             context.emitExpressionAsStatement(
@@ -4179,7 +4181,7 @@ export class UserFunctionLowerer {
                 });
             closure = asynchronous
                 ? context.withOwnedCallbackBody(() =>
-                      context.withAsyncActivation(compileBody),
+                      context.asyncActivations.withAsyncActivation(compileBody),
                   )
                 : compileBody();
         } finally {
@@ -4610,7 +4612,7 @@ export class UserFunctionLowerer {
                           expression: ts.Expression,
                           target: DataType,
                       ) =>
-                          context.compileAsyncReturn(
+                          context.asyncActivations.compileAsyncReturn(
                               expression,
                               target,
                               (value, result, node) =>

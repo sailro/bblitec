@@ -18,7 +18,7 @@ export interface WorkerLoweringContext extends Pick<
     | "compileFrameCallback"
     | "reachFeature"
     | "reachJsData"
-    | "compileWorkerCallback"
+    | "asyncActivations"
     | "compileNumber"
     | "emit"
     | "allocateTemporaryCppName"
@@ -533,7 +533,7 @@ export function compileWorkerValue(
                 once = property.initializer.kind === ts.SyntaxKind.TrueKeyword;
             }
         }
-        const compiled = context.compileWorkerCallback(
+        const compiled = context.asyncActivations.compileWorkerCallback(
             callback,
             event.text as "message" | "error",
         );

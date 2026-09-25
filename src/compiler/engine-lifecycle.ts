@@ -49,7 +49,7 @@ export interface EngineLifecycleContext extends Pick<
     | "registerNativeConstBinding"
     | "symbols"
     | "unwrap"
-    | "workerAbortCpp"
+    | "asyncActivations"
 > {
     readonly body: string[];
     readonly indentLevel: number;
@@ -676,7 +676,7 @@ export class EngineLifecycle {
             `[[maybe_unused]] auto ${guard} = bbl::js::finally([&]() {`,
         );
         this.context.increaseIndent();
-        const workerAbort = this.context.workerAbortCpp();
+        const workerAbort = this.context.asyncActivations.workerAbortCpp();
         if (workerAbort) this.context.emit(`if (${workerAbort}) return;`);
         else if (this.context.options.pendingActivations)
             this.context.emit("if (bbl::js::activation_abandoned()) return;");

@@ -23,7 +23,6 @@ import {
 import type {
     LoweringServices,
     NativeFunctionBodyOptions,
-    NativeReturnValueCompiler,
 } from "./compiler/lowering-services.js";
 import type { ApplicationCpp } from "./compiler/source-units.js";
 import {
@@ -31,6 +30,7 @@ import {
     type NativeDeclaration,
 } from "./compiler/native-declarations.js";
 import ts from "typescript";
+import { AsyncActivations } from "./compiler/async-activations.js";
 import { EngineLifecycle } from "./compiler/engine-lifecycle.js";
 import { SharedClosureAnalysis } from "./compiler/shared-closure-analysis.js";
 import { NativeEmissionRegistry } from "./compiler/native-emission-registry.js";
@@ -55,9 +55,7 @@ import {
     type NativeRecordStorageDemand,
 } from "./compiler/native-record-storage.js";
 import { resolve } from "node:path";
-import { framePollExecutor } from "./compiler/frame-poll.js";
 import { integerCounterOf } from "./compiler/integer-loops.js";
-import { PendingActivations } from "./compiler/pending-activations.js";
 import {
     compileTextModuleValue,
     compileTextMutation,
@@ -194,7 +192,6 @@ import {
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
     type AliasedMutationScan,
-    type SupportedFunction,
     type CallbackInvocationOptions,
 } from "./compiler/user-functions.js";
 import {
@@ -205,7 +202,6 @@ import {
     isUpdateExpression,
     objectProperty,
     stringLiteralText,
-    unwrapExpression,
     unwrappedIdentifier,
 } from "./compiler/syntax.js";
 import { CompileError } from "./compiler/compile-error.js";
@@ -618,6 +614,10 @@ class Compiler implements LoweringServices {
     public readonly engineLifecycle: EngineLifecycle = new EngineLifecycle(
         this,
     );
+    /** Async activations, pending-promise boundaries and worker realm hooks. */
+    public readonly asyncActivations: AsyncActivations = new AsyncActivations(
+        this,
+    );
     private readonly statements = new StatementLowerer();
     public readonly userFunctions: UserFunctionLowerer;
     public readonly ui: UiProjection = new UiProjection(this);
@@ -628,7 +628,7 @@ class Compiler implements LoweringServices {
     public get uiScopedSheetSelectors(): Set<string> {
         return this.ui.uiScopedSheetSelectors;
     }
-    private readonly asyncLowerer = new AsyncLowerer(this);
+    public readonly asyncLowerer = new AsyncLowerer(this);
     public readonly windowProperties: WindowProperties = new WindowProperties(
         this,
     );
@@ -1265,7 +1265,7 @@ class Compiler implements LoweringServices {
         this.bindings.pushScope(this.allocateUserFunctionPrefix());
         let closure: CapturedClosure;
         try {
-            closure = this.withAsyncActivation(() =>
+            closure = this.asyncActivations.withAsyncActivation(() =>
                 this.captureManagedClosureLines(() => {
                     this.beginNativeFunctionBody(undefined, false, {
                         coroutine: true,
@@ -1945,7 +1945,7 @@ class Compiler implements LoweringServices {
 
     public compileValue(expression: ts.Expression): Value {
         traceSourceNode(expression);
-        this.refusePendingActivationUse(expression);
+        this.asyncActivations.refusePendingActivationUse(expression);
         this.checkNodeGeometryMutation(expression);
         const boundary = this.nextNativeBindingSequence;
         const dependencies = new EmissionSet<NativeCaptureBinding>();
@@ -2041,131 +2041,6 @@ class Compiler implements LoweringServices {
         return compileWorkerValue(this, expression);
     }
 
-    public emitAwaitExpression(expression: ts.Expression): boolean {
-        if (!this.options.workers) return false;
-        const node = unwrapExpression(expression);
-        if (!ts.isAwaitExpression(node)) return false;
-        this.compileValue(expression);
-        return true;
-    }
-
-    public withAsyncActivation<T>(work: () => T): T {
-        return this.asyncLowerer.withActivation(work);
-    }
-
-    public compileAsyncCall(
-        declaration: SupportedFunction,
-        arguments_: readonly Value[],
-        node: ts.Node,
-    ): Value | undefined {
-        return this.options.workers
-            ? this.asyncLowerer.compileCall(declaration, arguments_, node)
-            : undefined;
-    }
-
-    public compileSynchronousPromise(node: ts.NewExpression): Value {
-        return this.asyncLowerer.compileSynchronousConstructor(node);
-    }
-
-    /** @unjournaled A whole-program analysis of compiler inputs, built on first use. */
-    private pendingActivationAnalysis: PendingActivations | undefined;
-
-    /** Built once a reached constructed promise sets `pendingActivations`. */
-    public pendingActivations(): PendingActivations {
-        this.pendingActivationAnalysis ??= new PendingActivations(
-            this.checker,
-            this.sourceFiles(),
-            (construction) =>
-                this.browserErasure.isFrameYield(construction) ||
-                this.browserErasure.isBoundedNestedFrameYield(construction) ||
-                this.browserErasure.frameDrainCondition(construction) !==
-                    undefined ||
-                framePollExecutor(construction, this.checker, (expression) =>
-                    this.libraryGlobal(expression),
-                ) !== undefined,
-        );
-        return this.pendingActivationAnalysis;
-    }
-
-    /** Refuses a reached use of a waiting function that needs a pending promise value. */
-    public refusePendingActivationUse(node: ts.Node): void {
-        if (this.options.pendingActivations)
-            this.pendingActivations().refuseReached(node, (site, message) =>
-                this.fail(site, message),
-            );
-    }
-
-    /**
-     * An expression statement that discards the promise of an activation
-     * which can end at a pending await is where that ending stops: the
-     * statements after it run, as they do after JavaScript's suspension.
-     */
-    public emitActivationBoundary(
-        statement: ts.ExpressionStatement,
-        emit: () => boolean | void,
-    ): boolean | void {
-        if (
-            !this.options.pendingActivations ||
-            !this.pendingActivations().discards(statement)
-        )
-            return emit();
-        const lines = this.captureEmittedLines(() => {
-            emit();
-        });
-        this.emit("try {");
-        this.increaseIndent();
-        for (const line of lines) this.emit(line);
-        this.decreaseIndent();
-        this.emit("} catch (const bbl::js::PendingActivation&) {");
-        this.emit("    bbl::js::end_abandoned_activation();");
-        this.emit("}");
-        return false;
-    }
-
-    public withEngineBootstrap<T>(
-        declaration: SupportedFunction,
-        work: () => T,
-    ): T {
-        // Worker bootstrap helpers can run under a message guard. Their own
-        // unconditional pre-engine setup remains fixed for every invocation.
-        const ownsEngine =
-            declaration.body &&
-            ts.isBlock(declaration.body) &&
-            declaration.body.statements.some(
-                (statement) =>
-                    ts.isVariableStatement(statement) &&
-                    statement.declarationList.declarations.some((variable) => {
-                        const call =
-                            variable.initializer &&
-                            this.unwrap(variable.initializer);
-                        return (
-                            call &&
-                            ts.isCallExpression(call) &&
-                            ts.isIdentifier(call.expression) &&
-                            this.symbols.importedName(call.expression) ===
-                                "createEngine"
-                        );
-                    }),
-            );
-        if (ownsEngine)
-            this.assetRegistry.decoderBootstrapDepths.push(
-                this.runtimeControlFlowDepth,
-            );
-        try {
-            return work();
-        } finally {
-            if (ownsEngine) this.assetRegistry.decoderBootstrapDepths.pop();
-        }
-    }
-
-    public compileAsyncReturn(
-        expression: ts.Expression,
-        type: DataType | undefined,
-        compileResult?: NativeReturnValueCompiler,
-    ): string {
-        return this.asyncLowerer.compileReturn(expression, type, compileResult);
-    }
-
     public withOwnedCallbackBody<T>(body: () => T): T {
         this.frameCallbackDepth++;
         try {
@@ -2175,79 +2050,8 @@ class Compiler implements LoweringServices {
         }
     }
 
-    @journaled private accessor awaitedSetupDepth = 0;
-
-    /** Immediately awaited helpers preserve their new engine's resource order. */
-    public withAsyncInvocation<T>(node: ts.Node, body: () => T): T {
-        const ordered =
-            this.engineCreationExecution !== undefined &&
-            ts.isAwaitExpression(node.parent) &&
-            !this.isRuntimeResourceConstruction();
-        if (ordered) this.awaitedSetupDepth++;
-        try {
-            return this.withOwnedCallbackBody(body);
-        } finally {
-            if (ordered) this.awaitedSetupDepth--;
-        }
-    }
-
     public isNativeWorkerExpression(expression: ts.Expression): boolean {
         return isNativeWorkerExpression(this, expression);
-    }
-
-    public workerCheckpointCpp(): string | undefined {
-        return this.options.workers
-            ? "bbl::pal::EventLoop::current().checkpoint()"
-            : undefined;
-    }
-
-    public workerAbortCpp(): string | undefined {
-        return this.options.workers
-            ? "bbl::pal::EventLoop::current().aborting()"
-            : undefined;
-    }
-
-    public compileAsyncEngineStart(
-        engine: Value,
-        node: ts.Node,
-    ): Value | undefined {
-        if (!this.options.workers) return undefined;
-        if (!engine.ownedEngineCpp)
-            this.fail(
-                node,
-                "Asynchronous engine startup requires an owned engine.",
-            );
-        return {
-            kind: "promise",
-            cpp: `bbl::pal::start_realm_engine(${engine.ownedEngineCpp})`,
-            promiseResult: { kind: "void", cpp: "" },
-            promiseType: "bbl::js::PromiseVoid",
-        };
-    }
-
-    public compileWorkerCallback(
-        expression: ts.Expression,
-        event: "message" | "error",
-    ): string {
-        const name = this.allocateTemporaryCppName("worker_event");
-        const type =
-            event === "message"
-                ? "const bbl::pal::WorkerMessage&"
-                : "bbl::pal::WorkerErrorEvent&";
-        const callback = this.compilePlatformCallback(
-            expression,
-            { name, cppType: type },
-            [
-                {
-                    kind:
-                        event === "message"
-                            ? "worker-message-event"
-                            : "worker-error-event",
-                    cpp: name,
-                },
-            ],
-        );
-        return `bbl::js::Callback<void(${type})>(${callback.identity}, ${callback.cpp})`;
     }
 
     /**
@@ -2568,7 +2372,7 @@ class Compiler implements LoweringServices {
             this.engineCreationExecution &&
             this.frameCallbackDepth ===
                 this.engineCreationExecution.callback +
-                    this.awaitedSetupDepth -
+                    this.asyncActivations.awaitedSetupDepth -
                     this.engineCreationExecution.awaited &&
             this.runtimeControlFlowDepth ===
                 this.engineCreationExecution.control &&
@@ -2584,7 +2388,7 @@ class Compiler implements LoweringServices {
             this.returnFrames.filter((frame) => frame.kind === "native")
                 .length <=
                 this.engineCreationExecution.native +
-                    this.awaitedSetupDepth -
+                    this.asyncActivations.awaitedSetupDepth -
                     this.engineCreationExecution.awaited
         ) {
             // Resource order is relative to this newly allocated engine.
@@ -2595,7 +2399,7 @@ class Compiler implements LoweringServices {
         return !this.definiteCollectionMutation();
     }
 
-    @journaled private accessor engineCreationExecution:
+    @journaled public accessor engineCreationExecution:
         | {
               callback: number;
               control: number;
@@ -3967,7 +3771,7 @@ class Compiler implements LoweringServices {
         this.engineCreationInsertion = this.body.length;
         if (this.options.workers)
             this.engineCreationExecution = {
-                awaited: this.awaitedSetupDepth,
+                awaited: this.asyncActivations.awaitedSetupDepth,
                 callback: this.frameCallbackDepth,
                 control: this.runtimeControlFlowDepth,
                 iteration: this.runtimeIterationDepth,
@@ -5845,7 +5649,7 @@ class Compiler implements LoweringServices {
             const result =
                 returnType !== "void" && frame.compileReturn
                     ? frame.compileReturn(statement.expression, returnType)
-                    : this.compileAsyncReturn(
+                    : this.asyncActivations.compileAsyncReturn(
                           statement.expression,
                           returnType === "void" ? undefined : returnType,
                       );

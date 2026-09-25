@@ -15,7 +15,6 @@ import type {
 } from "./handle-collections.js";
 import type {
     CallbackInvocationOptions,
-    SupportedFunction,
     UserFunctionLowerer,
 } from "./user-functions.js";
 import type {
@@ -45,6 +44,7 @@ import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
 import type { PropertyAccessLowerer } from "./properties.js";
+import type { AsyncActivations } from "./async-activations.js";
 import type { EngineLifecycle } from "./engine-lifecycle.js";
 import type { SharedClosureAnalysis } from "./shared-closure-analysis.js";
 import type { NativeEmissionRegistry } from "./native-emission-registry.js";
@@ -71,25 +71,6 @@ export interface NativeFunctionBodyOptions {
 
 /** Shared compiler operations; each lowering module selects its required services. */
 export interface LoweringServices {
-    withAsyncActivation<T>(work: () => T): T;
-    withEngineBootstrap<T>(declaration: SupportedFunction, work: () => T): T;
-    compileAsyncCall(
-        declaration: SupportedFunction,
-        arguments_: readonly Value[],
-        node: ts.Node,
-    ): Value | undefined;
-    compileSynchronousPromise(node: ts.NewExpression): Value;
-    pendingActivations(): import("./pending-activations.js").PendingActivations;
-    refusePendingActivationUse(node: ts.Node): void;
-    emitActivationBoundary(
-        statement: ts.ExpressionStatement,
-        emit: () => boolean | void,
-    ): boolean | void;
-    compileAsyncReturn(
-        expression: ts.Expression,
-        type: DataType | undefined,
-        compileResult?: NativeReturnValueCompiler,
-    ): string;
     emitNativeThrow(
         errorCpp: string,
         node?: ts.ThrowStatement,
@@ -121,6 +102,7 @@ export interface LoweringServices {
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
     readonly propertyAccess: PropertyAccessLowerer;
+    readonly asyncActivations: AsyncActivations;
     readonly engineLifecycle: EngineLifecycle;
     readonly sharedClosures: SharedClosureAnalysis;
     readonly nativeEmission: NativeEmissionRegistry;
@@ -175,17 +157,8 @@ export interface LoweringServices {
     emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
     compileValue(expression: ts.Expression): Value;
     compileWorkerValue(expression: ts.Expression): Value | undefined;
-    emitAwaitExpression(expression: ts.Expression): boolean;
     withOwnedCallbackBody<T>(body: () => T): T;
-    withAsyncInvocation<T>(node: ts.Node, body: () => T): T;
     isNativeWorkerExpression(expression: ts.Expression): boolean;
-    workerCheckpointCpp(): string | undefined;
-    workerAbortCpp(): string | undefined;
-    compileAsyncEngineStart(engine: Value, node: ts.Node): Value | undefined;
-    compileWorkerCallback(
-        expression: ts.Expression,
-        event: "message" | "error",
-    ): string;
     staticStringElements(
         expression: ts.Expression,
     ): readonly string[] | undefined;

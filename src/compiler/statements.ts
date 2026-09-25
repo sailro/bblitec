@@ -67,11 +67,8 @@ export interface StatementLoweringContext extends Pick<
     | "classLowerer"
     | "resolveRecordValue"
     | "admissions"
-    | "workerCheckpointCpp"
-    | "workerAbortCpp"
+    | "asyncActivations"
     | "options"
-    | "emitActivationBoundary"
-    | "refusePendingActivationUse"
     | "speculating"
     | "transaction"
     | "checker"
@@ -124,7 +121,6 @@ export interface StatementLoweringContext extends Pick<
     | "compileNodeInputMutation"
     | "checkNodeGeometryMutation"
     | "emitDiscardedValue"
-    | "emitAwaitExpression"
     | "conditions"
     | "browserErasure"
     | "libraryGlobal"
@@ -464,7 +460,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {
-        context.refusePendingActivationUse(statement);
+        context.asyncActivations.refusePendingActivationUse(statement);
         if (
             ts.canHaveModifiers(statement) &&
             ts
@@ -490,7 +486,7 @@ export class StatementLowerer {
         if (ts.isExpressionStatement(statement)) {
             this.loweredTerminators.delete(statement);
             if (
-                context.emitActivationBoundary(statement, () =>
+                context.asyncActivations.emitActivationBoundary(statement, () =>
                     this.emitExpression(context, statement.expression),
                 )
             ) {
@@ -1236,7 +1232,7 @@ export class StatementLowerer {
             return;
         }
         if (
-            context.workerCheckpointCpp() &&
+            context.asyncActivations.workerCheckpointCpp() &&
             someAnalysisNode(finallyBlock, ts.isAwaitExpression, {
                 functions: "skip",
             })
@@ -1324,7 +1320,7 @@ export class StatementLowerer {
                 );
             }
             const suspendedCatch =
-                context.workerCheckpointCpp() &&
+                context.asyncActivations.workerCheckpointCpp() &&
                 someAnalysisNode(
                     statement.catchClause.block,
                     ts.isAwaitExpression,
@@ -1360,7 +1356,7 @@ export class StatementLowerer {
                 catchDeclaration && !erasedCatchBinding
                     ? context.allocateTemporaryCppName("caught_error")
                     : undefined;
-            if (context.workerCheckpointCpp())
+            if (context.asyncActivations.workerCheckpointCpp())
                 context.emit(
                     "} catch (const bbl::pal::WorkerTerminated&) { throw;",
                 );
@@ -1710,7 +1706,8 @@ export class StatementLowerer {
                         counter &&
                         counterCpp &&
                         integerLoopConditionCpp(counter, counterCpp);
-                    const checkpoint = context.workerCheckpointCpp();
+                    const checkpoint =
+                        context.asyncActivations.workerCheckpointCpp();
                     const condition = nativeCondition
                         ? checkpoint
                             ? `(${checkpoint}, ${nativeCondition})`
@@ -1980,7 +1977,7 @@ export class StatementLowerer {
                 condition = context.conditions.compileCondition(expression);
             }),
         );
-        const checkpoint = context.workerCheckpointCpp();
+        const checkpoint = context.asyncActivations.workerCheckpointCpp();
         if (checkpoint) condition = `(${checkpoint}, ${condition})`;
         if (lines.length === 0) return condition;
         return `([&]() -> bool { ${lines.join(" ")} return ${condition}; }())`;
@@ -3023,7 +3020,7 @@ export class StatementLowerer {
             context.emitDiscardedValue(text);
             return;
         }
-        if (context.emitAwaitExpression(expression)) return;
+        if (context.asyncActivations.emitAwaitExpression(expression)) return;
         const unwrapped = context.unwrap(expression);
         if (ts.isVoidExpression(unwrapped)) {
             const operand = context.unwrap(unwrapped.expression);

@@ -34,7 +34,7 @@ export interface SceneIntrinsicContext
             | "compileStringLiteral"
             | "dataLowerer"
             | "emit"
-            | "compileAsyncEngineStart"
+            | "asyncActivations"
             | "sceneManifest"
             | "requireEngine"
             | "ensureDefaultRenderTask"
@@ -549,7 +549,8 @@ export function compileSceneIntrinsic(
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "engine", argumentAt(call, 0));
             context.reachFeature("backend:sdl", call);
-            const asynchronous = context.compileAsyncEngineStart(engine, call);
+            const asynchronous =
+                context.asyncActivations.compileAsyncEngineStart(engine, call);
             if (asynchronous) return asynchronous;
             // Upstream this returns to a continuation that runs alongside
             // the frames it just scheduled; here the call blocks, so the
