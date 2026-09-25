@@ -311,15 +311,18 @@ share it without reinstalling. Use `-Remove` to unlink junctions before removing
 
 Defaults use CPU affinity/RAM and Ninja history. `tools/model-build-scheduling.mjs` inspects scheduling.
 Native ccache stores objects in `artifacts/native-cache` (CMake `BBLITE_NATIVE_CACHE_DIR`, 25 GiB);
-`BBLITE_NATIVE_CACHE=0` disables it. Keys are relative to the checkout, so worktrees share hits. Each
+`BBLITE_NATIVE_CACHE=0` disables it. Keys are relative to the checkout, so worktrees share hits; a miss
+takes its headers from the compiler's own dependency output (ccache's depend mode) rather than a preprocessor
+pass. Each
 repository unit reads a content-addressed folder holding exactly the generated headers its include closure
 names (`native/native-header-cache.cmake`), so a generated header rebuilds only its includers and a unit
 hits across scenes whose inputs to it agree; lowered modules compile from content-addressed copies under the
-cache (`sources/<module>-<digest>.cpp`, the name their diagnostics carry). clang-cl builds the precompiled
-header from a source under the cache named by its text, so every tree of a checkout whose PCH inputs agree
-shares it and its users' entries; its own entry keys on the checkout's absolute paths, which the PCH
-records. Like `/Yc`, it instantiates the templates its headers use (`-fpch-instantiate-templates`), so
-units do not repeat them. Debug keys retain directory identity.
+cache (`sources/<module>-<digest>.cpp`, the name their diagnostics carry). clang-cl builds each precompiled
+header (the shared one, and each backend's scene-renderer one) from a source under the cache named by its
+text, so every tree of a checkout whose PCH inputs agree shares it and its users' entries; its own entry
+keys on the checkout's absolute paths, which the PCH records. Like `/Yc`, each instantiates the templates
+its headers use (`-fpch-instantiate-templates`), so units do not repeat them. Debug keys retain directory
+identity.
 
 ## Shader compilation
 

@@ -225,7 +225,7 @@ target_link_libraries(check PRIVATE bblite_features)
 bblite_cache_unit_headers(TARGETS check)
 bblite_generated_inputs(pch_generated "\${BBLITE_NATIVE_ROOT}/include/bblite/shared.hpp")
 bblite_cached_headers(pch_directory \${pch_generated})
-bblite_shared_pch(TARGETS check HEADERS <bblite/shared.hpp> <vector> INCLUDE_DIRECTORY "\${pch_directory}")
+bblite_shared_pch(NAME check_pch TARGETS check HEADERS <bblite/shared.hpp> <vector> INCLUDE_DIRECTORY "\${pch_directory}")
 `,
         );
         // The precompiled header reads an activation macro of the tree.
@@ -291,7 +291,6 @@ bblite_shared_pch(TARGETS check HEADERS <bblite/shared.hpp> <vector> INCLUDE_DIR
         ].map((match) => match[1]!);
 
     const checkoutA = checkout("checkout-a");
-    // A miss preprocesses each user with the PCH's source included as text.
     const first = build(checkoutA, "first");
     assert.deepEqual(compiles(first.log), [
         "cache_miss",
@@ -305,18 +304,29 @@ bblite_shared_pch(TARGETS check HEADERS <bblite/shared.hpp> <vector> INCLUDE_DIR
         "direct_cache_hit",
         "direct_cache_hit",
     ]);
+    // A header the PCH holds changes: the PCH is rebuilt and every unit
+    // compiles against it, none from an entry keyed on the old PCH.
+    writeFileSync(
+        join(checkoutA, "include/bblite/shared.hpp"),
+        "#pragma once\n#include <bblite/features/has_value.hpp>\n#include <vector>\ninline int shared_value() { return HAS_VALUE ? 3 : 0; }\n",
+    );
+    run(["--build", second.build]);
+    assert.equal(
+        execFileSync(join(second.build, "check.exe"), { encoding: "utf8" }),
+        "34",
+    );
 
     // The PCH records the absolute paths it was built from, so another
     // checkout builds its own rather than one naming the first's files.
     const other = build(checkout("checkout-b"), "first");
     assert.ok(compiles(other.log).includes("cache_miss"));
-    const pch = readdirSync(join(other.build, "CMakeFiles/bblite_pch.dir"), {
+    const pch = readdirSync(join(other.build, "CMakeFiles/check_pch.dir"), {
         recursive: true,
         encoding: "utf8",
     }).find((path) => /bblite_pch-[0-9a-f]{16}\.cxx\.obj$/.test(path));
     assert.ok(pch, "the precompiled header is the PCH target's object");
     const bytes = readFileSync(
-        join(other.build, "CMakeFiles/bblite_pch.dir", pch),
+        join(other.build, "CMakeFiles/check_pch.dir", pch),
         "latin1",
     );
     assert.ok(bytes.includes("checkout-b"));

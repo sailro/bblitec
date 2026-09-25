@@ -14,7 +14,7 @@ import {
     needsOfflineShaders,
 } from "../src/build-options.js";
 import { listFiles } from "../src/tooling/records.js";
-import { sceneBackendSource } from "./native-fixture.js";
+import { sceneBackendFiles, sceneBackendSource } from "./native-fixture.js";
 
 test("compiled backends have independent build and deployment directories", () => {
     const directory = "native/build-primitives-release";
@@ -511,7 +511,39 @@ test("the scene-invariant PAL units compile in their own object library", () => 
     );
     assert.match(
         cmake,
-        /target_link_libraries\(bblite_native PRIVATE bblite_features bblite_pal_common\)/,
+        /target_link_libraries\(bblite_native PRIVATE bblite_features bblite_pal_common \$\{BBLITE_SCENE_RENDERER_TARGETS\}\)/,
+    );
+    // Each backend's scene renderer -- the driver and every family unit, all
+    // opening with the scene header -- is an object library of its own, and
+    // no other unit is.
+    const sceneUnit = new RegExp(
+        (
+            /BBLITE_SCENE_RENDERER_UNIT\s*"([^"]+)"/.exec(cmake)?.[1] ?? ""
+        ).replaceAll("\\\\", "\\"),
+    );
+    for (const backend of ["sdl", "dawn"] as const) {
+        for (const file of sceneBackendFiles(backend).filter((path) =>
+            path.endsWith(".cpp"),
+        )) {
+            assert.match(`/${file.slice("native/".length)}`, sceneUnit, file);
+            assert.match(
+                readFileSync(file, "utf8"),
+                /^(?:#include <bblite\/features\/\w+\.hpp>\n|\/\/.*\n|\n)*#include "pal_(?:sdl_gpu|dawn)_scene\.hpp"$/m,
+                `${file} opens with its scene header`,
+            );
+        }
+    }
+    for (const unit of [
+        "pal_sdl_gpu_sprite",
+        "pal_dawn_effect",
+        "pal_sdl_gpu_frame_graph",
+        "pal_gpu_shared",
+    ]) {
+        assert.doesNotMatch(`/src/${unit}.cpp`, sceneUnit, unit);
+    }
+    assert.match(
+        cmake,
+        /add_library\(bblite_\$\{bblite_backend\}_scene OBJECT \$\{BBLITE_\$\{bblite_backend_variable\}_SCENE_SOURCES\}\)/,
     );
     // Under the object cache each repository unit reads its own
     // content-addressed header folder, and a PAL-common unit reaching a
@@ -520,7 +552,7 @@ test("the scene-invariant PAL units compile in their own object library", () => 
     // rides the interface target.
     assert.match(
         cmake,
-        /bblite_cache_unit_headers\(\s*TARGETS bblite_pal_common bblite_native\s+SCENE_INVARIANT bblite_pal_common/,
+        /bblite_cache_unit_headers\(\s*TARGETS bblite_pal_common bblite_native \$\{BBLITE_SCENE_RENDERER_TARGETS\}\s+SCENE_INVARIANT bblite_pal_common/,
     );
     assert.doesNotMatch(cmake, /target_compile_definitions\(\s*bblite_native/);
     assert.doesNotMatch(
@@ -544,7 +576,23 @@ test("the scene-invariant PAL units compile in their own object library", () => 
     );
     assert.match(
         cmake,
-        /bblite_shared_pch\(\s*TARGETS bblite_pal_common bblite_native\s+HEADERS \$\{BBLITE_PCH_HEADERS\}/,
+        /bblite_shared_pch\(\s*NAME bblite_pch\s+TARGETS bblite_pal_common bblite_native\s+HEADERS \$\{BBLITE_PCH_HEADERS\}/,
+    );
+    // clang-cl's /Yc instantiates the templates a PCH leaves pending; the
+    // -emit-pch PCHs must too, or every user instantiates them again.
+    assert.match(
+        readFileSync("native/native-header-cache.cmake", "utf8"),
+        /"SHELL:-Xclang -emit-pch" "SHELL:-Xclang -fpch-instantiate-templates"/,
+    );
+    // A scene renderer library precompiles its scene header alone, under the
+    // cache and without it.
+    assert.match(
+        cmake,
+        /bblite_shared_pch\(\s*NAME \$\{bblite_target\}_pch\s+TARGETS \$\{bblite_target\}\s+HEADERS "\$\{bblite_scene_header\}"\s+INCLUDE/,
+    );
+    assert.match(
+        cmake,
+        /target_precompile_headers\(\s*\$\{bblite_target\} PRIVATE "\$\{BBLITE_NATIVE_ROOT\}\/src\/pal_\$\{bblite_backend\}_scene\.hpp"\s*\)/,
     );
     assert.match(
         cmake,

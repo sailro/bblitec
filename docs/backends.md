@@ -35,7 +35,8 @@ Each backend's scene renderer is a driver unit (`pal_sdl_gpu.cpp`, `pal_dawn.cpp
 run), a state header (`pal_sdl_gpu_scene.hpp`, `pal_dawn_scene.hpp`) and one unit per feature family, paired
 across the backends as `pal_sdl_gpu_scene_<family>.cpp` / `pal_dawn_scene_<family>.cpp`: meshes, variants,
 shadows, textures, targets, post_process and picking. CMake builds the families wherever the feature table
-selects the driver.
+selects the driver, as one object library per backend (`bblite_sdl_gpu_scene`, `bblite_dawn_scene`) whose
+precompiled header holds the state header, so a tree parses it once per backend.
 `pal_scene_synchronize.hpp` owns a scene frame's synchronization order, which both scene backends
 instantiate with their own GPU operations. `pal_pass_camera.hpp` resolves every pass's camera and clear
 colour through the lowered `cfg.cam ?? scene.camera` and `cfg.clrColor ?? sc.clearColor`: a layer renders
