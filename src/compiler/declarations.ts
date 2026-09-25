@@ -15,6 +15,7 @@ import { isStoringDataCall } from "./data-methods.js";
 import { mutatingArrayMethods } from "./receiver-methods.js";
 import {
     isOpaqueReference,
+    isHandleKind,
     isTypedArrayType,
     passesByReference,
     type DataType,
@@ -1130,12 +1131,13 @@ export class DeclarationLowerer {
             this.context.reachJsData();
             initializerCpp = `bbl::js::snapshot_value(${value.ownedCpp ?? value.cpp})`;
         }
-        const sharedPrimitive =
+        const sharedBinding =
             sharedClosureStorage &&
-            this.context.sharedClosures.isSharedClosureScalar(
-                value.dataType?.kind === "enum" ? "enum" : value.kind,
-            );
-        const boundCpp = sharedPrimitive ? `(*${cppName})` : cppName;
+            (isHandleKind(value.kind) ||
+                this.context.sharedClosures.isSharedClosureScalar(
+                    value.dataType?.kind === "enum" ? "enum" : value.kind,
+                ));
+        const boundCpp = sharedBinding ? `(*${cppName})` : cppName;
         const valueFound = presenceFlagCpp(value);
         const optionalFoundCpp =
             valueFound === undefined ||
@@ -1147,13 +1149,13 @@ export class DeclarationLowerer {
         this.context.emit({
             kind: "declaration",
             name: cppName,
-            type: sharedPrimitive
+            type: sharedBinding
                 ? "auto"
                 : stableOwnerAlias
                   ? "auto&"
                   : nativeType,
-            initializer: sharedPrimitive
-                ? `bbl::js::make_gc_shared<${nativeType}>(${initializerCpp})`
+            initializer: sharedBinding
+                ? `bbl::js::make_gc_shared<${nativeType === "auto" ? `std::decay_t<decltype(${initializerCpp})>` : nativeType}>(${initializerCpp})`
                 : initializerCpp,
             attributes: "[[maybe_unused]] ",
         });
@@ -1184,14 +1186,14 @@ export class DeclarationLowerer {
         const stored: Value = {
             ...value,
             cpp: boundCpp,
-            ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
+            ...(sharedBinding ? { sharedStorageCpp: cppName } : {}),
             ...(optionalFoundCpp ? { optionalFoundCpp } : {}),
             ...(slotFoundCpp ? { slotFoundCpp } : {}),
             nativeBinding: true,
         };
         // The local reads its own storage, not a counted loop's counter.
         delete writable(stored).integerCounterCpp;
-        if (!sharedClosureStorage) delete writable(stored).sharedStorageCpp;
+        if (!sharedBinding) delete writable(stored).sharedStorageCpp;
         if (stored.kind === "audio-engine" && stored.audioMainBusCpp) {
             writable(stored).audioMainBusCpp = this.context.takeNativeTemporary(
                 stored.audioMainBusCpp,
