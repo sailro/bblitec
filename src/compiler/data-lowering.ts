@@ -34,7 +34,11 @@ import {
     resolvedSymbol,
 } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
-import { nullability } from "./type-facts.js";
+import {
+    arrayElementType,
+    nullability,
+    slotHoldsOnlyNull,
+} from "./type-facts.js";
 import { dataUnionEquality } from "./data-comparisons.js";
 import { compileDateNew } from "./dates.js";
 import { requireDynamicBindingStorage } from "./dynamic-binding-storage.js";
@@ -1265,6 +1269,38 @@ export class DataLowerer {
         const combinedPresent = selectedPresent
             ? `(${present} && ${selectedPresent})`
             : present;
+        // A chain whose member may itself be `null` is `undefined` only when
+        // the owner was absent (`Value.slotFoundCpp`).
+        const slotFound = (() => {
+            const member = ts.isCallExpression(access)
+                ? undefined
+                : ts.isPropertyAccessExpression(access)
+                  ? resolvedSymbol(this.context.checker, access)
+                  : undefined;
+            const memberType =
+                member && (member.flags & ts.SymbolFlags.Optional) === 0
+                    ? this.context.checker.getTypeOfSymbol(member)
+                    : ts.isElementAccessExpression(access)
+                      ? arrayElementType(
+                            this.context.checker,
+                            this.context.checker.getTypeAtLocation(
+                                access.expression,
+                            ),
+                        )
+                      : undefined;
+            if (!memberType || !slotHoldsOnlyNull(memberType)) return undefined;
+            const name = this.context.allocateTemporaryCppName("chain_found");
+            this.context.emit({
+                kind: "declaration",
+                type: "const bool",
+                name,
+                initializer: present,
+                attributes: "[[maybe_unused]] ",
+            });
+            return name;
+        })();
+        const withSlot = (value: Value): Value =>
+            slotFound ? { ...value, slotFoundCpp: slotFound } : value;
         const impure = selected.impure;
         const optionalResult = (
             type: DataType,
@@ -1299,10 +1335,12 @@ export class DataLowerer {
             selectedType.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(selectedType.name)
         ) {
-            return optionalResult(
-                selectedType,
-                selected.cpp,
-                this.context.dataTypes.absentValue(selectedType),
+            return withSlot(
+                optionalResult(
+                    selectedType,
+                    selected.cpp,
+                    this.context.dataTypes.absentValue(selectedType),
+                ),
             );
         }
         const resultType: DataType =
@@ -1325,10 +1363,12 @@ export class DataLowerer {
                       access,
                   );
         this.context.reachJsData();
-        return optionalResult(
-            resultType,
-            this.context.dataTypes.presentValue(resultType, selectedCpp),
-            this.context.dataTypes.absentValue(resultType),
+        return withSlot(
+            optionalResult(
+                resultType,
+                this.context.dataTypes.presentValue(resultType, selectedCpp),
+                this.context.dataTypes.absentValue(resultType),
+            ),
         );
     }
 
@@ -2977,6 +3017,34 @@ export class DataLowerer {
         const indexLines = retainedIndexOwner
             ? this.context.captureEmittedLines(compileIndex)
             : (compileIndex(), []);
+        const elementType = arrayElementType(
+            this.context.checker,
+            this.context.checker.getTypeAtLocation(access.expression),
+        );
+        const nullableElementRead =
+            mode === "read" &&
+            dataType.kind === "vector" &&
+            dataType.element.kind === "optional" &&
+            elementType !== undefined &&
+            slotHoldsOnlyNull(elementType);
+        // The slot test reads the index again, so an index that runs code
+        // is read once, first.
+        if (
+            nullableElementRead &&
+            !retainedIndexOwner &&
+            expressionMayRunCode(access.argumentExpression)
+        ) {
+            const pinned =
+                this.context.allocateTemporaryCppName("element_index");
+            this.context.emit({
+                kind: "declaration",
+                type: "const double",
+                name: pinned,
+                initializer: index,
+                attributes: "[[maybe_unused]] ",
+            });
+            index = pinned;
+        }
         const indexedOwner = retainedIndexOwner
             ? this.context.allocateTemporaryCppName("indexed_owner")
             : owner.cpp;
@@ -3058,8 +3126,21 @@ export class DataLowerer {
         }
         switch (dataType.kind) {
             case "vector": {
+                // An unproven read can miss the array (`Value.slotFoundCpp`).
+                const slot =
+                    nullableElementRead && !proven
+                        ? {
+                              preserveUncheckedLookup: true as const,
+                              ...(retainedIndexOwner
+                                  ? {}
+                                  : {
+                                        slotFoundCpp: `bbl::js::array_has_index(${owner.cpp}, ${index})`,
+                                    }),
+                          }
+                        : {};
                 const value: Value = {
                     ...this.leafValue(indexed, dataType.element),
+                    ...slot,
                     ...(mode === "read" ? { nativeLvalue: true as const } : {}),
                     nativeCaptures: owner.nativeCaptures ?? [],
                     ...(owner.readOnly ? { readOnly: true as const } : {}),
@@ -3648,6 +3729,18 @@ export class DataLowerer {
                     element,
                 ),
                 preserveUncheckedLookup: true,
+                ...(slotHoldsOnlyNull(
+                    arrayElementType(
+                        this.context.checker,
+                        this.context.checker.getTypeAtLocation(
+                            access.expression,
+                        ),
+                    ) ?? this.context.checker.getAnyType(),
+                )
+                    ? {
+                          slotFoundCpp: `bbl::js::array_has_index(${owner.cpp}, ${indexTemporary})`,
+                      }
+                    : {}),
                 nativeCaptures: [
                     ...(owner.nativeCaptures ?? []),
                     this.context.registerNativeBinding(indexTemporary),
@@ -9184,16 +9277,22 @@ export class DataLowerer {
         const absent = nullability(
             this.context.checker.getTypeAtLocation(operand),
         );
-        const state =
-            value.preserveUncheckedLookup && !absent.null
-                ? "undefined"
-                : absent.undefined && !absent.null
-                  ? "undefined"
-                  : absent.null && !absent.undefined
-                    ? "null"
-                    : absent.null && absent.undefined
-                      ? undefined
-                      : literal;
+        // A presence flag the type does not account for (an unchecked
+        // index or a search that can miss) marks a slot that is not there:
+        // `undefined`.
+        const state = value.preserveUncheckedLookup
+            ? absent.null
+                ? undefined
+                : "undefined"
+            : absent.undefined && !absent.null
+              ? "undefined"
+              : absent.null && !absent.undefined
+                ? "null"
+                : absent.null && absent.undefined
+                  ? undefined
+                  : presenceFlagCpp(value) !== undefined
+                    ? "undefined"
+                    : literal;
         if (state === undefined)
             this.context.fail(
                 operand,
@@ -9338,10 +9437,10 @@ export class DataLowerer {
                 present: string,
                 absent = `!(${present})`,
             ): string => {
-                // A lookup that knows whether its key was there tells a
-                // miss (`undefined`) from a stored `null` exactly.
-                if (!loose && literal !== undefined && value.keyFoundCpp) {
-                    const found = value.keyFoundCpp;
+                // A value that knows whether its slot existed tells a
+                // missing one (`undefined`) from a stored `null` exactly.
+                if (!loose && literal !== undefined && value.slotFoundCpp) {
+                    const found = value.slotFoundCpp;
                     if (literal === "undefined")
                         return negated ? found : `!${found}`;
                     const storedNull = `(${found} && ${absent})`;
