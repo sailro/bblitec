@@ -1574,10 +1574,8 @@ void draw_standard_variant(
         bound_pipeline = variant_pipeline;
     }
     const MeshRecord& record = handle_at(engine.meshes, item.mesh);
-    upstream::MeshUniforms pinned_mesh = pinned_mesh_block(scene, engine, item.mesh);
-    if (velocity_history) {
-        write_pinned_velocity_tail(*velocity_history, item.mesh, pinned_mesh);
-    }
+    const upstream::MeshUniforms pinned_mesh =
+        pinned_mesh_block(scene, engine, item.mesh, velocity_history);
     const upstream::StandardMaterialUniforms material_block =
         standard_material_block(material, features);
     const upstream::StandardUvTransformUniforms uv_block = standard_uv_block(material, features);

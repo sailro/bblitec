@@ -27,32 +27,40 @@ test("a geometry task's Standard renderables keep the pin's previous world and s
         join(output, "velocity.hpp"),
         [
             cppRecord(source, "struct PinnedVelocityHistory {"),
+            cppRecord(
+                source,
+                "template <typename Block>\nconcept PinnedVelocityBlock",
+            ),
             cppFunction(source, "void begin_pinned_velocity_frame("),
             cppFunction(
                 source,
                 "const PinnedVelocityHistory::Renderable& update_pinned_velocity(",
             ),
             cppFunction(source, "void write_pinned_velocity_tail("),
+            cppFunction(source, "void update_pinned_velocity_frame("),
         ].join("\n\n"),
     );
     const executable = join(output, "check.exe");
-    runNativeFixtureCompiler(tools, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/O2",
-        `/Fo:${output}/`,
-        `/Fe:${executable}`,
-        "/I",
-        output,
-        "test/fixtures/pinned-velocity-history-check.cpp",
-    ]);
-    assert.match(
-        execFileSync(executable, { encoding: "utf8" }),
-        /pinned-velocity-history-check: ok/,
-    );
+    for (const velocity of [0, 1]) {
+        runNativeFixtureCompiler(tools, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/O2",
+            `/DFIXTURE_VELOCITY=${velocity}`,
+            `/Fo:${output}/`,
+            `/Fe:${executable}`,
+            "/I",
+            output,
+            "test/fixtures/pinned-velocity-history-check.cpp",
+        ]);
+        assert.match(
+            execFileSync(executable, { encoding: "utf8" }),
+            /pinned-velocity-history-check: ok/,
+        );
+    }
 });
 
 test("only the geometry task's Standard draws write the velocity tail", () => {
@@ -75,10 +83,10 @@ test("only the geometry task's Standard draws write the velocity tail", () => {
             1,
             `${backend} updates each geometry task's renderables once a frame`,
         );
-        assert.equal(
-            text.match(/write_pinned_velocity_tail\(/g)?.length,
-            1,
-            `${backend} writes the tail at one Standard draw site`,
+        assert.match(
+            text,
+            /pinned_mesh_block\(scene, engine, (?:draw\.item|item)\.mesh, velocity_history\)/,
+            `${backend} uses the task's composed world and velocity tail`,
         );
     }
     assert.match(

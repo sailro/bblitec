@@ -1601,10 +1601,14 @@ std::vector<std::uint8_t> pinned_lights_block(const Scene& scene, const Engine& 
 #endif
 
 #if BBLITE_PINNED_MATERIALS && BBLITE_PINNED_MATERIAL_VARIANTS
-upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engine,
-                                         MeshHandle mesh) {
+upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engine, MeshHandle mesh,
+                                         const PinnedVelocityHistory* velocity_history) {
     upstream::MeshUniforms block{};
-    block.world = mesh_block_world(scene, engine, handle_at(engine.meshes, mesh));
+    if (velocity_history && PinnedVelocityBlock<upstream::MeshUniforms>) {
+        write_pinned_velocity_tail(*velocity_history, mesh, block);
+    } else {
+        block.world = mesh_block_world(scene, engine, handle_at(engine.meshes, mesh));
+    }
     pinned_mesh_light_selection(scene, engine, mesh, block);
     return block;
 }
@@ -1612,12 +1616,20 @@ upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engin
 void update_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& scene,
                                   const Engine& engine,
                                   const std::vector<upstream::RenderItem>& items) {
+    if constexpr (!PinnedVelocityBlock<upstream::MeshUniforms>) {
+        return;
+    }
     begin_pinned_velocity_frame(history, scene);
     for (const upstream::RenderItem& source : items) {
         const upstream::RenderItem item =
             upstream::bind_render_item(source, engine, source.material);
         if (item.material_kind != upstream::RenderMaterialKind::standard) {
             continue;
+        }
+        if (item.mesh.value < history.renderables.size()) {
+            const auto& renderable = history.renderables[item.mesh.value];
+            if (renderable.mesh == item.mesh && renderable.updated_frame == history.frame)
+                continue;
         }
         update_pinned_velocity(
             history, item.mesh,
@@ -1627,11 +1639,8 @@ void update_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& s
 
 void write_pinned_velocity_tail(const PinnedVelocityHistory& history, MeshHandle mesh,
                                 upstream::MeshUniforms& block) {
-    [&](auto& dependent) {
-        if constexpr (requires {
-                          dependent.previousWorld;
-                          dependent.velocityEnabled;
-                      }) {
+    [&]<typename Block>(Block& dependent) {
+        if constexpr (PinnedVelocityBlock<Block>) {
             if (mesh.value >= history.renderables.size() ||
                 !(history.renderables[mesh.value].mesh == mesh) ||
                 history.renderables[mesh.value].updated_frame != history.frame) {
@@ -1639,6 +1648,7 @@ void write_pinned_velocity_tail(const PinnedVelocityHistory& history, MeshHandle
                                        "velocity update did not reach.");
             }
             const PinnedVelocityHistory::Renderable& renderable = history.renderables[mesh.value];
+            dependent.world = renderable.previous_world;
             dependent.previousWorld = renderable.written_previous_world;
             dependent.velocityEnabled = renderable.written_velocity_enabled;
         }

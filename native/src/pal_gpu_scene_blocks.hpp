@@ -58,6 +58,12 @@ struct PinnedVelocityHistory {
     std::vector<Renderable> renderables;
 };
 
+template <typename Block>
+concept PinnedVelocityBlock = requires(Block block) {
+    block.previousWorld;
+    block.velocityEnabled;
+};
+
 /** Opens a task frame; a moved renderable version rebuilds every renderable. */
 void begin_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& scene);
 
@@ -148,8 +154,9 @@ inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine
 }
 
 #if BBLITE_PINNED_MATERIAL_VARIANTS
-/** The pin's `MeshUniforms` for one mesh: its world and its light selection. */
-upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engine, MeshHandle mesh);
+/** The pin's mesh block, reusing a geometry task's updated world when it has velocity. */
+upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engine, MeshHandle mesh,
+                                         const PinnedVelocityHistory* velocity_history = nullptr);
 
 /**
  * A geometry task's pre-draw update (`geometry-renderer-task.ts` executes
@@ -162,7 +169,7 @@ void update_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& s
                                   const std::vector<upstream::RenderItem>& items);
 
 /**
- * The Standard geometry output's block tail (`standard-geometry-renderable.ts`
+ * The Standard geometry output's world and tail (`standard-geometry-renderable.ts`
  * `_baseUpdate`): what this frame's update wrote for the mesh. The generic
  * lambda makes the access dependent: outside a template both `if constexpr`
  * branches must compile, and most scenes' mirrored MeshUniforms carries no

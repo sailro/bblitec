@@ -1084,10 +1084,8 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
                                 [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
                                 const PinnedVelocityHistory* velocity_history) {
     const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
-    upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
-    if (velocity_history) {
-        write_pinned_velocity_tail(*velocity_history, draw.item.mesh, mesh_block);
-    }
+    const upstream::MeshUniforms mesh_block =
+        pinned_mesh_block(scene, engine, draw.item.mesh, velocity_history);
     wgpuQueueWriteBuffer(state.queue, mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
     std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
     if (material && material->no_color) {
