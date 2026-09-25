@@ -215,7 +215,7 @@ export interface ExpressionContext
             | "castNumber"
             | "compileBoolean"
             | "compileStringLiteral"
-            | "registerAsset"
+            | "assetRegistry"
             | "moduleRelativeAssetUrl"
             | "compileDynamicModuleRelativeAssetUrl"
             | "materializeStaticNativeValue"

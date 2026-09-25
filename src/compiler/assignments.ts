@@ -524,7 +524,7 @@ export interface AssignmentContext
             | "expectKind"
             | "expectSameEngine"
             | "requireEngine"
-            | "assertAssetRootWritable"
+            | "assetRegistry"
             | "eraseBrowserInstrumentation"
             | "browserErasure"
             | "isNativeUiValueExpression"
@@ -1611,7 +1611,7 @@ export function emitPropertyAssignment(
     if (trsVector && ts.isPropertyAccessExpression(left.expression)) {
         const root = context.compileValue(left.expression.expression);
         if (root.kind === "asset-root") {
-            context.assertAssetRootWritable(root, expression);
+            context.assetRegistry.assertAssetRootWritable(root, expression);
             const vector = left.expression.name.text;
             const axis = trsAxisIndex(left.name.text);
             if (axis === undefined) {
@@ -2773,7 +2773,7 @@ function emitTargetPropertyAssignment(
                     "A light parent currently requires an imported transform root or null.",
                 );
             context.expectSameEngine(target, parent, expression);
-            context.assertAssetRootWritable(parent, expression);
+            context.assetRegistry.assertAssetRootWritable(parent, expression);
         }
         context.emit(
             `bbl::set_light_asset_parent(${context.requireEngine(target, expression)}, ${target.cpp}, ${parent ? parent.cpp : "bbl::AssetHandle{}"});`,
@@ -2844,7 +2844,7 @@ function emitLocalMatrixAssignment(
                 "An imported synthetic root only exposes clearing _localMatrix with undefined.",
             );
         }
-        context.assertAssetRootWritable(target, expression);
+        context.assetRegistry.assertAssetRootWritable(target, expression);
         // loadGltf's public root is the synthetic TRS node. It never owns a
         // raw glTF matrix in the flattened native representation, so clearing
         // that optional override is observably a no-op here as it is upstream.

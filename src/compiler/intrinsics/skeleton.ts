@@ -20,7 +20,7 @@ export interface SkeletonIntrinsicContext
             | "compileForDataSink"
             | "requireEngine"
             | "expectSameEngine"
-            | "gltfAlreadyLoaded"
+            | "assetRegistry"
             | "fail"
         > {}
 
@@ -161,7 +161,7 @@ export function compileSkeletonIntrinsic(
             // the call creates nothing, so it emits no statement; what it
             // does is decide which loader is generated.
             context.expectArgumentCount(call, 0, 0);
-            if (context.gltfAlreadyLoaded()) {
+            if (context.assetRegistry.gltfAlreadyLoaded()) {
                 context.fail(
                     call,
                     "enableBoneControl installs the pin's builder hook, so " +

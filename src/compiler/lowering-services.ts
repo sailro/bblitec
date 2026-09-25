@@ -1,5 +1,4 @@
 import type ts from "typescript";
-import type { AssetDecoderConfiguration } from "../asset-decoders.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type {
     DataTypeRegistry,
@@ -46,6 +45,7 @@ import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
 import type { PropertyAccessLowerer } from "./properties.js";
+import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
 import type { IntrinsicOptions } from "./intrinsic-options.js";
 
@@ -118,6 +118,7 @@ export interface LoweringServices {
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
     readonly propertyAccess: PropertyAccessLowerer;
+    readonly assetRegistry: AssetRegistry;
     readonly admissions: AdmissionRecorder;
     readonly intrinsicOptions: IntrinsicOptions;
     readonly userFunctions: UserFunctionLowerer;
@@ -133,10 +134,6 @@ export interface LoweringServices {
     readonly canvasReadbackFunctions: Set<string>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
     readonly assets: Map<string, CompileAsset>;
-    setAssetDecoderConfiguration(
-        configuration: AssetDecoderConfiguration,
-        node: ts.Node,
-    ): void;
     readonly assetPayloads: Map<string, string>;
     readonly boundPixelsTextures: Set<string>;
     readonly erasedBrowserExpressions: Set<number>;
@@ -528,15 +525,6 @@ export interface LoweringServices {
         element: DataIterationElement,
         template?: Value,
     ): void;
-    registerAsset(
-        source: string,
-        kind: CompileAsset["kind"],
-        faceSize?: number,
-    ): CompileAsset;
-    markAssetRootReparented(root: Value, node: ts.Node): void;
-    assertAssetRootWritable(root: Value, node: ts.Node): void;
-    recordGltfContainerLoad(asset: CompileAsset, node: ts.Node): void;
-    enableGltfCameras(node: ts.Node): void;
     probePixelsAsset(expression: ts.Expression):
         | {
               cpp: string;
@@ -552,17 +540,6 @@ export interface LoweringServices {
         callee: ts.Identifier,
     ): Value | undefined;
     registerSpriteAtlasAsset(expression: ts.Expression): string;
-    selectGltfVariant(
-        asset: CompileAsset,
-        variantName: string,
-        node: ts.Node,
-    ): void;
-    recordAssetSceneUnlit(
-        asset: CompileAsset,
-        tint: readonly [number, number, number] | undefined,
-        node: ts.Node,
-    ): void;
-    resolveBundledAsset(source: string): string;
     canvasSizeProperty(
         expression: ts.Expression,
     ): "width" | "height" | undefined;
@@ -659,7 +636,6 @@ export interface LoweringServices {
     requirePresentationHost(node: ts.Node): string;
     pbrLightmapEnabled(): boolean;
     reachFeature(feature: Feature, site?: ts.Node | string): void;
-    gltfAlreadyLoaded(): boolean;
     compileSceneRegistration(scene: Value, node: ts.Node): string;
     ensureDefaultRenderTask(
         scene: Value,

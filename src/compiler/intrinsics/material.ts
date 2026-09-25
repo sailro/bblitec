@@ -55,7 +55,7 @@ export interface MaterialIntrinsicContext
             | "engineHasStarted"
             | "hasRegisteredScene"
             | "sceneManifest"
-            | "recordAssetSceneUnlit"
+            | "assetRegistry"
             | "pbrLightmapEnabled"
             | "boundPixelsTextures"
             | "expectSameEngine"
@@ -1210,7 +1210,11 @@ function compileSetPbrUnlit(
         ? material.assetWholeMeshList
         : undefined;
     if (container) {
-        context.recordAssetSceneUnlit(container, tint?.channels, call);
+        context.assetRegistry.recordAssetSceneUnlit(
+            container,
+            tint?.channels,
+            call,
+        );
     } else {
         context.sceneManifest.recordScenePbrUnlit(
             material.scenePbrMaterialIndex,

@@ -5,12 +5,12 @@ import type { LoweringServices } from "./lowering-services.js";
 export function compileBakedMesh(
     context: Pick<
         LoweringServices,
-        "registerAsset" | "allocateTemporaryCppName" | "cppString" | "emit"
+        "assetRegistry" | "allocateTemporaryCppName" | "cppString" | "emit"
     >,
     mesh: BakedCsgMesh,
 ): { positions: string; normals: string; uvs: string; indices: string } {
     const payload = Buffer.from(packBakedCsgMesh(mesh)).toString("base64");
-    const asset = context.registerAsset(
+    const asset = context.assetRegistry.registerAsset(
         `data:application/x-bblite-mesh;base64,${payload}`,
         "binary",
     );

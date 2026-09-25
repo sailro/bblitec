@@ -177,7 +177,7 @@ interface UiProjectionContext extends Pick<
     | "options"
     | "probeEmission"
     | "reachFeature"
-    | "registerAsset"
+    | "assetRegistry"
     | "reachJsData"
     | "requireDefaultEngine"
     | "requireEngine"
@@ -2067,7 +2067,8 @@ export class UiProjection {
         if (image === "none") return image;
         return renderUiBorderImage(
             image,
-            this.context.registerAsset(image.source, "texture").output,
+            this.context.assetRegistry.registerAsset(image.source, "texture")
+                .output,
         );
     }
 

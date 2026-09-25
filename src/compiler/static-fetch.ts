@@ -24,7 +24,7 @@ export interface StaticFetchContext extends Pick<
     | "cppString"
     | "bindings"
     | "libraryGlobal"
-    | "registerAsset"
+    | "assetRegistry"
     | "reachJsData"
     | "reachFeature"
     | "dataLowerer"
@@ -84,7 +84,7 @@ export function compileStaticFetch(
         context.options,
     );
     if (response) {
-        const asset = context.registerAsset(source, "binary");
+        const asset = context.assetRegistry.registerAsset(source, "binary");
         return ownedPackagedResponse(
             context,
             url,
@@ -193,14 +193,15 @@ function compileDynamicCandidateFetch(
             [...candidates.values()].map(({ logicalSource, source }) => ({
                 key: logicalSource,
                 logicalSource,
-                output: context.registerAsset(source, kind).output,
+                output: context.assetRegistry.registerAsset(source, kind)
+                    .output,
             })),
             selected,
         );
     const entries = [...candidates.values()].map(
         ({ logicalSource, source }) => ({
             key: logicalSource,
-            output: context.registerAsset(source, kind).output,
+            output: context.assetRegistry.registerAsset(source, kind).output,
         }),
     );
     context.reachJsData();
@@ -263,7 +264,10 @@ export function compileStaticFetchMethod(
                 "Fetched response has no static source.",
             );
         }
-        const asset = context.registerAsset(owner.staticString, "binary");
+        const asset = context.assetRegistry.registerAsset(
+            owner.staticString,
+            "binary",
+        );
         context.reachJsData();
         return {
             kind: "data",
@@ -415,7 +419,10 @@ function compileDynamicDirectoryFetch(
     }
     const assets = files.map((file) => {
         const key = relative(directory, file).split(sep).join("/");
-        const asset = context.registerAsset(`${logicalBase}${key}`, kind);
+        const asset = context.assetRegistry.registerAsset(
+            `${logicalBase}${key}`,
+            kind,
+        );
         return {
             key,
             logicalSource: `${logicalBase}${key}`,

@@ -137,7 +137,7 @@ export interface StatementLoweringContext extends Pick<
     | "expectKind"
     | "expectSameEngine"
     | "requireEngine"
-    | "assertAssetRootWritable"
+    | "assetRegistry"
     | "expectArgumentCount"
     | "expectObjectLiteral"
     | "objectProperty"
@@ -3545,7 +3545,7 @@ export class StatementLowerer {
         transform: SceneNodeTransformDescriptor,
     ): boolean {
         if (target.kind === "asset-root") {
-            context.assertAssetRootWritable(target, call);
+            context.assetRegistry.assertAssetRootWritable(target, call);
             const components = this.setCallComponents(
                 context,
                 call,

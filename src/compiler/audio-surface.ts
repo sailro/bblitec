@@ -51,7 +51,7 @@ interface AudioCallContext
             | "allocateTemporaryCppName"
             | "registerNativeTemporary"
             | "cppString"
-            | "registerAsset"
+            | "assetRegistry"
             | "dataLowerer"
             | "options"
             | "conditions"

@@ -43,14 +43,9 @@ export interface AssetIntrinsicContext
             | "compileStringLiteral"
             | "compileNumber"
             | "intrinsicOptions"
-            | "registerAsset"
-            | "setAssetDecoderConfiguration"
+            | "assetRegistry"
             | "emitDiscardedValue"
-            | "recordGltfContainerLoad"
-            | "enableGltfCameras"
             | "hasFeature"
-            | "selectGltfVariant"
-            | "resolveBundledAsset"
             | "unwrap"
             | "libraryGlobal"
             | "cppString"
@@ -239,8 +234,8 @@ function compileLoadGltf(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const source = context.compileStringLiteral(argumentAt(call, 1));
-    const asset = context.registerAsset(source, "gltf");
-    context.recordGltfContainerLoad(asset, call);
+    const asset = context.assetRegistry.registerAsset(source, "gltf");
+    context.assetRegistry.recordGltfContainerLoad(asset, call);
     context.reachFeature("loader:gltf", call);
     context.reachFeature("renderer:scene", call);
     return {
@@ -268,7 +263,7 @@ function compileLoadSplat(
     const scene = context.compileValue(argumentAt(call, 0));
     context.expectKind(scene, "scene", argumentAt(call, 0));
     const source = context.compileStringLiteral(argumentAt(call, 1));
-    const asset = context.registerAsset(source, "splat");
+    const asset = context.assetRegistry.registerAsset(source, "splat");
     if (call.arguments.length === 3) {
         context.sceneManifest.recordSplatFragments(
             compileSplatFragments(context, call),
@@ -319,7 +314,7 @@ function compileLoadSPZ(
     const scene = context.compileValue(argumentAt(call, 0));
     context.expectKind(scene, "scene", argumentAt(call, 0));
     const source = context.compileStringLiteral(argumentAt(call, 1));
-    const asset = context.registerAsset(source, container.kind);
+    const asset = context.assetRegistry.registerAsset(source, container.kind);
     context.reachFeature("loader:splat", call);
     // The entry point's own feature, reached at the call the way
     // `loader:splat-bake` is: it selects the emitted entry point
@@ -383,7 +378,7 @@ function compileSelectVariant(
             "selectVariant requires the container a glTF load returned.",
         );
     }
-    context.selectGltfVariant(
+    context.assetRegistry.selectGltfVariant(
         container.asset,
         context.compileStringLiteral(argumentAt(call, 1)),
         call,
@@ -397,7 +392,7 @@ function compileEnableGltfCameras(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 0, 0);
-    context.enableGltfCameras(call);
+    context.assetRegistry.enableGltfCameras(call);
     return { kind: "void", cpp: "" };
 }
 
@@ -434,7 +429,7 @@ function compileLoadBabylon(
         if (camera) loadCamera = context.compileBoolean(camera);
         if (textures) loadTextures = context.compileBoolean(textures);
     }
-    const asset = context.registerAsset(source, "babylon");
+    const asset = context.assetRegistry.registerAsset(source, "babylon");
     const textureModes =
         loadTextures === "true"
             ? [true]
@@ -483,7 +478,9 @@ function compileLoadTexture2D(
         ? undefined
         : context.compileStringLiteral(argumentAt(call, 1));
     const asset =
-        url === undefined ? undefined : context.registerAsset(url, "texture");
+        url === undefined
+            ? undefined
+            : context.assetRegistry.registerAsset(url, "texture");
     const texturePathCpp =
         dynamic?.dynamicAssetPathCpp ??
         `bbl::asset_path(${context.cppString(asset!.output)})`;
@@ -645,9 +642,9 @@ function compileLoadKtxTexture2D(
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const url = context.compileStringLiteral(argumentAt(call, 1));
     const assets = basis
-        ? [context.registerAsset(url, "basis")]
+        ? [context.assetRegistry.registerAsset(url, "basis")]
         : ktxContainerUrls(context, call, url).map((candidate) =>
-              context.registerAsset(candidate, "texture"),
+              context.assetRegistry.registerAsset(candidate, "texture"),
           );
     const paths = assets.map(
         (asset) => `bbl::asset_path(${context.cppString(asset.output)})`,
@@ -681,7 +678,10 @@ function compileLoadSkybox(
     // Pinned loadCubeTexture face suffix order: layers 0-5.
     const faceAssets = ["_px", "_nx", "_py", "_ny", "_pz", "_nz"].map(
         (suffix) =>
-            context.registerAsset(`${baseUrl}${suffix}${extension}`, "texture"),
+            context.assetRegistry.registerAsset(
+                `${baseUrl}${suffix}${extension}`,
+                "texture",
+            ),
     );
     const size = call.arguments[3]
         ? context.compileNumber(call.arguments[3])
@@ -710,7 +710,7 @@ function compileLoadEnvironment(
     const scene = context.compileValue(argumentAt(call, 0));
     context.expectKind(scene, "scene", argumentAt(call, 0));
     const environmentUrl = context.compileStringLiteral(argumentAt(call, 1));
-    const environmentAsset = context.registerAsset(
+    const environmentAsset = context.assetRegistry.registerAsset(
         environmentUrl,
         "environment",
     );
@@ -725,7 +725,10 @@ function compileLoadEnvironment(
               skipGround: false,
           };
     const groundAsset = options.groundTextureUrl
-        ? context.registerAsset(options.groundTextureUrl, "texture")
+        ? context.assetRegistry.registerAsset(
+              options.groundTextureUrl,
+              "texture",
+          )
         : undefined;
     // src/loader-env/load-env.ts treats the skybox as .env when its
     // URL matches the lighting URL or carries the .env extension,
@@ -738,11 +741,11 @@ function compileLoadEnvironment(
             options.skyboxUrl.toLowerCase().endsWith(".env"));
     const skyboxAsset =
         options.skyboxUrl && !skyboxUsesEnvironment
-            ? context.registerAsset(options.skyboxUrl, "texture")
+            ? context.assetRegistry.registerAsset(options.skyboxUrl, "texture")
             : undefined;
     const brdfAsset = options.brdfUrl
-        ? context.registerAsset(
-              context.resolveBundledAsset(options.brdfUrl),
+        ? context.assetRegistry.registerAsset(
+              context.assetRegistry.resolveBundledAsset(options.brdfUrl),
               "texture",
           )
         : undefined;
@@ -810,11 +813,14 @@ function compileAddDdsEnvironmentBackground(
         context.intrinsicOptions.compileDdsEnvironmentBackgroundOptions(
             argumentAt(call, 1),
         );
-    const groundAsset = context.registerAsset(
+    const groundAsset = context.assetRegistry.registerAsset(
         options.groundTextureUrl,
         "texture",
     );
-    const skyboxAsset = context.registerAsset(options.skyboxUrl, "texture");
+    const skyboxAsset = context.assetRegistry.registerAsset(
+        options.skyboxUrl,
+        "texture",
+    );
     context.reachFeature("background:dds-environment", call);
     context.reachFeature("background:ground", call);
     context.reachFeature("background:skybox", call);
@@ -857,9 +863,15 @@ function compileLoadDdsEnvironment(
               call.arguments[2],
           )
         : "";
-    const environmentAsset = context.registerAsset(source, "dds-environment");
+    const environmentAsset = context.assetRegistry.registerAsset(
+        source,
+        "dds-environment",
+    );
     const brdfAsset = brdfUrl
-        ? context.registerAsset(context.resolveBundledAsset(brdfUrl), "texture")
+        ? context.assetRegistry.registerAsset(
+              context.assetRegistry.resolveBundledAsset(brdfUrl),
+              "texture",
+          )
         : undefined;
     context.reachFeature("environment:ibl", call);
     context.reachFeature("environment:dds", call);
@@ -906,14 +918,14 @@ function compileLoadHdrEnvironment(
     }
     writable(scene.sceneEnvironmentState!).hasTexturedSkybox ||=
         options.useCubemapSkybox;
-    const environmentAsset = context.registerAsset(
+    const environmentAsset = context.assetRegistry.registerAsset(
         source,
         "hdr-environment",
         options.faceSize,
     );
     // Pinned load-hdr generates its 256x256 rgba16f BRDF LUT
     // with a compute pass instead of loading the bundled PNG.
-    const brdfAsset = context.registerAsset(
+    const brdfAsset = context.assetRegistry.registerAsset(
         "generated:pinned-ibl-brdf-lut",
         "texture",
     );

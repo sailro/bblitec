@@ -116,7 +116,7 @@ interface PlatformCallContext
             | "emitDiscardedValue"
             | "reachFeature"
             | "reachJsData"
-            | "registerAsset"
+            | "assetRegistry"
             | "requireDefaultEngine"
             | "requireEngine"
             | "requirePresentationHost"
@@ -1122,7 +1122,7 @@ export class PlatformCalls {
                             image.logicalPath,
                         );
                     }
-                    const asset = this.context.registerAsset(
+                    const asset = this.context.assetRegistry.registerAsset(
                         `data:application/octet-stream;base64,${Buffer.from(atlas.pixels).toString("base64")}`,
                         "pixels",
                     );

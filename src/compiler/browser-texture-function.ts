@@ -872,7 +872,7 @@ interface BrowserTextureCallContext extends Pick<
     | "options"
     | "browserTextureFunctions"
     | "compileValue"
-    | "registerAsset"
+    | "assetRegistry"
     | "allocateTemporaryCppName"
     | "cppString"
     | "reachFeature"
@@ -971,7 +971,7 @@ function bindBakedTexture(
     const label = `${shape.name}_texture_${index}`;
     const cppName = context.allocateTemporaryCppName(label);
     if (texture.factory === "createTexture2DFromPixels") {
-        const asset = context.registerAsset(
+        const asset = context.assetRegistry.registerAsset(
             `data:application/octet-stream;base64,${Buffer.from(
                 texture.pixels,
             ).toString("base64")}`,
@@ -1008,7 +1008,7 @@ function bindBakedTexture(
             },
         };
     }
-    const asset = context.registerAsset(
+    const asset = context.assetRegistry.registerAsset(
         `data:${texture.mediaType};base64,${Buffer.from(texture.image).toString(
             "base64",
         )}`,

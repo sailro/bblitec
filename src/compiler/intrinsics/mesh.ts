@@ -83,7 +83,7 @@ export interface MeshIntrinsicContext
             | "dataTypes"
             | "sceneManifest"
             | "intrinsicOptions"
-            | "registerAsset"
+            | "assetRegistry"
             | "cppString"
             | "requireDefaultEngine"
             | "compileTypedArrayArgument"
@@ -101,8 +101,6 @@ export interface MeshIntrinsicContext
             | "isEntryBodyScope"
             | "requireEngine"
             | "expectSameEngine"
-            | "markAssetRootReparented"
-            | "assertAssetRootWritable"
             | "unwrap"
             | "resolveStaticExpression"
             | "symbols"
@@ -1193,7 +1191,10 @@ function compileSetParent(
     }
     context.reachFeature("mesh:parenting", call);
     if (child.kind === "asset-root") {
-        context.markAssetRootReparented(child, argumentAt(call, 0));
+        context.assetRegistry.markAssetRootReparented(
+            child,
+            argumentAt(call, 0),
+        );
         return {
             kind: "void",
             cpp:
@@ -1493,7 +1494,7 @@ function compileCreateHierarchyInstancePool(
             "createHierarchyInstancePool currently lowers a cloned imported glTF root hierarchy.",
         );
     }
-    context.assertAssetRootWritable(root, call);
+    context.assetRegistry.assertAssetRootWritable(root, call);
     const capacity = context.compileNumber(argumentAt(call, 1), "double");
     const engine = context.requireEngine(root, call);
     const pool = context.allocateTemporaryCppName("hierarchy_instance_pool");
@@ -1994,7 +1995,7 @@ function compileCreateGroundFromHeightMap(
     context.expectArgumentCount(call, 2, 3);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
-    const asset = context.registerAsset(
+    const asset = context.assetRegistry.registerAsset(
         context.compileStringLiteral(argumentAt(call, 1)),
         "texture",
     );
