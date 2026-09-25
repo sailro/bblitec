@@ -3047,8 +3047,10 @@ export class PinnedNumericLowerer {
                     ts.SyntaxKind.AmpersandAmpersandToken)
         )
             return `(${this.condition(node.left)} ${node.operatorToken.kind === ts.SyntaxKind.BarBarToken ? "||" : "&&"} ${this.condition(node.right)})`;
-        const kind = this.valueKind(expression);
         const value = this.expression(expression);
+        const adaptedAbsence = this.absenceTest(expression);
+        if (adaptedAbsence !== undefined) return `!(${adaptedAbsence})`;
+        const kind = this.valueKind(expression);
         return kind === "boolean"
             ? cppCondition(value)
             : this.truthyValue(kind, value);
