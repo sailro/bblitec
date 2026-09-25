@@ -149,6 +149,13 @@ int main(int argc, char** argv) {
     input.tag = "input";
     input.file_input = true;
     input.file_accept = "application/json,.json";
+    for (const auto& type : bbl::js::detail::file_types) {
+        const auto filter = bbl::js::detail::open_options(std::string(type.mime));
+        const std::string pattern = "*." + std::string(type.extension);
+        require(filter.filter_pattern == pattern &&
+                    filter.filter_name == std::string(type.label) + " (" + pattern + ")",
+                "each supported MIME type maps to its dialog extension and label");
+    }
     require_throws(
         []() { static_cast<void>(bbl::js::detail::open_options("application/x-unknown,.json")); },
         "mixed unmappable MIME filter is rejected defensively");

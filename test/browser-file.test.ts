@@ -3,6 +3,9 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import ts from "typescript";
+import { fileTypes } from "../src/file-types.js";
+import { validateFileAccept } from "../src/compiler/browser-file.js";
 
 import { CompileError, compileSource } from "../src/compiler.js";
 import {
@@ -28,6 +31,25 @@ function compileFileBody(body: string): ReturnType<typeof compileSource> {
         { fileName: "examples/browser-file-fixture.ts" },
     );
 }
+
+test("every native file type is accepted and canonicalized by the compiler", () => {
+    const node = ts.factory.createStringLiteral("");
+    const context = {
+        fail(_node: ts.Node, message: string): never {
+            throw new Error(message);
+        },
+    };
+    for (const type of fileTypes) {
+        assert.equal(
+            validateFileAccept(
+                context,
+                `${type.mime.toUpperCase()},.${type.extension},${type.mime}`,
+                node,
+            ),
+            `${type.mime},.${type.extension}`,
+        );
+    }
+});
 
 test("lowers Blob string and byte parts with static MIME options", () => {
     const result = compileFileBody(`
