@@ -418,7 +418,7 @@ export function discoverDevelopmentTools(
         bbliteTint:
             environment.BBLITE_TINT_PATH !== undefined
                 ? findExecutable(environment.BBLITE_TINT_PATH, options)
-                : findTintTool(resolve(cwd), platform),
+                : findTintTool(resolve(cwd), cmake, platform),
         ccache:
             environment.CCACHE_PATH !== undefined
                 ? findExecutable(environment.CCACHE_PATH, options)

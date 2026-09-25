@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -313,7 +319,8 @@ test("a checkout uses only the bblite-tint that records its own tool sources", (
         mkdirSync(dirname(join(root, path)), { recursive: true });
         writeFileSync(join(root, path), content);
     }
-    const sources = Object.fromEntries(tintToolSources(root));
+    // A checkout without a patch manifest has no tint series to read.
+    const sources = Object.fromEntries(tintToolSources(root, undefined));
     assert.deepEqual(Object.keys(sources).sort(), [
         "tools/build-tint.ps1",
         "tools/tint-sdl/CMakeLists.txt",
@@ -339,14 +346,14 @@ test("a checkout uses only the bblite-tint that records its own tool sources", (
         ...sources,
         "tools/tint-sdl/main.cc": "0".repeat(64),
     });
-    assert.equal(findTintTool(root, "linux"), undefined);
+    assert.equal(findTintTool(root, undefined, "linux"), undefined);
     assert.match(
-        tintToolMismatch(other, root) ?? "",
+        tintToolMismatch(other, root, undefined) ?? "",
         /tools\/tint-sdl\/main\.cc differs/,
     );
     const own = build("1111111111111111", sources);
-    assert.equal(findTintTool(root, "linux"), own);
-    assert.equal(tintToolMismatch(own, root), undefined);
+    assert.equal(findTintTool(root, undefined, "linux"), own);
+    assert.equal(tintToolMismatch(own, root, undefined), undefined);
     const options = { cwd: root, platform: "linux" as const, environment: {} };
     assert.equal(discoverDevelopmentTools(options).bbliteTint, own);
     // An explicit tool stands for discovery; the compiler still verifies it.
@@ -362,5 +369,36 @@ test("a checkout uses only the bblite-tint that records its own tool sources", (
         join(root, "tools/tint-sdl/main.cc"),
         "int main() { return 1; }",
     );
-    assert.equal(findTintTool(root, "linux"), undefined);
+    assert.equal(findTintTool(root, undefined, "linux"), undefined);
 });
+
+test(
+    "bblite-tint's sources carry Dawn's tint series, which needs CMake to read",
+    { skip: !host.cmake },
+    () => {
+        const cmake = host.cmake!;
+        const root = resolve(".");
+        const manifest = JSON.parse(
+            readFileSync("native/patches/manifest.json", "utf8"),
+        ) as {
+            patches: { library: string; file: string; variants: string[] }[];
+        };
+        const selected = manifest.patches
+            .filter(
+                (patch) =>
+                    patch.library === "dawn" &&
+                    (patch.variants.includes("tint") ||
+                        patch.variants.includes("all")),
+            )
+            .map((patch) => patch.file);
+        assert.ok(selected.length > 0);
+        const patches = [...tintToolSources(root, cmake).keys()].filter(
+            (source) => source.startsWith("native/"),
+        );
+        assert.deepEqual(patches, selected);
+        assert.throws(
+            () => tintToolSources(root, undefined),
+            /needs CMake for Dawn's tint patch series/,
+        );
+    },
+);

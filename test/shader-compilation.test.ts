@@ -921,7 +921,7 @@ test("shader checkpoints include DXC codegen DLL contents only for DXC targets",
     mkdirSync(directory);
     const dxc = join(root, "dxc.exe");
     writeFileSync(dxc, "compiler identity");
-    const localTools = { dxc, bbliteTint: undefined };
+    const localTools = { dxc, bbliteTint: undefined, cmake: tools.cmake };
     const compile = (target: "metal" | "d3d12") =>
         compileOfflineShaders({
             repositoryRoot: root,
@@ -1167,7 +1167,7 @@ test(
             compileOfflineShaders({
                 repositoryRoot: root,
                 directories: [directory],
-                tools: { dxc: tools.dxc, bbliteTint },
+                tools: { dxc: tools.dxc, bbliteTint, cmake: tools.cmake },
                 target: "d3d12",
             });
         assert.equal(compile(tint).tintCompiled, 1);
@@ -1201,7 +1201,7 @@ test(
             compileOfflineShaders({
                 repositoryRoot: root,
                 directories: [directory],
-                tools: { dxc: tools.dxc, bbliteTint },
+                tools: { dxc: tools.dxc, bbliteTint, cmake: tools.cmake },
                 target: "metal",
             });
         const provenance: unknown = JSON.parse(

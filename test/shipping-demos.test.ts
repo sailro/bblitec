@@ -19,6 +19,7 @@ import {
     discoverWindowsBuildTools,
 } from "../src/development-tools.js";
 import { applicationScenes } from "../src/scene-registry.js";
+import type { CompiledNativeBackend } from "../src/tooling/backends.js";
 import {
     desktopShaderSuffixes,
     importedLibraries,
@@ -321,7 +322,7 @@ test("desktop packaging refuses a build that is not the exact mini shape, and st
     const validateWindows = (
         values: Record<string, string>,
         scene = "demo",
-        expectBackend?: "SDL_GPU" | "DAWN",
+        expectBackend?: CompiledNativeBackend,
     ) => {
         write("native/win/CMakeCache.txt", cacheText(values));
         return validateDesktopBuilds({

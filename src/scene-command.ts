@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// First, so the modules evaluated after it are compiled through the cache.
+import "./tooling/compile-cache.js";
 import { spawn, spawnSync } from "node:child_process";
 import { availableParallelism, totalmem } from "node:os";
 import {

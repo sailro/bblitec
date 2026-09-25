@@ -6,6 +6,7 @@ import {
     mkdirSync,
     mkdtempSync,
     readFileSync,
+    renameSync,
     rmSync,
     statSync,
     writeFileSync,
@@ -124,18 +125,15 @@ function fixture(root: string): void {
     );
     const patch = (
         library: string,
-        order: number,
         file: string,
         inherited: boolean,
         variants: string[],
     ): object => ({
         library,
-        order,
         file,
         purpose: "fixture",
         upstream: { state: inherited ? "vcpkg" : "unsubmitted" },
         variants,
-        inheritedFromVcpkg: inherited,
     });
     write(
         join(root, "native/patches/manifest.json"),
@@ -157,23 +155,17 @@ function fixture(root: string): void {
                 },
             },
             patches: [
-                patch(
-                    "demo",
-                    1,
-                    "native/patches/demo/0001-first.patch",
-                    false,
-                    ["all"],
-                ),
+                patch("demo", "native/patches/demo/0001-first.patch", false, [
+                    "all",
+                ]),
                 patch(
                     "port",
-                    1,
                     "native/vcpkg-overlay-ports/port/keep.patch",
                     true,
                     ["vcpkg"],
                 ),
                 patch(
                     "port",
-                    2,
                     "native/vcpkg-overlay-ports/port/extra.patch",
                     false,
                     ["extra-feature"],
@@ -261,12 +253,16 @@ test("patches:check reports orphans, missing files, headers, numbering and port 
                 write(
                     path,
                     readFileSync(path, "utf8").replace(
-                        '"order":1,"file":"native/patches/demo',
-                        '"order":2,"file":"native/patches/demo',
+                        "demo/0001-first.patch",
+                        "demo/0002-first.patch",
                     ),
                 );
+                renameSync(
+                    join(root, "native/patches/demo/0001-first.patch"),
+                    join(root, "native/patches/demo/0002-first.patch"),
+                );
             },
-            /order 2 where its position in the demo series is 1/,
+            /0002-first\.patch: its number is not its position 1 in the demo series/,
         ],
         [
             "unknown variant",
@@ -339,6 +335,53 @@ test(
                 }),
                 `${library} record`,
             );
+        }
+    },
+);
+
+test(
+    "a dependency artifact's inputs are its manifest pin and builder, the patch owner and its series",
+    { skip: !tools.powershell || !tools.cmake },
+    () => {
+        const manifest = JSON.parse(
+            readFileSync("native/patches/manifest.json", "utf8"),
+        ) as {
+            libraries: Record<
+                string,
+                { pin: { file: string }; builder: string }
+            >;
+        };
+        for (const [library, variants] of [
+            ["sdl3", ["trimmed"]],
+            ["dawn", ["android"]],
+        ] as const) {
+            const quoted = `@(${variants.map((variant) => `'${variant}'`).join(",")})`;
+            const inputs = execFileSync(
+                tools.powershell!,
+                [
+                    "-NoProfile",
+                    "-Command",
+                    `Import-Module '${resolve("tools/bblite-tools.psm1")}' -Force; ` +
+                        `Get-DependencyInputs ${library} ${quoted} '${tools.cmake!}'`,
+                ],
+                { encoding: "utf8" },
+            )
+                .trim()
+                .split(/\r?\n/)
+                .map((path) => resolve(path));
+            const definition = manifest.libraries[library]!;
+            assert.deepEqual(inputs, [
+                resolve(definition.pin.file),
+                resolve(definition.builder),
+                resolve("native/patches/manifest.json"),
+                resolve("native/patch-identity.cmake"),
+                ...runPatchIdentity(tools.cmake!, "series", library, {
+                    variants,
+                })
+                    .split("\n")
+                    .filter(Boolean)
+                    .map((path) => resolve(path)),
+            ]);
         }
     },
 );
@@ -634,12 +677,10 @@ test(
                 patches: [
                     {
                         library: "demo",
-                        order: 1,
                         file: "native/patches/demo/0001-fixture.patch",
                         purpose: "fixture",
                         upstream: { state: "unsubmitted" },
                         variants: ["all"],
-                        inheritedFromVcpkg: false,
                     },
                 ],
             }),

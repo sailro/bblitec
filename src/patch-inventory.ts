@@ -5,8 +5,9 @@
  *
  * `checkPatchInventory` is `npm run patches:check`: every listed file exists,
  * every patch file under native/patches and the overlay ports is listed, each
- * patch this repository owns opens with its rationale, script patches are
- * numbered in application order, each overlay portfile takes its series from
+ * patch this repository owns opens with its rationale, a library's patches
+ * apply in manifest order and its script patches are numbered by their
+ * position there, each overlay portfile takes its series from
  * the manifest and every patch in its directory applies to it, and no builder
  * or portfile names a patch file itself. `artifactPatchState` asks the CMake
  * owner whether an installed artifact's record is current.
@@ -45,14 +46,13 @@ interface PatchLibrary {
     variants: readonly string[];
 }
 
+/** One manifest entry; a library's entries are listed in application order. */
 interface MaintainedPatch {
     library: string;
-    order: number;
     file: string;
     purpose: string;
     upstream: { state: UpstreamState; link?: string; retire?: string };
     variants: readonly string[];
-    inheritedFromVcpkg: boolean;
 }
 
 interface PatchManifest {
@@ -160,17 +160,10 @@ function parsePatchManifest(source: string): PatchManifest {
             throw new Error(
                 `${where}.upstream.state must be one of ${upstreamStates.join(", ")}.`,
             );
-        const order = field(patch, "order", where);
-        if (typeof order !== "number" || !Number.isInteger(order) || order < 1)
-            throw new Error(`${where}.order must be a positive integer.`);
-        const inherited = field(patch, "inheritedFromVcpkg", where);
-        if (typeof inherited !== "boolean")
-            throw new Error(`${where}.inheritedFromVcpkg must be a boolean.`);
         const link = optionalText(upstream, "link", `${where}.upstream`);
         const retire = optionalText(upstream, "retire", `${where}.upstream`);
         return {
             library: requiredText(patch, "library", where),
-            order,
             file: requiredText(patch, "file", where),
             purpose: requiredText(patch, "purpose", where),
             upstream: {
@@ -182,7 +175,6 @@ function parsePatchManifest(source: string): PatchManifest {
                 field(patch, "variants", where),
                 `${where}.variants`,
             ),
-            inheritedFromVcpkg: inherited,
         };
     });
     return { libraries, patches };
@@ -325,12 +317,6 @@ export function checkPatchInventory(root = moduleRepositoryRoot()): string[] {
         const patches = manifest.patches.filter(
             (patch) => patch.library === library.name,
         );
-        patches.forEach((patch, index) => {
-            if (patch.order !== index + 1)
-                problems.push(
-                    `${patch.file}: order ${patch.order} where its position in the ${library.name} series is ${index + 1}.`,
-                );
-        });
         const names = patches.map((patch) => basename(patch.file));
         if (new Set(names).size !== names.length)
             problems.push(`${where}: two patches share a file name.`);
@@ -388,12 +374,17 @@ export function checkPatchInventory(root = moduleRepositoryRoot()): string[] {
         }
     }
 
+    // A patch's position in its library's series (1-based), its application order.
+    const positions = new Map<string, number>();
     for (const patch of manifest.patches) {
+        const position = (positions.get(patch.library) ?? 0) + 1;
+        positions.set(patch.library, position);
         const library = manifest.libraries.get(patch.library);
         if (!library) {
             problems.push(`${patch.file}: unknown library '${patch.library}'.`);
             continue;
         }
+        const inherited = patch.upstream.state === "vcpkg";
         if (patch.variants.length === 0)
             problems.push(`${patch.file}: applies to no variant.`);
         for (const variant of patch.variants) {
@@ -414,16 +405,12 @@ export function checkPatchInventory(root = moduleRepositoryRoot()): string[] {
                 problems.push(
                     `${patch.file}: script patches live at native/patches/${library.name}/NNNN-slug.patch.`,
                 );
-            else if (Number(scriptFile[2]) !== patch.order)
+            else if (Number(scriptFile[2]) !== position)
                 problems.push(
-                    `${patch.file}: its number is not its order ${patch.order}.`,
+                    `${patch.file}: its number is not its position ${position} in the ${library.name} series.`,
                 );
         }
-        if (patch.inheritedFromVcpkg !== (patch.upstream.state === "vcpkg"))
-            problems.push(
-                `${patch.file}: upstream state 'vcpkg' marks exactly the patches inherited from the vcpkg port.`,
-            );
-        if (patch.inheritedFromVcpkg && !inPort)
+        if (inherited && !inPort)
             problems.push(
                 `${patch.file}: an inherited vcpkg patch stays in its port directory.`,
             );
@@ -443,7 +430,7 @@ export function checkPatchInventory(root = moduleRepositoryRoot()): string[] {
         const first = lines.findIndex((line) => diffStart.test(line));
         if (first < 0) problems.push(`${patch.file}: holds no diff.`);
         else if (
-            !patch.inheritedFromVcpkg &&
+            !inherited &&
             !lines.slice(0, first).some((line) => line.trim() !== "")
         )
             problems.push(
