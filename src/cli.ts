@@ -643,6 +643,23 @@ async function bakeNodeParticleSystems(
     // the atlas builder reads -- the texture, packaged from the bytes the
     // driver fetched when the URL was a browser object URL.
     for (const entry of bake.live) {
+        if (entry.snapshot) {
+            const system = systems.find(
+                (system) =>
+                    system.bake.set === entry.set &&
+                    system.bake.system === entry.system,
+            );
+            if (!system)
+                throw new Error(
+                    "A native particle continuation has no warm-up snapshot.",
+                );
+            system.continuation = {
+                graph: entry.graph,
+                facts: entry.facts,
+                snapshot: entry.snapshot,
+            };
+            continue;
+        }
         const { bytes, mediaType, ...texture } = entry.texture;
         const source =
             bytes !== undefined
@@ -704,7 +721,17 @@ async function bakeNodeParticleSystems(
             pixelsPerUnit: request.pixelsPerUnit,
             originPx: request.originPx,
             invertY: request.invertY,
-            ...(request.retainFrozen ? { retainFrozen: true as const } : {}),
+            ...(request.retainFrozen ||
+            expansion.systems.some((entry) =>
+                systems.some(
+                    (system) =>
+                        system.bake.set === entry.set &&
+                        system.bake.system === entry.system &&
+                        system.continuation,
+                ),
+            )
+                ? { retainFrozen: true as const }
+                : {}),
             ...(request.opacity === undefined
                 ? {}
                 : { opacity: request.opacity }),

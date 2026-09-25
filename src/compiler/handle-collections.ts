@@ -1495,8 +1495,9 @@ export class HandleCollections {
         if (
             this.context.sceneManifest.reachedNodeParticles.buffers.some(
                 (buffer) =>
-                    buffer.set === set.nodeParticleSetIndex ||
-                    buffer.set === system.nodeParticleSetIndex,
+                    (!buffer.runtime || buffer.observed || buffer.sheet) &&
+                    (buffer.set === set.nodeParticleSetIndex ||
+                        buffer.set === system.nodeParticleSetIndex),
             )
         ) {
             this.context.fail(

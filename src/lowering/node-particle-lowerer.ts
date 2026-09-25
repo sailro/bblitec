@@ -41,6 +41,7 @@ import {
     type LiveGraph,
     type LiveSystemFacts,
     type LoweredLiveSystem,
+    type NodeParticleSnapshot,
     NodeParticleLiveLowerer,
 } from "./node-particle-live-lowerer.js";
 import type { CompileAsset, PixelsTextureSource } from "../compiler/types.js";
@@ -87,6 +88,11 @@ export interface NodeParticleSystemEmit {
      * the executed pin reported about its own build.
      */
     live?: { graph: LiveGraph; facts: LiveSystemFacts; provider?: true };
+    continuation?: {
+        graph: LiveGraph;
+        facts: LiveSystemFacts;
+        snapshot: NodeParticleSnapshot;
+    };
 }
 
 /**
@@ -938,6 +944,15 @@ export class NodeParticleLowerer {
         const isRegistered = (entry: NodeParticleSystemEmit): boolean =>
             registeredSystems.has(nodeParticleKey(entry.bake));
         for (const entry of systems) {
+            if (
+                entry.continuation &&
+                (isRegistered(entry) ||
+                    !hooked.has(nodeParticleKey(entry.bake)))
+            ) {
+                throw new Error(
+                    `Runtime particle initialization requires a pure-2D registration.${refusalSite}`,
+                );
+            }
             this.assertBakeable(
                 entry,
                 isRegistered(entry) || hooked.has(nodeParticleKey(entry.bake)),
@@ -988,18 +1003,22 @@ export class NodeParticleLowerer {
             liveRequests.add(request);
         });
         const liveLowerer = new NodeParticleLiveLowerer(this.context);
+        const nativeSystems = systems.filter(
+            (entry) => entry.live || entry.continuation,
+        );
         const lowered = new Map(
-            liveSystems.map((entry) => [
+            nativeSystems.map((entry) => [
                 nodeParticleKey(entry.bake),
                 liveLowerer.lowerSystem(
-                    entry.live!.graph,
-                    entry.live!.facts,
-                    entry.live!.provider,
+                    (entry.live ?? entry.continuation)!.graph,
+                    (entry.live ?? entry.continuation)!.facts,
+                    entry.live?.provider,
+                    entry.continuation?.snapshot,
                 ),
             ]),
         );
         const simulation =
-            liveSystems.length > 0
+            nativeSystems.length > 0
                 ? `${liveLowerer.sharedSource()}\n${[...lowered.values()].map((system) => system.source).join("\n\n")}`
                 : "";
         const live =
@@ -1015,7 +1034,7 @@ export class NodeParticleLowerer {
         const frozen =
             retained ||
             systems.some((entry) => entry.bake.bufferColumns !== undefined)
-                ? this.frozenSectionCpp(systems, sprite2d)
+                ? this.frozenSectionCpp(systems, sprite2d, lowered)
                 : undefined;
         if (retained) this.assertLiveRules();
         // Which halves of the family this scene reaches. The two render
@@ -1096,7 +1115,7 @@ ${
 void register_node_particle_set_2d(
     Engine& engine,
     SpriteRendererHandle renderer,
-    int request);
+    int request, std::optional<std::array<double, 2>> origin = {});
 `
 }${live?.header ?? ""}${native?.header ?? ""}${frozen?.header ?? ""}
 }  // namespace bbl::upstream
@@ -1279,6 +1298,7 @@ struct Sprite2DBridge {
     int set_index;
     int system_index;
     bool exact;
+    bool auto_start;
     double pixels_per_unit;
     double origin_x;
     double origin_y;
@@ -1300,6 +1320,13 @@ ${sprite2d
     )
     .join("\n")}
 };
+Sprite2DBridge bridge_with_origin(Sprite2DBridge bridge, std::optional<std::array<double, 2>> origin) {
+    if (origin) {
+        bridge.origin_x = (*origin)[0];
+        bridge.origin_y = (*origin)[1];
+    }
+    return bridge;
+}
 `
 }
 const BakedSystem& baked(int set_index, int system_index) {
@@ -1549,25 +1576,28 @@ void register_node_particle_set(
 void register_node_particle_set_2d(
     Engine& engine,
     SpriteRendererHandle renderer,
-    int request) {${
-        retained
-            ? `
+    int request, std::optional<std::array<double, 2>> origin) {
+    if (origin && (!std::isfinite((*origin)[0]) || !std::isfinite((*origin)[1])))
+        throw std::runtime_error("Particle origin must be finite.");${
+            retained
+                ? `
     if (retained_frozen_request[request]) {
-        register_retained_frozen_node_particle_set_2d(engine, renderer, request);
+        register_retained_frozen_node_particle_set_2d(engine, renderer, request, origin);
         return;
     }`
-            : ""
-    }${
-        live
-            ? `
+                : ""
+        }${
+            live
+                ? `
     if (live_request[request]) {
-        register_live_node_particle_set_2d(engine, renderer, request);
+        register_live_node_particle_set_2d(engine, renderer, request, origin);
         return;
     }`
-            : ""
-    }
-    for (const Sprite2DBridge& bridge : sprite_2d_bridges) {
-        if (bridge.request != request) continue;
+                : ""
+        }
+    for (const Sprite2DBridge& row : sprite_2d_bridges) {
+        if (row.request != request) continue;
+        const Sprite2DBridge bridge = bridge_with_origin(row, origin);
         const BakedSystem& system =
             baked(bridge.set_index, bridge.system_index);
         const SpriteAtlasHandle atlas =
@@ -1599,6 +1629,7 @@ void register_node_particle_set_2d(
     private frozenSectionCpp(
         systems: readonly NodeParticleSystemEmit[],
         bindings: readonly NodeParticleSprite2DEmit[],
+        lowered: ReadonlyMap<string, LoweredLiveSystem>,
     ): {
         header: string;
         state: string;
@@ -1659,12 +1690,16 @@ void register_node_particle_set_2d(
             tables.push(...declaration.lines);
             return declaration.expression;
         };
-        const rows = observed.map(({ bake }) => {
+        const continuations = observed.filter((entry) => entry.continuation);
+        const rows = observed.map(({ bake, continuation }) => {
             const prefix = `frozen_${bake.set}_${bake.system}`;
-            const sizes = retainedKeys.has(nodeParticleKey(bake))
-                ? stream(`${prefix}_sizes`, bake.sizes)
-                : "std::span<const double>{}";
-            const columns = Object.entries(bake.bufferColumns ?? {}).map(
+            const sizes =
+                !continuation && retainedKeys.has(nodeParticleKey(bake))
+                    ? stream(`${prefix}_sizes`, bake.sizes)
+                    : "std::span<const double>{}";
+            const columns = Object.entries(
+                continuation ? {} : (bake.bufferColumns ?? {}),
+            ).map(
                 ([name, values]) =>
                     `    {${JSON.stringify(name)}, ${stream(`${prefix}_${name}`, values)}},`,
             );
@@ -1677,7 +1712,7 @@ void register_node_particle_set_2d(
             }
             return `    {${bake.set}, ${bake.system}, ${bake.texture!.width}, ${bake.texture!.height},
         ${sizes},
-        ${columns.length > 0 ? `std::span<const FrozenColumn>(${prefix}_columns)` : "std::span<const FrozenColumn>{}"}, false, 0, 0, {}},`;
+        ${columns.length > 0 ? `std::span<const FrozenColumn>(${prefix}_columns)` : "std::span<const FrozenColumn>{}"}, false, 0, 0, {}, ${continuation ? `&runtime_${bake.set}_${bake.system}` : "nullptr"}},`;
         });
         return {
             header: `
@@ -1687,6 +1722,7 @@ double node_particle_frozen_capacity(int set, int system);
 double node_particle_frozen_alive(int set, int system);
 bbl::js::Nullable<double> node_particle_frozen_column(
     int set, int system, const char* column, double index);
+void write_node_particle_column(int set, int system, const char* column, double index, double value);
 `,
             state: `
 struct FrozenColumn {
@@ -1694,26 +1730,54 @@ struct FrozenColumn {
     std::span<const double> values;
 };
 
+struct FrozenRuntime {
+    double (*alive)();
+    double (*read)(std::string_view, std::size_t);
+    void (*write)(std::string_view, std::size_t, double);
+    void (*animate)(double);
+    void (*start)();
+    std::array<double, 9> (*sprite_particle)(std::size_t);
+};
+${continuations
+    .map((entry) => {
+        const ns = lowered.get(nodeParticleKey(entry.bake))!.namespace;
+        return `namespace ${ns} {
+double alive();
+double read_column(std::string_view, std::size_t);
+void write_column(std::string_view, std::size_t, double);
+void animate(double);
+void start();
+std::array<double, 9> sprite_particle(std::size_t);
+}
+const FrozenRuntime runtime_${entry.bake.set}_${entry.bake.system}{
+    &${ns}::alive, &${ns}::read_column, &${ns}::write_column, &${ns}::animate, &${ns}::start, &${ns}::sprite_particle};`;
+    })
+    .join("\n")}
+
 struct FrozenSystem {
-    int set;
-    int system;
-    double texture_width;
-    double texture_height;
+    int set{};
+    int system{};
+    double texture_width{};
+    double texture_height{};
     std::span<const double> sizes;
     std::span<const FrozenColumn> columns;
     bool has_sheet = false;
     double cell_width = 0;
     double cell_height = 0;
     bbl::js::U16Array cells;
+    const FrozenRuntime* runtime = nullptr;
 };
 
 ${tables.join("\n")}
-FrozenSystem frozen_systems[] = {
+auto& frozen_systems() {
+    static FrozenSystem states[] = {
 ${rows.join("\n")}
-};
+    };
+    return states;
+}
 
 FrozenSystem* frozen_system(int set, int system) {
-    for (FrozenSystem& candidate : frozen_systems) {
+    for (FrozenSystem& candidate : frozen_systems()) {
         if (candidate.set == set && candidate.system == system) return &candidate;
     }
     return nullptr;
@@ -1738,10 +1802,13 @@ void sync_frozen_bridge(Engine& engine, Sprite2DLayerHandle handle,
     Sprite2DLayerRecord& layer = ${recordAt("engine.sprite_layers", "handle")};
     assert_frozen_bridge_ownership(layer);
     const SpriteAtlasRecord& atlas = ${recordAt("engine.sprite_atlases", "layer.atlas")};
-    const std::size_t alive = system.particle_count;
+    const std::size_t alive = state.runtime ? static_cast<std::size_t>(state.runtime->alive()) : system.particle_count;
     const std::uint32_t previous_count = layer.count;
     for (std::size_t i = 0; i < alive; ++i) {
-        const BakedParticle& particle = system.particles[i];
+        const BakedParticle particle = i < system.particle_count ? system.particles[i] : BakedParticle{};
+        const auto values = state.runtime ? state.runtime->sprite_particle(i) : std::array<double, 9>{
+            particle.position.x, particle.position.y, state.sizes[i * 2], state.sizes[i * 2 + 1],
+            particle.rotation, particle.color.x, particle.color.y, particle.color.z, particle.color.w};
         if (state.has_sheet && i >= state.cells.size()) {
             throw std::runtime_error("Particle sprite-sheet cell index is undefined.");
         }
@@ -1749,22 +1816,22 @@ void sync_frozen_bridge(Engine& engine, Sprite2DLayerHandle handle,
             state.has_sheet ? static_cast<double>(state.cells[i]) : particle.frame)];
         const std::size_t base = i * layer.instance_floats_per_sprite;
         const std::size_t saved = i * ${savedSizeFloats}u;
-        const float width = static_cast<float>(state.sizes[i * 2] * bridge.pixels_per_unit);
-        const float height = static_cast<float>(state.sizes[i * 2 + 1] * bridge.pixels_per_unit);
+        const float width = static_cast<float>(values[2] * bridge.pixels_per_unit);
+        const float height = static_cast<float>(values[3] * bridge.pixels_per_unit);
         auto& data = layer.instance_data;
-        data[base] = static_cast<float>(bridge.origin_x + static_cast<double>(particle.position.x) * bridge.pixels_per_unit);
-        data[base + 1] = static_cast<float>(bridge.origin_y + static_cast<double>(particle.position.y) * bridge.pixels_per_unit * bridge.y_sign);
+        data[base] = static_cast<float>(bridge.origin_x + values[0] * bridge.pixels_per_unit);
+        data[base + 1] = static_cast<float>(bridge.origin_y + values[1] * bridge.pixels_per_unit * bridge.y_sign);
         data[base + 2] = width;
         data[base + 3] = height;
         data[base + 4] = frame.uv_min.x;
         data[base + 5] = frame.uv_min.y;
         data[base + 6] = frame.uv_max.x;
         data[base + 7] = frame.uv_max.y;
-        data[base + 8] = static_cast<float>(static_cast<double>(particle.rotation) * bridge.y_sign);
-        data[base + 9] = particle.color.x;
-        data[base + 10] = particle.color.y;
-        data[base + 11] = particle.color.z;
-        data[base + 12] = particle.color.w;
+        data[base + 8] = static_cast<float>(values[4] * bridge.y_sign);
+        data[base + 9] = static_cast<float>(values[5]);
+        data[base + 10] = static_cast<float>(values[6]);
+        data[base + 11] = static_cast<float>(values[7]);
+        data[base + 12] = static_cast<float>(values[8]);
         layer.saved_size[saved] = width;
         layer.saved_size[saved + 1] = height;
     }
@@ -1777,27 +1844,27 @@ void sync_frozen_bridge(Engine& engine, Sprite2DLayerHandle handle,
     if (dirty_end > 0) mark_sprite_2d_dirty(layer, 0u, static_cast<std::uint32_t>(dirty_end));
 }
 
-// Simulation was measured to be the identity. The renderer still copies the
-// current sheet cells on every hook, including writes through another alias.
+// Retained bridges sync shared sheet cells and any native continuation each frame.
 void register_retained_frozen_node_particle_set_2d(
-    Engine& engine, SpriteRendererHandle renderer, int request) {
+    Engine& engine, SpriteRendererHandle renderer, int request, std::optional<std::array<double, 2>> origin) {
     struct Mapping {
-        const Sprite2DBridge* bridge;
+        Sprite2DBridge bridge;
         const BakedSystem* system;
         const FrozenSystem* state;
         Sprite2DLayerHandle primary;
         std::optional<Sprite2DLayerHandle> secondary;
     };
     std::vector<Mapping> mappings;
-    for (const Sprite2DBridge& bridge : sprite_2d_bridges) {
-        if (bridge.request != request) continue;
+    for (const Sprite2DBridge& row : sprite_2d_bridges) {
+        if (row.request != request) continue;
+        const Sprite2DBridge bridge = bridge_with_origin(row, origin);
         const BakedSystem& system = baked(bridge.set_index, bridge.system_index);
         const FrozenSystem& state = *frozen_system(bridge.set_index, bridge.system_index);
         const SpriteAtlasHandle atlas = particle_atlas(engine, bridge.set_index, bridge.system_index);
         Sprite2DLayerOptions options = bridge_layer_options(bridge, system);
         const Sprite2DLayerHandle layer = create_sprite_2d_layer(engine, atlas, options);
         sync_frozen_bridge(engine, layer, bridge, system, state);
-        Mapping mapping{&bridge, &system, &state, layer, {}};
+        Mapping mapping{bridge, &system, &state, layer, {}};
         if (options.blend_mode.particle_passes == 2) {
             options.blend_mode = create_particle_blend(2);
             options.custom_shader = false;
@@ -1811,11 +1878,15 @@ void register_retained_frozen_node_particle_set_2d(
         add_sprite_renderer_layer(engine, renderer, mapping.primary);
         if (mapping.secondary) add_sprite_renderer_layer(engine, renderer, *mapping.secondary);
     }
+    for (const Mapping& mapping : mappings) {
+        if (mapping.state->runtime && mapping.bridge.auto_start) mapping.state->runtime->start();
+    }
     sprite_renderer_before_update(engine, renderer,
-        [&engine, mappings = std::move(mappings)](double) {
+        [&engine, mappings = std::move(mappings)](double delta_ms) {
             for (const Mapping& mapping : mappings) {
+                if (mapping.state->runtime) mapping.state->runtime->animate(delta_ms > 0 ? delta_ms / ${doubleLiteral(this.context.numericValue(this.context.moduleScopeConstant(this.context.sourceFile(sprite2dModule), "FRAME_MS")!, this.context.sourceFile(sprite2dModule)))} : 1);
                 if (mapping.secondary) assert_frozen_bridge_ownership(${recordAt("engine.sprite_layers", "*mapping.secondary")});
-                const Sprite2DBridge& bridge = *mapping.bridge;
+                const Sprite2DBridge& bridge = mapping.bridge;
                 sync_frozen_bridge(engine, mapping.primary, bridge, *mapping.system, *mapping.state);
                 if (mapping.secondary) {
                     const Sprite2DLayerRecord& source = ${recordAt("engine.sprite_layers", "mapping.primary")};
@@ -1847,6 +1918,8 @@ double node_particle_frozen_capacity(int set, int system) {
 }
 
 double node_particle_frozen_alive(int set, int system) {
+    const FrozenSystem* state = frozen_system(set, system);
+    if (state && state->runtime) return state->runtime->alive();
     return static_cast<double>(baked(set, system).particle_count);
 }
 
@@ -1854,6 +1927,10 @@ bbl::js::Nullable<double> node_particle_frozen_column(
     int set, int system, const char* column, double index) {
     const FrozenSystem* state = frozen_system(set, system);
     if (!state) return {};
+    if (state->runtime) {
+        if (!std::isfinite(index) || index < 0 || std::floor(index) != index || index >= baked(set, system).capacity) return {};
+        return state->runtime->read(column, static_cast<std::size_t>(index));
+    }
     const std::string_view name(column);
     for (const FrozenColumn& candidate : state->columns) {
         if (candidate.name == name && bbl::js::array_has_index(candidate.values, index)) {
@@ -1861,6 +1938,13 @@ bbl::js::Nullable<double> node_particle_frozen_column(
         }
     }
     return {};
+}
+
+void write_node_particle_column(int set, int system, const char* column, double index, double value) {
+    const FrozenSystem* state = frozen_system(set, system);
+    if (!state || !state->runtime) throw std::runtime_error("No native particle continuation.");
+    if (!std::isfinite(index) || index < 0 || std::floor(index) != index || index >= baked(set, system).capacity) return;
+    state->runtime->write(column, static_cast<std::size_t>(index), value);
 }
 `,
         };
@@ -2295,10 +2379,14 @@ LiveMapping& live_mapping(int request, int bridge) {
 void register_live_node_particle_set_2d(
     Engine& engine,
     SpriteRendererHandle renderer,
-    int request) {
+    int request, std::optional<std::array<double, 2>> origin) {
     for (LiveMapping& mapping : live_mappings) {
         const Sprite2DBridge& row = *mapping.row;
         if (row.request != request) continue;
+        if (origin) {
+            mapping.origin_x = (*origin)[0];
+            mapping.origin_y = (*origin)[1];
+        }
         const BakedSystem& system = baked(row.set_index, row.system_index);
         const Sprite2DLayerOptions options = bridge_layer_options(row, system);
         if (options.blend_mode.particle_passes == 2) {
@@ -2419,7 +2507,7 @@ double node_particle_2d_alive(int request, int bridge) {
         // a system the scene froze, and that is measured rather than argued:
         // the driver stepped this system once more and compared every column
         // the sync reads. A live system runs that callback for real.
-        if (perFrameStep && !entry.live) {
+        if (perFrameStep && !entry.live && !entry.continuation) {
             if (entry.bake.updateSpeed !== 0) {
                 throw new Error(
                     "A registered node-particle set animates its systems " +
@@ -2540,7 +2628,7 @@ function sprite2dBridgeRowCpp(
             ? `${fallback}, false`
             : `${typeof value === "boolean" ? value : bakedFloatLiteral(value)}, true`;
     return (
-        `    {${request}, ${entry.set}, ${entry.system}, ${binding.exact}, ` +
+        `    {${request}, ${entry.set}, ${entry.system}, ${binding.exact}, ${binding.autoStart ?? true}, ` +
         `${binding.pixelsPerUnit}, ${binding.originPx[0]}, ` +
         `${binding.originPx[1]}, ${binding.invertY ? -1 : 1}, ` +
         `${optional(binding.opacity, "0.0f")}, ` +

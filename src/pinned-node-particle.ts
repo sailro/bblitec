@@ -48,6 +48,7 @@ import {
     HOOK_NAMES,
     type LiveGraph,
     type LiveSystemFacts,
+    type NodeParticleSnapshot,
     SLOT_NAMES,
 } from "./lowering/node-particle-live-lowerer.js";
 
@@ -273,6 +274,8 @@ export interface NodeParticleFrozenBufferRequest {
     readonly observed?: true;
     /** A scene supplied shared native sprite-sheet metadata. */
     readonly sheet?: true;
+    /** Source initialization continues natively after the deterministic warm-up. */
+    readonly runtime?: true;
 }
 
 /**
@@ -283,6 +286,7 @@ export interface NodeParticleFrozenBufferRequest {
  * with the page.
  */
 interface NodeParticleLiveBake {
+    snapshot?: NodeParticleSnapshot;
     /** Index into the request's `sprite2d` list, and the bridge within it. */
     request?: number;
     bridge?: number;
@@ -764,6 +768,9 @@ ${buildCalls(request.sets)}
         return origin;
     };
 ${textureAssignments(request.textures ?? [])}
+    const scalarState = (system) => Object.fromEntries(Object.entries(system).filter(
+        ([, value]) => typeof value === "number" || typeof value === "boolean"));
+    const builtScalars = new Map([...origins.keys()].map((system) => [system, scalarState(system)]));
 ${stepProgram(request.steps)}
     // A registration names a SET; how many systems it has is the graph's
     // answer, and systems.push can add one built elsewhere, so the
@@ -912,6 +919,9 @@ ${stepProgram(request.steps)}
     for (const set of nativeSets) {
         liveExpansions.push({ provider: true, systems: sets[set].systems.map(originOf) });
     }
+    for (const entry of bufferRequests.filter((entry) => entry.runtime)) {
+        liveExpansions.push({ snapshot: true, systems: [entry] });
+    }
     for (const expansion of liveExpansions) {
         for (let bridge = 0; bridge < expansion.systems.length; bridge++) {
             const entry = expansion.systems[bridge];
@@ -936,7 +946,17 @@ ${stepProgram(request.steps)}
                 hooks[hook] = system[hook] !== undefined;
             }
             const emitter = emitters[entry.set];
+            const scalars = expansion.snapshot ? builtScalars.get(system) : system;
             live.push({
+                ...(expansion.snapshot ? { snapshot: {
+                    columns: Object.fromEntries([
+                        ...Object.keys(${JSON.stringify(nodeParticleColumnWidths)}).map((name) => [name, Array.from(system.buffer[name])]),
+                        ...[...system.buffer._columns].map(([name, values]) => [name, Array.from(values)]),
+                    ]),
+                    scalars: scalarState(system),
+                    alive: system.buffer.alive,
+                    nextId: system.buffer._nextId,
+                } } : {}),
                 ...(expansion.provider ? { provider: true } : { request: expansion.request, bridge }),
                 set: entry.set,
                 system: entry.system,
@@ -955,10 +975,10 @@ ${stepProgram(request.steps)}
                     system: entry.system,
                     systemBlockId,
                     capacity: system.buffer.capacity,
-                    emitRate: system.emitRate,
-                    updateSpeed: system.updateSpeed,
-                    blendMode: system.blendMode,
-                    targetStopDuration: system.targetStopDuration,
+                    emitRate: scalars.emitRate,
+                    updateSpeed: scalars.updateSpeed,
+                    blendMode: scalars.blendMode,
+                    targetStopDuration: scalars.targetStopDuration,
                     updateSteps: system.updateSteps.length,
                     slots,
                     hooks,
@@ -972,7 +992,7 @@ ${stepProgram(request.steps)}
                     sceneAssigned: sceneTextured,
                     width: system.texture.width,
                     height: system.texture.height,
-                    ...await textureBytes(source),
+                    ...(expansion.snapshot ? {} : await textureBytes(source)),
                 },
             });
         }
