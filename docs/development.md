@@ -272,6 +272,9 @@ when executable inputs or measurement contracts change. `lint:exports` is adviso
 `neutrality <file> --generated --write` saves a generated-byte baseline and `neutrality <file> --generated`
 compares against it after full registry regeneration. Native/shader changes use saved differential
 reports and the validation sequence above.
+Ocean's neutrality check requires saved native PNGs at 1280×720. It compares every pixel outside
+the registered GPU timing values and frame counter exactly, and reports those live text regions separately.
+Parity references and thresholds apply to the complete image.
 
 ## Native builds
 

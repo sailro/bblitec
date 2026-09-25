@@ -24,7 +24,26 @@
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { artifactDirectory, parityReportPath } from "./tooling/artifacts.js";
+import {
+    artifactDirectory,
+    parityReportPath,
+    parityNativeImagePath,
+    backendFileToken,
+    NATIVE_BACKENDS,
+} from "./tooling/artifacts.js";
+import { compareImagePartition } from "./parity.js";
+import { scenes } from "./scene-registry.js";
+
+/** Aggregates whose movement can be explained by the partition's reported pixels. */
+const imageCells = new Set([
+    "goldenVersusSdlGpu.fullMad",
+    "goldenVersusSdlGpu.foregroundMad",
+    "goldenVersusDawn.fullMad",
+    "goldenVersusDawn.foregroundMad",
+    ...["exactMatch", "within1", "within3", "within5", "mad", "maxDiff"].map(
+        (key) => `sdlGpuVersusDawn.${key}`,
+    ),
+]);
 
 /**
  * The backends whose cells move between runs with no code change at all,
@@ -178,6 +197,7 @@ interface NeutralityVerdict {
     moved: string[];
     wobbled: string[];
     missing: string[];
+    partitioned: string[];
 }
 
 export function runNeutralityReport(
@@ -199,6 +219,7 @@ export function runNeutralityReport(
     const moved: string[] = [];
     const wobbled: string[] = [];
     const missing: string[] = [];
+    const partitioned: string[] = [];
 
     for (const [scene, before] of baseline) {
         const after = current.get(scene);
@@ -207,6 +228,38 @@ export function runNeutralityReport(
             continue;
         }
         const differences: string[] = [];
+        const partition = scenes.find((entry) => entry.id === scene)?.parity
+            ?.neutralityPartition;
+        const changedRegions = new Set<string>();
+        if (partition) {
+            for (const backend of NATIVE_BACKENDS) {
+                const token = backendFileToken(backend);
+                const { stable, regions } = compareImagePartition(
+                    parityNativeImagePath(
+                        join(artifactDirectory("parity"), scene),
+                        token,
+                    ),
+                    parityNativeImagePath(
+                        join(baselineDirectory, scene),
+                        token,
+                    ),
+                    partition,
+                );
+                const changed = stable.totalPixels - stable.exactMatch;
+                if (changed)
+                    differences.push(
+                        `    ${backend}: ${changed} stable pixel(s) changed, MAD=${stable.mad}, max=${stable.maxDiff}`,
+                    );
+                const summaries = regions.map((region) => {
+                    const count = region.totalPixels - region.exactMatch;
+                    if (count) changedRegions.add(backend);
+                    return `    ${region.name}: ${count}/${region.totalPixels} pixel(s) changed, MAD=${region.mad}, max=${region.maxDiff}`;
+                });
+                partitioned.push(
+                    `  ${scene} ${backend}: ${stable.exactMatch}/${stable.totalPixels} stable pixels identical\n${summaries.join("\n")}`,
+                );
+            }
+        }
         let expected = 0;
         for (const path of new Set([...before.keys(), ...after.keys()])) {
             const previous = before.get(path);
@@ -218,6 +271,14 @@ export function runNeutralityReport(
                 continue;
             }
             if (previous === value) continue;
+            if (
+                partition &&
+                imageCells.has(path) &&
+                cellBackends(path).some((backend) =>
+                    changedRegions.has(backend),
+                )
+            )
+                continue;
             if (isWobblingCell(scene, path)) {
                 expected++;
                 continue;
@@ -232,15 +293,19 @@ export function runNeutralityReport(
                     ...(wobbleScenes.get(scene) ?? []),
                 ].join(", ")}, known wobble`,
             );
-        } else {
+        } else if (!partition) {
             unchanged++;
         }
     }
 
     console.log(
-        `${unchanged} scene(s) bit-identical across every cell, ` +
+        `${unchanged} scene(s) bit-identical across every report cell, ` +
             `${moved.length} moved.`,
     );
+    if (partitioned.length > 0) {
+        console.log("\nStable image pixels and separately measured live text:");
+        for (const line of partitioned) console.log(line);
+    }
     if (wobbled.length > 0) {
         console.log(
             "\nKnown run-to-run variation (per scene/backend; see wobbleScenes):",
@@ -262,6 +327,6 @@ export function runNeutralityReport(
         );
     }
     const neutral = moved.length === 0 && missing.length === 0;
-    if (neutral) console.log("\nNeutral: no measured cell moved.");
-    return { neutral, unchanged, moved, wobbled, missing };
+    if (neutral) console.log("\nNeutral: no stable measurement moved.");
+    return { neutral, unchanged, moved, wobbled, missing, partitioned };
 }

@@ -1,4 +1,6 @@
 export interface SceneParityDefinition {
+    /** Fixed capture bounds for live measurements; neutrality checks every other pixel exactly. */
+    neutralityPartition?: import("./parity.js").ImagePartition;
     reference: { kind: "source"; path: string };
     referenceTimeSeconds?: number;
     referenceAnimationGroups?: string[];
@@ -4781,6 +4783,36 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Ocean",
         nativeHostUi: "ui/ocean-host.json",
         parity: {
+            neutralityPartition: {
+                width: 1280,
+                height: 720,
+                // Native 1280x720 layout of [data-timing] in ui/ocean-host.json.
+                // Labels, panel geometry, and the status prefix remain in the strict region.
+                regions: [
+                    ...[
+                        "fps",
+                        "compute",
+                        "spectrum",
+                        "fft",
+                        "merge",
+                        "mipmaps",
+                        "total",
+                    ].map((name, row) => ({
+                        name: `GPU timing ${name}`,
+                        x: 212,
+                        y: 149 + row * 21,
+                        width: 43,
+                        height: 14,
+                    })),
+                    {
+                        name: "GPU frame counter",
+                        x: 92,
+                        y: 298,
+                        width: 20,
+                        height: 14,
+                    },
+                ],
+            },
             referenceHostPage: "corpus/babylon-lite/lab/lite/demo-ocean.html",
             referenceScrollbars: true,
             referenceSearch: "?seekTime=0.1",
