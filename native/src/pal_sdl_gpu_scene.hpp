@@ -1,6 +1,7 @@
-// The SDL_GPU scene renderer's state and the declarations its family units
-// share: the scene driver (pal_sdl_gpu.cpp) and one unit per feature family,
-// each paired with its Dawn twin (pal_dawn_scene_<family>.cpp).
+// The SDL_GPU scene renderer's state and the declarations its sources
+// share: the scene driver (pal_sdl_gpu.cpp) and one file per feature family,
+// each paired with its Dawn twin (pal_dawn_scene_<family>.cpp), compiled as
+// one translation unit (pal_sdl_gpu_scene_all.cpp).
 #pragma once
 #include <bblite/features/gpu_task_timing.hpp>
 #include <bblite/features/has_billboards.hpp>

@@ -1,7 +1,8 @@
-// The Dawn scene renderer's state and the declarations its family units
-// share: the scene driver (pal_dawn.cpp) and one unit per feature family,
-// each paired with its SDL_GPU twin (pal_sdl_gpu_scene_<family>.cpp). Dawn
-// renders generated WGSL directly through the Tint-pinned WebGPU runtime.
+// The Dawn scene renderer's state and the declarations its sources share:
+// the scene driver (pal_dawn.cpp) and one file per feature family, each
+// paired with its SDL_GPU twin (pal_sdl_gpu_scene_<family>.cpp), compiled as
+// one translation unit (pal_dawn_scene_all.cpp). Dawn renders generated WGSL
+// directly through the Tint-pinned WebGPU runtime.
 #pragma once
 
 #include <bblite/features/device_recovery.hpp>

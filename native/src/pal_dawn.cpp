@@ -1,6 +1,7 @@
 // The Dawn scene renderer's driver: the pass helpers, the pipelines the
 // frame run builds and the frame run itself. The feature families it draws
-// through are their own units (pal_dawn_scene_<family>.cpp).
+// through are their own files (pal_dawn_scene_<family>.cpp), compiled with it
+// as one translation unit (pal_dawn_scene_all.cpp).
 #include <bblite/features/compute_frame_graph.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/gpu_task_timing.hpp>
