@@ -240,7 +240,11 @@ function(bblite_shared_pch)
     if(arg_INCLUDE_DIRECTORY)
         target_include_directories(${arg_NAME} PRIVATE "${arg_INCLUDE_DIRECTORY}")
     endif()
-    set_source_files_properties("${source}" PROPERTIES COMPILE_OPTIONS "-Xclang;-emit-pch")
+    # As clang-cl's /Yc does, the PCH instantiates the templates its headers
+    # leave pending, so no user instantiates them again.
+    target_compile_options(
+        ${arg_NAME} PRIVATE "SHELL:-Xclang -emit-pch" "SHELL:-Xclang -fpch-instantiate-templates"
+    )
     set(launcher ${CMAKE_CXX_COMPILER_LAUNCHER})
     list(FILTER launcher EXCLUDE REGEX "^base_dir=")
     set_property(TARGET ${arg_NAME} PROPERTY CXX_COMPILER_LAUNCHER "${launcher}")

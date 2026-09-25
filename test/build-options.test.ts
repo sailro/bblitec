@@ -578,6 +578,12 @@ test("the scene-invariant PAL units compile in their own object library", () => 
         cmake,
         /bblite_shared_pch\(\s*NAME bblite_pch\s+TARGETS bblite_pal_common bblite_native\s+HEADERS \$\{BBLITE_PCH_HEADERS\}/,
     );
+    // clang-cl's /Yc instantiates the templates a PCH leaves pending; the
+    // -emit-pch PCHs must too, or every user instantiates them again.
+    assert.match(
+        readFileSync("native/native-header-cache.cmake", "utf8"),
+        /"SHELL:-Xclang -emit-pch" "SHELL:-Xclang -fpch-instantiate-templates"/,
+    );
     // A scene renderer library precompiles the shared set and its scene
     // header, under the cache and without it.
     assert.match(
