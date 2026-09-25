@@ -46,6 +46,10 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 | `browser-erasure.ts` | Browser-only predicates, deployment folds and erased-expression records |
 | `analysis-walk.ts`, `lowering-services.ts` | Shared traversal and compiler interface |
 | `ui-projection.ts`, `platform-calls.ts` | Retained UI and platform calls |
+| `callbacks.ts`, `shared-closure-analysis.ts` | Frame, platform and physics callbacks; which bindings closures share and which are rebound |
+| `engine-lifecycle.ts`, `async-activations.ts` | The `startEngine` mark, hoisted continuation, finally guard, frame yields and device recovery; async activations and worker hooks |
+| `intrinsic-options.ts`, `asset-registry.ts`, `admissions.ts` | Per-intrinsic option objects; asset registration and its recorded facts; capability admissions deferred until the program reaches the capability |
+| `native-emission-registry.ts` | Namespace-level native definitions, shared bodies, environment structs and static tables |
 
 Dynamic storage demands replay emission against the same parsed program. Earlier aliases and
 initializers use the selected representation. Equivalent definitions share code; invocations retain
