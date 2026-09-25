@@ -1,13 +1,17 @@
 // The smallest helpers every GPU unit shares: the draw counter a
-// device-recovery build keeps, the `npos` sentinel and the program-cache
-// walk. Reads only activation macros.
+// device-recovery build keeps, the `npos` sentinel, the program-cache walk
+// and the `.slots` sidecar reading. Reads only activation macros.
 #pragma once
 #include <bblite/features/device_recovery.hpp>
 
 #include <bblite/runtime.hpp>
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -61,6 +65,45 @@ inline std::size_t find_or_create_program(std::vector<Program>& programs, Matche
     }
     programs.push_back(build());
     return programs.size() - 1;
+}
+
+/**
+ * Each line of a `.slots` sidecar -- the file bblite-tint writes beside every
+ * compiled stage -- without its line ending or trailing spaces. SDL_GPU reads
+ * the register lines for its dense slots, Dawn the `@binding` lines for its
+ * reflected layouts; both read the file through this one walk.
+ */
+template <typename Visit> inline void for_each_sidecar_line(std::string_view text, Visit visit) {
+    for (std::size_t start = 0; start < text.size();) {
+        const std::size_t end = std::min(text.find('\n', start), text.size());
+        std::string_view line = text.substr(start, end - start);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+            line.remove_suffix(1);
+        visit(line);
+        start = end + 1;
+    }
+}
+
+/**
+ * A sidecar's decimal register or binding index, or none for text that is not
+ * one. Sidecars are generated build artifacts, but a stale or malformed one
+ * must still fail in bounded space: the index is capped before anything is
+ * sized by it, where `stoul("-4")` would wrap to a huge value and a resize to
+ * it would consume the machine before startup could report the error.
+ */
+inline std::optional<std::uint32_t> parse_sidecar_index(std::string_view digits) {
+    constexpr std::uint32_t max_sidecar_index = 4096;
+    if (digits.empty())
+        return std::nullopt;
+    std::uint32_t value = 0;
+    for (const char digit : digits) {
+        if (digit < '0' || digit > '9')
+            return std::nullopt;
+        value = value * 10 + static_cast<std::uint32_t>(digit - '0');
+        if (value > max_sidecar_index)
+            return std::nullopt;
+    }
+    return value;
 }
 
 } // namespace bbl::pal

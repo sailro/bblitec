@@ -37,6 +37,7 @@ test("SDL integer texture allocations, shader counts and draw bindings preserve 
     const output = resolve("artifacts/test-sdl-integer-textures");
     mkdirSync(output, { recursive: true });
     const source = `#include <bblite/runtime.hpp>
+#include "pal_gpu_common.hpp"
 #include "pal_sdl_gpu_resources.hpp"
 #include "pal_spirv_vertex.hpp"
 #include <algorithm>

@@ -718,12 +718,21 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     );
 });
 
-test("SDL shader slot loading rejects unbounded generated indices", () => {
-    const source = readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8");
-    assert.match(source, /constexpr std::size_t max_slot_index = 4096;/);
-    assert.match(source, /digit < '0' \|\| digit > '9'/);
-    assert.match(source, /Malformed shader slot/);
-    assert.doesNotMatch(source, /std::stoul\(reg\.substr\(1\)\)/);
+test("shader sidecar loading rejects unbounded generated indices", () => {
+    // One bounded index parser, which both backends' sidecar readers use.
+    const common = readFileSync("native/src/pal_gpu_common.hpp", "utf8");
+    assert.match(common, /constexpr std::uint32_t max_sidecar_index = 4096;/);
+    assert.match(common, /digit < '0' \|\| digit > '9'/);
+    for (const file of ["pal_sdl_gpu_shared.hpp", "pal_dawn_shared.hpp"]) {
+        const source = readFileSync(`native/src/${file}`, "utf8");
+        assert.match(source, /parse_sidecar_index\(/, file);
+        assert.match(source, /for_each_sidecar_line\(/, file);
+        assert.doesNotMatch(source, /std::stoul\(/, file);
+    }
+    assert.match(
+        readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"),
+        /Malformed shader slot/,
+    );
 });
 
 test("native shader snapshots track additions and removals", () => {

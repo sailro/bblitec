@@ -6,6 +6,7 @@
 #include "pal_spirv_vertex.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
+#include "pal_gpu_common.hpp"
 #include "pal_sdl_gpu_formats.hpp"
 
 // SDL_GPU mechanics shared by the renderers that draw through it.
@@ -28,8 +29,10 @@
 #include <cstring>
 #include <memory>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <SDL3/SDL.h>
@@ -153,17 +156,17 @@ inline void save_texture_png(SDL_GPUDevice*, SdlGpuCommand& command, SDL_GPUText
 #endif
 
 /**
- * What the shader step's compaction pass assigned, read back at load.
+ * The slots bblite-tint assigned a compiled stage, read back at load.
  *
  * SDL_GPU addresses uniforms by a per-stage slot and textures by a per-stage
- * index, so this backend needs the order the compaction produced. It cannot be
+ * index, so this backend needs the order the compiled stage kept. It cannot be
  * derived from the WGSL: a stage may declare a block it never reads -- the pin's
  * unlit fragment declares its mesh block for the `mli()` helper and then takes
- * no light path -- and Tint strips it, so the source over-counts. The remap
+ * no light path -- and Tint strips it, so the source over-counts. bblite-tint
  * writes a `.slots` file beside each stage naming every register by the pin's
- * own identifier, and this reads it. Both compaction passes write one: a
- * custom sprite fragment declares the layer block and the `fx` block, and
- * which of them survives is the caller's own WGSL to decide.
+ * own identifier, and this reads it: a custom sprite fragment declares the
+ * layer block and the `fx` block, and which of them survives is the caller's
+ * own WGSL to decide.
  */
 struct PinnedStageSlots {
     /** The entry point the stage's module declared, as the sidecar names it. */
@@ -186,16 +189,12 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
     const std::vector<std::uint8_t> bytes =
         read_binary_file(join_path(shader_root, base_name + ".slots"));
     PinnedStageSlots slots;
-    std::string line;
-    const auto take = [&]() {
+    const auto take = [&](std::string_view line) {
         const std::size_t space = line.find(' ');
-        if (line.empty() || space == std::string::npos)
+        if (line.empty() || space == std::string_view::npos)
             return;
-        const std::string reg = line.substr(0, space);
-        std::string name = line.substr(space + 1);
-        while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) {
-            name.pop_back();
-        }
+        const std::string_view reg = line.substr(0, space);
+        const std::string name(line.substr(space + 1));
         if (reg == "@entry") {
             slots.entry_point = name;
             return;
@@ -217,41 +216,17 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
                                                            : nullptr;
         if (!target)
             return;
-        // Sidecars are generated build artifacts, but a stale or malformed one
-        // must still fail in bounded space. In particular, `stoul("-4")`
-        // produces a huge unsigned value on Windows; resizing to that index
-        // would consume the machine before startup could report the error.
-        constexpr std::size_t max_slot_index = 4096;
-        if (reg.size() < 2) {
-            throw std::runtime_error("Malformed shader slot '" + reg + "' in " + base_name +
-                                     ".slots.");
+        const std::optional<std::uint32_t> index = parse_sidecar_index(reg.substr(1));
+        if (!index) {
+            throw std::runtime_error("Malformed shader slot '" + std::string(reg) + "' in " +
+                                     base_name + ".slots.");
         }
-        std::size_t index = 0;
-        for (std::size_t cursor = 1; cursor < reg.size(); ++cursor) {
-            const char digit = reg[cursor];
-            if (digit < '0' || digit > '9') {
-                throw std::runtime_error("Malformed shader slot '" + reg + "' in " + base_name +
-                                         ".slots.");
-            }
-            index = index * 10 + static_cast<std::size_t>(digit - '0');
-            if (index > max_slot_index) {
-                throw std::runtime_error("Shader slot '" + reg + "' is out of range in " +
-                                         base_name + ".slots.");
-            }
-        }
-        if (target->size() <= index)
-            target->resize(index + 1);
-        (*target)[index] = name;
+        if (target->size() <= *index)
+            target->resize(*index + 1);
+        (*target)[*index] = name;
     };
-    for (const std::uint8_t byte : bytes) {
-        if (byte == '\n') {
-            take();
-            line.clear();
-            continue;
-        }
-        line.push_back(static_cast<char>(byte));
-    }
-    take();
+    for_each_sidecar_line(
+        std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()), take);
     return slots;
 }
 
@@ -263,8 +238,8 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
  * the `fx` block; a body that owns its alpha reads neither, and a block a
  * stage does not read is dropped on the way to the compiled shader. So which
  * of them exists, and at which of this stage's dense slots, is a question
- * only the compaction pass can answer -- which is what it writes beside the
- * stage.
+ * only the compiled stage can answer -- which is what bblite-tint writes
+ * beside it.
  */
 inline int stage_uniform_slot(const PinnedStageSlots& slots, const char* block_name) {
     for (std::size_t index = 0; index < slots.uniforms.size(); ++index) {
