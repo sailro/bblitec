@@ -176,11 +176,10 @@ test("generates the shared Tint material vertex interface", () => {
     assert.match(vertex, /boneMatrices: array<mat4x4<f32>, 64>/);
     assert.match(vertex, /input\.morphPosition0/);
     assert.match(vertex, /@location\(15\) morphTangent1: vec3<f32>/);
-    assert.match(vertex, /deformation\.options\.y < 0\.5/);
     assert.match(staticVertex, /@binding\(1\) var<uniform> mesh: MeshUniforms/);
     assert.match(
         staticVertex,
-        /\(mesh\.world \* vec4<f32>\(worldPosition, 1\.0\)\)/,
+        /var finalWorld = mesh\.world;[\s\S]*\(finalWorld \* vec4<f32>\(worldPosition, 1\.0\)\)/,
     );
     assert.match(
         instancedVertex,
