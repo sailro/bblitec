@@ -52,7 +52,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Performance
 
-- [ ] Memoize reached-loop walks per root and flags (`resource-loops.ts` `walkReachedLoopNodes`, 13% of doom's generation).
 - [ ] Send lowered modules through unit packing and outlining (scene1's `gltf_loader.cpp` is 283 KB, 7.8 s alone).
 - [ ] Make record layouts feature-independent so one shared PCH serves every scene (`runtime.hpp` includes 15 feature headers).
 - [ ] `minecraft`: worst frame of a chunk-crossing sprint replay at most 16.7 ms (`BBLITE_FPS_PROFILE` maximum interval), with meshing, lighting, water settling and allocation attributed separately (`BBLITE_CPU_PROFILE`).

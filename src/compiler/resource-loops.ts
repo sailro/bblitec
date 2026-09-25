@@ -1,7 +1,6 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
 import { classChain, classMemberTable } from "./class-members.js";
 import {
     isPinnedType,
@@ -171,30 +170,73 @@ function nativeTransformSet(
     return kind === "mesh" || kind === "transform-node";
 }
 
+type LoopCallbacks = ReadonlyMap<ts.Symbol, SupportedFunction | undefined>;
+
+interface ReachedLoopEdge {
+    readonly node: ts.Node;
+    readonly callbacks: LoopCallbacks;
+    readonly functionKey?: string;
+}
+
+interface ReachedLoopNode {
+    readonly node: ts.Node;
+    /** First row after this syntax subtree, for a visitor's pruning decision. */
+    end: number;
+    readonly expansions: Map<
+        string,
+        {
+            readonly called: ts.Signature["declaration"];
+            readonly edges: readonly ReachedLoopEdge[];
+        }
+    >;
+}
+
+interface ReachedLoopCache {
+    readonly plans: WeakMap<ts.Node, readonly ReachedLoopNode[]>;
+    readonly identities: WeakMap<ts.Node | ts.Symbol, number>;
+    nextIdentity: number;
+}
+
+/** @unjournaled Syntax plans are immutable; expansions validate their current callee before reuse. */
+const reachedLoopCaches = new WeakMap<object, ReachedLoopCache>();
+
 /** Follow reached calls with readonly callback parameters bound to their source bodies. */
 export function walkReachedLoopNodes(
     context: Pick<ResourceLoopContext, "checker" | "symbols"> &
-        Partial<Pick<ResourceLoopContext, "dataTypes">>,
+        Partial<
+            Pick<
+                ResourceLoopContext,
+                "dataTypes" | "bindings" | "knownValueWithoutEvaluation"
+            >
+        >,
     root: ts.Node,
     visit: (
         node: ts.Node,
         called?: ts.Signature["declaration"],
     ) => boolean | void,
 ): void {
-    type Callbacks = ReadonlyMap<ts.Symbol, SupportedFunction | undefined>;
+    let cache = reachedLoopCaches.get(context);
+    if (!cache) {
+        cache = {
+            plans: new WeakMap(),
+            identities: new WeakMap(),
+            nextIdentity: 0,
+        };
+        reachedLoopCaches.set(context, cache);
+    }
+    const memo = cache;
     const functions = new Map<ts.Node, Set<string>>();
-    const identities = new Map<ts.Node | ts.Symbol, number>();
     const identity = (value: ts.Node | ts.Symbol): number => {
-        let id = identities.get(value);
+        let id = memo.identities.get(value);
         if (id === undefined) {
-            id = identities.size;
-            identities.set(value, id);
+            id = memo.nextIdentity++;
+            memo.identities.set(value, id);
         }
         return id;
     };
     const callback = (
         expression: ts.Expression,
-        callbacks: Callbacks,
+        callbacks: LoopCallbacks,
     ): SupportedFunction | undefined => {
         const value = unwrapExpression(expression);
         if (isSupportedFunction(value)) return value;
@@ -212,7 +254,18 @@ export function walkReachedLoopNodes(
             return undefined;
         return tryResolveFunctionDeclaration(context.checker, value);
     };
-    const walkFunction = (node: ts.Node, callbacks: Callbacks): void => {
+    const callbackKey = (callbacks: LoopCallbacks): string =>
+        [...callbacks]
+            .map(
+                ([symbol, value]) =>
+                    `${identity(symbol)}:${value ? identity(value) : "?"}`,
+            )
+            .sort()
+            .join(",");
+    const functionEdge = (
+        node: ts.Node,
+        callbacks: LoopCallbacks,
+    ): ReachedLoopEdge[] => {
         if (
             !(
                 isSupportedFunction(node) ||
@@ -222,41 +275,61 @@ export function walkReachedLoopNodes(
             ) ||
             !node.body
         )
-            return;
-        const key = [...callbacks]
-            .map(
-                ([symbol, value]) =>
-                    `${identity(symbol)}:${value ? identity(value) : "?"}`,
-            )
-            .sort()
-            .join(",");
-        let seen = functions.get(node);
-        if (!seen) functions.set(node, (seen = new Set()));
-        if (seen.has(key)) return;
-        seen.add(key);
-        walk(node.body, callbacks);
+            return [];
+        return [
+            { node: node.body, callbacks, functionKey: callbackKey(callbacks) },
+        ];
     };
-    const walk = (subtree: ts.Node, callbacks: Callbacks): void =>
-        forEachAnalysisNode(
-            subtree,
-            (node) => {
-                const invocation =
-                    ts.isCallExpression(node) || ts.isNewExpression(node);
-                const callee = invocation
-                    ? unwrapExpression(node.expression)
+    const plan = (subtree: ts.Node): readonly ReachedLoopNode[] => {
+        let rows = memo.plans.get(subtree);
+        if (!rows) {
+            const built: ReachedLoopNode[] = [];
+            const append = (node: ts.Node): void => {
+                if (node !== subtree && ts.isFunctionLike(node)) return;
+                const row: ReachedLoopNode = {
+                    node,
+                    end: 0,
+                    expansions: new Map(),
+                };
+                built.push(row);
+                ts.forEachChild(node, append);
+                row.end = built.length;
+            };
+            append(subtree);
+            rows = built;
+            memo.plans.set(subtree, rows);
+        }
+        return rows;
+    };
+    const walk = (subtree: ts.Node, callbacks: LoopCallbacks): void => {
+        const rows = plan(subtree);
+        const key = callbackKey(callbacks);
+        for (let index = 0; index < rows.length; index++) {
+            const row = rows[index]!;
+            const node = row.node;
+            const invocation =
+                ts.isCallExpression(node) || ts.isNewExpression(node);
+            const callee = invocation
+                ? unwrapExpression(node.expression)
+                : undefined;
+            const symbol =
+                callee && ts.isIdentifier(callee)
+                    ? declaredSymbol(context.checker, callee)
                     : undefined;
-                const symbol =
-                    callee && ts.isIdentifier(callee)
-                        ? declaredSymbol(context.checker, callee)
-                        : undefined;
-                const called = invocation
-                    ? symbol && callbacks.has(symbol)
-                        ? (callbacks.get(symbol) ??
-                          context.checker.getResolvedSignature(node)
-                              ?.declaration)
-                        : resolvedLoopCallee(context, node)
-                    : undefined;
-                if (visit(node, called) === false) return "skip";
+            const called = invocation
+                ? symbol && callbacks.has(symbol)
+                    ? (callbacks.get(symbol) ??
+                      context.checker.getResolvedSignature(node)?.declaration)
+                    : resolvedLoopCallee(context, node)
+                : undefined;
+            if (visit(node, called) === false) {
+                index = row.end - 1;
+                continue;
+            }
+            if (!invocation && !ts.isPropertyAccessExpression(node)) continue;
+            let expansion = row.expansions.get(key);
+            if (!expansion || expansion.called !== called) {
+                const edges: ReachedLoopEdge[] = [];
                 if (invocation && callee) {
                     const imported = ts.isIdentifier(callee)
                         ? context.symbols.importedName(callee)
@@ -315,7 +388,9 @@ export function walkReachedLoopNodes(
                                         : undefined,
                                 );
                             }
-                            walkFunction(target, bound ?? callbacks);
+                            edges.push(
+                                ...functionEdge(target, bound ?? callbacks),
+                            );
                         }
                     }
                     if (ts.isNewExpression(node)) {
@@ -343,13 +418,17 @@ export function walkReachedLoopNodes(
                                     ts.isPropertyDeclaration(member) &&
                                     member.initializer
                                 )
-                                    walk(member.initializer, callbacks);
+                                    edges.push({
+                                        node: member.initializer,
+                                        callbacks,
+                                    });
                             }
                         }
                     }
                     for (const argument of node.arguments ?? []) {
                         const declaration = callback(argument, callbacks);
-                        if (declaration) walkFunction(declaration, callbacks);
+                        if (declaration)
+                            edges.push(...functionEdge(declaration, callbacks));
                     }
                 }
                 if (ts.isPropertyAccessExpression(node)) {
@@ -361,12 +440,23 @@ export function walkReachedLoopNodes(
                             ts.isGetAccessorDeclaration(declaration) ||
                             ts.isSetAccessorDeclaration(declaration)
                         )
-                            walkFunction(declaration, callbacks);
+                            edges.push(...functionEdge(declaration, callbacks));
                     }
                 }
-            },
-            { skip: (node) => node !== subtree && ts.isFunctionLike(node) },
-        );
+                expansion = { called, edges };
+                row.expansions.set(key, expansion);
+            }
+            for (const edge of expansion.edges) {
+                if (edge.functionKey !== undefined) {
+                    let seen = functions.get(edge.node);
+                    if (!seen) functions.set(edge.node, (seen = new Set()));
+                    if (seen.has(edge.functionKey)) continue;
+                    seen.add(edge.functionKey);
+                }
+                walk(edge.node, edge.callbacks);
+            }
+        }
+    };
     walk(root, new Map());
 }
 
