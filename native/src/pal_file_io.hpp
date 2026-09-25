@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <random>
 #include <span>
 #include <stdexcept>
@@ -18,6 +19,7 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
+#include <variant>
 
 #if defined(_WIN32)
 #include "pal_win32_text.hpp"
@@ -97,16 +99,33 @@ private:
     return std::filesystem::path{std::u8string(value.begin(), value.end())};
 }
 
-[[nodiscard]] inline std::vector<std::uint8_t>
-read_binary_file_bounded(const std::filesystem::path& path, std::uintmax_t maximum_bytes,
-                         std::string_view description) {
+enum class FileLinks { reject, follow };
+struct FileReadError {
+    std::string message;
+};
+using FileReadResult = std::variant<std::monostate, FileReadError, std::vector<std::uint8_t>>;
+
+/** Whole deployed resources and resolved system fonts must fit a 32-bit byte count. */
+inline constexpr std::uintmax_t maximum_resource_file_bytes =
+    (std::numeric_limits<std::uint32_t>::max)();
+
+/** Absent, failed, or a complete snapshot (including an empty file). */
+[[nodiscard]] inline FileReadResult
+try_read_binary_file_bounded(const std::filesystem::path& path, std::uintmax_t maximum_bytes,
+                             std::string_view description,
+                             FileLinks links = FileLinks::reject) try {
 #if defined(_WIN32)
-    UniqueFileHandle handle(CreateFileW(
-        path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    UniqueFileHandle handle(
+        CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN |
+                        (links == FileLinks::reject ? FILE_FLAG_OPEN_REPARSE_POINT : 0),
+                    nullptr));
     if (!handle.valid()) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+            return std::monostate{};
         throw std::runtime_error("Unable to inspect " + std::string(description) + ": " +
-                                 "Win32 error " + std::to_string(GetLastError()) + ".");
+                                 "Win32 error " + std::to_string(error) + ".");
     }
     BY_HANDLE_FILE_INFORMATION information{};
     LARGE_INTEGER size{};
@@ -117,7 +136,8 @@ read_binary_file_bounded(const std::filesystem::path& path, std::uintmax_t maxim
                                  " (Win32 error " + std::to_string(error) + ").");
     }
     if ((information.dwFileAttributes &
-         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+         (FILE_ATTRIBUTE_DIRECTORY |
+          (links == FileLinks::reject ? FILE_ATTRIBUTE_REPARSE_POINT : 0))) != 0 ||
         size.QuadPart < 0) {
         throw std::runtime_error(std::string(description) +
                                  " must be a regular file, not a directory or reparse point.");
@@ -158,14 +178,19 @@ read_binary_file_bounded(const std::filesystem::path& path, std::uintmax_t maxim
 #if !defined(O_NOFOLLOW)
 #error "Browser file IO requires O_NOFOLLOW on this host."
 #endif
-    int flags = O_RDONLY | O_NOFOLLOW;
+    int flags = O_RDONLY | O_NONBLOCK;
+    if (links == FileLinks::reject)
+        flags |= O_NOFOLLOW;
 #if defined(O_CLOEXEC)
     flags |= O_CLOEXEC;
 #endif
     UniqueFileDescriptor descriptor(::open(path.c_str(), flags));
     if (!descriptor.valid()) {
+        const int error = errno;
+        if (error == ENOENT)
+            return std::monostate{};
         throw std::runtime_error("Unable to inspect " + std::string(description) + ": " +
-                                 std::error_code(errno, std::generic_category()).message() + ".");
+                                 std::error_code(error, std::generic_category()).message() + ".");
     }
     struct stat information{};
     if (::fstat(descriptor.get(), &information) != 0) {
@@ -211,6 +236,28 @@ read_binary_file_bounded(const std::filesystem::path& path, std::uintmax_t maxim
     }
     return value;
 #endif
+} catch (const std::runtime_error& error) {
+    return FileReadError{error.what()};
+}
+
+[[nodiscard]] inline std::optional<std::vector<std::uint8_t>>
+file_read_value(FileReadResult result) {
+    if (const auto* error = std::get_if<FileReadError>(&result))
+        throw std::runtime_error(error->message);
+    if (auto* bytes = std::get_if<std::vector<std::uint8_t>>(&result))
+        return std::move(*bytes);
+    return std::nullopt;
+}
+
+[[nodiscard]] inline std::vector<std::uint8_t>
+read_binary_file_bounded(const std::filesystem::path& path, std::uintmax_t maximum_bytes,
+                         std::string_view description, FileLinks links = FileLinks::reject) {
+    auto bytes =
+        file_read_value(try_read_binary_file_bounded(path, maximum_bytes, description, links));
+    if (!bytes)
+        throw std::runtime_error("Unable to open " + std::string(description) +
+                                 ": file is absent.");
+    return std::move(*bytes);
 }
 
 [[nodiscard]] inline std::string read_text_file_bounded(const std::filesystem::path& path,

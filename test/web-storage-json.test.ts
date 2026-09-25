@@ -396,7 +396,7 @@ test("the Web Storage PAL keeps its file work behind an encoded key", () => {
     assert.match(fileIo, /MoveFileExW|std::filesystem::rename/);
     // Reads are bounded and removing an absent key is not a failure.
     assert.match(source, /kMaximumEntryBytes/);
-    assert.match(source, /error == std::errc::no_such_file_or_directory/);
+    assert.match(source, /try_read_binary_file_bounded/);
     // A test root keeps the user's own preferences out of a run.
     assert.match(source, /BBLITE_LOCAL_STORAGE_ROOT/);
     // No OS API outside PAL: the header the scene includes is a thin shim.

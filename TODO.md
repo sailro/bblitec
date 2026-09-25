@@ -19,7 +19,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 - [ ] Serve every pinned GPU writer through one WebGPU-shaped device, not a text-only one (`text_gpu.hpp`).
 - [ ] Write Dawn material and UV blocks once per frame or version change, not in every pass (`pal_dawn_scene_variants.cpp`).
 - [ ] Adopt SDL's main-callback loop for interactive builds so the Win32 move/resize modal loop no longer stalls iteration (`pal_platform_events.hpp`).
-- [ ] Shared bounded I/O returning absent/error/value (`pal_storage.cpp`, `pal_file_io.hpp`, `pal_ui_form.hpp`, `pal.cpp`).
 - [ ] Reclaim retired shadow-generator records and map targets without compacting handles (`rebuild_scene_renderables` in `scene-lowerer.ts`).
 
 ## Qualification

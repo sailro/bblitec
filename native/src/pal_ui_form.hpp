@@ -1,5 +1,6 @@
 #pragma once
 #include <bblite/pal_system_fonts.hpp>
+#include "pal_file_io.hpp"
 #include <RmlUi/Core/Elements/ElementFormControl.h>
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <RmlUi/Core/ElementText.h>
@@ -11,8 +12,6 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include <cmath>
-#include <fstream>
-#include <iterator>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -171,8 +170,11 @@ private:
         const auto descriptor = find_system_font(family, weight);
         if (!descriptor)
             return std::nullopt;
-        std::ifstream input(descriptor->path, std::ios::binary);
-        const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(input)), {});
+        const auto bytes = detail::read_binary_file_bounded(
+            descriptor->path,
+            (std::min)(detail::maximum_resource_file_bytes,
+                       static_cast<std::uintmax_t>((std::numeric_limits<FT_Long>::max)())),
+            "resolved text form font", detail::FileLinks::follow);
         FT_Face face = nullptr;
         if (FT_New_Memory_Face(library, bytes.data(), static_cast<FT_Long>(bytes.size()),
                                descriptor->face_index, &face))
