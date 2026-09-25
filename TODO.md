@@ -21,6 +21,7 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Platform and runtime
 
+- [ ] Name SDL_GPU backend functions by their backend as the files are: `render_sprite_ui_sdl_frame`, `render_ui_backdrop_sdl` and siblings say `sdl` where they mean SDL_GPU (`native/src/pal_sdl_gpu_*`).
 - [ ] Adopt SDL's main-callback loop for interactive builds so the Win32 move/resize modal loop no longer stalls iteration (`pal_platform_events.hpp`).
 - [ ] One file-type descriptor table for `<input accept>` validation and native dialog filters (`browser-file.ts`, `js_file.hpp`, `js_voxel_file.hpp`).
 - [ ] Shared bounded I/O returning absent/error/value (`pal_storage.cpp`, `pal_file_io.hpp`, `pal_ui_form.hpp`, `pal.cpp`).
