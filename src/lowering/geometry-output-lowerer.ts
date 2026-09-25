@@ -282,6 +282,7 @@ PixelViewport resolve_copy_viewport(
                 `${renderModule}#createRenderTask,RenderTask.addMesh, ${copyModule}#createCopyToTextureTask, and ${actionsModule}#addTask,addTaskAtStart`,
             )}
 #include <bblite/upstream/frame_graph_geometry.hpp>
+#include <bblite/js_data.hpp>
 
 #include <algorithm>
 #include <cmath>

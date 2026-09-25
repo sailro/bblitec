@@ -167,7 +167,21 @@ export function lowerGpuRetirement(context: LoweringContext): LoweredSource {
                     bindings,
                     calls: new Map(),
                     foldConditions: false,
-                    expression: (node) => expression(node).cpp,
+                    expression: (node, lowerer) => {
+                        const value = expression(node);
+                        lowerer.bindLocal(node, {
+                            cpp: value.cpp,
+                            type:
+                                value.kind === "bool"
+                                    ? "bool"
+                                    : value.kind === "number"
+                                      ? "scalar"
+                                      : value.kind === "string"
+                                        ? "string"
+                                        : "opaque",
+                        });
+                        return value.cpp;
+                    },
                     statement: (node, lowerer, indent) =>
                         statement(node, lowerer, indent),
                     forOf: (source, element) => {
@@ -537,6 +551,6 @@ export function lowerGpuRetirement(context: LoweringContext): LoweredSource {
         modulePath,
         symbolName: [...functions.keys()].join(","),
         header: "",
-        source: `#include <bblite/pal_gpu_retirement.hpp>\nnamespace bbl {\n${sources.join("\n\n")}\n}\n`,
+        source: `#include <bblite/pal_gpu_retirement.hpp>\n#include <bblite/js_data.hpp>\nnamespace bbl {\n${sources.join("\n\n")}\n}\n`,
     };
 }
