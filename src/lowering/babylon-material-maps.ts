@@ -101,12 +101,15 @@ export function lowerBabylonMaterialMaps(context: LoweringContext): string {
         {
             bindings,
             calls: new Map(),
-            forOf(iterated, element) {
-                const range = bindings.get(iterated)?.cpp;
+            forOf(_iterated, element, binding) {
+                const range = binding?.cpp;
                 return range
                     ? {
                           range,
                           bindings: new Map([
+                              ...[...bindings].filter(([name]) =>
+                                  name.startsWith(`${element}.`),
+                              ),
                               [element, { cpp: element, type: "opaque" }],
                           ]),
                       }
@@ -124,10 +127,23 @@ export function lowerBabylonMaterialMaps(context: LoweringContext): string {
                         ),
                         indent,
                     );
-                if (statement === first)
+                if (statement === first) {
+                    lowerer.bindPorts(
+                        [
+                            [
+                                created.name.getText(file),
+                                {
+                                    cpp: created.name.getText(file),
+                                    type: "opaque",
+                                },
+                            ],
+                        ],
+                        created,
+                    );
                     return [
                         `${indent}const auto ${created.name.getText(file)} = load_material(engine, md, base_path, scene_ambient, reflection_cubes, load_textures);`,
                     ];
+                }
                 if (
                     !ts.isExpressionStatement(statement) ||
                     !ts.isCallExpression(statement.expression)

@@ -1,7 +1,8 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { bufferAlignmentCpp } from "./gpu-buffer-adapters.js";
 
@@ -47,7 +48,7 @@ export function storageBufferDescriptorCpp(context: LoweringContext): string {
                 ] as const,
         ),
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set("align", (args) => `storage_buffer_align(${args.join(", ")})`);
     calls.set(
         "Number.isSafeInteger",
@@ -56,7 +57,7 @@ export function storageBufferDescriptorCpp(context: LoweringContext): string {
     const body = lowerPinnedBody(file, statements.slice(start, end + 1), {
         bindings,
         calls,
-        booleanOr: true,
+
         callShapes: new Map([["Number.isSafeInteger", "bool"]]),
     });
     return `${bufferAlignmentCpp(context, "storage_buffer_align")}

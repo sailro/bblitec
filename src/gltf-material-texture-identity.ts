@@ -1,11 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
-import {
-    asRecords,
-    asStrings,
-    GLTF_SOURCE_ALBEDO_IDENTITIES,
-    type JsonObject,
-} from "./gltf-document.js";
+import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "./gltf-document.js";
+import { asRecords, asStrings, type JsonObject } from "./json-fields.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import { ensurePinnedLoaderExecution } from "./pinned-material-input.js";
 import {

@@ -62,8 +62,7 @@ export function lowerGltfWeightedAnimationTargets(
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression(node, lowerer) {
             if (context.expressionMatchesShape(node, "mixer[GLTF_NODES]"))
                 return "transport.nodes(mixer)";
@@ -466,6 +465,10 @@ function lowerTopoOrder(context: LoweringContext): string {
                     statement.parameters[0]!.name as ts.Identifier,
                     "idx",
                     "Weighted topological visit parameter",
+                );
+                lowerer.bindPorts(
+                    [["idx", { cpp: "idx", type: "scalar" }]],
+                    statement.body,
                 );
                 return [
                     `${indent}std::function<void(double)> visit = [&](double idx) {`,

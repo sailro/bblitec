@@ -13,8 +13,6 @@ import type {
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
-    pinnedNumericMathCalls,
-    pinnedRoundCall,
 } from "../pinned-operators.js";
 
 const numericOperators = new Map([
@@ -100,15 +98,6 @@ export function lowerGltfMaterialObjectFunction(
             : `GltfPbrValue ${sourceName}`;
     });
     const calls = new Map<string, (args: readonly string[]) => string>();
-    for (const [name, emit] of [
-        ...pinnedNumericMathCalls(),
-        ["Math.round", pinnedRoundCall],
-    ] as const)
-        calls.set(
-            name,
-            (args) =>
-                `GltfPbrValue{${emit(args.map((argument) => `(${argument}).number()`))}}`,
-        );
     let temporary = 0;
     const value = (expression: ts.Expression, lowerer: PinnedNumericLowerer) =>
         `(${lowerer.expression(expression)})`;
@@ -169,9 +158,14 @@ export function lowerGltfMaterialObjectFunction(
     const body = lowerPinnedBody(file, declaration.body.statements, {
         bindings,
         calls,
+        mathValue: {
+            argument: (cpp) => `(${cpp}).number()`,
+            result: (cpp) => `GltfPbrValue{${cpp}}`,
+        },
+        condition: (expression, lowerer) =>
+            `${value(expression, lowerer)}.truthy()`,
         foldConditions: false,
-        forOf(iterated, element) {
-            const range = bindings.get(iterated);
+        forOf(_iterated, element, range) {
             return range
                 ? {
                       range: `${range.cpp}.elements()`,
@@ -224,7 +218,6 @@ export function lowerGltfMaterialObjectFunction(
                         node,
                         "Expected an expression material callback.",
                     );
-                const saved = new Map(bindings);
                 const parameters = node.parameters.map((parameter) => {
                     if (!ts.isIdentifier(parameter.name))
                         context.contractError(
@@ -232,7 +225,7 @@ export function lowerGltfMaterialObjectFunction(
                             "Expected a named material callback parameter.",
                         );
                     const name = parameter.name.text;
-                    bindings.set(name, {
+                    lowerer.bindLocal(parameter.name, {
                         cpp: name,
                         type: "opaque",
                         absentCpp: `!${name}.truthy()`,
@@ -240,9 +233,6 @@ export function lowerGltfMaterialObjectFunction(
                     return `GltfPbrValue ${name}`;
                 });
                 const body = value(node.body, lowerer);
-                bindings.clear();
-                for (const [name, binding] of saved)
-                    bindings.set(name, binding);
                 return `[&](${parameters.join(", ")}) { return ${body}; }`;
             }
             if (ts.isConditionalExpression(node))
@@ -347,7 +337,7 @@ export function lowerGltfMaterialObjectFunction(
                         ? `${target.receiver}.set(${target.key}, ${value(node.right, lowerer)})`
                         : ts.isElementAccessExpression(left)
                           ? `${value(left.expression, lowerer)}.set_at(${value(left.argumentExpression, lowerer)}.number(), ${value(node.right, lowerer)})`
-                          : ts.isIdentifier(left) && bindings.has(left.text)
+                          : ts.isIdentifier(left) && lowerer.binding(left)
                             ? `(${left.text} = ${value(node.right, lowerer)})`
                             : undefined;
                     if (!store)
@@ -589,7 +579,7 @@ export function lowerGltfMaterialObjectFunction(
                                 "Expected a named material state.",
                             );
                         const name = variable.name.text;
-                        bindings.set(name, {
+                        lowerer.bindLocal(variable.name, {
                             cpp: name,
                             type: "opaque",
                             absentCpp: `!${name}.truthy()`,
@@ -656,7 +646,7 @@ export function lowerGltfMaterialObjectFunction(
                                     "Unsupported material result destructuring.",
                                 );
                             const name = element.name.text;
-                            bindings.set(name, {
+                            lowerer.bindLocal(element.name, {
                                 cpp: name,
                                 type: "opaque",
                                 absentCpp: `!${name}.truthy()`,
@@ -682,7 +672,7 @@ export function lowerGltfMaterialObjectFunction(
                         return [`${indent}const auto ${name} = ${callback};`];
                     }
                     const initial = value(initializer, lowerer);
-                    bindings.set(name, {
+                    lowerer.bindLocal(variable.name, {
                         cpp: name,
                         type: "opaque",
                         absentCpp: `!${name}.truthy()`,

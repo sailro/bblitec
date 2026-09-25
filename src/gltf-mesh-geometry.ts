@@ -1,4 +1,5 @@
-import { asIndex, asRecords, type JsonObject } from "./gltf-document.js";
+import { asIndex } from "./gltf-document.js";
+import { asRecords, type JsonObject } from "./json-fields.js";
 import { BinaryBuilder } from "./glb-binary-builder.js";
 import { RecordedBuffer } from "./recording-device.js";
 

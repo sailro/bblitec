@@ -144,7 +144,10 @@ export function audioTypeof(
           ? "function"
           : undefined;
     if (result && receiver.cpp)
-        context.emit(`static_cast<void>(${receiver.cpp});`);
+        context.emit({
+            kind: "expression",
+            code: `static_cast<void>(${receiver.cpp});`,
+        });
     return result;
 }
 
@@ -359,11 +362,12 @@ export function compileAudioMethodCall(
                     },
                 );
             const decoded = context.allocateTemporaryCppName("decoded_audio");
-            context.emit(
-                `const bbl::pal::AudioBufferHandle ${decoded} = ` +
-                    `bbl::pal::audio_decode_buffer(${receiver.cpp}, ` +
-                    `${encoded.cpp});`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: "const bbl::pal::AudioBufferHandle",
+                name: decoded,
+                initializer: `bbl::pal::audio_decode_buffer(${receiver.cpp}, ${encoded.cpp})`,
+            });
             return {
                 kind: "audio-buffer",
                 cpp: decoded,
@@ -432,10 +436,12 @@ export function compileAudioMethodCall(
             context.reachFeature(factory.feature, call);
         }
         const node = context.allocateTemporaryCppName("audio_node");
-        context.emit(
-            `bbl::pal::AudioNodeHandle ${node} = ` +
-                `bbl::pal::${factory.factory}(${receiver.cpp});`,
-        );
+        context.emit({
+            kind: "declaration",
+            type: "bbl::pal::AudioNodeHandle",
+            name: node,
+            initializer: `bbl::pal::${factory.factory}(${receiver.cpp})`,
+        });
         context.registerNativeTemporary(node);
         return {
             kind: "audio-node",
@@ -466,7 +472,12 @@ export function compileAudioMethodCall(
         context.expectArgumentCount(call, 2, 3);
         context.reachFeature("audio:buffer-source", call);
         const buffer = context.allocateTemporaryCppName("audio_copy_buffer");
-        context.emit(`const auto ${buffer} = ${receiver.cpp};`);
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: buffer,
+            initializer: receiver.cpp,
+        });
         const samples = context.compileValue(argumentAt(call, 0));
         if (samples.dataType?.kind !== "f32array")
             context.fail(
@@ -474,11 +485,21 @@ export function compileAudioMethodCall(
                 `${method} requires a Float32Array.`,
             );
         const input = context.allocateTemporaryCppName("audio_copy_samples");
-        context.emit(`const auto ${input} = ${samples.cpp};`);
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: input,
+            initializer: samples.cpp,
+        });
         const index = (argument: ts.Expression): string => {
             const cpp = context.compileNumber(argument, "double");
             const name = context.allocateTemporaryCppName("audio_copy_index");
-            context.emit(`const auto ${name} = bbl::js::to_uint32(${cpp});`);
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: name,
+                initializer: `bbl::js::to_uint32(${cpp})`,
+            });
             return name;
         };
         const channel = index(argumentAt(call, 1));
@@ -716,10 +737,12 @@ export function emitAudioPropertyAssignment(
     }
 
     if (owner.kind === "audio-param" && property === "value") {
-        context.emit(
-            `bbl::pal::audio_param_set_value(${owner.cpp}, ` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::pal::audio_param_set_value(${owner.cpp}, ` +
                 `${context.compileNumber(right, "float")});`,
-        );
+        });
         return true;
     }
 
@@ -736,18 +759,21 @@ export function emitAudioPropertyAssignment(
             );
         }
         context.reachFeature("audio:buffer-source", expression);
-        context.emit(
-            `bbl::pal::audio_set_buffer(${owner.cpp}, ${buffer.cpp});`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::pal::audio_set_buffer(${owner.cpp}, ${buffer.cpp});`,
+        });
         return true;
     }
 
     if (property === "loop") {
         context.reachFeature("audio:buffer-source", expression);
-        context.emit(
-            `bbl::pal::audio_set_loop(${owner.cpp}, ` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::pal::audio_set_loop(${owner.cpp}, ` +
                 `${context.compileBoolean(right)});`,
-        );
+        });
         return true;
     }
 
@@ -804,18 +830,22 @@ export function emitAudioPropertyAssignment(
     }
     const wave = OSCILLATOR_WAVES[spelling];
     if (wave) {
-        context.emit(
-            `bbl::pal::audio_set_oscillator_wave(${owner.cpp}, ` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::pal::audio_set_oscillator_wave(${owner.cpp}, ` +
                 `bbl::pal::OscillatorWave::${wave});`,
-        );
+        });
         return true;
     }
     const filter = FILTER_KINDS[spelling];
     if (filter) {
-        context.emit(
-            `bbl::pal::audio_set_filter_kind(${owner.cpp}, ` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::pal::audio_set_filter_kind(${owner.cpp}, ` +
                 `bbl::pal::BiquadFilterKind::${filter});`,
-        );
+        });
         return true;
     }
     context.fail(

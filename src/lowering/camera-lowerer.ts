@@ -9,7 +9,7 @@ import {
 } from "./world-bounds-lowerer.js";
 
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { pinnedHeader } from "./pinned-header.js";
 import {
     lowerObjectComponents,
@@ -158,7 +158,7 @@ export class CameraLowerer {
             {
                 cppName: "mat4_look_at_world_lh_to_ref",
                 returns: "void",
-                calls: pinnedNumericMathCalls(),
+                calls: new Map(),
             },
         );
     }
@@ -182,7 +182,7 @@ export class CameraLowerer {
             cppName: "arc_rotate_local_eye_position",
             enclosing: "createArcRotateCamera",
             leadingParameters: ["const CameraRecord& camera"],
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
             memberBindings: members,
             returns: {
                 type: "Vec3d",
@@ -595,7 +595,7 @@ ${invalidation}
             ),
             {
                 bindings,
-                calls: pinnedNumericMathCalls(),
+                calls: new Map(),
                 statement: (statement, lowerer, indent) => {
                     if (!ts.isVariableStatement(statement)) return undefined;
                     const [declaration] =
@@ -726,7 +726,6 @@ CameraHandle create_banked_free_camera(
                 ...worldAabbLaneBindings(this.context, "acc", "acc"),
             ]),
             calls: new Map([
-                ...pinnedNumericMathCalls(),
                 ["emptyWorldAabb", () => "empty_world_aabb()"],
                 [
                     "expandWorldAabbForMesh",
@@ -748,7 +747,7 @@ CameraHandle create_banked_free_camera(
                 ["emptyWorldAabb", "f64-buffer"],
                 ["vec3", "vec3"],
             ]),
-            booleanOr: true,
+
             forOf: (iterated, element) =>
                 iterated === "scene.meshes"
                     ? {

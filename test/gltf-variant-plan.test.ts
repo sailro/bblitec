@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
-import {
-    gltfVariantNames,
-    GLTF_VARIANT_PLAN,
-    type JsonObject,
-} from "../src/gltf-document.js";
+import { gltfVariantNames, GLTF_VARIANT_PLAN } from "../src/gltf-document.js";
+import { type JsonObject } from "../src/json-fields.js";
 import {
     gltfVariantPlan,
     packageVariantPlan,

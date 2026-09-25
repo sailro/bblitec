@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /** The pinned axis/plane dispatcher, with source-translated drag arithmetic.
  * Native handles replace DOM identities; event delivery and synchronous GPU
  * readback are platform seams. Canvas proxies keep their source listeners.
@@ -13,7 +14,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import { lowerRotationPointerDrag } from "./rotation-pointer-drag-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 
@@ -24,7 +25,7 @@ export function lowerPointerDrag(
     context: LoweringContext,
     rotation = false,
 ): string {
-    const calls = new Map(pinnedNumericMathCallsWithHypot());
+    const calls = new Map<string, PinnedCallSpelling>();
     const materialFactory = context.functionDeclaration(
         "src/gizmo/gizmo-core.ts",
         "createGizmoMaterials",

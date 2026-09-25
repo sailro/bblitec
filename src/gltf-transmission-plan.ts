@@ -1,9 +1,5 @@
-import {
-    asObject,
-    gltfVariantNames,
-    GLTF_TRANSMISSION_PLAN,
-    type JsonObject,
-} from "./gltf-document.js";
+import { gltfVariantNames, GLTF_TRANSMISSION_PLAN } from "./gltf-document.js";
+import { asObject, type JsonObject } from "./json-fields.js";
 
 export interface GltfTransmissionPlan {
     registered: boolean;

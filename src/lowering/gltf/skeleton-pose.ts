@@ -4,8 +4,8 @@ import {
     lowerPinnedBody,
     type PinnedBodyScope,
 } from "../pinned-body-lowerer.js";
-import type {
-    PinnedBinding,
+import {
+    type PinnedBinding,
     PinnedNumericLowerer,
 } from "../pinned-numeric-lowerer.js";
 
@@ -104,8 +104,7 @@ export function lowerGltfSkeletonPose(context: LoweringContext): string {
             ],
         ]),
         expression,
-        booleanAnd: true,
-        booleanOr: true,
+
         statement(node, numeric, indent) {
             if (ts.isFunctionDeclaration(node)) {
                 if (
@@ -117,6 +116,10 @@ export function lowerGltfSkeletonPose(context: LoweringContext): string {
                         node,
                         "Expected source recursive topological traversal.",
                     );
+                numeric.bindPorts(
+                    [["idx", { cpp: "idx", type: "scalar" }]],
+                    node.body,
+                );
                 return [
                     `${indent}std::function<void(double)> visit = [&](double idx) {`,
                     ...numeric.statements(
@@ -314,32 +317,20 @@ export function lowerGltfSkeletonPose(context: LoweringContext): string {
                 initializer,
                 "Expected eager float scratch allocation.",
             );
-        return lowerPinnedBody(
-            build.file,
-            [
-                ts.factory.createExpressionStatement(
-                    ts.factory.createBinaryExpression(
-                        ts.factory.createIdentifier("size"),
-                        ts.SyntaxKind.EqualsToken,
-                        initializer.arguments[0]!,
-                    ),
-                ),
-            ],
-            {
-                bindings: new Map([
-                    ["size", { cpp: "size", type: "scalar" }],
-                    [
-                        "numNodes",
-                        {
-                            cpp: "static_cast<double>(state.nodes.size())",
-                            type: "scalar",
-                        },
-                    ],
-                    ["TRS_STRIDE", bindings.get("TRS_STRIDE")!],
-                ]),
-                calls: new Map(),
-            },
-        ).trim();
+        const numeric = new PinnedNumericLowerer(build.file, {
+            bindings: new Map([
+                [
+                    "numNodes",
+                    {
+                        cpp: "static_cast<double>(state.nodes.size())",
+                        type: "scalar",
+                    },
+                ],
+                ["TRS_STRIDE", bindings.get("TRS_STRIDE")!],
+            ]),
+            calls: new Map(),
+        });
+        return `size = ${numeric.expression(initializer.arguments[0]!)};`;
     };
     const root = context.moduleScopeConstant(file, "RH_TO_LH");
     if (

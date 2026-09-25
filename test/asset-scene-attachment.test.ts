@@ -197,6 +197,7 @@ test("native container attachment follows source guards, order, repeated hooks a
     writeFileSync(
         file,
         `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 #include <nlohmann/json.hpp>
 #include <cassert>
 #include <fstream>

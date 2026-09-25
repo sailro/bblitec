@@ -73,6 +73,7 @@ import {
     repositoryRelativePath,
 } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
+import { asFeatures, projectFeatures } from "./compiler/output-projection.js";
 import { downloadCached } from "./asset-download-cache.js";
 import {
     emitAssetSpecializations,
@@ -642,6 +643,23 @@ async function bakeNodeParticleSystems(
     // the atlas builder reads -- the texture, packaged from the bytes the
     // driver fetched when the URL was a browser object URL.
     for (const entry of bake.live) {
+        if (entry.snapshot) {
+            const system = systems.find(
+                (system) =>
+                    system.bake.set === entry.set &&
+                    system.bake.system === entry.system,
+            );
+            if (!system)
+                throw new Error(
+                    "A native particle continuation has no warm-up snapshot.",
+                );
+            system.continuation = {
+                graph: entry.graph,
+                facts: entry.facts,
+                snapshot: entry.snapshot,
+            };
+            continue;
+        }
         const { bytes, mediaType, ...texture } = entry.texture;
         const source =
             bytes !== undefined
@@ -703,7 +721,17 @@ async function bakeNodeParticleSystems(
             pixelsPerUnit: request.pixelsPerUnit,
             originPx: request.originPx,
             invertY: request.invertY,
-            ...(request.retainFrozen ? { retainFrozen: true as const } : {}),
+            ...(request.retainFrozen ||
+            expansion.systems.some((entry) =>
+                systems.some(
+                    (system) =>
+                        system.bake.set === entry.set &&
+                        system.bake.system === entry.system &&
+                        system.continuation,
+                ),
+            )
+                ? { retainFrozen: true as const }
+                : {}),
             ...(request.opacity === undefined
                 ? {}
                 : { opacity: request.opacity }),
@@ -1524,12 +1552,18 @@ async function main(): Promise<void> {
         dispersion: composedArms.dispersion,
         occlusionUv2: composedArms.occlusionUv2,
     };
-    emitUpstreamGenerated(
+    const generatedSources = emitUpstreamGenerated(
         outputPath,
         result.manifest.features,
         emitOptions,
         tree,
     );
+    result.manifest.generatedSources = generatedSources;
+    result.cmake = projectFeatures(
+        asFeatures(result.manifest.features),
+        result.manifest.sourceUnits.map(({ path }) => path),
+        generatedSources,
+    ).cmake;
     for (const [path, cpp] of result.cppFiles) tree.write(path, cpp);
     tree.prune("sources");
     const imageCodecs = reachedImageCodecs(outputPath, result.manifest.assets);

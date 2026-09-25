@@ -92,6 +92,8 @@ int main(int argc, char** argv) {
             "Blob concatenation order");
 
     bbl::Engine engine;
+    require(!engine.browser_file_storage,
+            "Browser-file storage must be allocated on first selection.");
     const bbl::ObjectUrlHandle first = bbl::js::create_object_url(engine, blob);
     const bbl::ObjectUrlHandle second = bbl::js::create_object_url(engine, blob);
     require(first.slot != second.slot || first.generation != second.generation,

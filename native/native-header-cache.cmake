@@ -211,11 +211,10 @@ endfunction()
 # cached without base_dir: the entry records this checkout's paths, so the
 # trees of this checkout share one PCH and its users' entries, and a PCH
 # naming another worktree's files is never handed out. Where ccache
-# preprocesses a user, the PCH's source is included as text, so the users
-# also read the folder of the PCH's generated headers. NAME is the PCH's own
+# preprocesses a user, the PCH's source is included as text. NAME is the PCH's own
 # object library; HEADERS are `<system>` spellings or absolute paths.
 function(bblite_shared_pch)
-    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME;INCLUDE_DIRECTORY" "TARGETS;HEADERS")
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME" "TARGETS;HEADERS")
     set(text "// A precompiled header of native/CMakeLists.txt.\n")
     foreach(header IN LISTS arg_HEADERS)
         if(header MATCHES "^<")
@@ -236,10 +235,7 @@ function(bblite_shared_pch)
     endif()
     file(LOCK "${source}.lock" RELEASE)
     add_library(${arg_NAME} OBJECT "${source}")
-    target_link_libraries(${arg_NAME} PRIVATE bblite_features)
-    if(arg_INCLUDE_DIRECTORY)
-        target_include_directories(${arg_NAME} PRIVATE "${arg_INCLUDE_DIRECTORY}")
-    endif()
+    target_link_libraries(${arg_NAME} PRIVATE bblite_core)
     # As clang-cl's /Yc does, the PCH instantiates the templates its headers
     # leave pending, so no user instantiates them again.
     target_compile_options(
@@ -263,9 +259,6 @@ function(bblite_shared_pch)
     foreach(target IN LISTS arg_TARGETS)
         add_dependencies(${target} ${arg_NAME}_stamp)
         target_compile_options(${target} PRIVATE "SHELL:-Xclang -include-pch -Xclang ${pch}")
-        if(arg_INCLUDE_DIRECTORY)
-            target_include_directories(${target} PRIVATE "${arg_INCLUDE_DIRECTORY}")
-        endif()
         get_target_property(sources ${target} SOURCES)
         set_property(SOURCE ${sources} APPEND PROPERTY OBJECT_DEPENDS "${stamp}")
     endforeach()

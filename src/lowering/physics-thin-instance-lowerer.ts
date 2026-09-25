@@ -1,10 +1,11 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { lowerQuatFromRotationBasis } from "./pinned-mat4-decompose.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import { recordAt } from "../compiler/record-access.js";
 
 const modulePath = "src/physics/havok-thin-instances.ts";
@@ -14,7 +15,21 @@ export function lowerPhysicsThinInstances(
     context: LoweringContext,
     floatingOrigin: boolean,
 ) {
-    const calls = pinnedNumericMathCallsWithHypot();
+    const indexRead = (node: ts.Node): ts.Identifier => {
+        const index = context.findNodes(
+            node,
+            (child): child is ts.Identifier =>
+                ts.isIdentifier(child) && child.text === "i",
+        )[0];
+        return (
+            index ??
+            context.contractError(
+                node,
+                "Expected the pinned thin-instance index.",
+            )
+        );
+    };
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set(
         "_quatFromRotationBasis",
         (args) => `thin_quat_from_basis(${args.join(", ")})`,
@@ -268,7 +283,7 @@ export function lowerPhysicsThinInstances(
                         "Native transform read",
                     );
                     return [
-                        `${indent}const auto nativeTransform = pal::physics_body_get_transform(state->handles.at(static_cast<std::size_t>(${lowerer.expression(ts.factory.createIdentifier("i"))})));`,
+                        `${indent}const auto nativeTransform = pal::physics_body_get_transform(state->handles.at(static_cast<std::size_t>(${lowerer.expression(indexRead(local.initializer))})));`,
                     ];
                 }
                 return undefined;
@@ -605,7 +620,7 @@ export function lowerPhysicsThinInstances(
                         "Thin native handle identity",
                     );
                     return [
-                        `${indent}const auto handle = state.handles.at(static_cast<std::size_t>(${lowerer.expression(ts.factory.createIdentifier("i"))}));`,
+                        `${indent}const auto handle = state.handles.at(static_cast<std::size_t>(${lowerer.expression(indexRead(local.initializer!))}));`,
                     ];
                 }
             }
@@ -624,7 +639,7 @@ export function lowerPhysicsThinInstances(
                 "[state[0], (state[2][i] ??= [handle[0]]), i]",
                 "Thin resolution identity and index",
             );
-            return `PhysicsBodyInstance{state.body, handle, static_cast<double>(${lowerer.expression(ts.factory.createIdentifier("i"))})}`;
+            return `PhysicsBodyInstance{state.body, handle, static_cast<double>(${lowerer.expression(indexRead(expression))})}`;
         },
     });
     const kinematics = (name: "com" | "matrix") => {

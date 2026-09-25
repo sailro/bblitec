@@ -48,7 +48,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import {
     pinnedOptionDefaults,
     pinnedOptionFallback,
@@ -332,7 +332,7 @@ export class PhysicsLowerer {
         ]);
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
         });
         const vector = (expression: ts.Expression): string => {
             const unwrapped = this.context.unwrapExpression(expression);
@@ -577,7 +577,7 @@ ${PRIMITIVE_SHAPE_ARMS.map((arm) =>
         const bindings = new Map<string, PinnedBinding>();
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
         });
         const supplied = new Map<string, string>(
             SHAPE_PARAMETERS.map(([pinned, field]) => [pinned, field]),
@@ -628,14 +628,17 @@ ${PRIMITIVE_SHAPE_ARMS.map((arm) =>
                         ? `params.${field} ? *params.${field} : ${value}`
                         : value;
                 if (components === undefined) {
-                    bindings.set(name, { cpp: name, type: "scalar" });
+                    lowerer.bindLocal(local.name, {
+                        cpp: name,
+                        type: "scalar",
+                    });
                     return (
                         `            const double ${name} = ` +
                         `${defaulted(lowerer.expression(fallback))};\n`
                     );
                 }
                 if (components.join(",") === "x,y,z") {
-                    bindings.set(name, { cpp: name, type: "vec3" });
+                    lowerer.bindLocal(local.name, { cpp: name, type: "vec3" });
                     const literal = `Vec3d{${lowerObjectComponents(
                         this.context,
                         lowerer,
@@ -657,10 +660,18 @@ ${PRIMITIVE_SHAPE_ARMS.map((arm) =>
                 // nothing can override it. It stays the pin's expression rather
                 // than a typed identity.
                 for (const [index, axis] of ["x", "y", "z", "w"].entries()) {
-                    bindings.set(`${name}.${axis}`, {
-                        cpp: `${name}[${index}]`,
-                        type: "scalar",
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                `${name}.${axis}`,
+                                {
+                                    cpp: `${name}[${index}]`,
+                                    type: "scalar",
+                                },
+                            ],
+                        ],
+                        local,
+                    );
                 }
                 const literal = `{${lowerObjectComponents(
                     this.context,
@@ -1540,7 +1551,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
                         [name, { cpp: name, type: "scalar" as const }] as const,
                 ),
             ]),
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
         });
         const distanceLocals = ["dx", "dy", "dz"]
             .map(

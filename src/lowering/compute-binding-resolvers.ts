@@ -102,8 +102,7 @@ function resolverScope(
     return {
         bindings,
         calls,
-        booleanOr: true,
-        booleanAnd: true,
+
         foldConditions: false,
         callShapes: new Map([
             ["_isComputeTextureSampleTypeCompatible", "bool"],

@@ -236,11 +236,8 @@ function staticArgumentJson(
 }
 
 /**
- * `RegisterNodeParticleSet2DOptions`, as the static record it is.
- *
- * Every field is a mapping constant the bridge reads per particle, so each
- * is resolved here and each default is the pin's own. `view` is refused: no
- * reached call names one, and a layer view moves every sprite.
+ * Registration options use pinned defaults; origin may be a runtime tuple.
+ * Layer views remain outside the supported bridge-owned presentation fields.
  */
 function sprite2dOptions(
     context: ParticleIntrinsicContext,
@@ -249,12 +246,19 @@ function sprite2dOptions(
     autoStart: boolean;
     pixelsPerUnit: number;
     originPx: readonly [number, number];
+    originCpp?: string;
     invertY: boolean;
     opacity?: number;
     visible?: boolean;
     order?: number;
 } {
-    const resolved = {
+    const resolved: {
+        autoStart: boolean;
+        pixelsPerUnit: number;
+        originPx: readonly [number, number];
+        invertY: boolean;
+        originCpp?: string;
+    } = {
         autoStart: pinnedDefaultFlag("sprite2dAutoStart"),
         pixelsPerUnit: pinnedDefaultNumber("sprite2dPixelsPerUnit"),
         originPx: pinnedDefaultVec2("sprite2dOriginPx"),
@@ -290,13 +294,22 @@ function sprite2dOptions(
     const origin = context.objectProperty(options, "originPx");
     if (origin) {
         const pair = staticNumberPair(context, origin);
-        if (!pair) {
-            context.fail(
-                origin,
-                "originPx must be a static two-element number tuple.",
-            );
+        if (pair) {
+            resolved.originPx = pair;
+        } else {
+            const cpp = context.compileForDataSink(origin, {
+                kind: "tuple",
+                arity: 2,
+            });
+            resolved.originCpp =
+                context.allocateTemporaryCppName("particle_origin");
+            context.emit({
+                kind: "declaration",
+                type: "const auto&",
+                name: resolved.originCpp,
+                initializer: cpp,
+            });
         }
-        resolved.originPx = pair;
     }
     const layer = context.objectProperty(options, "layer");
     if (!layer) return resolved;
@@ -428,6 +441,17 @@ function requireUnbaked(
     node: ts.Node,
 ): void {
     requireParticleBakeWritable(context, { set, system }, node);
+    if (
+        context.sceneManifest.reachedNodeParticles.buffers.some(
+            (entry) =>
+                entry.set === set && entry.system === system && entry.runtime,
+        )
+    ) {
+        context.fail(
+            node,
+            "Generation-time particle simulation cannot follow runtime buffer initialization.",
+        );
+    }
     if (isFrozen(context, set, system)) {
         context.fail(
             node,
@@ -619,9 +643,10 @@ export function compileParticleIntrinsic(
             });
             if (provider) {
                 context.reachJsRandom();
-                context.emit(
-                    `bbl::upstream::initialize_native_node_particle_set(${context.sceneManifest.reachedNodeParticles.sets.length - 1}, ${provider.callbackCpp}, ${provider.initialMatrixCpp});`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `bbl::upstream::initialize_native_node_particle_set(${context.sceneManifest.reachedNodeParticles.sets.length - 1}, ${provider.callbackCpp}, ${provider.initialMatrixCpp});`,
+                });
             }
             return {
                 kind: "node-particle-set",
@@ -745,10 +770,12 @@ export function compileParticleIntrinsic(
             writable(frozen).synced = true;
             const engineCpp =
                 billboard.engineCpp ?? context.requireDefaultEngine(call);
-            context.emit(
-                "bbl::upstream::sync_node_particle_billboard(" +
+            context.emit({
+                kind: "expression",
+                code:
+                    "bbl::upstream::sync_node_particle_billboard(" +
                     `${engineCpp}, ${set}, ${system}, ${billboard.cpp});`,
-            );
+            });
             return { kind: "void", cpp: "" };
         }
 
@@ -847,11 +874,13 @@ export function compileParticleIntrinsic(
             context.reachFeature("renderer:scene", call);
             // The call is named by its own request index, not by the
             // set's: which systems it walks is what the bake observed.
-            context.emit(
-                "bbl::upstream::register_node_particle_set(" +
+            context.emit({
+                kind: "expression",
+                code:
+                    "bbl::upstream::register_node_particle_set(" +
                     `${engineCpp}, ${scene.cpp}, ` +
                     `${context.sceneManifest.reachedNodeParticles.registrations.length - 1});`,
-            );
+            });
             return { kind: "void", cpp: "" };
         }
 
@@ -921,11 +950,15 @@ export function compileParticleIntrinsic(
                     "A frozen particle buffer read cannot be combined with live particle simulation.",
                 );
             }
+            const { originCpp, ...options } = sprite2dOptions(
+                context,
+                call.arguments[2],
+            );
             context.sceneManifest.reachedNodeParticles.sprite2d.push({
                 set: index,
                 exact:
                     importedName === "registerNodeParticleSet2DWithBlendModes",
-                ...sprite2dOptions(context, call.arguments[2]),
+                ...options,
                 ...(live ? { live: true as const } : {}),
                 ...(sheet ? { retainFrozen: true as const } : {}),
             });
@@ -933,11 +966,17 @@ export function compileParticleIntrinsic(
             context.reachFeature("particle:node", call);
             const request =
                 context.sceneManifest.reachedNodeParticles.sprite2d.length - 1;
-            context.emit(
-                "bbl::upstream::register_node_particle_set_2d(" +
+            context.emit({
+                kind: "expression",
+                code:
+                    "bbl::upstream::register_node_particle_set_2d(" +
                     `${renderer.engineCpp ?? context.requireDefaultEngine(call)}, ` +
-                    `${renderer.cpp}, ${request});`,
-            );
+                    `${renderer.cpp}, ${request}` +
+                    (originCpp
+                        ? `, std::array<double, 2>{${originCpp}[0], ${originCpp}[1]}`
+                        : "") +
+                    ");",
+            });
             // The binding upstream owns the hook and the layers it attached,
             // and every operation on it -- disposal above all -- refuses at
             // its own intrinsic. What the corpus does with a FROZEN one is

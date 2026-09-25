@@ -1,3 +1,4 @@
+import { PinnedRecordModel, type MemberSpec } from "./pinned-record-lowerer.js";
 /**
  * The clustered light field as one generated translation unit.
  *
@@ -59,7 +60,7 @@ import {
     type PinnedNumericScope,
     type PinnedRecordShape,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { recordAt, recordFind } from "../compiler/record-access.js";
 
 const buildSymbol = "buildClusteredLightGpuState";
@@ -303,15 +304,38 @@ function activeLightMembers(
 }
 
 function activeLightStruct(context: LoweringContext): string {
-    const fields = activeLightMembers(context).map(({ name, record }) =>
-        record
-            ? `    const ClusteredLight* ${name} = nullptr;`
-            : `    double ${name} = 0.0;`,
+    const members = new Map<string, MemberSpec>(
+        activeLightMembers(context).map(({ name, record }) => [
+            name,
+            {
+                field: name,
+                shape: record
+                    ? {
+                          kind: "native",
+                          cpp: "const ClusteredLight*",
+                          nullable: true,
+                      }
+                    : { kind: "number" },
+            },
+        ]),
     );
-    return `// ${context.provenance(clusteredModule, "_ClusteredActiveLight")}
-struct ClusteredActiveLight {
-${fields.join("\n")}
-};`;
+    const model = new PinnedRecordModel(
+        context,
+        context.program.modules([clusteredModule]),
+        {
+            records: [
+                {
+                    pinned: ["_ClusteredActiveLight"],
+                    cpp: "ClusteredActiveLight",
+                    reference: false,
+                    members,
+                },
+            ],
+            values: new Map(),
+            adapters: new Map(),
+        },
+    );
+    return model.structs(["_ClusteredActiveLight"]);
 }
 
 /**
@@ -890,7 +914,7 @@ function dataTextureRows(
                 },
             ),
         ),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
     });
     return rows.expression(height);
 }
@@ -942,7 +966,7 @@ function dataTextureWriter(context: LoweringContext): string {
     );
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings: new Map(numbers.map((name) => [name, scalar(name)])),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         statement: (node, lowerer, indent) => {
             const call = statementCall(context, node);
             if (
@@ -1020,7 +1044,7 @@ function snapshotWriter(context: LoweringContext): string {
             cppName: "snapshot_light",
             returns: "double",
             inline: true,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
             arrayCopy: copyToFloats,
             memberBindings: new Map(clusteredLightMembers("light", "light.")),
         },
@@ -1052,7 +1076,7 @@ function coneChangedWriter(context: LoweringContext): string {
                 { cpp: "snapshot", type: "f32", mutable: true },
             ],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         expression: (node) =>
             ts.isIdentifier(node) &&
             node.text === snapshot.name.getText(file) &&
@@ -1133,7 +1157,7 @@ function collectWriter(context: LoweringContext): string {
             ],
             [view, { cpp: view, type: "f32" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
     });
     return `// ${context.provenance(clusteredSpotModule, "spotSupport._create._collect")}
 inline void collect_clustered_spots(
@@ -1152,7 +1176,6 @@ ${body}
 function platformCalls(
     context: LoweringContext,
     file: ts.SourceFile,
-    bindings: ReadonlyMap<string, PinnedBinding>,
     paramsBuffer: () => ts.VariableDeclaration,
 ): NonNullable<PinnedNumericScope["expression"]> {
     const writer = context.functionDeclaration(
@@ -1200,7 +1223,7 @@ function platformCalls(
                 !ts.isIdentifier(texture) ||
                 !ts.isIdentifier(data) ||
                 data.text !== storage.payload ||
-                bindings.get(data.text)?.cpp !==
+                lowerer.binding(data)?.cpp !==
                     `container.${RECORD_STORAGE.get(storage.payload)!.field}`
             ) {
                 return context.contractError(
@@ -1228,7 +1251,7 @@ function platformCalls(
                 context.numericValue(offset, file) !== 0 ||
                 !payload ||
                 !ts.isIdentifier(payload) ||
-                bindings.get(payload.text)?.cpp !== "container.params"
+                lowerer.binding(payload)?.cpp !== "container.params"
             ) {
                 return context.contractError(
                     node,
@@ -1306,7 +1329,10 @@ function lowerBuild(
             const target = `container.${storage.field}`;
             if (storage.kind === "count") {
                 const value = lowerer.expression(initializer);
-                bindings.set(name, scalar(`static_cast<double>(${target})`));
+                lowerer.bindPorts(
+                    [[name, scalar(`static_cast<double>(${target})`)]],
+                    node,
+                );
                 return [
                     `${indent}${target} = static_cast<std::uint32_t>(${value});`,
                 ];
@@ -1347,11 +1373,19 @@ function lowerBuild(
                 );
             }
             const size = lowerer.expression(count);
-            bindings.set(name, {
-                cpp: target,
-                type: storage.kind,
-                mutable: true,
-            });
+            lowerer.bindPorts(
+                [
+                    [
+                        name,
+                        {
+                            cpp: target,
+                            type: storage.kind,
+                            mutable: true,
+                        },
+                    ],
+                ],
+                node,
+            );
             return [
                 `${indent}${target}.assign(static_cast<std::size_t>(${size}), ` +
                     `${storage.kind === "f32" ? "0.0f" : "0u"});`,
@@ -1397,7 +1431,7 @@ function lowerBuild(
             if (
                 !payload ||
                 !ts.isIdentifier(payload) ||
-                bindings.get(payload.text)?.cpp !== "container.params"
+                lowerer.binding(payload)?.cpp !== "container.params"
             ) {
                 return context.contractError(
                     initializer,
@@ -1431,8 +1465,7 @@ function lowerBuild(
             // its handle) and canvas extent.
             const [camera, ...extent] = call.arguments;
             const identity = camera
-                ? bindings.get(context.unwrapExpression(camera).getText(file))
-                      ?.identity
+                ? lowerer.binding(context.unwrapExpression(camera))?.identity
                 : undefined;
             if (!identity || extent.length !== 2) {
                 return context.contractError(
@@ -1464,7 +1497,6 @@ function lowerBuild(
         expression: platformCalls(
             context,
             file,
-            bindings,
             () =>
                 paramsBuffer ??
                 context.contractError(
@@ -1590,7 +1622,7 @@ function spotSupportCreation(
         statements.slice(0, support),
         {
             bindings,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
             methods: sharedScope(context).methods,
             statement: (inner, nested, innerIndent) => {
                 if (onlyDeclaration(inner) !== snapshot) return undefined;
@@ -1613,11 +1645,19 @@ function spotSupportCreation(
                     );
                 }
                 const target = `captured.${SPOT_SNAPSHOT}`;
-                bindings.set("snapshot", {
-                    cpp: target,
-                    type: "f32",
-                    mutable: true,
-                });
+                nested.bindPorts(
+                    [
+                        [
+                            "snapshot",
+                            {
+                                cpp: target,
+                                type: "f32",
+                                mutable: true,
+                            },
+                        ],
+                    ],
+                    snapshot,
+                );
                 return [
                     `${innerIndent}${target}.assign(static_cast<std::size_t>(${nested.expression(size)}), 0.0f);`,
                 ];
@@ -1693,12 +1733,10 @@ function lowerRefresh(
         callShapes: new Map([["spotSupport._coneChanged", "bool" as const]]),
         matrixCalls: new Set(["getViewMatrix", "getProjectionMatrix"]),
         arrayCopy: copyToFloats,
-        booleanAnd: true,
-        booleanOr: true,
+
         expression: platformCalls(
             context,
             file,
-            bindings,
             () =>
                 paramsBuffer ??
                 context.contractError(
@@ -1772,7 +1810,7 @@ function containerFactory(context: LoweringContext): string {
         bindings: new Map(
             clusteredOptionBindings(context, CONTAINER_OPTIONS, options),
         ),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         returnValue: (expression, lowerer) => {
             const literal = expression
                 ? context.unwrapExpression(expression)
@@ -1873,7 +1911,7 @@ function lightFactory(
             ["ClusteredPointLight", light],
             ["ClusteredSpotLight", light],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         // The spot support's installation, recognised by the pinned
         // function the call resolves to, lowered beside this factory.
         expression: (node, lowerer) =>
@@ -1936,7 +1974,7 @@ function spotSupportEnabler(context: LoweringContext): string {
             ],
             ["spotSupport", { cpp: "true", type: "bool" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         expression: (node) =>
             ts.isIdentifier(node) &&
             node.text === "spotSupport" &&
@@ -2053,7 +2091,7 @@ function containerAdder(context: LoweringContext): string {
             ],
             [container, { cpp: container, type: "opaque" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         statement,
     });
     return `// ${context.provenance(clusteredModule, "addClusteredLightContainer")}

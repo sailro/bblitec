@@ -494,7 +494,7 @@ async function main(): Promise<void> {
             generatedShaderDirectories,
         } = await import("./compile-shaders.js");
         const summary = formatShaderCompilation(
-            compileOfflineShaders({
+            await compileOfflineShaders({
                 directories: [
                     ...new Set(
                         plan.scenes.flatMap((scene) =>

@@ -4,7 +4,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 const module = "src/physics/havok.ts";
@@ -248,8 +248,7 @@ export function lowerPhysicsConstraints(context: LoweringContext): {
                 `axes.at(static_cast<std::size_t>(${axis}))`;
             const lowerer = new PinnedNumericLowerer(factory.file, {
                 bindings: scopeBindings,
-                booleanAnd: true,
-                booleanOr: true,
+
                 expression: (node, lowerer) => {
                     if (
                         ts.isBinaryExpression(node) &&
@@ -376,14 +375,13 @@ export function lowerPhysicsConstraints(context: LoweringContext): {
                         [parameter, { cpp: parameter, type: "vec3" as const }],
                     ]),
                     calls: new Map([
-                        ...pinnedNumericMathCallsWithHypot(),
                         [
                             "normalizeVec3",
                             (args) =>
                                 `constraint_normalize(${args.join(", ")})`,
                         ],
                     ]),
-                    booleanAnd: true,
+
                     vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
                     returnValue: (expression, lowerer) => {
                         if (!expression)

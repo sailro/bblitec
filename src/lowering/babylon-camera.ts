@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -5,7 +6,7 @@ import {
     type PinnedBinding,
     recordLiteralCpp,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { recordAt } from "../compiler/record-access.js";
 
 /** The complete pinned camera parser, with JSON reads and engine handles as native carriers. */
@@ -40,7 +41,7 @@ export function lowerBabylonCamera(context: LoweringContext): string {
             type: "scalar",
         });
     }
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set("createFreeCamera", (args) => {
         if (args.length !== 2)
             context.contractError(
@@ -76,16 +77,27 @@ export function lowerBabylonCamera(context: LoweringContext): string {
                     "A camera handle requires an identifier binding.",
                 );
             const name = local.name.text;
-            bindings.set(name, { cpp: name, type: "opaque" });
+            lowerer.bindPorts(
+                [[name, { cpp: name, type: "opaque" }]],
+                statement,
+            );
             for (const [source, target] of [
                 ["fov", "fov"],
                 ["nearPlane", "near_plane"],
                 ["farPlane", "far_plane"],
             ]) {
-                bindings.set(`${name}.${source}`, {
-                    cpp: `${recordAt("engine.cameras", name)}.${target}`,
-                    type: "scalar",
-                });
+                lowerer.bindPorts(
+                    [
+                        [
+                            `${name}.${source}`,
+                            {
+                                cpp: `${recordAt("engine.cameras", name)}.${target}`,
+                                type: "scalar",
+                            },
+                        ],
+                    ],
+                    statement,
+                );
             }
             return [
                 `${indent}CameraHandle ${name} = ${lowerer.expression(initializer)};`,

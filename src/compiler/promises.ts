@@ -125,7 +125,7 @@ export function compileImmediatePromise(
                 continue;
             }
             if (value.kind === "void") {
-                context.emit(`${value.cpp};`);
+                context.emit({ kind: "expression", code: `${value.cpp};` });
                 elements.push(value);
                 continue;
             }
@@ -197,7 +197,7 @@ export function compileImmediatePromise(
             name: fulfilled,
             initializer: "false",
         });
-        context.emit("try {");
+        context.emit({ kind: "open", code: "try {" });
         context.increaseIndent();
     }
     const settlementBoundary = context.nativeBindingCheckpoint();
@@ -228,7 +228,7 @@ export function compileImmediatePromise(
         emitValue(context, value);
     }
     if (fulfilled) {
-        context.emit(`${fulfilled} = true;`);
+        context.emit({ kind: "expression", code: `${fulfilled} = true;` });
     }
     context.compileCallbackWithValues(callback, [value], call, true);
     if (rejection && fulfilled) {
@@ -244,7 +244,7 @@ export function compileImmediatePromise(
             true,
         );
         context.decreaseIndent();
-        context.emit("}");
+        context.emit({ kind: "close", code: "}" });
     }
     return { kind: "void", cpp: "" };
 }
@@ -280,7 +280,7 @@ function compileImmediateCatch(
         initializer: "true",
         attributes: "[[maybe_unused]] ",
     });
-    context.emit("try {");
+    context.emit({ kind: "open", code: "try {" });
     context.increaseIndent();
     const value = context.compileValue(callee.expression);
     if (value.kind !== "void") {
@@ -294,10 +294,10 @@ function compileImmediateCatch(
     const clause = rejectionClause(context, callback);
     context.emit(clause.header);
     context.increaseIndent();
-    context.emit(`${settled} = false;`);
+    context.emit({ kind: "expression", code: `${settled} = false;` });
     context.compileCallbackWithValues(callback, clause.values(), call, true);
     context.decreaseIndent();
-    context.emit("}");
+    context.emit({ kind: "close", code: "}" });
     return {
         kind: "boolean",
         cpp: settled,
@@ -329,6 +329,6 @@ export function isPromiseResultUsed(call: ts.CallExpression): boolean {
 
 function emitValue(context: PromiseLoweringContext, value: Value): void {
     if (value.kind !== "engine" && value.cpp.length > 0) {
-        context.emit(`${value.cpp};`);
+        context.emit({ kind: "expression", code: `${value.cpp};` });
     }
 }

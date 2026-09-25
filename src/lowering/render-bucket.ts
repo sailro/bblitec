@@ -46,8 +46,6 @@ function lowerCondition(
     return new PinnedNumericLowerer(file, {
         bindings: new Map(bindings),
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
     }).expression(expression);
 }
 

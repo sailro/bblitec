@@ -1,4 +1,5 @@
-import { asRecords, asIndex, type JsonObject } from "../src/gltf-document.js";
+import { asIndex } from "../src/gltf-document.js";
+import { asRecords, type JsonObject } from "../src/json-fields.js";
 import {
     packageGltfMeshPlan,
     recordMeshPlan,

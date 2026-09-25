@@ -18,6 +18,7 @@
  * share.
  */
 import ts from "typescript";
+import { importAugmentedModule } from "./pinned-module-loader.js";
 
 import { javascriptModuleUrl } from "./data-url.js";
 import { webgpuFlagNamespaces } from "./webgpu-flags.js";
@@ -429,30 +430,35 @@ const augmentedModules = new Map<string, Promise<unknown>>();
 /**
  * Imports a pinned module with named module-local symbols also exported.
  *
- * Not everything the pin runs sits on its export surface — the DDS loader's
- * `computeSH` is module-local — and transcribing an internal function is the
- * drift the project rule exists to prevent. So the pinned module's own text
- * is imported through a `data:` URL with an export appended for the internal
- * symbols. Relative specifiers do not resolve from a `data:` URL, so they
- * are rewritten to absolute URLs against the module's own directory first;
- * everything that executes is still the pin's text.
+ * Relative imports are anchored to the packaged module before the shared
+ * loader exports its declarations and executes its original source.
  */
 export async function importPinnedModuleWithExports<T>(
     relativePath: string,
     extraExports: readonly string[],
     redirects: ReadonlyMap<string, string> = new Map(),
 ): Promise<T> {
-    // Node dedupes the `data:` import, but not the read, the rewrite and the
-    // base64 that build its URL — and a scene composing several post-process
-    // stages asks for the same module once per stage.
+    // Cache the read and rewrite as well as the module execution.
     const key = `${relativePath}|${extraExports.join(",")}|${JSON.stringify([...redirects])}`;
     const cached = augmentedModules.get(key);
     if (cached) {
         return (await cached) as T;
     }
-    const loading = import(
-        pinnedModuleUrl(relativePath, extraExports, redirects)
+    const packaged = join(
+        pinnedLibraryRoot(),
+        pinnedImplementationPath(relativePath),
     );
+    const loading = importAugmentedModule(
+        anchorPinnedSpecifiers(packaged, redirects),
+        packaged,
+    ).then((bindings) => {
+        for (const name of extraExports)
+            if (!Object.hasOwn(bindings, name))
+                throw new Error(
+                    `Pinned ${relativePath} declares no module-scope '${name}'.`,
+                );
+        return bindings;
+    });
     augmentedModules.set(key, loading);
     return (await loading) as T;
 }

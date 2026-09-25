@@ -266,7 +266,7 @@ test("shadow synchronization lowers source guards and publication statements and
     const sync = changed.slice(
         changed.indexOf("inline bool synchronize_shadow_enabled"),
     );
-    assert.match(sync, /state\.uploaded_enabled[^\n]+&& false/);
+    assert.match(sync, /state\.uploaded_enabled[^\n]+&& \(false\)/);
     assert.match(
         sync,
         /state\.uploaded_enabled = [^;]+;\s*generator\.runtime_enabled_version\+\+/,

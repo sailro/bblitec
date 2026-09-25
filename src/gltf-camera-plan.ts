@@ -1,11 +1,5 @@
-import {
-    asIndex,
-    asObject,
-    asRecords,
-    areGltfIndices,
-    GLTF_MESH_PLAN,
-    type JsonObject,
-} from "./gltf-document.js";
+import { asIndex, areGltfIndices, GLTF_MESH_PLAN } from "./gltf-document.js";
+import { asObject, asRecords, type JsonObject } from "./json-fields.js";
 import type { GltfGeometryPacker } from "./gltf-mesh-geometry.js";
 
 interface Vector3 {

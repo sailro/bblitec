@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { EmissionSet } from "./emission-transaction.js";
-import { cppIdentifiers } from "./cpp-identifiers.js";
+import { EmissionSet, journaled } from "./emission-transaction.js";
 import type { DataType } from "./data-types/model.js";
 
 /** An emitted native binding, shared by every expression that reads it. */
@@ -38,8 +37,6 @@ export interface CapturedClosure {
     nativeCaptures: readonly NativeCaptureBinding[];
     localBindings: readonly string[];
     environmentType?: string;
-    /** Enclosing native bindings the body names without capturing them. */
-    uncaptured?: readonly string[];
 }
 
 /**
@@ -139,6 +136,7 @@ function copiesScalarParameter(type: DataType): boolean {
  * exposes the actual owning captures, including mutable cells, to the GC. */
 export class ClosureCaptures {
     private readonly bindings = new EmissionSet<NativeCaptureBinding>();
+    @journaled private accessor struct: EnvironmentStruct | undefined;
     constructor(
         readonly environment: string,
         readonly boundary: number,
@@ -149,15 +147,19 @@ export class ClosureCaptures {
     ) {}
 
     use(binding: NativeCaptureBinding): void {
-        if (binding.sequence <= this.boundary) this.bindings.add(binding);
+        if (binding.sequence <= this.boundary && !this.bindings.has(binding)) {
+            this.bindings.add(binding);
+            this.struct = undefined;
+        }
     }
 
-    retainReferenced(lines: readonly string[]): ReadonlySet<string> {
-        const identifiers = cppIdentifiers(lines.join("\n"));
+    retainReferenced(identifiers: ReadonlySet<string>): void {
         for (const binding of this.bindings) {
-            if (!identifiers.has(binding.name)) this.bindings.delete(binding);
+            if (!identifiers.has(binding.name)) {
+                this.bindings.delete(binding);
+                this.struct = undefined;
+            }
         }
-        return identifiers;
     }
 
     get initializer(): string {
@@ -185,6 +187,7 @@ export class ClosureCaptures {
      * Owned members are traced; borrowed ones are references.
      */
     get environmentStruct(): EnvironmentStruct {
+        if (this.struct) return this.struct;
         const bindings = [...this.bindings];
         const types = bindings.map((binding) => this.bindingType?.(binding));
         const concrete = types.every((type) => type !== undefined);
@@ -206,7 +209,7 @@ export class ClosureCaptures {
             .update(JSON.stringify(members))
             .digest("hex")
             .slice(0, 16)}`;
-        return {
+        return (this.struct = {
             name,
             lines: [
                 ...(concrete
@@ -226,7 +229,7 @@ export class ClosureCaptures {
                 "};",
             ],
             ...(concrete ? { declaration: `struct ${name};` } : {}),
-        };
+        });
     }
 
     get declarations(): string[] {

@@ -166,25 +166,34 @@ export function compileAudioIntrinsic(
             //   createMainBus  -- a GainNode connected to mainOut._gain
             // A sound source connects into `mainBus._in`, which is that
             // second gain. Two nodes, and the shape is the contract.
-            context.emit(
-                `bbl::pal::AudioContextHandle ${engine}_ctx = ` +
-                    `bbl::pal::audio_create_context(${context.audioSessionCpp()});`,
-            );
-            context.emit(
-                `const bbl::pal::AudioNodeHandle ${engine}_main_out = ` +
-                    `bbl::pal::audio_create_gain(${engine}_ctx);`,
-            );
-            context.emit(
-                `bbl::pal::audio_connect(${engine}_main_out, ` +
+            context.emit({
+                kind: "declaration",
+                type: "bbl::pal::AudioContextHandle",
+                name: `${engine}_ctx`,
+                initializer: `bbl::pal::audio_create_context(${context.audioSessionCpp()})`,
+            });
+            context.emit({
+                kind: "declaration",
+                type: "const bbl::pal::AudioNodeHandle",
+                name: `${engine}_main_out`,
+                initializer: `bbl::pal::audio_create_gain(${engine}_ctx)`,
+            });
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::pal::audio_connect(${engine}_main_out, ` +
                     `bbl::pal::audio_destination(${engine}_ctx));`,
-            );
-            context.emit(
-                `bbl::pal::AudioNodeHandle ${engine}_main_bus = ` +
-                    `bbl::pal::audio_create_gain(${engine}_ctx);`,
-            );
-            context.emit(
-                `bbl::pal::audio_connect(${engine}_main_bus, ${engine}_main_out);`,
-            );
+            });
+            context.emit({
+                kind: "declaration",
+                type: "bbl::pal::AudioNodeHandle",
+                name: `${engine}_main_bus`,
+                initializer: `bbl::pal::audio_create_gain(${engine}_ctx)`,
+            });
+            context.emit({
+                kind: "expression",
+                code: `bbl::pal::audio_connect(${engine}_main_bus, ${engine}_main_out);`,
+            });
             context.registerNativeTemporary(`${engine}_ctx`);
             context.registerNativeTemporary(`${engine}_main_bus`);
             return {
@@ -256,12 +265,20 @@ export function compileAudioIntrinsic(
                 );
             }
             const source = context.allocateTemporaryCppName("audio_source");
-            context.emit(
-                `const bbl::pal::AudioNodeHandle ${source} = ` +
-                    `bbl::pal::audio_create_gain(${engine.cpp});`,
-            );
-            context.emit(`bbl::pal::audio_connect(${source}, ${mainBus});`);
-            context.emit(`bbl::pal::audio_connect(${node.cpp}, ${source});`);
+            context.emit({
+                kind: "declaration",
+                type: "const bbl::pal::AudioNodeHandle",
+                name: source,
+                initializer: `bbl::pal::audio_create_gain(${engine.cpp})`,
+            });
+            context.emit({
+                kind: "expression",
+                code: `bbl::pal::audio_connect(${source}, ${mainBus});`,
+            });
+            context.emit({
+                kind: "expression",
+                code: `bbl::pal::audio_connect(${node.cpp}, ${source});`,
+            });
             return {
                 kind: "audio-node",
                 cpp: source,

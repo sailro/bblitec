@@ -1,7 +1,8 @@
+import { stringLiteral as cppStringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
 import { type LoweringContext, type LoweredSource } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import type {
     PinnedBinding,
     PinnedCallSpelling,
@@ -66,7 +67,7 @@ function freeCameraBindings(): Map<string, PinnedBinding> {
 }
 
 function freeCameraCalls(): Map<string, PinnedCallSpelling> {
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set("keys.has", (args) => `pressed(${args.join(", ")})`);
     calls.set(
         "camera.target.set",
@@ -77,7 +78,7 @@ function freeCameraCalls(): Map<string, PinnedCallSpelling> {
 }
 
 function stringLiteral(node: ts.Expression): string | undefined {
-    return ts.isStringLiteral(node) ? JSON.stringify(node.text) : undefined;
+    return ts.isStringLiteral(node) ? cppStringLiteral(node.text) : undefined;
 }
 
 /** Stores into the camera's accessor-backed fields, through their setters. */
@@ -149,7 +150,7 @@ function lowerFreeUpdate(
         bindings,
         calls,
         expression: stringLiteral,
-        booleanOr: true,
+
         statement: accessorStatement(context),
     });
 }
@@ -187,7 +188,7 @@ function lowerFreePointer(
     return lowerPinnedBody(file, callback.body!.statements, {
         bindings,
         calls: freeCameraCalls(),
-        booleanOr: true,
+
         statement: cameraPlatformStatement(
             context,
             control.event,
@@ -320,7 +321,7 @@ export function lowerConfigurableCameraControls(
                     fallback,
                     "Camera key defaults require literal codes.",
                 );
-            cpp = `std::vector<std::string>{${fallback.elements.map((element) => JSON.stringify(ts.isStringLiteral(element) ? element.text : context.contractError(element, "Expected a literal key code."))).join(", ")}}`;
+            cpp = `std::vector<std::string>{${fallback.elements.map((element) => cppStringLiteral(ts.isStringLiteral(element) ? element.text : context.contractError(element, "Expected a literal key code."))).join(", ")}}`;
         }
         fields.push(
             `    ${numeric ? "double" : "std::vector<std::string>"} ${name};`,

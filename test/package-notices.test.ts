@@ -11,7 +11,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
-import { asObject } from "../src/gltf-document.js";
+import { asObject } from "../src/json-fields.js";
 import {
     copyPackageNotices,
     linkedPortNotices,

@@ -47,11 +47,8 @@ import {
     moduleClosureBytes,
     moduleIdentity,
 } from "./bake-cache.js";
-import {
-    asObject,
-    GAUSSIAN_SPLATTING_EXTENSION,
-    type JsonRecord,
-} from "./gltf-document.js";
+import { GAUSSIAN_SPLATTING_EXTENSION } from "./gltf-document.js";
+import { asObject, type JsonRecord } from "./json-fields.js";
 
 /** The pin's own parse result. `sh` rides along for the SH-capable arms. */
 interface ParsedSplat {

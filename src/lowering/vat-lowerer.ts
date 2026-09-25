@@ -2,7 +2,7 @@ import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerGltfVatBinding } from "./gltf/vat-binding.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { recordAt } from "../compiler/record-access.js";
 
 const VAT_MODULE = "src/vat/vat-baker.ts";
@@ -455,12 +455,11 @@ void seek_vat(Engine& engine, double seconds) {
         ]);
         const texelCount = lowerPinnedBody(file, [texels], {
             bindings: params,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
         });
         const expand = lowerPinnedBody(file, setInstances.body.statements, {
             bindings: new Map(params),
             calls: new Map([
-                ...pinnedNumericMathCalls(),
                 [
                     "uploadInstances",
                     (args: readonly string[]) =>

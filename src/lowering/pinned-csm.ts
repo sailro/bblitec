@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
@@ -8,7 +9,7 @@ import {
     PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import type { RenderedCpp } from "./pinned-numeric-expression.js";
 
 const modulePath = "src/shadow/csm-shadow-task-hooks.ts";
@@ -124,19 +125,19 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
     public constructor(
         private readonly context: LoweringContext,
         private readonly source: ts.SourceFile,
-        private readonly numeric: PinnedNumericScope,
+        numeric: PinnedNumericScope,
         private readonly aggregateCalls: ReadonlyMap<
             string,
             { shape: Shape; cpp: (args: readonly string[]) => string }
         > = new Map(),
     ) {
-        super(source, numeric);
         for (const name of ["near", "far"]) {
             numeric.bindings.set(`@native-macro:${name}`, {
                 cpp: name,
                 type: "scalar",
             });
         }
+        super(source, numeric);
     }
 
     private declaration(node: ts.Identifier): ts.Declaration {
@@ -162,30 +163,27 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
                     ? `${value.cpp}.value_or(0.0)`
                     : `(*${value.cpp})`
                 : value.cpp;
-        this.numeric.bindings.set(
-            this.context.unwrapExpression(node).getText(this.source),
-            {
-                cpp,
-                type:
-                    shape.kind === "buffer"
-                        ? shape.width
-                        : shape.kind === "boolean"
-                          ? "bool"
-                          : "scalar",
-                ...(shape.kind === "optional"
-                    ? {
-                          absentCpp:
-                              shape.value.kind === "number"
-                                  ? `!${value.cpp}.has_value() || !bbl::js::number_truthy(*${value.cpp})`
-                                  : `!${value.cpp}.has_value()`,
-                      }
-                    : shape.kind === "buffer" ||
-                        shape.kind === "array" ||
-                        shape.kind === "record"
-                      ? { absentCpp: "false" }
-                      : {}),
-            },
-        );
+        this.bindLocal(this.context.unwrapExpression(node), {
+            cpp,
+            type:
+                shape.kind === "buffer"
+                    ? shape.width
+                    : shape.kind === "boolean"
+                      ? "bool"
+                      : "scalar",
+            ...(shape.kind === "optional"
+                ? {
+                      absentCpp:
+                          shape.value.kind === "number"
+                              ? `!${value.cpp}.has_value() || !bbl::js::number_truthy(*${value.cpp})`
+                              : `!${value.cpp}.has_value()`,
+                  }
+                : shape.kind === "buffer" ||
+                    shape.kind === "array" ||
+                    shape.kind === "record"
+                  ? { absentCpp: "false" }
+                  : {}),
+        });
     }
 
     private value(expression: ts.Expression): Value | undefined {
@@ -440,10 +438,10 @@ interface Parameter {
 }
 
 function numericScope(): PinnedNumericScope {
-    const calls = pinnedNumericMathCallsWithHypot();
-    calls.set("Math.round", (args) => `bbl::js::round_js(${args.join(", ")})`);
+    const calls = new Map<string, PinnedCallSpelling>();
+
     calls.set("Number.isFinite", (args) => `std::isfinite(${args.join(", ")})`);
-    return { bindings: new Map(), calls, booleanAnd: true };
+    return { bindings: new Map(), calls };
 }
 
 function bindParameters(
@@ -650,7 +648,7 @@ function lowerCsmMatrixHelpers(context: LoweringContext): string {
                 cppName: "csm_world_bias_clip_offset",
                 inline: true,
                 calls: numericScope().calls,
-                booleanOr: true,
+
                 returns: "double",
             },
         ),

@@ -1,10 +1,6 @@
 import ts from "typescript";
-import {
-    asIndex,
-    asObject,
-    areGltfIndices,
-    type JsonObject,
-} from "./gltf-document.js";
+import { asIndex, areGltfIndices } from "./gltf-document.js";
+import { asObject, type JsonObject } from "./json-fields.js";
 import { GltfGeometryPacker } from "./gltf-mesh-geometry.js";
 import type { RecordedMeshDeformation } from "./gltf-mesh-deformation.js";
 import { LoweringContext } from "./lowering/context.js";

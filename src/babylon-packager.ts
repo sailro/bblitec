@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { downloadCached } from "./asset-download-cache.js";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, resolve } from "node:path";
-import { asObject, asRecords } from "./gltf-document.js";
+import { asObject, asRecords } from "./json-fields.js";
 import { packageBabylonMeshWalks } from "./babylon-mesh-walks.js";
 import type { CompiledMeshWalk } from "./gltf-mesh-walks.js";
 

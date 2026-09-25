@@ -55,8 +55,7 @@ export function lowerGltfAssetSceneSetup(context: LoweringContext): string {
     const body = lowerPinnedBody(file, [loop], {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         forOf(iterated, element) {
             if (iterated !== "assetFragments" || element !== "frag")
                 return undefined;
@@ -113,11 +112,19 @@ export function lowerGltfAssetSceneSetup(context: LoweringContext): string {
                     const initializer = lowerer.expression(
                         variable.initializer,
                     );
-                    bindings.set("prev", {
-                        cpp: "prev",
-                        type: "opaque",
-                        absentCpp: "!prev",
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                "prev",
+                                {
+                                    cpp: "prev",
+                                    type: "opaque",
+                                    absentCpp: "!prev",
+                                },
+                            ],
+                        ],
+                        statement,
+                    );
                     return [`${indent}const auto prev = ${initializer};`];
                 }
             }

@@ -7,7 +7,7 @@ import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerPinnedBody } from "../src/lowering/pinned-body-lowerer.js";
 import type { PinnedBinding } from "../src/lowering/pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "../src/lowering/pinned-operators.js";
+
 import { lowerGltfAnimationPlayback } from "../src/lowering/gltf/animation-playback.js";
 import { lowerGltfAnimationEvaluator } from "../src/lowering/gltf/animation-evaluator.js";
 import { lowerGltfAnimationBoneOverrides } from "../src/lowering/gltf/animation-bone-overrides.js";
@@ -332,7 +332,6 @@ function numericCallbacks(context: LoweringContext): string {
 ${lowerPinnedBody(file, declaration.body!.statements, {
     bindings,
     calls: new Map([
-        ...pinnedNumericMathCalls(),
         ...functions.map(
             ([, name]) =>
                 [
@@ -341,8 +340,6 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
                 ] as const,
         ),
     ]),
-    booleanAnd: true,
-    booleanOr: true,
 })}
 }`;
         })

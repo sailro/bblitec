@@ -293,58 +293,7 @@ export function pinnedMathSpelling(name: string): string {
     return spelling;
 }
 
-/**
- * Math calls for numeric scopes: the `<cmath>` members one to one, and
- * `Math.max`/`Math.min` at any arity with JavaScript's NaN and signed-zero
- * rules through `mathExtremeCall`, all at JavaScript's width. Their spelling
- * lives in `bblite/js_data.hpp`, which every unit a pinned numeric scope
- * lands in includes. Math.round and Math.hypot are supplied by their
- * dedicated helpers.
- */
-export function pinnedNumericMathCalls(): Map<
-    string,
-    (args: readonly string[]) => string
-> {
-    const calls = new Map(
-        Object.entries(PINNED_MATH_FUNCTIONS).map(
-            ([name, spelling]): [
-                string,
-                (args: readonly string[]) => string,
-            ] => [`Math.${name}`, (args) => `${spelling}(${args.join(", ")})`],
-        ),
-    );
-    for (const method of ["max", "min"] as const) {
-        calls.set(`Math.${method}`, (args) => mathExtremeCall(method, args));
-    }
-    return calls;
-}
-
-/**
- * The same map, plus `Math.hypot` as the pin's own variadic helper.
- *
- * `<cmath>`'s `hypot` is two- or three-argument and rounds differently from
- * JavaScript's, so a lowering that reaches `Math.hypot` at all must spell it
- * as `bbl::js::hypot_js`, which takes the whole list. Every caller that
- * lowers a pinned body doing vector length or normalization needs exactly
- * this pair, so the reason lives here rather than beside each `new Map`.
- */
-export function pinnedNumericMathCallsWithHypot(): Map<
-    string,
-    (args: readonly string[]) => string
-> {
-    const calls = pinnedNumericMathCalls();
-    calls.set("Math.hypot", pinnedHypotCall);
-    return calls;
-}
-
-/**
- * `Math.hypot` at any arity, as the one spelling both layers use.
- *
- * Scene code reaches it through the compiler's own `Math` dispatch and a
- * pinned body through the map above; spelling it once here is what keeps
- * the two from drifting, the way `pinnedMathSpelling` does for the plain
- * `<cmath>` members.
- */
+/** `Math.hypot` at any arity, shared by scene and pinned lowering. */
 export function pinnedHypotCall(args: readonly string[]): string {
     return `bbl::js::hypot_js({${args.join(", ")}})`;
 }
@@ -358,7 +307,7 @@ export function pinnedRoundCall(args: readonly string[]): string {
 }
 
 /**
- * A `Math.x(...)` call the numeric scopes' shared map lowers -- a `<cmath>`
+ * A supported `Math.x(...)` call -- a `<cmath>`
  * member or `Math.max`/`Math.min` -- or undefined when the node is not one.
  */
 export function pinnedMathCall(node: ts.Node): ts.CallExpression | undefined {

@@ -98,6 +98,8 @@ interface StatementLoweringContext extends Pick<
     | "emitNativeReturn"
     | "emitNativeThrow"
     | "captureEmittedLines"
+    | "captureEmittedStatements"
+    | "emitCapturedStatements"
     | "reachesOnlyClosedEffects"
     | "useNativeValue"
     | "engineLifecycle"
@@ -545,11 +547,19 @@ export class StatementLowerer {
                         "Labeled break has no active target.",
                     );
                 }
-                context.emit(`goto ${label.target};`);
+                context.emit({
+                    kind: "control",
+                    code: `goto ${label.target};`,
+                    transfer: "goto",
+                });
                 return;
             }
             if (this.completeStaticIteration(statement)) return;
-            context.emit("break;");
+            context.emit({
+                kind: "control",
+                code: "break;",
+                transfer: "break",
+            });
             return;
         }
         if (ts.isContinueStatement(statement)) {
@@ -560,7 +570,11 @@ export class StatementLowerer {
                 );
             }
             if (this.completeStaticIteration(statement)) return;
-            context.emit("continue;");
+            context.emit({
+                kind: "control",
+                code: "continue;",
+                transfer: "continue",
+            });
             return;
         }
         if (
@@ -570,7 +584,11 @@ export class StatementLowerer {
         ) {
             // Early bare return of an inlined function: leave the
             // breakable wrapper emitted around the inline body.
-            context.emit("break;");
+            context.emit({
+                kind: "control",
+                code: "break;",
+                transfer: "break",
+            });
             return;
         }
         if (
@@ -744,9 +762,9 @@ export class StatementLowerer {
                 // Empty labels fall through to the next body. Only the reached
                 // body participates in feature selection and specialization.
                 if (matched && clause.statements.length > 0) {
-                    context.emit("{");
+                    context.emit({ kind: "open", code: "{" });
                     this.emitSwitchBody(context, clause);
-                    context.emit("}");
+                    context.emit({ kind: "close", code: "}" });
                     return;
                 }
             }
@@ -766,15 +784,23 @@ export class StatementLowerer {
                 `Switch discriminants must be numbers or strings, received ${value.kind}.`,
             );
         }
-        context.emit("{");
+        context.emit({ kind: "open", code: "{" });
         context.increaseIndent();
         if (stringSwitch) {
             // The view must not outlive its characters: a discriminant such
             // as `prefix + "x"` is a temporary, so its storage is bound first.
-            context.emit(`const auto& ${discriminant}_storage = ${value.cpp};`);
-            context.emit(
-                `const std::string_view ${discriminant} = ${discriminant}_storage;`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: "const auto&",
+                name: `${discriminant}_storage`,
+                initializer: value.cpp,
+            });
+            context.emit({
+                kind: "declaration",
+                type: "const std::string_view",
+                name: discriminant,
+                initializer: `${discriminant}_storage`,
+            });
         } else {
             context.emit(
                 enumSwitch
@@ -842,10 +868,10 @@ export class StatementLowerer {
             );
         }
         if (emittedBranch) {
-            context.emit("}");
+            context.emit({ kind: "close", code: "}" });
         }
         context.decreaseIndent();
-        context.emit("}");
+        context.emit({ kind: "close", code: "}" });
     }
 
     private compileStaticSwitchString(
@@ -918,7 +944,7 @@ export class StatementLowerer {
                 // single-iteration scope restores the one missing control
                 // boundary so an early case `break` still skips the rest of
                 // that case without escaping an enclosing loop.
-                context.emit("do {");
+                context.emit({ kind: "open", code: "do {", breaks: true });
                 context.increaseIndent();
             }
             for (const statement of statements) {
@@ -926,7 +952,7 @@ export class StatementLowerer {
             }
             if (nestedBreak) {
                 context.decreaseIndent();
-                context.emit("} while (false);");
+                context.emit({ kind: "close", code: "} while (false);" });
             }
         } finally {
             context.bindings.popScope();
@@ -1036,7 +1062,7 @@ export class StatementLowerer {
                 context.trackResourceLoopEarlyReturn(statement.expression);
             }
         }
-        context.emit(`if (${condition}) {`);
+        context.emit({ kind: "open", code: `if (${condition}) {` });
         // Alias invalidation is path-sensitive: a branch that always
         // leaves the iteration cannot invalidate anything for the code
         // that follows the `if`, so its effects are rolled back.
@@ -1048,7 +1074,7 @@ export class StatementLowerer {
             context.dataLowerer.restoreAliasState(beforeThen);
         }
         if (statement.elseStatement) {
-            context.emit("} else {");
+            context.emit({ kind: "branch", code: "} else {" });
             const beforeElse = context.dataLowerer.snapshotAliasState();
             this.inRuntimeControlFlow(context, () =>
                 this.emitScopedBody(context, statement.elseStatement!),
@@ -1057,7 +1083,7 @@ export class StatementLowerer {
                 context.dataLowerer.restoreAliasState(beforeElse);
             }
         }
-        context.emit("}");
+        context.emit({ kind: "close", code: "}" });
     }
 
     private statementIsBrowserOnly(
@@ -1260,29 +1286,30 @@ export class StatementLowerer {
             ? capturedFinally
             : undefined;
         if (finallyGuard) {
-            context.emit("{");
+            context.emit({ kind: "open", code: "{" });
             context.increaseIndent();
             const guard =
                 context.engineLifecycle.emitFinallyGuard(finallyGuard);
             const pending =
                 context.allocateTemporaryCppName("finally_exception");
             context.emit(`std::exception_ptr ${pending};`);
-            context.emit("try {");
+            context.emit({ kind: "open", code: "try {" });
             context.increaseIndent();
             for (const line of body) context.emit(line);
             context.decreaseIndent();
             context.emit(
                 `} catch (...) { ${pending} = std::current_exception(); }`,
             );
-            context.emit(`${guard}.run();`);
+            context.emit({ kind: "expression", code: `${guard}.run();` });
             // A source body that cannot complete normally reaches this
             // boundary only through the catch above. Preserve that fact for
             // C++ return analysis, including non-void coroutine bodies.
-            context.emit(
-                `${abruptBody ? "" : `if (${pending}) `}std::rethrow_exception(${pending});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${abruptBody ? "" : `if (${pending}) `}std::rethrow_exception(${pending});`,
+            });
             context.decreaseIndent();
-            context.emit("}");
+            context.emit({ kind: "close", code: "}" });
         } else for (const line of body) context.emit(line);
     }
 
@@ -1319,7 +1346,7 @@ export class StatementLowerer {
                 )
                     ? context.allocateTemporaryCppName("pending_exception")
                     : undefined;
-            const protectedLines = context.captureEmittedLines(() => {
+            const protectedBody = context.captureEmittedStatements(() => {
                 context.bindings.pushScope(context.allocateBlockPrefix());
                 try {
                     for (const child of statement.tryBlock.statements) {
@@ -1336,12 +1363,12 @@ export class StatementLowerer {
             });
             // A protected block that lowers to nothing cannot throw, so its
             // handler is unreachable.
-            if (protectedLines.length === 0) return;
+            if (protectedBody.length === 0) return;
             if (suspendedCatch)
                 context.emit(`std::exception_ptr ${suspendedCatch};`);
-            context.emit("try {");
+            context.emit({ kind: "open", code: "try {" });
             context.increaseIndent();
-            for (const line of protectedLines) context.emit(line);
+            context.emitCapturedStatements(protectedBody);
             context.decreaseIndent();
             const catchCpp =
                 catchDeclaration && !erasedCatchBinding
@@ -1390,7 +1417,7 @@ export class StatementLowerer {
                             : caughtErrorValue(context, catchCpp),
                     );
                 }
-                const handlerLines = context.captureEmittedLines(() => {
+                const handlerBody = context.captureEmittedStatements(() => {
                     for (const child of statement.catchClause!.block
                         .statements) {
                         this.emit(context, child);
@@ -1401,15 +1428,18 @@ export class StatementLowerer {
                             break;
                     }
                 });
-                for (const line of handlerLines) context.emit(line);
+                context.emitCapturedStatements(handlerBody);
                 // A source handler that ignores its exception says so.
-                if (handlerLines.length === 0 && !suspendedCatch)
-                    context.emit("bbl::discard_exception();");
+                if (handlerBody.length === 0 && !suspendedCatch)
+                    context.emit({
+                        kind: "expression",
+                        code: "bbl::discard_exception();",
+                    });
             } finally {
                 context.bindings.popScope();
                 context.decreaseIndent();
             }
-            context.emit("}");
+            context.emit({ kind: "close", code: "}" });
             return;
         }
         if (!statement.finallyBlock) {
@@ -1578,9 +1608,9 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Block,
     ): void {
-        context.emit("{");
+        context.emit({ kind: "open", code: "{" });
         this.emitScopedBody(context, statement);
-        context.emit("}");
+        context.emit({ kind: "close", code: "}" });
     }
 
     private emitFor(
@@ -1657,7 +1687,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.ForStatement,
     ): void {
-        context.emit("{");
+        context.emit({ kind: "open", code: "{" });
         context.increaseIndent();
         context.bindings.pushScope(context.allocateBlockPrefix());
         try {
@@ -1734,7 +1764,11 @@ export class StatementLowerer {
                         }
                         header = lines[0]!.slice(0, -1);
                     }
-                    context.emit(`for (; ${condition}; ${header}) {`);
+                    context.emit({
+                        kind: "open",
+                        code: `for (; ${condition}; ${header}) {`,
+                        iteration: true,
+                    });
                     context.increaseIndent();
                     context.bindings.pushScope(context.allocateBlockPrefix());
                     try {
@@ -1750,7 +1784,7 @@ export class StatementLowerer {
                         context.bindings.popScope();
                     }
                     context.decreaseIndent();
-                    context.emit("}");
+                    context.emit({ kind: "close", code: "}" });
                 },
                 statement,
             );
@@ -1758,7 +1792,7 @@ export class StatementLowerer {
             context.bindings.popScope();
             context.decreaseIndent();
         }
-        context.emit("}");
+        context.emit({ kind: "close", code: "}" });
     }
 
     /**
@@ -1917,16 +1951,18 @@ export class StatementLowerer {
         this.inRuntimeIteration(
             context,
             () => {
-                context.emit(
-                    `while (${this.compileRepeatedCondition(
+                context.emit({
+                    kind: "open",
+                    code: `while (${this.compileRepeatedCondition(
                         context,
                         statement.expression,
                     )}) {`,
-                );
+                    iteration: true,
+                });
                 this.inRuntimeControlFlow(context, () =>
                     this.emitScopedBody(context, statement.statement),
                 );
-                context.emit("}");
+                context.emit({ kind: "close", code: "}" });
             },
             statement,
         );
@@ -1939,16 +1975,17 @@ export class StatementLowerer {
         this.inRuntimeIteration(
             context,
             () => {
-                context.emit("do {");
+                context.emit({ kind: "open", code: "do {", iteration: true });
                 this.inRuntimeControlFlow(context, () =>
                     this.emitScopedBody(context, statement.statement),
                 );
-                context.emit(
-                    `} while (${this.compileRepeatedCondition(
+                context.emit({
+                    kind: "close",
+                    code: `} while (${this.compileRepeatedCondition(
                         context,
                         statement.expression,
                     )});`,
-                );
+                });
             },
             statement,
         );
@@ -2856,7 +2893,10 @@ export class StatementLowerer {
                             initializer: `*${iterator}`,
                             attributes: "[[maybe_unused]] ",
                         });
-                        context.emit(`++${iterator};`);
+                        context.emit({
+                            kind: "expression",
+                            code: `++${iterator};`,
+                        });
                         context.bindDataIterationVariable(
                             declaration.name,
                             member,
@@ -2890,7 +2930,7 @@ export class StatementLowerer {
                 item,
                 `const ${context.dataTypes.cppType(container.element)}`,
             );
-        const lines = context.captureEmittedLines(() => {
+        const lines = context.captureEmittedStatements(() => {
             context.bindings.pushScope(context.allocateBlockPrefix());
             try {
                 context.bindDataIterationVariable(
@@ -2921,29 +2961,56 @@ export class StatementLowerer {
             const indexCpp = indexed.indexCpp;
             const range = context.allocateTemporaryCppName("range");
             const span = target.container.dataType?.kind === "span";
-            context.emit(
-                `${span ? "auto" : "auto&&"} ${range} = ${span ? `std::span{${target.container.cpp}}` : target.container.cpp};`,
-            );
-            context.emit(
-                `for (std::size_t ${indexCpp} = 0; ${indexCpp} < ${range}.size(); ++${indexCpp}) {`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: span ? "auto" : "auto&&",
+                name: range,
+                initializer: span
+                    ? `std::span{${target.container.cpp}}`
+                    : target.container.cpp,
+            });
+            context.emit({
+                kind: "open",
+                code: `for (std::size_t ${indexCpp} = 0; ${indexCpp} < ${range}.size(); ++${indexCpp}) {`,
+                iteration: true,
+            });
             context.increaseIndent();
             if (indexed.kind === "array-entry") {
-                context.emit(`auto&& ${item} = ${range}[${indexCpp}];`);
+                context.emit({
+                    kind: "declaration",
+                    type: "auto&&",
+                    name: item,
+                    initializer: `${range}[${indexCpp}]`,
+                });
             }
-            for (const line of lines) context.emit(line);
+            context.emitCapturedStatements(lines);
             context.decreaseIndent();
-            context.emit("}");
+            context.emit({ kind: "close", code: "}" });
             return true;
         }
         const storedIterator = target.container.dataType?.kind === "iterator";
         if (storedIterator) {
             const source = context.allocateTemporaryCppName("iterator_source");
             const value = context.allocateTemporaryCppName("iterator_value");
-            context.emit(`const auto ${source} = ${target.container.cpp};`);
-            context.emit(`while (auto ${value} = ${source}.next().value) {`);
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: source,
+                initializer: target.container.cpp,
+            });
+            context.emit({
+                kind: "open",
+                code: `while (auto ${value} = ${source}.next().value) {`,
+                iteration: true,
+            });
             context.increaseIndent();
-            context.emit(`[[maybe_unused]] auto&& ${item} = *${value};`);
+            context.emit({
+                kind: "declaration",
+                type: "auto&&",
+                name: item,
+                initializer: `*${value}`,
+                attributes: "[[maybe_unused]] ",
+            });
         } else {
             // A span is a borrowed descriptor, so hold that descriptor by value.
             // Binding the range-for's hidden reference to a returned span makes
@@ -2952,15 +3019,21 @@ export class StatementLowerer {
                 target.container.dataType?.kind === "span"
                     ? context.allocateTemporaryCppName("range")
                     : undefined;
-            context.emit(
-                `for (${span ? `auto ${span} = std::span{${target.container.cpp}}; ` : ""}auto&& ${item} : ${span ?? target.container.cpp}) {`,
-            );
+            context.emit({
+                kind: "open",
+                code: `for (${span ? `auto ${span} = std::span{${target.container.cpp}}; ` : ""}auto&& ${item} : ${span ?? target.container.cpp}) {`,
+                iteration: true,
+            });
             context.increaseIndent();
         }
-        for (const line of lines) context.emit(line);
-        if (!storedIterator) context.emit(`static_cast<void>(${item});`);
+        context.emitCapturedStatements(lines);
+        if (!storedIterator)
+            context.emit({
+                kind: "expression",
+                code: `static_cast<void>(${item});`,
+            });
         context.decreaseIndent();
-        context.emit("}");
+        context.emit({ kind: "close", code: "}" });
         return true;
     }
 
@@ -3079,11 +3152,18 @@ export class StatementLowerer {
                 ) {
                     const scheduled = context.compileValue(rightExpression);
                     if (scheduled.kind === "void") {
-                        if (scheduled.cpp) context.emit(`${scheduled.cpp};`);
+                        if (scheduled.cpp)
+                            context.emit({
+                                kind: "expression",
+                                code: `${scheduled.cpp};`,
+                            });
                         return;
                     }
                     context.expectKind(scheduled, "number", rightExpression);
-                    context.emit(`${target.cpp} = ${scheduled.cpp};`);
+                    context.emit({
+                        kind: "expression",
+                        code: `${target.cpp} = ${scheduled.cpp};`,
+                    });
                     return;
                 }
                 if (target.kind === "number") {
@@ -3091,18 +3171,20 @@ export class StatementLowerer {
                         unwrapped.right,
                         "double",
                     );
-                    context.emit(
-                        this.numericAssignmentCpp(
+                    context.emit({
+                        kind: "expression",
+                        code: this.numericAssignmentCpp(
                             context,
                             target.cpp,
                             operator,
                             right,
                         ),
-                    );
+                    });
                 } else if (target.kind === "boolean" && operator === "=") {
-                    context.emit(
-                        `${target.cpp} = ${context.conditions.compileCondition(unwrapped.right)};`,
-                    );
+                    context.emit({
+                        kind: "expression",
+                        code: `${target.cpp} = ${context.conditions.compileCondition(unwrapped.right)};`,
+                    });
                 } else if (operator === "+=" && isStringValue(target)) {
                     emitStringAppend(context, target.cpp, unwrapped.right);
                 } else if (target.kind === "string" && operator === "=") {
@@ -3113,11 +3195,17 @@ export class StatementLowerer {
                             `String assignment requires a string, received ${value.kind}.`,
                         );
                     }
-                    context.emit(`${target.cpp} = ${value.cpp};`);
+                    context.emit({
+                        kind: "expression",
+                        code: `${target.cpp} = ${value.cpp};`,
+                    });
                 } else if (target.kind === "audio-node" && operator === "=") {
                     const value = context.compileValue(unwrapped.right);
                     context.expectKind(value, "audio-node", unwrapped.right);
-                    context.emit(`${target.cpp} = ${value.cpp};`);
+                    context.emit({
+                        kind: "expression",
+                        code: `${target.cpp} = ${value.cpp};`,
+                    });
                 } else if (
                     (target.kind === "data" || target.kind === "promise") &&
                     operator === "=" &&
@@ -3143,7 +3231,10 @@ export class StatementLowerer {
                                 `${target.kind}, received ${right.kind}.`,
                         );
                     }
-                    context.emit(`${target.cpp} = ${right.cpp};`);
+                    context.emit({
+                        kind: "expression",
+                        code: `${target.cpp} = ${right.cpp};`,
+                    });
                     const leftName = unwrappedIdentifier(
                         unwrapped.left,
                         (wrapped) => context.unwrap(wrapped),
@@ -3249,12 +3340,14 @@ export class StatementLowerer {
             // Its settling time still gates capture: the frame conductor
             // must draw the CPU mutation that follows before taking the
             // screenshot which `dataset.ready` guarded upstream.
-            context.emit(
-                `bbl::defer_capture_until(` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::defer_capture_until(` +
                     `${context.requireDefaultEngine(unwrapped)}, ` +
                     `[frames = 0u]() mutable { ` +
                     `return ++frames >= 2u; });`,
-            );
+            });
             return;
         }
         if (
@@ -3309,7 +3402,10 @@ export class StatementLowerer {
             if (context.constructsLocalClass(unwrapped)) {
                 const value = context.compileValue(unwrapped);
                 if (value.cpp.length > 0) {
-                    context.emit(`static_cast<void>(${value.cpp});`);
+                    context.emit({
+                        kind: "expression",
+                        code: `static_cast<void>(${value.cpp});`,
+                    });
                 }
                 return;
             }
@@ -3321,12 +3417,14 @@ export class StatementLowerer {
             // the scene's own and it holds off the capture, because
             // upstream it holds off `canvas.dataset.ready` and the harness
             // screenshots on that.
-            context.emit(
-                `bbl::defer_capture_until(` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::defer_capture_until(` +
                     `${context.requireDefaultEngine(unwrapped)}, ` +
                     `[&]() { return ` +
                     `${context.conditions.compileCondition(drain)}; });`,
-            );
+            });
             return;
         }
         if (context.engineLifecycle.isFrameYield(unwrapped)) {
@@ -3473,9 +3571,10 @@ export class StatementLowerer {
             });
             return value;
         });
-        context.emit(
-            `bbl::set_camera_vector(${recordAt(`${vector.owner.engineCpp}.cameras`, handle)}, &bbl::CameraRecord::${vector.field}, bbl::Vec3d{${values.join(", ")}});`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_camera_vector(${recordAt(`${vector.owner.engineCpp}.cameras`, handle)}, &bbl::CameraRecord::${vector.field}, bbl::Vec3d{${values.join(", ")}});`,
+        });
         return true;
     }
 
@@ -3551,9 +3650,10 @@ export class StatementLowerer {
                 transform.sourceProperty + ".set",
                 "double",
             );
-            context.emit(
-                `bbl::${transform.assetSetter}(${context.requireEngine(target, call)}, ${target.cpp}, bbl::${components.length === 4 ? "Vec4d" : "Vec3d"}{${components.join(", ")}});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `bbl::${transform.assetSetter}(${context.requireEngine(target, call)}, ${target.cpp}, bbl::${components.length === 4 ? "Vec4d" : "Vec3d"}{${components.join(", ")}});`,
+            });
             return true;
         }
         if (target.kind === "transform-node" || target.kind === "scene-node") {
@@ -3583,15 +3683,17 @@ export class StatementLowerer {
                 `${transform.sourceProperty}.set`,
                 transform.precision,
             ).join(", ")}}`;
-            context.emit(
-                `bbl::${
-                    target.kind === "scene-node"
-                        ? transform.sceneNodeSetter
-                        : transform.transformNodeSetter
-                }(` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::${
+                        target.kind === "scene-node"
+                            ? transform.sceneNodeSetter
+                            : transform.transformNodeSetter
+                    }(` +
                     `${context.requireEngine(target, call)}, ` +
                     `${targetCpp}, ${vector});`,
-            );
+            });
             return true;
         }
         if (target.kind !== "mesh") {
@@ -3607,19 +3709,26 @@ export class StatementLowerer {
         const vector = `${transform.cppType}{${components.join(", ")}}`;
         const engine = context.requireEngine(target, call);
         if (transform.meshSetter) {
-            context.emit(
-                `bbl::${transform.meshSetter}(` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::${transform.meshSetter}(` +
                     `${engine}, ${target.cpp}, ${vector});`,
-            );
+            });
             return true;
         }
-        context.emit(
-            `${recordAt(`${engine}.meshes`, target.cpp)}.` +
+        context.emit({
+            kind: "expression",
+            code:
+                `${recordAt(`${engine}.meshes`, target.cpp)}.` +
                 `${transform.nativeField} = ${vector};`,
-        );
+        });
         // The world-matrix state's `markLocalDirty`, pushed through the
         // subtree the parent setter registered.
-        context.emit(`bbl::mark_mesh_dirty(${engine}, ${target.cpp});`);
+        context.emit({
+            kind: "expression",
+            code: `bbl::mark_mesh_dirty(${engine}, ${target.cpp});`,
+        });
         return true;
     }
 
@@ -3669,12 +3778,14 @@ export class StatementLowerer {
             3,
             `${property}.set`,
         );
-        context.emit(
-            `bbl::${setter}(` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::${setter}(` +
                 `${context.requireEngine(target, call)}, ` +
                 `${target.cpp}, ` +
                 `bbl::Vec3{${components.join(", ")}});`,
-        );
+        });
         return true;
     }
 
@@ -3792,18 +3903,22 @@ export class StatementLowerer {
         context.expectSameEngine(node, child, call);
         if (node.kind === "mesh") {
             context.reachFeature("mesh:parenting", call);
-            context.emit(
-                `bbl::push_mesh_child(` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::push_mesh_child(` +
                     `${context.requireEngine(node, call)}, ` +
                     `${node.cpp}, ${child.cpp});`,
-            );
+            });
             return true;
         }
-        context.emit(
-            `bbl::push_transform_node_child(` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::push_transform_node_child(` +
                 `${context.requireEngine(node, call)}, ` +
                 `${node.cpp}, ${child.cpp});`,
-        );
+        });
         return true;
     }
 
@@ -3839,9 +3954,10 @@ export class StatementLowerer {
             // The pin recomputes the pass's uniform block and uploads it;
             // native marks the record so the backend rewrites it from the
             // parameters before the next frame it records.
-            context.emit(
-                `bbl::update_post_process_uniforms(${context.requireEngine(task, call)}, ${task.cpp});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `bbl::update_post_process_uniforms(${context.requireEngine(task, call)}, ${task.cpp});`,
+            });
             return true;
         }
         const offset = exported ? 1 : 0;
@@ -3874,9 +3990,10 @@ export class StatementLowerer {
             materialCpp = material.cpp;
             materialOverride = true;
         }
-        context.emit(
-            `bbl::add_render_task_mesh(${engine}, ${task.cpp}, ${mesh.cpp}, ${materialCpp}, ${materialOverride});`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::add_render_task_mesh(${engine}, ${task.cpp}, ${mesh.cpp}, ${materialCpp}, ${materialOverride});`,
+        });
         return true;
     }
 }

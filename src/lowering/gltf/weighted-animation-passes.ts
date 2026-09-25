@@ -57,8 +57,7 @@ export function lowerGltfWeightedAnimationPasses(
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression(node, lowerer) {
             if (!ts.isCallExpression(node)) return undefined;
             const callee = node.expression.getText(file);
@@ -177,6 +176,7 @@ export function lowerGltfWeightedAnimationPasses(
                     adapter[0]!,
                     "Weighted animation transport alias",
                 );
+                lowerer.bindPorts(bindings, variable);
                 return [`${indent}${adapter[1]}`];
             }
             if (
@@ -216,6 +216,7 @@ export function lowerGltfWeightedAnimationPasses(
                     callback,
                     "Expected weighted target publication callback.",
                 );
+            lowerer.bindPorts(bindings, callback.body);
             return [
                 `${indent}for (auto& [key, target] : scratch.targets) {`,
                 ...lowerer.statements(

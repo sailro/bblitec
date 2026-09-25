@@ -63,9 +63,10 @@ function compileOptions(
                     site,
                     `Procedural sky option ${field.name} requires a number.`,
                 );
-            context.emit(
-                `${target}.${field.name} = ${field.value ? context.castNumber(field.value, "double") : field.cpp};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${target}.${field.name} = ${field.value ? context.castNumber(field.value, "double") : field.cpp};`,
+            });
         } else if (field.name === "sunDirection") {
             let components: string[];
             if (
@@ -79,16 +80,22 @@ function compileOptions(
             } else if (field.type?.kind === "tuple" && field.type.arity === 3) {
                 const direction =
                     context.allocateTemporaryCppName("sky_direction");
-                context.emit(`const auto ${direction} = ${field.cpp};`);
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: direction,
+                    initializer: field.cpp,
+                });
                 components = [0, 1, 2].map((index) => `${direction}[${index}]`);
             } else
                 return context.fail(
                     site,
                     "Procedural sky sunDirection requires a numeric tuple of three components.",
                 );
-            context.emit(
-                `${target}.sunDirection = {${components.join(", ")}};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${target}.sunDirection = {${components.join(", ")}};`,
+            });
         } else if (field.name === "brdfUrl" && load) {
             const source = field.value?.staticString;
             if (source === undefined)
@@ -151,9 +158,12 @@ export function compileProceduralSkyIntrinsic(
     if (sun) {
         context.reachJsData();
         const color = context.allocateTemporaryCppName("sky_sun_color");
-        context.emit(
-            `const auto ${color} = bbl::compute_procedural_sky_sun_color(${options.cpp});`,
-        );
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: color,
+            initializer: `bbl::compute_procedural_sky_sun_color(${options.cpp})`,
+        });
         return {
             kind: "data",
             dataType: { kind: "tuple", arity: 3 },

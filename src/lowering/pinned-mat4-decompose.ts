@@ -21,7 +21,6 @@ import {
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
-import { pinnedHypotCall, pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const DECOMPOSE_MODULE = "src/math/decompose-mat4.ts";
 const DETERMINANT_MODULE = "src/math/mat4-determinant3.ts";
@@ -75,10 +74,7 @@ export function lowerMat4Determinant3(
 }
 
 export function lowerMat4DecomposeRotation(context: LoweringContext): string {
-    const calls = new Map<string, (args: readonly string[]) => string>([
-        ...pinnedNumericMathCalls(),
-        ["Math.hypot", pinnedHypotCall],
-    ]);
+    const calls = new Map<string, (args: readonly string[]) => string>([]);
 
     const determinant = lowerMat4Determinant3(context, calls);
 
@@ -154,10 +150,7 @@ export function lowerMat4DecomposeRotation(context: LoweringContext): string {
  * with the rotation-only fold in another generated translation unit.
  */
 export function lowerMat4DecomposeFull(context: LoweringContext): string {
-    const calls = new Map<string, (args: readonly string[]) => string>([
-        ...pinnedNumericMathCalls(),
-        ["Math.hypot", pinnedHypotCall],
-    ]);
+    const calls = new Map<string, (args: readonly string[]) => string>([]);
 
     const determinant = lowerMat4Determinant3(
         context,
@@ -348,7 +341,6 @@ export function lowerQuatFromRotationBasis(
             ...(inline ? { inline } : {}),
             // The trace method picks its branch with `&&` over numeric
             // comparisons.
-            booleanAnd: true,
         },
     );
     if (!defaultOverload) return body;

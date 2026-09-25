@@ -6,7 +6,7 @@ import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { PinnedRecordModel } from "../src/lowering/pinned-record-lowerer.js";
-import { pinnedTypedProgram } from "../src/lowering/pinned-typed-program.js";
+
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import {
     optionalNativeFixtureTools,
@@ -90,7 +90,7 @@ function lowered(): string {
     const store = new FixtureStore();
     const model = new PinnedRecordModel(
         new LoweringContext(store),
-        pinnedTypedProgram(store, [MODULE]),
+        store.program.modules([MODULE]),
         {
             records: [
                 {

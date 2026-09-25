@@ -421,9 +421,10 @@ function compileShapeParameters(
                 const present = optionalReference
                     ? `static_cast<bool>(${cpp})`
                     : optionalPresentCpp(cpp);
-                context.emit(
-                    `if (${present}) throw std::runtime_error("Physics shape rotation is not lowered.");`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `if (${present}) throw std::runtime_error("Physics shape rotation is not lowered.");`,
+                });
                 continue;
             }
             fields[field.sourceName] = {
@@ -880,9 +881,10 @@ function compileCreatePhysicsConstraint(
         }
     }
     context.reachFeature("physics:constraints", call);
-    context.emit(
-        `bbl::upstream::create_physics_constraint(${world.cpp}, ${parent.cpp}, ${child.cpp}, ${type}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}}, {${limits.join(", ")}});`,
-    );
+    context.emit({
+        kind: "expression",
+        code: `bbl::upstream::create_physics_constraint(${world.cpp}, ${parent.cpp}, ${child.cpp}, ${type}, bbl::upstream::PhysicsConstraintOptions{${fields.join(", ")}}, {${limits.join(", ")}});`,
+    });
     return { kind: "void", cpp: "" };
 }
 
@@ -1567,10 +1569,12 @@ function compileGetPhysicsBodyLinearVelocity(
     context.expectKind(body, "physics-body", argumentAt(call, 1));
     context.expectSameEngine(world, body, call);
     const velocity = context.allocateTemporaryCppName("physics_velocity");
-    context.emit(
-        `const bbl::Vec3d ${velocity} = ` +
-            `bbl::upstream::get_physics_body_linear_velocity(${world.cpp}, ${body.cpp});`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::Vec3d",
+        name: velocity,
+        initializer: `bbl::upstream::get_physics_body_linear_velocity(${world.cpp}, ${body.cpp})`,
+    });
     return vec3Record(velocity);
 }
 
@@ -1871,12 +1875,12 @@ function compilePhysicsRaycast(
         }
     }
     const result = context.allocateTemporaryCppName("physics_raycast");
-    context.emit(
-        `const bbl::upstream::PhysicsRaycastResult ${result} = ` +
-            `bbl::upstream::physics_raycast(${worldCpp}, ` +
-            `${from}, ${to}, ` +
-            `${membership}, ${collideWith}, ${shouldHitTriggers});`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::upstream::PhysicsRaycastResult",
+        name: result,
+        initializer: `bbl::upstream::physics_raycast(${worldCpp}, ${from}, ${to}, ${membership}, ${collideWith}, ${shouldHitTriggers})`,
+    });
     return {
         kind: "record",
         cpp: "",

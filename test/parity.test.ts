@@ -8,6 +8,7 @@ import {
     analyzeDifference,
     analyzeIdBuffer,
     compareImages,
+    compareImagePartition,
     compareRegion,
     generateDiffMap,
     generateHotspotMap,
@@ -26,6 +27,63 @@ function writePng(
     });
     writeFileSync(path, PNG.sync.write(png));
 }
+
+test("image partitions account for every pixel and refuse invalid geometry", (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-partition-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const reference = join(directory, "reference.png");
+    const actual = join(directory, "actual.png");
+    writePng(reference, [
+        [0, 0, 0, 255],
+        [0, 0, 0, 255],
+        [0, 0, 0, 255],
+    ]);
+    writePng(actual, [
+        [0, 0, 0, 255],
+        [30, 30, 30, 255],
+        [3, 3, 3, 255],
+    ]);
+    const region = { name: "clock", x: 1, y: 0, width: 1, height: 1 };
+    const partition = { width: 3, height: 1, regions: [region] };
+    const result = compareImagePartition(actual, reference, partition);
+    assert.equal(result.stable.totalPixels, 2);
+    assert.equal(result.stable.exactMatch, 1);
+    assert.equal(result.stable.mad, 1.5);
+    assert.equal(result.regions[0]!.mad, 30);
+    assert.equal(result.stable.totalPixels + result.regions[0]!.totalPixels, 3);
+    assert.throws(
+        () =>
+            compareImagePartition(actual, reference, {
+                ...partition,
+                width: 4,
+            }),
+        /requires 4x1/,
+    );
+    assert.throws(
+        () =>
+            compareImagePartition(actual, reference, {
+                ...partition,
+                regions: [region, region],
+            }),
+        /Overlapping/,
+    );
+    assert.throws(
+        () =>
+            compareImagePartition(actual, reference, {
+                ...partition,
+                regions: [{ ...region, x: -1 }],
+            }),
+        /Invalid/,
+    );
+    assert.throws(
+        () =>
+            compareImagePartition(actual, reference, {
+                ...partition,
+                regions: [{ ...region, x: 0, width: 3 }],
+            }),
+        /retain stable pixels/,
+    );
+});
 
 test("gates a registered scene and leaves an unthresholded one diagnostic", () => {
     assert.deepEqual(

@@ -1,4 +1,5 @@
-import { GLTF_MESH_WALKS, type JsonObject } from "./gltf-document.js";
+import { GLTF_MESH_WALKS } from "./gltf-document.js";
+import { type JsonObject } from "./json-fields.js";
 import { evaluateMeshWalks, type CompiledMeshWalk } from "./gltf-mesh-walks.js";
 import {
     importPinnedModule,

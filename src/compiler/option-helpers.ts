@@ -52,13 +52,10 @@ export function validateObjectProperties(
 }
 
 /** What the static folds read, as a lowering context carries it. */
-export interface PositiveIntegerContext
-    extends
-        Pick<
-            LoweringServices,
-            "resolveStaticExpression" | "libraryGlobal" | "fail" | "bindings"
-        >,
-        Partial<Pick<LoweringServices, "staticCanvasSize">> {}
+export interface PositiveIntegerContext extends Pick<
+    LoweringServices,
+    "resolveStaticExpression" | "libraryGlobal" | "fail" | "bindings"
+> {}
 
 /**
  * The folds' own parameter: the same reads with the name lookups alone, so a
@@ -348,14 +345,6 @@ export function staticNumberValue(
         if (left === undefined || right === undefined) return undefined;
         return foldNumericBinary(node.operatorToken.kind, left, right);
     }
-    // A canvas size is a compile-time constant to every caller of THIS
-    // helper, and only to them: `staticNumberValue` never emits, so a
-    // consumer that reaches it has already decided it needs the number at
-    // generation. The live read stays `Compiler.canvasSizeValue`, which
-    // emits `engine.options.width` and carries no static value at all, so a
-    // scene that resizes still sees the new size everywhere it is drawn.
-    const canvas = context.staticCanvasSize?.(node);
-    if (canvas !== undefined) return canvas;
     if (ts.isElementAccessExpression(node)) {
         // A constant tuple indexed by a constant -- the corpus writes its
         // colours that way (`PARTICLE_TINT[0]`).

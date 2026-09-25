@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import { CppDefinitions, type CppModule } from "../cpp-definitions.js";
 import {
@@ -19,10 +20,6 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import {
-    pinnedNumericMathCallsWithHypot,
-    pinnedRoundCall,
-} from "./pinned-operators.js";
 import { nativeTextureFormat } from "./post-process-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
@@ -414,7 +411,7 @@ void pack_mat4_into_f32(
             bindings: new Map(
                 names.map((name) => [name, { cpp: name, type: "scalar" }]),
             ),
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
         });
         return `// ${this.context.provenance(CONTACT.module, "CLAMP")}
 double screen_space_clamp(double ${names.join(", double ")}) {
@@ -424,7 +421,7 @@ double screen_space_clamp(double ${names.join(", double ")}) {
 
     /** The pure temporal helpers, lowered whole. */
     private temporalHelpers(): string {
-        const calls = pinnedNumericMathCallsWithHypot();
+        const calls = new Map<string, PinnedCallSpelling>();
         return [
             lowerPinnedFunction(
                 this.context,
@@ -578,7 +575,7 @@ double screen_space_clamp(double ${names.join(", double ")}) {
                         );
                     },
                 },
-                booleanOr: true,
+
                 memberBindings,
             },
         );
@@ -825,7 +822,7 @@ ${arms}
             body.statements,
             {
                 bindings,
-                calls: pinnedNumericMathCallsWithHypot(),
+                calls: new Map(),
             },
             indent,
         );
@@ -833,8 +830,8 @@ ${arms}
 
     /** `computeScreenSpaceScaledSize`, whole, as the backend's sizing rule. */
     private scaledSize(): string {
-        const calls = pinnedNumericMathCallsWithHypot();
-        calls.set("Math.round", pinnedRoundCall);
+        const calls = new Map<string, PinnedCallSpelling>();
+
         return lowerPinnedFunction(
             this.context,
             TEMPORAL_MODULE,
@@ -1328,7 +1325,6 @@ class FrameWalker {
         this.numeric = new PinnedNumericLowerer(file, scope);
         this.boolean = new PinnedNumericLowerer(file, {
             ...scope,
-            booleanOr: true,
         });
     }
 
@@ -1341,8 +1337,8 @@ class FrameWalker {
     }
 
     private scope(bindings: Map<string, PinnedBinding>) {
-        const calls = pinnedNumericMathCallsWithHypot();
-        calls.set("Math.round", pinnedRoundCall);
+        const calls = new Map<string, PinnedCallSpelling>();
+
         calls.set("CLAMP", (args) => `screen_space_clamp(${args.join(", ")})`);
         calls.set(
             "getEffectiveAspectRatio",
@@ -1724,14 +1720,25 @@ class FrameWalker {
             `${indent}const ScreenSpaceResetDecision reset_decision = ` +
                 "decide_screen_space_reset(reset_event);",
         );
-        this.bindings.set("decision.invalidateHistory", {
-            cpp: "reset_decision.invalidate_history",
-            type: "bool",
-        });
-        this.bindings.set("decision.restartPhase", {
-            cpp: "reset_decision.restart_phase",
-            type: "bool",
-        });
+        this.numeric.bindPorts(
+            [
+                [
+                    "decision.invalidateHistory",
+                    {
+                        cpp: "reset_decision.invalidate_history",
+                        type: "bool",
+                    },
+                ],
+                [
+                    "decision.restartPhase",
+                    {
+                        cpp: "reset_decision.restart_phase",
+                        type: "bool",
+                    },
+                ],
+            ],
+            initializer,
+        );
         return lines;
     }
 

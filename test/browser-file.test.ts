@@ -494,12 +494,9 @@ test("browser file ownership stays generic and PAL-isolated", () => {
     );
     assert.match(shim, /pal::save_file/);
     assert.doesNotMatch(shim, /read_selected_file_text/);
-    const browserFileRecord = runtime.slice(
-        runtime.indexOf("struct BrowserFileRecord {"),
-        runtime.indexOf(
-            "#endif",
-            runtime.indexOf("struct BrowserFileRecord {"),
-        ),
+    const browserFileRecord = cppFunction(
+        runtime,
+        "struct BrowserFileRecord {",
     );
     assert.match(browserFileRecord, /std::vector<std::uint8_t> bytes/);
     assert.match(browserFileRecord, /std::string display_name/);

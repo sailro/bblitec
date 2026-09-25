@@ -272,6 +272,9 @@ when executable inputs or measurement contracts change. `lint:exports` is adviso
 `neutrality <file> --generated --write` saves a generated-byte baseline and `neutrality <file> --generated`
 compares against it after full registry regeneration. Native/shader changes use saved differential
 reports and the validation sequence above.
+Ocean's neutrality check requires saved native PNGs at 1280×720. It compares every pixel outside
+the registered GPU timing values and frame counter exactly, and reports those live text regions separately.
+Parity references and thresholds apply to the complete image.
 
 ## Native builds
 
@@ -320,8 +323,8 @@ repository unit reads a content-addressed folder holding exactly the generated h
 names (`native/native-header-cache.cmake`), so a generated header rebuilds only its includers and a unit
 hits across scenes whose inputs to it agree; lowered modules compile from content-addressed copies under the
 cache (`sources/<module>-<digest>.cpp`, the name their diagnostics carry). clang-cl builds the precompiled
-header from a source under the cache named by its text, so every tree of a checkout whose PCH inputs agree
-shares it and its users' entries; its own entry keys on the checkout's absolute paths, which the PCH
+header from a source under the cache named by its text. Record layouts and PCH inputs are independent of
+scene features; trees with the same build options share it. Its entry keys on the checkout's absolute paths, which the PCH
 records. Like `/Yc`, it instantiates the templates its headers use (`-fpch-instantiate-templates`), so units
 do not repeat them. Debug keys retain directory identity.
 

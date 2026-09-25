@@ -1,8 +1,9 @@
+import { isRecord } from "./json-fields.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { run } from "node:test";
-import { apiHash, isRecord, type ApiSnapshot } from "./api-surface.js";
+import { apiHash, type ApiSnapshot } from "./api-surface.js";
 
 export interface ApiCase {
     id: string;

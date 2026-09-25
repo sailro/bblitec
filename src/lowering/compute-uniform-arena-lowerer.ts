@@ -1,8 +1,9 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import type {
     PinnedBinding,
     PinnedNumericScope,
@@ -124,7 +125,7 @@ function scope(
                 ] as const,
         ),
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const name of ["Number.isInteger", "Number.isSafeInteger"])
         calls.set(
             name,
@@ -149,7 +150,7 @@ function scope(
     return {
         bindings,
         calls,
-        booleanOr: true,
+
         callShapes: new Map([
             ["Number.isInteger", "bool"],
             ["Number.isSafeInteger", "bool"],

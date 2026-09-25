@@ -1,3 +1,4 @@
+import { stringLiteral } from "../cpp-literals.js";
 /**
  * Translates a pinned numeric function body to C++, statement by statement.
  *
@@ -24,6 +25,18 @@
  * keeps a changed pinned body visible instead of silently stale.
  */
 import ts from "typescript";
+import { PinnedBindings } from "./pinned-bindings.js";
+import { findAnalysisNode } from "../compiler/analysis-walk.js";
+import {
+    moduleSymbols,
+    pinnedCheckerOf,
+    pinnedNamesOf,
+} from "../pinned-program.js";
+import {
+    declarationInDefaultLibrary,
+    declaredSymbol,
+} from "../compiler/symbols.js";
+import { MATH_MEMBERS, mathCallSpelling } from "../compiler/math-intrinsics.js";
 import {
     pinnedTranslationObserved,
     TranslationActivity,
@@ -396,11 +409,8 @@ export interface PinnedBinding {
          */
         | "function-list"
         /**
-         * A record the body only aliases and reads members off by their
-         * dotted text (`const buffer = system.buffer`): it has no members
-         * of its own here, so every read resolves through a text-keyed
-         * binding the caller supplied -- or through `record`, where the
-         * caller named the native struct it is.
+         * A record whose members resolve through the caller's bound paths
+         * or through `record`, where the caller names its native struct.
          */
         | "opaque"
         /**
@@ -498,6 +508,11 @@ export interface PinnedNumericScope {
         lowerer: PinnedNumericLowerer,
     ) => string | RenderedCpp | undefined;
     expressionSpelling?: PinnedExpressionSpelling;
+    /** Truthiness at a domain-owned value representation boundary. */
+    condition?: (
+        expression: ts.Expression,
+        lowerer: PinnedNumericLowerer,
+    ) => string;
     foldConditions?: boolean;
     /** An explicitly validated platform boundary within an otherwise lowered
      * body. Undefined retains the ordinary translator and its refusals. */
@@ -506,7 +521,7 @@ export interface PinnedNumericScope {
         lowerer: PinnedNumericLowerer,
         indent: string,
     ) => readonly string[] | undefined;
-    /** Identifiers already bound when the body starts (parameters, locals). */
+    /** Named adapter ports, resolved to source symbols at the body's entry. */
     bindings: Map<string, PinnedBinding>;
     /**
      * The native struct an object literal declared under one of the pin's
@@ -516,6 +531,12 @@ export interface PinnedNumericScope {
     recordTypes?: ReadonlyMap<string, PinnedRecordShape>;
     /** Calls this body may make, as a C++ spelling per pinned callee. */
     calls: ReadonlyMap<string, PinnedCallSpelling>;
+    /** Numeric conversion at an opaque value boundary; Math still uses its shared table. */
+    mathValue?: {
+        argument: (cpp: string) => string;
+        result: (cpp: string) => string;
+    };
+
     /**
      * Methods called ON a bound buffer, spelled from the RESOLVED receiver.
      * Keyed by method name alone: `counts.fill(0)` reaches the same rule
@@ -606,10 +627,6 @@ export interface PinnedNumericScope {
      * copying method from silently losing its result.
      */
     receiverReturningMethods?: ReadonlySet<string>;
-    /** This body uses `||` only to join boolean conditions. */
-    booleanOr?: boolean;
-    /** This body uses `&&` only to join boolean conditions. */
-    booleanAnd?: boolean;
     /** Native option specialization may make a pinned fallback local dead. */
     maybeUnusedConst?: boolean;
     /**
@@ -734,7 +751,14 @@ const TYPED_ARRAY_CONVERSIONS: ReadonlyMap<
     ["Uint32Array", { conversion: "u32_array_from", type: "u32" as const }],
 ]);
 
+export interface PinnedIteration {
+    readonly prefix?: readonly string[];
+    readonly header: string;
+    readonly bindings?: readonly string[];
+}
+
 export class PinnedNumericLowerer {
+    private caughtSymbol: ts.Symbol | undefined;
     readonly translationActivity = pinnedTranslationObserved()
         ? new TranslationActivity()
         : undefined;
@@ -742,8 +766,20 @@ export class PinnedNumericLowerer {
         private readonly file: ts.SourceFile,
         private readonly scope: PinnedNumericScope,
     ) {
-        this.callerBindings = new Set(scope.bindings.keys());
+        this.sourceBindings = new PinnedBindings(scope.bindings);
+        this.localNames = new Set([
+            "pi",
+            ...[...scope.bindings]
+                .filter(
+                    ([source, binding]) =>
+                        source === binding.cpp ||
+                        source.startsWith("@native-macro:"),
+                )
+                .map(([, binding]) => binding.cpp),
+        ]);
     }
+
+    private readonly sourceBindings: PinnedBindings<PinnedBinding>;
 
     /** Module-scope constants resolved so far, by initializer; undefined while resolving. */
     private readonly moduleConstants = new Map<
@@ -758,11 +794,10 @@ export class PinnedNumericLowerer {
         );
     }
 
-    /** The names the CALLER bound before this body started. */
-    private readonly callerBindings: ReadonlySet<string>;
+    private localNames: Set<string>;
 
     /** Local helper closures a builder declares and calls; see below. */
-    private readonly helpers = new Map<string, ts.ArrowFunction>();
+    private readonly helpers = new Map<ts.Symbol | symbol, ts.ArrowFunction>();
 
     /** How many helper bodies are being written out right now. */
     private inlining = 0;
@@ -770,44 +805,48 @@ export class PinnedNumericLowerer {
     protected localName(name: string): string {
         // Caller aliases can name locals declared later (options.offset ->
         // defaultOffset); reserve declarations, not those substitutions.
-        const occupied = new Set([
-            "pi",
-            ...Array.from(this.scope.bindings)
-                .filter(
-                    ([source, binding]) =>
-                        !this.callerBindings.has(source) ||
-                        source === binding.cpp,
-                )
-                .map(([, binding]) => binding.cpp),
-        ]);
         const base = `${this.scope.localPrefix ?? ""}${cppIdentifier(name)}`;
         let cpp = base;
-        for (let suffix = 1; occupied.has(cpp); suffix++)
+        for (let suffix = 1; this.localNames.has(cpp); suffix++)
             cpp = `${base}_${suffix}`;
         return cpp;
     }
 
-    /**
-     * Bind a name from a caller's statement hook: the local that hook
-     * declared in place of the pin's statement, visible to what follows it
-     * in the same block exactly as the ordinary declaration would be.
-     */
-    public bindLocal(name: string, binding: PinnedBinding): void {
-        this.scope.bindings.set(name, binding);
+    /** The representation of a source expression, resolved by declaration. */
+    public binding(node: ts.Expression): PinnedBinding | undefined {
+        return this.sourceBindings.get(node);
+    }
+
+    /** Resolve a validated adapter port in its explicit source scope. */
+    public portBinding(name: string, at: ts.Node): PinnedBinding | undefined {
+        return this.sourceBindings.port(name, at);
+    }
+
+    public bindLocal(node: ts.Expression, binding: PinnedBinding): void {
+        this.sourceBindings.set(node, binding);
+        this.localNames.add(binding.cpp);
+    }
+
+    public bindPorts(
+        bindings: Iterable<readonly [string, PinnedBinding]>,
+        at: ts.Node,
+    ): void {
+        const entries = [...bindings];
+        this.sourceBindings.bindPorts(entries, at);
+        for (const [, binding] of entries) this.localNames.add(binding.cpp);
     }
 
     protected withBindings<T>(action: () => T): T {
-        const saved = new Map(this.scope.bindings);
+        const saved = new Set(this.localNames);
         try {
-            return action();
+            return this.sourceBindings.scoped(action);
         } finally {
-            this.scope.bindings.clear();
-            for (const [name, binding] of saved)
-                this.scope.bindings.set(name, binding);
+            this.localNames = saved;
         }
     }
 
     public statement(statement: ts.Statement, indent: string): string[] {
+        this.sourceBindings.enter(statement);
         this.translationActivity?.node(statement);
         const adapted = this.scope.statement?.(statement, this, indent);
         if (adapted !== undefined) {
@@ -818,66 +857,8 @@ export class PinnedNumericLowerer {
             );
             return [...adapted];
         }
-        if (ts.isTryStatement(statement)) {
-            if (statement.catchClause || !statement.finallyBlock)
-                return this.fail(
-                    statement,
-                    "try requires a catch-free finally block",
-                );
-            const rejectExit = (
-                node: ts.Node,
-                loops = 0,
-                switches = 0,
-            ): void => {
-                if (ts.isFunctionLike(node)) return;
-                if (
-                    ts.isReturnStatement(node) ||
-                    ts.isLabeledStatement(node) ||
-                    (ts.isBreakStatement(node) &&
-                        (node.label || loops + switches === 0)) ||
-                    (ts.isContinueStatement(node) &&
-                        (node.label || loops === 0))
-                )
-                    this.fail(
-                        node,
-                        "finally lowering does not admit early returns or loop exits",
-                    );
-                const loop =
-                    ts.isForStatement(node) ||
-                    ts.isForOfStatement(node) ||
-                    ts.isForInStatement(node) ||
-                    ts.isWhileStatement(node) ||
-                    ts.isDoStatement(node);
-                ts.forEachChild(node, (child) =>
-                    rejectExit(
-                        child,
-                        loops + Number(loop),
-                        switches + Number(ts.isSwitchStatement(node)),
-                    ),
-                );
-            };
-            rejectExit(statement);
-            const body = this.withBindings(() =>
-                this.statements(statement.tryBlock.statements, `${indent}    `),
-            );
-            const cleanup = this.withBindings(() =>
-                this.statements(
-                    statement.finallyBlock!.statements,
-                    `${indent}    `,
-                ),
-            );
-            return [
-                `${indent}try {`,
-                ...body,
-                `${indent}} catch (...) {`,
-                ...cleanup,
-                `${indent}    throw;`,
-                `${indent}}`,
-                `${indent}{`,
-                ...cleanup,
-                `${indent}}`,
-            ];
-        }
+        if (ts.isTryStatement(statement))
+            return this.tryStatement(statement, indent);
         if (ts.isContinueStatement(statement) && !statement.label) {
             return [`${indent}continue;`];
         }
@@ -889,7 +870,10 @@ export class PinnedNumericLowerer {
                 // the body is already growing, and every call names a
                 // literal argument, so inlining at each call site is what
                 // the pin's own two calls mean.
-                this.helpers.set(helper.name, helper.arrow);
+                this.helpers.set(
+                    this.sourceBindings.identity(helper.name),
+                    helper.arrow,
+                );
                 return [];
             }
             return this.declarations(statement.declarationList, indent);
@@ -918,7 +902,7 @@ export class PinnedNumericLowerer {
                         (argument) =>
                             `${indent}(void)(${this.expression(argument)});`,
                     ),
-                    `${indent}throw std::runtime_error(${JSON.stringify(`#${code.text}`)});`,
+                    `${indent}throw std::runtime_error(${stringLiteral(`#${code.text}`)});`,
                 ];
             }
             if (
@@ -1034,95 +1018,62 @@ export class PinnedNumericLowerer {
             ];
         }
         if (ts.isForStatement(statement)) {
-            const initializer = statement.initializer;
-            // A hoisted loop variable's `for` assigns rather than declares
-            // (`for (y = 0; ...)`); it is the same loop, and the index it
-            // binds lives for the same body either way.
-            const assigned =
-                initializer !== undefined &&
-                ts.isBinaryExpression(initializer) &&
-                initializer.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isIdentifier(initializer.left)
-                    ? {
-                          name: initializer.left.text,
-                          initial: initializer.right,
-                      }
-                    : undefined;
-            const declaring =
-                initializer !== undefined &&
-                ts.isVariableDeclarationList(initializer)
-                    ? initializer
-                    : undefined;
-            if ((!assigned && !declaring) || !statement.condition) {
-                this.fail(statement, "for statement");
-            }
-            // The loop variable indexes typed arrays, so it is an integer
-            // rather than the f64 every other local is.
-            const { condition, incrementor } = statement;
             return this.withBindings(() => {
-                const declared = assigned
-                    ? this.declaredLoopVariable(assigned.name, assigned.initial)
-                    : this.loopVariable(declaring!);
+                const declared = this.forInitializer(statement.initializer);
                 return [
-                    `${indent}for (${declared}; ` +
-                        `${this.condition(condition)}; ` +
-                        `${incrementor ? this.expressionStatement(incrementor) : ""}) {`,
+                    `${indent}for (${declared}; ${statement.condition ? this.condition(statement.condition) : ""}; ${statement.incrementor ? this.loopIncrementor(statement.incrementor) : ""}) {`,
                     ...this.branch(statement.statement, indent),
                     `${indent}}`,
                 ];
             });
         }
         if (ts.isForOfStatement(statement)) {
-            const initializer = statement.initializer;
+            const list = statement.initializer;
             if (
-                !ts.isVariableDeclarationList(initializer) ||
-                initializer.declarations.length !== 1 ||
-                !(
-                    ts.isIdentifier(initializer.declarations[0]!.name) ||
-                    (ts.isArrayBindingPattern(
-                        initializer.declarations[0]!.name,
-                    ) &&
-                        initializer.declarations[0]!.name.elements.every(
-                            (element) =>
-                                ts.isBindingElement(element) &&
-                                ts.isIdentifier(element.name) &&
-                                !element.dotDotDotToken &&
-                                !element.initializer,
-                        ))
-                )
-            ) {
-                this.fail(statement, "for-of initializer");
-            }
-            const element = initializer.declarations[0]!.name.getText(
-                this.file,
-            );
-            const iterated = statement.expression.getText(this.file);
-            const resolved =
-                this.scope.forOf?.(
-                    iterated,
-                    element,
-                    this.scope.bindings.get(iterated),
-                ) ??
-                (ts.isIdentifier(initializer.declarations[0]!.name)
-                    ? this.recordListForOf(iterated, element)
-                    : undefined);
-            if (!resolved) {
-                this.fail(statement, `for-of over '${iterated}'`);
-            }
-            // The element's bindings live only for the body, so a later
-            // loop over a different collection cannot see them.
+                statement.awaitModifier ||
+                !ts.isVariableDeclarationList(list) ||
+                list.declarations.length !== 1
+            )
+                return this.fail(
+                    statement,
+                    "for-of requires one ordinary binding",
+                );
             return this.withBindings(() => {
-                for (const [name, binding] of resolved.bindings)
-                    this.scope.bindings.set(name, binding);
+                const iteration = this.forOfIteration(
+                    statement,
+                    list.declarations[0]!.name,
+                );
+                const loopIndent = iteration.prefix?.length
+                    ? indent + "    "
+                    : indent;
                 return [
-                    `${indent}for (const auto& ${element} : ${resolved.range}) {`,
-                    ...this.branch(statement.statement, indent),
-                    `${indent}}`,
+                    ...(iteration.prefix?.length
+                        ? [
+                              `${indent}{`,
+                              ...iteration.prefix.map(
+                                  (line) => loopIndent + line,
+                              ),
+                          ]
+                        : []),
+                    `${loopIndent}for (${iteration.header}) {`,
+                    ...(iteration.bindings ?? []).map(
+                        (line) => loopIndent + "    " + line,
+                    ),
+                    ...this.branch(statement.statement, loopIndent),
+                    `${loopIndent}}`,
+                    ...(iteration.prefix?.length ? [`${indent}}`] : []),
                 ];
             });
         }
         if (ts.isThrowStatement(statement)) {
-            const thrown = statement.expression;
+            const thrown = unwrapExpression(statement.expression);
+            if (
+                this.caughtSymbol &&
+                ts.isIdentifier(thrown) &&
+                declaredSymbol(pinnedCheckerOf(this.file), thrown) ===
+                    this.caughtSymbol
+            )
+                return [`${indent}throw;`];
             if (
                 !ts.isNewExpression(thrown) ||
                 !ts.isIdentifier(thrown.expression) ||
@@ -1135,7 +1086,7 @@ export class PinnedNumericLowerer {
             // A literal message is the literal; a composed one (a template
             // naming what failed) is the string the pin builds.
             const message = ts.isStringLiteral(argument)
-                ? JSON.stringify(argument.text)
+                ? stringLiteral(argument.text)
                 : this.stringExpression(argument);
             return [`${indent}throw std::runtime_error(${message});`];
         }
@@ -1165,6 +1116,155 @@ export class PinnedNumericLowerer {
             ];
         }
         return this.fail(statement, "statement");
+    }
+
+    protected forInitializer(
+        initializer: ts.ForInitializer | undefined,
+    ): string {
+        if (!initializer) return "";
+        if (ts.isVariableDeclarationList(initializer))
+            return this.loopVariable(initializer);
+        if (
+            ts.isBinaryExpression(initializer) &&
+            initializer.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isIdentifier(initializer.left)
+        )
+            return this.declaredLoopVariable(
+                initializer.left,
+                initializer.right,
+            );
+        return this.fail(initializer, "for initializer");
+    }
+
+    protected loopIncrementor(expression: ts.Expression): string {
+        return this.expressionStatement(expression);
+    }
+
+    protected forOfIteration(
+        statement: ts.ForOfStatement,
+        binding: ts.BindingName,
+    ): PinnedIteration {
+        if (!(
+            ts.isIdentifier(binding) ||
+            (ts.isArrayBindingPattern(binding) &&
+                binding.elements.every(
+                    (element) =>
+                        ts.isBindingElement(element) &&
+                        ts.isIdentifier(element.name) &&
+                        !element.dotDotDotToken &&
+                        !element.initializer,
+                ))
+        ))
+            return this.fail(binding, "for-of initializer");
+        const element = binding.getText(this.file);
+        const iterated = statement.expression.getText(this.file);
+        const resolved =
+            this.scope.forOf?.(
+                iterated,
+                element,
+                this.binding(statement.expression),
+            ) ??
+            (ts.isIdentifier(binding)
+                ? this.recordListForOf(statement.expression, element)
+                : undefined);
+        if (!resolved) return this.fail(statement, `for-of over '${iterated}'`);
+        this.bindPorts(resolved.bindings, statement.statement);
+        return { header: `const auto& ${element} : ${resolved.range}` };
+    }
+
+    protected tryStatement(
+        statement: ts.TryStatement,
+        indent: string,
+    ): string[] {
+        if (!statement.finallyBlock && statement.catchClause) {
+            const clause = statement.catchClause;
+            const variable = clause.variableDeclaration;
+            const previous = this.caughtSymbol;
+            const checker = pinnedCheckerOf(this.file);
+            this.caughtSymbol =
+                variable && ts.isIdentifier(variable.name)
+                    ? declaredSymbol(checker, variable.name)
+                    : undefined;
+            try {
+                const invalid =
+                    this.caughtSymbol &&
+                    findAnalysisNode(
+                        clause.block,
+                        (node) =>
+                            ts.isIdentifier(node) &&
+                            declaredSymbol(checker, node) ===
+                                this.caughtSymbol &&
+                            !ts.isThrowStatement(node.parent),
+                    );
+                if (invalid)
+                    this.fail(
+                        invalid,
+                        "catch reads its error beyond rethrowing it",
+                    );
+                return [
+                    `${indent}try {`,
+                    ...this.branch(statement.tryBlock, indent),
+                    `${indent}} catch (...) {`,
+                    ...this.branch(clause.block, indent),
+                    `${indent}}`,
+                ];
+            } finally {
+                this.caughtSymbol = previous;
+            }
+        }
+        if (statement.catchClause || !statement.finallyBlock)
+            return this.fail(
+                statement,
+                "try requires a catch-free finally block",
+            );
+        const rejectExit = (node: ts.Node, loops = 0, switches = 0): void => {
+            if (ts.isFunctionLike(node)) return;
+            if (
+                ts.isReturnStatement(node) ||
+                ts.isLabeledStatement(node) ||
+                (ts.isBreakStatement(node) &&
+                    (node.label || loops + switches === 0)) ||
+                (ts.isContinueStatement(node) && (node.label || loops === 0))
+            )
+                this.fail(
+                    node,
+                    "finally lowering does not admit early returns or loop exits",
+                );
+            const loop =
+                ts.isForStatement(node) ||
+                ts.isForOfStatement(node) ||
+                ts.isForInStatement(node) ||
+                ts.isWhileStatement(node) ||
+                ts.isDoStatement(node);
+            ts.forEachChild(node, (child) =>
+                rejectExit(
+                    child,
+                    loops + Number(loop),
+                    switches + Number(ts.isSwitchStatement(node)),
+                ),
+            );
+        };
+        rejectExit(statement);
+        const body = this.withBindings(() =>
+            this.statements(statement.tryBlock.statements, `${indent}    `),
+        );
+        const cleanup = this.withBindings(() =>
+            this.statements(
+                statement.finallyBlock!.statements,
+                `${indent}    `,
+            ),
+        );
+        return [
+            `${indent}try {`,
+            ...body,
+            `${indent}} catch (...) {`,
+            ...cleanup,
+            `${indent}    throw;`,
+            `${indent}}`,
+            `${indent}{`,
+            ...cleanup,
+            `${indent}}`,
+        ];
     }
 
     private branch(statement: ts.Statement, indent: string): string[] {
@@ -1235,7 +1335,7 @@ export class PinnedNumericLowerer {
                 )
                     this.fail(declaration, "for initializer");
                 return this.declaredLoopVariable(
-                    declaration.name.text,
+                    declaration.name,
                     declaration.initializer,
                     index === 0,
                 );
@@ -1245,13 +1345,13 @@ export class PinnedNumericLowerer {
 
     /** `for (<name> = <initial>; ...)`, whichever spelling declared it. */
     private declaredLoopVariable(
-        name: string,
+        name: ts.Identifier,
         initial: ts.Expression,
         declareType = true,
     ): string {
-        const cpp = this.localName(name);
+        const cpp = this.localName(name.text);
         const value = this.expression(initial);
-        this.scope.bindings.set(name, { cpp, type: "index" });
+        this.bindLocal(name, { cpp, type: "index" });
         return (
             `${declareType ? "std::int64_t " : ""}${cpp} = ` +
             `static_cast<std::int64_t>(${value})`
@@ -1421,12 +1521,13 @@ export class PinnedNumericLowerer {
                         ) {
                             this.fail(element, "record binding element");
                         }
-                        for (const [path, binding] of member.read(temporary)) {
-                            this.scope.bindings.set(
-                                `${member.name}${path}`,
-                                binding,
-                            );
-                        }
+                        this.bindPorts(
+                            [...member.read(temporary)].map(
+                                ([path, binding]) =>
+                                    [`${member.name}${path}`, binding] as const,
+                            ),
+                            element,
+                        );
                     }
                     continue;
                 }
@@ -1443,7 +1544,7 @@ export class PinnedNumericLowerer {
                         this.fail(element, "binding element");
                     }
                     const name = element.name.text;
-                    this.scope.bindings.set(name, {
+                    this.bindLocal(element.name, {
                         cpp: `${temporary}.${name}`,
                         type: "scalar",
                     });
@@ -1493,7 +1594,7 @@ export class PinnedNumericLowerer {
                     ) {
                         this.fail(declaration, "tuple binding element");
                     }
-                    this.scope.bindings.set(element.name.text, {
+                    this.bindLocal(element.name, {
                         cpp: `${temporary}[${index}]`,
                         type: "scalar",
                     });
@@ -1511,7 +1612,7 @@ export class PinnedNumericLowerer {
                 this.scope.recordCalls
             ) {
                 const bound = this.recordCallBinding(
-                    declaration.name.text,
+                    declaration.name,
                     declaration.initializer,
                     indent,
                     lines.length,
@@ -1537,7 +1638,7 @@ export class PinnedNumericLowerer {
             // same name twice in two scopes -- `computeNormals` has two
             // `let len` -- and the second is a declaration, not a
             // resolution.
-            if (this.callerBindings.has(name)) {
+            if (this.sourceBindings.isPort(declaration.name)) {
                 continue;
             }
             const cpp = this.localName(name);
@@ -1557,7 +1658,7 @@ export class PinnedNumericLowerer {
                     annotation !== undefined
                         ? recordTypeOfAnnotation(annotation)
                         : undefined;
-                this.scope.bindings.set(name, {
+                this.bindLocal(declaration.name, {
                     cpp,
                     type: record ?? "scalar",
                 });
@@ -1570,7 +1671,7 @@ export class PinnedNumericLowerer {
             }
             const specialized = this.specializedDeclaration(
                 declaration,
-                name,
+                declaration.name,
                 cpp,
                 isConst,
                 indent,
@@ -1597,18 +1698,18 @@ export class PinnedNumericLowerer {
             // A `??` over an allocation (`out ?? new F32(16)`) means the
             // opposite -- allocate when absent -- so it is left alone.
             const aliasSource = unwrapExpression(source);
-            const aliasKey =
+            const aliasNode =
                 ts.isBinaryExpression(aliasSource) &&
                 aliasSource.operatorToken.kind ===
                     ts.SyntaxKind.QuestionQuestionToken &&
                 ts.isArrayLiteralExpression(unwrapExpression(aliasSource.right))
-                    ? unwrapExpression(aliasSource.left).getText(this.file)
+                    ? unwrapExpression(aliasSource.left)
                     : // The UNWRAPPED text: `const mi = info.pickedMesh as
                       // Mesh | undefined` names the same binding the read
                       // beside it does, and keeping the assertion in the key
                       // would miss it and copy a nullable into a double.
-                      aliasSource.getText(this.file);
-            const alias = this.scope.bindings.get(aliasKey);
+                      aliasSource;
+            const alias = this.binding(aliasNode);
             // A binding the caller declared NULLABLE aliases for the same
             // reason a buffer does: `const ray = info.ray` names the same
             // optional, and copying it into a double would lose both its
@@ -1652,7 +1753,7 @@ export class PinnedNumericLowerer {
                         `${indent}auto*${isConst ? " const" : ""} ${cpp} = ` +
                             `${alias.pointer ?? `&(${alias.cpp})`};`,
                     );
-                    this.scope.bindings.set(name, {
+                    this.bindLocal(declaration.name, {
                         ...target,
                         cpp: `(*${cpp})`,
                         pointer: cpp,
@@ -1666,7 +1767,7 @@ export class PinnedNumericLowerer {
                     const { materializeAlias: _materializeAlias, ...value } =
                         alias;
                     lines.push(`${indent}auto&& ${cpp} = ${alias.cpp};`);
-                    this.scope.bindings.set(name, { ...value, cpp });
+                    this.bindLocal(declaration.name, { ...value, cpp });
                 } else {
                     // A second name for an owned local is not the owner: a
                     // store through it must not move the storage away. Any
@@ -1674,9 +1775,9 @@ export class PinnedNumericLowerer {
                     // hook may key on.
                     if (alias.owned) {
                         const { owned: _owned, ...shared } = alias;
-                        this.scope.bindings.set(name, shared);
+                        this.bindLocal(declaration.name, shared);
                     } else {
-                        this.scope.bindings.set(name, alias);
+                        this.bindLocal(declaration.name, alias);
                     }
                 }
                 // An opaque record's members are bound by their dotted
@@ -1684,16 +1785,10 @@ export class PinnedNumericLowerer {
                 // original had: `const buffer = system.buffer` makes
                 // `buffer.age` the binding `system.buffer.age` was.
                 if (alias.type === "opaque") {
-                    const prefix = `${aliasKey}.`;
-                    const members: Array<[string, PinnedBinding]> = [];
-                    for (const [key, member] of this.scope.bindings) {
-                        if (key.startsWith(prefix)) {
-                            members.push([key.slice(prefix.length), member]);
-                        }
-                    }
-                    for (const [member, binding] of members) {
-                        this.scope.bindings.set(`${name}.${member}`, binding);
-                    }
+                    this.sourceBindings.copyMembers(
+                        aliasNode,
+                        declaration.name,
+                    );
                 }
                 continue;
             }
@@ -1709,7 +1804,7 @@ export class PinnedNumericLowerer {
                 emptyList.elements.length === 0
             ) {
                 const shape = this.declaredListType(declaration);
-                this.scope.bindings.set(name, { cpp, type: shape });
+                this.bindLocal(declaration.name, { cpp, type: shape });
                 lines.push(`${indent}${listStorage(shape)!} ${cpp};`);
                 continue;
             }
@@ -1717,11 +1812,9 @@ export class PinnedNumericLowerer {
             // list the caller owns. A `const` would alias, but the pin
             // reseats this one, so it copies the way JavaScript's own
             // assignment of the reference then reassignment does.
-            const listSource = this.scope.bindings.get(
-                unwrapExpression(source).getText(this.file),
-            );
+            const listSource = this.binding(unwrapExpression(source));
             if (listSource && isListShape(listSource.type)) {
-                this.scope.bindings.set(name, {
+                this.bindLocal(declaration.name, {
                     cpp,
                     type: listSource.type,
                 });
@@ -1742,11 +1835,11 @@ export class PinnedNumericLowerer {
                     // One record of a record list, bound by reference with
                     // its members read through the list's struct.
                     lines.push(`${indent}const auto& ${cpp} = ${element.cpp};`);
-                    this.bindRecord(name, cpp, element.record);
+                    this.bindRecord(declaration.name, cpp, element.record);
                     continue;
                 }
                 if (element) {
-                    this.scope.bindings.set(name, element);
+                    this.bindLocal(declaration.name, element);
                     continue;
                 }
             }
@@ -1766,7 +1859,7 @@ export class PinnedNumericLowerer {
                 );
                 const shape = chosen[0];
                 if (shape && chosen[1] === shape && isListShape(shape)) {
-                    this.scope.bindings.set(name, {
+                    this.bindLocal(declaration.name, {
                         cpp,
                         type: shape,
                     });
@@ -1789,13 +1882,13 @@ export class PinnedNumericLowerer {
                 set.typeArguments?.length === 1 &&
                 set.typeArguments[0]!.kind === ts.SyntaxKind.StringKeyword
             ) {
-                this.scope.bindings.set(name, { cpp, type: "string-set" });
+                this.bindLocal(declaration.name, { cpp, type: "string-set" });
                 lines.push(`${indent}bbl::js::Set<std::string> ${cpp};`);
                 continue;
             }
             const allocation = this.allocation(source);
             if (allocation) {
-                this.scope.bindings.set(name, {
+                this.bindLocal(declaration.name, {
                     cpp,
                     type: allocation.type,
                     ...(allocation.bytesCpp
@@ -1826,7 +1919,7 @@ export class PinnedNumericLowerer {
                     `${indent}${isConst ? "const " : ""}${recordType.cpp} ${cpp} = ` +
                         `${this.recordValueOf(initializer, recordType)};`,
                 );
-                this.bindRecord(name, cpp, recordType);
+                this.bindRecord(declaration.name, cpp, recordType);
                 continue;
             }
             if (
@@ -1834,7 +1927,7 @@ export class PinnedNumericLowerer {
                 ts.isObjectLiteralExpression(initializer)
             ) {
                 const value = this.expression(initializer);
-                this.scope.bindings.set(name, { cpp, type: "vec3" });
+                this.bindLocal(declaration.name, { cpp, type: "vec3" });
                 // A JavaScript `const` binds the object, not its members,
                 // so one the body writes a member of is not const here.
                 const writable = this.membersWritten(declaration, name);
@@ -1849,7 +1942,7 @@ export class PinnedNumericLowerer {
                     initializer.expression.getText(this.file),
                 )
             ) {
-                this.scope.bindings.set(name, {
+                this.bindLocal(declaration.name, {
                     cpp: `(*${cpp})`,
                     type: "f32",
                     absentCpp: `!${cpp}.has_value()`,
@@ -1869,7 +1962,7 @@ export class PinnedNumericLowerer {
                     initializer.expression.getText(this.file),
                 )
             ) {
-                this.scope.bindings.set(name, { cpp, type: "f32" });
+                this.bindLocal(declaration.name, { cpp, type: "f32" });
                 lines.push(
                     `${indent}${isConst ? "const " : ""}` +
                         `std::array<float, 16> ${cpp} = ` +
@@ -1886,7 +1979,7 @@ export class PinnedNumericLowerer {
                       )
                     : undefined;
             if (fixedTupleArity !== undefined) {
-                this.scope.bindings.set(name, {
+                this.bindLocal(declaration.name, {
                     cpp,
                     type: "f64-buffer",
                 });
@@ -1903,7 +1996,7 @@ export class PinnedNumericLowerer {
                 ts.isIdentifier(initializer.expression) &&
                 this.scope.listCalls.has(initializer.expression.text)
             ) {
-                this.scope.bindings.set(name, {
+                this.bindLocal(declaration.name, {
                     cpp,
                     type: "f64-list",
                 });
@@ -1934,7 +2027,7 @@ export class PinnedNumericLowerer {
                     }
                     return this.expression(element);
                 });
-                this.scope.bindings.set(name, { cpp, type: "f64-list" });
+                this.bindLocal(declaration.name, { cpp, type: "f64-list" });
                 lines.push(
                     `${indent}${listStorage("f64-list")!} ${cpp}{${elements.join(", ")}};`,
                 );
@@ -1943,17 +2036,19 @@ export class PinnedNumericLowerer {
             // A local the pin initializes with a truth (a literal, a
             // comparison, a join of truths) is a boolean, and stays one:
             // `||=` onto it is a logical store, not a value selection.
-            const isBoolean = this.booleanValue(initializer);
             // A number copied from a counted loop's `std::int64_t` index
             // converts explicitly, as a store of one does.
             const value =
                 ts.isIdentifier(initializer) &&
-                this.scope.bindings.get(initializer.text)?.type === "index"
+                this.binding(initializer)?.type === "index"
                     ? `static_cast<double>(${this.expression(source)})`
                     : this.expression(source);
-            this.scope.bindings.set(name, {
+            const kind = this.valueKind(initializer);
+            const isBoolean = kind === "boolean";
+            const isString = kind === "string";
+            this.bindLocal(declaration.name, {
                 cpp,
-                type: isBoolean ? "bool" : "scalar",
+                type: isBoolean ? "bool" : isString ? "string" : "scalar",
             });
             lines.push(
                 `${indent}${
@@ -1962,7 +2057,8 @@ export class PinnedNumericLowerer {
                         : isConst
                           ? "const "
                           : ""
-                }` + `${isBoolean ? "bool" : "double"} ${cpp} = ${value};`,
+                }` +
+                    `${isBoolean ? "bool" : isString ? "std::string" : "double"} ${cpp} = ${value};`,
             );
         }
         return lines;
@@ -2042,9 +2138,7 @@ export class PinnedNumericLowerer {
         // `new U8(buffer)` / `new F32(buffer)` re-view an existing byte
         // buffer; the same constructors over a COUNT allocate.
         const named = unwrapExpression(argument);
-        const source = ts.isIdentifier(named)
-            ? this.scope.bindings.get(named.text)
-            : undefined;
+        const source = ts.isIdentifier(named) ? this.binding(named) : undefined;
         if (source?.type === "u8-view") {
             if (constructor !== "U8" && constructor !== "F32") {
                 return undefined;
@@ -2259,11 +2353,9 @@ export class PinnedNumericLowerer {
             return undefined;
         }
         const right = unwrapExpression(expression.right);
-        const value = this.scope.bindings.get(right.getText(this.file));
+        const value = this.binding(right);
         if (!value || !isOwnedBufferType(value.type)) return undefined;
-        const target = this.scope.bindings.get(
-            unwrapExpression(expression.left).getText(this.file),
-        );
+        const target = this.binding(unwrapExpression(expression.left));
         if (target?.pointer !== undefined) {
             if (!target.reseatable || target.type !== value.type) {
                 this.fail(expression, "buffer alias reseat");
@@ -2355,9 +2447,7 @@ export class PinnedNumericLowerer {
         ) {
             return undefined;
         }
-        const list = this.scope.bindings.get(
-            unwrapExpression(target.expression).getText(this.file),
-        );
+        const list = this.binding(unwrapExpression(target.expression));
         if (!list || (list.type !== "record-list" && !isListShape(list.type))) {
             return undefined;
         }
@@ -2396,7 +2486,7 @@ export class PinnedNumericLowerer {
         const cpp = this.assignmentTarget(target);
         if (logical) {
             if (
-                this.scope.bindings.get(target.text)?.type !== "bool" ||
+                this.binding(target)?.type !== "bool" ||
                 !this.booleanValue(expression.right)
             ) {
                 this.fail(expression, `'${logical}=' over a non-boolean`);
@@ -2405,7 +2495,7 @@ export class PinnedNumericLowerer {
         }
         // The operator's `ToInt32` result is a number again; only a scalar
         // local holds it -- an integer index would narrow it.
-        if (this.scope.bindings.get(target.text)?.type !== "scalar") {
+        if (this.binding(target)?.type !== "scalar") {
             this.fail(
                 expression,
                 "compound bitwise assignment to a non-scalar",
@@ -2416,12 +2506,12 @@ export class PinnedNumericLowerer {
 
     /** A `for (const x of list)` over a record list, element by element. */
     private recordListForOf(
-        iterated: string,
+        iterated: ts.Expression,
         element: string,
     ):
         | { range: string; bindings: ReadonlyMap<string, PinnedBinding> }
         | undefined {
-        const list = this.scope.bindings.get(iterated);
+        const list = this.binding(iterated);
         if (list?.type !== "record-list" || !list.record) return undefined;
         return {
             range: list.cpp,
@@ -2436,7 +2526,7 @@ export class PinnedNumericLowerer {
         const node = unwrapExpression(expression);
         const binding = ts.isElementAccessExpression(node)
             ? this.elementBinding(node)
-            : this.scope.bindings.get(node.getText(this.file));
+            : this.binding(node);
         return binding?.type === "opaque" && binding.record
             ? { cpp: binding.cpp, shape: binding.record }
             : undefined;
@@ -2445,21 +2535,16 @@ export class PinnedNumericLowerer {
     /** What `===` compares for an operand: its identity, or its value. */
     private identityOf(expression: ts.Expression): string {
         const node = unwrapExpression(expression);
-        return (
-            this.scope.bindings.get(node.getText(this.file))?.identity ??
-            this.expression(node)
-        );
+        return this.binding(node)?.identity ?? this.expression(node);
     }
 
     /** Bind `name` as one record of `shape`, with every member path. */
     private bindRecord(
-        name: string,
+        name: ts.Identifier,
         cpp: string,
         shape: PinnedRecordShape,
     ): void {
-        for (const [path, binding] of recordBindings(name, cpp, shape)) {
-            this.scope.bindings.set(path, binding);
-        }
+        this.bindPorts(recordBindings(name.text, cpp, shape), name);
     }
 
     /**
@@ -2474,9 +2559,7 @@ export class PinnedNumericLowerer {
     private recordListCall(node: ts.CallExpression): string | undefined {
         const callee = unwrapExpression(node.expression);
         if (!ts.isPropertyAccessExpression(callee)) return undefined;
-        const list = this.scope.bindings.get(
-            unwrapExpression(callee.expression).getText(this.file),
-        );
+        const list = this.binding(unwrapExpression(callee.expression));
         if (list?.type !== "record-list" || !list.record) return undefined;
         const shape = list.record;
         if (callee.name.text === "push") {
@@ -2497,7 +2580,7 @@ export class PinnedNumericLowerer {
                 comparator && ts.isArrowFunction(comparator)
                     ? comparator.parameters.map((parameter) =>
                           ts.isIdentifier(parameter.name)
-                              ? parameter.name.text
+                              ? parameter.name
                               : undefined,
                       )
                     : [];
@@ -2519,14 +2602,14 @@ export class PinnedNumericLowerer {
             }
             const body = comparator.body;
             const compare = this.withBindings(() => {
-                this.bindRecord(a, cppIdentifier(a), shape);
-                this.bindRecord(b, cppIdentifier(b), shape);
+                this.bindRecord(a, cppIdentifier(a.text), shape);
+                this.bindRecord(b, cppIdentifier(b.text), shape);
                 return this.expression(body);
             });
             return (
                 `std::stable_sort(${list.cpp}.begin(), ${list.cpp}.end(), ` +
-                `[&](const ${shape.cpp}& ${cppIdentifier(a)}, ` +
-                `const ${shape.cpp}& ${cppIdentifier(b)}) { ` +
+                `[&](const ${shape.cpp}& ${cppIdentifier(a.text)}, ` +
+                `const ${shape.cpp}& ${cppIdentifier(b.text)}) { ` +
                 `return (${compare}) < 0.0; })`
             );
         }
@@ -2598,7 +2681,7 @@ export class PinnedNumericLowerer {
      */
     private specializedDeclaration(
         declaration: ts.VariableDeclaration,
-        name: string,
+        name: ts.Identifier,
         cpp: string,
         isConst: boolean,
         indent: string,
@@ -2620,7 +2703,7 @@ export class PinnedNumericLowerer {
             ? this.staticCondition(initializer)
             : undefined;
         if (known !== undefined) {
-            this.scope.bindings.set(name, {
+            this.bindLocal(name, {
                 cpp: known ? "true" : "false",
                 type: "bool",
                 staticBoolean: known,
@@ -2635,12 +2718,12 @@ export class PinnedNumericLowerer {
             );
         }
         if (initializer.kind === ts.SyntaxKind.NullKeyword) {
-            this.scope.bindings.set(name, absentBinding("null"));
+            this.bindLocal(name, absentBinding("null"));
             return [];
         }
-        const source = this.scope.bindings.get(initializer.getText(this.file));
+        const source = this.binding(initializer);
         if (source && (isRecordType(source.type) || source.staticallyAbsent)) {
-            this.scope.bindings.set(name, source);
+            this.bindLocal(name, source);
             return [];
         }
         if (ts.isCallExpression(initializer)) {
@@ -2652,13 +2735,13 @@ export class PinnedNumericLowerer {
             if (shape === "f32" || shape === "f64-buffer") {
                 if (!isConst)
                     this.fail(declaration, "mutable buffer call binding");
-                this.scope.bindings.set(name, { cpp, type: shape });
+                this.bindLocal(name, { cpp, type: shape });
                 return [
                     `${indent}auto&& ${cpp} = ${this.expression(initializer)};`,
                 ];
             }
             if (shape && isRecordType(shape)) {
-                this.scope.bindings.set(name, { cpp, type: shape });
+                this.bindLocal(name, { cpp, type: shape });
                 return [
                     `${indent}${isConst ? "const " : ""}` +
                         `${RECORD_SHAPES.get(shape)!.storage} ${cpp} = ` +
@@ -2679,7 +2762,7 @@ export class PinnedNumericLowerer {
         const unwrapped = unwrapExpression(target);
         const literal = unwrapExpression(value);
         const binding = ts.isIdentifier(unwrapped)
-            ? this.scope.bindings.get(unwrapped.text)
+            ? this.binding(unwrapped)
             : undefined;
         // Rebinding a FIXED tuple to a literal of its own shape --
         // `localNormal = [-localNormal[0], ...]` after the facing test
@@ -2700,7 +2783,7 @@ export class PinnedNumericLowerer {
         // names carries, as JavaScript's reference assignment does.
         if (binding?.identity !== undefined) {
             const source = ts.isIdentifier(literal)
-                ? this.scope.bindings.get(literal.text)
+                ? this.binding(literal)
                 : undefined;
             if (source?.identity === undefined) {
                 this.fail(value, "store of a value without an identity");
@@ -2719,7 +2802,7 @@ export class PinnedNumericLowerer {
         if (
             binding?.type === "scalar" &&
             ts.isIdentifier(literal) &&
-            this.scope.bindings.get(literal.text)?.type === "index"
+            this.binding(literal)?.type === "index"
         ) {
             return `static_cast<double>(${text})`;
         }
@@ -2748,7 +2831,7 @@ export class PinnedNumericLowerer {
         }
         const argument = unwrapExpression(node.arguments[0]!);
         if (!ts.isIdentifier(argument)) return undefined;
-        const source = this.scope.bindings.get(argument.text);
+        const source = this.binding(argument);
         if (source?.type !== "f64-list") return undefined;
         // `bbl::js::f32_array_from` / `u32_array_from` are the pin's own
         // conversions rather than a C++ cast: the u32 one applies
@@ -2763,7 +2846,7 @@ export class PinnedNumericLowerer {
     /** `const f = (a, b) => { ... }` — a void helper the body calls. */
     private localHelper(
         list: ts.VariableDeclarationList,
-    ): { name: string; arrow: ts.ArrowFunction } | undefined {
+    ): { name: ts.Identifier; arrow: ts.ArrowFunction } | undefined {
         if (list.declarations.length !== 1) return undefined;
         const declaration = list.declarations[0]!;
         if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
@@ -2771,7 +2854,7 @@ export class PinnedNumericLowerer {
         }
         const initializer = unwrapExpression(declaration.initializer);
         return ts.isArrowFunction(initializer) && ts.isBlock(initializer.body)
-            ? { name: declaration.name.text, arrow: initializer }
+            ? { name: declaration.name, arrow: initializer }
             : undefined;
     }
 
@@ -2796,13 +2879,13 @@ export class PinnedNumericLowerer {
         if (!ts.isCallExpression(node)) return undefined;
         const callee = unwrapExpression(node.expression);
         if (!ts.isIdentifier(callee)) return undefined;
-        const arrow = this.helpers.get(callee.text);
+        const arrow = this.helpers.get(this.sourceBindings.identity(callee));
         if (!arrow || !ts.isBlock(arrow.body)) return undefined;
         if (arrow.parameters.length !== node.arguments.length) {
             this.fail(node, `helper '${callee.text}' arity`);
         }
         const parameters = arrow.parameters.map(
-            (parameter, index): [string, PinnedBinding] => {
+            (parameter, index): [ts.Identifier, PinnedBinding] => {
                 if (!ts.isIdentifier(parameter.name)) {
                     this.fail(parameter, "helper parameter");
                 }
@@ -2812,7 +2895,7 @@ export class PinnedNumericLowerer {
                     unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
                     unwrapped.kind === ts.SyntaxKind.FalseKeyword;
                 return [
-                    parameter.name.text,
+                    parameter.name,
                     {
                         cpp: this.expression(argument),
                         type: isBoolean ? "bool" : "scalar",
@@ -2834,7 +2917,7 @@ export class PinnedNumericLowerer {
         const body = arrow.body;
         const lines = this.withBindings(() => {
             for (const [name, binding] of parameters)
-                this.scope.bindings.set(name, binding);
+                this.bindLocal(name, binding);
             this.inlining += 1;
             try {
                 return body.statements.flatMap((nested) =>
@@ -2877,16 +2960,16 @@ export class PinnedNumericLowerer {
             ts.isStringLiteral(node) ||
             ts.isNoSubstitutionTemplateLiteral(node)
         ) {
-            return `std::string(${JSON.stringify(node.text)})`;
+            return `std::string(${stringLiteral(node.text)})`;
         }
-        const bound = this.scope.bindings.get(node.getText(this.file));
+        const bound = this.binding(node);
         if (bound?.type === "string") return bound.cpp;
         if (ts.isTemplateExpression(node)) {
-            const parts = [`std::string(${JSON.stringify(node.head.text)})`];
+            const parts = [`std::string(${stringLiteral(node.head.text)})`];
             for (const span of node.templateSpans) {
                 parts.push(this.stringExpression(span.expression));
                 if (span.literal.text)
-                    parts.push(JSON.stringify(span.literal.text));
+                    parts.push(stringLiteral(span.literal.text));
             }
             return `(${parts.join(" + ")})`;
         }
@@ -2927,9 +3010,7 @@ export class PinnedNumericLowerer {
                 callee.name.text === "from" &&
                 node.arguments.length === 1
             ) {
-                const set = this.scope.bindings.get(
-                    unwrapExpression(node.arguments[0]!).getText(this.file),
-                );
+                const set = this.binding(unwrapExpression(node.arguments[0]!));
                 if (set?.type === "string-set") {
                     return `bbl::js::array_from_iterable<std::string>(${set.cpp})`;
                 }
@@ -2945,12 +3026,71 @@ export class PinnedNumericLowerer {
         return this.fail(node, "string array");
     }
 
-    private condition(expression: ts.Expression): string {
+    protected condition(expression: ts.Expression): string {
+        if (this.scope.condition) return this.scope.condition(expression, this);
         const known = this.staticCondition(expression);
         if (known !== undefined) return known ? "true" : "false";
         const absent = this.absenceTest(expression);
         if (absent !== undefined) return `!(${absent})`;
-        return cppCondition(this.expression(expression));
+        const node = unwrapExpression(expression);
+        if (
+            ts.isBinaryExpression(node) &&
+            (node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken)
+        )
+            return `(${this.conditionOperand(node.left)} ${node.operatorToken.kind === ts.SyntaxKind.BarBarToken ? "||" : "&&"} ${this.conditionOperand(node.right)})`;
+        const value = this.expression(expression);
+        const adaptedAbsence = this.absenceTest(expression);
+        if (adaptedAbsence !== undefined) return `!(${adaptedAbsence})`;
+        const kind = this.valueKind(expression);
+        return kind === "boolean"
+            ? cppCondition(value)
+            : this.truthyValue(kind, value);
+    }
+
+    private truthyValue(
+        kind: ReturnType<PinnedNumericLowerer["valueKind"]>,
+        cpp: string,
+    ): string {
+        if (kind === "boolean") return cpp;
+        if (kind === "string") return `!std::string_view(${cpp}).empty()`;
+        if (kind === "object") return "true";
+        if (kind === "nullable" || kind === "native")
+            return `static_cast<bool>(${cpp})`;
+        return `bbl::js::number_truthy(static_cast<double>(${cpp}))`;
+    }
+
+    private conditionOperand(node: ts.Expression): string {
+        // Conditions and adapters can contain operators; a logical operand
+        // supplies the grouping that a statement's condition would own.
+        return `(${cppCondition(this.condition(node))})`;
+    }
+
+    /** Value selection evaluates the left once and the selected right lazily. */
+    private logicalValue(node: ts.BinaryExpression): string {
+        const or = node.operatorToken.kind === ts.SyntaxKind.BarBarToken;
+        const kind = this.valueKind(node.left);
+        const rightKind = this.valueKind(node.right);
+        if (
+            kind !== rightKind ||
+            (kind !== "boolean" && kind !== "number" && kind !== "string")
+        )
+            return this.fail(
+                node,
+                "logical value selection between incompatible representations",
+            );
+        if (kind === "boolean")
+            return `(${this.conditionOperand(node.left)} ${or ? "||" : "&&"} ${this.conditionOperand(node.right)})`;
+        const left = this.expression(node.left);
+        const right = this.expression(node.right);
+        const temporary = this.temporaryName(node, 0);
+        const select = (cpp: string) =>
+            kind === "number"
+                ? `static_cast<double>(${cpp})`
+                : `std::string(${cpp})`;
+        const test = this.truthyValue(kind, temporary);
+        return `([&]() { auto&& ${temporary} = ${left}; return ${test} ? ${select(or ? temporary : right)} : ${select(or ? right : temporary)}; }())`;
     }
 
     /**
@@ -3030,7 +3170,7 @@ export class PinnedNumericLowerer {
     ): { cpp: string; type: PinnedBinding["type"] } | undefined {
         const node = unwrapExpression(expression);
         if (ts.isIdentifier(node)) {
-            const binding = this.scope.bindings.get(node.text);
+            const binding = this.binding(node);
             return binding && isRecordType(binding.type)
                 ? { cpp: binding.cpp, type: binding.type }
                 : undefined;
@@ -3041,10 +3181,10 @@ export class PinnedNumericLowerer {
                 ? { cpp: this.elementAccess(node), type: "vec3" }
                 : undefined;
         }
-        // A member the caller bound as a record by its dotted text
+        // A member the caller bound as a record by its declaration path
         // (`region.origin`), read the way a record local is.
         const member = ts.isPropertyAccessExpression(node)
-            ? this.scope.bindings.get(node.getText(this.file))
+            ? this.binding(node)
             : undefined;
         return member && isRecordType(member.type)
             ? { cpp: member.cpp, type: member.type }
@@ -3145,7 +3285,7 @@ export class PinnedNumericLowerer {
         expression: ts.ElementAccessExpression,
     ): PinnedBinding | undefined {
         const owner = unwrapExpression(expression.expression);
-        const named = this.scope.bindings.get(owner.getText(this.file));
+        const named = this.binding(owner);
         if (named) return named;
         // `us[p]![i]` -- the owner is itself a row, which is a list.
         return ts.isElementAccessExpression(owner)
@@ -3166,7 +3306,7 @@ export class PinnedNumericLowerer {
         const adapted = this.assignmentDomain(unwrapped);
         if (adapted !== undefined) return adapted;
         if (ts.isIdentifier(unwrapped)) {
-            const binding = this.scope.bindings.get(unwrapped.text);
+            const binding = this.binding(unwrapped);
             if (!binding) this.fail(unwrapped, "assignment target");
             return binding.cpp;
         }
@@ -3176,7 +3316,7 @@ export class PinnedNumericLowerer {
             // too -- a pinned function that mutates the record it was
             // handed writes the same field the reads name, and binding one
             // direction without the other would lower half its body.
-            const named = this.scope.bindings.get(unwrapped.getText(this.file));
+            const named = this.binding(unwrapped);
             if (named) return named.cpp;
             // `scratch.x = ...` on one of the pin's positional records: the
             // same member the read path resolves, written.
@@ -3209,7 +3349,7 @@ export class PinnedNumericLowerer {
             // A fixed heterogeneous cell can map to a native record field.
             // Only an explicitly mutable binding names a store destination;
             // ordinary exact read bindings may be constants or expressions.
-            const exact = this.scope.bindings.get(unwrapped.getText(this.file));
+            const exact = this.binding(unwrapped);
             if (exact?.mutable) return exact.cpp;
             // Assigning past a list's end EXTENDS it in JavaScript, and the
             // pinned ribbon fills `us[p]` without sizing `us` first. A
@@ -3283,6 +3423,7 @@ export class PinnedNumericLowerer {
     }
 
     public renderExpression(expression: ts.Expression): RenderedCpp {
+        this.sourceBindings.enter(expression);
         this.translationActivity?.node(expression);
         if (
             this.scope.expressionSpelling?.parentheses === "source" &&
@@ -3319,14 +3460,15 @@ export class PinnedNumericLowerer {
     protected expressionDomain(
         node: ts.Expression,
     ): string | RenderedCpp | undefined {
+        if (ts.isStringLiteralLike(node))
+            return `std::string(${stringLiteral(node.text)})`;
         if (ts.isIdentifier(node)) {
             if (node.text === "Infinity") {
                 return "std::numeric_limits<double>::infinity()";
             }
-            const binding =
-                this.scope.bindings.get(node.text) ?? this.moduleConstant(node);
+            const binding = this.binding(node) ?? this.moduleConstant(node);
             if (!binding) this.fail(node, "identifier");
-            if (binding.nullish !== undefined) {
+            if (binding.nullish !== undefined && !this.provenPresent(node)) {
                 this.fail(node, "read of a nullable value outside '??'");
             }
             // A view is a pointer; naming it bare would be an address.
@@ -3362,6 +3504,7 @@ export class PinnedNumericLowerer {
                 if (known !== undefined) return known ? "true" : "false";
                 const absent = this.absenceTest(node.operand);
                 if (absent) return `(${absent})`;
+                return `!(${this.condition(node.operand)})`;
             }
         }
         // `[ar1, ar2]` -- a list of lists written out. The pin builds one
@@ -3369,9 +3512,7 @@ export class PinnedNumericLowerer {
         // already a list this body declared.
         if (ts.isArrayLiteralExpression(node) && node.elements.length > 0) {
             const rows = node.elements.map((element) =>
-                this.scope.bindings.get(
-                    unwrapExpression(element).getText(this.file),
-                ),
+                this.binding(unwrapExpression(element)),
             );
             const row = rows[0];
             if (
@@ -3406,7 +3547,7 @@ export class PinnedNumericLowerer {
             if (allocated !== undefined) return allocated;
         }
         if (ts.isElementAccessExpression(node)) {
-            const exact = this.scope.bindings.get(node.getText(this.file));
+            const exact = this.binding(node);
             if (exact) return exact.cpp;
             // A NUMBER read widens to the f64 a JS number is. The f32
             // ROUND-TRIP that `sortSplatsBackToFront` depends on is
@@ -3447,9 +3588,8 @@ export class PinnedNumericLowerer {
             return renderPinnedArithmetic(
                 node,
                 (child) =>
-                    child === node.condition &&
-                    this.absenceTest(child) !== undefined
-                        ? cppPrimary(`!(${this.absenceTest(child)})`)
+                    child === node.condition
+                        ? cppPrimary(this.condition(child))
                         : this.renderExpression(child),
                 this.scope.expressionSpelling,
             );
@@ -3539,7 +3679,7 @@ export class PinnedNumericLowerer {
         const node = unwrapExpression(expression);
         if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
         if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
-        const bound = this.scope.bindings.get(node.getText(this.file));
+        const bound = this.binding(node);
         if (bound) {
             if (bound.staticBoolean !== undefined) return bound.staticBoolean;
             if (bound.staticallyAbsent) return false;
@@ -3551,13 +3691,15 @@ export class PinnedNumericLowerer {
                 bound.absentCpp === undefined &&
                 (isRecordType(bound.type) ||
                     isListShape(bound.type) ||
-                    bound.type === "function-list" ||
-                    bound.type === "opaque")
+                    bound.type === "function-list")
             ) {
                 return true;
             }
             if (bound.staticNumber !== undefined)
-                return bound.staticNumber !== 0;
+                return (
+                    bound.staticNumber !== 0 &&
+                    !Number.isNaN(bound.staticNumber)
+                );
             return undefined;
         }
         if (
@@ -3574,20 +3716,18 @@ export class PinnedNumericLowerer {
             if (left === false) return false;
             const right = this.staticCondition(node.right);
             if (left === true) return right;
-            return right === false ? false : undefined;
+            return undefined;
         }
         if (kind === ts.SyntaxKind.BarBarToken) {
             const left = this.staticCondition(node.left);
             if (left === true) return true;
             const right = this.staticCondition(node.right);
             if (left === false) return right;
-            return right === true ? true : undefined;
+            return undefined;
         }
         if (kind === ts.SyntaxKind.InKeyword) {
             const member = unwrapExpression(node.left);
-            const owner = this.scope.bindings.get(
-                unwrapExpression(node.right).getText(this.file),
-            );
+            const owner = this.binding(unwrapExpression(node.right));
             if (!ts.isStringLiteral(member) || !owner) return undefined;
             const shape = RECORD_SHAPES.get(owner.type);
             return shape ? shape.members.includes(member.text) : undefined;
@@ -3619,9 +3759,7 @@ export class PinnedNumericLowerer {
             : nullish(left)
               ? [right, nullish(left)]
               : [undefined, undefined];
-        const absent = absentOperand
-            ? this.scope.bindings.get(absentOperand.getText(this.file))
-            : undefined;
+        const absent = absentOperand ? this.binding(absentOperand) : undefined;
         if (absent?.staticallyAbsent && literal) {
             const loose =
                 kind === ts.SyntaxKind.EqualsEqualsToken ||
@@ -3691,9 +3829,7 @@ export class PinnedNumericLowerer {
         expression: ts.Expression,
         name: string,
     ): boolean | { absent: string; whenAbsent: boolean } | undefined {
-        const bound = this.scope.bindings.get(
-            unwrapExpression(expression).getText(this.file),
-        );
+        const bound = this.binding(unwrapExpression(expression));
         if (!bound) return undefined;
         const absenceIs = (
             value: "undefined" | "null" | undefined,
@@ -3742,8 +3878,7 @@ export class PinnedNumericLowerer {
                 : foldNumericUnary(node.operator, inner);
         }
         if (!ts.isIdentifier(node)) return undefined;
-        const bound =
-            this.scope.bindings.get(node.text) ?? this.moduleConstant(node);
+        const bound = this.binding(node) ?? this.moduleConstant(node);
         return bound?.staticNumber;
     }
 
@@ -3763,8 +3898,7 @@ export class PinnedNumericLowerer {
         ) {
             if (
                 chain.questionDotToken &&
-                this.scope.bindings.get(chain.expression.getText(this.file))
-                    ?.staticallyAbsent
+                this.binding(chain.expression)?.staticallyAbsent
             )
                 return true;
             chain = chain.expression;
@@ -3838,7 +3972,10 @@ export class PinnedNumericLowerer {
                 ? clauseLines(clauses[selected]!, indent)
                 : [];
         }
-        const discriminant = this.expression(statement.expression);
+        const discriminant = this.temporaryName(statement, 0);
+        const selection = `${indent}    const auto ${discriminant} = ${this.expression(statement.expression)};`;
+        const outer = indent;
+        indent += "    ";
         const lines: string[] = [];
         let defaultClause: ts.DefaultClause | undefined;
         clauses.forEach((clause, index) => {
@@ -3856,14 +3993,20 @@ export class PinnedNumericLowerer {
             );
         });
         if (defaultClause) {
-            if (lines.length === 0) return clauseLines(defaultClause, indent);
+            if (lines.length === 0)
+                return [
+                    `${outer}{`,
+                    selection,
+                    ...clauseLines(defaultClause, indent),
+                    `${outer}}`,
+                ];
             lines.push(
                 `${indent}} else {`,
                 ...clauseLines(defaultClause, `${indent}    `),
             );
         }
         if (lines.length > 0) lines.push(`${indent}}`);
-        return lines;
+        return [`${outer}{`, selection, ...lines, `${outer}}`];
     }
 
     /** `{ x, y, z }` -- the pin's own positional record, as the caller spells it. */
@@ -3900,50 +4043,66 @@ export class PinnedNumericLowerer {
      */
     private absenceTest(expression: ts.Expression): string | undefined {
         const node = unwrapExpression(expression);
-        // By full source text, which is how a MEMBER binding is keyed:
-        // the pin tests `!mi._cpuNormals` as readily as `!positions`.
-        return this.scope.bindings.get(node.getText(this.file))?.absentCpp;
+        // Member paths and plain locals carry the same absence contract.
+        return this.binding(node)?.absentCpp;
     }
 
-    /**
-     * One operand of the pin's `&&`/`||`, where a nullable container in a
-     * boolean position means "it is there".
-     */
-    private booleanOperand(expression: ts.Expression): string {
-        const absent = this.absenceTest(expression);
-        return absent ? `!(${absent})` : this.expression(expression);
-    }
-
-    /** Joins of proven boolean operands retain boolean storage and short-circuiting. */
     private booleanValue(expression: ts.Expression): boolean {
+        return this.valueKind(expression) === "boolean";
+    }
+
+    /** One representation decision for storage, truth tests and value selection. */
+    private valueKind(
+        expression: ts.Expression,
+    ): "boolean" | "number" | "string" | "object" | "nullable" | "native" {
         const node = unwrapExpression(expression);
-        if (ts.isCallExpression(node))
-            return (
-                callShapeOf(this.scope.callShapes, node, this.file) === "bool"
-            );
+        const binding = this.binding(node);
+        if (binding) {
+            if (binding.type === "bool") return "boolean";
+            if (binding.type === "scalar" || binding.type === "index")
+                return "number";
+            if (binding.type === "string") return "string";
+            if (binding.type === "opaque") return "native";
+            return binding.absentCpp || binding.nullish ? "nullable" : "object";
+        }
+        if (
+            ts.isCallExpression(node) &&
+            callShapeOf(this.scope.callShapes, node, this.file) === "bool"
+        )
+            return "boolean";
         if (
             node.kind === ts.SyntaxKind.TrueKeyword ||
             node.kind === ts.SyntaxKind.FalseKeyword ||
             (ts.isPrefixUnaryExpression(node) &&
                 node.operator === ts.SyntaxKind.ExclamationToken)
         )
-            return true;
+            return "boolean";
+        if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node))
+            return "string";
+        if (ts.isConditionalExpression(node)) {
+            const truthy = this.valueKind(node.whenTrue);
+            if (truthy === this.valueKind(node.whenFalse)) return truthy;
+        }
         if (ts.isBinaryExpression(node)) {
             if (PINNED_COMPARISON_OPERATORS.has(node.operatorToken.kind))
-                return true;
+                return "boolean";
             if (
                 node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
                 node.operatorToken.kind ===
                     ts.SyntaxKind.AmpersandAmpersandToken
             )
-                return (
-                    this.booleanValue(node.left) &&
-                    this.booleanValue(node.right)
-                );
+                return this.valueKind(node.left);
         }
-        return (
-            this.scope.bindings.get(node.getText(this.file))?.type === "bool"
-        );
+        const type = pinnedCheckerOf(this.file).getTypeAtLocation(node);
+        const parts = type.isUnion() ? type.types : [type];
+        if (
+            parts.every((part) => (part.flags & ts.TypeFlags.BooleanLike) !== 0)
+        )
+            return "boolean";
+        if (parts.every((part) => (part.flags & ts.TypeFlags.StringLike) !== 0))
+            return "string";
+        // The numeric port's untyped adapters and arithmetic return numbers.
+        return "number";
     }
 
     /** One property read off a binding the pin treats as optional. */
@@ -3953,7 +4112,7 @@ export class PinnedNumericLowerer {
         | { present: string; member: { cpp: string; absent?: string } }
         | undefined {
         const owner = unwrapExpression(node.expression);
-        const binding = this.scope.bindings.get(owner.getText(this.file));
+        const binding = this.binding(owner);
         const optional = binding?.optional;
         if (!optional) return undefined;
         const member = optional.members.get(node.name.text);
@@ -3972,7 +4131,7 @@ export class PinnedNumericLowerer {
      * paths below it.
      */
     private recordCallBinding(
-        name: string,
+        name: ts.Identifier,
         initializer: ts.Expression,
         indent: string,
         ordinal: number,
@@ -4002,16 +4161,22 @@ export class PinnedNumericLowerer {
         const members = this.scope.recordCalls?.get(unwrapped.expression.text);
         if (!members) return undefined;
         const temporary = this.temporaryName(initializer, ordinal);
-        // Every member the caller listed binds by its own dotted text, which
-        // is the same lookup `propertyAccess` opens with — so a later `q.x`
-        // resolves there rather than needing an arm of its own.
+        // Bind every member beneath this declaration's identity.
         for (const field of members) {
-            this.scope.bindings.set(`${name}.${field}`, {
-                cpp: `${temporary}.${field}`,
-                type: "scalar",
-            });
+            this.bindPorts(
+                [
+                    [
+                        `${name.text}.${field}`,
+                        {
+                            cpp: `${temporary}.${field}`,
+                            type: "scalar",
+                        },
+                    ],
+                ],
+                name,
+            );
         }
-        this.scope.bindings.set(name, { cpp: temporary, type: "scalar" });
+        this.bindLocal(name, { cpp: temporary, type: "scalar" });
         return [
             `${indent}const auto ${temporary} = ` +
                 `${this.expression(unwrapped)};`,
@@ -4029,22 +4194,34 @@ export class PinnedNumericLowerer {
         return `pinned_${ordinal}_${node.getStart(this.file)}`;
     }
 
+    private provenPresent(node: ts.Expression): boolean {
+        const at = ts.isNonNullExpression(node.parent) ? node.parent : node;
+        const type = pinnedCheckerOf(this.file).getTypeAtLocation(at);
+        const absent =
+            ts.TypeFlags.Undefined |
+            ts.TypeFlags.Null |
+            ts.TypeFlags.Void |
+            ts.TypeFlags.Any |
+            ts.TypeFlags.Unknown;
+        return (type.isUnion() ? type.types : [type]).every(
+            (part) => (part.flags & absent) === 0,
+        );
+    }
+
     private propertyAccess(
         node: ts.PropertyAccessExpression,
         absentOverride?: string,
     ): string {
-        const named = this.scope.bindings.get(node.getText(this.file));
-        // A nullable value is read only by the `??` that resolves it.
-        if (named?.nullish !== undefined) {
+        const named = this.binding(node);
+        // A source guard or non-null assertion can narrow the represented absence.
+        if (named?.nullish !== undefined && !this.provenPresent(node)) {
             this.fail(node, "read of a nullable value outside '??'");
         }
         if (named) return named.cpp;
         // `hi?.r ?? 0` where generation resolved `hi` to null: the pin's
         // own `??` default is the value, and a read with no default is a
         // member of nothing.
-        const ownerBinding = this.scope.bindings.get(
-            unwrapExpression(node.expression).getText(this.file),
-        );
+        const ownerBinding = this.binding(unwrapExpression(node.expression));
         if (ownerBinding?.staticallyAbsent) {
             if (absentOverride === undefined) {
                 this.fail(node, "member read off an absent record");
@@ -4081,7 +4258,7 @@ export class PinnedNumericLowerer {
         // record's own array, say). Resolving the owner by its text rather
         // than by its node kind is what makes those the same rule.
         const owner = unwrapExpression(node.expression);
-        const binding = this.scope.bindings.get(owner.getText(this.file));
+        const binding = this.binding(owner);
         if (binding && node.name.text === "length") {
             if (
                 binding.type === "f32" ||
@@ -4133,7 +4310,7 @@ export class PinnedNumericLowerer {
             const text = this.expression(argument);
             const unwrapped = unwrapExpression(argument);
             const bound = ts.isIdentifier(unwrapped)
-                ? this.scope.bindings.get(unwrapped.text)
+                ? this.binding(unwrapped)
                 : undefined;
             return bound?.type === "index"
                 ? `static_cast<double>(${text})`
@@ -4177,12 +4354,8 @@ export class PinnedNumericLowerer {
             (node.arguments.length === 1 ||
                 (node.arguments.length === 2 && !this.scope.arrayCopy))
         ) {
-            const receiver = this.scope.bindings.get(
-                callee.expression.getText(this.file),
-            );
-            const source = this.scope.bindings.get(
-                unwrapExpression(node.arguments[0]!).getText(this.file),
-            );
+            const receiver = this.binding(callee.expression);
+            const source = this.binding(unwrapExpression(node.arguments[0]!));
             if (
                 receiver &&
                 source &&
@@ -4201,12 +4374,8 @@ export class PinnedNumericLowerer {
             this.scope.arrayCopy &&
             node.arguments.length === 2
         ) {
-            const receiver = this.scope.bindings.get(
-                callee.expression.getText(this.file),
-            );
-            const source = this.scope.bindings.get(
-                unwrapExpression(node.arguments[0]!).getText(this.file),
-            );
+            const receiver = this.binding(callee.expression);
+            const source = this.binding(unwrapExpression(node.arguments[0]!));
             if (receiver && source) {
                 return this.scope.arrayCopy(
                     receiver.cpp,
@@ -4220,12 +4389,9 @@ export class PinnedNumericLowerer {
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "add" &&
             node.arguments.length === 1 &&
-            this.scope.bindings.get(callee.expression.getText(this.file))
-                ?.type === "string-set"
+            this.binding(callee.expression)?.type === "string-set"
         ) {
-            const set = this.scope.bindings.get(
-                callee.expression.getText(this.file),
-            )!;
+            const set = this.binding(callee.expression)!;
             return `${set.cpp}.add(${this.stringExpression(node.arguments[0]!)})`;
         }
         // `positions.push(x, y, z)` onto a grown list. The pin appends in
@@ -4242,7 +4408,7 @@ export class PinnedNumericLowerer {
             const receiver = unwrapExpression(callee.expression);
             const list = ts.isElementAccessExpression(receiver)
                 ? this.rowBinding(receiver)
-                : this.scope.bindings.get(callee.expression.getText(this.file));
+                : this.binding(callee.expression);
             if (list && isListShape(list.type)) {
                 if (node.arguments.length === 0) {
                     this.fail(node, "push with no arguments");
@@ -4267,9 +4433,7 @@ export class PinnedNumericLowerer {
         }
         if (ts.isPropertyAccessExpression(callee)) {
             const method = this.scope.methods?.get(callee.name.text);
-            const receiver = this.scope.bindings.get(
-                callee.expression.getText(this.file),
-            );
+            const receiver = this.binding(callee.expression);
             if (method && receiver) {
                 const result = method(receiver.cpp, args, receiver);
                 this.translationActivity?.request("method", node, this.file);
@@ -4313,6 +4477,39 @@ export class PinnedNumericLowerer {
             return builtin.spell(args);
         }
         const spelling = this.scope.calls.get(name);
+        if (
+            !spelling &&
+            ts.isPropertyAccessExpression(callee) &&
+            ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "Math"
+        ) {
+            const declaration = pinnedNamesOf(
+                callee.getSourceFile(),
+            ).declarationOf(callee.expression);
+            const global = declaration
+                ? declarationInDefaultLibrary(declaration)
+                : !declaredSymbol(
+                      moduleSymbols(callee.getSourceFile()),
+                      callee.expression,
+                  );
+            if (global) {
+                const method = callee.name.text;
+                const member = MATH_MEMBERS.get(method);
+                if (
+                    member &&
+                    (member.variadic
+                        ? args.length < member.arity
+                        : args.length !== member.arity)
+                )
+                    this.fail(node, `'${name}' arity`);
+                const arguments_ = this.scope.mathValue
+                    ? args.map(this.scope.mathValue.argument)
+                    : args;
+                const result = mathCallSpelling(method)?.(arguments_);
+                if (result !== undefined)
+                    return this.scope.mathValue?.result(result) ?? result;
+            }
+        }
         if (!spelling) this.fail(node, `call '${name}'`);
         const result = spelling(args);
         this.translationActivity?.request("call", node, this.file);
@@ -4326,11 +4523,16 @@ export class PinnedNumericLowerer {
         // diameter, it is "did the scene name a zero top". Naming it here
         // is the same specialization `propertyAccess` already takes for a
         // resolved member.
-        const named = this.scope.bindings.get(node.getText(this.file));
+        const named = this.binding(node);
         if (named) return named.cpp;
         // A comparison generation already answers is its answer, so the
         // untranslatable half of a shape test (`"r" in min`) never reaches
         // the operator table below.
+        if (
+            node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+            node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+        )
+            return this.logicalValue(node);
         const known = this.staticCondition(node);
         if (known !== undefined) return known ? "true" : "false";
         // A `typeof` test generation cannot answer but the binding can is
@@ -4345,22 +4547,6 @@ export class PinnedNumericLowerer {
             return typeofAnswer.whenAbsent === typeofComparison.equality
                 ? `(${typeofAnswer.absent})`
                 : `!(${typeofAnswer.absent})`;
-        }
-        // A boolean join with one static side keeps only the side that
-        // still decides, by JavaScript's own short-circuit rule.
-        if (
-            node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-            node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
-        ) {
-            const or = node.operatorToken.kind === ts.SyntaxKind.BarBarToken;
-            const left = this.staticCondition(node.left);
-            const right = this.staticCondition(node.right);
-            if (left !== undefined && (or ? !left : left)) {
-                return this.booleanOperand(node.right);
-            }
-            if (right !== undefined && (or ? !right : right)) {
-                return this.booleanOperand(node.left);
-            }
         }
         // Every bitwise operator through its `bbl::js` helper: JavaScript
         // coerces both sides with ToInt32 (ToUint32 for `>>>`) and masks a
@@ -4387,10 +4573,8 @@ export class PinnedNumericLowerer {
             // Two typed arrays compare by identity, never by contents: after
             // a ping-pong merge `source !== permutation` asks which buffer
             // holds the result.
-            const leftBuffer = this.scope.bindings.get(left.getText(this.file));
-            const rightBuffer = this.scope.bindings.get(
-                right.getText(this.file),
-            );
+            const leftBuffer = this.binding(left);
+            const rightBuffer = this.binding(right);
             if (
                 leftBuffer &&
                 rightBuffer &&
@@ -4432,10 +4616,8 @@ export class PinnedNumericLowerer {
                     : `!${equal}`;
             }
             if (
-                this.scope.bindings.get(left.getText(this.file))?.identity !==
-                    undefined ||
-                this.scope.bindings.get(right.getText(this.file))?.identity !==
-                    undefined
+                this.binding(left)?.identity !== undefined ||
+                this.binding(right)?.identity !== undefined
             ) {
                 return `(${this.identityOf(left)} ${
                     node.operatorToken.kind ===
@@ -4470,9 +4652,7 @@ export class PinnedNumericLowerer {
                     spine.operatorToken.kind ===
                         ts.SyntaxKind.QuestionQuestionToken
                 ) {
-                    const head = this.scope.bindings.get(
-                        unwrapExpression(spine.left).getText(this.file),
-                    );
+                    const head = this.binding(unwrapExpression(spine.left));
                     if (head?.nullish !== undefined) break;
                     if (head) return head.cpp;
                     spine = unwrapExpression(spine.left);
@@ -4483,9 +4663,7 @@ export class PinnedNumericLowerer {
                 // that option into its native record binds the complete
                 // optional-element expression here; naming that binding is
                 // the same specialization as taking the present arm.
-                const resolved = this.scope.bindings.get(
-                    left.getText(this.file),
-                );
+                const resolved = this.binding(left);
                 // A nullable value the caller holds takes the pin's own
                 // default where it is absent, and is read only where not.
                 if (resolved?.nullish !== undefined) {
@@ -4501,55 +4679,6 @@ export class PinnedNumericLowerer {
                 return this.propertyAccess(left, this.expression(node.right));
             }
 
-            case ts.SyntaxKind.BarBarToken:
-                if (
-                    this.scope.booleanOr ||
-                    (this.booleanValue(node.left) &&
-                        this.booleanValue(node.right))
-                ) {
-                    if (
-                        this.absenceTest(node.left) === undefined &&
-                        this.absenceTest(node.right) === undefined
-                    )
-                        return undefined;
-                    return (
-                        `(${this.booleanOperand(node.left)} || ` +
-                        `${this.booleanOperand(node.right)})`
-                    );
-                }
-                // JS `a || b` evaluates to `a` when `a` is truthy and to `b`
-                // otherwise; C++ `a || b` evaluates to a bool. Emitting the
-                // C++ operator turned the pin's `Math.hypot(...) || 1` into
-                // the constant 1 and stopped normalising the quaternion,
-                // which is exactly the class of silent rewrite this
-                // translator exists to prevent. Lowered to the value-selecting
-                // form instead: `bbl::js::or_number`, which the other
-                // lowerers already emit and which also falls through on NaN
-                // -- a local copy of this dropped that arm.
-                return (
-                    `bbl::js::or_number(${this.expression(node.left)}, ` +
-                    `${this.expression(node.right)})`
-                );
-            case ts.SyntaxKind.AmpersandAmpersandToken:
-                if (
-                    this.scope.booleanAnd ||
-                    (this.booleanValue(node.left) &&
-                        this.booleanValue(node.right))
-                ) {
-                    if (
-                        this.absenceTest(node.left) === undefined &&
-                        this.absenceTest(node.right) === undefined
-                    )
-                        return undefined;
-                    return (
-                        `(${this.booleanOperand(node.left)} && ` +
-                        `${this.booleanOperand(node.right)})`
-                    );
-                }
-                // The same hazard in the other direction. No pinned body
-                // this translator serves uses it as a value yet, so it
-                // refuses rather than guessing which meaning is wanted.
-                return this.fail(node, "value-selecting '&&'");
             default:
                 return undefined;
         }

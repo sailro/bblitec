@@ -1,3 +1,4 @@
+import { isRecord } from "./json-fields.js";
 import {
     createReadStream,
     existsSync,
@@ -8,7 +9,7 @@ import {
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { apiHash, isRecord, type ApiSnapshot } from "./api-surface.js";
+import { apiHash, type ApiSnapshot } from "./api-surface.js";
 import { type ApiUse } from "./api-usage.js";
 import { contentDigest, writeJsonRecord } from "./tooling/records.js";
 import { scenes } from "./scene-registry.js";

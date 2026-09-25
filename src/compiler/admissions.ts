@@ -32,7 +32,7 @@ interface AdmissionContext
 export class AdmissionRecorder {
     constructor(private readonly context: AdmissionContext) {}
 
-    public readonly untrackedTaaCameraWrites: Array<{
+    private readonly untrackedTaaCameraWrites: Array<{
         node: ts.Node;
         reason: string;
         cameraVersionSafe?: true;
@@ -191,7 +191,19 @@ export class AdmissionRecorder {
     }
 
     @journaled private accessor textAttachmentReached = false;
-    @journaled public accessor textCameraMutation: ts.Node | undefined;
+    @journaled private accessor textCameraMutation: ts.Node | undefined;
+
+    public noteTextCameraMutation(node: ts.Node): void {
+        this.textCameraMutation ??= node;
+    }
+
+    public noteUntrackedCameraWrite(write: {
+        node: ts.Node;
+        reason: string;
+        cameraVersionSafe?: true;
+    }): void {
+        this.untrackedTaaCameraWrites.push(write);
+    }
 
     public noteTextCameraControl(
         node: ts.Node,

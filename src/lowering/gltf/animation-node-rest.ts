@@ -32,12 +32,13 @@ export function lowerGltfAnimationNodeRest(context: LoweringContext): string {
     const jsonLocals = new Set<string>();
     const property = (
         expression: ts.Expression,
+        lowerer: import("../pinned-numeric-lowerer.js").PinnedNumericLowerer,
     ): { owner: string; key: string } | undefined => {
         const node = context.unwrapExpression(expression);
         return ts.isPropertyAccessExpression(node) &&
             ts.isIdentifier(node.expression) &&
             jsonLocals.has(node.expression.text) &&
-            bindings.get(node.expression.text)?.type === "opaque"
+            lowerer.binding(node.expression)?.type === "opaque"
             ? { owner: node.expression.text, key: node.name.text }
             : undefined;
     };
@@ -69,13 +70,13 @@ export function lowerGltfAnimationNodeRest(context: LoweringContext): string {
                     `(optional(document, "nodes") && !optional(document, "nodes")->is_null() ? ` +
                     `static_cast<double>(required(document, "nodes").as_array().size()) : ${lowerer.expression(node.right)})`
                 );
-            const member = property(node);
+            const member = property(node, lowerer);
             if (member)
                 return `optional(${member.owner}, ${JSON.stringify(member.key)})`;
             if (
                 ts.isElementAccessExpression(node) &&
                 ts.isIdentifier(node.expression) &&
-                bindings.get(node.expression.text)?.type === "f64-buffer"
+                lowerer.binding(node.expression)?.type === "f64-buffer"
             )
                 return `${node.expression.text}.at(gltf_checked_index(static_cast<double>(${lowerer.expression(node.argumentExpression)})))`;
             if (
@@ -117,7 +118,10 @@ export function lowerGltfAnimationNodeRest(context: LoweringContext): string {
                             initializer,
                             "Expected empty node-rest storage.",
                         );
-                    bindings.set(name, { cpp: name, type: "opaque" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "opaque" }]],
+                        statement,
+                    );
                     return [`${indent}std::vector<GltfNodeRest> ${name};`];
                 }
                 if (
@@ -131,7 +135,10 @@ export function lowerGltfAnimationNodeRest(context: LoweringContext): string {
                         initializer.argumentExpression,
                     );
                     jsonLocals.add(name);
-                    bindings.set(name, { cpp: name, type: "opaque" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "opaque" }]],
+                        statement,
+                    );
                     return [
                         `${indent}const auto& ${name} = required(document, "nodes").as_array().at(gltf_checked_index(static_cast<double>(${value}))).as_object();`,
                     ];
@@ -140,7 +147,7 @@ export function lowerGltfAnimationNodeRest(context: LoweringContext): string {
                     ts.isBinaryExpression(initializer) &&
                     initializer.operatorToken.kind ===
                         ts.SyntaxKind.QuestionQuestionToken &&
-                    property(initializer.left)
+                    property(initializer.left, lowerer)
                 ) {
                     const fallback = context.unwrapExpression(
                         initializer.right,
@@ -154,7 +161,10 @@ export function lowerGltfAnimationNodeRest(context: LoweringContext): string {
                     const values = fallback.elements
                         .map((element) => lowerer.expression(element))
                         .join(", ");
-                    bindings.set(name, { cpp: name, type: "f64-buffer" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "f64-buffer" }]],
+                        statement,
+                    );
                     return [
                         `${indent}const auto ${name} = gltf_rest_numbers<${fallback.elements.length}>(${source}, [&]() { return std::array<double, ${fallback.elements.length}>{${values}}; });`,
                     ];

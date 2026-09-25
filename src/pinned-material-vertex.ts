@@ -566,12 +566,10 @@ export function pinnedMaterialVertex(
             },
             statements: deformation,
         });
-        const helperSource = builders.value(skeletonModule, "SKELETON_HELPERS");
-        if (typeof helperSource !== "string")
-            context.contractError(
-                declaration,
-                "Pinned skeleton helper is missing.",
-            );
+        const helperSource = context.pinnedString(
+            skeletonModule,
+            "SKELETON_HELPERS",
+        );
         helpers = paletteReader(helperSource, requireShape);
         origins.push(
             context.provenance(

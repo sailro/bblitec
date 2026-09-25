@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { asObject } from "./gltf-document.js";
+import { asObject } from "./json-fields.js";
 import { findRepositoryRoot } from "./repository-root.js";
 
 interface ImageCodec {

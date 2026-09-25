@@ -12,6 +12,88 @@ export interface CompareResult {
     maxDiff: number;
 }
 
+export interface ImageRegion {
+    name: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
+export interface ImagePartition {
+    width: number;
+    height: number;
+    regions: readonly ImageRegion[];
+}
+
+/** Compare a complete capture, keeping declared changing regions separate. */
+export function compareImagePartition(
+    actualPath: string,
+    referencePath: string,
+    partition: ImagePartition,
+): {
+    stable: CompareResult;
+    regions: Array<ImageRegion & CompareResult>;
+} {
+    const actual = loadPng(actualPath);
+    const reference = loadPng(referencePath);
+    const { width, height } = partition;
+    if (
+        actual.width !== width ||
+        actual.height !== height ||
+        reference.width !== width ||
+        reference.height !== height
+    ) {
+        throw new Error(
+            `Image partition requires ${width}x${height} captures: ${actualPath}, ${referencePath}`,
+        );
+    }
+    const regionAt = new Int32Array(width * height).fill(-1);
+    const regions = partition.regions.map((region, index) => {
+        if (
+            ![region.x, region.y, region.width, region.height].every(
+                Number.isInteger,
+            ) ||
+            region.x < 0 ||
+            region.y < 0 ||
+            region.width <= 0 ||
+            region.height <= 0 ||
+            region.x + region.width > width ||
+            region.y + region.height > height
+        ) {
+            throw new Error(`Invalid image region '${region.name}'.`);
+        }
+        for (let y = region.y; y < region.y + region.height; y++) {
+            for (let x = region.x; x < region.x + region.width; x++) {
+                const offset = y * width + x;
+                if (regionAt[offset] !== -1)
+                    throw new Error(
+                        `Overlapping image region '${region.name}'.`,
+                    );
+                regionAt[offset] = index;
+            }
+        }
+        return { ...region, ...emptyResult(region.width * region.height) };
+    });
+    const stable = emptyResult(
+        width * height -
+            regions.reduce((total, region) => total + region.totalPixels, 0),
+    );
+    if (stable.totalPixels === 0)
+        throw new Error("An image partition must retain stable pixels.");
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const index = regionAt[y * width + x]!;
+            addPixel(
+                index < 0 ? stable : regions[index]!,
+                comparePixel(actual, reference, x, y),
+            );
+        }
+    }
+    for (const result of [stable, ...regions]) result.mad /= result.totalPixels;
+    return { stable, regions };
+}
+
 export interface RegionResult extends CompareResult {
     regionPixels: number;
 }

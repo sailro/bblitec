@@ -55,7 +55,7 @@ import {
     PinnedNumericLowerer,
     recordLiteralCpp,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import {
     PINNED_DECOMPOSE_ROTATION,
     lowerMat4DecomposeRotation,
@@ -403,7 +403,6 @@ export class GizmoLowerer {
     /** The pin's own quaternion helpers, as C++. */
     private mathHelpers(): string {
         const calls = new Map([
-            ...pinnedNumericMathCallsWithHypot(),
             [
                 "quatFromBjsEuler",
                 (args: readonly string[]): string =>
@@ -867,7 +866,7 @@ export class GizmoLowerer {
                     ],
                 ),
             ]),
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
         });
     }
 
@@ -881,7 +880,6 @@ export class GizmoLowerer {
                 ...bindings,
             ]),
             calls: new Map([
-                ...pinnedNumericMathCallsWithHypot(),
                 [
                     "quatFromBjsEuler",
                     (args: readonly string[]) =>
@@ -893,7 +891,6 @@ export class GizmoLowerer {
                         `rotate_vec3_by_quat(${args.join(", ")})`,
                 ],
             ]),
-            booleanAnd: true,
         });
     }
 
@@ -1101,7 +1098,7 @@ export class GizmoLowerer {
             this.context.sourceFile(modulePath),
             {
                 bindings: scalars,
-                calls: pinnedNumericMathCallsWithHypot(),
+                calls: new Map(),
             },
         );
         const render = (expression: ts.Expression): string => {
@@ -2000,7 +1997,7 @@ EditGizmoHandle push_edit_gizmo(
                     ],
                 ),
             ]),
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
         });
         const prologue: string[] = [];
         /** The C++ type each option's `value_or` resolves to. */
@@ -2319,7 +2316,15 @@ ${body}
             );
         const colliderLowerer = this.widgetLowerer(
             AXIS_DRAG_MODULE,
-            new Map([["thickness", arrow.expression(colliderThickness)]]),
+            new Map([
+                [
+                    "thickness",
+                    this.widgetLowerer(
+                        AXIS_DRAG_MODULE,
+                        new Map([["thickness", "thickness"]]),
+                    ).expression(colliderThickness),
+                ],
+            ]),
         );
         const colliderCone = this.widgetMesh(
             AXIS_DRAG_MODULE,
@@ -3365,7 +3370,6 @@ std::array<float, 16> bbox_mat4_from_quat(
                 ...extra,
             ]),
             calls: new Map([
-                ...pinnedNumericMathCallsWithHypot(),
                 [
                     "rotatePoint",
                     (args: readonly string[]): string =>
@@ -3388,7 +3392,7 @@ std::array<float, 16> bbox_mat4_from_quat(
                     },
                 ],
             ]),
-            booleanAnd: true,
+
             vec3Literal: (x, y, z) => vec3d([x, y, z]),
         };
     }
@@ -3610,8 +3614,7 @@ std::array<float, 16> bbox_mat4_from_quat(
                     ["ay", { cpp: "ay", type: "scalar" }],
                     ["az", { cpp: "az", type: "scalar" }],
                 ]),
-                calls: pinnedNumericMathCallsWithHypot(),
-                booleanAnd: true,
+                calls: new Map(),
             }),
             ["1.0", "1.0", "1.0"],
         );
@@ -3628,7 +3631,7 @@ std::array<float, 16> bbox_mat4_from_quat(
                 ["armLen", { cpp: "corner_arm_len", type: "scalar" }],
                 ["axisSigns", { cpp: "axis_signs", type: "scalar" }],
             ]),
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
         });
         const cornerParts = [
             { local: "anchor", target: "corner.anchor" },
@@ -4725,6 +4728,20 @@ void attach_bounding_box_gizmo_to_node(
             ["canvas.width", { cpp: "canvas_width", type: "scalar" }],
             ["canvas.height", { cpp: "canvas_height", type: "scalar" }],
         ]);
+        cameraMath.bindPorts(
+            [
+                ["rotX", { cpp: "rot_x", type: "f64-buffer" }],
+                ["rotZ", { cpp: "rot_z", type: "f64-buffer" }],
+            ],
+            cameraDeclaration.body!.statements[0]!,
+        );
+        cameraMath.bindPorts(
+            [
+                ["canvas.width", { cpp: "canvas_width", type: "scalar" }],
+                ["canvas.height", { cpp: "canvas_height", type: "scalar" }],
+            ],
+            this.context.variableInitializer(cameraFactory, "aspect"),
+        );
         return `CameraGizmoHandle create_camera_gizmo(
     Engine& engine,
     UtilityLayerHandle layer) {
@@ -4956,6 +4973,21 @@ void attach_camera_gizmo_to_camera(
             ["y", { cpp: "entry[1]", type: "scalar" }],
             ["sy", { cpp: "entry[1]", type: "scalar" }],
         ]);
+        const rotations = new Map([
+            ["mq", "mq"],
+            ["sq", "sphere_rotation"],
+            ["hq", "hemi_rotation"],
+        ]);
+        for (const variable of this.context.findNodes(
+            lightDeclaration,
+            ts.isVariableDeclaration,
+        )) {
+            const cpp = ts.isIdentifier(variable.name)
+                ? rotations.get(variable.name.text)
+                : undefined;
+            if (cpp && ts.isIdentifier(variable.name))
+                lightMath.bindLocal(variable.name, { cpp, type: "f64-buffer" });
+        }
         const directionalArm = this.lightGeometryArm(
             lightDeclaration,
             "directional",
@@ -4968,6 +5000,18 @@ void attach_camera_gizmo_to_camera(
         const spotArm = this.lightGeometryArm(lightDeclaration, "spot");
         const shaftBuilder = this.arrowLocal(directionalArm, "makeShaft");
         const headBuilder = this.arrowLocal(directionalArm, "makeHead");
+        for (const helper of [shaftBuilder, headBuilder])
+            for (const [index, parameter] of helper.parameters.entries()) {
+                if (!ts.isIdentifier(parameter.name))
+                    this.context.contractError(
+                        parameter,
+                        "Expected a named placement parameter.",
+                    );
+                lightMath.bindLocal(parameter.name, {
+                    cpp: `entry[${index}]`,
+                    type: "scalar",
+                });
+            }
         const argumentRows = (
             scope: ts.Node,
             callee: string,
@@ -5589,7 +5633,6 @@ void set_composite_gizmo_local_coordinates(
             engine, gizmo.parts[i], use_local);
     }
 }
-
 
 void dispose_composite_gizmo(
     Engine& engine,

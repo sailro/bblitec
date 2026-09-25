@@ -92,7 +92,12 @@ export function dataUnionEquality(
                 : type.kind === "optional"
                   ? `(${value.cpp}).to_optional()`
                   : value.cpp;
-        lowerer.context.emit(`const auto ${cpp} = ${initializer};`);
+        lowerer.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: cpp,
+            initializer: initializer,
+        });
         return { cpp, type };
     };
     const a = snapshot(left),

@@ -2,7 +2,6 @@ import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "../pinned-operators.js";
 
 const module = "src/animation/weighted-gltf-mixer.ts";
 
@@ -51,7 +50,6 @@ export function lowerGltfWeightedAnimationRuntime(
 ${lowerPinnedBody(file, declaration.body!.statements, {
     bindings,
     calls: new Map([
-        ...pinnedNumericMathCalls(),
         ...[...quaternionCpp].map(
             ([source, cpp]) =>
                 [
@@ -174,10 +172,10 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
             "skel",
             "boneData",
         ]);
+        const bindings = bindingScope();
         return lowerPinnedBody(file, declaration.body!.statements, {
-            bindings: bindingScope(),
-            booleanAnd: true,
-            booleanOr: true,
+            bindings,
+
             methods: new Map([
                 [
                     "fill",
@@ -192,7 +190,6 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
                 ],
             ]),
             calls: new Map([
-                ...pinnedNumericMathCalls(),
                 ...[...quaternionCpp].map(
                     ([source, cpp]) =>
                         [
@@ -366,10 +363,19 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
                         variable.initializer
                     ) {
                         const name = variable.name.text;
-                        if (aliases.has(name))
+                        if (aliases.has(name)) {
+                            lowerer.bindPorts(
+                                [...bindings].filter(
+                                    ([port]) =>
+                                        port === name ||
+                                        port.startsWith(`${name}.`),
+                                ),
+                                variable,
+                            );
                             return [
                                 `${indent}auto& ${name} = ${lowerer.expression(variable.initializer)};`,
                             ];
+                        }
                         if (
                             [
                                 "baseRot",
@@ -525,8 +531,7 @@ function lowerWeightedMask(context: LoweringContext): string {
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression(node) {
             if (
                 context.expressionMatchesShape(

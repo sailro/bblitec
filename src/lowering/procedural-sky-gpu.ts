@@ -3,7 +3,6 @@ import { stringLiteral } from "../cpp-literals.js";
 import { type LoweringContext, unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { proceduralSkyModule } from "./procedural-sky-atmosphere.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 /** The pinned texture, buffer, shader and binding descriptors projected onto the PAL. */
 export function proceduralSkyGpuSource(context: LoweringContext): {
@@ -76,7 +75,7 @@ export function proceduralSkyGpuSource(context: LoweringContext): {
                     { cpp: context.doubleLiteral(extent[1]!), type: "scalar" },
                 ],
             ]),
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
             returnValue: (expression, lowerer) =>
                 `static_cast<std::uint32_t>(${lowerer.expression(expression!)})`,
         },

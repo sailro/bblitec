@@ -37,7 +37,7 @@ export function lowerGltfBoneVisibility(context: LoweringContext): string {
                     `(entries.at(static_cast<std::size_t>(${args[0]})).mask = 0u)`,
             ],
         ]),
-        booleanAnd: true,
+
         expression(node, numeric) {
             if (
                 ts.isPrefixUnaryExpression(node) &&
@@ -57,6 +57,13 @@ export function lowerGltfBoneVisibility(context: LoweringContext): string {
                     variable.name.text !== "o"
                 )
                     return undefined;
+                numeric.bindPorts(
+                    [
+                        ["o", { cpp: "o", type: "opaque", absentCpp: "!o" }],
+                        ["o.mask", { cpp: "o->mask", type: "scalar" }],
+                    ],
+                    variable,
+                );
                 if (
                     context.expressionMatchesShape(
                         variable.initializer,

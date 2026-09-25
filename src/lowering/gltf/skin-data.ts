@@ -85,7 +85,7 @@ export function lowerGltfInverseBindMatrices(context: LoweringContext): string {
                     !owner ||
                     !ts.isIdentifier(owner) ||
                     !accessorResults.has(owner.text) ||
-                    bindings.get(owner.text)?.type !== "opaque"
+                    lowerer.binding(owner)?.type !== "opaque"
                 )
                     context.contractError(
                         node,
@@ -121,7 +121,10 @@ export function lowerGltfInverseBindMatrices(context: LoweringContext): string {
             const value = lowerer.expression(initializer);
             const name = variable.name.text;
             accessorResults.add(name);
-            bindings.set(name, { cpp: name, type: "opaque" });
+            lowerer.bindPorts(
+                [[name, { cpp: name, type: "opaque" }]],
+                statement,
+            );
             return [`${indent}const auto ${name} = ${value};`];
         },
         returnValue: (expression, lowerer) => lowerer.expression(expression!),

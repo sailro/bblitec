@@ -1,19 +1,4 @@
 #pragma once
-#include <bblite/features/has_animation.hpp>
-#include <bblite/features/has_browser_file.hpp>
-#include <bblite/features/has_camera_gizmos.hpp>
-#include <bblite/features/has_gamepad.hpp>
-#include <bblite/features/has_gizmos.hpp>
-#include <bblite/features/has_light_gizmos.hpp>
-#include <bblite/features/has_picking.hpp>
-#include <bblite/features/has_shadows.hpp>
-#include <bblite/features/has_sprite_animation.hpp>
-#include <bblite/features/has_sprites.hpp>
-#include <bblite/features/has_text.hpp>
-#include <bblite/features/has_ui.hpp>
-#include <bblite/features/shadow_morph_bounds.hpp>
-#include <bblite/features/shadows_csm.hpp>
-#include <bblite/features/workers.hpp>
 
 #include <bblite/checked_handles.hpp>
 #include <bblite/pal_audio_types.hpp>
@@ -241,11 +226,7 @@ template <typename Signature> class PlatformEventListeners;
 
 template <typename... Args> class PlatformEventListeners<void(Args...)> {
 public:
-#if BBLITE_WORKERS
     using Callback = js::Callback<void(Args...)>;
-#else
-    using Callback = std::function<void(Args...)>;
-#endif
 
     void add(std::size_t identity, Callback callback, bool once = false) {
         const auto duplicate =
@@ -279,7 +260,6 @@ public:
 
     [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
 
-#if BBLITE_WORKERS
     void add(Callback callback, bool once = false) {
         const auto identity = callback.identity();
         add(identity, std::move(callback), once);
@@ -289,7 +269,6 @@ public:
         for (const Entry& entry : entries_)
             visitor(entry.callback);
     }
-#endif
 
     void dispatch(Args... args) {
         dispatch_with([](Callback& callback, Args... values) { callback(values...); }, args...);
@@ -390,7 +369,6 @@ private:
     std::shared_ptr<BrowserFileRecord> record_;
 };
 
-#if BBLITE_HAS_UI
 /** Last computed retained-layout box exposed as DOMRect's reached surface. */
 struct UiClientRect {
     double left = 0.0;
@@ -398,7 +376,6 @@ struct UiClientRect {
     double width = 0.0;
     double height = 0.0;
 };
-#endif
 
 struct MeshHandle {
     std::uint32_t value = invalid_handle;
@@ -659,9 +636,7 @@ struct BillboardSpriteHandle {
 };
 
 /** Which sprite family a frame animation drives. */
-#if BBLITE_HAS_SPRITE_ANIMATION
 #include <bblite/runtime/sprite-animation.hpp>
-#endif
 
 struct EffectWrapperHandle {
     std::uint32_t value = invalid_handle;
@@ -770,9 +745,7 @@ struct BoundingBoxGizmoHandle {
  * and the name, which is all the reached slice reads, is resolved once at
  * pick time rather than re-derived at every read.
  */
-#if BBLITE_HAS_PICKING
 #include <bblite/runtime/picking-records.hpp>
-#endif
 
 /**
  * The picker's own state. The GPU resources it owns live with the renderer
@@ -788,7 +761,6 @@ struct NodeInputState;
 using NodeInputHandle = std::shared_ptr<NodeInputState>;
 struct NodeMaterialInputsState;
 struct NodeMaterialGroupState;
-#if BBLITE_HAS_PICKING
 struct GpuPickerRecord {
     std::weak_ptr<SceneState> scene;
     bool disposed = false;
@@ -801,7 +773,6 @@ struct GpuPickerRecord {
     bool detailed = false;
 };
 
-#endif
 /**
  * One light in a clustered container: the pin's `ClusteredPointLight`, and
  * the direction and cone its `ClusteredSpotLight` adds. The factories
@@ -1991,13 +1962,12 @@ struct ModelGeometry {
     /** The loader reversed source triangles for the loaded world's winding. */
     bool source_indices_reversed = false;
     std::vector<std::vector<Vec3>> morph_positions;
-#if BBLITE_SHADOW_MORPH_BOUNDS
     // Each morph target's own delta AABB, filled on first use by the
     // shadow header's ensure_morph_target_ranges and then kept. Upstream
     // this is a WeakMap cache keyed on the mesh and invalidated when its
     // positions or target list change; a geometry's deltas cannot change
-    // once loaded, so there is nothing here to invalidate. Only a scene
-    // that enables morph-target shadows carries it.
+    // once loaded, so there is nothing here to invalidate. It stays empty
+    // until a scene enables morph-target shadows.
     //
     // `mutable` because it is memoization of immutable data and nothing
     // else: the caster collector reads the engine through a const
@@ -2006,7 +1976,6 @@ struct ModelGeometry {
     // differ. The alternative is folding it afresh every frame for every
     // target, which is what the pin's cache exists to avoid.
     mutable std::vector<std::array<Vec3, 2>> morph_bounds;
-#endif
     std::vector<std::vector<Vec3>> morph_normals;
     std::vector<std::vector<Vec3>> morph_tangents;
     std::vector<std::uint32_t> indices;
@@ -2058,9 +2027,7 @@ inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
     geometry.source_indices_reversed = false;
     release_storage(geometry.morph_positions);
-#if BBLITE_SHADOW_MORPH_BOUNDS
     release_storage(geometry.morph_bounds);
-#endif
     release_storage(geometry.morph_normals);
     release_storage(geometry.morph_tangents);
     release_storage(geometry.indices);
@@ -2412,9 +2379,7 @@ inline void apply_mesh_bound_overrides(const MeshRecord& mesh, Vec3& minimum, Ve
 // ---------------------------------------------------------------------------
 
 /** shared/sprite-atlas.ts `SpriteFrame`: UVs in [0,1], size in pixels. */
-#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-atlas-records.hpp>
-#endif
 
 enum class DepthCompare {
     never,
@@ -2428,9 +2393,7 @@ enum class DepthCompare {
 };
 
 /** blend-descriptors.ts / sprite-blend.ts, as the pure data they are. */
-#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-blend.hpp>
-#endif
 
 struct SplatMeshRecord {
     /**
@@ -2481,9 +2444,7 @@ struct SplatMeshRecord {
     std::vector<std::vector<std::uint8_t>> sh_textures;
 };
 
-#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-records.hpp>
-#endif
 
 struct EffectTextureSlot {
     std::string name;
@@ -2527,9 +2488,7 @@ struct EffectRendererOptions {
     Color4 clear_color{};
 };
 
-#if BBLITE_HAS_ANIMATION
 #include <bblite/runtime/animation-records.hpp>
-#endif
 
 // KHR_texture_transform is per texture slot upstream: gltf-ext-uv-transform.ts
 // attaches uScale/vScale/uOffset/vOffset/uAng to each texture wrapper, and each
@@ -2799,10 +2758,8 @@ struct MaterialRecord {
     std::vector<float> shader_uniform_values;
     /** Storage slots in the shader's declared order. */
     std::vector<StorageBufferHandle> shader_storage_buffers;
-#if BBLITE_SHADOWS_CSM
     /** CSM receiver textures keyed by shader sampler slot. */
     std::vector<ShadowGeneratorHandle> shader_csm_textures;
-#endif
     /** Optional shader material used only by this material's shadow pass. */
     MaterialHandle shadow_caster_material{};
     // The mode the factory or loader authored: blend for a PBR `alphaBlend`
@@ -3419,11 +3376,8 @@ struct HierarchyInstancePoolRecord {
  * their light-space matrix is fitted with, which is why every consumer that
  * asks about a generator's RESOURCES tests for the ESM arm alone.
  */
-#if BBLITE_HAS_SHADOWS
 #include <bblite/runtime/shadow-records.hpp>
-#endif
 
-#if BBLITE_HAS_UI
 enum class UiStyleSelectorKind : std::uint8_t {
     Sequence,
     Class,
@@ -3609,7 +3563,6 @@ struct UiElementRecord {
     std::vector<std::function<void()>> click_callbacks;
     std::unordered_map<std::string, std::vector<std::function<void(const PlatformMouseEvent&)>>>
         event_callbacks;
-#if BBLITE_HAS_BROWSER_FILE
     /** Browser-file state exists only for retained <a>/<input> elements. */
     ObjectUrlHandle download_url{};
     BrowserFileHandle selected_file{};
@@ -3617,19 +3570,13 @@ struct UiElementRecord {
     std::string file_accept;
     std::vector<std::function<void()>> file_change_callbacks;
     bool file_input = false;
-#endif
     UiClientRect client_rect{};
     bool client_rect_requested = false;
     std::optional<CanvasState> canvas;
-#if BBLITE_WORKERS
     bool external_gpu_canvas = false;
-#endif
     bool attached_to_root = false;
 };
 
-#endif
-
-#if BBLITE_HAS_BROWSER_FILE
 /** One recyclable object-URL slot. Generation prevents stale-handle reuse. */
 struct ObjectUrlRecord {
     std::shared_ptr<const std::vector<std::uint8_t>> bytes;
@@ -3714,11 +3661,8 @@ struct BrowserFileRecord {
 private:
     std::shared_ptr<BrowserFileStorage> storage;
 };
-#endif
 
-#if BBLITE_HAS_GIZMOS
 #include <bblite/runtime/gizmo-records.hpp>
-#endif
 
 struct AnimationFrameRequestState {
     std::size_t id;
@@ -3841,9 +3785,7 @@ struct Engine {
     bool device_disposed = false;
     std::uint64_t draw_call_count = 0;
     OwnerLifetime lifetime;
-#if BBLITE_WORKERS
     std::shared_ptr<pal::OffscreenRun> offscreen_run;
-#endif
     /** Generated subsystem state; callbacks hold weak references back to it. */
     std::vector<std::shared_ptr<void>> native_resource_owners;
     std::shared_ptr<pal::AudioSession> audio_session;
@@ -3923,10 +3865,8 @@ struct Engine {
     PlatformEventListeners<void(const PlatformMouseEvent&)> mouse_move_callbacks;
     PlatformEventListeners<void(const PlatformMouseEvent&)> mouse_wheel_callbacks;
     PlatformEventListeners<void(const PlatformMouseEvent&)> mouse_cancel_callbacks;
-#if BBLITE_HAS_GAMEPAD
     /** Cached browser property identities; owns no SDL handles. */
     std::shared_ptr<PlatformGamepadState> platform_gamepad_state;
-#endif
     /** Browser `window.resize` callbacks, dispatched after canvas size sync. */
     PlatformEventListeners<void()> window_resize_callbacks;
     PlatformEventListeners<void()> pointer_lock_change_callbacks;
@@ -3938,7 +3878,6 @@ struct Engine {
     /** Programmatic focus requested by the source render canvas. */
     bool canvas_focused = false;
     PlatformEventListeners<void(bool)> visibility_change_callbacks;
-#if BBLITE_HAS_UI
     /** Scene-created DOM after compiler lowering, independent of RmlUi. */
     std::vector<UiElementRecord> ui_elements;
     /** The primary 2D canvas, when this engine is only a platform host. */
@@ -3966,15 +3905,11 @@ struct Engine {
         return revision <= ui_revision && text_revision <= ui_text_revision &&
                ui_revision - revision == ui_text_revision - text_revision;
     }
-#endif
-#if BBLITE_HAS_BROWSER_FILE
     /** Per-engine Blob URL registry; revoked slots are cleared and recycled. */
     std::vector<ObjectUrlRecord> object_urls;
     std::vector<std::uint32_t> free_object_url_slots;
     /** Live input/File/FileList values share reclaimable picker snapshots. */
-    std::shared_ptr<BrowserFileStorage> browser_file_storage =
-        std::make_shared<BrowserFileStorage>();
-#endif
+    std::shared_ptr<BrowserFileStorage> browser_file_storage;
     /**
      * Application-owned `requestAnimationFrame` callbacks registered before
      * `startEngine`. Browser RAF callbacks run in registration order, so these
@@ -4016,9 +3951,7 @@ struct Engine {
      * registering scenes attach one seeker per manager, the way an asset
      * added to a scene contributes its own.
      */
-#if BBLITE_HAS_ANIMATION
     std::vector<PropertyAnimationManager> animation_managers;
-#endif
     std::vector<MeshRecord> meshes;
     /** Retired mesh slots `store_mesh_record` reuses (see there). */
     std::vector<std::uint32_t> free_mesh_slots;
@@ -4092,18 +4025,12 @@ struct Engine {
     double input_replay_pointer_x = 0.0;
     double input_replay_pointer_y = 0.0;
     std::vector<FrameGraphContext*> registered_frame_graph_contexts;
-#if BBLITE_HAS_SPRITES
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
-#endif
-#if BBLITE_HAS_SPRITE_ANIMATION
     std::vector<SpriteAnimationManagerRecord> sprite_animation_managers;
-#endif
-#if BBLITE_HAS_SPRITES
     std::vector<BillboardSystemRecord> billboard_systems;
     std::vector<SpriteRendererRecord> sprite_renderers;
     std::vector<SpriteRenderTextureRecord> sprite_render_textures;
-#endif
     std::vector<SplatMeshRecord> splat_meshes;
     /**
      * The clustered light fields this engine holds.
@@ -4115,29 +4042,19 @@ struct Engine {
     std::vector<ClusteredLightContainer> clustered_light_containers;
     std::vector<EffectWrapperRecord> effect_wrappers;
     std::vector<EffectRendererRecord> effect_renderers;
-#if BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorRecord> shadow_generators;
-#endif
-#if BBLITE_HAS_PICKING
     std::vector<GpuPickerRecord> gpu_pickers;
-#endif
     /**
      * The utility layers this engine holds. Pointer-stable because
      * `registerScene` publishes the address of the scene inside one, and
      * every gizmo follow callback captures it.
      */
-#if BBLITE_HAS_GIZMOS
     std::vector<std::unique_ptr<UtilityLayerRecord>> utility_layers;
-#if BBLITE_HAS_CAMERA_GIZMOS
     std::vector<CameraGizmoRecord> camera_gizmos;
-#endif
-#if BBLITE_HAS_LIGHT_GIZMOS
     std::vector<LightGizmoRecord> light_gizmos;
-#endif
     std::vector<EditGizmoRecord> edit_gizmos;
     std::weak_ptr<PointerDragDispatcher> canvas_pointer_dispatcher;
     std::vector<BoundingBoxGizmoRecord> bounding_box_gizmos;
-#endif
     /**
      * The live renderer's pick pass.
      *
@@ -4154,15 +4071,11 @@ struct Engine {
      * candidate collector asks it per mesh and both backends skip their
      * pick sources under it (`pickAsyncImpl`). Null is an unfiltered pick.
      */
-#if BBLITE_HAS_PICKING
     using PickFilter = std::function<bool(MeshHandle)>;
     std::function<PickingInfo(GpuPickerHandle, double, double, const PickFilter*)> pick_hook;
-#endif
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
-#if BBLITE_HAS_SPRITES
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
-#endif
     // The text half keeps the pin's own list on the text surface the
     // generated code registers into (`bbl::text_surface`).
     std::shared_ptr<TextSurface> text_surface;
@@ -4176,9 +4089,7 @@ struct Engine {
      * lazily from inside the enabler, so importing (or here, generating)
      * the extension without using it installs nothing.
      */
-#if BBLITE_HAS_SPRITES
     Sprite2DYSortHook sprite_y_sort_hook;
-#endif
     std::uint64_t next_file_texture_identity = 1;
     std::unordered_map<std::string, FileTexture> file_texture_cache;
     std::vector<FileTexture> render_texture_facades;
@@ -4209,12 +4120,7 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
 }
 
 inline bool has_sprite_renderers(const Engine& engine) {
-#if BBLITE_HAS_SPRITES
     return !engine.registered_sprite_renderers.empty();
-#else
-    static_cast<void>(engine);
-    return false;
-#endif
 }
 
 struct Engine::DeviceRecoveryState {
@@ -4643,13 +4549,11 @@ inline void cancel_animation_frame(Engine& engine, std::size_t id) {
     std::erase_if(engine.post_render_animation_frame_once_callbacks, matches);
 }
 
-#if BBLITE_HAS_PICKING
 inline void PickingInfo::bind_engine(Engine& engine) {
     state->engine = &engine;
     state->engine_lifetime = engine.lifetime.token();
 }
 
-#endif
 /** Copy a typed-array view into an engine-owned GPU storage record. */
 template <typename Data>
 [[nodiscard]] inline StorageBufferHandle create_storage_buffer(Engine& engine, const Data& data,
@@ -4718,7 +4622,6 @@ inline void dispose_storage_buffer(Engine& engine, StorageBufferHandle handle) {
 }
 
 /** Subscribe to the bytes produced by the CSM receiver's own packer. */
-#if BBLITE_SHADOWS_CSM
 template <typename Callback>
 [[nodiscard]] inline auto on_csm_receiver_update(Engine& engine, ShadowGeneratorHandle generator,
                                                  Callback callback) {
@@ -4736,7 +4639,6 @@ template <typename Callback>
         }
     };
 }
-#endif
 
 /** SDL-backed browser Gamepad surface (implemented by pal_sdl.cpp). */
 js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine& engine);
@@ -5029,25 +4931,17 @@ struct SceneState {
     /** Source shadow scheduler identity, including scenes with no caster passes. */
     std::optional<std::string> shadow_task_name;
     /** Shadow generators retired only after a replacement rebuild succeeds. */
-#if BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorHandle> pending_shadow_retirements;
-#endif
     std::vector<AnimationGroupHandle> animation_groups;
-#if BBLITE_HAS_SPRITES
     std::vector<BillboardSystemHandle> billboard_systems;
-#endif
     // sprite-scene.ts: depth-enabled 2D layers are scene renderables and
     // therefore share this scene's colour, multisample and depth targets.
-#if BBLITE_HAS_SPRITES
     std::vector<Sprite2DLayerHandle> depth_hosted_sprite_layers;
-#endif
     // `loadSplat` registers the renderable on the scene it is handed, the
     // way `attachGaussianSplattingMesh` pushes into `_renderables`.
     std::vector<SplatMeshHandle> splat_meshes;
-#if BBLITE_HAS_TEXT
     /** Retained text is populated only by the reached text attachment adapter. */
     std::vector<std::shared_ptr<TextRenderableState>> text_renderables;
-#endif
     /**
      * The clustered light field this scene was given, if it was given one.
      *
@@ -5076,9 +4970,7 @@ struct SceneState {
      * engine's animation managers. Registration is idempotent upstream,
      * so the contribution is too.
      */
-#if BBLITE_HAS_ANIMATION
     bool seeks_animation_managers = false;
-#endif
     /** The same, for the baked meshes this scene's registration reaches. */
     bool seeks_vat = false;
     std::vector<SceneDeferredBuilder> deferred_builders;
@@ -5125,9 +5017,7 @@ struct SceneState {
         visitor(disposables);
         visitor(animation_seekers);
         visitor(deferred_builders);
-#if BBLITE_HAS_TEXT
         visitor(text_renderables);
-#endif
     }
 };
 
@@ -5152,22 +5042,16 @@ struct Scene {
     std::vector<MeshHandle>& meshes;
     std::vector<LightHandle>& lights;
     std::vector<TaskHandle>& tasks;
-#if BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorHandle>& pending_shadow_retirements;
-#endif
     std::vector<AnimationGroupHandle>& animation_groups;
-#if BBLITE_HAS_SPRITES
     std::vector<BillboardSystemHandle>& billboard_systems;
     std::vector<Sprite2DLayerHandle>& depth_hosted_sprite_layers;
-#endif
     std::vector<SplatMeshHandle>& splat_meshes;
     ClusteredLightContainerHandle& clustered_lights;
     SnapshotList<js::Callback<void(float)>>& before_render;
     std::vector<js::Callback<void()>>& disposables;
     std::vector<js::Callback<void(double)>>& animation_seekers;
-#if BBLITE_HAS_ANIMATION
     bool& seeks_animation_managers;
-#endif
     bool& seeks_vat;
     std::vector<SceneDeferredBuilder>& deferred_builders;
     EnvironmentState& environment;
@@ -5225,29 +5109,21 @@ private:
           disposed(state->disposed), mirrored_meshes(state->mirrored_meshes),
           clear_color(state->clear_color), camera(state->camera), meshes(state->meshes),
           lights(state->lights), tasks(state->tasks),
-#if BBLITE_HAS_SHADOWS
           pending_shadow_retirements(state->pending_shadow_retirements),
-#endif
-          animation_groups(state->animation_groups),
-#if BBLITE_HAS_SPRITES
-          billboard_systems(state->billboard_systems),
+          animation_groups(state->animation_groups), billboard_systems(state->billboard_systems),
           depth_hosted_sprite_layers(state->depth_hosted_sprite_layers),
-#endif
           splat_meshes(state->splat_meshes), clustered_lights(state->clustered_lights),
           before_render(state->before_render), disposables(state->disposables),
           animation_seekers(state->animation_seekers),
-#if BBLITE_HAS_ANIMATION
-          seeks_animation_managers(state->seeks_animation_managers),
-#endif
-          seeks_vat(state->seeks_vat), deferred_builders(state->deferred_builders),
-          environment(state->environment), fixed_delta_ms(state->fixed_delta_ms),
+          seeks_animation_managers(state->seeks_animation_managers), seeks_vat(state->seeks_vat),
+          deferred_builders(state->deferred_builders), environment(state->environment),
+          fixed_delta_ms(state->fixed_delta_ms),
           render_topology_version(state->render_topology_version),
           topology_rebuild_pending(state->topology_rebuild_pending),
           material_family_mask(state->material_family_mask),
           transmission_enabled(state->transmission_enabled), fog_mode(state->fog_mode),
           fog_density(state->fog_density), fog_start(state->fog_start), fog_end(state->fog_end),
-          fog_color(state->fog_color), clip_plane(state->clip_plane) {
-    }
+          fog_color(state->fog_color), clip_plane(state->clip_plane) {}
 };
 // The destroy-then-place assignment operators above are only sound while a
 // copy cannot throw between the destruction and the placement.
@@ -5280,9 +5156,7 @@ inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uin
  * scene beneath them. Held by pointer-stable storage because the scene's
  * address is what `registerScene` publishes.
  */
-#if BBLITE_HAS_GIZMOS
 #include <bblite/runtime/gizmo-scene.hpp>
-#endif
 
 struct FrameGraphContext {
     Engine* engine = nullptr;
@@ -5733,10 +5607,8 @@ void set_shader_texture(Engine& engine, MaterialHandle material, std::uint32_t s
                         FileTexture texture);
 void set_shader_storage_buffer(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                StorageBufferHandle buffer);
-#if BBLITE_SHADOWS_CSM
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                             ShadowGeneratorHandle generator);
-#endif
 void set_shadow_caster_material(Engine& engine, MaterialHandle material, MaterialHandle caster);
 void set_shader_pixels_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                const PixelsTexture& texture);
@@ -5995,6 +5867,7 @@ CameraHandle enable_orthographic_camera(Engine& engine, CameraHandle camera, dou
 RenderTargetHandle create_render_target(Engine& engine, RenderTargetOptions options);
 RenderTargetTexture create_render_target_texture(Engine& engine, RenderTargetOptions options,
                                                  bool surface_sized = false);
+std::uint32_t render_target_dimension(double value);
 std::array<double, 2> resolve_surface_render_target_size(double width, double height,
                                                          double surface_scale);
 js::Callback<void()> on_render_target_texture_resize(Engine& engine, RenderTargetTexture result,
@@ -6109,7 +5982,6 @@ struct PcfDirectionalShadowOptions {
  * block read them. `stabilizeCascades` and `worldSpaceBias` are the two
  * arms this port does not build and refuse by name at generation.
  */
-#if BBLITE_SHADOWS_CSM
 struct CsmDirectionalShadowOptions {
     // No factory defaults, for the reason above: every field is written
     // from the factory's own `??`; the scalars only value-initialize.
@@ -6125,7 +5997,6 @@ struct CsmDirectionalShadowOptions {
     /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */
     bool force_refresh_every_frame{};
 };
-#endif
 
 ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(Engine& engine, LightHandle light,
                                                             PcfSpotShadowOptions options);
@@ -6133,15 +6004,11 @@ ShadowGeneratorHandle create_esm_directional_shadow_generator(Engine& engine, Li
                                                               EsmDirectionalShadowOptions options);
 ShadowGeneratorHandle create_pcf_directional_shadow_generator(Engine& engine, LightHandle light,
                                                               PcfDirectionalShadowOptions options);
-#if BBLITE_SHADOWS_CSM
 ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, LightHandle light,
                                                               CsmDirectionalShadowOptions options);
-#endif
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
-#if BBLITE_SHADOW_MORPH_BOUNDS
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);
-#endif
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);
@@ -6192,48 +6059,46 @@ void remove_from_scene(Scene& scene, LightHandle light);
 void on_before_render(Scene& scene, js::Callback<void(float)> callback);
 void on_scene_dispose(Scene& scene, js::Callback<void()> callback);
 void on_key_down(Engine& engine, std::size_t identity,
-                 std::function<void(const PlatformKeyboardEvent&)> callback, bool once = false);
+                 js::Callback<void(const PlatformKeyboardEvent&)> callback, bool once = false);
 void off_key_down(Engine& engine, std::size_t identity);
 void on_key_up(Engine& engine, std::size_t identity,
-               std::function<void(const PlatformKeyboardEvent&)> callback, bool once = false);
+               js::Callback<void(const PlatformKeyboardEvent&)> callback, bool once = false);
 void off_key_up(Engine& engine, std::size_t identity);
-void on_pointer_down(Engine& engine, std::size_t identity, std::function<void()> callback,
+void on_pointer_down(Engine& engine, std::size_t identity, js::Callback<void()> callback,
                      bool once = false);
 void off_pointer_down(Engine& engine, std::size_t identity);
-void on_canvas_click(Engine& engine, std::size_t identity, std::function<void()> callback,
+void on_canvas_click(Engine& engine, std::size_t identity, js::Callback<void()> callback,
                      bool once = false);
 void off_canvas_click(Engine& engine, std::size_t identity);
 void on_mouse_down(Engine& engine, std::size_t identity,
-                   std::function<void(const PlatformMouseEvent&)> callback, bool once = false);
+                   js::Callback<void(const PlatformMouseEvent&)> callback, bool once = false);
 void off_mouse_down(Engine& engine, std::size_t identity);
 void on_mouse_up(Engine& engine, std::size_t identity,
-                 std::function<void(const PlatformMouseEvent&)> callback, bool once = false);
+                 js::Callback<void(const PlatformMouseEvent&)> callback, bool once = false);
 void off_mouse_up(Engine& engine, std::size_t identity);
 void on_mouse_move(Engine& engine, std::size_t identity,
-                   std::function<void(const PlatformMouseEvent&)> callback, bool once = false);
+                   js::Callback<void(const PlatformMouseEvent&)> callback, bool once = false);
 void off_mouse_move(Engine& engine, std::size_t identity);
 void on_mouse_wheel(Engine& engine, std::size_t identity,
-                    std::function<void(const PlatformMouseEvent&)> callback, bool once = false);
+                    js::Callback<void(const PlatformMouseEvent&)> callback, bool once = false);
 void off_mouse_wheel(Engine& engine, std::size_t identity);
 void on_mouse_cancel(Engine& engine, std::size_t identity,
-                     std::function<void(const PlatformMouseEvent&)> callback, bool once = false);
+                     js::Callback<void(const PlatformMouseEvent&)> callback, bool once = false);
 void off_mouse_cancel(Engine& engine, std::size_t identity);
-void on_window_resize(Engine& engine, std::size_t identity, std::function<void()> callback,
+void on_window_resize(Engine& engine, std::size_t identity, js::Callback<void()> callback,
                       bool once = false);
 void off_window_resize(Engine& engine, std::size_t identity);
-void on_pointer_lock_change(Engine& engine, std::size_t identity, std::function<void()> callback,
+void on_pointer_lock_change(Engine& engine, std::size_t identity, js::Callback<void()> callback,
                             bool once = false);
 void off_pointer_lock_change(Engine& engine, std::size_t identity);
 void set_canvas_cursor(Engine& engine, std::string cursor);
 void focus_canvas(Engine& engine);
 void request_pointer_lock(Engine& engine);
 void exit_pointer_lock(Engine& engine);
-void on_visibility_change(Engine& engine, std::size_t identity, std::function<void(bool)> callback,
+void on_visibility_change(Engine& engine, std::size_t identity, js::Callback<void(bool)> callback,
                           bool once = false);
 void off_visibility_change(Engine& engine, std::size_t identity);
-#if BBLITE_HAS_ANIMATION
 #include <bblite/runtime/animation-api.hpp>
-#endif
 void set_animation_weight(Engine& engine, AnimationGroupHandle group, double weight);
 void go_to_frame(Engine& engine, AnimationGroupHandle group, double frame, bool with_engine);
 void play_animation(Engine& engine, AnimationGroupHandle group);
@@ -6280,9 +6145,7 @@ struct ConfigurableFreeControlOptions {
 };
 void attach_configurable_free_control(Engine& engine, CameraHandle camera, const Scene& scene,
                                       ConfigurableFreeControlOptions options);
-#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-options.hpp>
-#endif
 
 // `attachParsedSplat`'s two halves, which the pin keeps apart and this port
 // needs apart for the same reason it does: a cloud is BUILT against the
@@ -6307,9 +6170,7 @@ SplatMeshHandle load_sog(Scene& scene, const std::string& path);
 // resets its TRS. Defined by the generated splat bake, which a scene reaches
 // through `bakeCurrentTransformIntoVertices`.
 void bake_current_transform_into_vertices(Engine& engine, SplatMeshHandle splat);
-#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-api.hpp>
-#endif
 
 /**
  * The sampler overrides `createTexture2DFromPixels` accepts.
@@ -6338,7 +6199,6 @@ void update_pixels_texture(Engine& engine, PixelsTexture& texture, const js::U8A
 PixelsTexture create_texture_2d_from_pixels(Engine& engine, const js::U8Array& pixels, double width,
                                             double height, PixelsTextureOptions options = {});
 
-#if BBLITE_HAS_SPRITES
 double add_sprite_2d_index(Engine& engine, Sprite2DLayerHandle layer, Sprite2DProps props);
 void update_sprite_2d_index(Engine& engine, Sprite2DLayerHandle layer, double index,
                             Sprite2DProps props);
@@ -6364,7 +6224,6 @@ void set_sprite_2d_frame_id(Engine& engine, Sprite2DLayerHandle layer, std::uint
                             double frame);
 void remove_sprite_2d_id(Engine& engine, Sprite2DLayerHandle layer, std::uint32_t sprite_id);
 bool sprite_2d_id_alive(const Engine& engine, Sprite2DLayerHandle layer, std::uint32_t sprite_id);
-#endif
 
 EffectWrapperHandle create_effect_wrapper(Engine& engine, std::uint32_t variant);
 void set_effect_uniforms(Engine& engine, EffectWrapperHandle effect,
@@ -6375,7 +6234,6 @@ EffectRendererHandle create_effect_renderer(Engine& engine, EffectWrapperHandle 
                                             EffectRendererOptions options);
 void register_effect_renderer(Engine& engine, EffectRendererHandle renderer);
 TaskHandle create_effect_render_task(Engine& engine, EffectTaskOptions options);
-#if BBLITE_HAS_SPRITES
 SpriteRendererHandle create_sprite_renderer(Engine& engine, SpriteRendererOptions options);
 void add_sprite_renderer_layer(Engine& engine, SpriteRendererHandle renderer,
                                Sprite2DLayerHandle layer);
@@ -6394,8 +6252,6 @@ void sprite_renderer_before_update(Engine& engine, SpriteRendererHandle renderer
  */
 void set_sprite_2d_count(Sprite2DLayerRecord& layer, std::uint32_t count);
 void mark_sprite_2d_dirty(Sprite2DLayerRecord& layer, std::uint32_t lo, std::uint32_t hi);
-
-#endif
 
 void register_scene(Scene& scene);
 void unregister_scene(Scene& scene);
@@ -6460,7 +6316,6 @@ void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
 [[nodiscard]] js::Array<double> mesh_bound_min_array(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] js::Array<double> mesh_bound_max_array(const Engine& engine, MeshHandle mesh);
 
-#if BBLITE_HAS_PICKING
 /** `createGpuPicker(scene)`. */
 GpuPickerHandle create_gpu_picker(Scene& scene);
 /** `PickingInfo.pickedMesh.name`, read where the scene asks for it. */
@@ -6485,7 +6340,6 @@ PickingInfo gpu_pick(Engine& engine, GpuPickerHandle picker, double x, double y)
 /** The same pick under the pin's `filter` option; see `Engine::PickFilter`. */
 PickingInfo gpu_pick(Engine& engine, GpuPickerHandle picker, double x, double y,
                      const Engine::PickFilter& filter);
-#endif
 /**
  * `KHR_interactivity` (the generated flow-graph unit). The loader chains
  * `attach_flow_graphs` onto an interactive asset's scene setup, and
@@ -6505,7 +6359,6 @@ bool gltf_node_visible(const Engine& engine, AssetHandle asset, std::size_t node
 void set_gltf_node_visible(Engine& engine, AssetHandle asset, std::size_t node, bool visible);
 TextureTransform& gltf_base_color_transform(Engine& engine, AssetHandle asset,
                                             std::size_t material);
-#if BBLITE_HAS_PICKING
 /**
  * `enableDetailedPicking(picker)`. Emitted with the detailed half; every
  * later pick on this picker draws the third attachment.
@@ -6528,7 +6381,6 @@ void dispose_picker(Engine& engine, GpuPickerHandle picker);
 PickingInfo pick_billboard_sprite(Engine& engine, Scene& scene, double x, double y);
 /** `PickingInfo.distance`: camera position to the reconstructed point. */
 [[nodiscard]] double picked_distance(const Scene& scene, const PickingInfo& info);
-#endif
 /**
  * Run and clear everything `setTimeout` queued. Called by the frame
  * conductor after the frame's own callbacks, which is where the browser
@@ -6544,10 +6396,8 @@ void run_interval_callbacks(Engine& engine);
 
 } // namespace bbl
 
-#if BBLITE_HAS_PICKING
 template <> struct std::hash<bbl::PickingInfo> {
     [[nodiscard]] std::size_t operator()(const bbl::PickingInfo& info) const noexcept {
         return std::hash<const void*>{}(info.state.get());
     }
 };
-#endif

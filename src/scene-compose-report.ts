@@ -38,7 +38,8 @@ import {
 } from "./capture-instrumented.js";
 import type { SceneDefinition } from "./scene-registry.js";
 import { divergence } from "./render-diff.js";
-import { asObject, glbDocument, type JsonObject } from "./gltf-document.js";
+import { glbDocument } from "./gltf-document.js";
+import { asObject, type JsonObject } from "./json-fields.js";
 import {
     gltfLinearImageProcessing,
     materialSubjects,

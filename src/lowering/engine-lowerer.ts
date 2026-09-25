@@ -236,7 +236,6 @@ ${canvasDatasetSource}
                 ],
             ]),
             calls: new Map(),
-            booleanAnd: true,
         });
         return `
 // ${this.context.provenance(module, "setSurfaceSize")}

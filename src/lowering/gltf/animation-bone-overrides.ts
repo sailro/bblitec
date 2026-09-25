@@ -34,8 +34,7 @@ export function lowerGltfAnimationBoneOverrides(
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         statement(statement, lowerer, indent) {
             if (
                 hidden !== undefined &&
@@ -85,6 +84,7 @@ export function lowerGltfAnimationBoneOverrides(
                     statement,
                     "Expected bone override node and field identity.",
                 );
+            lowerer.bindPorts(bindings, statement.statement);
             return [
                 `${indent}for (const auto& [ni, o] : overrides) {`,
                 ...lowerer.statements(

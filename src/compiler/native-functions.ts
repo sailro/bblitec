@@ -61,6 +61,8 @@ export interface NativeFunctionContext extends Pick<
     | "bindings"
     | "allocateUserFunctionPrefix"
     | "captureEmittedLines"
+    | "captureNativeDependencies"
+    | "nativeBindingCheckpoint"
     | "nativeEmission"
     | "registerNativeTemporary"
     | "registerNativeBinding"
@@ -184,9 +186,10 @@ export function captureDataFunctionBody(
          *  method's synthetic `this` record). */
         beforeBody?: () => void;
         /** The definition is emitted at namespace scope. */
-        namespaceScope?: boolean;
+        namespaceScope?: ts.Node;
     },
 ): { parameterDeclarations: string[]; lines: string[] } {
+    const bindingBoundary = context.nativeBindingCheckpoint();
     context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
         const parameterDeclarations = [
@@ -224,9 +227,8 @@ export function captureDataFunctionBody(
             channels?.namespaceScope ? { namespaceScope: true } : {},
         );
         try {
-            return {
-                parameterDeclarations,
-                lines: context.dataLowerer.captureStringIndexes(
+            const captured = context.captureNativeDependencies(() =>
+                context.dataLowerer.captureStringIndexes(
                     parameters
                         .filter(
                             (parameter) =>
@@ -240,9 +242,24 @@ export function captureDataFunctionBody(
                             ),
                             declaration: parameter.name.parent.parent,
                         })),
-                    () => context.captureEmittedLines(emitBody),
+                    () =>
+                        context.captureEmittedLines(emitBody, {
+                            functionBody: true,
+                        }),
                 ),
-            };
+            );
+            if (
+                channels?.namespaceScope &&
+                captured.nativeCaptures.some(
+                    (binding) => binding.sequence <= bindingBoundary,
+                )
+            )
+                context.fail(
+                    channels.namespaceScope,
+                    "A namespace body reads an enclosing native local and requires a closure.",
+                    "entry-scope-required",
+                );
+            return { parameterDeclarations, lines: captured.value };
         } finally {
             context.endNativeFunctionBody();
         }
@@ -638,7 +655,7 @@ export class NativeFunctionLowerer {
             ...argumentsCpp,
         ].join(", ")})`;
         if (!signature.returnType) {
-            this.context.emit(`${callCpp};`);
+            this.context.emit({ kind: "expression", code: `${callCpp};` });
             return { kind: "void", cpp: "" };
         }
         const result = `bbl_method_${this.context.allocateUserFunctionPrefix()}result`;
@@ -1838,7 +1855,7 @@ export class NativeFunctionLowerer {
                     this.emitValueBody(body.statements, !!signature.returnType);
                 },
                 {
-                    namespaceScope: true,
+                    namespaceScope: signature.method,
                     bindLeading: () =>
                         signature.fields.map((field) => {
                             const cppName = this.context.bindings.cppIdentifier(
@@ -2339,7 +2356,7 @@ export class NativeFunctionLowerer {
                 () => {
                     this.emitValueBody(body.statements, !!signature.returnType);
                 },
-                { namespaceScope: true },
+                { namespaceScope: signature.declaration },
             ),
             signature.declaration,
         );
@@ -2353,9 +2370,11 @@ export class NativeFunctionLowerer {
         if (returnsValue && !terminated) {
             // An exhaustive source switch may lower to a native if/else chain.
             // Keep the impossible fallthrough defined on all native compilers.
-            this.context.emit(
-                'throw std::runtime_error("Native value function fell through without returning.");',
-            );
+            this.context.emit({
+                kind: "control",
+                code: 'throw std::runtime_error("Native value function fell through without returning.");',
+                transfer: "throw",
+            });
         }
     }
 

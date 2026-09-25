@@ -138,7 +138,7 @@ export function lowerMaterialPublication(context: LoweringContext): string {
             ["mat", { cpp: "captured.value", type: "scalar" }],
         ]),
         calls: new Map(),
-        booleanAnd: true,
+
         returnValue(expression) {
             if (!expression)
                 context.contractError(
@@ -194,8 +194,7 @@ export function lowerMaterialPublication(context: LoweringContext): string {
                 [captured, { cpp: "captured.value", type: "scalar" }],
             ]),
             calls: new Map(),
-            booleanAnd: true,
-            booleanOr: true,
+
             returnValue: () => "false",
         });
     };

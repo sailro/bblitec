@@ -53,13 +53,16 @@ export function compileRetainedComputeTextureOptions(
                     field.name === "maxAnisotropy" &&
                     field.type?.kind === "number"
                 )
-                    context.emit(
-                        `${target}.descriptor.sampler.anisotropy = bbl::pal::compute_sampler_anisotropy(${field.cpp});`,
-                    );
+                    context.emit({
+                        kind: "expression",
+                        code: `${target}.descriptor.sampler.anisotropy = bbl::pal::compute_sampler_anisotropy(${field.cpp});`,
+                    });
                 else
-                    context.emit(
-                        `throw std::runtime_error(${stringLiteral(`Unrepresented compute sampler option: ${field.name}.`)});`,
-                    );
+                    context.emit({
+                        kind: "control",
+                        code: `throw std::runtime_error(${stringLiteral(`Unrepresented compute sampler option: ${field.name}.`)});`,
+                        transfer: "throw",
+                    });
             });
     };
     const emitAccess = (member: Member): void => {
@@ -79,11 +82,15 @@ export function compileRetainedComputeTextureOptions(
                 "Compute texture access requires a represented value.",
             );
         if (member.type.kind === "union")
-            context.emit(
-                `std::visit([&](const auto& accesses) { ${member.type.members.map((type, index) => `${index ? "else " : ""}if constexpr (std::is_same_v<std::decay_t<decltype(accesses)>, ${context.dataTypes.cppType(type)}>) { ${append(type, "accesses")} }`).join(" ")} }, ${member.cpp});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `std::visit([&](const auto& accesses) { ${member.type.members.map((type, index) => `${index ? "else " : ""}if constexpr (std::is_same_v<std::decay_t<decltype(accesses)>, ${context.dataTypes.cppType(type)}>) { ${append(type, "accesses")} }`).join(" ")} }, ${member.cpp});`,
+            });
         else context.emit(append(member.type, member.cpp));
-        context.emit(`${target}.access_supplied = true;`);
+        context.emit({
+            kind: "expression",
+            code: `${target}.access_supplied = true;`,
+        });
     };
     const fields = members(context.compileValue(expression));
     for (const key of ["width", "viewDimension", "format"])

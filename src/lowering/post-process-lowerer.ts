@@ -24,7 +24,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { TaaPostProcessLowerer } from "./taa-post-process-lowerer.js";
 import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
 import { refuseGeneration, type FeatureSites } from "../generation-refusal.js";
@@ -1047,7 +1047,7 @@ ${body}
         // the module does NOT declare is bound above.
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
         });
         for (const statement of declaration.body.statements) {
             lines.push(...lowerer.statement(statement, "            "));

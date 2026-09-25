@@ -4,10 +4,8 @@ import {
     gltfSourceAlbedoIdentities,
     packageSourceAlbedoIdentities,
 } from "../src/gltf-material-texture-identity.js";
-import {
-    GLTF_SOURCE_ALBEDO_IDENTITIES,
-    type JsonObject,
-} from "../src/gltf-document.js";
+import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-document.js";
+import { type JsonObject } from "../src/json-fields.js";
 
 function textured(index = 0, texCoord = 0): JsonObject {
     return { pbrMetallicRoughness: { baseColorTexture: { index, texCoord } } };

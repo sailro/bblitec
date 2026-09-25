@@ -2,7 +2,7 @@ import ts from "typescript";
 import { cameraChangeKeyHeader } from "./camera-change-key-lowerer.js";
 import { LoweringContext } from "./context.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
@@ -58,7 +58,7 @@ export class SceneUboLowerer {
                 cppName: "pack_scene_matrix",
                 returns: "void",
                 templateParameters: ["class Matrix"],
-                booleanAnd: true,
+
                 arrayCopy: copyFloats,
             },
         );
@@ -424,7 +424,7 @@ void write_pass_scene_ubo(Source& source, const Engine& engine, const Scene& sce
     CameraKey&& camera_key, WriteFull&& write_full) {
 ${lowerPinnedBody(file, declaration.body!.statements.slice(0, tailIndex), {
     bindings,
-    booleanAnd: true,
+
     calls: new Map([
         ["_cameraChangeKey", (args) => `camera_key(${args.join(", ")})`],
     ]),
@@ -446,7 +446,7 @@ ${lowerPinnedBody(file, declaration.body!.statements.slice(0, tailIndex), {
                 cppName: "taa_halton",
                 returns: "double",
                 inline: true,
-                calls: pinnedNumericMathCalls(),
+                calls: new Map(),
             },
         );
     }
@@ -510,7 +510,7 @@ ${lowerPinnedBody(file, declaration.body!.statements.slice(0, tailIndex), {
 void advance_taa_jitter(State& state, Source& source, double width, double height, WriteSpan&& write_span) {
 ${lowerPinnedBody(file, declaration.body!.statements, {
     bindings,
-    booleanOr: true,
+
     calls: new Map([
         [
             "task.engine._device.queue.writeBuffer",

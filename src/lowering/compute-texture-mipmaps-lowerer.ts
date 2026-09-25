@@ -190,6 +190,9 @@ export function lowerComputeTextureMipmaps(
             return {
                 range: iterated,
                 bindings: new Map([
+                    ...[...bindings].filter(([name]) =>
+                        name.startsWith(`${element}.`),
+                    ),
                     [element, { cpp: element, type: "opaque" }],
                 ]),
             };
@@ -263,6 +266,7 @@ export function lowerComputeTextureMipmaps(
                         callback.body,
                         "Expected mipmap preparation expression.",
                     );
+                lowerer.bindPorts(bindings, callback.body);
                 return [
                     `${indent}js::Array<PreparedComputeMipmaps> prepared;`,
                     `${indent}for (const auto& resource : textures) prepared.push_back(${lowerer.expression(callback.body)});`,
@@ -285,6 +289,7 @@ export function lowerComputeTextureMipmaps(
                         callback.body,
                         "Expected mipmap draw count expression.",
                     );
+                lowerer.bindPorts(bindings, callback.body);
                 return [
                     `${indent}const double draw_count = std::accumulate(prepared.begin(), prepared.end(), ${lowerer.expression(init.arguments[1]!)}, [&](double count, const auto& levels) { return ${lowerer.expression(callback.body)}; });`,
                 ];

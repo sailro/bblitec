@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
@@ -5,10 +6,7 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import {
-    pinnedNumericMathCalls,
-    pinnedNumericMathCallsWithHypot,
-} from "./pinned-operators.js";
+
 import { normalizeVec3Call } from "./pinned-normalize-vec3.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
@@ -358,7 +356,6 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
         const body = lowerPinnedBody(file, statements.slice(first, last + 1), {
             bindings,
             calls: new Map([
-                ...pinnedNumericMathCalls(),
                 [
                     "computePickVP",
                     (args: readonly string[]) =>
@@ -420,10 +417,18 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
                         );
                     }
                     for (const member of ["x", "y", "width", "height"]) {
-                        bindings.set(`viewport.${member}`, {
-                            cpp: `static_cast<double>(viewport.${member})`,
-                            type: "scalar",
-                        });
+                        lowerer.bindPorts(
+                            [
+                                [
+                                    `viewport.${member}`,
+                                    {
+                                        cpp: `static_cast<double>(viewport.${member})`,
+                                        type: "scalar",
+                                    },
+                                ],
+                            ],
+                            statement,
+                        );
                     }
                     return [
                         `${indent}const auto viewport = resolve_viewport(` +
@@ -439,17 +444,28 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
                         "getViewProjectionMatrix(camera, aspect)",
                         "pick view projection",
                     );
-                    bindings.set("vp", {
-                        cpp: "pick.view_projection",
-                        type: "f32",
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                "vp",
+                                {
+                                    cpp: "pick.view_projection",
+                                    type: "f32",
+                                },
+                            ],
+                        ],
+                        statement,
+                    );
                     return [
                         `${indent}pick.view_projection = view_projection(aspect);`,
                     ];
                 }
                 const output = outputs.get(name);
                 if (output) {
-                    bindings.set(name, { cpp: output, type: "scalar" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: output, type: "scalar" }]],
+                        statement,
+                    );
                     return [
                         `${indent}${output} = ${lowerer.expression(initializer)};`,
                     ];
@@ -777,7 +793,7 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
      * pin exports the face reader, this binding is where it fails.
      */
     private lowerDetailedHelpers(): string {
-        const calls = pinnedNumericMathCallsWithHypot();
+        const calls = new Map<string, PinnedCallSpelling>();
         calls.set("normalizeVec3TupleOrUp", normalizeVec3Call);
         calls.set(
             "clampTinyBarycentric",
@@ -848,7 +864,7 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
             {
                 cppName: "faces_pick_ray",
                 calls,
-                booleanAnd: true,
+
                 memberBindings: new Map<string, PinnedBinding>([
                     ...tupleMembers("normal", "normal"),
                     PICK_INFO_RAY,
@@ -926,8 +942,7 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
                 cppName: "populate_detailed_mesh_info",
                 returns: "void",
                 calls,
-                booleanAnd: true,
-                booleanOr: true,
+
                 fixedTupleCalls: new Map([
                     ["normalizeVec3TupleOrUp", 3],
                     ["transformNormal", 3],
@@ -1011,8 +1026,7 @@ ${this.lowerPickedNormalImpl(calls)}
             {
                 cppName: "picked_normal_impl",
                 calls,
-                booleanAnd: true,
-                booleanOr: true,
+
                 leadingParameters: [
                     "const std::vector<float>& mesh_normals",
                     "const std::vector<std::uint32_t>& mesh_indices",
@@ -1179,7 +1193,7 @@ js::Nullable<js::Tuple<3>> picked_normal(
      * arms answer `null`, which is the empty optional the info carries.
      */
     private lowerPickRay(): string {
-        const calls = pinnedNumericMathCallsWithHypot();
+        const calls = new Map<string, PinnedCallSpelling>();
         calls.set("invertMat4", (args) => `mat4_invert(${args.join(", ")})`);
         calls.set(
             "unprojectPoint",
@@ -1360,14 +1374,13 @@ void populate_pick_ray(
                 ...vec3MemberBindings("origin"),
             ]),
             calls: new Map([
-                ...pinnedNumericMathCallsWithHypot(),
                 [
                     "getCameraPosition",
                     (args: readonly string[]) =>
                         `upstream::camera_position(${args.join(", ")})`,
                 ],
             ]),
-            booleanAnd: true,
+
             vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
             statement: (statement, inner, indent) => {
                 if (statement === originStatement) {

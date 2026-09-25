@@ -30,8 +30,7 @@ export function lowerGltfHierarchy(context: LoweringContext): string {
     const mapBody = lowerPinnedBody(file, parentMap.body!.statements, {
         bindings: mapBindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         forOf(iterated, element) {
             return iterated === "children"
                 ? {

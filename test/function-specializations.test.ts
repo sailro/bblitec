@@ -175,6 +175,16 @@ const controls = `
         new CounterWalker().walk(selectedCounter, 1);
         if (counters[1]!.value !== 17)
             throw new Error("borrowed recursive record identity");
+        class RecursiveRelay {
+            step(depth: number): number { return descend(this, depth); }
+        }
+        function descend(relay: RecursiveRelay, depth: number): number {
+            if (depth <= 0) return 0;
+            if (depth % 2 === 0) return 1 + descend(relay, depth - 1);
+            return 1 + relay.step(depth - 1);
+        }
+        if (descend(new RecursiveRelay(), 5) !== 5)
+            throw new Error("shared method captures recursive self");
         let loads = 0;
         async function load(ignored: number): Promise<void> {
             await loadTexture2D(engine, "data:image/png;base64,iVBORw0KGgo=", { mipMaps: false });
@@ -187,7 +197,7 @@ const controls = `
 
 test("recursive specializations share bodies within their native scope", () => {
     const result = compileSource(controls);
-    assert.equal(result.cpp.match(/make_recursive_group\(/g)?.length, 9);
+    assert.equal(result.cpp.match(/make_recursive_group\(/g)?.length, 10);
     assert.equal(result.cpp.match(/"shared move body"/g)?.length, 1);
     assert.equal(result.cpp.match(/"shared method body"/g)?.length, 1);
     assert.match(result.cpp, /storedmover_receiver/);

@@ -9,7 +9,8 @@ import {
     specializeGltf,
 } from "../src/asset-specializer.js";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
-import { parseGlbJson, type JsonObject } from "../src/gltf-document.js";
+import { parseGlbJson } from "../src/gltf-document.js";
+import { type JsonObject } from "../src/json-fields.js";
 import { writeGlbFixture } from "./glb-fixture.js";
 import { packageGltfMeshPlan } from "../src/gltf-mesh-plan.js";
 import { packageGltfTransmissionPlan } from "../src/pinned-material-arms.js";

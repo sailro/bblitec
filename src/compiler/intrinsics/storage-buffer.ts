@@ -102,13 +102,16 @@ export function compileCreateStorageBuffer(
                 "storage_options_owner",
                 optionsExpression,
             );
-            context.emit(`if (${optionalPresentCpp(owner.cpp)}) {`);
+            context.emit({
+                kind: "open",
+                code: `if (${optionalPresentCpp(owner.cpp)}) {`,
+            });
             writeOptions({
                 kind: "data",
                 cpp: `${owner.cpp}.value()`,
                 dataType: value.dataType.inner,
             });
-            context.emit("}");
+            context.emit({ kind: "close", code: "}" });
             return;
         }
         if (value.kind === "data" && value.dataType?.kind === "union") {
@@ -126,12 +129,15 @@ export function compileCreateStorageBuffer(
                     cpp: `std::get<${index}>(${owner.cpp})`,
                     dataType: type,
                 });
-                context.emit("}");
+                context.emit({ kind: "close", code: "}" });
             });
             return;
         }
         if (value.kind === "string" || value.dataType?.kind === "string") {
-            context.emit(`${target}.label = ${value.cpp};`);
+            context.emit({
+                kind: "expression",
+                code: `${target}.label = ${value.cpp};`,
+            });
             return;
         }
         for (const member of retainedOptions(

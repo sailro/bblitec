@@ -1,12 +1,14 @@
 import {
     asIndex,
+    GLTF_MESH_WALKS,
+    isGaussianSplatPrimitive,
+} from "./gltf-document.js";
+import {
     asObject,
     asString,
     asStrings,
-    GLTF_MESH_WALKS,
-    isGaussianSplatPrimitive,
     type JsonObject,
-} from "./gltf-document.js";
+} from "./json-fields.js";
 import {
     importPinnedModule,
     importPinnedModuleWithExports,

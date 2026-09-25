@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * `havok-floating-origin.ts`, translated from its own bodies.
  *
@@ -27,6 +28,7 @@
  */
 import { posix } from "node:path";
 import ts from "typescript";
+import { PinnedRecordModel, type MemberSpec } from "./pinned-record-lowerer.js";
 import type { LoweringContext } from "./context.js";
 import {
     lowerPinnedFunctionParts,
@@ -38,7 +40,6 @@ import {
     type PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 export const havokFloatingOriginModule = "src/physics/havok-floating-origin.ts";
 const havokModule = "src/physics/havok.ts";
@@ -84,90 +85,51 @@ const CONTEXT_HOOKS: ReadonlyMap<string, string> = new Map([
     ["dispose", "_dispose"],
 ]);
 
-/** A pinned record's data members, in declaration order, by their C++ type. */
-function recordFields(
-    context: LoweringContext,
-    interfaceName: string,
-    types: ReadonlyMap<string, { annotation: string; cpp: string }>,
-): readonly { name: string; cpp: string }[] {
-    const { file, declaration: declared } = context.interfaceDeclaration(
-        havokFloatingOriginModule,
-        interfaceName,
-    );
-    const fields: { name: string; cpp: string }[] = [];
-    for (const member of declared.members) {
-        const name = member.name
-            ? context.propertyName(member.name)
-            : undefined;
-        if (!name) {
-            return context.contractError(
-                member,
-                `Expected a named ${interfaceName} member.`,
-            );
-        }
-        if (ts.isMethodSignature(member) && CONTEXT_HOOKS.has(name)) continue;
-        const type = types.get(name);
-        if (
-            !ts.isPropertySignature(member) ||
-            !type ||
-            member.type?.getText(file) !== type.annotation
-        ) {
-            return context.contractError(
-                member,
-                `Expected ${interfaceName}.${name} to be one of the members ` +
-                    "this port stores.",
-            );
-        }
-        fields.push({ name, cpp: type.cpp });
-    }
-    return fields;
-}
-
-/** `WorldRegion` and `HavokFloatingOriginContext`, as native records. */
+/** Native solver and storage ports on the pin's checked state records. */
 export function floatingOriginStructs(context: LoweringContext): string {
-    const region = recordFields(
+    const native = (field: string, cpp: string): [string, MemberSpec] => [
+        field,
+        { field, shape: { kind: "native", cpp } },
+    ];
+    const model = new PinnedRecordModel(
         context,
-        "WorldRegion",
-        new Map([
-            ["_world", { annotation: "any", cpp: "pal::PhysicsWorldHandle" }],
-            ["origin", { annotation: "Vec3", cpp: "Vec3d" }],
-            // A gravity vector is the PAL's three-lane array.
-            [
-                "gravity",
-                { annotation: "number[]", cpp: "std::array<double, 3>" },
-            ],
-        ]),
-    );
-    const floatingOrigin = recordFields(
-        context,
-        "HavokFloatingOriginContext",
-        new Map([
-            [
-                "regions",
+        context.program.modules([havokFloatingOriginModule]),
+        {
+            records: [
                 {
-                    annotation: "WorldRegion[]",
-                    cpp: "std::vector<std::shared_ptr<PhysicsRegion>>",
+                    pinned: ["WorldRegion"],
+                    cpp: "PhysicsRegion",
+                    reference: true,
+                    members: new Map([
+                        native("_world", "pal::PhysicsWorldHandle"),
+                        native("origin", "Vec3d"),
+                        native("gravity", "std::array<double, 3>"),
+                    ]),
+                },
+                {
+                    pinned: ["HavokFloatingOriginContext"],
+                    cpp: "PhysicsFloatingOrigin",
+                    reference: false,
+                    members: new Map([
+                        native(
+                            "regions",
+                            "std::vector<std::shared_ptr<PhysicsRegion>>",
+                        ),
+                        native("gravity", "std::array<double, 3>"),
+                    ]),
+                    omit: new Map(
+                        [...CONTEXT_HOOKS.keys()].map((name) => [
+                            name,
+                            "The lowered module function supplies this hook.",
+                        ]),
+                    ),
                 },
             ],
-            ["radius", { annotation: "number", cpp: "double" }],
-            [
-                "gravity",
-                { annotation: "number[]", cpp: "std::array<double, 3>" },
-            ],
-        ]),
+            values: new Map(),
+            adapters: new Map(),
+        },
     );
-    const fields = (list: readonly { name: string; cpp: string }[]): string =>
-        list.map(({ name, cpp }) => `    ${cpp} ${name}{};`).join("\n");
-    return `// ${context.provenance(havokFloatingOriginModule, "WorldRegion")}
-struct PhysicsRegion {
-${fields(region)}
-};
-
-// ${context.provenance(havokFloatingOriginModule, "HavokFloatingOriginContext", "its state; the hooks are the lowered functions")}
-struct PhysicsFloatingOrigin {
-${fields(floatingOrigin)}
-};
-`;
+    return model.structs(["WorldRegion", "HavokFloatingOriginContext"]);
 }
 
 /**
@@ -369,8 +331,6 @@ function floatingOriginScope(
     forOf: NonNullable<PinnedNumericScope["forOf"]>;
     vec3Literal: NonNullable<PinnedNumericScope["vec3Literal"]>;
     recordLiteral: NonNullable<PinnedNumericScope["recordLiteral"]>;
-    booleanAnd: true;
-    booleanOr: true;
 } {
     const file = context.sourceFile(havokFloatingOriginModule);
     const memberBindings = new Map<string, PinnedBinding>([
@@ -385,7 +345,7 @@ function floatingOriginScope(
         ]),
         ...extra,
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const [pinned, native] of FLOATING_ORIGIN_FUNCTIONS) {
         calls.set(pinned, (args) => `${native}(${args.join(", ")})`);
     }
@@ -503,8 +463,6 @@ function floatingOriginScope(
         },
         vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
         recordLiteral: recordLiteralCpp,
-        booleanAnd: true,
-        booleanOr: true,
     };
 }
 
@@ -529,7 +487,7 @@ function declaration(
         : undefined;
     if (!initializer) return undefined;
     const bind = (bindings: readonly [string, PinnedBinding][]): void => {
-        for (const [key, binding] of bindings) lowerer.bindLocal(key, binding);
+        lowerer.bindPorts(bindings, entry);
     };
     // A region the module looks up or creates.
     if (

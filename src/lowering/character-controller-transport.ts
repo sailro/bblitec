@@ -1,22 +1,29 @@
+import {
+    type RecordShape,
+    recordScalars,
+    recordOf,
+    arrayOf,
+    optionalOf,
+    tupleOf,
+} from "./record-shapes.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
     type CharacterKernelLowerer,
     type KernelSchema,
     type KernelValue,
-    kernelTuple,
 } from "./character-kernel-lowerer.js";
 
-export const queryResultType = kernelTuple([
-    "number",
-    "QueryPoint",
-    "QueryPoint",
+export const queryResultType = tupleOf([
+    recordScalars.number,
+    recordOf("QueryPoint"),
+    recordOf("QueryPoint"),
 ]);
-export const massPropertiesType = kernelTuple([
-    "number[]",
-    "number",
-    "number[]",
-    "number[]",
+export const massPropertiesType = tupleOf([
+    arrayOf(recordScalars.number),
+    recordScalars.number,
+    arrayOf(recordScalars.number),
+    arrayOf(recordScalars.number),
 ]);
 
 /** HP calls carry opaque handles and native collector storage. Numeric contact,
@@ -29,7 +36,7 @@ export function characterTransportSchema(
         lowerer: CharacterKernelLowerer,
     ): KernelValue => {
         const body = lowerer.value(expression);
-        if (body.type !== "NativeBody")
+        if (body.type.kind !== "record" || body.type.name !== "NativeBody")
             return context.contractError(
                 expression,
                 "Character PAL call requires a represented native body handle.",
@@ -83,26 +90,35 @@ export function characterTransportSchema(
                 if (
                     node.getText(node.getSourceFile()) === "this._world._bodies"
                 )
-                    return { cpp: "_world_bodies()", type: "PhysicsBody[]" };
+                    return {
+                        cpp: "_world_bodies()",
+                        type: arrayOf(recordOf("PhysicsBody")),
+                    };
                 if (node.name.text === "_hkBody") {
                     const body = lowerer.value(node.expression);
-                    if (body.type === "PhysicsBody")
+                    if (
+                        body.type.kind === "record" &&
+                        body.type.name === "PhysicsBody"
+                    )
                         return {
                             cpp: `_native_body(${body.cpp})`,
-                            type: "NativeBody",
+                            type: recordOf("NativeBody"),
                         };
                 }
                 if (node.name.text === "motionType") {
                     const body = lowerer.value(node.expression);
-                    if (body.type === "PhysicsBody")
+                    if (
+                        body.type.kind === "record" &&
+                        body.type.name === "PhysicsBody"
+                    )
                         return node.questionDotToken
                             ? {
                                   cpp: `(${body.cpp} ? std::optional<double>{_body_motion_type(${body.cpp})} : std::nullopt)`,
-                                  type: "optional:number",
+                                  type: optionalOf(recordScalars.number),
                               }
                             : {
                                   cpp: `_body_motion_type(${body.cpp})`,
-                                  type: "number",
+                                  type: recordScalars.number,
                               };
                 }
                 if (
@@ -111,10 +127,13 @@ export function characterTransportSchema(
                     node.expression.name.text === "node"
                 ) {
                     const body = lowerer.value(node.expression.expression);
-                    if (body.type === "PhysicsBody")
+                    if (
+                        body.type.kind === "record" &&
+                        body.type.name === "PhysicsBody"
+                    )
                         return {
                             cpp: `_body_world_matrix(${body.cpp})`,
-                            type: "number[]",
+                            type: arrayOf(recordScalars.number),
                         };
                 }
             }
@@ -129,7 +148,7 @@ export function characterTransportSchema(
                 )
                     return {
                         cpp: `_body_identity(${lowerer.value(node.expression.expression).cpp})`,
-                        type: "optional:number",
+                        type: optionalOf(recordScalars.number),
                     };
                 if (
                     ts.isCallExpression(node.expression) &&
@@ -152,7 +171,7 @@ export function characterTransportSchema(
                     )
                         return {
                             cpp: `_create_collector(${lowerer.value(call.arguments[0]!).cpp})`,
-                            type: "QueryCollector",
+                            type: recordOf("QueryCollector"),
                         };
                     if (
                         name === "HP_QueryCollector_GetNumHits" &&
@@ -160,7 +179,7 @@ export function characterTransportSchema(
                     )
                         return {
                             cpp: `static_cast<double>(${collector(call.arguments[0]!)}.size())`,
-                            type: "number",
+                            type: recordScalars.number,
                         };
                     if (
                         [
@@ -173,62 +192,83 @@ export function characterTransportSchema(
                             cpp: `${collector(call.arguments[0]!)}.at(js::array_index(${lowerer.value(call.arguments[1]!).cpp}))`,
                             type: queryResultType,
                         };
-                    const bodyGetters = new Map([
+                    const bodyGetters = new Map<
+                        string,
+                        readonly [string, RecordShape]
+                    >([
                         [
                             "HP_Body_GetMassProperties",
                             ["_mass_properties", massPropertiesType],
                         ],
                         [
                             "HP_Body_GetAngularVelocity",
-                            ["_angular_velocity", "number[]"],
+                            [
+                                "_angular_velocity",
+                                arrayOf(recordScalars.number),
+                            ],
                         ],
                         [
                             "HP_Body_GetLinearVelocity",
-                            ["_linear_velocity", "number[]"],
+                            ["_linear_velocity", arrayOf(recordScalars.number)],
                         ],
                     ]);
                     const getter = bodyGetters.get(name);
                     if (getter && call.arguments.length === 1)
                         return {
                             cpp: `${getter[0]}(${bodyArgument(call.arguments[0]!, lowerer).cpp})`,
-                            type: getter[1]!,
+                            type: getter[1],
                         };
                 }
                 const owner = lowerer.value(node.expression);
-                if (owner.type === "QueryPoint") {
-                    const field = new Map([
-                        ["0", ["identity", "number[]"]],
-                        ["3", ["position", "number[]"]],
-                        ["4", ["normal", "number[]"]],
+                if (
+                    owner.type.kind === "record" &&
+                    owner.type.name === "QueryPoint"
+                ) {
+                    const field = new Map<
+                        string,
+                        readonly [string, RecordShape]
+                    >([
+                        ["0", ["identity", arrayOf(recordScalars.number)]],
+                        ["3", ["position", arrayOf(recordScalars.number)]],
+                        ["4", ["normal", arrayOf(recordScalars.number)]],
                     ]).get(node.argumentExpression.text);
                     if (field)
                         return {
                             cpp: `${owner.cpp}->${field[0]}`,
-                            type: field[1]!,
+                            type: field[1],
                             borrowed: "mutable",
                         };
                 }
             }
             if (ts.isCallExpression(node)) {
                 const path = node.expression.getText(node.getSourceFile());
-                const thin = new Map([
+                const thin = new Map<string, readonly [string, RecordShape]>([
                     [
                         "this._world._thin?.resolve",
                         [
                             "_thin_resolve",
-                            `optional:${kernelTuple(["PhysicsBody", "NativeBody", "number"])}`,
+                            optionalOf(
+                                tupleOf([
+                                    recordOf("PhysicsBody"),
+                                    recordOf("NativeBody"),
+                                    recordScalars.number,
+                                ]),
+                            ),
                         ],
                     ],
-                    ["this._world._thin?.com", ["_thin_com", "Vec3"]],
+                    ["this._world._thin?.com", ["_thin_com", recordOf("Vec3")]],
                     [
                         "this._world._thin?.matrix",
-                        ["_thin_matrix", "optional:number[]"],
+                        [
+                            "_thin_matrix",
+                            optionalOf(arrayOf(recordScalars.number)),
+                        ],
                     ],
                 ]).get(path);
                 if (thin)
                     return {
                         cpp: `${thin[0]}(${node.arguments.map((argument) => lowerer.value(argument).cpp).join(", ")})`,
-                        type: thin[1]!,
+                        type: thin[1],
                     };
                 if (
                     path === "worldStepSeconds" &&
@@ -236,14 +276,17 @@ export function characterTransportSchema(
                     node.arguments[0]!.getText(node.getSourceFile()) ===
                         "this._world"
                 )
-                    return { cpp: "_world_step_seconds()", type: "number" };
+                    return {
+                        cpp: "_world_step_seconds()",
+                        type: recordScalars.number,
+                    };
                 if (
                     path === "hknp.HP_Body_ApplyImpulse" &&
                     node.arguments.length === 3
                 )
                     return {
-                        cpp: `_apply_impulse(${bodyArgument(node.arguments[0]!, lowerer).cpp}, ${lowerer.value(node.arguments[1]!, "number[]").cpp}, ${lowerer.value(node.arguments[2]!, "number[]").cpp})`,
-                        type: "void",
+                        cpp: `_apply_impulse(${bodyArgument(node.arguments[0]!, lowerer).cpp}, ${lowerer.value(node.arguments[1]!, arrayOf(recordScalars.number)).cpp}, ${lowerer.value(node.arguments[2]!, arrayOf(recordScalars.number)).cpp})`,
+                        type: recordScalars.void,
                     };
                 if (
                     [
@@ -255,7 +298,7 @@ export function characterTransportSchema(
                     collector(node.arguments[0]!);
                     return {
                         cpp: `_release_collector(${lowerer.value(node.arguments[0]!).cpp})`,
-                        type: "void",
+                        type: recordScalars.void,
                     };
                 }
                 if (
@@ -275,14 +318,17 @@ export function characterTransportSchema(
                             "Character release requires its shape handle.",
                         );
                     const shape = lowerer.value(handle.expression);
-                    if (shape.type !== "PhysicsShape")
+                    if (
+                        shape.type.kind !== "record" ||
+                        shape.type.name !== "PhysicsShape"
+                    )
                         return context.contractError(
                             handle,
                             "Character shape release has an unrepresented owner.",
                         );
                     return {
                         cpp: `_release_shape(${shape.cpp})`,
-                        type: "void",
+                        type: recordScalars.void,
                     };
                 }
             }
@@ -322,10 +368,10 @@ export function lowerCharacterCollectorCasts(
             .statements[0]!,
     ) as ts.ArrayLiteralExpression;
     const cast = initializer(source[7]!) as ts.ArrayLiteralExpression;
-    return `    const auto start = ${lowerer.value(initializer(source[3]!), "number[]").cpp};
-    const auto orientation = ${lowerer.value(initializer(source[4]!), "number[]").cpp};
+    return `    const auto start = ${lowerer.value(initializer(source[3]!), arrayOf(recordScalars.number)).cpp};
+    const auto orientation = ${lowerer.value(initializer(source[4]!), arrayOf(recordScalars.number)).cpp};
     if (${lowerer.value((source[6] as ts.IfStatement).expression).cpp}) {
         _collect_proximity(start, orientation, ${lowerer.value(proximity.elements[3]!).cpp}, ${lowerer.value(proximity.elements[4]!).cpp});
     }
-    _collect_cast(orientation, start, ${lowerer.value(cast.elements[3]!, "number[]").cpp}, ${lowerer.value(cast.elements[4]!).cpp});`;
+    _collect_cast(orientation, start, ${lowerer.value(cast.elements[3]!, arrayOf(recordScalars.number)).cpp}, ${lowerer.value(cast.elements[4]!).cpp});`;
 }

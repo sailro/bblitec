@@ -1,6 +1,6 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 /** Texture allocation facts and mip arithmetic, read/lowered from the pin. */
 export function pinnedTextureHeader(context: LoweringContext): string {
@@ -33,7 +33,7 @@ export function pinnedTextureHeader(context: LoweringContext): string {
         context.propertyInitializer(sampler, "maxAnisotropy"),
         samplerFile,
     );
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     const dimensions = [
         { pinned: "width", kind: "number" as const, cpp: "width" },
         { pinned: "height", kind: "number" as const, cpp: "height" },

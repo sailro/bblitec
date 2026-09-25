@@ -28,6 +28,7 @@ import {
     compileOptionalStaticBoolean,
     compilePositiveInteger,
     compileStaticNumber,
+    staticNumberValue,
     pinnedEnumMemberName,
     validateObjectProperties,
     type PositiveIntegerContext,
@@ -68,6 +69,16 @@ export interface CompiledRenderTargetOptions {
     hasColor: boolean;
     surface?: Value;
     signature: NonNullable<Value["renderTargetSignature"]>;
+}
+
+/** Fixed extents snapshot the running expression when the target is created. */
+function compileRenderTargetDimension(
+    context: EngineOptionContext,
+    expression: ts.Expression,
+): string {
+    if (staticNumberValue(context, expression) !== undefined)
+        return compilePositiveInteger(context, expression);
+    return `bbl::render_target_dimension(${context.compileNumber(expression, "double")})`;
 }
 
 export function compileRenderTargetOptions(
@@ -136,8 +147,11 @@ export function compileRenderTargetOptions(
                         "Fixed render target size requires width and height.",
                     );
                 }
-                width = compilePositiveInteger(context, widthExpression);
-                height = compilePositiveInteger(context, heightExpression);
+                width = compileRenderTargetDimension(context, widthExpression);
+                height = compileRenderTargetDimension(
+                    context,
+                    heightExpression,
+                );
             }
         } else {
             surface = context.compileValue(unwrappedSize);

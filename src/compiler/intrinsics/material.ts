@@ -578,14 +578,16 @@ function compileCreatePbrMaterial(
             initializer: creation,
         });
         if (baseColorFile) {
-            context.emit(
-                `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColorFile});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColorFile});`,
+            });
         }
         if (ormFile) {
-            context.emit(
-                `bbl::set_material_orm_file(${engine}, ${temporary}, ${ormFile});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `bbl::set_material_orm_file(${engine}, ${temporary}, ${ormFile});`,
+            });
         }
         if (plugins) {
             const folded = foldMaterialPluginList(context, plugins, "pbr");
@@ -669,10 +671,12 @@ function compileCreateGridMaterial(
     // Each typed uniform carries the value the factory computed and the
     // material normalized to float32.
     for (const uniform of grid.uniforms) {
-        context.emit(
-            `bbl::set_shader_uniform_value(${engine}, ${material}, ` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::set_shader_uniform_value(${engine}, ${material}, ` +
                 `${uniform.offset}u, ${uniform.values.map(float32Literal).join(", ")});`,
-        );
+        });
     }
     return {
         kind: "material",
@@ -796,9 +800,10 @@ function compileMarkMaterialUboDirty(
     context.expectKind(material, "material", argumentAt(call, 0));
     const engine = context.requireEngine(material, call);
     for (const [field, value] of material.materialUboArrayFields ?? []) {
-        context.emit(
-            `${recordAt(`${engine}.materials`, material.cpp)}.${field} = ${value.cpp};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${engine}.materials`, material.cpp)}.${field} = ${value.cpp};`,
+        });
     }
     return {
         kind: "void",
@@ -832,11 +837,13 @@ function compileCreateShaderMaterial(
             initializer: materialCpp,
         });
         for (const uniform of variant.dynamicUniforms) {
-            context.emit(
-                `bbl::set_shader_uniform_value(${engine}, ` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::set_shader_uniform_value(${engine}, ` +
                     `${material}, ${uniform.offset}u, ` +
                     `${uniform.components.join(", ")});`,
-            );
+            });
         }
         materialCpp = material;
     }
@@ -1627,10 +1634,12 @@ function compileSetPbrSheen(
     if (sheen.texture) {
         const texture = context.compileValue(sheen.texture);
         context.expectKind(texture, "texture", sheen.texture);
-        context.emit(
-            `bbl::set_pbr_sheen_texture(` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::set_pbr_sheen_texture(` +
                 `${engine}, ${material.cpp}, ${texture.cpp});`,
-        );
+        });
     }
     return {
         kind: "void",

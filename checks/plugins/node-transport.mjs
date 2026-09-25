@@ -30,7 +30,7 @@ import {
 /**
  * @import { BuildStamp } from "../../dist/src/build-stamp.js"
  * @import { CompileManifest } from "../../dist/src/compiler/types.js"
- * @import { JsonRecord } from "../../dist/src/gltf-document.js"
+ * @import { JsonRecord } from "../../dist/src/json-fields.js"
  * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
  * @import { RecordedBufferState, RecordedMesh, RecordedObservation, RecordedPipeline } from "./webgpu-records.js"
  */

@@ -24,6 +24,7 @@ export const CPP_ELEMENT = {
     f32: "float",
     f64: "double",
     u32: "std::uint32_t",
+    i32: "std::int32_t",
     u8: "std::uint8_t",
     i64: "std::int64_t",
 } as const;

@@ -1,5 +1,5 @@
 import { CPP_SCALAR } from "../../lowering/cpp-types.js";
-import { handleCppType, handleOwnsTracedEdge } from "./handles.js";
+import { handleCppType } from "./handles.js";
 import type { DataKindOperations } from "./contracts.js";
 import type { TypedArrayKind } from "./model.js";
 import { typedArrayCppType, typedArrayStem } from "./typed-arrays.js";
@@ -89,7 +89,8 @@ export const scalarKinds: DataKindOperations<
         equal: (left, right) => left.handle === right.handle,
         children: () => [],
         byReference: false,
-        tracedEdges: (type) => handleOwnsTracedEdge(type.handle),
+        tracedEdges: (type) =>
+            `bbl::js::gc_traceable<${handleCppType(type.handle)}>`,
     },
     u8array: typedArray("u8array"),
     i8array: typedArray("i8array"),

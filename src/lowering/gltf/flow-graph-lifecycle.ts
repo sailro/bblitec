@@ -335,6 +335,10 @@ export function lowerGltfFlowGraphLifecycle(context: LoweringContext): string {
                 call,
                 "Expected flow runtime cleanup iteration.",
             );
+        lowerer.bindPorts(
+            [["runtime", { cpp: "runtime", type: "opaque" }]],
+            callback.body,
+        );
         const body = ts.isBlock(callback.body)
             ? callback.body.statements
             : [ts.factory.createExpressionStatement(callback.body)];
@@ -489,6 +493,10 @@ export function lowerGltfFlowGraphLifecycle(context: LoweringContext): string {
                         rejected,
                         "() => undefined",
                         "Unsupported pending flow-runtime rejection",
+                    );
+                    lowerer.bindPorts(
+                        [["loaded", { cpp: "loaded", type: "opaque" }]],
+                        fulfilled.body,
                     );
                     return [
                         `${indent}{`,
@@ -652,7 +660,10 @@ export function lowerFlowGraphMembership(context: LoweringContext): string {
                             );
                         const name = variable.name.text;
                         // The source returns -1 for an absent callback/runtime.
-                        localBindings.set(name, { cpp: name, type: "index" });
+                        lowerer.bindPorts(
+                            [[name, { cpp: name, type: "index" }]],
+                            statement,
+                        );
                         return [
                             `${indent}const auto found = std::find(${collection}.begin(), ${collection}.end(), ${lowerer.expression(value.arguments[0]!)});`,
                             `${indent}const std::ptrdiff_t ${name} = found == ${collection}.end() ? -1 : found - ${collection}.begin();`,

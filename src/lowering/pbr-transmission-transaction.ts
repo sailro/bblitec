@@ -175,7 +175,7 @@ function lowerRebuildTransaction(context: LoweringContext): string {
     const scope = {
         bindings,
         calls: new Map(),
-        booleanOr: true,
+
         statement(
             statement: ts.Statement,
             numeric: import("./pinned-numeric-lowerer.js").PinnedNumericLowerer,

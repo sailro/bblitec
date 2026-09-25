@@ -111,11 +111,12 @@ export function compileSkeletonIntrinsic(
             );
             const engineCpp = engine.engineCpp ?? engine.cpp;
             const skeleton = context.allocateTemporaryCppName("skeleton");
-            context.emit(
-                `const ${handleCppType("scene-skeleton")} ${skeleton} = ` +
-                    `bbl::create_scene_skeleton(${engineCpp}, ` +
-                    `${joints}, ${weights}, ${boneCount}, ${boneData});`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: `const ${handleCppType("scene-skeleton")}`,
+                name: skeleton,
+                initializer: `bbl::create_scene_skeleton(${engineCpp}, ${joints}, ${weights}, ${boneCount}, ${boneData})`,
+            });
             context.reachFeature("mesh:skeleton", call);
             return {
                 kind: "scene-skeleton",
@@ -188,12 +189,12 @@ export function compileSkeletonIntrinsic(
             const name = context.compileStringLiteral(argumentAt(call, 1));
             const engine = context.requireEngine(skeleton, call);
             const bone = context.allocateTemporaryCppName("bone");
-            context.emit(
-                `const ${handleCppType("bone")} ${bone} = ` +
-                    `bbl::get_bone_by_name(` +
-                    `${engine}, ` +
-                    `${skeleton.cpp}, ${context.cppString(name)});`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: `const ${handleCppType("bone")}`,
+                name: bone,
+                initializer: `bbl::get_bone_by_name(${engine}, ${skeleton.cpp}, ${context.cppString(name)})`,
+            });
             return {
                 kind: "bone",
                 cpp: bone,

@@ -1,3 +1,15 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
+import {
+    methodAccess,
+    provenance,
+    WRAPPER_CORE,
+    WRAPPER_GENERATORS,
+    wrapperModule,
+    propertyPath,
+    blockArrow,
+    declarationOf,
+    type BlockArrow,
+} from "./navigation-wrappers.js";
 /**
  * The @recast-navigation generators' build plan: every number
  * `generateSoloNavMeshData` and `generateTileCache` compute before they hand
@@ -27,13 +39,12 @@
  * PAL exports it.
  */
 import ts from "typescript";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { declaredSymbol } from "../compiler/symbols.js";
+import { pinnedCheckerOf } from "../pinned-program.js";
 import {
     contractError,
     findNodes,
     hasNode,
-    nullishDefault,
     numericValue,
     sharedPinnedContext,
     unwrapExpression,
@@ -45,12 +56,9 @@ import {
     type PinnedRecordMember,
     type PinnedRecordShape,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedMathCall, pinnedNumericMathCalls } from "./pinned-operators.js";
+import { pinnedMathCall } from "./pinned-operators.js";
 import { doubleLiteral } from "../cpp-literals.js";
 
-export const WRAPPER_CORE = "@recast-navigation/core/dist/index.mjs";
-export const WRAPPER_GENERATORS =
-    "@recast-navigation/generators/dist/index.mjs";
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
 /**
@@ -161,111 +169,6 @@ export const NAV_MESH_BUILD_PARAM_FIELDS: ReadonlyMap<string, string> = new Map(
         ["maxObstacles", "max_obstacles"],
     ],
 );
-
-const wrapperModules = new Map<string, ts.SourceFile>();
-
-/** One installed `@recast-navigation` module's syntax tree, parsed once. */
-export function wrapperModule(moduleSpecifier: string): ts.SourceFile {
-    const cached = wrapperModules.get(moduleSpecifier);
-    if (cached) return cached;
-    const require = createRequire(import.meta.url);
-    const modulePath = require.resolve(moduleSpecifier);
-    const file = ts.createSourceFile(
-        modulePath,
-        readFileSync(modulePath, "utf8"),
-        ts.ScriptTarget.Latest,
-        true,
-    );
-    wrapperModules.set(moduleSpecifier, file);
-    return file;
-}
-
-/** The installed version of one `@recast-navigation` package. */
-export function wrapperPackageVersion(name: string): string {
-    const require = createRequire(import.meta.url);
-    const manifest: unknown = JSON.parse(
-        readFileSync(require.resolve(`${name}/package.json`), "utf8"),
-    );
-    if (
-        typeof manifest !== "object" ||
-        manifest === null ||
-        !("version" in manifest) ||
-        typeof manifest.version !== "string"
-    ) {
-        throw new Error(`${name}'s package.json names no version.`);
-    }
-    return manifest.version;
-}
-
-/** `a.b.c` as its names, or undefined for anything but a property path. */
-export function propertyPath(expression: ts.Expression): string[] | undefined {
-    const unwrapped = unwrapExpression(expression);
-    if (ts.isIdentifier(unwrapped)) return [unwrapped.text];
-    if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) return ["this"];
-    if (ts.isPropertyAccessExpression(unwrapped)) {
-        const owner = propertyPath(unwrapped.expression);
-        return owner ? [...owner, unwrapped.name.text] : undefined;
-    }
-    return undefined;
-}
-
-type BlockArrow = ts.ArrowFunction & { body: ts.Block };
-
-function isBlockArrow(node: ts.Node): node is BlockArrow {
-    return ts.isArrowFunction(node) && ts.isBlock(node.body);
-}
-
-/** A `const name = (...) => { ... }` under `scope`, refusing any other shape. */
-export function blockArrow(
-    scope: ts.Node,
-    name: string,
-    parameters: readonly string[],
-): BlockArrow {
-    const arrow = unwrapExpression(variableInitializer(scope, name));
-    if (
-        !isBlockArrow(arrow) ||
-        arrow.parameters.length !== parameters.length ||
-        arrow.parameters.some(
-            (parameter, index) =>
-                parameter.name.getText() !== parameters[index],
-        )
-    ) {
-        return contractError(
-            arrow,
-            `Expected ${name} to stay an arrow function of ` +
-                `(${parameters.join(", ")}) with a body.`,
-        );
-    }
-    return arrow;
-}
-
-/** The one statement of `statements` declaring `name`, and its index. */
-export function declarationOf(
-    statements: readonly ts.Statement[],
-    name: string,
-    at: ts.Node,
-): { index: number; declaration: ts.VariableDeclaration } {
-    const found = statements.flatMap((statement, index) =>
-        ts.isVariableStatement(statement) &&
-        statement.declarationList.declarations.length === 1 &&
-        ts.isIdentifier(statement.declarationList.declarations[0]!.name) &&
-        statement.declarationList.declarations[0]!.name.text === name
-            ? [
-                  {
-                      index,
-                      declaration: statement.declarationList.declarations[0]!,
-                  },
-              ]
-            : [],
-    );
-    if (found.length !== 1 || !found[0]!.declaration.initializer) {
-        return contractError(
-            at,
-            `Expected one declaration of '${name}' with an initializer.`,
-        );
-    }
-    return found[0]!;
-}
 
 /** Whether a statement calls anything but a `Math` member or `allowed`. */
 function callsOutside(
@@ -386,215 +289,168 @@ function constantObject(
 export type NavigationBuildArm = "solo" | "tileCache";
 type BuildArm = NavigationBuildArm;
 
-/**
- * One `cfg.<key> = ...` the pinned module performs for an arm: a copy made
- * only when the scene gave the key, a store the arm always makes, or one it
- * makes under a further condition, which the plan cannot read.
- */
-type CfgAssignment =
-    | { key: string; kind: "given" }
-    | { key: string; kind: "givenNonEmpty" }
-    | { key: string; kind: "always"; value: ts.Expression }
-    | { key: string; kind: "conditional"; at: ts.Node };
+/** A cfg store and the source guards under which it executes. */
+interface CfgAssignment {
+    readonly key: string;
+    readonly value: ts.Expression;
+    readonly guards: readonly { expression: ts.Expression; negate: boolean }[];
+}
 
-let cfgAssignments: ReadonlyMap<BuildArm, readonly CfgAssignment[]> | undefined;
+const cfgAssignments = new Map<BuildArm, readonly CfgAssignment[]>();
 
-/**
- * What the pinned `_createNavMeshFromMerged` puts in `cfg` for each arm, in
- * order: the keys it copies when the scene gave them (`if (params.K !==
- * undefined) { cfg.K = params.K; }`), then the tile-cache block's own. The
- * tiled block belongs to an arm the compiler refuses, and any other `cfg`
- * store refuses here.
- */
+/** Select the generator's branch by its call; retain the pin's guards verbatim. */
 function pinnedCfgAssignments(arm: BuildArm): readonly CfgAssignment[] {
-    if (!cfgAssignments) {
-        const context = sharedPinnedContext();
-        const { declaration } = context.functionDeclaration(
-            NAVIGATION_MODULE,
-            "_createNavMeshFromMerged",
-        );
-        const common: CfgAssignment[] = [];
-        const tileCache: CfgAssignment[] = [];
-        const accounted = new Set<ts.Node>();
-        for (const statement of declaration.body!.statements) {
-            if (!ts.isIfStatement(statement)) continue;
-            const guard = statement.expression;
-            const block = ts.isBlock(statement.thenStatement)
-                ? statement.thenStatement.statements
-                : [];
-            if (ts.isIdentifier(guard) && guard.text === "needsTileCache") {
-                for (const store of findNodes(
-                    statement.thenStatement,
-                    (node): node is ts.BinaryExpression =>
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                        propertyPath(node.left)?.[0] === "cfg",
-                )) {
-                    const key = propertyPath(store.left)![1]!;
-                    const direct = block.some(
-                        (inner) =>
-                            ts.isExpressionStatement(inner) &&
-                            inner.expression === store,
-                    );
-                    tileCache.push(
-                        direct
-                            ? { key, kind: "always", value: store.right }
-                            : { key, kind: "conditional", at: store },
-                    );
-                    accounted.add(store);
-                }
-                continue;
-            }
-            if (ts.isIdentifier(guard) && guard.text === "needsTiled") {
-                for (const store of findNodes(
-                    statement,
-                    (node): node is ts.BinaryExpression =>
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
-                )) {
-                    accounted.add(store);
-                }
-                continue;
-            }
-            const [only] = block;
-            const store =
-                block.length === 1 &&
-                only &&
-                ts.isExpressionStatement(only) &&
-                ts.isBinaryExpression(only.expression)
-                    ? only.expression
-                    : undefined;
-            const path = store ? propertyPath(store.left) : undefined;
-            const key = path?.length === 2 ? path[1]! : undefined;
-            if (
-                !store ||
-                !key ||
-                !context.expressionMatchesShape(
-                    store,
-                    `cfg.${key} = params.${key}`,
-                )
-            ) {
-                continue;
-            }
-            if (
-                context.expressionMatchesShape(
-                    guard,
-                    `params.${key} !== undefined`,
-                )
-            ) {
-                common.push({ key, kind: "given" });
-                accounted.add(store);
-            } else if (
-                context.expressionMatchesShape(
-                    guard,
-                    `params.${key} !== undefined && params.${key}.length > 0`,
-                )
-            ) {
-                common.push({ key, kind: "givenNonEmpty" });
-                accounted.add(store);
-            }
-        }
-        for (const store of findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                propertyPath(node.left)?.[0] === "cfg",
-        )) {
-            if (!accounted.has(store)) {
-                contractError(
-                    store,
-                    "Expected every cfg store in _createNavMeshFromMerged to " +
-                        "be a given-key copy or an arm's own.",
+    const cached = cfgAssignments.get(arm);
+    if (cached) return cached;
+    const { declaration } = sharedPinnedContext().functionDeclaration(
+        NAVIGATION_MODULE,
+        "_createNavMeshFromMerged",
+    );
+    const assignments: CfgAssignment[] = [];
+    const generators = new Map([
+        ["generateTileCache", "tileCache"],
+        ["generateTiledNavMesh", "tiled"],
+        ["generateSoloNavMesh", "solo"],
+    ]);
+    const visit = (node: ts.Node, guards: CfgAssignment["guards"]): void => {
+        if (ts.isIfStatement(node)) {
+            const calls = findNodes(
+                node.thenStatement,
+                (child): child is ts.CallExpression =>
+                    ts.isCallExpression(child) &&
+                    ts.isPropertyAccessExpression(child.expression) &&
+                    generators.has(child.expression.name.text),
+            );
+            const selected = calls.map((call) =>
+                ts.isPropertyAccessExpression(call.expression)
+                    ? generators.get(call.expression.name.text)
+                    : undefined,
+            );
+            if (selected.length > 1)
+                return contractError(
+                    node,
+                    "Expected one navigation generator per build branch.",
                 );
+            if (selected.length === 0 || selected[0] === arm)
+                visit(node.thenStatement, [
+                    ...guards,
+                    { expression: node.expression, negate: false },
+                ]);
+            if (node.elseStatement)
+                visit(node.elseStatement, [
+                    ...guards,
+                    { expression: node.expression, negate: true },
+                ]);
+            return;
+        }
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+            const path = propertyPath(node.left);
+            if (path?.[0] === "cfg") {
+                if (path.length !== 2)
+                    return contractError(
+                        node,
+                        "Expected a direct navigation config field store.",
+                    );
+                assignments.push({ key: path[1]!, value: node.right, guards });
+                return;
             }
         }
-        cfgAssignments = new Map([
-            ["solo", common],
-            ["tileCache", [...common, ...tileCache]],
-        ]);
-    }
-    return cfgAssignments.get(arm)!;
+        ts.forEachChild(node, (child) => visit(child, guards));
+    };
+    visit(declaration.body!, []);
+    cfgAssignments.set(arm, assignments);
+    return assignments;
 }
 
-/** The scene's own parameter, as the plan reads it. */
-function paramsField(key: string, at: ts.Node): string {
-    const field = NAV_MESH_BUILD_PARAM_FIELDS.get(key);
-    if (!field) {
-        return contractError(
-            at,
-            `The pinned cfg reads params.${key}, which ` +
-                "bbl::pal::NavMeshBuildParams does not carry.",
-        );
+/** Native parameter storage is the only adaptation; guard arithmetic stays pinned. */
+function cfgLowerer(): PinnedNumericLowerer {
+    const { file } = sharedPinnedContext().functionDeclaration(
+        NAVIGATION_MODULE,
+        "_createNavMeshFromMerged",
+    );
+    const bindings = new Map<string, PinnedBinding>();
+    for (const [key, field] of NAV_MESH_BUILD_PARAM_FIELDS) {
+        const storage = `params.${field}`;
+        bindings.set(`params.${key}`, {
+            cpp: `bbl::pinned::present(${storage})`,
+            type: "scalar",
+            nullish: `!${storage}.has_value()`,
+            absentCpp: `!${storage}.has_value()`,
+        });
     }
-    return `params.${field}`;
+    for (const [key, field] of NAV_MESH_BUILD_PARAM_LISTS)
+        bindings.set(`params.${key}`, {
+            cpp: `params.${field}`,
+            type: "record-list",
+            record: offMeshConnectionRecord(),
+            absentCpp: "false",
+        });
+    const checker = pinnedCheckerOf(file);
+    const resolving = new Set<ts.Symbol>();
+    return new PinnedNumericLowerer(file, {
+        bindings,
+        calls: new Map(),
+        expression: (node, lowerer) => {
+            if (!ts.isIdentifier(node)) return undefined;
+            const symbol = declaredSymbol(checker, node);
+            const declaration = symbol?.valueDeclaration;
+            if (
+                !symbol ||
+                !declaration ||
+                !ts.isVariableDeclaration(declaration) ||
+                !declaration.initializer
+            )
+                return undefined;
+            if (resolving.has(symbol))
+                return contractError(
+                    node,
+                    "Recursive navigation guard initializer.",
+                );
+            resolving.add(symbol);
+            try {
+                return lowerer.expression(declaration.initializer);
+            } finally {
+                resolving.delete(symbol);
+            }
+        },
+    });
 }
 
-/** `cfg.<key>` layered over what the spreads beneath it hold. */
+function cfgGuard(
+    assignment: CfgAssignment,
+    lowerer: PinnedNumericLowerer,
+): string | undefined {
+    if (assignment.guards.length === 0) return undefined;
+    return assignment.guards
+        .map(
+            (guard) =>
+                `${guard.negate ? "!" : ""}(${lowerer.expression(guard.expression)})`,
+        )
+        .join(" && ");
+}
+
+/** `cfg.<key>` layered over the generator's defaults, in pinned store order. */
 function cfgValue(
     arm: BuildArm,
     key: string,
     below: ConfigValue | undefined,
 ): ConfigValue | undefined {
     let value = below;
+    const lowerer = cfgLowerer();
     for (const assignment of pinnedCfgAssignments(arm)) {
         if (assignment.key !== key) continue;
-        const at = sharedPinnedContext().functionDeclaration(
-            NAVIGATION_MODULE,
-            "_createNavMeshFromMerged",
-        ).declaration;
-        if (assignment.kind === "conditional") {
-            return contractError(
-                assignment.at,
-                `cfg.${key} is stored only under a further condition, which ` +
-                    "the build plan does not read.",
-            );
-        }
-        if (assignment.kind === "givenNonEmpty") {
-            return contractError(
-                at,
-                `cfg.${key} is a list, which the build plan reads through ` +
-                    "cfgListPresence.",
-            );
-        }
-        if (assignment.kind === "given") {
-            // Present only when the scene gave it; the spread beneath
-            // answers otherwise.
-            if (!value || value.type !== "scalar") {
-                return contractError(
-                    at,
-                    `cfg.${key} is copied only when given, and no default ` +
-                        "beneath it answers when it is not.",
-                );
-            }
-            value = {
-                cpp: `${paramsField(key, at)}.value_or(${value.cpp})`,
-                type: "scalar",
-                readsParams: true,
-            };
-            continue;
-        }
-        // Always present: `params.K ?? N`, or `params.K` itself, which a
-        // scene that selected this arm has given -- read as the pin's proven
-        // presence.
-        const nullish = nullishDefault(assignment.value);
-        const path = propertyPath(nullish ? nullish.left : assignment.value);
-        if (path?.length !== 2 || path[0] !== "params") {
+        const guard = cfgGuard(assignment, lowerer);
+        const cpp = lowerer.expression(assignment.value);
+        if (guard && !value)
             return contractError(
                 assignment.value,
-                `Expected cfg.${key} to be read from params.`,
+                `Conditional cfg.${key} has no generator default.`,
             );
-        }
-        const field = paramsField(path[1]!, assignment.value);
         value = {
-            cpp: nullish
-                ? `${field}.value_or(${doubleLiteral(
-                      numericValue(
-                          nullish.right,
-                          assignment.value.getSourceFile(),
-                      ),
-                  )})`
-                : `bbl::pinned::present(${field})`,
+            cpp: guard ? `(${guard} ? ${cpp} : ${value!.cpp})` : cpp,
             type: "scalar",
             readsParams: true,
         };
@@ -602,11 +458,7 @@ function cfgValue(
     return value;
 }
 
-/**
- * A list key of `cfg` the generator tests for truthiness: the pinned module
- * stores it only when the scene's list is non-empty, so the test is the
- * seam list's own, and the list it then reads is the scene's.
- */
+/** A list's presence is the condition of the store that passes it to the generator. */
 function cfgListPresence(
     arm: BuildArm,
     key: string,
@@ -616,19 +468,19 @@ function cfgListPresence(
         (assignment) => assignment.key === key,
     );
     const field = NAV_MESH_BUILD_PARAM_LISTS.get(key);
+    const assignment = assignments[0];
     if (
+        !field ||
         assignments.length !== 1 ||
-        assignments[0]!.kind !== "givenNonEmpty" ||
-        !field
-    ) {
+        !assignment ||
+        propertyPath(assignment.value)?.join(".") !== `params.${key}`
+    )
         return contractError(
             at,
-            `Expected the pinned cfg to carry ${key} exactly when the ` +
-                "scene's list is non-empty.",
+            `Expected cfg.${key} to receive its parameter list once.`,
         );
-    }
     return {
-        present: `!params.${field}.empty()`,
+        present: cfgGuard(assignment, cfgLowerer()) ?? "true",
         list: `params.${field}`,
     };
 }
@@ -997,13 +849,13 @@ function storeCpp(
 /** Whether an expression is a boolean the scope already knows. */
 function booleanValue(
     expression: ts.Expression,
-    bindings: ReadonlyMap<string, PinnedBinding>,
+    lowerer: PinnedNumericLowerer,
 ): boolean {
     const unwrapped = unwrapExpression(expression);
     return (
         unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
         unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
-        bindings.get(unwrapped.getText())?.type === "bool"
+        lowerer.binding(unwrapped)?.type === "bool"
     );
 }
 
@@ -1103,32 +955,10 @@ function wrapperSetterFields(className: string): ReadonlyMap<string, string> {
     }
     const setters = new Map<string, string>();
     for (const member of declaration.members) {
-        if (
-            !ts.isMethodDeclaration(member) ||
-            member.parameters.length !== 1 ||
-            member.body?.statements.length !== 1
-        ) {
-            continue;
-        }
-        const parameter = member.parameters[0]!.name.getText();
-        const [only] = member.body.statements;
-        const store =
-            only &&
-            ts.isExpressionStatement(only) &&
-            ts.isBinaryExpression(only.expression) &&
-            only.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
-                ? only.expression
-                : undefined;
-        const path = store ? propertyPath(store.left) : undefined;
-        if (
-            store &&
-            path?.length === 3 &&
-            path[0] === "this" &&
-            path[1] === "raw" &&
-            store.right.getText() === parameter
-        ) {
-            setters.set(member.name.getText(), path[2]!);
-        }
+        if (!ts.isMethodDeclaration(member)) continue;
+        const access = methodAccess(member);
+        if (access?.kind === "store" && !access.element)
+            setters.set(member.name.getText(), access.field);
     }
     return setters;
 }
@@ -1143,7 +973,6 @@ function lowerCreate(
     className: string,
     target: string,
     lowerer: PinnedNumericLowerer,
-    bindings: ReadonlyMap<string, PinnedBinding>,
     indent: string,
 ): string[] {
     const literal = call.arguments[0]
@@ -1189,7 +1018,7 @@ function lowerCreate(
         if (field.component === undefined) {
             cpp = lowerer.expression(value);
         } else {
-            const binding = bindings.get(unwrapExpression(value).getText());
+            const binding = lowerer.binding(value);
             if (
                 typeof field.component === "number" &&
                 binding?.type === "f64-buffer"
@@ -1214,7 +1043,7 @@ function lowerCreate(
         return `${indent}${storeCpp(
             member,
             cpp,
-            booleanValue(value, bindings) ? "bool" : "scalar",
+            booleanValue(value, lowerer) ? "bool" : "scalar",
         )}`;
     });
 }
@@ -1237,22 +1066,6 @@ function planFunctionCpp(plan: PlanFunction): string {
         `/** ${plan.comment} */\n` +
         `inline ${plan.returns} ${plan.name}(\n    ${plan.parameters.join(",\n    ")}) {\n` +
         `${plan.body.join("\n")}\n}`
-    );
-}
-
-function generatorsProvenance(symbol: string): string {
-    return (
-        `\`${symbol}\` from @recast-navigation/generators@` +
-        `${wrapperPackageVersion("@recast-navigation/generators")}, lowered from ` +
-        "the installed package."
-    );
-}
-
-function coreProvenance(symbol: string): string {
-    return (
-        `\`${symbol}\` from @recast-navigation/core@` +
-        `${wrapperPackageVersion("@recast-navigation/core")}, lowered from ` +
-        "the installed package."
     );
 }
 
@@ -1286,7 +1099,7 @@ function boundingBoxFunction(): PlanFunction {
         ["indices", { cpp: "indices", type: "u32" }],
     ]);
     const lanes = (name: string, at: ts.Node): string => {
-        const binding = bindings.get(name);
+        const binding = lowerer.portBinding(name, at);
         if (binding?.type !== "vec3") {
             return contractError(
                 at,
@@ -1297,7 +1110,7 @@ function boundingBoxFunction(): PlanFunction {
     };
     const lowerer = new PinnedNumericLowerer(file, {
         bindings,
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         vec3Literal: (x, y, z) => `bbl::Vec3d{${x}, ${y}, ${z}}`,
         returnValue: (expression) => {
             if (!expression) {
@@ -1315,7 +1128,7 @@ function boundingBoxFunction(): PlanFunction {
         },
     });
     return {
-        comment: generatorsProvenance("getBoundingBox"),
+        comment: provenance("generators", "getBoundingBox"),
         returns: "bbl::pal::NavBounds",
         name: "get_bounding_box",
         parameters: [
@@ -1400,7 +1213,7 @@ function rcConfigFunction(
                 `${indent}${storeCpp(
                     `rcConfig.${store.field}`,
                     active.expression(store.value),
-                    booleanValue(store.value, bindings) ? "bool" : "scalar",
+                    booleanValue(store.value, active) ? "bool" : "scalar",
                 )}`,
             ];
         },
@@ -1416,7 +1229,7 @@ function rcConfigFunction(
     });
     return {
         comment:
-            `${coreProvenance("createRcConfig")} Its config is ` +
+            `${provenance("core", "createRcConfig")} Its config is ` +
             `\`${GENERATORS[arm]}\`'s spread over the pinned cfg, resolved at generation.`,
         returns: "bbl::pal::NavRcConfig",
         name: `${PLAN_NAMES[arm]}_rc_config`,
@@ -1527,7 +1340,7 @@ function configStepFunction(
     ]);
     const lowerer = new PinnedNumericLowerer(file, {
         bindings,
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         statement: (statement, active, indent) => {
             if (statement === measure.statement) return [];
             const store = rawStore(statement);
@@ -1546,7 +1359,7 @@ function configStepFunction(
     if (arm === "tileCache") {
         const [width, height] = [TILE_GRID.width, TILE_GRID.height].map(
             (local) => {
-                const binding = bindings.get(local);
+                const binding = lowerer.portBinding(local, body.at(-1)!);
                 if (!binding) {
                     return contractError(
                         generator.body,
@@ -1562,7 +1375,7 @@ function configStepFunction(
     }
     return {
         comment:
-            generatorsProvenance(`${GENERATORS[arm]}`) +
+            provenance("generators", `${GENERATORS[arm]}`) +
             " Its build-config step.",
         returns,
         name: `${PLAN_NAMES[arm]}_config`,
@@ -1655,10 +1468,18 @@ function offMeshPackingFunction(): PlanFunction {
                 ts.isArrayLiteralExpression(initializer) &&
                 initializer.elements.length === 0
             ) {
-                bindings.set(declared.name.text, {
-                    cpp: declared.name.text,
-                    type: "f64-list",
-                });
+                active.bindPorts(
+                    [
+                        [
+                            declared.name.text,
+                            {
+                                cpp: declared.name.text,
+                                type: "f64-list",
+                            },
+                        ],
+                    ],
+                    statement,
+                );
                 return [`${indent}std::vector<double> ${declared.name.text};`];
             }
             // The glue's copy into the create params, which the PAL makes.
@@ -1682,7 +1503,7 @@ function offMeshPackingFunction(): PlanFunction {
                 lists.some(
                     (list) =>
                         !ts.isIdentifier(list) ||
-                        bindings.get(list.text)?.type !== "f64-list",
+                        active.binding(list)?.type !== "f64-list",
                 )
             ) {
                 return context.contractError(
@@ -1700,7 +1521,10 @@ function offMeshPackingFunction(): PlanFunction {
         },
     });
     return {
-        comment: coreProvenance("NavMeshCreateParams.setOffMeshConnections"),
+        comment: provenance(
+            "core",
+            "NavMeshCreateParams.setOffMeshConnections",
+        ),
         returns: "bbl::pal::NavOffMeshPacking",
         name: OFF_MESH_PACKING,
         parameters: [
@@ -1788,7 +1612,7 @@ function soloCreateParamsFunction(generator: GeneratorConfig): PlanFunction {
                     `    ${storeCpp(
                         `navMeshCreateParams.${field}`,
                         lowerer.expression(value),
-                        booleanValue(value, bindings) ? "bool" : "scalar",
+                        booleanValue(value, lowerer) ? "bool" : "scalar",
                     )}`,
                 );
                 continue;
@@ -1840,7 +1664,7 @@ function soloCreateParamsFunction(generator: GeneratorConfig): PlanFunction {
     lines.push("    return navMeshCreateParams;");
     return {
         comment:
-            generatorsProvenance("generateSoloNavMeshData") +
+            provenance("generators", "generateSoloNavMeshData") +
             " Its NavMeshCreateParams values.",
         returns: "bbl::pal::NavMeshCreateValues",
         name: "solo_nav_mesh_create_params",
@@ -1914,7 +1738,7 @@ function tileCacheParamsFunction(generator: GeneratorConfig): PlanFunction {
     });
     return {
         comment:
-            generatorsProvenance("generateTileCache") +
+            provenance("generators", "generateTileCache") +
             " Its DetourTileCacheParams.",
         returns: "bbl::pal::NavTileCacheParams",
         name: "tile_cache_params",
@@ -1926,7 +1750,6 @@ function tileCacheParamsFunction(generator: GeneratorConfig): PlanFunction {
                 "DetourTileCacheParams",
                 "tileCacheParams",
                 lowerer,
-                bindings,
                 "    ",
             ),
             "    return tileCacheParams;",
@@ -1971,7 +1794,7 @@ function bitHelperFunction(name: string, cppName: string): PlanFunction {
         },
     });
     return {
-        comment: generatorsProvenance(name),
+        comment: provenance("generators", name),
         returns: "double",
         name: cppName,
         parameters: ["double v"],
@@ -2005,7 +1828,7 @@ function tileNavMeshParamsFunction(generator: GeneratorConfig): PlanFunction {
         }
     }
     const { bindings, readsParams } = tileCacheBindings(generator);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const [name, cppName] of DETOUR_BIT_HELPERS) {
         calls.set(name, (args) => {
             if (args.length !== 1) {
@@ -2022,7 +1845,10 @@ function tileNavMeshParamsFunction(generator: GeneratorConfig): PlanFunction {
         calls,
         statement: (statement, active, indent) => {
             if (statement === slice[0]) {
-                bindings.set("orig", { cpp: "orig", type: "vec3" });
+                active.bindPorts(
+                    [["orig", { cpp: "orig", type: "vec3" }]],
+                    statement,
+                );
                 return [
                     `${indent}const bbl::Vec3d orig{bounds.min[0], bounds.min[1], bounds.min[2]};`,
                 ];
@@ -2042,7 +1868,6 @@ function tileNavMeshParamsFunction(generator: GeneratorConfig): PlanFunction {
                         "NavMeshParams",
                         "navMeshParams",
                         active,
-                        bindings,
                         indent,
                     ),
                 ];
@@ -2052,7 +1877,7 @@ function tileNavMeshParamsFunction(generator: GeneratorConfig): PlanFunction {
     });
     return {
         comment:
-            generatorsProvenance("generateTileCache") +
+            provenance("generators", "generateTileCache") +
             " Its tile/poly bit split and NavMeshParams.",
         returns: "bbl::pal::NavTiledMeshParams",
         name: "tile_cache_nav_mesh_params",
@@ -2104,7 +1929,7 @@ function cloneRcConfigFunction(): PlanFunction {
         returnValue: () => "clone",
     });
     return {
-        comment: coreProvenance("cloneRcConfig"),
+        comment: provenance("core", "cloneRcConfig"),
         returns: "bbl::pal::NavRcConfig",
         name: "clone_rc_config",
         parameters: ["const bbl::pal::NavRcConfig& rcConfig"],
@@ -2171,14 +1996,14 @@ function tileConfigFunction(generator: GeneratorConfig): PlanFunction {
     const fields = wrapperRcConfigFields();
     const lowerer = new PinnedNumericLowerer(file, {
         bindings,
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         statement: (statement, active, indent) => {
             if (statement === statements[clone.index]) {
                 for (const [text, binding] of rcConfigReads(
                     "tileConfig",
                     "tileConfig",
                 )) {
-                    bindings.set(text, binding);
+                    active.bindPorts([[text, binding]], statement);
                 }
                 return [
                     `${indent}bbl::pal::NavRcConfig tileConfig = clone_rc_config(${config});`,
@@ -2206,7 +2031,7 @@ function tileConfigFunction(generator: GeneratorConfig): PlanFunction {
     });
     return {
         comment:
-            generatorsProvenance("generateTileCache") +
+            provenance("generators", "generateTileCache") +
             " rasterizeTileLayers' tile config and bounds.",
         returns: "bbl::pal::NavRcConfig",
         name: "tile_cache_tile_config",

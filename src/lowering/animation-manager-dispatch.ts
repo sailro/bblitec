@@ -65,8 +65,7 @@ export function lowerAnimationManagerDispatch(
     const body = lowerPinnedBody(file, statements.slice(2), {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression(node) {
             if (
                 context.expressionMatchesShape(

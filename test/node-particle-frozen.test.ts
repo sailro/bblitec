@@ -20,42 +20,72 @@ const registration = `
     registerNodeParticleSet2D(renderer, set, { autoStart: false });
 `;
 
-test("unchanged scene300 derives frozen marker placement from the configured canvas", () => {
+test("particle warm-up preserves runtime canvas sizes in startup writes and bridge origins", () => {
     for (const [width, height] of [
         [1280, 720],
         [800, 600],
     ] as const) {
         const result = compileSource(original, { fileName, width, height });
-        const program = result.nodeParticles!;
-        assert.deepEqual(program.sprite2d[0]!.originPx, [
-            width * 0.5,
-            height * 0.72,
-        ]);
-        assert.equal(program.sprite2d[0]!.retainFrozen, true);
-        const writes = program.steps.filter(
-            (step) => step.op === "buffer-write",
+        assert.equal(result.nodeParticles!.buffers[0]!.runtime, true);
+        assert.match(result.cpp, /write_node_particle_column\(0, 0, "posX"/);
+        assert.match(result.cpp, /write_node_particle_column\(0, 0, "size"/);
+        assert.match(result.cpp, /std::array<double, 2>\{\w*particle_origin/);
+        assert.match(result.cpp, /engine\.options\.width/);
+        assert.match(result.cpp, /engine\.options\.height/);
+        assert.ok(
+            !result.nodeParticles!.steps.some(
+                (step) => step.op === "buffer-write",
+            ),
         );
-        assert.deepEqual(writes.slice(0, 2), [
-            {
-                op: "buffer-write",
-                set: 0,
-                system: 0,
-                column: "posX",
-                index: 0,
-                value: (96 - width * 0.5) / 220,
-            },
-            {
-                op: "buffer-write",
-                set: 0,
-                system: 0,
-                column: "posY",
-                index: 0,
-                value: (height * 0.72 - 96) / 220,
-            },
-        ]);
-        assert.match(result.cpp, /sprite_renderer_before_update/);
-        assert.match(result.cpp, /\(\*v_liveSamples\)\+\+/);
     }
+});
+
+test("runtime particle writes preserve static overwrites and end generation simulation", () => {
+    const result = compile(`
+        const positions = system.buffer.posX;
+        positions[0] = 1;
+        positions[0] = canvas.width / 3;
+        positions[0] = 4;
+        ${registration}
+    `);
+    assert.equal(
+        result.nodeParticles!.steps.filter((step) => step.op === "buffer-write")
+            .length,
+        1,
+    );
+    assert.equal(
+        (result.cpp.match(/write_node_particle_column/g) ?? []).length,
+        2,
+    );
+    assert.throws(
+        () =>
+            compile(
+                `system.buffer.posX[0] = canvas.width; animateParticleSystem(system, 1);`,
+            ),
+        /Generation-time particle simulation cannot follow runtime buffer initialization/,
+    );
+});
+
+test("runtime particle initialization retains original identities through system-list composition", () => {
+    const sourceFile = resolve(
+        "corpus/babylon-lite/lab/lite/src/lite/scene301.ts",
+    );
+    const result = compileSource(readFileSync(sourceFile, "utf8"), {
+        fileName: sourceFile,
+    });
+    assert.deepEqual(
+        result.nodeParticles!.buffers.map(({ set, system, runtime }) => ({
+            set,
+            system,
+            runtime,
+        })),
+        [
+            { set: 0, system: 0, runtime: true },
+            { set: 1, system: 0, runtime: true },
+        ],
+    );
+    assert.match(result.cpp, /write_node_particle_column\(0, 0, "posX"/);
+    assert.match(result.cpp, /write_node_particle_column\(1, 0, "posX"/);
 });
 
 test("frozen particle buffer and column aliases preserve ordered initialization writes", () => {

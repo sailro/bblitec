@@ -72,6 +72,24 @@ function lower(
     return lowerer.statements(file.statements, "").join("\n");
 }
 
+test("record aliases retain optional-read adapters while rebinding ordinary members", () => {
+    const output = lower(
+        "const state = engine.record; const guarded = state?.count; const direct = state.count;",
+        [
+            ["engine.record", { cpp: "(*record)", type: "opaque" }],
+            ["engine.record.count", { cpp: "record->count", type: "scalar" }],
+            ["state.count", { cpp: "unbound.count", type: "scalar" }],
+            [
+                "state?.count",
+                { cpp: "(record ? record->count : 0.0)", type: "scalar" },
+            ],
+        ],
+    );
+    assert.match(output, /guarded = \(record \? record->count : 0\.0\);/);
+    assert.match(output, /direct = record->count;/);
+    assert.doesNotMatch(output, /unbound/);
+});
+
 test("loop and branch locals preserve outer bindings and avoid native shadowing", () => {
     const cpp = lower(
         `let p = 7; let pi = 2; for (let p = 0; p < 3; p++) { pi += p; } if (pi > 0) { let p = 9; pi += p; } { let p = 4; pi += p; } p += pi;`,
@@ -84,11 +102,94 @@ test("loop and branch locals preserve outer bindings and avoid native shadowing"
     assert.match(cpp, /p \+= pi_1;$/);
 });
 
+test("logical conditions preserve grouping supplied by boolean adapters", () => {
+    const cpp = lower("let result = 0; if (enabled || ready) result = 1;", [
+        ["enabled", { cpp: "enabled", type: "bool" }],
+        ["ready", { cpp: "(target && target->ready)", type: "bool" }],
+    ]);
+    assert.match(cpp, /\(enabled\) \|\| \(target && target->ready\)/);
+});
+
+test("conditional locals inherit the representations of adapted branches", () => {
+    const cpp = lower(
+        'const lane = axis === 0 ? "x" : "y";',
+        [["axis", { cpp: "axis", type: "scalar" }]],
+        {
+            expression: (node, lowerer) => {
+                if (!ts.isStringLiteral(node)) return undefined;
+                const cpp = node.text === "x" ? "0.0" : "1.0";
+                lowerer.bindLocal(node, { cpp, type: "scalar" });
+                return cpp;
+            },
+        },
+    );
+    assert.match(cpp, /const double lane =/);
+    assert.doesNotMatch(cpp, /std::string/);
+});
+
 test("a number declared from a counted loop index converts explicitly", () => {
     const cpp = lower(
         "let total = 0; for (let start = 0; start < 4; start++) { let left = start; total += left; }",
     );
     assert.match(cpp, /double left = static_cast<double>\(start\);/);
+});
+
+test("caller ports and helper captures keep declaration identity under shadowing", () => {
+    const cpp = lower(
+        `let x = 1; let total = 0;
+        const add = (amount: number) => { total += x + amount; };
+        { let x = 9; add(2); total += x; }
+        add(3); total += x;`,
+        [["x", { cpp: "outer_value", type: "scalar" }]],
+    );
+    assert.doesNotMatch(cpp, /double x = 1/);
+    assert.match(cpp, /double x = 9\.0/);
+    assert.equal(cpp.match(/outer_value \+/g)?.length, 2);
+    assert.match(cpp, /total \+= x;/);
+    assert.match(cpp, /total \+= outer_value;/);
+});
+
+test("member bindings use declaration paths across equivalent source spellings", () => {
+    const cpp = lower(
+        `let record: {value: number}; let total = 0;
+        total += (record /* same owner */)["value"];
+        total += values[0.0];
+        { const record = {x: 1, y: 2, z: 3}; total += record.x; }
+        total += record.value;`,
+        [
+            ["record", { cpp: "native_record", type: "opaque" }],
+            ["record.value", { cpp: "native_value", type: "scalar" }],
+            ["values[0]", { cpp: "native_first", type: "scalar" }],
+        ],
+        { vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}` },
+    );
+    assert.equal(cpp.match(/total \+= native_value;/g)?.length, 2);
+    assert.match(cpp, /total \+= native_first;/);
+    assert.match(cpp, /total \+= record.x;/);
+});
+
+test("JavaScript class methods resolve parameter ports and shadowed locals", () => {
+    const file = ts.createSourceFile(
+        "wrapper.mjs",
+        `export class Wrapper {
+        update(value) { let total = value; { let value = 2; total += value; } return total + value; }
+    }`,
+        ts.ScriptTarget.Latest,
+        true,
+    );
+    const declaration = file.statements[0];
+    assert.ok(declaration && ts.isClassDeclaration(declaration));
+    const method = declaration.members[0];
+    assert.ok(method && ts.isMethodDeclaration(method) && method.body);
+    const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
+        bindings: new Map([["value", { cpp: "argument", type: "scalar" }]]),
+        calls: new Map(),
+        returnValue: (node) => lowerer.expression(node!),
+    });
+    const cpp = lowerer.statements(method.body.statements, "").join("\n");
+    assert.match(cpp, /double total = argument;/);
+    assert.match(cpp, /double value = 2.0;/);
+    assert.match(cpp, /return \(total \+ argument\);/);
 });
 
 test("shared statement lowering handles continue and ordered scalar assignment chains", () => {
@@ -185,7 +286,10 @@ test("a string set and a composed throw message lower as JavaScript's", (t) => {
     );
     assert.match(body, /bbl::js::Set<std::string> names;/);
     assert.match(body, /names\.add\(first\);/);
-    assert.match(body, /if \(static_cast<double>\(names\.size\(\)\)\) \{/);
+    assert.match(
+        body,
+        /if \(bbl::js::number_truthy\(static_cast<double>\(static_cast<double>\(names\.size\(\)\)\)\)\) \{/,
+    );
     // A number inside a template would need JavaScript's own formatting.
     assert.throws(
         () =>
@@ -324,10 +428,6 @@ test("compound bitwise stores, array literals and written const records run as J
     const body = lower(source, [], {
         calls: new Map([
             ["Number", (args) => `static_cast<double>(${args[0]})`],
-            [
-                "Math.min",
-                (args) => `bbl::js::math_extreme<false>({${args.join(", ")}})`,
-            ],
         ]),
         vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
     });
@@ -580,13 +680,16 @@ test("nullable vector aliases retain presence in conditional expressions", () =>
     assert.doesNotMatch(cpp, /axis \?/);
 });
 
-test("lowers a JavaScript numeric or-else to the value-selecting helper", () => {
+test("lowers a JavaScript numeric or-else to lazy value selection", () => {
     const emitted = lower("const length = value || 1;", [
         ["value", { cpp: "value", type: "scalar" }],
     ]);
     // Not `(value || 1.0)`: that is a bool in C++, so every non-zero input
     // would collapse to 1.
-    assert.match(emitted, /bbl::js::or_number\(value, 1\.0\)/);
+    assert.match(
+        emitted,
+        /number_truthy\(static_cast<double>\(pinned_0_\d+\)\) \? static_cast<double>/,
+    );
     assert.doesNotMatch(emitted, /value \|\| /);
 });
 
@@ -672,21 +775,21 @@ test("keeps every bitwise operator on JavaScript's own int32 coercion", () => {
     }
 });
 
-test("refuses a value-selecting and, rather than guessing its meaning", () => {
+test("numeric and selects a value and Math members resolve without caller maps", () => {
+    assert.match(
+        lower("const kept = value && fallback;", [
+            ["value", { cpp: "value", type: "scalar" }],
+            ["fallback", { cpp: "fallback", type: "scalar" }],
+        ]),
+        /number_truthy/,
+    );
+    assert.match(lower("const x = Math.tan(1);"), /std::tan\(1\.0\)/);
     assert.throws(
         () =>
-            lower("const kept = value && fallback;", [
-                ["value", { cpp: "value", type: "scalar" }],
-                ["fallback", { cpp: "fallback", type: "scalar" }],
-            ]),
-        /Unsupported pinned value-selecting/,
-    );
-});
-
-test("refuses a call the caller did not declare", () => {
-    assert.throws(
-        () => lower("const x = Math.tan(1);"),
-        /Unsupported pinned call 'Math\.tan'/,
+            lower(
+                "const Math = { tan: (x: number) => x }; const x = Math.tan(1);",
+            ),
+        /Unsupported pinned/,
     );
 });
 
@@ -726,7 +829,84 @@ test("lowers a switch over a run-time discriminant to strict-equality arms", () 
     );
     assert.match(
         emitted,
-        /if \(mode == 0\.0\) \{\s*value = 1\.0;\s*\} else if \(mode == 4\.0\) \{\s*value = 2\.0;\s*\} else \{\s*value = 3\.0;\s*\}/,
+        /const auto (pinned_\w+) = mode;\s*if \(\1 == 0\.0\) \{\s*value = 1\.0;\s*\} else if \(\1 == 4\.0\) \{\s*value = 2\.0;\s*\} else \{\s*value = 3\.0;\s*\}/,
+    );
+});
+
+test("logical values and switch selectors preserve lazy, single evaluation natively", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const body = lower(
+        `
+        let left = 0;
+        const a = left || next();
+        const b = left && next();
+        left = NaN;
+        const c = left || next();
+        left = -0;
+        const d = left && next();
+        const text = "" || "ok";
+        const mixedCondition = (left && (left <= 0 || left > 1)) ? 1 : 2;
+        const gated = gate && (choice ? false : true);
+        let branch = 0;
+        if (gate && (choice ? false : true)) branch = 1;
+        let selected = 0;
+        switch (next()) { case 0: selected = 10; break; case 3: selected = 20; break; default: selected = 30; }
+    `,
+        [
+            ["gate", { cpp: "gate", type: "bool" }],
+            ["choice", { cpp: "choice", type: "bool" }],
+            [
+                "NaN",
+                {
+                    cpp: "std::numeric_limits<double>::quiet_NaN()",
+                    type: "scalar",
+                },
+            ],
+        ],
+        { calls: new Map([["next", () => "next()"]]) },
+    );
+    const output = resolve("artifacts/pinned-numeric-logical-values");
+    mkdirSync(output, { recursive: true });
+    const file = join(output, "check.cpp"),
+        executable = join(output, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/js_data.hpp>
+        #include <cassert>
+        #include <cmath>
+        int main() {
+            int calls = 0;
+            bool gate = false, choice = true;
+            auto next = [&]() { return static_cast<double>(++calls); };
+            ${body}
+            assert(a == 1 && b == 0 && c == 2 && d == 0 && std::signbit(d));
+            assert(text == "ok" && selected == 20 && calls == 3 && mixedCondition == 2);
+            assert(!gated && branch == 0);
+        }`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/Od",
+        `/Fo:${output}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        file,
+    ]);
+    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+    assert.throws(
+        () => lower(`const value = 1 || "text";`),
+        /incompatible representations/,
     );
 });
 

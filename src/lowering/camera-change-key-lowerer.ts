@@ -22,7 +22,7 @@ export function cameraChangeKeyHeader(context: LoweringContext): string {
             cppName: "scene_camera_change_key",
             returns: "double",
             templateParameters: ["class Camera"],
-            booleanOr: true,
+
             memberBindings: new Map([
                 [
                     "camera._projFov",

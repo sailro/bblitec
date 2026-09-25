@@ -53,7 +53,7 @@ import {
 } from "./tooling/backends.js";
 import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import { readCompiledAssetSources } from "./tooling/generated-readers.js";
-import { asObject } from "./gltf-document.js";
+import { asObject } from "./json-fields.js";
 
 export type ShippingPlatform = "win32" | "linux" | "darwin";
 

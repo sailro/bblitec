@@ -20,7 +20,12 @@ export function replacementCallback(
     let stored: Value | undefined;
     if (replacement.dataType?.kind === "function") {
         const cpp = context.allocateTemporaryCppName("replacement_callback");
-        context.emit(`const auto ${cpp} = ${replacement.cpp};`);
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: cpp,
+            initializer: replacement.cpp,
+        });
         stored = {
             ...replacement,
             cpp,
@@ -134,9 +139,11 @@ export function replacementCallback(
                     invoke,
                 )
               : invoke();
-        context.emit(
-            `return ${lowerer.compileKnownValueForSink(result, { kind: "string" }, call)};`,
-        );
+        context.emit({
+            kind: "control",
+            code: `return ${lowerer.compileKnownValueForSink(result, { kind: "string" }, call)};`,
+            transfer: "return",
+        });
     } finally {
         context.leaveRuntimeIteration();
         context.leaveRuntimeControlFlow();

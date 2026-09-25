@@ -60,7 +60,11 @@ export function compileJsonTupleView(
             );
             context.emit(`if (${index} == ${slot}) return ${cpp};`);
         });
-        context.emit("return {};");
+        context.emit({
+            kind: "control",
+            code: "return {};",
+            transfer: "return",
+        });
     });
     const cpp = context.allocateTemporaryCppName("dynamic_tuple_view");
     context.emit({
@@ -134,7 +138,11 @@ export function compileJsonRecordView(
                 `if (${key} == ${context.cppString(field.name)}) return ${value};`,
             );
         }
-        context.emit("return {};");
+        context.emit({
+            kind: "control",
+            code: "return {};",
+            transfer: "return",
+        });
     });
     const cpp = context.allocateTemporaryCppName("dynamic_record_view");
     context.emit({

@@ -123,7 +123,7 @@ export function lowerGltfTextureCache(context: LoweringContext): string {
                     arrays.has(left.expression.text)
                 )
                     return `(bbl::js::array_index_write(*${left.expression.text}, bbl::js::array_index(${lowerer.expression(left.argumentExpression)})) = ${lowerer.expression(node.right)})`;
-                if (ts.isIdentifier(left) && bindings.has(left.text))
+                if (ts.isIdentifier(left) && !!lowerer.binding(left))
                     return `(${lowerer.expression(left)} = ${lowerer.expression(node.right)})`;
             }
             if (
@@ -159,11 +159,21 @@ export function lowerGltfTextureCache(context: LoweringContext): string {
                 const texture = ts.isElementAccessExpression(initializer);
                 const rendered = lowerer.expression(initializer);
                 if (array) arrays.add(name);
-                bindings.set(name, {
-                    cpp: name,
-                    type: array || texture ? "opaque" : "scalar",
-                    ...(array || texture ? { absentCpp: `!${name}` } : {}),
-                });
+                lowerer.bindPorts(
+                    [
+                        [
+                            name,
+                            {
+                                cpp: name,
+                                type: array || texture ? "opaque" : "scalar",
+                                ...(array || texture
+                                    ? { absentCpp: `!${name}` }
+                                    : {}),
+                            },
+                        ],
+                    ],
+                    statement,
+                );
                 return `${indent}auto ${name} = ${rendered};`;
             });
         },
@@ -269,7 +279,10 @@ export function lowerGltfSampledTexture(context: LoweringContext): string {
                     );
                 const rendered = lowerer.expression(variable.initializer),
                     name = variable.name.text;
-                bindings.set(name, { cpp: name, type: "opaque" });
+                lowerer.bindPorts(
+                    [[name, { cpp: name, type: "opaque" }]],
+                    statement,
+                );
                 return `${indent}const auto ${name} = ${rendered};`;
             });
         },
@@ -382,7 +395,7 @@ export function lowerGltfExtendedTexturePicker(
                     return `${node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? "!" : ""}${left.text}.has_value()`;
                 if (
                     ts.isIdentifier(left) &&
-                    bindings.has(left.text) &&
+                    !!lowerer.binding(left) &&
                     node.operatorToken.kind === ts.SyntaxKind.EqualsToken
                 )
                     return `(${left.text} = ${lowerer.expression(node.right)})`;
@@ -460,11 +473,19 @@ export function lowerGltfExtendedTexturePicker(
                     maps.set(name, "GltfSamplerTextures");
                 const scalar =
                     receiver === "_ids" || ts.isBinaryExpression(initializer);
-                bindings.set(name, {
-                    cpp: receiver ? `(*${name})` : name,
-                    type: scalar ? "scalar" : "opaque",
-                    absentCpp: `!${name}`,
-                });
+                lowerer.bindPorts(
+                    [
+                        [
+                            name,
+                            {
+                                cpp: receiver ? `(*${name})` : name,
+                                type: scalar ? "scalar" : "opaque",
+                                absentCpp: `!${name}`,
+                            },
+                        ],
+                    ],
+                    statement,
+                );
                 return `${indent}auto ${name} = ${rendered};`;
             });
         },

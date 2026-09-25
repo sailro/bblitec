@@ -53,8 +53,7 @@ export function lightParameterHeader(context: LoweringContext): string {
                 ],
                 ["light._bumpLightVersion", () => "(bump ? bump() : void())"],
             ]),
-            booleanAnd: true,
-            booleanOr: true,
+
             expression(node) {
                 if (ts.isStringLiteralLike(node))
                     return `std::string{${stringLiteral(node.text)}}`;

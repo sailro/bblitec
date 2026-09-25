@@ -22,7 +22,7 @@ const { bbliteTint } = tools;
 test(
     "Tint cache reflection is independent of source path and fill order",
     { skip: !bbliteTint },
-    (t) => {
+    async (t) => {
         const directory = mkdtempSync(
             join(tmpdir(), "bblite-shader-reflection-"),
         );
@@ -69,7 +69,7 @@ test(
                     }),
                 );
                 const output = formatShaderCompilation(
-                    compileOfflineShaders({
+                    await compileOfflineShaders({
                         repositoryRoot: root,
                         directories: [shaders],
                         tools,
@@ -109,7 +109,7 @@ test(
 test(
     "per-stage override values specialize every Tint format and cache identity",
     { skip: !bbliteTint },
-    (t) => {
+    async (t) => {
         const directory = mkdtempSync(
             join(tmpdir(), "bblite-shader-constants-"),
         );
@@ -169,9 +169,9 @@ test(
                         ],
                     }),
                 );
-            const compile = (): string =>
+            const compile = async (): Promise<string> =>
                 formatShaderCompilation(
-                    compileOfflineShaders({
+                    await compileOfflineShaders({
                         repositoryRoot: root,
                         directories: [shaders],
                         tools,
@@ -180,7 +180,7 @@ test(
                 );
             declare(enabledFirst);
             assert.match(
-                compile(),
+                await compile(),
                 /bblite-tint stages: 2 compiled, 1 replayed/,
             );
             const read = (stem: string): Buffer[] =>
@@ -209,7 +209,7 @@ test(
             );
             declare(!enabledFirst);
             assert.match(
-                compile(),
+                await compile(),
                 /bblite-tint stages: 0 compiled, 3 replayed/,
             );
             assert.deepEqual(

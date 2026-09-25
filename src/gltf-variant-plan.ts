@@ -1,12 +1,10 @@
 import {
     asIndex,
-    asObject,
-    asRecords,
     areGltfIndices,
     gltfVariantNames,
     GLTF_VARIANT_PLAN,
-    type JsonObject,
 } from "./gltf-document.js";
+import { asObject, asRecords, type JsonObject } from "./json-fields.js";
 import {
     packagedGltfMeshPlan,
     type GltfConstructedMaterialPlan,

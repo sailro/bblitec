@@ -131,9 +131,10 @@ export class WindowProperties {
                       inner: { ...field.type.inner, identity: true },
                   }
                 : field.type;
-        context.emit(
-            `${field.cpp} = ${context.dataLowerer.compileForSink(expression.right, stored)};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${field.cpp} = ${context.dataLowerer.compileForSink(expression.right, stored)};`,
+        });
         return true;
     }
 
@@ -146,7 +147,10 @@ export class WindowProperties {
                 expression,
                 "Window extension deletion requires a known property type.",
             );
-        this.context.emit(`${field.cpp} = std::nullopt;`);
+        this.context.emit({
+            kind: "expression",
+            code: `${field.cpp} = std::nullopt;`,
+        });
         return true;
     }
 }

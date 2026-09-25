@@ -12,9 +12,12 @@
  */
 import ts from "typescript";
 import { statementKind, type LoweringContext } from "./context.js";
-import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { lowerPinnedStatements } from "./pinned-body-lowerer.js";
 
 const morphModule = "src/morph/create-morph-targets.ts";
 
@@ -82,7 +85,7 @@ export function morphTargetsHeader(context: LoweringContext): string {
         ],
     ]);
     const statements = deltaStatements(context, declaration);
-    const body = lowerPinnedBody(file, statements, {
+    const lowerer = new PinnedNumericLowerer(file, {
         bindings,
         calls: new Map(),
         // `const tgt = targets[t]!`: one target, whose two optional arrays
@@ -108,19 +111,42 @@ export function morphTargetsHeader(context: LoweringContext): string {
             const lanes = (member: string): string =>
                 `bbl::MorphTargetLanes{geometry.${member}, ${target}}`;
             const name = entry.name.text;
-            bindings.set(`${name}.positions`, {
-                cpp: lanes("morph_positions"),
-                type: "f32-view",
-            });
-            bindings.set(`${name}.normals`, {
-                cpp: lanes("morph_normals"),
-                type: "f32-view",
-                absentCpp: `${target} >= geometry.morph_normals.size()`,
-            });
+            lowerer.bindPorts(
+                [
+                    [
+                        `${name}.positions`,
+                        {
+                            cpp: lanes("morph_positions"),
+                            type: "f32-view",
+                        },
+                    ],
+                ],
+                statement,
+            );
+            lowerer.bindPorts(
+                [
+                    [
+                        `${name}.normals`,
+                        {
+                            cpp: lanes("morph_normals"),
+                            type: "f32-view",
+                            absentCpp: `${target} >= geometry.morph_normals.size()`,
+                        },
+                    ],
+                ],
+                statement,
+            );
             return [];
         },
     });
-    const deltas = bindings.get("deltaData");
+    const body = lowerPinnedStatements(lowerer, statements);
+    const delta = context.variableInitializer(declaration, "deltaData").parent;
+    if (!ts.isVariableDeclaration(delta) || !ts.isIdentifier(delta.name))
+        return context.contractError(
+            delta,
+            "Expected the morph delta allocation.",
+        );
+    const deltas = lowerer.binding(delta.name);
     if (deltas?.type !== "f32") {
         context.contractError(
             declaration,

@@ -1,7 +1,8 @@
 import { writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 /**
- * Particle simulation and initialization writes execute in the ordered bake.
+ * Particle simulation and static initialization execute in the ordered bake.
+ * Runtime inputs end that bake and continue initialization in native columns.
  * Buffer and column aliases retain the originating system identity. Native
  * reads expose its final snapshot, including Float64 ages and inactive slots;
  * writes after that boundary refuse instead of silently moving an earlier read.
@@ -27,6 +28,8 @@ interface ParticleBufferContext
             | "unwrap"
             | "libraryGlobal"
             | "isRuntimeResourceConstruction"
+            | "compileNumber"
+            | "emit"
         > {}
 
 type BufferIdentity = { set: number; system: number };
@@ -264,12 +267,21 @@ export function emitParticleBufferWrite(
                 "happens while the simulation is still running.",
         );
     }
-    if (value === undefined) {
-        context.fail(
-            expression.right,
-            "A particle column takes a static number: the simulation runs " +
-                "at generation.",
-        );
+    const program = context.sceneManifest.reachedNodeParticles;
+    const runtime = program.buffers.some(
+        (entry) =>
+            entry.set === owner.set &&
+            entry.system === owner.system &&
+            entry.runtime,
+    );
+    if (value === undefined || runtime) {
+        const request = frozenParticleBuffer(context, owner, expression);
+        writable(request).runtime = true;
+        context.emit({
+            kind: "expression",
+            code: `bbl::upstream::write_node_particle_column(${owner.set}, ${owner.system}, "${name}", ${index}, ${context.compileNumber(expression.right, "double")});`,
+        });
+        return true;
     }
     context.sceneManifest.reachedNodeParticles.steps.push({
         op: "buffer-write",

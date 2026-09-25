@@ -475,9 +475,13 @@ export function compileWorkerValue(
                 return `${temporary}.get()`;
             });
             const listName = context.allocateTemporaryCppName("transfer_list");
-            context.emit(
-                `const std::array<bbl::pal::Transferable*, ${entries.length}> ${listName}{${entries.join(", ")}};`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: `const std::array<bbl::pal::Transferable*, ${entries.length}>`,
+                name: listName,
+                initializer: entries.join(", "),
+                initialization: "direct",
+            });
             transferCpp = `, ${listName}`;
         }
         return {

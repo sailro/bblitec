@@ -174,7 +174,7 @@ test("per-particle closures are lowered with their shapes folded", async () => {
     // The PerParticle lock: the mode folded, the id read, the draw stored.
     assert.match(
         source,
-        /if \(state\.b8_current_lock_id != lockId\) \{\s*\{\s*state\.b8_current_lock_id = lockId;\s*\}\s*state\.b8_stored = draw_b8\(state, i\);/,
+        /if \(\(\(false\) \|\| \(state\.b8_current_lock_id != lockId\)\)\) \{\s*\{\s*state\.b8_current_lock_id = lockId;\s*\}\s*state\.b8_stored = draw_b8\(state, i\);/,
     );
     // A scalar random draws through the pin's own randomBetween over the
     // pinned generator.

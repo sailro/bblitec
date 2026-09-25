@@ -43,7 +43,7 @@ import {
     lowerObjectComponents,
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
 import {
@@ -416,7 +416,7 @@ export class RendererLowerer {
             {
                 cppName: "mat4_perspective_lh_to_ref",
                 returns: "void",
-                calls: pinnedNumericMathCalls(),
+                calls: new Map(),
             },
         );
         const orthoWriter = options.orthographicCamera
@@ -436,7 +436,7 @@ export class RendererLowerer {
                   {
                       cppName: "mat4_ortho_off_center_lh_to_ref",
                       returns: "void",
-                      calls: pinnedNumericMathCalls(),
+                      calls: new Map(),
                   },
               )
             : "";
@@ -504,7 +504,7 @@ export class RendererLowerer {
             {
                 cppName: "clamp01",
                 returns: "double",
-                calls: pinnedNumericMathCalls(),
+                calls: new Map(),
             },
         );
         // `camera?.viewport`, as the record's own optional. Bound by the
@@ -586,7 +586,7 @@ export class RendererLowerer {
             {
                 cppName: "effective_aspect_ratio",
                 returns: "double",
-                calls: pinnedNumericMathCalls(),
+                calls: new Map(),
                 memberBindings: viewport,
             },
         );
@@ -606,7 +606,6 @@ export class RendererLowerer {
             {
                 cppName: "resolve_camera_viewport",
                 calls: new Map([
-                    ...pinnedNumericMathCalls(),
                     [
                         "clamp01",
                         (args: readonly string[]) => `clamp01(${args[0]})`,
@@ -2340,7 +2339,6 @@ ${
     }
     return result;
 }
-
 
 } // namespace bbl::upstream
 `;

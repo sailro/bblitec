@@ -8,16 +8,18 @@ import {
     GAUSSIAN_SPLAT_DOCUMENT_KEY,
     GLTF_MESH_PLAN,
     asIndex,
-    asObject,
-    asRecords,
     primitiveRecords,
-    asString,
-    asStrings,
     parseGlbJson,
     selectedVariantIndex,
     variantMaterialIndex,
-    type JsonRecord,
 } from "./gltf-document.js";
+import {
+    asObject,
+    asRecords,
+    asString,
+    asStrings,
+    type JsonRecord,
+} from "./json-fields.js";
 import { sharedUpstreamStore, UpstreamSourceStore } from "./upstream-source.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import {

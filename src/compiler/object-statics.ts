@@ -370,7 +370,10 @@ function compileObjectAssign(
                         { kind: scalarKind },
                         source,
                     );
-                    context.emit(`${existing.cpp} = ${stored};`);
+                    context.emit({
+                        kind: "expression",
+                        code: `${existing.cpp} = ${stored};`,
+                    });
                     writable(properties)[key] = {
                         kind: scalarKind,
                         cpp: existing.cpp,
@@ -400,9 +403,10 @@ function compileObjectAssign(
                     field.type,
                     source,
                 );
-                context.emit(
-                    `${target.cpp}${access}${field.name} = ${stored};`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${target.cpp}${access}${field.name} = ${stored};`,
+                });
             }
         }
         // The stores changed fields whose generation snapshot lives on the

@@ -5,10 +5,7 @@ import type {
     PinnedBinding,
     PinnedNumericLowerer,
 } from "../pinned-numeric-lowerer.js";
-import {
-    pinnedNumericMathCalls,
-    pinnedRemainderCall,
-} from "../pinned-operators.js";
+import { pinnedRemainderCall } from "../pinned-operators.js";
 
 const groupModule = "src/animation/animation-group.ts";
 const controllerModule = "src/skeleton/skeleton-updater.ts";
@@ -151,9 +148,8 @@ export function lowerGltfAnimationPlayback(
         ]);
     const controllerScope = {
         bindings: bindings(),
-        calls: pinnedNumericMathCalls(),
-        booleanOr: true,
-        booleanAnd: true,
+        calls: new Map(),
+
         expression(node: ts.Expression, lowerer: PinnedNumericLowerer) {
             if (
                 ts.isBinaryExpression(node) &&
@@ -251,8 +247,7 @@ export function lowerGltfAnimationPlayback(
         );
         return lowerPinnedBody(file, declaration.body!.statements, {
             bindings: bindings(),
-            booleanOr: true,
-            booleanAnd: true,
+
             expression(node, lowerer) {
                 if (
                     ts.isCallExpression(node) &&
@@ -296,7 +291,6 @@ export function lowerGltfAnimationPlayback(
                 return undefined;
             },
             calls: new Map([
-                ...pinnedNumericMathCalls(),
                 [
                     "syncControllerFromGroup",
                     () =>
@@ -413,9 +407,8 @@ export function lowerGltfAnimationPlayback(
                   );
               return lowerPinnedBody(file, declaration.body!.statements, {
                   bindings: bindings(),
-                  calls: pinnedNumericMathCalls(),
-                  booleanOr: true,
-                  booleanAnd: true,
+                  calls: new Map(),
+
                   statement(statement, lowerer, indent) {
                       const remainder = remainderStore(
                           statement,

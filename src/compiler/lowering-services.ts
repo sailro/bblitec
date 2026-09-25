@@ -27,7 +27,7 @@ import type {
     NativeCaptureBinding,
     NativeExpression,
 } from "./closure-captures.js";
-import type { NativeDeclaration } from "./native-declarations.js";
+import type { NativeStatement, NativeEmission } from "./native-statements.js";
 import type {
     ParameterizedResourceLoop,
     ResourceLoop,
@@ -110,6 +110,7 @@ export interface LoweringServices {
     readonly canvasReadbackFunctions: Set<string>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
     readonly assets: Map<string, CompileAsset>;
+    readonly assetOutputs: Map<string, CompileAsset>;
     readonly assetPayloads: Map<string, string>;
     readonly boundPixelsTextures: Set<string>;
     readonly erasedBrowserExpressions: Set<number>;
@@ -335,7 +336,12 @@ export interface LoweringServices {
     readonly speculating: boolean;
     /** Runs `work` in an emission transaction: committed on return, rolled back on a throw. */
     transaction(work: () => void): void;
-    captureEmittedLines(emitBody: () => void): string[];
+    captureEmittedLines(
+        emitBody: () => void,
+        options?: { functionBody?: true },
+    ): string[];
+    captureEmittedStatements(emitBody: () => void): NativeEmission[];
+    emitCapturedStatements(body: readonly NativeEmission[]): void;
     canReplaySharedCallEffects(body: ts.Node): boolean;
     beginNativeFunctionBody(
         returnType: DataType | undefined,
@@ -359,6 +365,10 @@ export interface LoweringServices {
     ): string[];
     useNativeValue(value: Value, seen?: Set<Value>): void;
     captureNativeExpression(compile: () => string): NativeExpression;
+    captureNativeDependencies<T>(compile: () => T): {
+        value: T;
+        nativeCaptures: readonly NativeCaptureBinding[];
+    };
     captureManagedClosureLines(
         emitBody: () => void,
         byReference?: boolean | "entry",
@@ -425,7 +435,6 @@ export interface LoweringServices {
     canvasSizeProperty(
         expression: ts.Expression,
     ): "width" | "height" | undefined;
-    staticCanvasSize(expression: ts.Expression): number | undefined;
     canvasSizeValue(expression: ts.Expression): Value | undefined;
     isBrowserInstrumentationCall(call: ts.CallExpression): boolean;
     platformDocumentHidden(): string | undefined;
@@ -520,7 +529,7 @@ export interface LoweringServices {
     ): void;
     cppString(value: string): string;
     hasRegisteredScene(): boolean;
-    emit(line: string | NativeDeclaration): void;
+    emit(line: string | NativeStatement): void;
     isEntryBodyScope(): boolean;
     increaseIndent(): void;
     decreaseIndent(): void;

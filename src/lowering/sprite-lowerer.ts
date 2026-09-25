@@ -28,7 +28,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { recordAt } from "../compiler/record-access.js";
 import {
     ySortCoreCpp,
@@ -1029,8 +1029,8 @@ inline void sort_sprite_renderer_layers(
         ]);
         const body = lowerPinnedBody(file, declaration.body!.statements, {
             bindings,
-            calls: pinnedNumericMathCalls(),
-            booleanAnd: true,
+            calls: new Map(),
+
             statement: (statement, lowerer, indent) => {
                 if (!ts.isVariableStatement(statement)) return undefined;
                 const local = statement.declarationList.declarations[0]!;
@@ -1061,11 +1061,19 @@ inline void sort_sprite_renderer_layers(
                         "_getSprite2DYSortHook()?.drawOrder(layer)",
                         "pickSprite2D draw order",
                     );
-                    bindings.set("drawOrder", {
-                        cpp: "draw_order",
-                        type: "u32",
-                        absentCpp: "draw_order == nullptr",
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                "drawOrder",
+                                {
+                                    cpp: "draw_order",
+                                    type: "u32",
+                                    absentCpp: "draw_order == nullptr",
+                                },
+                            ],
+                        ],
+                        statement,
+                    );
                     return [
                         `${indent}const std::uint32_t* draw_order = ` +
                             "engine.sprite_y_sort_hook.draw_order ? " +
@@ -1272,6 +1280,7 @@ ${body}
 // ${this.context.provenance(pipelineModule, "buildSpriteLayerUbo")}
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
+#include <bblite/pinned_records.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1282,8 +1291,6 @@ ${body}
 #include <stdexcept>
 #include <vector>
 
-namespace bbl::upstream {
-
 /**
  * shared/sprite-atlas.ts#createGridSpriteAtlas, the one partition every grid
  * loader shares: \`loadSpriteAtlas\`, the particle bridges and scene code's
@@ -1291,6 +1298,8 @@ namespace bbl::upstream {
  * header because it is the shared atlas module's.
  */
 ${gridSpriteAtlasCpp(this.context)}
+
+namespace bbl::upstream {
 
 /**
  * sprite-pipeline.ts: the pure-2D per-instance vertex attributes at the
@@ -2062,7 +2071,6 @@ void update_sprite_2d_index(
         false);
     touch_sprite_instances(layer, index, index + 1u);
 }
-
 
 // sprite-2d-handle.ts: a stable id over a moving index. Upstream keeps the
 // pair in a Map and a Uint32Array beside the layer, updated by a hook the

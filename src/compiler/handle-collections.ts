@@ -36,13 +36,11 @@ import type {
 } from "./types.js";
 import {
     asIndex,
-    asRecords,
-    asString,
     glbJsonText,
     instantiatedPrimitiveRecords,
     isGaussianSplatPrimitive,
-    type JsonObject,
 } from "../gltf-document.js";
+import { asRecords, asString, type JsonObject } from "../json-fields.js";
 // The same reader the material arms key their skinned mesh features by, so
 // "which meshes of this file are skinned" has one answer in the compiler.
 // The same reader the material arms key their skinned mesh features by, so
@@ -102,9 +100,11 @@ export function emitHandleCollectionLoop<
     extraBinding?: Partial<ValueBase>,
 ): void {
     const item = context.allocateTemporaryCppName(target.temporaryLabel);
-    context.emit(
-        `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
-    );
+    context.emit({
+        kind: "open",
+        code: `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
+        iteration: true,
+    });
     context.increaseIndent();
     context.bindings.pushScope(context.allocateBlockPrefix());
     try {
@@ -124,7 +124,7 @@ export function emitHandleCollectionLoop<
         context.bindings.popScope();
         context.decreaseIndent();
     }
-    context.emit("}");
+    context.emit({ kind: "close", code: "}" });
 }
 
 /** What the collection operations need from the entry compiler. */
@@ -1495,8 +1495,9 @@ export class HandleCollections {
         if (
             this.context.sceneManifest.reachedNodeParticles.buffers.some(
                 (buffer) =>
-                    buffer.set === set.nodeParticleSetIndex ||
-                    buffer.set === system.nodeParticleSetIndex,
+                    (!buffer.runtime || buffer.observed || buffer.sheet) &&
+                    (buffer.set === set.nodeParticleSetIndex ||
+                        buffer.set === system.nodeParticleSetIndex),
             )
         ) {
             this.context.fail(
@@ -1788,7 +1789,13 @@ export class HandleCollections {
 
         const result = this.context.allocateTemporaryCppName("material_match");
         const found = this.context.allocateTemporaryCppName("material_found");
-        this.context.emit(`${handleCppType("material")} ${result}{};`);
+        this.context.emit({
+            kind: "declaration",
+            type: handleCppType("material"),
+            name: result,
+            initializer: "",
+            initialization: "default",
+        });
         this.context.emit({
             kind: "declaration",
             type: "bool",
@@ -1809,23 +1816,33 @@ export class HandleCollections {
                 assetPbrMaterial = selected.assetPbrMaterial === true;
                 const selectedFound = presenceFlagCpp(selected);
                 if (selectedFound) {
-                    context.emit(`if (${selectedFound}) {`);
+                    context.emit({
+                        kind: "open",
+                        code: `if (${selectedFound}) {`,
+                    });
                     context.increaseIndent();
                 }
                 context.bindings.bindLocalValue(predicateParameter, selected);
                 const test = context.conditions.compileCondition(
                     predicate.body as ts.Expression,
                 );
-                context.emit(`if (${test}) {`);
+                context.emit({ kind: "open", code: `if (${test}) {` });
                 context.increaseIndent();
-                context.emit(`${result} = ${selected.cpp};`);
-                context.emit(`${found} = true;`);
-                context.emit("break;");
+                context.emit({
+                    kind: "expression",
+                    code: `${result} = ${selected.cpp};`,
+                });
+                context.emit({ kind: "expression", code: `${found} = true;` });
+                context.emit({
+                    kind: "control",
+                    code: "break;",
+                    transfer: "break",
+                });
                 context.decreaseIndent();
-                context.emit("}");
+                context.emit({ kind: "close", code: "}" });
                 if (selectedFound) {
                     context.decreaseIndent();
-                    context.emit("}");
+                    context.emit({ kind: "close", code: "}" });
                 }
             },
         );
@@ -1910,7 +1927,13 @@ export class HandleCollections {
         const item = this.context.allocateTemporaryCppName(
             "asset_descendant_mesh",
         );
-        this.context.emit(`${handleCppType("mesh")} ${result}{};`);
+        this.context.emit({
+            kind: "declaration",
+            type: handleCppType("mesh"),
+            name: result,
+            initializer: "",
+            initialization: "default",
+        });
         this.context.emit({
             kind: "declaration",
             type: "bool",
@@ -1918,22 +1941,30 @@ export class HandleCollections {
             initializer: "false",
             attributes: "[[maybe_unused]] ",
         });
-        this.context.emit(
-            `for (const ${handleCppType("mesh")} ${item} : ${asset}.meshes) {`,
-        );
+        this.context.emit({
+            kind: "open",
+            code: `for (const ${handleCppType("mesh")} ${item} : ${asset}.meshes) {`,
+            iteration: true,
+        });
         this.context.increaseIndent();
-        this.context.emit(
-            `if (${recordAt(`${engine}.meshes`, item)}.name == ` +
+        this.context.emit({
+            kind: "open",
+            code:
+                `if (${recordAt(`${engine}.meshes`, item)}.name == ` +
                 `${this.context.cppString(name)}) {`,
-        );
+        });
         this.context.increaseIndent();
-        this.context.emit(`${result} = ${item};`);
-        this.context.emit(`${found} = true;`);
-        this.context.emit("break;");
+        this.context.emit({ kind: "expression", code: `${result} = ${item};` });
+        this.context.emit({ kind: "expression", code: `${found} = true;` });
+        this.context.emit({
+            kind: "control",
+            code: "break;",
+            transfer: "break",
+        });
         this.context.decreaseIndent();
-        this.context.emit("}");
+        this.context.emit({ kind: "close", code: "}" });
         this.context.decreaseIndent();
-        this.context.emit("}");
+        this.context.emit({ kind: "close", code: "}" });
         return {
             kind: "mesh",
             cpp: result,
@@ -1988,7 +2019,13 @@ export class HandleCollections {
         );
         const item =
             this.context.allocateTemporaryCppName("asset_skinned_mesh");
-        this.context.emit(`${handleCppType("mesh")} ${result}{};`);
+        this.context.emit({
+            kind: "declaration",
+            type: handleCppType("mesh"),
+            name: result,
+            initializer: "",
+            initialization: "default",
+        });
         this.context.emit({
             kind: "declaration",
             type: "bool",
@@ -1996,22 +2033,30 @@ export class HandleCollections {
             initializer: "false",
             attributes: "[[maybe_unused]] ",
         });
-        this.context.emit(
-            `for (const ${handleCppType("mesh")} ${item} : ` +
+        this.context.emit({
+            kind: "open",
+            code:
+                `for (const ${handleCppType("mesh")} ${item} : ` +
                 `${recordAt(`${engine}.assets`, root.cpp)}.meshes) {`,
-        );
+            iteration: true,
+        });
         this.context.increaseIndent();
-        this.context.emit(
-            `if (${recordAt(`${engine}.meshes`, item)}.skinned) {`,
-        );
+        this.context.emit({
+            kind: "open",
+            code: `if (${recordAt(`${engine}.meshes`, item)}.skinned) {`,
+        });
         this.context.increaseIndent();
-        this.context.emit(`${result} = ${item};`);
-        this.context.emit(`${found} = true;`);
-        this.context.emit("break;");
+        this.context.emit({ kind: "expression", code: `${result} = ${item};` });
+        this.context.emit({ kind: "expression", code: `${found} = true;` });
+        this.context.emit({
+            kind: "control",
+            code: "break;",
+            transfer: "break",
+        });
         this.context.decreaseIndent();
-        this.context.emit("}");
+        this.context.emit({ kind: "close", code: "}" });
         this.context.decreaseIndent();
-        this.context.emit("}");
+        this.context.emit({ kind: "close", code: "}" });
         return {
             kind: "mesh",
             cpp: result,
@@ -2171,7 +2216,13 @@ export class HandleCollections {
         const found = this.context.allocateTemporaryCppName(
             `${target.temporaryLabel}_found`,
         );
-        this.context.emit(`${target.elementCppType} ${result}{};`);
+        this.context.emit({
+            kind: "declaration",
+            type: target.elementCppType,
+            name: result,
+            initializer: "",
+            initialization: "default",
+        });
         // A caller may use the selected handle without testing the optional
         // result (for example, a scene whose asset contract guarantees the
         // named camera). The search still needs the flag for callers that do
@@ -2193,13 +2244,20 @@ export class HandleCollections {
                 const test = context.conditions.compileCondition(
                     predicate.body as ts.Expression,
                 );
-                context.emit(`if (${test}) {`);
+                context.emit({ kind: "open", code: `if (${test}) {` });
                 context.increaseIndent();
-                context.emit(`${result} = ${item};`);
-                context.emit(`${found} = true;`);
-                context.emit("break;");
+                context.emit({
+                    kind: "expression",
+                    code: `${result} = ${item};`,
+                });
+                context.emit({ kind: "expression", code: `${found} = true;` });
+                context.emit({
+                    kind: "control",
+                    code: "break;",
+                    transfer: "break",
+                });
                 context.decreaseIndent();
-                context.emit("}");
+                context.emit({ kind: "close", code: "}" });
             },
         );
         return valueForKind(target.elementKind, {

@@ -1,3 +1,4 @@
+import { stringLiteral } from "../cpp-literals.js";
 /**
  * `device-lost-recovery.ts`'s coordinator, lowered from the pin.
  *
@@ -234,8 +235,6 @@ function coordinatorScope(
     calls: Map<string, (args: readonly string[]) => string>;
     methods: NonNullable<PinnedNumericScope["methods"]>;
     statement: NonNullable<PinnedNumericScope["statement"]>;
-    booleanOr: true;
-    booleanAnd: true;
 } {
     const file = context.sourceFile(recoveryModule);
     const statement: NonNullable<PinnedNumericScope["statement"]> = (
@@ -284,8 +283,6 @@ function coordinatorScope(
         ]),
         methods: listMethods,
         statement,
-        booleanOr: true,
-        booleanAnd: true,
     };
 }
 
@@ -361,7 +358,7 @@ function continuationsCpp(context: LoweringContext): string {
                     "continuations settle.",
             );
         }
-        lowerer.bindLocal("registrations", inFlight[1]);
+        lowerer.bindPorts([["registrations", inFlight[1]]], entry);
         return [`${indent}state.in_flight = state.registrations;`];
     };
     const forOf: NonNullable<PinnedNumericScope["forOf"]> = (
@@ -447,9 +444,7 @@ function registrationCpp(context: LoweringContext): string {
             node.declarationList.declarations[0]?.getText(file) ===
                 "state = getState(engine)"
         ) {
-            for (const [key, binding] of stateMembers("state", "state")) {
-                lowerer.bindLocal(key, binding);
-            }
+            lowerer.bindPorts(stateMembers("state", "state"), node);
             return [
                 `${indent}Engine::DeviceRecoveryState& state = recovery_state(engine);`,
             ];
@@ -477,10 +472,18 @@ function registrationCpp(context: LoweringContext): string {
                     "Expected a recovery handle to start enabled.",
                 );
             }
-            lowerer.bindLocal("disabled", {
-                cpp: "registration->disabled",
-                type: "bool",
-            });
+            lowerer.bindPorts(
+                [
+                    [
+                        "disabled",
+                        {
+                            cpp: "registration->disabled",
+                            type: "bool",
+                        },
+                    ],
+                ],
+                local,
+            );
             return [
                 `${indent}registration->engine = &engine;`,
                 `${indent}registration->disabled = false;`,
@@ -649,7 +652,7 @@ std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(En
     if (engine.device_recovery && engine.device_recovery->disposed)
         throw std::runtime_error("Cannot register recovery on a disposed engine.");
     auto registration = std::make_shared<DeviceRecoveryRegistration>();
-    registration->kind = ${JSON.stringify(kind.initializer.text)};
+    registration->kind = ${stringLiteral(kind.initializer.text)};
     return enable_device_lost_recovery(engine, std::move(registration));
 }`;
 }
@@ -720,7 +723,7 @@ function contextKindAssertionCpp(context: LoweringContext): string {
     });
     const registries = contextRegistries
         .map((entry, index) => {
-            const line = `    kinds.insert(kinds.end(), ${entry.count}, std::string(${JSON.stringify(kinds[index])}));`;
+            const line = `    kinds.insert(kinds.end(), ${entry.count}, std::string(${stringLiteral(kinds[index]!)}));`;
             return entry.macro ? `#if ${entry.macro}\n${line}\n#endif` : line;
         })
         .join("\n");
@@ -909,6 +912,7 @@ export function lowerDeviceRecovery(context: LoweringContext): LoweredSource {
 // ${context.provenance(recoveryModule, "_enableDeviceLostRecovery, arm")}
 // Native device recreation replays generated upload/composition products over retained CPU owners.
 #include <bblite/runtime.hpp>
+#include <bblite/features/has_sprites.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/text_gpu.hpp>

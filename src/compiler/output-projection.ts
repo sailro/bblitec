@@ -1,4 +1,6 @@
 import { EmissionMap } from "./emission-transaction.js";
+import { cppTokens } from "./cpp-identifiers.js";
+import type { NativeDeclaration } from "./native-declarations.js";
 import type { Feature } from "./types.js";
 import { reachesShadowGenerator } from "../shadow-capabilities.js";
 import { reachedGeneratedSources } from "../generated-sources.js";
@@ -11,11 +13,6 @@ import {
     type NativeFunctionDefinition,
     type DataPreamble,
 } from "./source-units.js";
-import {
-    outlineFunctionBody,
-    outlineFunctionDefinition,
-    type OutlinedSegment,
-} from "./body-outlining.js";
 
 /**
  * The output projection: the feature→sources authority and the renders
@@ -404,11 +401,11 @@ export function impliedFeatures(feature: Feature): readonly Feature[] {
 export function projectFeatures(
     features: readonly Feature[],
     applicationSources: readonly string[],
+    generatedSources = reachedGeneratedSources(features),
 ): { runtimeSources: string[]; generatedSources: string[]; cmake: string } {
     const runtimeSources = [
         ...new Set(features.flatMap((feature) => featureSources[feature])),
     ];
-    const generatedSources = reachedGeneratedSources(features);
     return {
         runtimeSources,
         generatedSources,
@@ -463,10 +460,9 @@ ${applicationSources.map((source) => `    "\${BBLITE_GENERATED_DIR}/${source}"`)
 
 function nativeIdentifierCounts(body: readonly string[]): Map<string, number> {
     const counts = new EmissionMap<string, number>();
-    for (const line of body) {
-        for (const name of line.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
-            counts.set(name, (counts.get(name) ?? 0) + 1);
-        }
+    for (const token of cppTokens(body.join("\n"))) {
+        if (token.kind === "identifier")
+            counts.set(token.text, (counts.get(token.text) ?? 0) + 1);
     }
     return counts;
 }
@@ -488,13 +484,10 @@ export function constructorEntryBody(body: readonly string[]): string[] {
     );
 }
 
-/** Names for the functions outlined out of one application's bodies. */
-function outlinedNames(): () => string {
-    let next = 0;
-    return () => `bbl_outlined_${next++}`;
-}
-
-function markUnreferencedLocals(body: string[]): void {
+function markUnreferencedLocals(
+    body: string[],
+    declarations?: ReadonlyMap<string, NativeDeclaration>,
+): void {
     // Initialized locals, and the empty `std::optional<...>` storage a
     // materialized module predeclares for a nullable resource: a browser-only
     // element whose writers the bake erased is declared and never read.
@@ -515,6 +508,10 @@ function markUnreferencedLocals(body: string[]): void {
         // exactly like the same declaration in the outer entry body.
         body[index] = block
             .split("\n")
+            .filter((line) => {
+                const known = declarations?.get(line.trim());
+                return !known?.discardIfUnused || counts.get(known.name) !== 1;
+            })
             .map((line) => {
                 const match = declaration.exec(line);
                 return match && counts.get(match[3]!) === 1
@@ -560,8 +557,7 @@ interface MainCppProjection {
     body: string[];
     /** The admitted entry statements before the sole top-level startEngine. */
     physicsDebugConstructionBody?: readonly string[];
-    /** The native type of an emitted local, when the compiler registered one. */
-    bindingType: (name: string) => string | undefined;
+    nativeDeclarations?: ReadonlyMap<string, NativeDeclaration>;
 }
 
 export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
@@ -578,52 +574,14 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
     } = projection;
     // The body is finished, so a local nothing referenced is now
     // decidable — mark those, and only those.
-    markUnreferencedLocals(projection.body);
-    // A large entry body moves its statements to functions that other
-    // translation units compile; a worker realm's entry keeps its own.
-    const allocateName = outlinedNames();
-    const outlined = projection.workers
-        ? { lines: projection.body, segments: [] }
-        : outlineFunctionBody({
-              lines: projection.body,
-              parameters: projection.audioSessionReached
-                  ? [
-                        {
-                            name: "bbl_audio_session",
-                            type: "std::shared_ptr<bbl::pal::AudioSession>",
-                        },
-                    ]
-                  : [],
-              bindingType: projection.bindingType,
-              allocateName,
-          });
-    const body = outlined.lines;
-    const segmentsOf = (
-        source: string,
-        segments: readonly OutlinedSegment[],
-    ): NativeFunctionDefinition[] =>
-        segments.map((segment) => ({
-            kind: "function",
-            source,
-            prototype: segment.prototype,
-            lines: segment.lines,
-        }));
-    // So does a large function definition, into its own source's units.
-    const nativeFunctions: readonly NativeFunctionDefinition[] = [
-        ...projection.nativeFunctions.flatMap((fn) => {
-            if (fn.kind !== "function") return [fn];
-            const definition = outlineFunctionDefinition({
-                lines: fn.lines,
-                bindingType: projection.bindingType,
-                allocateName,
-            });
-            return [
-                { ...fn, lines: definition.lines },
-                ...segmentsOf(fn.source, definition.segments),
-            ];
-        }),
-        ...segmentsOf(projection.source, outlined.segments),
-    ];
+    markUnreferencedLocals(projection.body, projection.nativeDeclarations);
+    const body = projection.body;
+    const nativeFunctions: readonly NativeFunctionDefinition[] =
+        projection.nativeFunctions.map((fn) => {
+            const lines = [...fn.lines];
+            markUnreferencedLocals(lines, projection.nativeDeclarations);
+            return { ...fn, lines };
+        });
     const nativeFunctionPrototypes = nativeFunctions.flatMap((fn) =>
         fn.prototype === undefined ? [] : [fn.prototype],
     );
@@ -929,7 +887,7 @@ ${features.includes("input:dom") ? "#include <bblite/pal_dom_events.hpp>\n" : ""
         const construction = constructorEntryBody(
             projection.physicsDebugConstructionBody,
         );
-        markUnreferencedLocals(construction);
+        markUnreferencedLocals(construction, projection.nativeDeclarations);
         extraction = `\n#include <bblite/pal_physics_debug.hpp>\n#include <string_view>\n
 static void extract_physics_constructor_inputs(const char* output_path) {
     bbl::pal::PhysicsDebugExtractionScope extraction;

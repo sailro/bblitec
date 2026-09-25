@@ -57,7 +57,9 @@ distinct captures and resource identities. Pinned functions use `lowerPinnedFunc
 use `lowerPinnedBody`. Pinned modules over plain records (the text family: data, layout, renderable,
 renderer, GPU writers and alpha-to-coverage membership) use `PinnedRecordModel`: a checked program over
 the pinned sources types every value, structs are emitted from the pinned declarations, and
-`pinned-record-transport.ts` rebuilds records the pin built at generation. Pinned classes are structs of
+`pinned-record-transport.ts` rebuilds records the pin built at generation. Both `PinnedRecordModel` and
+`CharacterKernelLowerer` use `record-shapes.ts` for typed shapes, storage, absence and truthiness;
+their storage policies select record ownership. Pinned classes are structs of
 their fields with their accessors, methods and constructor lowered over the instance. A closure is a
 `bbl::js::Callback` over its frame's environment struct, which holds the bindings closures capture and is
 shared by the frame and all of its closures; records and environments that can close a cycle describe
@@ -78,10 +80,14 @@ bodies appear only in units that use them. Paths mirror source folders from thei
 worker realms live under `sources/workers/<module>/`. Single-source programs within the budget retain one file.
 Folded imports emit no unit; specialized inline bodies remain with their caller. Module initialization
 and shared bindings retain their ordered entry execution. An entry or function body larger than
-`outlinedBodyMinimumBytes` moves its compound and expression statements, and large initializers of typed
-declarations, into functions of its source (`body-outlining.ts`) that take the locals they read by
-reference; declarations, statements that leave the body or a loop, and statements reading a local without
-a native type stay in place, and a loop moves whole or not at all.
+`outlinedBodyMinimumBytes` uses emitted declaration, scope and control-flow facts (`native-statements.ts`)
+to move compound and expression statements, and large runtime initializers, into functions of its source
+(`body-outlining.ts`) that take the locals they read by reference. Declarations, outward transfers and
+untyped reads stay in place; opaque emission blocks further outlining in its scope. Loops move whole.
+
+Lowered library modules use the same packing budget and outliner. Generator-owned regions carry explicit
+captures; other bodies remain opaque. Packed modules share declarations, records and variable storage in
+`upstream/include/bblite/upstream/units/`; their implementation parts are listed in `generatedSources`.
 
 Ordinary loops remain native loops, including small constant ranges. Static expansion is reserved for
 composition that needs distinct generation-time values or frame-yield continuations. Shared functions,

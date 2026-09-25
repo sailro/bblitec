@@ -4,7 +4,7 @@ import {
     asObject,
     asString,
     type JsonObject,
-} from "../src/gltf-document.js";
+} from "../src/json-fields.js";
 
 export function jsonObject(value: unknown): JsonObject {
     const record = asObject(value);

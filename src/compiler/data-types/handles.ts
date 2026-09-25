@@ -76,49 +76,6 @@ const handleCppTypes: Record<HandleKind, string> = {
     "navigation-obstacle": "bbl::pal::NavObstacleHandle",
 };
 
-/**
- * Handles whose native value is an engine identity -- a record index, an
- * engine pointer, stored texture pixels -- and so owns no traced edge. Every
- * other handle owns shared state and counts as traced. A native fixture
- * checks each against `bbl::js::gc_traceable`.
- */
-export const untracedHandleKinds: ReadonlySet<HandleKind> = new Set<HandleKind>(
-    [
-        "engine",
-        "asset",
-        "gpu-device",
-        "gpu-texture",
-        "gpu-environment",
-        "mesh",
-        "animation-group",
-        "flow-graph",
-        "camera",
-        "ui-element",
-        "utility-layer",
-        "pointer-drag",
-        "gamepad",
-        "gamepad-button",
-        "light",
-        "shadow-generator",
-        "hierarchy-instance-pool",
-        "storage-buffer",
-        "material",
-        "billboard-sprite",
-        "billboard-system",
-        "sprite-layer",
-        "sprite-atlas",
-        "splat-mesh",
-        "texture",
-        "skeleton",
-        "scene-skeleton",
-        "bone",
-    ],
-);
-
-export function handleOwnsTracedEdge(kind: HandleKind): boolean {
-    return !untracedHandleKinds.has(kind);
-}
-
 export function isHandleKind(kind: string): kind is HandleKind {
     return Object.prototype.hasOwnProperty.call(handleCppTypes, kind);
 }

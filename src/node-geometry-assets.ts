@@ -1,9 +1,5 @@
-import {
-    asIndex,
-    asObject,
-    asRecords,
-    type JsonObject,
-} from "./gltf-document.js";
+import { asIndex } from "./gltf-document.js";
+import { asObject, asRecords, type JsonObject } from "./json-fields.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
 /** The raw local attributes consumed by the pinned node geometry view. */

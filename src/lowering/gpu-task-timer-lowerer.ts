@@ -176,8 +176,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             bindings,
             calls: new Map(),
             foldConditions: false,
-            booleanOr: true,
-            booleanAnd: true,
+
             expression,
             forOf: (source, element) =>
                 source === "pending.records"
@@ -255,10 +254,18 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
                         if (!ts.isIdentifier(local.name) || !local.initializer)
                             return fail(local);
                         const cpp = lowerer.expression(local.initializer);
-                        bindings.set(local.name.text, {
-                            cpp: local.name.text,
-                            type: "opaque",
-                        });
+                        lowerer.bindPorts(
+                            [
+                                [
+                                    local.name.text,
+                                    {
+                                        cpp: local.name.text,
+                                        type: "opaque",
+                                    },
+                                ],
+                            ],
+                            node,
+                        );
                         const declaration = `${indent}${local.name.text === "tasks" ? "auto" : "const auto"} ${local.name.text} = ${cpp};`;
                         if (
                             phase === "complete" &&

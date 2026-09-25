@@ -17,6 +17,22 @@
  * not rolled back.
  */
 
+/** Revisions are allocated only for state observed by a derived cache. */
+const mutationVersions = new WeakMap<object, number>();
+const proxyTargets = new WeakMap<object, object>();
+
+export function emissionMutationVersion(value: object): number {
+    const target = proxyTargets.get(value) ?? value;
+    let version = mutationVersions.get(target);
+    if (version === undefined) mutationVersions.set(target, (version = 0));
+    return version;
+}
+
+function changed(value: object): void {
+    const version = mutationVersions.get(value);
+    if (version !== undefined) mutationVersions.set(value, version + 1);
+}
+
 /** Transactions opened and declined, originals saved, containers restored. */
 interface EmissionTransactionStatistics {
     transactions: number;
@@ -217,6 +233,7 @@ export class EmissionMap<K, V> extends Map<K, V> {
                 entries: undefined,
             }),
             (record) => {
+                changed(this);
                 if (record.entries === undefined) {
                     for (const [key, original] of record.saved) {
                         if (original) super.set(key, original.value);
@@ -239,10 +256,11 @@ export class EmissionMap<K, V> extends Map<K, V> {
     }
 
     public override set(key: K, value: V): this {
-        if (!journaling(this.#born)) return super.set(key, value);
         const present = super.has(key);
         const previous = super.get(key);
         if (present && Object.is(previous, value)) return this;
+        changed(this);
+        if (!journaling(this.#born)) return super.set(key, value);
         const record = this.#record();
         if (record && record.entries === undefined)
             saveOriginal(record.saved, key, () =>
@@ -254,12 +272,14 @@ export class EmissionMap<K, V> extends Map<K, V> {
 
     public override delete(key: K): boolean {
         if (!super.has(key)) return false;
+        changed(this);
         this.#snapshot();
         return super.delete(key);
     }
 
     public override clear(): void {
         if (this.size === 0) return;
+        changed(this);
         this.#snapshot();
         super.clear();
     }
@@ -474,6 +494,7 @@ export function emissionArray<T>(values: T[] = []): T[] {
                 saved: new Map(),
             }),
             (original) => {
+                changed(values);
                 values.length = original.length;
                 for (const [key, descriptor] of original.saved) {
                     if (descriptor)
@@ -506,6 +527,7 @@ export function emissionArray<T>(values: T[] = []): T[] {
     };
     /** A shrinking length removes the slots between it and the old length. */
     const write = (key: PropertyKey, length: unknown): void => {
+        changed(values);
         const original = record();
         if (!original) return;
         if (key !== "length") {
@@ -520,7 +542,7 @@ export function emissionArray<T>(values: T[] = []): T[] {
             )
                 save(original, String(index));
     };
-    return registerContainer(
+    const proxy = registerContainer(
         new Proxy(values, {
             set(target, key, value: unknown) {
                 const current = Reflect.getOwnPropertyDescriptor(target, key);
@@ -542,6 +564,8 @@ export function emissionArray<T>(values: T[] = []): T[] {
             },
         }),
     );
+    proxyTargets.set(proxy, values);
+    return proxy;
 }
 
 interface PropertyOriginals extends Originals {
@@ -568,6 +592,7 @@ function sameDescriptor(
  * output order. Unchanged properties are left alone.
  */
 function restoreProperties(target: object, original: PropertyOriginals): void {
+    changed(target);
     const { keys, descriptors } = original;
     const current = Reflect.ownKeys(target);
     const reordered =
@@ -593,6 +618,7 @@ function restoreProperties(target: object, original: PropertyOriginals): void {
 const snapshots = new WeakMap<object, Journal<PropertyOriginals>>();
 
 function snapshotBeforeWrite(target: object, born: number): void {
+    changed(target);
     if (!journaling(born)) return;
     let journal = snapshots.get(target);
     if (!journal) {
@@ -642,8 +668,8 @@ export function writable<T extends object>(target: T): Mutable<T> {
             throw new Error(
                 "writable() names a journaled container; write it directly.",
             );
-        snapshotBeforeWrite(target, 0);
     }
+    snapshotBeforeWrite(target, 0);
     return target as Mutable<T>;
 }
 
@@ -654,7 +680,7 @@ export type Mutable<T> =
 /** A plain record whose writes are journaled: its properties, once per transaction. */
 export function emissionRecord<T extends object>(value: T): T {
     const born = innermostId();
-    return registerContainer(
+    const proxy = registerContainer(
         new Proxy(value, {
             set(target, key, next: unknown) {
                 snapshotBeforeWrite(target, born);
@@ -670,6 +696,8 @@ export function emissionRecord<T extends object>(value: T): T {
             },
         }),
     );
+    proxyTargets.set(proxy, value);
+    return proxy;
 }
 
 interface FieldOriginals extends Originals {

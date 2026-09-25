@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
@@ -9,7 +10,6 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const module = "src/particle/node/npe-emitter-provider.ts";
 
@@ -52,7 +52,7 @@ export function lowerNodeParticleProviderShared(
         "provider() as Mat4 | null | undefined",
         "provider sample",
     );
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set("Number.isFinite", ([value]) => `std::isfinite(${value})`);
     const sample = lowerPinnedFunctionParts(
         context,
@@ -81,8 +81,6 @@ export function lowerNodeParticleProviderShared(
                 ],
             ]),
             calls,
-            booleanAnd: true,
-            booleanOr: true,
         },
     );
     const translation = lowerPinnedFunction(
@@ -258,8 +256,6 @@ export function lowerNodeParticleProviderState(
         new PinnedNumericLowerer(file, {
             bindings: bindings(),
             calls,
-            booleanAnd: true,
-            booleanOr: true,
         })
             .statements(body, "    ")
             .join("\n");

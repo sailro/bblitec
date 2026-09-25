@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import {
     type LoweredSource,
@@ -9,7 +10,7 @@ import {
     type PinnedBodyScope,
 } from "./pinned-body-lowerer.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { pinnedRecordLiteral } from "./pinned-record-literal.js";
 
 export const proceduralSkyModule =
@@ -119,9 +120,8 @@ export function lowerProceduralSkyAtmosphere(
                 ),
             ),
         );
-        const calls = pinnedNumericMathCalls();
-        calls.set("Math.exp", (args) => `std::exp(${args.join(", ")})`);
-        calls.set("Math.hypot", (args) => `std::hypot(${args.join(", ")})`);
+        const calls = new Map<string, PinnedCallSpelling>();
+
         calls.set(
             "Number.isFinite",
             (args) => `std::isfinite(${args.join(", ")})`,
@@ -138,8 +138,7 @@ export function lowerProceduralSkyAtmosphere(
         const scope: PinnedBodyScope = {
             bindings,
             calls,
-            booleanAnd: true,
-            booleanOr: true,
+
             callShapes: new Map([["polynomialToPreScaledHarmonics", "f32"]]),
             expression(node, lowerer) {
                 if (node.kind === ts.SyntaxKind.NullKeyword)
@@ -179,8 +178,13 @@ export function lowerProceduralSkyAtmosphere(
                         );
                     const value = callback.parameters[0]!.name.getText(file),
                         index = callback.parameters[1]!.name.getText(file);
-                    bind(value, value);
-                    bind(index, index);
+                    lowerer.bindPorts(
+                        [
+                            [value, { cpp: value, type: "scalar" }],
+                            [index, { cpp: index, type: "scalar" }],
+                        ],
+                        callback.body,
+                    );
                     const source = lowerer.expression(
                             node.expression.expression,
                         ),
@@ -221,7 +225,10 @@ export function lowerProceduralSkyAtmosphere(
                             "Expected sky harmonic offset loop.",
                         );
                     const id = node.initializer.declarations[0]!.name.text;
-                    bind(id, id);
+                    lowerer.bindPorts(
+                        [[id, { cpp: id, type: "scalar" }]],
+                        node.statement,
+                    );
                     return [
                         `${indent}for(const double ${id}: ${lowerer.expression(node.expression)}) {`,
                         ...lowerer.statements(
@@ -257,7 +264,10 @@ export function lowerProceduralSkyAtmosphere(
                     const source = lowerer.expression(entry.initializer);
                     return entry.name.elements.map((element, index) => {
                         const id = element.getText(file);
-                        bind(id, id);
+                        lowerer.bindPorts(
+                            [[id, { cpp: id, type: "scalar" }]],
+                            entry,
+                        );
                         return `${indent}const double ${id} = (${source})[${index}];`;
                     });
                 }
@@ -269,7 +279,10 @@ export function lowerProceduralSkyAtmosphere(
                     ];
                 if (name === "makeCpuContext" && id === "betaM") {
                     const value = lowerer.expression(entry.initializer);
-                    bind(id, id, "f64-list");
+                    lowerer.bindLocal(entry.name, {
+                        cpp: id,
+                        type: "f64-list",
+                    });
                     return [`${indent}const auto ${id} = ${value};`];
                 }
                 const initializer = unwrapExpression(entry.initializer);
@@ -291,7 +304,10 @@ export function lowerProceduralSkyAtmosphere(
                         );
                     const single =
                         initializer.expression.getText(file) === "F32";
-                    bind(id, id, single ? "f32" : "f64-buffer");
+                    lowerer.bindLocal(entry.name, {
+                        cpp: id,
+                        type: single ? "f32" : "f64-buffer",
+                    });
                     return [
                         `${indent}std::vector<${single ? "float" : "double"}> ${id}(static_cast<std::size_t>(${lowerer.expression(length)}));`,
                     ];
@@ -308,14 +324,20 @@ export function lowerProceduralSkyAtmosphere(
                             );
                         return `{${row.elements.map((element) => lowerer.expression(element)).join(",")}}`;
                     });
-                    bind(id, id, "f64-list-2d");
+                    lowerer.bindLocal(entry.name, {
+                        cpp: id,
+                        type: "f64-list-2d",
+                    });
                     return [
                         `${indent}const std::vector<std::vector<double>> ${id}{${rows.join(",")}};`,
                     ];
                 }
                 if (ts.isArrayLiteralExpression(initializer)) {
                     const value = lowerer.expression(initializer);
-                    bind(id, id, "f64-list");
+                    lowerer.bindLocal(entry.name, {
+                        cpp: id,
+                        type: "f64-list",
+                    });
                     return [`${indent}const auto ${id} = ${value};`];
                 }
                 return undefined;

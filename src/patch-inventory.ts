@@ -1,3 +1,9 @@
+import {
+    isRecord,
+    isNonemptyString,
+    jsonValue,
+    optionalJsonField,
+} from "./json-fields.js";
 /**
  * The maintained upstream patches: one inventory (native/patches/manifest.json)
  * whose series and artifact records native/patch-identity.cmake alone
@@ -64,10 +70,6 @@ interface PatchManifest {
 const moduleRepositoryRoot = (): string =>
     findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function field(
     value: Record<string, unknown>,
     key: string,
@@ -78,9 +80,11 @@ function field(
 }
 
 function text(value: unknown, where: string): string {
-    if (typeof value !== "string" || value.trim() === "")
-        throw new Error(`${where} must be a non-empty string.`);
-    return value;
+    return jsonValue(
+        value,
+        isNonemptyString,
+        `${where} must be a non-empty string.`,
+    );
 }
 
 function requiredText(
@@ -96,9 +100,12 @@ function optionalText(
     key: string,
     where: string,
 ): string | undefined {
-    return value[key] === undefined
-        ? undefined
-        : text(value[key], `${where}.${key}`);
+    return optionalJsonField(
+        value,
+        key,
+        isNonemptyString,
+        `${where}.${key} must be a non-empty string.`,
+    );
 }
 
 function strings(value: unknown, where: string): string[] {
@@ -107,8 +114,7 @@ function strings(value: unknown, where: string): string[] {
 }
 
 function object(value: unknown, where: string): Record<string, unknown> {
-    if (!isRecord(value)) throw new Error(`${where} must be an object.`);
-    return value;
+    return jsonValue(value, isRecord, `${where} must be an object.`);
 }
 
 function isUpstreamState(value: string): value is UpstreamState {

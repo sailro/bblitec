@@ -12,6 +12,11 @@ import {
     walkReachedLoopNodes,
 } from "../src/compiler/resource-loops.js";
 import { CompilerSymbols } from "../src/compiler/symbols.js";
+import {
+    EmissionTransaction,
+    writable,
+} from "../src/compiler/emission-transaction.js";
+import type { Value } from "../src/compiler/types.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import {
@@ -1640,18 +1645,15 @@ test("reached-call analysis follows each forwarded callback and retains unknown 
             ts.isFunctionDeclaration(node) && node.name?.text === "scan",
     );
     assert.ok(scan?.body);
+    const context = { checker, symbols: new CompilerSymbols(checker) };
     const calls: Array<ts.Signature["declaration"]> = [];
-    walkReachedLoopNodes(
-        { checker, symbols: new CompilerSymbols(checker) },
-        scan.body,
-        (node, called) => {
-            if (
-                ts.isCallExpression(node) &&
-                node.expression.getText() === "callback"
-            )
-                calls.push(called);
-        },
-    );
+    walkReachedLoopNodes(context, scan.body, (node, called) => {
+        if (
+            ts.isCallExpression(node) &&
+            node.expression.getText() === "callback"
+        )
+            calls.push(called);
+    });
     assert.deepEqual(
         calls.map((called) =>
             called && ts.isFunctionDeclaration(called)
@@ -1660,4 +1662,76 @@ test("reached-call analysis follows each forwarded callback and retains unknown 
         ),
         ["pure", "effect", "unknown"],
     );
+    let typeQueries = 0;
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Preserve the checker receiver while counting repeated analysis.
+    const original = checker.getTypeAtLocation;
+    checker.getTypeAtLocation = (node) => {
+        typeQueries++;
+        return original.call(checker, node);
+    };
+    try {
+        const repeated: Array<ts.Signature["declaration"]> = [];
+        walkReachedLoopNodes(context, scan.body, (node, called) => {
+            if (
+                ts.isCallExpression(node) &&
+                node.expression.getText() === "callback"
+            )
+                repeated.push(called);
+        });
+        assert.deepEqual(repeated, calls);
+        assert.equal(typeQueries, 0);
+    } finally {
+        checker.getTypeAtLocation = original;
+    }
+});
+
+test("cached reached walks preserve pruning and validate rebound callees after rollback", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        function first(): void { Math.abs(1); }
+        function second(): void { Math.sin(1); }
+        let selected = first;
+        function scan(): void { selected(); selected(); }
+    `,
+        "input.ts",
+    );
+    const functions = sourceFile.statements.filter(ts.isFunctionDeclaration);
+    const first = functions.find((node) => node.name?.text === "first")!;
+    const second = functions.find((node) => node.name?.text === "second")!;
+    const root = functions.find((node) => node.name?.text === "scan")!.body!;
+    const selected: Value = {
+        kind: "callback",
+        cpp: "",
+        callbackDeclaration: first,
+    };
+    const context = {
+        checker,
+        symbols: new CompilerSymbols(checker),
+        knownValueWithoutEvaluation: (
+            node: ts.Expression,
+        ): Value | undefined =>
+            ts.isIdentifier(node) && node.text === "selected"
+                ? selected
+                : undefined,
+    };
+    const calls = (skipFirst: boolean): string[] => {
+        let count = 0;
+        const reached: string[] = [];
+        walkReachedLoopNodes(context, root, (node) => {
+            if (!ts.isCallExpression(node)) return;
+            const name = node.expression.getText();
+            if (name === "selected" && count++ === 0 && skipFirst) return false;
+            reached.push(name);
+        });
+        return reached;
+    };
+    assert.deepEqual(calls(false), ["selected", "Math.abs", "selected"]);
+    assert.deepEqual(calls(true), ["selected", "Math.abs"]);
+    assert.deepEqual(calls(false), ["selected", "Math.abs", "selected"]);
+    new EmissionTransaction().run(() => {
+        writable(selected).callbackDeclaration = second;
+        assert.deepEqual(calls(false), ["selected", "Math.sin", "selected"]);
+        return false;
+    }, Boolean);
+    assert.deepEqual(calls(false), ["selected", "Math.abs", "selected"]);
 });

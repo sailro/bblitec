@@ -213,9 +213,10 @@ export function compileEngineIntrinsic(
                 initializer: `bbl::create_frame_graph_context(${surface.cpp})`,
             });
             if (update) {
-                context.emit(
-                    `bbl::on_frame_graph_update(${nativeContext}, ${context.callbacks.compileFrameCallback(update)});`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `bbl::on_frame_graph_update(${nativeContext}, ${context.callbacks.compileFrameCallback(update)});`,
+                });
             }
             return {
                 kind: "frame-graph-context",

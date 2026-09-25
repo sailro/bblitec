@@ -66,9 +66,10 @@ export function emitMaterialPluginResources(
 ): void {
     const engine = context.requireEngine(target, source);
     context.reachFeature("material:plugin-index", source);
-    context.emit(
-        `bbl::set_material_plugins(${engine}, ${target.cpp}, static_cast<std::uint8_t>(${signatureIndex}));`,
-    );
+    context.emit({
+        kind: "expression",
+        code: `bbl::set_material_plugins(${engine}, ${target.cpp}, static_cast<std::uint8_t>(${signatureIndex}));`,
+    });
     const samplers = plugins.manifests.flatMap(
         (plugin) => plugin.samplers ?? [],
     );
@@ -85,14 +86,16 @@ export function emitMaterialPluginResources(
                   ? "add_material_plugin_texture"
                   : "add_material_plugin_file_texture";
         const sampler = samplers[index]!;
-        context.emit(
-            `bbl::${helper}(${engine}, ${target.cpp}, ${texture.value.cpp}, ${context.cppString(sampler.texture)}, ${context.cppString(sampler.sampler)});`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::${helper}(${engine}, ${target.cpp}, ${texture.value.cpp}, ${context.cppString(sampler.texture)}, ${context.cppString(sampler.sampler)});`,
+        });
     });
     for (const writer of plugins.uniformWriters) {
-        context.emit(
-            `bbl::add_material_plugin_uniform_writer(${engine}, ${target.cpp}, ${writer});`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::add_material_plugin_uniform_writer(${engine}, ${target.cpp}, ${writer});`,
+        });
     }
 }
 

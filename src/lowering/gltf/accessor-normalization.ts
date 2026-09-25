@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "../pinned-operators.js";
+
 import {
     identifierParameters,
     refuseNode,
@@ -37,7 +37,7 @@ export function lowerAccessorNormalizationCpp(file: ts.SourceFile): string {
             [parameters[2]!, { cpp: "component_type", type: "scalar" }],
             [parameters[3]!, { cpp: "normalized", type: "bool" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         methods: new Map(
             Object.entries(accessorReadsByGetter).map(([getter, read]) => [
                 getter,

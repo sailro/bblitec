@@ -74,8 +74,7 @@ export function lowerAssetSceneAttachment(context: LoweringContext): string {
         {
             bindings,
             calls: new Map(),
-            booleanAnd: true,
-            booleanOr: true,
+
             returnValue: (expression) => {
                 if (expression)
                     context.contractError(
@@ -157,7 +156,10 @@ export function lowerAssetSceneAttachment(context: LoweringContext): string {
                             "result.animationGroups",
                             "Container animation groups",
                         );
-                        bindings.set(name, { cpp: "groups", type: "opaque" });
+                        lowerer.bindPorts(
+                            [[name, { cpp: "groups", type: "opaque" }]],
+                            statement,
+                        );
                         return [
                             `${indent}const auto& groups = record.animation_groups;`,
                         ];

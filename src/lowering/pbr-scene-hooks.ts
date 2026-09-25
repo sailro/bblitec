@@ -91,7 +91,7 @@ export function lowerPbrTransmissionSelection(
     const body = lowerPinnedBody(file, statements.slice(0, activation), {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
+
         expression(node, lowerer) {
             if (
                 ts.isBinaryExpression(node) &&
@@ -145,11 +145,19 @@ export function lowerPbrTransmissionSelection(
                     mesh,
                     "Expected an indexed transmission mesh.",
                 );
-            bindings.set("mat", {
-                cpp: "mat",
-                type: "opaque",
-                absentCpp: "!mat",
-            });
+            lowerer.bindPorts(
+                [
+                    [
+                        "mat",
+                        {
+                            cpp: "mat",
+                            type: "opaque",
+                            absentCpp: "!mat",
+                        },
+                    ],
+                ],
+                statement,
+            );
             return [
                 `${indent}const auto material = ${recordAt("engine.meshes", `meshes.at(static_cast<std::size_t>(${lowerer.expression(mesh.argumentExpression)}))`)}.material;`,
                 `${indent}const MaterialRecord* mat = material.value < engine.materials.size() ? &${recordAt("engine.materials", "material")} : nullptr;`,
@@ -316,7 +324,7 @@ export function lowerPbrSceneHookRegistry(context: LoweringContext): string {
                     () => "(enable_scene_transmission(scene), false)",
                 ],
             ]),
-            booleanOr: true,
+
             expression(node) {
                 if (
                     !context.expressionMatchesShape(

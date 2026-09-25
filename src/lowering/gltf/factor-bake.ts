@@ -1,17 +1,9 @@
 import ts from "typescript";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
-import {
-    pinnedNumericMathCalls,
-    pinnedRoundCall,
-} from "../pinned-operators.js";
 import { refuseNode, topLevelFunction } from "./shared.js";
 
 /** Source conversions retain JavaScript-number precision until their byte stores. */
 export function lowerGltfFactorBake(colorFile: ts.SourceFile): string {
-    const calls = new Map([
-        ...pinnedNumericMathCalls(),
-        ["Math.round", pinnedRoundCall],
-    ]);
     const srgb = topLevelFunction(colorFile, "linearToSrgbByte");
     const parameter = srgb.parameters[0]?.name;
     if (
@@ -29,7 +21,7 @@ export function lowerGltfFactorBake(colorFile: ts.SourceFile): string {
         bindings: new Map([
             [parameter.text, { cpp: parameter.text, type: "scalar" }],
         ]),
-        calls,
+        calls: new Map(),
         returnValue: (value, lowerer) =>
             `bbl::js::to_uint8(${lowerer.expression(value!)})`,
     });

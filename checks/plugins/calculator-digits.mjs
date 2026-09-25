@@ -15,7 +15,8 @@
 //            dispatches: { <phase>: ["Button 7", ...] } }
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
-import { asObject, parseGlbJson } from "../../dist/src/gltf-document.js";
+import { parseGlbJson } from "../../dist/src/gltf-document.js";
+import { asObject } from "../../dist/src/json-fields.js";
 import { loadPng, readManifest } from "./support.mjs";
 
 /**

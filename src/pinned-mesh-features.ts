@@ -11,7 +11,7 @@
  * The bits come from the primitive's own accessors, which is where the pinned
  * loader reads them from too.
  */
-import type { JsonObject } from "./gltf-document.js";
+import type { JsonObject } from "./json-fields.js";
 import type { SceneMeshManifest } from "./compiler/types.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 

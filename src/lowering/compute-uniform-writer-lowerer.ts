@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import { stringLiteral } from "../cpp-literals.js";
 import {
@@ -6,7 +7,7 @@ import {
     unwrapExpression,
 } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import type {
     PinnedBinding,
     PinnedNumericScope,
@@ -191,7 +192,7 @@ function scope(
         ].includes(name)
     )
         bindings.set("value", { cpp: "value", type: "f64-list" });
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const [symbol, fn] of Object.entries(functions))
         calls.set(symbol, (args) => `${fn.cpp}(${args.join(", ")})`);
     calls.set(
@@ -203,7 +204,7 @@ function scope(
     return {
         bindings,
         calls,
-        booleanOr: true,
+
         expression(node, lowerer) {
             if (ts.isStringLiteralLike(node)) return stringLiteral(node.text);
             if (

@@ -36,7 +36,11 @@ export function compileCollectionForEach(
     // Copy each entry before the callback: deletion or replacement of its
     // collection slot must not alter already evaluated callback arguments.
     // A non-const copy states that intent to clang's range-loop-construct.
-    lowerer.context.emit(`for (auto ${entry} : ${source}) {`);
+    lowerer.context.emit({
+        kind: "open",
+        code: `for (auto ${entry} : ${source}) {`,
+        iteration: true,
+    });
     lowerer.context.increaseIndent();
     lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     lowerer.context.enterRuntimeIteration();
@@ -74,7 +78,7 @@ export function compileCollectionForEach(
         lowerer.context.bindings.popScope();
         lowerer.context.decreaseIndent();
     }
-    lowerer.context.emit("}");
+    lowerer.context.emit({ kind: "close", code: "}" });
     return { kind: "void", cpp: "" };
 }
 
@@ -142,9 +146,10 @@ export function compileEntryCollection(
             return { keyName, valueName };
         });
         for (const entry of entries)
-            lowerer.context.emit(
-                `${result}.set(${entry.keyName}, ${entry.valueName});`,
-            );
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${result}.set(${entry.keyName}, ${entry.valueName});`,
+            });
     } else {
         const source = lowerer.context.compileValue(input);
         if (source.kind === "tuple") {
@@ -164,7 +169,10 @@ export function compileEntryCollection(
                     type.value,
                     input,
                 );
-                lowerer.context.emit(`${result}.set(${key}, ${value});`);
+                lowerer.context.emit({
+                    kind: "expression",
+                    code: `${result}.set(${key}, ${value});`,
+                });
             }
         } else if (source.dataType?.kind === "map") {
             const entry = lowerer.context.allocateTemporaryCppName("map_entry");
@@ -178,9 +186,10 @@ export function compileEntryCollection(
                 type.value,
                 input,
             );
-            lowerer.context.emit(
-                `for (const auto& ${entry} : ${source.cpp}) ${result}.set(${key}, ${value});`,
-            );
+            lowerer.context.emit({
+                kind: "expression",
+                code: `for (const auto& ${entry} : ${source.cpp}) ${result}.set(${key}, ${value});`,
+            });
         } else if (
             source.dataType?.kind === "vector" ||
             source.dataType?.kind === "span"
@@ -212,16 +221,22 @@ export function compileEntryCollection(
                 type.value,
                 input,
             );
-            lowerer.context.emit(
-                `for (const auto& ${entry} : ${source.cpp}) {`,
-            );
+            lowerer.context.emit({
+                kind: "open",
+                code: `for (const auto& ${entry} : ${source.cpp}) {`,
+                iteration: true,
+            });
             lowerer.context.increaseIndent();
-            lowerer.context.emit(
-                `if (${entry}.size() < 2) throw std::runtime_error("Collection entry requires a key and value");`,
-            );
-            lowerer.context.emit(`${result}.set(${key}, ${value});`);
+            lowerer.context.emit({
+                kind: "expression",
+                code: `if (${entry}.size() < 2) throw std::runtime_error("Collection entry requires a key and value");`,
+            });
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${result}.set(${key}, ${value});`,
+            });
             lowerer.context.decreaseIndent();
-            lowerer.context.emit("}");
+            lowerer.context.emit({ kind: "close", code: "}" });
         } else {
             lowerer.context.fail(
                 input,

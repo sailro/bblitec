@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * A LIVE node-particle system, lowered from the pin's own block evaluators.
  *
@@ -35,9 +36,14 @@
  * different set of particles.
  */
 import ts from "typescript";
-import { doubleLiteral, floatLiteral, snakeCase } from "../cpp-literals.js";
+import {
+    cppArrayDeclaration,
+    doubleLiteral,
+    floatLiteral,
+    snakeCase,
+} from "../cpp-literals.js";
 import { LoweringContext } from "./context.js";
-import { cppVector } from "./cpp-types.js";
+import { CPP_ELEMENT, cppVector } from "./cpp-types.js";
 import {
     lowerPinnedFunction,
     lowerPinnedFunctionParts,
@@ -56,7 +62,7 @@ import {
     recordTypeOfAnnotation,
     recordTypeOfMembers,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import {
     type Callable,
     type Classified,
@@ -169,6 +175,14 @@ export interface LoweredLiveSystem {
     source: string;
 }
 
+/** State at the boundary between an executed warm-up and native initialization. */
+export interface NodeParticleSnapshot {
+    columns: Record<string, readonly number[]>;
+    scalars: Record<string, number | boolean>;
+    alive: number;
+    nextId: number;
+}
+
 // ── Static values ────────────────────────────────────────────────────────────
 
 /** One buffer column: its pinned name, its storage and its C++ member. */
@@ -256,8 +270,8 @@ type NpEnv = Env<StaticValue>;
 
 /** The calls every residual body may make: the Math table and the pinned generator. */
 function pinnedCalls(): Map<string, (args: readonly string[]) => string> {
-    const calls = pinnedNumericMathCalls();
-    calls.set("Math.random", () => "bbl::js::random_js()");
+    const calls = new Map<string, PinnedCallSpelling>();
+
     return calls;
 }
 
@@ -323,6 +337,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         private readonly systemFields: ReadonlyMap<string, number | boolean>,
         public readonly namespace: string,
         private readonly provider: boolean,
+        private readonly snapshot?: NodeParticleSnapshot,
     ) {
         this.blocks = new Map(graph.blocks.map((block) => [block.id, block]));
         this.evaluator = new PartialEvaluator(context, this);
@@ -337,8 +352,14 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         );
         this.assertFacts();
         for (const closure of this.steps) this.lowerClosure(closure, "void");
-        for (const closure of this.slots.values())
-            this.lowerClosure(closure, "void");
+        if (!this.snapshot) {
+            for (const closure of this.slots.values())
+                this.lowerClosure(closure, "void");
+        } else if (this.snapshot.scalars.updateSpeed !== 0) {
+            throw new Error(
+                "A native particle continuation requires updateSpeed = 0 after its warm-up.",
+            );
+        }
         for (const closure of this.hooks.values())
             this.lowerClosure(closure, "void");
         if (this.provider)
@@ -1191,6 +1212,11 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         blockId: number,
         assigned: PinnedBinding["type"] | undefined,
     ): { member: string; type: PinnedBinding["type"] } {
+        if (this.snapshot) {
+            throw new Error(
+                "A particle warm-up with captured mutable graph variables cannot resume natively.",
+            );
+        }
         if (!cell.member) {
             const cpp = `b${blockId}_${snakeCase(cell.name)}`;
             const value = cell.value;
@@ -1277,7 +1303,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             type: "function-list",
         });
         for (const slot of SLOT_NAMES) {
-            const closure = this.slots.get(slot);
+            const closure = this.snapshot ? undefined : this.slots.get(slot);
             if (closure) {
                 const cpp = closure.cpp!;
                 bindings.set(`${local}.${slot}`, {
@@ -1421,8 +1447,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             bindings,
             calls,
             callShapes,
-            booleanAnd: true,
-            booleanOr: true,
+
             recordLiteral: recordLiteralCpp,
             indexedCall,
         };
@@ -1667,7 +1692,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         let bareReturn = false;
         const shapeOf = (expression: ts.Expression): PinnedBinding["type"] => {
             const node = this.context.unwrapExpression(expression);
-            const named = scope.bindings.get(node.getText(file));
+            const named = lowerer.binding(node);
             if (named && named.type !== "opaque") return named.type;
             return (
                 (ts.isCallExpression(node)
@@ -1799,8 +1824,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                     cppName: cpp,
                     returns,
                     calls,
-                    booleanAnd: true,
-                    booleanOr: true,
+
                     memberBindings,
                     leadingParameters: ["State& state"],
                     indexedCall,
@@ -1811,13 +1835,14 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                 `// ${parts.provenance}\n${parts.declaration} {\n${parts.body}\n}`,
             );
         };
-        lowerPinned(
-            bufferModule,
-            "spawnParticle",
-            "spawn_particle",
-            [],
-            "double",
-        );
+        if (!this.snapshot)
+            lowerPinned(
+                bufferModule,
+                "spawnParticle",
+                "spawn_particle",
+                [],
+                "double",
+            );
         lowered.push(this.killParticleCpp());
         this.prototypes.push("void kill_particle(State& state, double i);");
         lowerPinned(
@@ -1841,13 +1866,20 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             [["scaledUpdateSpeed", "scaled_update_speed"]],
             "void",
         );
-        lowerPinned(
-            systemModule,
-            "createNew",
-            "create_new",
-            [["count", "count"]],
-            "void",
-        );
+        if (this.snapshot) {
+            this.prototypes.push("void create_new(State&, double count);");
+            lowered.push(`void create_new(State&, double count) {
+    if (count > 0) throw std::runtime_error("A particle warm-up continuation cannot resume emission.");
+}`);
+        } else {
+            lowerPinned(
+                systemModule,
+                "createNew",
+                "create_new",
+                [["count", "count"]],
+                "void",
+            );
+        }
         lowerPinned(
             systemModule,
             "animateParticleSystem",
@@ -1988,7 +2020,7 @@ ${members.map(([, declaration]) => `    ${declaration}`).join("\n")}
 };
 
 ${
-    this.provider
+    this.provider || !emitted.includes("emitter_world_matrix")
         ? ""
         : `// The emitter world matrix the build composed (createTranslationMat4 of the
 // emitter option), as the executed pin reported it.
@@ -2008,9 +2040,83 @@ ${this.functions.join("\n\n")}
 
 ${simulation}
 
-State state(${this.capacity}u);
+${this.snapshot ? this.snapshotState(this.snapshot) : `State state(${this.capacity}u);`}
 
 } // namespace ${this.namespace}`;
+    }
+
+    private snapshotState(snapshot: NodeParticleSnapshot): string {
+        const assignments = this.columns.map((column) => {
+            const values = snapshot.columns[column.name];
+            if (!values || values.length !== this.capacity) {
+                throw new Error(
+                    `Particle warm-up is missing column '${column.name}'.`,
+                );
+            }
+            const literal =
+                column.element === "f32" ? floatLiteral : doubleLiteral;
+            const table = cppArrayDeclaration(
+                `initial_${column.cpp}`,
+                CPP_ELEMENT[column.element],
+                values,
+                (value) =>
+                    column.element === "u32" || column.element === "u8"
+                        ? `${value}u`
+                        : literal(value),
+            );
+            return [
+                ...table.lines.map((line) => `    ${line}`),
+                `    value.${column.cpp} = ${table.expression};`,
+            ].join("\n");
+        });
+        for (const [name, initial] of this.systemFields) {
+            const value = snapshot.scalars[name];
+            if (typeof value !== typeof initial) {
+                throw new Error(
+                    `Particle warm-up is missing scalar '${name}'.`,
+                );
+            }
+            assignments.push(
+                `    value.${snakeCase(name)} = ${typeof value === "boolean" ? value : doubleLiteral(value!)};`,
+            );
+        }
+        const accessors = this.columns.map((column) => {
+            const cast = `bbl::js::numeric_store_value<${CPP_ELEMENT[column.element]}>(value)`;
+            return {
+                read: `    if (name == "${column.name}") return static_cast<double>(state.${column.cpp}[index]);`,
+                write: `    if (name == "${column.name}") { state.${column.cpp}[index] = ${cast}; return; }`,
+            };
+        });
+        return `State& snapshot_state() {
+    static State state = [] {
+    State value(${this.capacity}u);
+    value.alive = ${doubleLiteral(snapshot.alive)};
+    value.next_id = ${doubleLiteral(snapshot.nextId)};
+${assignments.join("\n")}
+    return value;
+    }();
+    return state;
+}
+
+double read_column(std::string_view name, std::size_t index) {
+    const State& state = snapshot_state();
+${accessors.map((entry) => entry.read).join("\n")}
+    throw std::runtime_error("Unknown particle column.");
+}
+void write_column(std::string_view name, std::size_t index, double value) {
+    State& state = snapshot_state();
+${accessors.map((entry) => entry.write).join("\n")}
+    throw std::runtime_error("Unknown particle column.");
+}
+double alive() { return snapshot_state().alive; }
+void animate(double ratio) { animate_particle_system(snapshot_state(), ratio); }
+void start() { start_particle_system(snapshot_state()); }
+std::array<double, 9> sprite_particle(std::size_t index) {
+    const State& state = snapshot_state();
+    const double size = state.size[index];
+    return {state.pos_x[index], state.pos_y[index], size * state.scale_x[index], size * state.scale_y[index],
+        state.angle[index], state.color_r[index], state.color_g[index], state.color_b[index], state.color_a[index]};
+}`;
     }
 }
 
@@ -2035,6 +2141,7 @@ export class NodeParticleLiveLowerer {
         graph: LiveGraph,
         facts: LiveSystemFacts,
         provider = false,
+        snapshot?: NodeParticleSnapshot,
     ): LoweredLiveSystem {
         if (!this.walkAsserted) {
             this.assertBuildWalk();
@@ -2056,6 +2163,7 @@ export class NodeParticleLiveLowerer {
             this.systemDefaults(),
             namespace,
             provider,
+            snapshot,
         );
         return { namespace, source: lowering.lower() };
     }
@@ -2433,8 +2541,6 @@ export class NodeParticleLiveLowerer {
                         ? "void"
                         : "double",
                 calls: pinnedCalls(),
-                booleanAnd: true,
-                booleanOr: true,
             }),
         );
         return cpp;

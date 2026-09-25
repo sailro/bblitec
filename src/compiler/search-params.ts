@@ -25,9 +25,7 @@ function searchParamsValue(lowerer: DataLowerer, input: string): Value {
 /**
  * The deployment query as a native bag, for a read the generation-time fold
  * could not answer (a key computed at run time). Its text is generation-known,
- * so each emitting function parses it once through a function-local static,
- * as the packaged-asset table does; under workers a static JS container would
- * be owned by several threads, so each read parses its own.
+ * so every emitting function reads the same immutable bag in its realm.
  */
 export function deploymentSearchParamsValue(
     lowerer: DataLowerer,
@@ -35,15 +33,15 @@ export function deploymentSearchParamsValue(
 ): Value {
     const context = lowerer.context;
     const bag = searchParamsValue(lowerer, context.cppString(search));
-    if (context.options.workers) return bag;
-    const name = context.allocateTemporaryCppName("deployment_query");
-    context.emit({
-        kind: "declaration",
-        type: "static thread_local const auto",
-        name,
-        initializer: bag.cpp,
-    });
-    return lowerer.leafValue(name, { kind: "search-params" });
+    const type = { kind: "search-params" } as const;
+    return lowerer.leafValue(
+        context.nativeEmission.deploymentQuery(
+            bag.cpp,
+            context.dataTypes.cppType(type),
+            !!context.options.workers,
+        ),
+        type,
+    );
 }
 
 export function compileSearchParams(

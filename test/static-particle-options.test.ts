@@ -19,7 +19,7 @@ function source(body: string): string {
     return `${setup}${body}} main();`;
 }
 
-test("particle options retain annotated tuple contents and configured viewport values", () => {
+test("particle options retain annotated constant tuple contents", () => {
     for (const [width, height] of [
         [1280, 720],
         [800, 600],
@@ -29,7 +29,7 @@ test("particle options retain annotated tuple contents and configured viewport v
             const center: readonly [number, number] = [96, 96];
         ` +
                 source(`
-            const original: [number, number] = [canvas.width * 0.5, canvas.height * 0.72];
+            const original: [number, number] = [${width} * 0.5, ${height} * 0.72];
             const originPx = original;
             const system = set.systems[0];
             system.buffer.posX[0] = (center[0] - originPx[0]) / 220;
@@ -61,28 +61,27 @@ test("particle options retain annotated tuple contents and configured viewport v
                 value: (height * 0.72 - 96) / 220,
             },
         ]);
-        // Generation-only option facts do not replace the tuple's live initializer.
-        assert.match(compiled.cpp, /v_engine\.options\.width/);
-        assert.match(compiled.cpp, /v_engine\.options\.height/);
     }
 });
 
-test("particle options refuse tuples initialized from a mutable scalar", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                source(`
+function assertRuntimeOrigin(body: string): void {
+    const compiled = compileSource(source(body));
+    assert.match(
+        compiled.cpp,
+        /register_node_particle_set_2d\([^;]*std::array<double, 2>\{/,
+    );
+}
+
+test("particle origins retain runtime tuples initialized from a mutable scalar", () => {
+    assertRuntimeOrigin(`
         let x = 96;
         const originPx: [number, number] = [x, 48];
         x = 24;
         registerNodeParticleSet2D(renderer, set, { originPx });
-    `),
-            ),
-        /originPx must be a static two-element number tuple/,
-    );
+    `);
 });
 
-test("particle options refuse tuple snapshots invalidated through native writes and aliases", () => {
+test("particle origins retain native writes and aliases while static scales refuse them", () => {
     const mutations = [
         "originPx[0] = 24;",
         "originPx[0] += 1;",
@@ -104,18 +103,11 @@ test("particle options refuse tuple snapshots invalidated through native writes 
         "[originPx[0], originPx[1]] = [originPx[1], originPx[0]];",
     ];
     for (const mutation of mutations) {
-        assert.throws(
-            () =>
-                compileSource(
-                    source(`
+        assertRuntimeOrigin(`
             const originPx: [number, number] = [96, 48];
             ${mutation}
             registerNodeParticleSet2D(renderer, set, { originPx });
-        `),
-                ),
-            /originPx must be a static two-element number tuple/,
-            mutation,
-        );
+        `);
         assert.throws(
             () =>
                 compileSource(
@@ -131,29 +123,17 @@ test("particle options refuse tuple snapshots invalidated through native writes 
     }
 });
 
-test("particle options refuse nonconstant, rebound and incorrectly sized tuples", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                source(`
+test("particle origins accept runtime and rebound pairs but refuse incorrect tuple sizes", () => {
+    assertRuntimeOrigin(`
         const values = new Float64Array([96]);
         const originPx: [number, number] = [values[0], 48];
         registerNodeParticleSet2D(renderer, set, { originPx });
-    `),
-            ),
-        /originPx must be a static two-element number tuple/,
-    );
-    assert.throws(
-        () =>
-            compileSource(
-                source(`
+    `);
+    assertRuntimeOrigin(`
         let originPx: [number, number] = [96, 48];
         originPx = [24, 12];
         registerNodeParticleSet2D(renderer, set, { originPx });
-    `),
-            ),
-        /originPx must be a static two-element number tuple/,
-    );
+    `);
     assert.throws(
         () =>
             compileSource(
@@ -162,6 +142,6 @@ test("particle options refuse nonconstant, rebound and incorrectly sized tuples"
         registerNodeParticleSet2D(renderer, set, { originPx });
     `),
             ),
-        /originPx must be a static two-element number tuple/,
+        /Data value of kind tuple does not match the expected tuple/,
     );
 });

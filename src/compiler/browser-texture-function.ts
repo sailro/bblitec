@@ -1019,13 +1019,12 @@ function bindBakedTexture(
     );
     const dimensions = pngDimensions(texture.image);
     context.reachFeature("texture:file", call);
-    context.emit(
-        `const auto ${cppName} = bbl::load_file_texture(${engineCpp}, ` +
-            `bbl::asset_path(${context.cppString(asset.output)}), ` +
-            `${upload.sampler}, ${upload.invertY ? "true" : "false"}, ` +
-            `${upload.srgb ? "true" : "false"}, ` +
-            `${upload.premultiplyAlpha ? "true" : "false"});`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: cppName,
+        initializer: `bbl::load_file_texture(${engineCpp}, bbl::asset_path(${context.cppString(asset.output)}), ${upload.sampler}, ${upload.invertY ? "true" : "false"}, ${upload.srgb ? "true" : "false"}, ${upload.premultiplyAlpha ? "true" : "false"})`,
+    });
     return {
         kind: "texture",
         textureStorage: "file",

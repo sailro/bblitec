@@ -809,8 +809,8 @@ ${matrices
 template <typename T> concept HasCascades = requires(T value) { value.csm_cascades; };
 template <typename T> concept HasCsmTextures = requires(T value) { value.shader_csm_textures; };
 int main() {
-    static_assert(!HasCascades<bbl::ShadowGeneratorRecord>);
-    static_assert(!HasCsmTextures<bbl::MaterialRecord>);
+    static_assert(HasCascades<bbl::ShadowGeneratorRecord>);
+    static_assert(HasCsmTextures<bbl::MaterialRecord>);
     static_assert(bbl::upstream::shadow_receiver_block_bytes == 96);
     bbl::ShadowGeneratorRecord generator;
     const auto block = bbl::upstream::shadow_receiver_block(generator);

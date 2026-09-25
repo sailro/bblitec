@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -5,7 +6,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { stringLiteral } from "../cpp-literals.js";
 
 export function computeTextureAccessCpp(context: LoweringContext): string {
@@ -99,7 +100,7 @@ export function computeTextureAccessCpp(context: LoweringContext): string {
 export function computeTextureDescriptorCpp(context: LoweringContext): string {
     const path = "src/resource/compute-storage-texture-view.ts";
     const validate = context.functionDeclaration(path, "validatePositive");
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set(
         "Number.isInteger",
         (args) =>
@@ -198,7 +199,10 @@ export function computeTextureDescriptorCpp(context: LoweringContext): string {
     });
     const mipExtent = context.variableInitializer(declaration, "mipExtent");
     const mipExtentCpp = mip.expression(mipExtent);
-    mipBindings.set("mipExtent", { cpp: "mip_extent", type: "scalar" });
+    mip.bindPorts(
+        [["mipExtent", { cpp: "mip_extent", type: "scalar" }]],
+        mipExtent,
+    );
     const mipCountCpp = mip.expression(
         context.variableInitializer(declaration, "mipLevelCount"),
     );
@@ -339,10 +343,18 @@ export function computeTextureSamplingCpp(context: LoweringContext): string {
                                 "Expected a sampling predicate result.",
                             );
                         const rhs = lowerer.expression(entry.initializer);
-                        bindings.set(entry.name.text, {
-                            cpp: entry.name.text,
-                            type: "opaque",
-                        });
+                        lowerer.bindPorts(
+                            [
+                                [
+                                    entry.name.text,
+                                    {
+                                        cpp: entry.name.text,
+                                        type: "opaque",
+                                    },
+                                ],
+                            ],
+                            node,
+                        );
                         return `${indent}const std::string_view ${entry.name.text} = ${rhs};`;
                     });
                 },

@@ -567,6 +567,13 @@ export class StaticEvaluator {
                 ? `std::numeric_limits<${type}>::infinity()`
                 : `std::numeric_limits<${type}>::quiet_NaN()`;
         }
+        if (
+            numericGlobal &&
+            (this.checker.getTypeAtLocation(unwrapped).flags &
+                ts.TypeFlags.NumberLike) !==
+                0
+        )
+            return this.castNumber(this.resolveValue(unwrapped), precision);
         if (ts.isPostfixUnaryExpression(unwrapped)) {
             const value = this.resolveValue(unwrapped);
             if (value.kind === "number") {

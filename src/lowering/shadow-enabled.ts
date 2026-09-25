@@ -162,7 +162,7 @@ export function lowerShadowEnabled(context: LoweringContext): string {
                     (args: readonly string[]) => `upload(${args.join(", ")})`,
                 ],
             ]),
-            booleanAnd: true,
+
             foldConditions: false,
             returnValue: (expression, lowerer) =>
                 expression
@@ -190,6 +190,11 @@ export function lowerShadowEnabled(context: LoweringContext): string {
                     const name =
                         node.declarationList.declarations[0]!.name.getText(
                             sync.file,
+                        );
+                    if (name === "csmData" || name === "callbacks")
+                        lowerer.bindPorts(
+                            [[name, syncBindings.get(name)!]],
+                            node,
                         );
                     if (name === "csmData")
                         return [

@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * Lowers the pinned shadow family into a header both backends execute.
  *
@@ -31,7 +32,7 @@ import {
     lowerMat4InvertCpp,
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 import { doubleLiteral, floatLiteral, stringLiteral } from "../cpp-literals.js";
 import { pinnedCsmFunctions } from "./pinned-csm.js";
@@ -57,7 +58,7 @@ const sceneModule = "src/scene/scene-core.ts";
 const shadowTaskModule = "src/frame-graph/shadow-task.ts";
 
 /** The `<cmath>` names these bodies reach, from the shared pinned table. */
-const mathCalls = pinnedNumericMathCalls();
+const mathCalls = new Map<string, PinnedCallSpelling>();
 
 /**
  * The pin's own floating-origin offset, as the three scalars both matrix
@@ -426,7 +427,7 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
                     ]),
                 };
             },
-            booleanOr: true,
+
             returns: {
                 type: "ShadowLightMatrix",
                 value: (lowerer, expression): string => {
@@ -1489,6 +1490,7 @@ export function pinnedShadowHeader(
 
 #include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/features/shadows_csm.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/light_matrix.hpp>
 #include <bblite/upstream/renderer_plan.hpp>

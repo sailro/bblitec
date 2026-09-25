@@ -160,7 +160,7 @@ function factoryScope(
     return {
         bindings,
         calls,
-        booleanOr: true,
+
         foldConditions: false,
         expression(node, lowerer) {
             if (ts.isStringLiteralLike(node))
@@ -297,13 +297,19 @@ function factoryScope(
                     return undefined;
                 const name = declaration.name.text;
                 if (["access", "sampleType", "type"].includes(name)) {
-                    bindings.set(name, { cpp: name, type: "opaque" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "opaque" }]],
+                        node,
+                    );
                     return [
                         `${indent}const auto ${name} = ${lowerer.expression(declaration.initializer)};`,
                     ];
                 }
                 if (name === "multisampled") {
-                    bindings.set(name, { cpp: name, type: "bool" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "bool" }]],
+                        node,
+                    );
                     return [
                         `${indent}const bool ${name} = ${lowerer.expression(declaration.initializer)};`,
                     ];
@@ -376,7 +382,7 @@ export function lowerComputeBindingDecl(
         "_isComputeStorageTextureFormat",
     );
     output.push(
-        `static bool is_compute_storage_texture_format(const std::string& format) {\n${lowerPinnedBody(format.file, format.declaration.body!.statements, { bindings: new Map([["format", { cpp: "format", type: "opaque" }]]), calls: new Map(), booleanOr: true, expression: (node) => (ts.isStringLiteralLike(node) ? `std::string{${stringLiteral(node.text)}}` : undefined), returnValue: (node, l) => l.expression(node!) })}\n}`,
+        `static bool is_compute_storage_texture_format(const std::string& format) {\n${lowerPinnedBody(format.file, format.declaration.body!.statements, { bindings: new Map([["format", { cpp: "format", type: "opaque" }]]), calls: new Map(), expression: (node) => (ts.isStringLiteralLike(node) ? `std::string{${stringLiteral(node.text)}}` : undefined), returnValue: (node, l) => l.expression(node!) })}\n}`,
     );
     for (const [name, fn] of Object.entries(computeBindingFactories)) {
         const path = `src/compute/${fn.module}.ts`,

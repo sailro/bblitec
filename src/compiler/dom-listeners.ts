@@ -90,7 +90,12 @@ export function listenerOptions(
             Object.assign(properties, owner.recordProperties);
         else if (owner.kind === "data" && owner.dataType?.kind === "struct") {
             const cpp = context.allocateTemporaryCppName("event_options");
-            context.emit(`const auto ${cpp} = ${owner.cpp};`);
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: cpp,
+                initializer: owner.cpp,
+            });
             const member = context.dataTypes.isReferenceStruct(
                 owner.dataType.name,
             )
@@ -127,7 +132,12 @@ export function listenerOptions(
                     `The event option '${name}' has no native boolean conversion.`,
                 );
             const cpp = context.allocateTemporaryCppName("event_option");
-            context.emit(`const bool ${cpp} = ${value};`);
+            context.emit({
+                kind: "declaration",
+                type: "const bool",
+                name: cpp,
+                initializer: value,
+            });
             result[name] = cpp;
         }
         return result;
@@ -153,7 +163,12 @@ export function listenerOptions(
         ) {
             const cpp = context.conditions.compileCondition(initializer);
             const value = context.allocateTemporaryCppName("event_option");
-            context.emit(`const bool ${value} = ${cpp};`);
+            context.emit({
+                kind: "declaration",
+                type: "const bool",
+                name: value,
+                initializer: cpp,
+            });
             result[name] = value;
         } else if (!removing && name === "signal") {
             context.fail(
@@ -311,9 +326,11 @@ export function emitDomEventListener(
         listener = compiled.cpp;
     }
     const options = listenerOptions(context, call.arguments[2], removing);
-    context.emit(
-        `bbl::${removing ? "off" : "on"}_dom_${family}(${engine}, ${target}, ${context.cppString(type)}, ${identity}, ` +
+    context.emit({
+        kind: "expression",
+        code:
+            `bbl::${removing ? "off" : "on"}_dom_${family}(${engine}, ${target}, ${context.cppString(type)}, ${identity}, ` +
             `${removing ? options.capture : `${listener}, ${options.capture}, ${options.once}, ${options.passive}`});`,
-    );
+    });
     return true;
 }

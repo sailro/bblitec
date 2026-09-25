@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * `createQuatFromLookDirectionRH`, translated whole from its pinned declaration.
  *
@@ -10,14 +11,14 @@
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { lowerQuatFromRotationBasis } from "./pinned-mat4-decompose.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import { pinnedHeader } from "./pinned-header.js";
 
 const LOOK_DIRECTION_MODULE = "src/math/create-quat-from-look-direction-rh.ts";
 
 /** The header carrying the pin's right-handed look-direction quaternion. */
 export function pinnedLookDirectionHeader(context: LoweringContext): string {
-    const mathCalls = pinnedNumericMathCallsWithHypot();
+    const mathCalls = new Map<string, PinnedCallSpelling>();
     const basis = lowerQuatFromRotationBasis(
         context,
         mathCalls,

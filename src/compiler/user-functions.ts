@@ -524,6 +524,11 @@ export function parameterIsMutated(
  * analyses must allow the write: one follows every store the parameter
  * reaches, the other proves a parameter it only reads unchanged.
  */
+const engineParameterMutations = new WeakMap<
+    ts.FunctionLikeDeclaration,
+    Map<number, boolean>
+>();
+
 export function engineCallMutatesArgument(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
@@ -533,14 +538,23 @@ export function engineCallMutatesArgument(
     if (!declaration || !isEngineDeclaration(declaration)) return false;
     const engine = engineBodies();
     return (engine.bodies(declaration) ?? []).some((body) => {
+        let mutations = engineParameterMutations.get(body);
+        const cached = mutations?.get(index);
+        if (cached !== undefined) return cached;
         const parameter = body.parameters[index]?.name;
-        return (
+        const bodyChecker = engine.checkerFor(body);
+        const mutated =
             isSupportedFunction(body) &&
             parameter !== undefined &&
             ts.isIdentifier(parameter) &&
-            parameterIsMutated(engine.checker, body, parameter) &&
-            !parameterIsReadOnly(engine.checker, body, parameter)
-        );
+            parameterIsMutated(bodyChecker, body, parameter) &&
+            !parameterIsReadOnly(bodyChecker, body, parameter);
+        if (!mutations) {
+            mutations = new Map();
+            engineParameterMutations.set(body, mutations);
+        }
+        mutations.set(index, mutated);
+        return mutated;
     });
 }
 
@@ -1169,6 +1183,7 @@ export interface UserFunctionContext
             | "emitStatement"
             | "statementTerminatesAfterLowering"
             | "bindings"
+            | "platformDocumentHidden"
             | "declarations"
             | "allocateUserFunctionPrefix"
             | "allocateTemporaryCppName"
@@ -2613,7 +2628,10 @@ export class UserFunctionLowerer {
                         entry.declaration,
                         entry.type,
                     );
-                    context.emit(`${entry.value.cpp} = ${cpp};`);
+                    context.emit({
+                        kind: "expression",
+                        code: `${entry.value.cpp} = ${cpp};`,
+                    });
                 }
                 const entry = entries.find(
                     (entry) => entry.declaration === root.declaration,
@@ -2981,14 +2999,11 @@ export class UserFunctionLowerer {
                     ? undefined
                     : {
                           cpp: `bbl_recursive_${context.allocateUserFunctionPrefix()}group`,
-                          self: `bbl_recursive_${context.allocateUserFunctionPrefix()}self`,
                           bodies: new Map<SupportedFunction, string>(),
                       };
-            for (const [index, entry] of entries.entries()) {
+            for (const entry of entries) {
                 if (localGroup) {
-                    writable(entry.value).cpp = recursive
-                        ? `${localGroup.self}.template call<${index}>`
-                        : localGroup.cpp;
+                    if (!recursive) writable(entry.value).cpp = localGroup.cpp;
                     continue;
                 }
                 const returnCpp = entry.returnType
@@ -3027,6 +3042,10 @@ export class UserFunctionLowerer {
             // generated. A later source call may observe different compile-time
             // class/resource arguments and receives its own local specialization.
             const emitBodies = (): void => {
+                const recursiveValues =
+                    localGroup && recursive
+                        ? entries.map((member) => member.value)
+                        : undefined;
                 for (const entry of recursive ? entries : []) {
                     const identifier = this.declarationIdentifier(
                         entry.declaration,
@@ -3054,7 +3073,14 @@ export class UserFunctionLowerer {
                         entry,
                         escapes,
                         localGroup && {
-                            ...(recursive ? { self: localGroup.self } : {}),
+                            ...(recursiveValues
+                                ? {
+                                      self: {
+                                          name: `bbl_recursive_${context.allocateUserFunctionPrefix()}self`,
+                                          values: recursiveValues,
+                                      },
+                                  }
+                                : {}),
                             ...(sharedBody
                                 ? { sharedName: localGroup.cpp }
                                 : {}),
@@ -3298,7 +3324,7 @@ export class UserFunctionLowerer {
         },
         escapes: boolean,
         localGroup?: {
-            self?: string;
+            self?: { name: string; values: readonly Value[] };
             sharedName?: string;
             accept: (body: string) => void;
         },
@@ -3472,11 +3498,20 @@ export class UserFunctionLowerer {
                         ),
                     () =>
                         context.captureManagedClosureLines(() => {
-                            if (localGroup?.self)
-                                context.registerNativeBinding(
-                                    localGroup.self,
+                            if (localGroup?.self) {
+                                const binding = context.registerNativeBinding(
+                                    localGroup.self.name,
                                     true,
                                 );
+                                for (const [
+                                    index,
+                                    value,
+                                ] of localGroup.self.values.entries()) {
+                                    writable(value).cpp =
+                                        `${localGroup.self.name}.template call<${index}>`;
+                                    writable(value).nativeCaptures = [binding];
+                                }
+                            }
                             for (const {
                                 parameter,
                                 value,
@@ -3541,16 +3576,20 @@ export class UserFunctionLowerer {
                                 // native if/else chain; keep its impossible
                                 // fallthrough defined.
                                 if (!terminated && entry.returnType)
-                                    context.emit(
-                                        'throw std::runtime_error("Native value function fell through without returning.");',
-                                    );
+                                    context.emit({
+                                        kind: "control",
+                                        code: 'throw std::runtime_error("Native value function fell through without returning.");',
+                                        transfer: "throw",
+                                    });
                             } else {
                                 if (!entry.returnType) {
                                     context.emitExpressionAsStatement(body);
                                 } else {
-                                    context.emit(
-                                        `return ${compileReturn ? compileReturn(body, entry.returnType) : context.compileForDataSink(body, entry.returnType)};`,
-                                    );
+                                    context.emit({
+                                        kind: "control",
+                                        code: `return ${compileReturn ? compileReturn(body, entry.returnType) : context.compileForDataSink(body, entry.returnType)};`,
+                                        transfer: "return",
+                                    });
                                 }
                             }
                         }, !escapes),
@@ -3620,7 +3659,7 @@ export class UserFunctionLowerer {
                 const name = context.allocateTemporaryCppName("recursive_body");
                 const parameters = [
                     `[[maybe_unused]] Environment& ${captured.environment}`,
-                    `[[maybe_unused]] Self& ${localGroup.self}`,
+                    `[[maybe_unused]] Self& ${localGroup.self.name}`,
                     ...parameterDeclarations,
                 ];
                 const sharedName =
@@ -3638,16 +3677,12 @@ export class UserFunctionLowerer {
                             ...captured.localBindings,
                             ...parameterNames,
                             captured.environment,
-                            localGroup.self,
+                            localGroup.self.name,
                         ],
                     );
                 closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName}{})`;
                 writable(entry.value).nativeCaptures = captured.nativeCaptures;
             } else if (localGroup?.sharedName) {
-                // A namespace body reaches its caller's locals only through
-                // its environment; a value that names one uncaptured stays
-                // with an inline specialization.
-                if (captured.uncaptured) throw new SharedCallRequiresInline();
                 closure = context.nativeEmission.renderSharedClosure(
                     captured,
                     returnCpp,
@@ -3664,7 +3699,11 @@ export class UserFunctionLowerer {
                     returnCpp,
                 );
             if (localGroup) localGroup.accept(closure);
-            else context.emit(`${entry.cppName} = ${closure};`);
+            else
+                context.emit({
+                    kind: "expression",
+                    code: `${entry.cppName} = ${closure};`,
+                });
         } finally {
             context.bindings.popScope();
         }
@@ -4149,17 +4188,21 @@ export class UserFunctionLowerer {
                     );
                     if (!terminated && ir.returnExpression) {
                         if (asynchronous) {
-                            context.emit(
-                                `co_return ${context.asyncActivations.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
-                            );
+                            context.emit({
+                                kind: "control",
+                                code: `co_return ${context.asyncActivations.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
+                                transfer: "suspend",
+                            });
                         } else if (!bodyResult) {
                             context.emitExpressionAsStatement(
                                 ir.returnExpression,
                             );
                         } else {
-                            context.emit(
-                                `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
-                            );
+                            context.emit({
+                                kind: "control",
+                                code: `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
+                                transfer: "return",
+                            });
                         }
                     }
                     if (
@@ -4168,7 +4211,11 @@ export class UserFunctionLowerer {
                         !ir.returnExpression &&
                         !bodyResult
                     )
-                        context.emit("co_return bbl::js::PromiseVoid{};");
+                        context.emit({
+                            kind: "control",
+                            code: "co_return bbl::js::PromiseVoid{};",
+                            transfer: "suspend",
+                        });
                     if (
                         !terminated &&
                         !ir.returnExpression &&
@@ -4492,7 +4539,7 @@ export class UserFunctionLowerer {
                 );
             }
             if (ir.needsWrapper) {
-                context.emit("do {");
+                context.emit({ kind: "open", code: "do {", breaks: true });
                 context.increaseIndent();
             }
             context.beginInlineFrame(ir.needsWrapper);
@@ -4504,7 +4551,7 @@ export class UserFunctionLowerer {
             }
             if (ir.needsWrapper) {
                 context.decreaseIndent();
-                context.emit("} while (false);");
+                context.emit({ kind: "close", code: "} while (false);" });
             }
             if (terminated || !ir.returnExpression)
                 return {
@@ -4557,9 +4604,11 @@ export class UserFunctionLowerer {
         try {
             const terminated = emitReachableStatements(context, ir.statements);
             if (!terminated && returnType) {
-                context.emit(
-                    'throw std::runtime_error("Native value function fell through without returning.");',
-                );
+                context.emit({
+                    kind: "control",
+                    code: 'throw std::runtime_error("Native value function fell through without returning.");',
+                    transfer: "throw",
+                });
             }
         } finally {
             context.endNativeFunctionBody();
@@ -4630,9 +4679,17 @@ export class UserFunctionLowerer {
             const terminated = emitReachableStatements(context, ir.statements);
             if (!terminated) {
                 if (!type.result)
-                    context.emit("co_return bbl::js::PromiseVoid{};");
+                    context.emit({
+                        kind: "control",
+                        code: "co_return bbl::js::PromiseVoid{};",
+                        transfer: "suspend",
+                    });
                 else if (type.result.kind === "optional")
-                    context.emit("co_return std::nullopt;");
+                    context.emit({
+                        kind: "control",
+                        code: "co_return std::nullopt;",
+                        transfer: "suspend",
+                    });
                 else
                     context.fail(
                         callNode,
@@ -5337,7 +5394,12 @@ export class UserFunctionLowerer {
                 value.cpp
             ) {
                 const name = context.allocateTemporaryCppName("call_argument");
-                context.emit(`const auto ${name} = ${value.cpp};`);
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: name,
+                    initializer: value.cpp,
+                });
                 sink.push(
                     withNativeMetadata(
                         context.dataValue(name, value.dataType),
@@ -5418,7 +5480,12 @@ export class UserFunctionLowerer {
         }
         const type = storage.kind === "optional" ? storage.inner : storage;
         const input = context.allocateTemporaryCppName("default_argument");
-        context.emit(`const auto& ${input} = ${argument.cpp};`);
+        context.emit({
+            kind: "declaration",
+            type: "const auto&",
+            name: input,
+            initializer: argument.cpp,
+        });
         let fallback = "";
         const lines = context.captureEmittedLines(() => {
             context.enterRuntimeControlFlow();
@@ -5435,12 +5502,15 @@ export class UserFunctionLowerer {
                 ? optionalPresentCpp(input)
                 : `static_cast<bool>(${input})`;
         const selected = storage.kind === "optional" ? `*${input}` : input;
-        context.emit(
-            `const ${cppType} ${result} = [&]() -> ${cppType} {\n` +
-                `    if (${present}) return ${selected};\n` +
-                lines.map((line) => `    ${line}\n`).join("") +
-                `    return ${fallback};\n}();`,
-        );
+        context.emit({
+            kind: "declaration",
+            type: `const ${cppType}`,
+            name: result,
+            initializer: `[&]() -> ${cppType} {
+    if (${present}) return ${selected};
+${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
+}()`,
+        });
         return context.dataValue(result, type);
     }
 

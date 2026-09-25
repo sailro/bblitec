@@ -49,17 +49,23 @@ template <class T>
 [[nodiscard]] bool truthy(const T&) {
     return true;
 }
-template <class T> [[nodiscard]] bool truthy(const std::optional<T>& value) {
-    return value.has_value() && truthy(*value);
-}
 template <class T> [[nodiscard]] bool truthy(const std::shared_ptr<T>& value) {
     return static_cast<bool>(value);
+}
+template <class T> [[nodiscard]] bool truthy(const js::Ref<T>& value) {
+    return static_cast<bool>(value);
+}
+template <class T> [[nodiscard]] bool truthy(const std::weak_ptr<T>& value) {
+    return !value.expired();
 }
 template <class R, class... A> [[nodiscard]] bool truthy(const std::function<R(A...)>& value) {
     return static_cast<bool>(value);
 }
 template <class R, class... A> [[nodiscard]] bool truthy(const js::Callback<R(A...)>& value) {
     return static_cast<bool>(value);
+}
+template <class T> [[nodiscard]] bool truthy(const std::optional<T>& value) {
+    return value.has_value() && truthy(*value);
 }
 
 /** A value the pin proved present (`x!`, a guarded optional). */

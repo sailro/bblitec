@@ -1,4 +1,5 @@
-import { asIndex, asObject } from "./gltf-document.js";
+import { asIndex } from "./gltf-document.js";
+import { asObject } from "./json-fields.js";
 import type { GltfGeometryPacker } from "./gltf-mesh-geometry.js";
 
 export interface RecordedMeshSetup {

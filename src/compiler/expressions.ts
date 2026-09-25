@@ -1,3 +1,6 @@
+import { requireWindowHost } from "./window-events.js";
+import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { mayCompileDataMethodCall } from "./data-methods.js";
 import { EmissionSet, writable } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -292,9 +295,10 @@ export function emitStringAppend(
 ): void {
     const value = context.compileValue(right);
     context.reachJsData();
-    context.emit(
-        `bbl::js::concat_append(${targetCpp}, ${stringConcatPart(context, value, right)});`,
-    );
+    context.emit({
+        kind: "expression",
+        code: `bbl::js::concat_append(${targetCpp}, ${stringConcatPart(context, value, right)});`,
+    });
 }
 
 export function stringConcatPart(
@@ -477,6 +481,12 @@ export class ExpressionLowerer {
         }
         const storage = compileWebStorageValue(this.context, unwrapped);
         if (storage) return storage;
+        const ratio = devicePixelRatioValue(this.context, unwrapped);
+        if (ratio) {
+            if (ratio.staticNumber === undefined)
+                requireWindowHost(this.context, unwrapped);
+            return ratio;
+        }
         const environment = browserEnvironmentValue(this.context, unwrapped);
         if (environment) return environment;
         const http = compileHttpFunction(this.context, unwrapped);
@@ -639,14 +649,6 @@ export class ExpressionLowerer {
                     unwrapped,
                     `Private name '${unwrapped.text}' is a member, not a value.`,
                 );
-            }
-            if (this.context.libraryGlobal(unwrapped) === "devicePixelRatio") {
-                return {
-                    kind: "number",
-                    cpp: "1.0",
-                    staticNumber: 1,
-                    dataType: { kind: "number" },
-                };
             }
             if (this.context.symbols.isGlobalUndefined(unwrapped)) {
                 return { kind: "json-null", cpp: "std::nullopt" };
@@ -3048,11 +3050,12 @@ export class ExpressionLowerer {
         );
         const engine = this.context.requireEngine(map, access);
         const row = this.context.allocateTemporaryCppName("vat_clip");
-        this.context.emit(
-            `const bbl::VatClipRow ${row} = bbl::vat_clip_row(` +
-                `${engine}, ${map.cpp}, ` +
-                `${this.context.cppString(clip)});`,
-        );
+        this.context.emit({
+            kind: "declaration",
+            type: "const bbl::VatClipRow",
+            name: row,
+            initializer: `bbl::vat_clip_row(${engine}, ${map.cpp}, ${this.context.cppString(clip)})`,
+        });
         return {
             kind: "vat-clip",
             cpp: row,
@@ -3502,7 +3505,10 @@ export class ExpressionLowerer {
             });
             if (constant) return constant;
         }
-        if (!assertedNonNull) {
+        if (
+            !assertedNonNull &&
+            this.context.dataLowerer.mayCompileGuardableElementAccess(unwrapped)
+        ) {
             // Determining whether an unchecked element read can carry an
             // existence predicate resolves its owner. A call-shaped owner
             // emits while it resolves, so a declined probe must discard
@@ -4940,9 +4946,11 @@ export class ExpressionLowerer {
         if (found) {
             return found;
         }
-        const method = this.context.probeEmission(() =>
-            this.context.dataLowerer.compileDataMethodCall(call),
-        );
+        const method = mayCompileDataMethodCall(this.context.checker, callee)
+            ? this.context.probeEmission(() =>
+                  this.context.dataLowerer.compileDataMethodCall(call),
+              )
+            : undefined;
         if (method) {
             return method;
         }
@@ -5185,7 +5193,10 @@ export class ExpressionLowerer {
                             "Optional class method calls returning a value are not lowered.",
                         );
                     }
-                    this.context.emit(`if (${optionalFound}) {`);
+                    this.context.emit({
+                        kind: "open",
+                        code: `if (${optionalFound}) {`,
+                    });
                     this.context.increaseIndent();
                     const result = this.context.classLowerer.compileMethodCall(
                         instance,
@@ -5200,10 +5211,13 @@ export class ExpressionLowerer {
                         );
                     }
                     if (result.cpp) {
-                        this.context.emit(`${result.cpp};`);
+                        this.context.emit({
+                            kind: "expression",
+                            code: `${result.cpp};`,
+                        });
                     }
                     this.context.decreaseIndent();
-                    this.context.emit("}");
+                    this.context.emit({ kind: "close", code: "}" });
                     return { kind: "void", cpp: "" };
                 }
                 return this.context.classLowerer.compileMethodCall(

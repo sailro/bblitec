@@ -169,8 +169,7 @@ function scope(
     return {
         bindings,
         calls,
-        booleanOr: true,
-        booleanAnd: true,
+
         foldConditions: false,
         callShapes: new Map([
             ["shader._slots.has", "bool"],
@@ -255,6 +254,9 @@ function scope(
                 return {
                     range: "shader->decls",
                     bindings: new Map([
+                        ...[...bindings].filter(([name]) =>
+                            name.startsWith(`${element}.`),
+                        ),
                         [element, { cpp: element, type: "opaque" }],
                     ]),
                 };
@@ -310,10 +312,18 @@ function scope(
                     return [
                         `${indent}auto bindings=js::make_gc_shared<ComputeBindingSet>(${pinnedRecordLiteral(context, l, initial, setSchema)});`,
                     ];
-                if (name === "entry" && creating)
+                if (name === "entry" && creating) {
+                    l.bindPorts(
+                        [...bindings].filter(
+                            ([port]) =>
+                                port === name || port.startsWith(`${name}.`),
+                        ),
+                        declaration,
+                    );
                     return [
                         `${indent}auto entry=${pinnedRecordLiteral(context, l, initial, entrySchema)};`,
                     ];
+                }
                 if (
                     [
                         "input",
@@ -325,10 +335,18 @@ function scope(
                         "layouts",
                         "volatileEntries",
                     ].includes(name)
-                )
+                ) {
+                    l.bindPorts(
+                        [...bindings].filter(
+                            ([port]) =>
+                                port === name || port.startsWith(`${name}.`),
+                        ),
+                        declaration,
+                    );
                     return [
                         `${indent}const auto${name === "input" || name === "entry" ? "&" : ""} ${name}=${l.expression(initial)};`,
                     ];
+                }
             }
             if (ts.isExpressionStatement(node)) {
                 const expression = unwrapExpression(node.expression);

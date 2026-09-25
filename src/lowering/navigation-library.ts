@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * The navigation JavaScript that runs over library data, lowered from the
  * installed @recast-navigation packages and the pinned module.
@@ -31,12 +32,14 @@ import {
 import {
     blockArrow,
     declarationOf,
-    propertyPath,
     WRAPPER_CORE,
     WRAPPER_GENERATORS,
     wrapperModule,
-    wrapperPackageVersion,
-} from "./navigation-build-plan.js";
+    methodAccess,
+    provenance,
+    type RawAccess,
+    type RawSource,
+} from "./navigation-wrappers.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { isPinnedErrorCall, pinnedErrorMessage } from "./pinned-error.js";
 import {
@@ -44,145 +47,11 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { MATH_MEMBERS } from "../compiler/math-intrinsics.js";
 import { stringLiteral } from "../cpp-literals.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
-
-/** Where a wrapper method's value comes from on its raw object. */
-type RawSource =
-    | { kind: "field"; field: string }
-    | { kind: "element"; field: string }
-    | { kind: "call"; method: string };
-
-/** What one wrapper method does to its raw object. */
-type RawAccess =
-    | { kind: "read"; source: RawSource }
-    | { kind: "store"; field: string; element: boolean }
-    | { kind: "view"; className: string; source: RawSource }
-    | { kind: "nullableView"; className: string; field: string };
-
-/** `this.raw.f`, `this.raw.get_f(p)` or `this.raw.m(params)`, over `params`. */
-function rawSource(
-    expression: ts.Expression,
-    parameters: readonly string[],
-): RawSource | undefined {
-    const node = unwrapExpression(expression);
-    const path = propertyPath(node);
-    if (path?.length === 3 && path[0] === "this" && path[1] === "raw") {
-        return { kind: "field", field: path[2]! };
-    }
-    if (!ts.isCallExpression(node)) return undefined;
-    const callee = propertyPath(node.expression);
-    const args = node.arguments.map((argument) => argument.getText());
-    if (
-        callee?.length !== 3 ||
-        callee[0] !== "this" ||
-        callee[1] !== "raw" ||
-        args.join(",") !== parameters.join(",")
-    ) {
-        return undefined;
-    }
-    const method = callee[2]!;
-    return method.startsWith("get_") && args.length === 1
-        ? { kind: "element", field: method.slice("get_".length) }
-        : { kind: "call", method };
-}
-
-/** One method of a core wrapper class, as the raw access it performs. */
-function methodAccess(method: ts.MethodDeclaration): RawAccess | undefined {
-    const parameters = method.parameters.map((parameter) =>
-        parameter.name.getText(),
-    );
-    const [only] = method.body?.statements ?? [];
-    if (!only || method.body!.statements.length !== 1) return undefined;
-    if (ts.isReturnStatement(only) && only.expression) {
-        const returned = unwrapExpression(only.expression);
-        // `!Raw.isNull(this.raw.f) ? new C(this.raw.f) : null`
-        if (
-            ts.isConditionalExpression(returned) &&
-            unwrapExpression(returned.whenFalse).kind ===
-                ts.SyntaxKind.NullKeyword
-        ) {
-            const test = unwrapExpression(returned.condition);
-            const made = unwrapExpression(returned.whenTrue);
-            const tested =
-                ts.isPrefixUnaryExpression(test) &&
-                test.operator === ts.SyntaxKind.ExclamationToken &&
-                ts.isCallExpression(test.operand) &&
-                test.operand.expression.getText() === "Raw.isNull" &&
-                test.operand.arguments.length === 1
-                    ? rawSource(test.operand.arguments[0]!, parameters)
-                    : undefined;
-            if (
-                tested?.kind === "field" &&
-                ts.isNewExpression(made) &&
-                ts.isIdentifier(made.expression) &&
-                made.arguments?.length === 1 &&
-                made.arguments[0]!.getText() === `this.raw.${tested.field}`
-            ) {
-                return {
-                    kind: "nullableView",
-                    className: made.expression.text,
-                    field: tested.field,
-                };
-            }
-            return undefined;
-        }
-        // `new C(<raw source>)`
-        if (
-            ts.isNewExpression(returned) &&
-            ts.isIdentifier(returned.expression) &&
-            returned.arguments?.length === 1
-        ) {
-            const source = rawSource(returned.arguments[0]!, parameters);
-            return source
-                ? {
-                      kind: "view",
-                      className: returned.expression.text,
-                      source,
-                  }
-                : undefined;
-        }
-        const source = rawSource(returned, parameters);
-        return source ? { kind: "read", source } : undefined;
-    }
-    if (!ts.isExpressionStatement(only)) return undefined;
-    const statement = unwrapExpression(only.expression);
-    // `this.raw.f = value`
-    if (
-        ts.isBinaryExpression(statement) &&
-        statement.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        parameters.length === 1 &&
-        statement.right.getText() === parameters[0]
-    ) {
-        const path = propertyPath(statement.left);
-        return path?.length === 3 && path[0] === "this" && path[1] === "raw"
-            ? { kind: "store", field: path[2]!, element: false }
-            : undefined;
-    }
-    // `this.raw.set_f(index, value)`
-    if (ts.isCallExpression(statement) && parameters.length === 2) {
-        const callee = propertyPath(statement.expression);
-        if (
-            callee?.length === 3 &&
-            callee[0] === "this" &&
-            callee[1] === "raw" &&
-            callee[2]!.startsWith("set_") &&
-            statement.arguments
-                .map((argument) => argument.getText())
-                .join(",") === parameters.join(",")
-        ) {
-            return {
-                kind: "store",
-                field: callee[2]!.slice("set_".length),
-                element: true,
-            };
-        }
-    }
-    return undefined;
-}
 
 /**
  * The glue's own array helper, whose raw `get(i)`/`set(i, v)` read and store
@@ -292,7 +161,7 @@ function sourceCpp(
  */
 class LibraryViews {
     public readonly bindings = new Map<string, PinnedBinding>();
-    public readonly calls = pinnedNumericMathCalls();
+    public readonly calls = new Map<string, PinnedCallSpelling>();
     private readonly classes = new Map<string, string>();
 
     /** `name` is a pointer to the raw object a `className` wraps. */
@@ -377,6 +246,7 @@ class LibraryViews {
                     : sourceCpp(owner, access.source, args);
             this.bind(name, access.className);
         }
+        lowerer.bindLocal(declared.name, this.bindings.get(name)!);
         return [`${indent}const auto* ${name} = ${pointer};`];
     }
 }
@@ -384,7 +254,7 @@ class LibraryViews {
 /** `const name = []` in a wrapper module: a JavaScript array of numbers. */
 function emptyNumberList(
     statement: ts.Statement,
-    bindings: Map<string, PinnedBinding>,
+    lowerer: PinnedNumericLowerer,
     indent: string,
 ): string[] | undefined {
     const declared =
@@ -404,7 +274,7 @@ function emptyNumberList(
     ) {
         return undefined;
     }
-    bindings.set(declared.name.text, {
+    lowerer.bindLocal(declared.name, {
         cpp: declared.name.text,
         type: "f64-list",
     });
@@ -427,14 +297,6 @@ function templateCpp(template: LibraryTemplate): string {
         `template <${template.typenames.map((name) => `typename ${name}`).join(", ")}>\n` +
         `inline ${template.returns} ${template.name}(\n    ` +
         `${template.parameters.join(",\n    ")}) {\n${template.body.join("\n")}\n}`
-    );
-}
-
-function provenance(pack: "core" | "generators", symbol: string): string {
-    return (
-        `\`${symbol}\` from @recast-navigation/${pack}@` +
-        `${wrapperPackageVersion(`@recast-navigation/${pack}`)}, lowered from ` +
-        "the installed package."
     );
 }
 
@@ -472,7 +334,7 @@ function navMeshWalkTemplate(): LibraryTemplate {
         bindings: views.bindings,
         calls: views.calls,
         statement: (statement, active, indent) =>
-            emptyNumberList(statement, views.bindings, indent) ??
+            emptyNumberList(statement, active, indent) ??
             views.declaration(statement, active, indent),
         returnValue: (expression) => {
             const returned = expression
@@ -480,13 +342,13 @@ function navMeshWalkTemplate(): LibraryTemplate {
                 : undefined;
             const lists =
                 returned && ts.isArrayLiteralExpression(returned)
-                    ? returned.elements.map((element) => element.getText())
+                    ? returned.elements.map((element) =>
+                          lowerer.binding(element),
+                      )
                     : [];
             if (
                 lists.length !== 2 ||
-                lists.some(
-                    (list) => views.bindings.get(list)?.type !== "f64-list",
-                )
+                lists.some((list) => list?.type !== "f64-list")
             ) {
                 return contractError(
                     walk,
@@ -495,7 +357,7 @@ function navMeshWalkTemplate(): LibraryTemplate {
                 );
             }
             return `bbl::pal::NavMeshPositionsAndIndices{${lists
-                .map((list) => `std::move(${list})`)
+                .map((list) => `std::move(${list!.cpp})`)
                 .join(", ")}}`;
         },
     });
@@ -811,7 +673,7 @@ export function navigationDebugGeometryDefinition(
         [lists[0]!, { cpp: "walk.positions", type: "f64-list" }],
         [lists[1]!, { cpp: "walk.indices", type: "f64-list" }],
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const name of ["hypot", "round", "imul"]) {
         const member = MATH_MEMBERS.get(name);
         if (!member) throw new Error(`Math.${name} has no shared spelling.`);
@@ -851,7 +713,7 @@ export function navigationDebugGeometryDefinition(
                 "createDebugNavMeshGeometry's result",
             );
             const local = (name: string): string => {
-                const binding = bindings.get(name);
+                const binding = lowerer.portBinding(name, expression);
                 if (!binding) {
                     return context.contractError(
                         expression,

@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import {
     laneComponents,
@@ -14,7 +15,7 @@ import {
     lowerPinnedFunctionParts,
 } from "./pinned-function-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { recordAt } from "../compiler/record-access.js";
 
 export class AnimationLowerer {
@@ -857,7 +858,7 @@ void set_animation_additive_from_frame(
             "bucket.quaternion && bucket.arity === 4",
             "blended quaternion normalize guard",
         );
-        const calls = pinnedNumericMathCalls();
+        const calls = new Map<string, PinnedCallSpelling>();
         const normalize = lowerPinnedFunction(
             this.context,
             mixerModule,
@@ -905,7 +906,7 @@ void set_animation_additive_from_frame(
                 cppName: "accumulate_weighted_track",
                 returns: "void",
                 calls,
-                booleanAnd: true,
+
                 memberBindings: new Map<string, PinnedBinding>([
                     ["bucket.active", { cpp: "bucket.active", type: "bool" }],
                     [
@@ -963,8 +964,7 @@ void set_animation_additive_from_frame(
                 cppName: "advance_property_group_time",
                 returns: "double",
                 calls,
-                booleanAnd: true,
-                booleanOr: true,
+
                 memberBindings: new Map<string, PinnedBinding>([
                     ["group.isPlaying", { cpp: "group.playing", type: "bool" }],
                     [
@@ -1157,7 +1157,7 @@ bool update_weighted_property_animations(
             {
                 cppName: "update_animation_weight_fades",
                 returns: "void",
-                calls: pinnedNumericMathCalls(),
+                calls: new Map(),
                 leadingParameters: [
                     "Engine& engine",
                     "PropertyAnimationManagerRecord& manager",

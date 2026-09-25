@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import { type LoweredSource, type LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -6,7 +7,7 @@ import {
     computeTextureSamplingCpp,
     computeTextureAccessCpp,
 } from "./compute-texture-descriptor.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { pinnedRecordLiteral } from "./pinned-record-literal.js";
@@ -154,7 +155,7 @@ function sampledResourcesCpp(context: LoweringContext): string {
                     () => "(resource->texture.data.gpu_source->owners == 0)",
                 ],
             ]),
-            booleanOr: true,
+
             expression(node) {
                 if (ts.isStringLiteral(node)) return stringLiteral(node.text);
                 if (
@@ -290,7 +291,7 @@ function factoryCpp(context: LoweringContext): string {
     const body = lowerPinnedBody(file, statements.slice(scopeIndex + 1), {
         bindings,
         calls: new Map([["gpu.texture.destroy", () => "gpu->destroy()"]]),
-        booleanOr: true,
+
         expression(node) {
             if (
                 ts.isCallExpression(node) &&
@@ -487,7 +488,10 @@ function registrationCpp(context: LoweringContext): string {
                         entry.initializer.kind === ts.SyntaxKind.NullKeyword
                             ? "false"
                             : lowerer.expression(entry.initializer);
-                    bindings.set(name, { cpp: name, type: "bool" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "bool" }]],
+                        node,
+                    );
                     return [`${indent}[[maybe_unused]] bool ${name} = ${rhs};`];
                 },
             );
@@ -567,7 +571,7 @@ function disposalCpp(context: LoweringContext): string {
             },
         ],
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set(
         "_textureOwners",
         () => "resource->sampled_texture->data.gpu_source->owners",
@@ -605,7 +609,10 @@ function disposalCpp(context: LoweringContext): string {
                     node,
                     "Compute registry lookup changed.",
                 );
-            bindings.set("resources", { cpp: "resources", type: "opaque" });
+            _lowerer.bindPorts(
+                [["resources", { cpp: "resources", type: "opaque" }]],
+                node,
+            );
             return [
                 `${indent}const auto resources = resource->registry.lock();`,
                 `${indent}const auto engine = resources ? resources->engine.lock() : nullptr;`,

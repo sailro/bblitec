@@ -21,7 +21,12 @@ export function compileComputeBindingDeclIntrinsic(
     const label = context.compileValue(argumentAt(call, 0));
     context.expectKind(label, "string", call);
     const labelCpp = context.allocateTemporaryCppName("binding_name");
-    context.emit(`const std::string ${labelCpp} = ${label.cpp};`);
+    context.emit({
+        kind: "declaration",
+        type: "const std::string",
+        name: labelCpp,
+        initializer: label.cpp,
+    });
     const optionsExpression = argumentAt(call, 1),
         value = context.compileValue(optionsExpression);
     const fields = retainedOptions(context, value, optionsExpression);

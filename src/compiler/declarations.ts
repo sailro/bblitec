@@ -15,6 +15,7 @@ import { isStoringDataCall } from "./data-methods.js";
 import { mutatingArrayMethods } from "./receiver-methods.js";
 import {
     isOpaqueReference,
+    isHandleKind,
     isTypedArrayType,
     passesByReference,
     type DataType,
@@ -133,6 +134,47 @@ interface DeclarationContext
 
 export class DeclarationLowerer {
     constructor(private readonly context: DeclarationContext) {}
+
+    private bindOptionalResource(
+        name: ts.Identifier,
+        cppName: string,
+        resource: { kind: ValueKind; cppType: string },
+        shared: boolean,
+        value: Value,
+        initializer = "",
+    ): void {
+        const type = `std::optional<${resource.cppType}>`;
+        this.context.emit(
+            shared
+                ? {
+                      kind: "declaration",
+                      type: `std::shared_ptr<${type}>`,
+                      name: cppName,
+                      initializer: `bbl::js::make_gc_shared<${type}>(${initializer})`,
+                  }
+                : {
+                      kind: "declaration",
+                      type,
+                      name: cppName,
+                      initializer,
+                      ...(initializer === ""
+                          ? { initialization: "default" as const }
+                          : {}),
+                      attributes: "[[maybe_unused]] ",
+                  },
+        );
+        const stored: Value = {
+            ...value,
+            cpp: shared ? `(**${cppName})` : `(*${cppName})`,
+            optionalFoundCpp: shared
+                ? `${cppName}->has_value()`
+                : optionalPresentCpp(cppName),
+            optionalStorageCpp: shared ? `(*${cppName})` : cppName,
+        };
+        if (shared) writable(stored).sharedStorageCpp = cppName;
+        else delete writable(stored).sharedStorageCpp;
+        this.context.bindings.defineVariable(name, stored);
+    }
 
     private initializerCapturesBinding(
         initializer: ts.Expression,
@@ -304,7 +346,10 @@ export class DeclarationLowerer {
                     type,
                     declaration.initializer,
                 );
-            this.context.emit(`${cppName}->initialize(${initializer});`);
+            this.context.emit({
+                kind: "expression",
+                code: `${cppName}->initialize(${initializer});`,
+            });
             return;
         }
         const sharedClosureStorage =
@@ -529,43 +574,18 @@ export class DeclarationLowerer {
             declaration.initializer.kind === ts.SyntaxKind.NullKeyword &&
             nullableResource
         ) {
-            this.context.emit(
-                sharedClosureStorage
-                    ? {
-                          kind: "declaration",
-                          type: `std::shared_ptr<std::optional<${nullableResource.cppType}>>`,
-                          name: cppName,
-                          initializer: `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>()`,
-                      }
-                    : {
-                          kind: "declaration",
-                          type: `std::optional<${nullableResource.cppType}>`,
-                          name: cppName,
-                          initializer: "",
-                          initialization: "default",
-                          attributes: "[[maybe_unused]] ",
-                      },
-            );
-            this.context.bindings.defineVariable(
+            this.bindOptionalResource(
                 declaration.name,
+                cppName,
+                nullableResource,
+                sharedClosureStorage,
                 valueForKind(nullableResource.kind, {
-                    cpp: sharedClosureStorage
-                        ? `(**${cppName})`
-                        : `(*${cppName})`,
+                    cpp: "",
                     ...((nullableResource.kind === "ui-element" ||
                         nullableResource.kind === "pointer-drag") &&
                     this.context.defaultEngineCpp
                         ? { engineCpp: this.context.defaultEngineCpp }
                         : {}),
-                    optionalFoundCpp: sharedClosureStorage
-                        ? `${cppName}->has_value()`
-                        : optionalPresentCpp(cppName),
-                    ...(sharedClosureStorage
-                        ? { sharedStorageCpp: cppName }
-                        : {}),
-                    optionalStorageCpp: sharedClosureStorage
-                        ? `(*${cppName})`
-                        : cppName,
                 }),
             );
             return;
@@ -728,33 +748,14 @@ export class DeclarationLowerer {
                     this.context.optionalResourceCpp(value),
                 initializerBoundary,
             );
-            this.context.emit(
-                sharedClosureStorage
-                    ? {
-                          kind: "declaration",
-                          type: `std::shared_ptr<std::optional<${nullableResource.cppType}>>`,
-                          name: cppName,
-                          initializer: `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>(${initializerCpp})`,
-                      }
-                    : {
-                          kind: "declaration",
-                          type: `std::optional<${nullableResource.cppType}>`,
-                          name: cppName,
-                          initializer: initializerCpp,
-                          attributes: "[[maybe_unused]] ",
-                      },
+            this.bindOptionalResource(
+                declaration.name,
+                cppName,
+                nullableResource,
+                sharedClosureStorage,
+                value,
+                initializerCpp,
             );
-            this.context.bindings.defineVariable(declaration.name, {
-                ...value,
-                cpp: sharedClosureStorage ? `(**${cppName})` : `(*${cppName})`,
-                optionalFoundCpp: sharedClosureStorage
-                    ? `${cppName}->has_value()`
-                    : optionalPresentCpp(cppName),
-                ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
-                optionalStorageCpp: sharedClosureStorage
-                    ? `(*${cppName})`
-                    : cppName,
-            });
             return;
         }
         if (
@@ -1133,12 +1134,13 @@ export class DeclarationLowerer {
             this.context.reachJsData();
             initializerCpp = `bbl::js::snapshot_value(${value.ownedCpp ?? value.cpp})`;
         }
-        const sharedPrimitive =
+        const sharedBinding =
             sharedClosureStorage &&
-            this.context.sharedClosures.isSharedClosureScalar(
-                value.dataType?.kind === "enum" ? "enum" : value.kind,
-            );
-        const boundCpp = sharedPrimitive ? `(*${cppName})` : cppName;
+            (isHandleKind(value.kind) ||
+                this.context.sharedClosures.isSharedClosureScalar(
+                    value.dataType?.kind === "enum" ? "enum" : value.kind,
+                ));
+        const boundCpp = sharedBinding ? `(*${cppName})` : cppName;
         const valueFound = presenceFlagCpp(value);
         const optionalFoundCpp =
             valueFound === undefined ||
@@ -1150,13 +1152,13 @@ export class DeclarationLowerer {
         this.context.emit({
             kind: "declaration",
             name: cppName,
-            type: sharedPrimitive
+            type: sharedBinding
                 ? "auto"
                 : stableOwnerAlias
                   ? "auto&"
                   : nativeType,
-            initializer: sharedPrimitive
-                ? `bbl::js::make_gc_shared<${nativeType}>(${initializerCpp})`
+            initializer: sharedBinding
+                ? `bbl::js::make_gc_shared<${nativeType === "auto" ? `std::decay_t<decltype(${initializerCpp})>` : nativeType}>(${initializerCpp})`
                 : initializerCpp,
             attributes: "[[maybe_unused]] ",
         });
@@ -1187,14 +1189,14 @@ export class DeclarationLowerer {
         const stored: Value = {
             ...value,
             cpp: boundCpp,
-            ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
+            ...(sharedBinding ? { sharedStorageCpp: cppName } : {}),
             ...(optionalFoundCpp ? { optionalFoundCpp } : {}),
             ...(slotFoundCpp ? { slotFoundCpp } : {}),
             nativeBinding: true,
         };
         // The local reads its own storage, not a counted loop's counter.
         delete writable(stored).integerCounterCpp;
-        if (!sharedClosureStorage) delete writable(stored).sharedStorageCpp;
+        if (!sharedBinding) delete writable(stored).sharedStorageCpp;
         if (stored.kind === "audio-engine" && stored.audioMainBusCpp) {
             writable(stored).audioMainBusCpp = this.context.takeNativeTemporary(
                 stored.audioMainBusCpp,
@@ -1229,7 +1231,7 @@ export class DeclarationLowerer {
     private pinSlotFound(
         slotFoundCpp: string | undefined,
         presenceTest: string | undefined,
-        presenceSnapshot: string | undefined,
+        discardIfUnused: string | undefined,
     ): string | undefined {
         if (
             slotFoundCpp === undefined ||
@@ -1237,8 +1239,8 @@ export class DeclarationLowerer {
         ) {
             return slotFoundCpp;
         }
-        if (presenceSnapshot && slotFoundCpp === presenceTest) {
-            return presenceSnapshot;
+        if (discardIfUnused && slotFoundCpp === presenceTest) {
+            return discardIfUnused;
         }
         const name = this.context.allocateTemporaryCppName("slot_found");
         this.context.emit({
@@ -1247,6 +1249,7 @@ export class DeclarationLowerer {
             name,
             initializer: slotFoundCpp,
             attributes: "[[maybe_unused]] ",
+            discardIfUnused: true,
         });
         return name;
     }
@@ -1356,9 +1359,10 @@ export class DeclarationLowerer {
             };
             if (owner.recordMethods) delete writable(owner.recordMethods)[key];
             initializers.push(() =>
-                this.context.emit(
-                    `(*${slot}) = ${this.context.dataLowerer.compileKnownValueForSink(callback, type, site)};`,
-                ),
+                this.context.emit({
+                    kind: "expression",
+                    code: `(*${slot}) = ${this.context.dataLowerer.compileKnownValueForSink(callback, type, site)};`,
+                }),
             );
         }
         for (const initialize of initializers) initialize();
@@ -1487,7 +1491,10 @@ export class DeclarationLowerer {
             // observer method returning its unsubscribe closure) is already
             // a native std::function. Fill the forward slot from that value;
             // there is no source declaration left to specialize again.
-            this.context.emit(`${forward.storageCpp} = ${value.cpp};`);
+            this.context.emit({
+                kind: "expression",
+                code: `${forward.storageCpp} = ${value.cpp};`,
+            });
             this.context.bindings.rebindVariable(name, {
                 kind: "callback",
                 cpp: forward.storageCpp,
@@ -1528,9 +1535,10 @@ export class DeclarationLowerer {
             (type, index) =>
                 `${this.context.dataTypes.cppType(type)} ${forward.parameterNames[index]}`,
         );
-        this.context.emit(
-            `${forward.storageCpp} = ${this.context.nativeEmission.renderSharedClosure(compiled, "void", value.callbackDeclaration, parameters.join(", "), forward.parameterNames)};`,
-        );
+        this.context.emit({
+            kind: "expression",
+            code: `${forward.storageCpp} = ${this.context.nativeEmission.renderSharedClosure(compiled, "void", value.callbackDeclaration, parameters.join(", "), forward.parameterNames)};`,
+        });
         this.context.bindings.rebindVariable(name, {
             kind: "callback",
             cpp: forward.storageCpp,
@@ -1617,9 +1625,13 @@ export class DeclarationLowerer {
                 this.context.reachJsData();
                 const identity =
                     this.context.allocateTemporaryCppName("callback_identity");
-                this.context.emit(
-                    `[[maybe_unused]] const auto ${identity} = bbl::js::next_callback_identity();`,
-                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: identity,
+                    initializer: "bbl::js::next_callback_identity()",
+                    attributes: "[[maybe_unused]] ",
+                });
                 this.context.registerNativeBinding(
                     identity,
                     false,
@@ -1671,7 +1683,10 @@ export class DeclarationLowerer {
                 callback,
                 type,
             );
-            this.context.emit(`${value.cpp} = ${compiled};`);
+            this.context.emit({
+                kind: "expression",
+                code: `${value.cpp} = ${compiled};`,
+            });
             return;
         }
         if (!ts.isBlock(callback.body)) {
@@ -1813,9 +1828,10 @@ export class DeclarationLowerer {
                     !escapes,
                 ),
         );
-        this.context.emit(
-            `${storage.cpp} = ${this.context.nativeEmission.renderSharedClosure(compiled, returnCpp, callback, parameterDeclarations.join(", "), [])};`,
-        );
+        this.context.emit({
+            kind: "expression",
+            code: `${storage.cpp} = ${this.context.nativeEmission.renderSharedClosure(compiled, returnCpp, callback, parameterDeclarations.join(", "), [])};`,
+        });
     }
 
     /**
@@ -2350,7 +2366,10 @@ export class DeclarationLowerer {
                     initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(annotated)}>(std::move(${targetCpp}))`,
                 });
             } else if (selfReferentialBinding) {
-                this.context.emit(`(*${cppName}) = std::move(${targetCpp});`);
+                this.context.emit({
+                    kind: "expression",
+                    code: `(*${cppName}) = std::move(${targetCpp});`,
+                });
             }
         } else {
             const initializerCpp = this.context.takeNativeTemporary(
@@ -3009,7 +3028,12 @@ export class DeclarationLowerer {
         if (value.dataType?.kind === "product") {
             const temporary =
                 this.context.allocateTemporaryCppName("destructure_tuple");
-            this.context.emit(`const auto ${temporary} = ${value.cpp};`);
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: temporary,
+                initializer: value.cpp,
+            });
             bindings.forEach((element, index) => {
                 if (index === restIndex && restName) {
                     this.context.bindings.bindLocalValue(
@@ -3154,9 +3178,12 @@ export class DeclarationLowerer {
         }
         const cppName = this.context.bindings.cppIdentifier(name.text);
         this.context.reachJsData();
-        this.context.emit(
-            `${this.context.dataTypes.cppType(type)} ${cppName} = ${initializer};`,
-        );
+        this.context.emit({
+            kind: "declaration",
+            type: this.context.dataTypes.cppType(type),
+            name: cppName,
+            initializer: initializer,
+        });
         this.context.bindings.defineVariable(
             name,
             this.context.dataLowerer.leafValue(cppName, type),
@@ -3257,9 +3284,12 @@ export class DeclarationLowerer {
                     field.type.kind !== "string" &&
                     field.type.kind !== "enum" &&
                     field.type.kind !== "handle";
-                this.context.emit(
-                    `${this.context.dataTypes.cppType(field.type)}${aliases ? "&" : ""} ${cppName} = ${fieldCpp};`,
-                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: `${this.context.dataTypes.cppType(field.type)}${aliases ? "&" : ""}`,
+                    name: cppName,
+                    initializer: fieldCpp,
+                });
                 const fieldValue = this.context.dataLowerer.leafValue(
                     cppName,
                     field.type,

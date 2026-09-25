@@ -1,4 +1,7 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { availableParallelism } from "node:os";
+import { runConcurrently } from "./run-concurrently.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
     existsSync,
@@ -185,25 +188,27 @@ export function generatedShaderDirectories(
         .filter(existsSync);
 }
 
-function runCompiler(
+const execFileAsync = promisify(execFile);
+
+async function runCompiler(
     executable: string,
     args: readonly string[],
     environment: NodeJS.ProcessEnv,
     source = args[0],
-): { stdout: string; stderr: string } {
-    const result = spawnSync(executable, args, {
-        encoding: "utf8",
-        env: environment,
-        windowsHide: true,
-        maxBuffer: 16 * 1024 * 1024,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
+): Promise<{ stdout: string; stderr: string }> {
+    try {
+        return await execFileAsync(executable, args, {
+            encoding: "utf8",
+            env: environment,
+            windowsHide: true,
+            maxBuffer: 16 * 1024 * 1024,
+        });
+    } catch (error) {
         throw new Error(
-            `${basename(executable)} failed (${result.status ?? result.signal}) for ${source}.\n${result.stderr}${result.stdout}`,
+            `${basename(executable)} failed for ${source}.\n${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
         );
     }
-    return result;
 }
 
 function lines(text: string): string[] {
@@ -273,9 +278,9 @@ function directoryIsCurrent(
 }
 
 /** Content caches serve stages; each directory records its complete input and output bytes. */
-export function compileOfflineShaders(
+export async function compileOfflineShaders(
     options: ShaderCompilationOptions,
-): ShaderCompilationResult {
+): Promise<ShaderCompilationResult> {
     const root = resolve(options.repositoryRoot ?? process.cwd());
     const environment = options.environment ?? process.env;
     const target =
@@ -371,6 +376,7 @@ export function compileOfflineShaders(
         directoriesReused: 0,
     };
 
+    const pendingStages = new Map<string, Promise<void>>();
     for (const directory of directories) {
         const stages = readShaderComposition(directory);
         const current = directoryDigests(directory, stages);
@@ -413,17 +419,25 @@ export function compileOfflineShaders(
             sourceStages.push(stage);
             bySource.set(stage.sourceName, sourceStages);
         }
-        for (const name of nativeSources) {
-            const source = join(directory, name);
+        const stageJobs = nativeSources.flatMap((name) => {
             const sourceStages = bySource.get(name);
             if (!sourceStages)
                 throw new Error(
-                    `${source} is not declared in composition.json.`,
+                    `${join(directory, name)} is not declared in composition.json.`,
                 );
-            const tool = requireTint();
-            let wgsl: string | undefined;
-            let uniformAdaptation: SdlUniformAdaptation | undefined;
-            for (const stage of sourceStages) {
+            return sourceStages.map((stage) => ({ name, stage }));
+        });
+        const sourceAdaptations = new Map<
+            string,
+            { wgsl: string; adaptation: SdlUniformAdaptation | undefined }
+        >();
+        await runConcurrently(
+            stageJobs,
+            Math.min(8, availableParallelism()),
+            ({ stage }) => stage.stem,
+            async ({ name, stage }) => {
+                const source = join(directory, name);
+                const tool = requireTint();
                 const kind = stageKind(stage.stem);
                 // A native module's stages share one interstage structure
                 // whose position both read: placing it first lets a D3D12
@@ -440,6 +454,8 @@ export function compileOfflineShaders(
                     `tint:${tintHash}|script:${implementationHash}|entry:${stage.entryPoint}|stage:${kind}|positionFirst:${positionFirst}|constants:${constants}|formats:${products.join(",")}|wgsl:${digestUpper(source)}`,
                 );
                 const cacheBase = join(cacheRoot, `tint-${key}`);
+                const existingStage = pendingStages.get(key);
+                if (existingStage) await existingStage;
                 if (
                     products.every((extension) =>
                         existsSync(`${cacheBase}${extension}`),
@@ -451,108 +467,123 @@ export function compileOfflineShaders(
                             readFileSync(`${cacheBase}${extension}`),
                         );
                     result.tintReused++;
-                    continue;
+                    return;
                 }
-                const outputBase = join(directory, stage.stem);
-                const pending = (extension: string): string =>
-                    `${outputBase}${extension}.pending`;
-                const pendingLayout = pending(".layout.json");
-                const pendingWgsl = pending(".sdl.wgsl");
-                const written = products.flatMap((extension) => {
-                    const option = tintProductOptions.get(extension);
-                    return option ? [{ extension, option }] : [];
-                });
-                const compile = (input: string) =>
-                    runCompiler(
-                        tool,
-                        [
-                            input,
-                            "--display-name",
-                            "source.wgsl",
-                            "--entry-point",
-                            stage.entryPoint,
-                            "--stage",
-                            kind,
-                            ...(positionFirst ? ["--position-first"] : []),
-                            ...(constants ? ["--overrides", constants] : []),
-                            ...written.flatMap(({ extension, option }) => [
-                                option,
-                                pending(extension),
-                            ]),
-                            "--layout-json",
-                            pendingLayout,
-                            ...(input === source
-                                ? []
-                                : ["--binding-layout-of", source]),
-                        ],
-                        environment,
-                        source,
-                    );
-                try {
-                    if (wgsl === undefined) {
-                        wgsl = readFileSync(source, "utf8");
-                        uniformAdaptation = prepareSdlUniformAdaptation(wgsl);
-                    }
-                    const reflection = compile(source);
-                    const layoutRecord = parseStageLayoutRecord(
-                        readFileSync(pendingLayout, "utf8"),
-                        source,
-                    );
-                    if (!stage.pinnedBindings)
-                        assertReflectedBindings(
-                            wgsl,
-                            layoutRecord.bindings,
+                const compileStage = async (): Promise<void> => {
+                    const outputBase = join(directory, stage.stem);
+                    const pending = (extension: string): string =>
+                        `${outputBase}${extension}.pending`;
+                    const pendingLayout = pending(".layout.json");
+                    const pendingWgsl = pending(".sdl.wgsl");
+                    const written = products.flatMap((extension) => {
+                        const option = tintProductOptions.get(extension);
+                        return option ? [{ extension, option }] : [];
+                    });
+                    const compile = (input: string) =>
+                        runCompiler(
+                            tool,
+                            [
+                                input,
+                                "--display-name",
+                                "source.wgsl",
+                                "--entry-point",
+                                stage.entryPoint,
+                                "--stage",
+                                kind,
+                                ...(positionFirst ? ["--position-first"] : []),
+                                ...(constants
+                                    ? ["--overrides", constants]
+                                    : []),
+                                ...written.flatMap(({ extension, option }) => [
+                                    option,
+                                    pending(extension),
+                                ]),
+                                "--layout-json",
+                                pendingLayout,
+                                ...(input === source
+                                    ? []
+                                    : ["--binding-layout-of", source]),
+                            ],
+                            environment,
                             source,
                         );
-                    const adapted = sdlUniformSource(
-                        uniformAdaptation,
-                        layoutRecord.uniformBuffers,
-                        source,
-                    );
-                    if (adapted !== undefined) {
-                        writeFileSync(pendingWgsl, `${adapted}${EOL}`);
-                        compile(pendingWgsl);
-                        assertUniformBufferCap(
-                            parseStageLayoutRecord(
-                                readFileSync(pendingLayout, "utf8"),
+                    try {
+                        let input = sourceAdaptations.get(source);
+                        if (!input) {
+                            const wgsl = readFileSync(source, "utf8");
+                            input = {
+                                wgsl,
+                                adaptation: prepareSdlUniformAdaptation(wgsl),
+                            };
+                            sourceAdaptations.set(source, input);
+                        }
+                        const { wgsl, adaptation: uniformAdaptation } = input;
+                        const reflection = await compile(source);
+                        const layoutRecord = parseStageLayoutRecord(
+                            readFileSync(pendingLayout, "utf8"),
+                            source,
+                        );
+                        if (!stage.pinnedBindings)
+                            assertReflectedBindings(
+                                wgsl,
+                                layoutRecord.bindings,
                                 source,
-                            ).uniformBuffers,
-                            `${source} (after SDL uniform adaptation)`,
+                            );
+                        const adapted = sdlUniformSource(
+                            uniformAdaptation,
+                            layoutRecord.uniformBuffers,
+                            source,
                         );
-                    }
-                    // A render stage's sidecar opens with its entry point
-                    // and closes with the `@binding` lines of the module
-                    // Dawn compiles, laid out as WebGPU binds it where SDL_GPU
-                    // binds the compacted slots; lines end as the tree's do.
-                    for (const { extension } of written)
+                        if (adapted !== undefined) {
+                            writeFileSync(pendingWgsl, `${adapted}${EOL}`);
+                            await compile(pendingWgsl);
+                            assertUniformBufferCap(
+                                parseStageLayoutRecord(
+                                    readFileSync(pendingLayout, "utf8"),
+                                    source,
+                                ).uniformBuffers,
+                                `${source} (after SDL uniform adaptation)`,
+                            );
+                        }
+                        // A render stage's sidecar opens with its entry point
+                        // and closes with the `@binding` lines of the module
+                        // Dawn compiles, laid out as WebGPU binds it where SDL_GPU
+                        // binds the compacted slots; lines end as the tree's do.
+                        for (const { extension } of written)
+                            tree.write(
+                                `${stage.stem}${extension}`,
+                                extension === ".slots"
+                                    ? `${lines(readFileSync(pending(extension), "utf8")).join(EOL)}${EOL}`
+                                    : readFileSync(pending(extension)),
+                            );
+                        // The reflection record: Tint's diagnostics for the
+                        // module, then every entry point's bindings.
                         tree.write(
-                            `${stage.stem}${extension}`,
-                            extension === ".slots"
-                                ? `${lines(readFileSync(pending(extension), "utf8")).join(EOL)}${EOL}`
-                                : readFileSync(pending(extension)),
+                            `${stage.stem}.tint-reflection.txt`,
+                            `${[...lines(reflection.stderr), ...lines(reflection.stdout)].join(EOL)}${EOL}`,
                         );
-                    // The reflection record: Tint's diagnostics for the
-                    // module, then every entry point's bindings.
-                    tree.write(
-                        `${stage.stem}.tint-reflection.txt`,
-                        `${[...lines(reflection.stderr), ...lines(reflection.stdout)].join(EOL)}${EOL}`,
-                    );
-                    for (const extension of products)
-                        cacheArtifact(
-                            `${cacheBase}${extension}`,
-                            readFileSync(`${outputBase}${extension}`),
-                        );
-                    result.tintCompiled++;
-                } finally {
-                    for (const temporary of [
-                        ...written.map(({ extension }) => pending(extension)),
-                        pendingLayout,
-                        pendingWgsl,
-                    ])
-                        rmSync(temporary, { force: true });
-                }
-            }
-        }
+                        for (const extension of products)
+                            cacheArtifact(
+                                `${cacheBase}${extension}`,
+                                readFileSync(`${outputBase}${extension}`),
+                            );
+                        result.tintCompiled++;
+                    } finally {
+                        for (const temporary of [
+                            ...written.map(({ extension }) =>
+                                pending(extension),
+                            ),
+                            pendingLayout,
+                            pendingWgsl,
+                        ])
+                            rmSync(temporary, { force: true });
+                    }
+                };
+                const pending = compileStage();
+                pendingStages.set(key, pending);
+                await pending;
+            },
+        );
         if (needsDxc) {
             for (const name of filesIn(directory).filter((name) =>
                 name.endsWith(".hlsl"),
@@ -577,7 +608,7 @@ export function compileOfflineShaders(
                 } else {
                     const temporary = `${cachePath}.${process.pid}-${randomUUID()}.tmp`;
                     try {
-                        runCompiler(
+                        await runCompiler(
                             tools.dxc,
                             [
                                 "-T",
@@ -670,7 +701,7 @@ if (isMainModule(import.meta.url)) {
         }
         console.log(
             formatShaderCompilation(
-                compileOfflineShaders({
+                await compileOfflineShaders({
                     directories: generatedShaderDirectories(
                         process.cwd(),
                         flags.values.get("--scene"),

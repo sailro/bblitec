@@ -1,26 +1,32 @@
+import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
 import { declaredSymbol, resolvedSymbol } from "../compiler/symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import { cppCondition } from "../cpp-expressions.js";
 import { moduleScopeVariable } from "../pinned-program.js";
 import type { LoweringContext } from "./context.js";
-import { CPP_SCALAR } from "./cpp-types.js";
+import {
+    RecordRepresentation,
+    type RecordShape,
+    recordScalars,
+    recordOf,
+    arrayOf,
+    tupleOf,
+    optionalOf,
+    stripOptional,
+    isRecordScalar,
+    primitiveRecordShape,
+} from "./record-shapes.js";
 import {
     PinnedNumericLowerer,
     type PinnedNumericScope,
+    type PinnedIteration,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
-/**
- * A value of the character controller's reference kernel: its C++ spelling
- * and representation. A representation is `number`, `boolean`, `string`,
- * `void`, `object` (a weak identity), a record name (`js::Ref<Record>`),
- * `T[]` (`js::Array<T>`), `optional:T`, `tuple:[...]`, `map:[K, V]`,
- * `weakmap:V` or `function:R` (a closure returning R).
- */
+/** A pinned value with its represented storage and alias lifetime. */
 export interface KernelValue {
     cpp: string;
-    type: string;
+    type: RecordShape;
     /** Where a read aliases storage another owner can change. */
     borrowed?: "mutable" | "stable";
 }
@@ -28,15 +34,15 @@ export interface KernelValue {
 /** A callee the kernel lowers a call of: a pinned helper or method, or a native. */
 export interface KernelFunction {
     cpp: string;
-    parameters: readonly string[];
+    parameters: readonly RecordShape[];
     requiredParameters: number;
-    returns: string;
+    returns: RecordShape;
     borrowedParameters?: ReadonlySet<number>;
 }
 
 export interface KernelSchema {
     /** Every record the kernel stores, with its fields' representations. */
-    records: ReadonlyMap<string, ReadonlyMap<string, string>>;
+    records: ReadonlyMap<string, ReadonlyMap<string, RecordShape>>;
     /** Callees, by the declaration the typed program resolves a call to. */
     functions: ReadonlyMap<ts.Declaration, KernelFunction>;
     /** What a declaration holds when a body starts: fields, parameters, constants. */
@@ -45,16 +51,16 @@ export interface KernelSchema {
      * Representations of declarations the pin types `any`, which only the
      * transport knows.
      */
-    declared: ReadonlyMap<ts.Declaration, string>;
+    declared: ReadonlyMap<ts.Declaration, RecordShape>;
     /** The representation of the pin's `unknown` (a body identity). */
-    unknown?: string;
-    returnType: string;
+    unknown?: RecordShape;
+    returnType: RecordShape;
     /** Fields whose owned assignment stays the stable source for later reads. */
     ownedAssignments?: ReadonlySet<ts.Declaration>;
     /** Native transport the caller lowers before the kernel does. */
     expression?: (
         node: ts.Expression,
-        expected: string | undefined,
+        expected: RecordShape | undefined,
         lowerer: CharacterKernelLowerer,
     ) => KernelValue | undefined;
     statement?: (
@@ -62,66 +68,6 @@ export interface KernelSchema {
         lowerer: CharacterKernelLowerer,
         indent: string,
     ) => string | undefined;
-}
-
-export const kernelTuple = (types: readonly string[]): string =>
-    `tuple:${JSON.stringify(types)}`;
-
-function typeList(type: string, prefix: string): string[] | undefined {
-    if (!type.startsWith(prefix)) return undefined;
-    const types: unknown = JSON.parse(type.slice(prefix.length));
-    if (
-        !Array.isArray(types) ||
-        !types.every(
-            (value: unknown): value is string => typeof value === "string",
-        )
-    ) {
-        throw new Error(`Kernel types must be a string array: ${type}.`);
-    }
-    return types;
-}
-
-const tupleTypes = (type: string): string[] | undefined =>
-    typeList(type, "tuple:");
-
-function mapTypes(type: string): readonly [string, string] | undefined {
-    if (type.startsWith("weakmap:")) return ["object", type.slice(8)];
-    const types = typeList(type, "map:");
-    if (!types) return undefined;
-    if (types.length !== 2) {
-        throw new Error("Kernel map storage requires key and value types.");
-    }
-    return [types[0]!, types[1]!];
-}
-
-const isScalar = (type: string): boolean =>
-    type === "number" || type === "boolean";
-
-/** The storage of a kernel representation. */
-function kernelStorage(
-    type: string,
-    records: ReadonlyMap<string, unknown>,
-): string {
-    if (type === "number") return CPP_SCALAR.number;
-    if (type === "boolean") return CPP_SCALAR.boolean;
-    if (type === "string") return CPP_SCALAR.string;
-    if (type === "void") return "void";
-    if (type === "object") return "js::WeakIdentity";
-    if (type.startsWith("weakmap:"))
-        return `js::WeakMap<${kernelStorage(type.slice(8), records)}>`;
-    if (type.startsWith("optional:"))
-        return `std::optional<${kernelStorage(type.slice(9), records)}>`;
-    const tuple = tupleTypes(type);
-    if (tuple)
-        return `std::tuple<${tuple.map((type) => kernelStorage(type, records)).join(", ")}>`;
-    if (type.startsWith("map:"))
-        return `js::Map<${mapTypes(type)!
-            .map((type) => kernelStorage(type, records))
-            .join(", ")}>`;
-    if (type.endsWith("[]"))
-        return `js::Array<${kernelStorage(type.slice(0, -2), records)}>`;
-    if (records.has(type)) return `js::Ref<${type}>`;
-    throw new Error(`Kernel storage is not represented: ${type}.`);
 }
 
 /**
@@ -135,7 +81,16 @@ function kernelStorage(
 export class CharacterKernelLowerer extends PinnedNumericLowerer {
     private temporary = 0;
     private readonly checker: ts.TypeChecker;
-    private readonly numeric: PinnedNumericScope;
+    private readonly representations = new RecordRepresentation({
+        record: (name) => {
+            if (!this.schema.records.has(name))
+                throw new Error(`Unknown kernel record '${name}'.`);
+            return { cpp: `js::Ref<${name}>`, reference: true };
+        },
+        object: "js::WeakIdentity",
+        jsNamespace: "js",
+        tuple: (elements) => `std::tuple<${elements.join(", ")}>`,
+    });
 
     public constructor(
         private readonly context: LoweringContext,
@@ -144,15 +99,13 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
     ) {
         const numeric: PinnedNumericScope = {
             bindings: new Map(),
-            calls: pinnedNumericMathCalls(),
-            booleanAnd: true,
-            booleanOr: true,
+            calls: new Map(),
+
             localPrefix: "local_",
         };
         super(file, numeric);
-        this.numeric = numeric;
         this.checker = context.program.checkerFor(file);
-        if (schema.returnType !== "void")
+        if (schema.returnType.kind !== "void")
             numeric.returnValue = (expression) =>
                 expression
                     ? this.value(expression, schema.returnType).cpp
@@ -164,8 +117,12 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
 
     // ── Representation ────────────────────────────────────────────────────
 
-    public storage(type: string): string {
-        return kernelStorage(type, this.schema.records);
+    public storage(type: RecordShape): string {
+        return this.representations.cppType(type);
+    }
+
+    private same(left: RecordShape, right: RecordShape): boolean {
+        return this.storage(left) === this.storage(right);
     }
 
     private refuse(node: ts.Node, message: string): never {
@@ -184,13 +141,14 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
     }
 
     /** The kernel representation of a checker type. */
-    public representation(type: ts.Type, at: ts.Node): string {
+    public representation(type: ts.Type, at: ts.Node): RecordShape {
         const flags = type.flags;
-        if (flags & ts.TypeFlags.NumberLike) return "number";
-        if (flags & ts.TypeFlags.BooleanLike) return "boolean";
-        if (flags & ts.TypeFlags.StringLike) return "string";
-        if (flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) return "void";
-        if (flags & ts.TypeFlags.NonPrimitive) return "object";
+        if (flags & ts.TypeFlags.NumberLike) return recordScalars.number;
+        if (flags & ts.TypeFlags.BooleanLike) return recordScalars.boolean;
+        if (flags & ts.TypeFlags.StringLike) return recordScalars.string;
+        if (flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined))
+            return recordScalars.void;
+        if (flags & ts.TypeFlags.NonPrimitive) return recordScalars.object;
         if (flags & ts.TypeFlags.Unknown && this.schema.unknown)
             return this.schema.unknown;
         if (type.isUnion()) {
@@ -201,24 +159,17 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
                         (ts.TypeFlags.Null | ts.TypeFlags.Undefined)
                     ),
             );
-            if (
-                present.length === type.types.length &&
-                present.every(
-                    (member) => member.flags & ts.TypeFlags.NumberLike,
-                )
-            )
-                return "number";
-            if (present.length === 1) {
-                const value = this.representation(present[0]!, at);
-                return this.schema.records.has(value) ||
-                    present.length === type.types.length
+            const primitive = primitiveRecordShape(present);
+            if (primitive || present.length === 1) {
+                const value = primitive ?? this.representation(present[0]!, at);
+                return present.length === type.types.length
                     ? value
-                    : `optional:${value}`;
+                    : this.representations.storedShape(optionalOf(value));
             }
         }
         const symbol = type.getSymbol();
         if (this.checker.isTupleType(type))
-            return kernelTuple(
+            return tupleOf(
                 this.checker
                     .getTypeArguments(type as ts.TypeReference)
                     .map((element) => this.representation(element, at)),
@@ -226,7 +177,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         // An array, or anything the pin indexes by number as one: a typed
         // array, `ArrayLike<number>`, the `Mat4` brand.
         const indexed = type.getNumberIndexType();
-        if (indexed) return `${this.representation(indexed, at)}[]`;
+        if (indexed) return arrayOf(this.representation(indexed, at));
         if (
             this.isLibrary(symbol, "Map") ||
             this.isLibrary(symbol, "WeakMap")
@@ -234,18 +185,22 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             const [key, value] = this.checker
                 .getTypeArguments(type as ts.TypeReference)
                 .map((argument) => this.representation(argument, at));
-            return symbol!.getName() === "WeakMap" && key === "object"
-                ? `weakmap:${value}`
-                : `map:${JSON.stringify([key, value])}`;
+            return symbol!.getName() === "WeakMap" && key?.kind === "object"
+                ? { kind: "weakmap", value: value! }
+                : { kind: "map", key: key!, value: value! };
         }
         const signatures = type.getCallSignatures();
         if (signatures.length === 1 && signatures[0]!.parameters.length === 0)
-            return `function:${this.representation(
-                this.checker.getReturnTypeOfSignature(signatures[0]!),
-                at,
-            )}`;
+            return {
+                kind: "function",
+                parameters: [],
+                result: this.representation(
+                    this.checker.getReturnTypeOfSignature(signatures[0]!),
+                    at,
+                ),
+            };
         const name = type.aliasSymbol?.getName() ?? symbol?.getName();
-        if (name && this.schema.records.has(name)) return name;
+        if (name && this.schema.records.has(name)) return recordOf(name);
         if (type.flags & ts.TypeFlags.Object) {
             // An object literal's own type: the one record declaring exactly
             // its members.
@@ -259,7 +214,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
                     fields.size === members.length &&
                     members.every((member) => fields.has(member)),
             );
-            if (matches.length === 1) return matches[0]![0];
+            if (matches.length === 1) return recordOf(matches[0]![0]);
         }
         return this.refuse(
             at,
@@ -268,7 +223,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
     }
 
     /** What a declaration of the pin is represented as. */
-    public declarationType(declaration: ts.Declaration): string {
+    public declarationType(declaration: ts.Declaration): RecordShape {
         const declared = this.schema.declared.get(declaration);
         if (declared) return declared;
         // A record named by an alias (`TransformNode` for the scene node)
@@ -284,7 +239,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             annotation && ts.isTypeReferenceNode(annotation)
                 ? declaredSymbol(this.checker, annotation.typeName)?.getName()
                 : undefined;
-        if (named && this.schema.records.has(named)) return named;
+        if (named && this.schema.records.has(named)) return recordOf(named);
         const name = ts.getNameOfDeclaration(declaration) ?? declaration;
         return this.representation(
             this.checker.getTypeAtLocation(name),
@@ -294,8 +249,8 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
 
     /** A signature's parameter and return representations. */
     public signature(declaration: ts.SignatureDeclaration): {
-        parameters: string[];
-        returns: string;
+        parameters: RecordShape[];
+        returns: RecordShape;
     } {
         const signature = this.checker.getSignatureFromDeclaration(declaration);
         if (!signature)
@@ -326,27 +281,30 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
     }
 
     /** A representation the checker gives a scalar expression, where it does. */
-    private scalarType(node: ts.Expression): string | undefined {
+    private scalarType(node: ts.Expression): RecordShape | undefined {
         if (ts.isIdentifier(node)) {
-            const binding = this.numeric.bindings.get(node.text);
-            if (binding) return binding.type === "bool" ? "boolean" : "number";
+            const binding = this.binding(node);
+            if (binding)
+                return binding.type === "bool"
+                    ? recordScalars.boolean
+                    : recordScalars.number;
         }
         const type = this.checker.getTypeAtLocation(node);
         if (type.flags & ts.TypeFlags.Any) return undefined;
-        if (type.flags & ts.TypeFlags.NumberLike) return "number";
-        if (type.flags & ts.TypeFlags.BooleanLike) return "boolean";
+        if (type.flags & ts.TypeFlags.NumberLike) return recordScalars.number;
+        if (type.flags & ts.TypeFlags.BooleanLike) return recordScalars.boolean;
         if (
             type.isUnion() &&
             type.types.every((member) => member.flags & ts.TypeFlags.NumberLike)
         )
-            return "number";
+            return recordScalars.number;
         return undefined;
     }
 
     private owned(value: KernelValue): string {
-        return isScalar(value.type) ||
-            value.type === "void" ||
-            value.type.startsWith("function:") ||
+        return isRecordScalar(value.type) ||
+            value.type.kind === "void" ||
+            value.type.kind === "function" ||
             !value.borrowed
             ? value.cpp
             : `js::snapshot_value(${value.cpp})`;
@@ -369,8 +327,6 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             const lines = this.referenceStatement(statement, indent);
             if (lines) return lines;
         }
-        if (ts.isForOfStatement(statement))
-            return this.forOf(statement, indent);
         return super.statement(statement, indent);
     }
 
@@ -409,7 +365,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             ? this.declarationType(declaration)
             : undefined;
         if (
-            isScalar(expected ?? this.scalarType(declaration.initializer) ?? "")
+            isRecordScalar(expected ?? this.scalarType(declaration.initializer))
         ) {
             // A number or boolean is the numeric translator's own local.
             return super.statement(
@@ -429,12 +385,12 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         this.schema.values.set(declaration, {
             cpp,
             type: value.type,
-            ...(isScalar(value.type)
+            ...(isRecordScalar(value.type)
                 ? {}
                 : { borrowed: stable ? "stable" : "mutable" }),
         });
         return [
-            `${indent}${value.type.startsWith("function:") ? "auto" : this.storage(value.type)} ${cpp} = ${this.owned(value)};`,
+            `${indent}${value.type.kind === "function" ? "auto" : this.storage(value.type)} ${cpp} = ${this.owned(value)};`,
         ];
     }
 
@@ -445,7 +401,8 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         indent: string,
     ): string[] {
         const value = this.value(initializer);
-        const fields = tupleTypes(value.type);
+        const fields =
+            value.type.kind === "tuple" ? value.type.elements : undefined;
         if (!fields || pattern.elements.length > fields.length)
             return this.refuse(
                 pattern,
@@ -497,9 +454,9 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             left.name.text === "length"
         ) {
             const array = this.value(left.expression);
-            if (array.type.endsWith("[]"))
+            if (array.type.kind === "array")
                 return [
-                    `${indent}js::array_truncate(${array.cpp}, ${this.value(expression.right, "number").cpp});`,
+                    `${indent}js::array_truncate(${array.cpp}, ${this.value(expression.right, recordScalars.number).cpp});`,
                 ];
         }
         const field = ts.isPropertyAccessExpression(left)
@@ -509,7 +466,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             return undefined;
         const target = this.value(left);
         const value = this.value(expression.right, target.type);
-        if (value.type !== target.type)
+        if (!this.same(value.type, target.type))
             return this.refuse(
                 expression.right,
                 "Pinned owned assignment requires one represented type.",
@@ -526,31 +483,30 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         ];
     }
 
-    private forOf(statement: ts.ForOfStatement, indent: string): string[] {
+    protected override forOfIteration(
+        statement: ts.ForOfStatement,
+        binding: ts.BindingName,
+    ): PinnedIteration {
         const list = statement.initializer;
         const element =
             ts.isVariableDeclarationList(list) && list.declarations.length === 1
                 ? list.declarations[0]!
                 : undefined;
-        if (
-            statement.awaitModifier ||
-            !element ||
-            !ts.isIdentifier(element.name)
-        )
+        if (statement.awaitModifier || !element || !ts.isIdentifier(binding))
             return this.refuse(
                 statement,
                 "Pinned for-of loop requires one ordinary binding.",
             );
         const values = this.value(statement.expression);
-        if (!values.type.endsWith("[]"))
+        if (values.type.kind !== "array")
             return this.refuse(
                 statement.expression,
                 "Pinned for-of requires an array.",
             );
         const array = `iterable_${this.temporary++}`,
             index = `index_${this.temporary++}`,
-            item = this.localName(element.name.text);
-        const type = values.type.slice(0, -2);
+            item = this.localName(binding.text);
+        const type = values.type.element;
         this.schema.values.set(element, {
             cpp: item,
             type,
@@ -561,17 +517,11 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             type,
             borrowed: "mutable",
         };
-        const body = ts.isBlock(statement.statement)
-            ? statement.statement.statements
-            : [statement.statement];
-        return [
-            `${indent}{ auto ${array} = ${this.owned(values)};`,
-            `${indent}for (std::size_t ${index} = 0; ${index} < ${array}.size(); ++${index}) {`,
-            `${indent}    auto ${item} = ${this.owned(selected)};`,
-            this.body(body, indent + "    "),
-            `${indent}}`,
-            `${indent}}`,
-        ];
+        return {
+            prefix: [`auto ${array} = ${this.owned(values)};`],
+            header: `std::size_t ${index} = 0; ${index} < ${array}.size(); ++${index}`,
+            bindings: [`auto ${item} = ${this.owned(selected)};`],
+        };
     }
 
     protected override assignmentDomain(
@@ -591,32 +541,43 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
 
     // ── Expressions ───────────────────────────────────────────────────────
 
+    protected override condition(node: ts.Expression): string {
+        const value = this.reference(this.context.unwrapExpression(node));
+        return value
+            ? cppCondition(this.representations.truthy(value.cpp, value.type))
+            : super.condition(node);
+    }
+
     protected override expressionDomain(node: ts.Expression) {
         return this.reference(node)?.cpp ?? super.expressionDomain(node);
     }
 
     /** A pinned expression, typed; a scalar the numeric translator spells. */
-    public value(input: ts.Expression, expected?: string): KernelValue {
+    public value(input: ts.Expression, expected?: RecordShape): KernelValue {
+        if (expected) expected = this.representations.storedShape(expected);
         const node = this.context.unwrapExpression(input);
         const reference = this.reference(node, expected);
-        if (reference) return reference;
+        if (reference) {
+            const type = this.representations.storedShape(reference.type);
+            return type === reference.type ? reference : { ...reference, type };
+        }
         if (
             (node.kind === ts.SyntaxKind.NullKeyword ||
                 (ts.isIdentifier(node) && node.text === "undefined")) &&
             expected &&
-            (this.schema.records.has(expected) ||
-                expected.startsWith("optional:"))
+            this.representations.absent(expected) !== undefined
         )
-            return { cpp: `${this.storage(expected)}{}`, type: expected };
+            return {
+                cpp: this.representations.absent(expected)!,
+                type: expected,
+            };
         const type = this.scalarType(node);
         if (!type)
             return this.refuse(
                 node,
                 "Pinned kernel expression has no native representation.",
             );
-        const binding = ts.isIdentifier(node)
-            ? this.numeric.bindings.get(node.text)
-            : undefined;
+        const binding = ts.isIdentifier(node) ? this.binding(node) : undefined;
         const cpp = this.expression(node);
         // A counted loop's index is an integer; everywhere else a JS number is.
         return {
@@ -632,12 +593,15 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
      */
     private reference(
         node: ts.Expression,
-        expected?: string,
+        expected?: RecordShape,
     ): KernelValue | undefined {
         const adapted = this.schema.expression?.(node, expected, this);
         if (adapted) return adapted;
         if (ts.isStringLiteral(node))
-            return { cpp: JSON.stringify(node.text), type: "string" };
+            return {
+                cpp: stringLiteral(node.text),
+                type: recordScalars.string,
+            };
         if (ts.isIdentifier(node)) return this.identifier(node, expected);
         if (ts.isPropertyAccessExpression(node)) return this.property(node);
         if (ts.isElementAccessExpression(node)) return this.element(node);
@@ -654,7 +618,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         return undefined;
     }
 
-    private contextual(node: ts.Expression): string {
+    private contextual(node: ts.Expression): RecordShape {
         return this.representation(
             this.checker.getContextualType(node) ??
                 this.checker.getTypeAtLocation(node),
@@ -664,7 +628,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
 
     private identifier(
         node: ts.Identifier,
-        expected: string | undefined,
+        expected: RecordShape | undefined,
     ): KernelValue | undefined {
         const declaration = this.declaration(node);
         if (!declaration) return undefined;
@@ -675,7 +639,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             constant?.initializer &&
             (constant.parent.flags & ts.NodeFlags.Const) !== 0 &&
             constant.getSourceFile() === node.getSourceFile() &&
-            !isScalar(this.declarationType(constant))
+            !isRecordScalar(this.declarationType(constant))
         ) {
             // A module constant of the kernel's own module, spelled where
             // it is read.
@@ -686,12 +650,17 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             this.schema.values.set(constant, bound);
         }
         if (!bound) return undefined;
-        if (expected === "object" && this.schema.records.has(bound.type))
-            return { cpp: `${bound.cpp}.weak_identity()`, type: "object" };
-        return bound.type === `optional:${expected}`
+        if (expected?.kind === "object" && bound.type.kind === "record")
+            return {
+                cpp: `${bound.cpp}.weak_identity()`,
+                type: recordScalars.object,
+            };
+        return expected &&
+            bound.type.kind === "optional" &&
+            this.same(bound.type.value, expected)
             ? {
-                  cpp: `${bound.cpp}.value()`,
-                  type: expected!,
+                  cpp: this.representations.present(bound.cpp, bound.type),
+                  type: expected,
                   borrowed: bound.borrowed ?? "mutable",
               }
             : bound;
@@ -730,25 +699,30 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
                         initializer.getSourceFile(),
                     ),
                 ),
-                type: "number",
+                type: recordScalars.number,
             };
         const owner = this.value(node.expression);
-        if (node.name.text === "length" && owner.type.endsWith("[]"))
+        if (node.name.text === "length" && owner.type.kind === "array")
             return {
                 cpp: `static_cast<double>(${owner.cpp}.size())`,
-                type: "number",
+                type: recordScalars.number,
             };
-        const type = this.schema.records.get(owner.type)?.get(node.name.text);
+        const type =
+            owner.type.kind === "record"
+                ? this.schema.records.get(owner.type.name)?.get(node.name.text)
+                : undefined;
         if (!type)
             return this.refuse(
                 node,
                 "Pinned reference member has no declared field.",
             );
-        if (node.questionDotToken)
+        if (node.questionDotToken) {
+            const optional = optionalOf(type);
             return {
-                cpp: `(${owner.cpp} ? std::optional<${this.storage(type)}>{${owner.cpp}->${node.name.text}} : std::nullopt)`,
-                type: `optional:${type}`,
+                cpp: `(${owner.cpp} ? ${this.storage(optional)}{${owner.cpp}->${node.name.text}} : ${this.representations.absent(optional)!})`,
+                type: optional,
             };
+        }
         return {
             cpp: `${owner.cpp}->${node.name.text}`,
             type,
@@ -758,10 +732,15 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
 
     private element(node: ts.ElementAccessExpression): KernelValue {
         const value = this.value(node.expression);
-        const owner = value.type.startsWith("optional:")
-            ? { cpp: `${value.cpp}.value()`, type: value.type.slice(9) }
-            : value;
-        const tuple = tupleTypes(owner.type);
+        const owner =
+            value.type.kind === "optional"
+                ? {
+                      cpp: this.representations.present(value.cpp, value.type),
+                      type: value.type.value,
+                  }
+                : value;
+        const tuple =
+            owner.type.kind === "tuple" ? owner.type.elements : undefined;
         if (tuple) {
             const index = this.context.numericValue(
                 node.argumentExpression,
@@ -778,23 +757,25 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
                 borrowed: "mutable",
             };
         }
-        if (!owner.type.endsWith("[]"))
+        if (owner.type.kind !== "array")
             return this.refuse(
                 node,
                 "Pinned reference indexing requires an array.",
             );
         return {
-            cpp: `${owner.cpp}.at(js::array_index(${this.value(node.argumentExpression, "number").cpp}))`,
-            type: owner.type.slice(0, -2),
+            cpp: `${owner.cpp}.at(js::array_index(${this.value(node.argumentExpression, recordScalars.number).cpp}))`,
+            type: owner.type.element,
             borrowed: "mutable",
         };
     }
 
     private record(
         node: ts.ObjectLiteralExpression,
-        type: string,
+        type: RecordShape,
     ): KernelValue {
-        const fields = this.schema.records.get(type);
+        if (type.kind !== "record")
+            return this.refuse(node, "Pinned record literal type.");
+        const fields = this.schema.records.get(type.name);
         if (!fields || fields.size !== node.properties.length)
             return this.refuse(
                 node,
@@ -826,14 +807,17 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             return `${cpp}->${name} = ${this.value(value, field).cpp};`;
         });
         return {
-            cpp: `([&]() { auto ${cpp} = js::make_ref<${type}>(); ${writes.join(" ")} return ${cpp}; }())`,
+            cpp: `([&]() { auto ${cpp} = js::make_ref<${type.name}>(); ${writes.join(" ")} return ${cpp}; }())`,
             type,
         };
     }
 
-    private array(node: ts.ArrayLiteralExpression, type: string): KernelValue {
-        const tuple = tupleTypes(type);
-        if (!type.endsWith("[]") && !tuple)
+    private array(
+        node: ts.ArrayLiteralExpression,
+        type: RecordShape,
+    ): KernelValue {
+        const tuple = type.kind === "tuple" ? type.elements : undefined;
+        if (type.kind !== "array" && !tuple)
             return this.refuse(
                 node,
                 "Pinned array literal requires an array or tuple type.",
@@ -841,7 +825,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         const values = node.elements.map((value, index) =>
             this.value(
                 value,
-                type.endsWith("[]") ? type.slice(0, -2) : tuple![index],
+                type.kind === "array" ? type.element : tuple![index],
             ),
         );
         return {
@@ -852,19 +836,19 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
 
     private construct(
         node: ts.NewExpression,
-        expected: string | undefined,
+        expected: RecordShape | undefined,
     ): KernelValue {
         const type =
             expected ??
             this.representation(this.checker.getTypeAtLocation(node), node);
         const [argument] = node.arguments ?? [];
-        if (type.endsWith("[]") && node.arguments?.length === 1)
+        if (type.kind === "array" && node.arguments?.length === 1)
             return {
-                cpp: `${this.storage(type)}(js::array_index(${this.value(argument!, "number").cpp}))`,
+                cpp: `${this.storage(type)}(js::array_index(${this.value(argument!, recordScalars.number).cpp}))`,
                 type,
             };
         if (
-            (type.startsWith("map:") || type.startsWith("weakmap:")) &&
+            (type.kind === "map" || type.kind === "weakmap") &&
             !node.arguments?.length
         )
             return { cpp: `${this.storage(type)}{}`, type };
@@ -884,7 +868,9 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             this.checker.getTypeAtLocation(node),
             node,
         );
-        const returns = type.slice("function:".length);
+        if (type.kind !== "function")
+            return this.refuse(node, "Pinned closure type.");
+        const returns = type.result;
         return {
             cpp: `[&]() { return ${this.value(node.body, returns).cpp}; }`,
             type,
@@ -893,18 +879,18 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
 
     private conditional(
         node: ts.ConditionalExpression,
-        expected: string | undefined,
+        expected: RecordShape | undefined,
     ): KernelValue | undefined {
         if (!expected && this.scalarType(node)) return undefined;
         const yes = this.value(node.whenTrue, expected);
         const no = this.value(node.whenFalse, yes.type);
-        if (yes.type !== no.type)
+        if (!this.same(yes.type, no.type))
             return this.refuse(
                 node,
                 "Pinned conditional branches require one represented type.",
             );
         return {
-            cpp: `(${cppCondition(this.expression(node.condition))} ? ${yes.cpp} : ${no.cpp})`,
+            cpp: `(${this.condition(node.condition)} ? ${yes.cpp} : ${no.cpp})`,
             type: yes.type,
         };
     }
@@ -918,31 +904,23 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             kind === ts.SyntaxKind.QuestionQuestionEqualsToken
         ) {
             const left = this.value(node.left);
-            if (this.schema.records.has(left.type)) {
-                const right = this.value(node.right, left.type);
-                return {
-                    cpp:
-                        kind === ts.SyntaxKind.QuestionQuestionToken
-                            ? `([&]() { auto value = ${this.owned(left)}; return value ? value : ${right.cpp}; }())`
-                            : `([&]() { auto& value = ${left.cpp}; if (!value) value = ${right.cpp}; return value; }())`,
-                    type: left.type,
-                };
-            }
             if (
-                kind === ts.SyntaxKind.QuestionQuestionToken &&
-                left.type.startsWith("optional:")
-            ) {
-                const type = left.type.slice(9),
-                    right = this.value(node.right, type);
-                return {
-                    cpp: `([&]() { const auto& optional = ${left.cpp}; return optional ? *optional : ${right.cpp}; }())`,
-                    type,
-                };
-            }
-            return this.refuse(
-                node,
-                "Pinned '??' requires a nullable reference.",
-            );
+                left.type.kind !== "optional" &&
+                !this.representations.nullable(left.type)
+            )
+                return this.refuse(
+                    node,
+                    "Pinned '??' requires a nullable reference.",
+                );
+            const type = stripOptional(left.type);
+            const right = this.value(node.right, type);
+            return {
+                cpp:
+                    kind === ts.SyntaxKind.QuestionQuestionToken
+                        ? `bbl::pinned::nullish<${this.storage(type)}>(${left.type.kind === "optional" ? left.cpp : this.owned(left)}, [&]() { return ${right.cpp}; })`
+                        : `bbl::pinned::nullish_assign(${left.cpp}, [&]() { return ${right.cpp}; })`,
+                type,
+            };
         }
         const equality =
             kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
@@ -957,7 +935,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         const right = this.value(node.right, left.type);
         return {
             cpp: `(${left.cpp} ${kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? "==" : "!="} ${right.cpp})`,
-            type: "boolean",
+            type: recordScalars.boolean,
         };
     }
 
@@ -977,11 +955,8 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         const fn = declaration && this.schema.functions.get(declaration);
         if (fn) return this.invoke(node, fn);
         const closure = declaration && this.schema.values.get(declaration);
-        if (
-            closure?.type.startsWith("function:") &&
-            node.arguments.length === 0
-        )
-            return { cpp: `${closure.cpp}()`, type: closure.type.slice(9) };
+        if (closure?.type.kind === "function" && node.arguments.length === 0)
+            return { cpp: `${closure.cpp}()`, type: closure.type.result };
         if (ts.isPropertyAccessExpression(callee))
             return this.method(node, callee);
         return undefined;
@@ -999,7 +974,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         const compiled = node.arguments.map((argument, index) => {
             const value = this.value(argument, fn.parameters[index]);
             if (!fn.borrowedParameters?.has(index)) return value.cpp;
-            if (!this.schema.records.has(value.type))
+            if (value.type.kind !== "record")
                 return this.refuse(
                     argument,
                     "Pinned borrowed parameters require reference records.",
@@ -1023,13 +998,16 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         );
         if (!owner) return undefined;
         const method = callee.name.text;
-        const types = mapTypes(owner.type);
-        if (types) {
-            const [key, value] = types;
+        if (owner.type.kind === "map" || owner.type.kind === "weakmap") {
+            const key =
+                owner.type.kind === "map"
+                    ? owner.type.key
+                    : recordScalars.object;
+            const value = owner.type.value;
             if (
                 method === "get" &&
                 node.arguments.length === 1 &&
-                this.schema.records.has(value)
+                value.kind === "record"
             )
                 return {
                     cpp: `${owner.cpp}.get(${this.value(node.arguments[0]!, key).cpp})`,
@@ -1042,12 +1020,12 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
                     type: owner.type,
                 };
         }
-        if (!owner.type.endsWith("[]"))
+        if (owner.type.kind !== "array")
             return this.refuse(
                 node,
                 "Pinned reference call has no declared native target.",
             );
-        const element = owner.type.slice(0, -2);
+        const element = owner.type.element;
         if (
             method === "splice" &&
             node.arguments.length === 2 &&
@@ -1057,8 +1035,8 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             ) === 1
         )
             return {
-                cpp: `js::array_splice_one(${owner.cpp}, ${this.value(node.arguments[0]!, "number").cpp})`,
-                type: "void",
+                cpp: `js::array_splice_one(${owner.cpp}, ${this.value(node.arguments[0]!, recordScalars.number).cpp})`,
+                type: recordScalars.void,
             };
         if (
             (method === "filter" || method === "findIndex") &&
@@ -1071,12 +1049,12 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             if (method === "push")
                 return {
                     cpp: `${owner.cpp}.push_back(${argument.cpp})`,
-                    type: "void",
+                    type: recordScalars.void,
                 };
             if (method === "indexOf")
                 return {
                     cpp: `js::array_index_of(${owner.cpp}, ${argument.cpp})`,
-                    type: "number",
+                    type: recordScalars.number,
                 };
         }
         return this.refuse(
@@ -1104,13 +1082,18 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         const item = `predicate_${this.temporary++}`,
             array = `values_${this.temporary++}`,
             index = `index_${this.temporary++}`;
-        const element = owner.type.slice(0, -2);
+        if (owner.type.kind !== "array")
+            return this.refuse(
+                callback,
+                "Pinned predicate receiver requires an array.",
+            );
+        const element = owner.type.element;
         this.schema.values.set(parameter, {
             cpp: item,
             type: element,
             borrowed: "mutable",
         });
-        const predicate = cppCondition(this.expression(callback.body));
+        const predicate = this.condition(callback.body);
         const output = method === "filter" ? "filtered" : "found";
         const initial =
             method === "filter"
@@ -1122,7 +1105,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
                 : `found = static_cast<double>(${index}); break;`;
         return {
             cpp: `([&]() { auto ${array} = ${this.owned(owner)}; ${initial} const auto length = ${array}.size(); for (std::size_t ${index} = 0; ${index} < length; ++${index}) { auto ${item} = ${this.owned({ cpp: `${array}.at(${index})`, type: element, borrowed: "mutable" })}; if (${predicate}) { ${accept} } } return ${output}; }())`,
-            type: method === "filter" ? owner.type : "number",
+            type: method === "filter" ? owner.type : recordScalars.number,
         };
     }
 }

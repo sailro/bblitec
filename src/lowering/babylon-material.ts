@@ -160,6 +160,7 @@ export function lowerBabylonMaterialProperties(
         bindings.set(`${row}.${name}`, {
             cpp: `source.at("${name}")`,
             type: "f64-buffer",
+            absentCpp: `!(source.contains("${name}") && !source.at("${name}").is_null())`,
         });
     bindings.set("sceneAmbient", { cpp: "scene_ambient", type: "opaque" });
     const body = lowerPinnedBody(file, statements.slice(1, textures), {
@@ -180,8 +181,6 @@ export function lowerBabylonMaterialProperties(
                 unwrapped.expression.text === row
             ) {
                 const name = unwrapped.name.text;
-                if (arrays.has(name))
-                    return `(source.contains("${name}") && !source.at("${name}").is_null())`;
                 if ([...scalars.keys()].includes(name))
                     return `source.at("${name}").get<double>()`;
             }

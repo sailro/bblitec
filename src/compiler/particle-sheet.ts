@@ -138,7 +138,8 @@ export function emitFrozenParticleSheetAssignment(
         );
     }
     writable(request).sheet = true;
-    context.emit(
-        `bbl::upstream::set_frozen_node_particle_sheet(${owner.set}, ${owner.system}, ${doubleLiteral(width)}, ${doubleLiteral(height)}, ${indices.cpp});`,
-    );
+    context.emit({
+        kind: "expression",
+        code: `bbl::upstream::set_frozen_node_particle_sheet(${owner.set}, ${owner.system}, ${doubleLiteral(width)}, ${doubleLiteral(height)}, ${indices.cpp});`,
+    });
 }

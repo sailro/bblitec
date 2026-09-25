@@ -26,7 +26,7 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
                 ],
             ]),
             calls: new Map(),
-            booleanOr: true,
+
             expression(node, lowerer) {
                 if (context.expressionMatchesShape(node, "count === undefined"))
                     return "false";
@@ -163,8 +163,7 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
         return lowerPinnedBody(file, declaration.body!.statements, {
             bindings,
             calls,
-            booleanAnd: true,
-            booleanOr: true,
+
             foldConditions: false,
             callShapes: new Map([
                 ["release", "bool"],
@@ -181,6 +180,9 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
                     ? {
                           range,
                           bindings: new Map([
+                              ...[...bindings].filter(([name]) =>
+                                  name.startsWith(`${element}.`),
+                              ),
                               [
                                   element,
                                   {
@@ -234,10 +236,18 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
                         );
                         return [`${indent}std::set<std::uint32_t> owners;`];
                     }
-                    if (["old", "replacement", "first", "mesh"].includes(id))
+                    if (["old", "replacement", "first", "mesh"].includes(id)) {
+                        lowerer.bindPorts(
+                            [...bindings].filter(
+                                ([name]) =>
+                                    name === id || name.startsWith(`${id}.`),
+                            ),
+                            declaration,
+                        );
                         return [
                             `${indent}const auto ${id} = ${lowerer.expression(declaration.initializer)};`,
                         ];
+                    }
                 }
                 if (
                     ts.isExpressionStatement(node) &&

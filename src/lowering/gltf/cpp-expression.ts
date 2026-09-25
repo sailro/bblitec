@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "../pinned-numeric-lowerer.js";
 /**
  * The pinned-expression renderer the glTF leaf lowerings (matrix leaves,
  * SH prescale) and the animation manager clock share: one
@@ -7,14 +8,14 @@
 import ts from "typescript";
 import { PinnedNumericLowerer } from "../pinned-numeric-lowerer.js";
 import { cppPrecedence } from "../pinned-numeric-expression.js";
-import { pinnedNumericMathCalls, pinnedMathCall } from "../pinned-operators.js";
+import { pinnedMathCall } from "../pinned-operators.js";
 import { CppExpressionScope, RenderedCpp, refuseNode } from "./shared.js";
 
 const expressionLowerers = new WeakMap<
     CppExpressionScope,
     PinnedNumericLowerer
 >();
-const expressionMathCalls = pinnedNumericMathCalls();
+const expressionMathCalls = new Map<string, PinnedCallSpelling>();
 
 export function renderCppExpression(
     scope: CppExpressionScope,
@@ -25,8 +26,7 @@ export function renderCppExpression(
         lowerer = new PinnedNumericLowerer(scope.file, {
             bindings: new Map(),
             calls: expressionMathCalls,
-            booleanOr: true,
-            booleanAnd: true,
+
             foldConditions: false,
             expressionSpelling: {
                 parentheses: "minimal",

@@ -6,7 +6,6 @@ import type {
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { lowerObjectComponents } from "./pinned-function-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const boundsModule = "src/mesh/mesh-world-bounds.ts";
 const thinInstanceBoundsModule =
@@ -181,7 +180,7 @@ export function lowerWorldAabbHelpers(
         return lowerPinnedBody(file, declaration.body!.statements, {
             bindings: scope,
             calls: extra.calls ?? new Map(),
-            booleanOr: true,
+
             statement: (statement, lowerer, indent) => {
                 if (
                     !ts.isVariableStatement(statement) ||
@@ -209,7 +208,10 @@ export function lowerWorldAabbHelpers(
             ...(extra.returns ? { returnValue: extra.returns } : {}),
             ...(extra.laneKeys
                 ? {
-                      expression: (node: ts.Expression) => {
+                      expression: (
+                          node: ts.Expression,
+                          lowerer: PinnedNumericLowerer,
+                      ) => {
                           if (!ts.isStringLiteral(node)) return undefined;
                           const lane = lanes.indexOf(node.text);
                           if (lane < 0)
@@ -217,7 +219,9 @@ export function lowerWorldAabbHelpers(
                                   node,
                                   `Unknown accumulator key '${node.text}'.`,
                               );
-                          return context.doubleLiteral(lane);
+                          const cpp = context.doubleLiteral(lane);
+                          lowerer.bindLocal(node, { cpp, type: "scalar" });
+                          return cpp;
                       },
                   }
                 : {}),
@@ -292,7 +296,7 @@ export function lowerWorldAabbHelpers(
                 "thinInstances",
                 "matrices",
             ]),
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
             laneKeys: true,
         },
     );
@@ -311,7 +315,6 @@ export function lowerWorldAabbHelpers(
         ]),
         {
             calls: new Map([
-                ...pinnedNumericMathCalls(),
                 [
                     "addRange",
                     (args: readonly string[]) =>

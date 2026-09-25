@@ -1,0 +1,78 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Pinned record backends share typed shapes, absence and truthiness rules; borrowed optional values retain borrowing.",
+      "applied": true
+    },
+    {
+      "summary": "Feature-independent runtime layouts share the core PCH; browser file storage allocates on use and platform callbacks retain one wrapper.",
+      "applied": true
+    },
+    {
+      "summary": "Both unit packers share template dependency reach; lowered declaration analysis reuses tokens and checks eligibility before weighting.",
+      "applied": true
+    },
+    {
+      "summary": "Structured regions retain capture metadata in the shared outliner.",
+      "applied": true
+    },
+    {
+      "summary": "Packed namespace arrays use shared storage and preserve declaration attributes.",
+      "applied": true
+    },
+    {
+      "summary": "Closure capture analysis uses the shared identifier reader.",
+      "applied": true
+    },
+    {
+      "summary": "Pinned declaration discovery uses the shared bounded AST walk.",
+      "applied": true
+    },
+    {
+      "summary": "Pinned closure name scopes have one owner.",
+      "applied": true
+    },
+    {
+      "summary": "String truth tests and logical selection borrow their operands.",
+      "applied": true
+    },
+    {
+      "summary": "Reached-loop expansion maps allocate only for nodes with expansion edges.",
+      "applied": true
+    },
+    {
+      "summary": "Transactional map writes share presence and previous-value lookups.",
+      "applied": true
+    },
+    {
+      "summary": "Document dependency resolution skips bound and unrelated identifiers.",
+      "applied": true
+    },
+    {
+      "summary": "Recursive bodies share the group-member list while owning distinct self bindings.",
+      "applied": true
+    },
+    {
+      "summary": "Particle continuation snapshots use shared numeric array emission and typed-array store conversions.",
+      "applied": true
+    },
+    {
+      "summary": "Native particle continuations omit duplicate frozen tables and repeated blob texture extraction.",
+      "applied": true
+    },
+    {
+      "summary": "Particle bridge synchronization reads one typed row instead of dispatching column-name strings per field.",
+      "applied": true
+    },
+    {
+      "summary": "Runtime particle origins enter through registration and are owned by the created mappings.",
+      "applied": true
+    }
+  ]
+}

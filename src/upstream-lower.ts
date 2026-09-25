@@ -3,6 +3,7 @@ import {
     type DeformPickingShader,
 } from "./pinned-picking-shaders.js";
 import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
+import { renderLoweredSourceUnits } from "./compiler/lowered-source-units.js";
 import { createHash } from "node:crypto";
 import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
 import { lowerLocalCubemap } from "./lowering/local-cubemap-lowerer.js";
@@ -902,10 +903,10 @@ function assertBillboardSceneBlock(
 }
 
 class GeneratedSourceWriter {
+    private readonly units = new Map<string, string[]>();
     private readonly variantHeaders: string[] = [];
     private readonly variantDefinitions: string[] = [];
     /** Native sources this run wrote, checked against the reached table. */
-    private readonly emitted = new Set<string>();
     /** The generated-source table's answer for the feature set `emit` runs. */
     private reachedSources: ReadonlySet<string> = new Set();
 
@@ -914,7 +915,7 @@ class GeneratedSourceWriter {
         private readonly store: UpstreamSourceStore,
     ) {}
 
-    public emit(features: string[], options: UpstreamEmitOptions): void {
+    public emit(features: string[], options: UpstreamEmitOptions): string[] {
         const context = pinnedContextOver(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
         // The generated-source table is the one statement of which units a
@@ -1706,9 +1707,9 @@ class GeneratedSourceWriter {
         // never reaches the build, and one declared but not emitted fails
         // the configure with a missing file.
         const missing = [...reachedSources].filter(
-            (source) => !this.emitted.has(source),
+            (source) => !this.units.has(source),
         );
-        const undeclared = [...this.emitted].filter(
+        const undeclared = [...this.units.keys()].filter(
             (source) => !reachedSources.has(source),
         );
         this.validateDeclaredSources(missing, undeclared);
@@ -1717,6 +1718,7 @@ class GeneratedSourceWriter {
             "upstream/provenance.json",
             `${JSON.stringify({ package: this.store.pin, generated }, null, 2)}\n`,
         );
+        return [...reachedSources].flatMap((source) => this.units.get(source)!);
     }
 
     private writeVariantModule(
@@ -1744,8 +1746,15 @@ class GeneratedSourceWriter {
         generated: Array<{ modulePath: string; symbolName: string }>,
         relativeHeader?: string,
     ): void {
-        this.emitted.add(relativeSource);
-        this.tree.write(relativeSource, lowered.source);
+        const units: string[] = [];
+        for (const [path, source] of renderLoweredSourceUnits(
+            relativeSource,
+            lowered.source,
+        )) {
+            this.tree.write(path, source);
+            if (path.endsWith(".cpp")) units.push(path);
+        }
+        this.units.set(relativeSource, units);
         if (relativeHeader && lowered.header) {
             this.tree.write(relativeHeader, lowered.header);
         }
@@ -3919,8 +3928,8 @@ export function emitUpstreamGenerated(
         occlusionUv2: false,
     },
     tree = new GeneratedTree(outputRoot),
-): void {
-    new GeneratedSourceWriter(tree, sharedUpstreamStore()).emit(
+): string[] {
+    return new GeneratedSourceWriter(tree, sharedUpstreamStore()).emit(
         features,
         options,
     );

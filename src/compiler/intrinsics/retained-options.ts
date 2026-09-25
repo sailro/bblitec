@@ -81,9 +81,9 @@ export function emitPresentOption(
         cpp = `${cpp}.value()`;
         type = type.inner;
     }
-    if (guard) context.emit(`if (${guard}) {`);
+    if (guard) context.emit({ kind: "open", code: `if (${guard}) {` });
     emit({ ...member, cpp, ...(type ? { type } : {}) });
-    if (guard) context.emit("}");
+    if (guard) context.emit({ kind: "close", code: "}" });
 }
 
 export function emitScalarOption(
@@ -94,12 +94,16 @@ export function emitScalarOption(
     site: ts.Node,
 ): void {
     if (kind === "string" && member.type?.kind === "enum") {
-        context.emit(
-            `${destination} = ${context.dataTypes.enumToStringCpp(member.type, member.cpp, site)};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${destination} = ${context.dataTypes.enumToStringCpp(member.type, member.cpp, site)};`,
+        });
         return;
     }
     if (member.type?.kind !== kind)
         context.fail(site, `Option ${member.name} requires ${kind}.`);
-    context.emit(`${destination} = ${member.cpp};`);
+    context.emit({
+        kind: "expression",
+        code: `${destination} = ${member.cpp};`,
+    });
 }

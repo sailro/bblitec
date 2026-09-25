@@ -81,7 +81,7 @@ test("preserves the pinned setParent world and hierarchy contract", () => {
     );
     assert.match(
         source,
-        /pinned_parent_mat4_determinant3\(m\) < 0\.0\) \? \(-syAbs\) : syAbs/,
+        /pinned_parent_mat4_determinant3\(m\) < 0\.0 \? \(-syAbs\) : syAbs/,
     );
 });
 

@@ -6,7 +6,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol, libraryGlobal } from "./symbols.js";
 
 /** AST nodes, checker types and symbols are immutable compiler inputs. */
 function isCompilerInput(value: object): boolean {
@@ -206,7 +206,10 @@ function dependencyIdentifiers(
 }
 
 export function functionDependencies(
-    context: Pick<LoweringServices, "checker" | "bindings">,
+    context: Pick<
+        LoweringServices,
+        "checker" | "bindings" | "platformDocumentHidden"
+    >,
     roots: readonly ts.FunctionLikeDeclaration[],
 ): unknown[] {
     return [
@@ -215,10 +218,20 @@ export function functionDependencies(
                 dependencyIdentifiers(context.checker, root),
             ),
         ),
-    ].flatMap((identifier) => {
+    ].flatMap((identifier): unknown[] => {
         const value = context.bindings.lookupOptional(identifier);
+        // Document visibility is supplied by the current platform dispatch.
+        // A helper used by two listeners must capture each listener's parameter.
+        const visibility =
+            !value &&
+            identifier.text === "document" &&
+            libraryGlobal(context.checker, identifier) === "document"
+                ? context.platformDocumentHidden()
+                : undefined;
         return value
             ? [[declaredSymbol(context.checker, identifier), value]]
-            : [];
+            : visibility !== undefined
+              ? [[declaredSymbol(context.checker, identifier), visibility]]
+              : [];
     });
 }

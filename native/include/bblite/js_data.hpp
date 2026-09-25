@@ -1,7 +1,5 @@
 #pragma once
 
-#include <bblite/features/workers.hpp>
-
 #include <bblite/js_callback.hpp>
 #include <bblite/js_error.hpp>
 #include <bblite/dom_event_state.hpp>
@@ -3450,11 +3448,7 @@ template <typename T> [[nodiscard]] inline bool array_has_index(const T& values,
 template <typename T> [[nodiscard]] inline T& missing_array_value() {
     // Re-defaulted on every miss so a stray write through one missed index
     // cannot persist into every later miss of the same element type.
-#if BBLITE_WORKERS
     T& slot = realm_scratch<T>();
-#else
-    static T slot{};
-#endif
     slot = T{};
     return slot;
 }
@@ -4073,14 +4067,7 @@ template <bool Maximum>
 // Deterministic Math.random: mulberry32 over a pinned seed. The browser
 // reference capture installs the identical generator before module load, so
 // both sides consume the same sequence (recorded as a fidelity adaptation).
-inline std::uint32_t& random_state() {
-#if BBLITE_WORKERS
-    return realm_state.random;
-#else
-    static std::uint32_t state = 1u;
-    return state;
-#endif
-}
+inline std::uint32_t& random_state() { return realm_state.random; }
 
 inline void seed_random(std::uint32_t seed) { random_state() = seed; }
 
@@ -4088,15 +4075,10 @@ inline void seed_random(std::uint32_t seed) { random_state() = seed; }
 // generator's state. Saving this callback preserves an override's closure
 // identity; an empty callback denotes the built-in generator.
 inline Callback<double()>& random_override() {
-#if BBLITE_WORKERS
     struct RandomOverride {
         Callback<double()> callback;
     };
     return realm_scratch<RandomOverride>().callback;
-#else
-    static Callback<double()> callback;
-    return callback;
-#endif
 }
 
 inline void set_random_override(Callback<double()> callback) {
@@ -4116,15 +4098,10 @@ inline void set_random_override(Callback<double()> callback) {
     const auto& override = random_override();
     if (override)
         return override;
-#if BBLITE_WORKERS
     struct BuiltinRandom {
         Callback<double()> callback{random_builtin};
     };
     return realm_scratch<BuiltinRandom>().callback;
-#else
-    static Callback<double()> builtin{random_builtin};
-    return builtin;
-#endif
 }
 
 [[nodiscard]] inline double random_js() {

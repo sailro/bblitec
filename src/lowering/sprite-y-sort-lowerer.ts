@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * `sprite-2d-y-sort.ts`, translated from its own bodies.
  *
@@ -26,6 +27,7 @@
  *    current rows.
  */
 import ts from "typescript";
+import { PinnedRecordModel, type MemberSpec } from "./pinned-record-lowerer.js";
 import type { LoweringContext } from "./context.js";
 import {
     lowerPinnedFunction,
@@ -37,7 +39,7 @@ import type {
     PinnedNumericLowerer,
     PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { recordAt } from "../compiler/record-access.js";
 
 export const ySortModule = "src/sprite/sprite-2d-y-sort.ts";
@@ -127,19 +129,45 @@ function stateStruct(
     context: LoweringContext,
     members: readonly StateMember[],
 ): string {
-    const fields = members.map(({ name, storage }) => {
-        const typed = [...TYPED_ARRAY_STORAGE.values()].find(
-            (entry) => entry.storage === storage,
-        );
-        if (typed) return `    ${typed.cpp} ${name};`;
-        return storage === "bool"
-            ? `    bool ${name} = false;`
-            : `    double ${name} = 0.0;`;
-    });
-    return `// ${context.provenance(ySortModule, "Sprite2DYSortState")}
-struct YSortState {
-${fields.join("\n")}
-};
+    const fields = new Map<string, MemberSpec>(
+        members.map(({ name, storage }) => {
+            const typed = [...TYPED_ARRAY_STORAGE.values()].find(
+                (entry) => entry.storage === storage,
+            );
+            return [
+                name,
+                {
+                    field: name,
+                    shape: typed
+                        ? { kind: "native", cpp: typed.cpp }
+                        : { kind: storage === "bool" ? "boolean" : "number" },
+                },
+            ];
+        }),
+    );
+    const model = new PinnedRecordModel(
+        context,
+        context.program.modules([ySortModule]),
+        {
+            records: [
+                {
+                    pinned: ["Sprite2DYSortState"],
+                    cpp: "YSortState",
+                    reference: false,
+                    members: fields,
+                    omit: new Map(
+                        [...STATE_MEMBERS_KEPT_ELSEWHERE].map((name) => [
+                            name,
+                            "The owning layer carries this state.",
+                        ]),
+                    ),
+                },
+            ],
+            values: new Map(),
+            adapters: new Map(),
+        },
+    );
+    return `${model.structs(["Sprite2DYSortState"])}
 
 YSortState* y_sort_state(const Sprite2DLayerRecord& layer) {
     return static_cast<YSortState*>(layer.y_sort.get());
@@ -190,7 +218,7 @@ function layerBindings(layer: string): [string, PinnedBinding][] {
 
 /** The calls every body may make: the module's own functions and Math. */
 function ySortCalls(): Map<string, (args: readonly string[]) => string> {
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const [pinned, native] of Y_SORT_FUNCTIONS) {
         calls.set(pinned, (args) => `${native}(${args.join(", ")})`);
     }
@@ -254,14 +282,12 @@ function stateLocal(
         return undefined;
     }
     const name = entry.name.text;
-    lowerer.bindLocal(name, {
+    lowerer.bindLocal(entry.name, {
         cpp: `(*${name})`,
         type: "opaque",
         absentCpp: `${name} == nullptr`,
     });
-    for (const [key, binding] of stateBindings(members, name, `${name}->`)) {
-        lowerer.bindLocal(key, binding);
-    }
+    lowerer.bindPorts(stateBindings(members, name, `${name}->`), entry);
     return [`${indent}YSortState* const ${name} = y_sort_state(layer);`];
 }
 
@@ -311,8 +337,7 @@ function bodyOptions(
         calls: ySortCalls(),
         methods: ySortMethods,
         callShapes: Y_SORT_CALL_SHAPES,
-        booleanAnd: true,
-        booleanOr: true,
+
         statement: (
             statement: ts.Statement,
             lowerer: PinnedNumericLowerer,
@@ -679,17 +704,22 @@ function enableCpp(
                     `${indent}${created}->${name} = ${lowerer.expression(value)};`,
                 );
             }
-            lowerer.bindLocal(created, {
-                cpp: `(*${created})`,
-                type: "opaque",
-            });
-            for (const [key, binding] of stateBindings(
-                members,
-                created,
-                `${created}->`,
-            )) {
-                lowerer.bindLocal(key, binding);
-            }
+            lowerer.bindPorts(
+                [
+                    [
+                        created,
+                        {
+                            cpp: `(*${created})`,
+                            type: "opaque",
+                        },
+                    ],
+                ],
+                node,
+            );
+            lowerer.bindPorts(
+                stateBindings(members, created, `${created}->`),
+                node,
+            );
             return [
                 `${indent}const auto ${created}_owner = std::make_shared<YSortState>();`,
                 `${indent}YSortState* const ${created} = ${created}_owner.get();`,

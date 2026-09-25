@@ -299,7 +299,10 @@ function emitFrameGraphTransmission(
     context.reachFeature("renderer:scene", expression);
     context.reachFeature("renderer:transmission", expression);
     context.reachFeature("material:pbr-linear-image-processing", expression);
-    context.emit(`bbl::enable_scene_transmission(${scene.cpp});`);
+    context.emit({
+        kind: "expression",
+        code: `bbl::enable_scene_transmission(${scene.cpp});`,
+    });
     return true;
 }
 
@@ -576,7 +579,7 @@ function emitSceneLightListClear(
             "Reached scene light list assignment supports clearing to zero.",
         );
     }
-    context.emit(`${owner.cpp}.lights.clear();`);
+    context.emit({ kind: "expression", code: `${owner.cpp}.lights.clear();` });
     return true;
 }
 
@@ -625,9 +628,10 @@ function emitNodeParticleScalarAssignment(
         );
     }
     if (context.sceneManifest.reachedNodeParticles.sets[set]?.native) {
-        context.emit(
-            `bbl::upstream::set_native_node_particle_scalar(${set}, ${system}, "${property}", ${context.compileNumber(expression.right, "double")});`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::upstream::set_native_node_particle_scalar(${set}, ${system}, "${property}", ${context.compileNumber(expression.right, "double")});`,
+        });
         return;
     }
     requireParticleBakeWritable(context, { set, system }, expression);
@@ -764,9 +768,10 @@ function emitPostProcessOptionAssignment(
                 expression,
                 "composite post-process option",
             );
-            context.emit(
-                `bbl::${compositeScalarFunction(composite.compositeIndex, accessor.property, true)}(${context.requireEngine(owner, expression)}, ${owner.cpp}, ${context.compileNumber(expression.right, "double")});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `bbl::${compositeScalarFunction(composite.compositeIndex, accessor.property, true)}(${context.requireEngine(owner, expression)}, ${owner.cpp}, ${context.compileNumber(expression.right, "double")});`,
+            });
             return true;
         }
         context.fail(
@@ -794,12 +799,13 @@ function emitPostProcessOptionAssignment(
     // that pass's. A composite's would be several, which is why a setter on
     // one is refused above.
 
-    context.emit(
-        `${recordAt(`${context.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.post_process.passes[0].params[${slot}] = ${context.compileNumber(
+    context.emit({
+        kind: "expression",
+        code: `${recordAt(`${context.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.post_process.passes[0].params[${slot}] = ${context.compileNumber(
             expression.right,
             "double",
         )};`,
-    );
+    });
     return true;
 }
 
@@ -825,9 +831,10 @@ function emitScreenSpaceSettingAssignment(
     const record = `${recordAt(`${context.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.screen_space`;
     requireSimpleAssignment(context, expression, "screen-space setting");
     if (setting === "enabled") {
-        context.emit(
-            `${record}.enabled = ${context.compileBoolean(expression.right)};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${record}.enabled = ${context.compileBoolean(expression.right)};`,
+        });
         return true;
     }
     if (!SCREEN_SPACE_SCALAR_SETTINGS.includes(setting)) {
@@ -837,12 +844,13 @@ function emitScreenSpaceSettingAssignment(
                 `settable scalar '${setting}'.`,
         );
     }
-    context.emit(
-        `${record}.${nativeSettingName(setting)} = ${context.compileNumber(
+    context.emit({
+        kind: "expression",
+        code: `${record}.${nativeSettingName(setting)} = ${context.compileNumber(
             expression.right,
             "double",
         )};`,
-    );
+    });
     return true;
 }
 
@@ -899,9 +907,10 @@ function emitSpriteLayerViewAssignment(
     requireSimpleAssignment(context, expression, "Sprite2DLayer view");
     const layer = context.compileValue(layerExpression);
     context.expectKind(layer, "sprite-layer", layerExpression);
-    context.emit(
-        `${recordAt(`${context.requireEngine(layer, layerExpression)}.sprite_layers`, layer.cpp)}.view.${field} = static_cast<float>(${context.compileNumber(expression.right, "double")});`,
-    );
+    context.emit({
+        kind: "expression",
+        code: `${recordAt(`${context.requireEngine(layer, layerExpression)}.sprite_layers`, layer.cpp)}.view.${field} = static_cast<float>(${context.compileNumber(expression.right, "double")});`,
+    });
     return true;
 }
 
@@ -1039,9 +1048,10 @@ function emitWriteOnlyNumberExpandoAssignment(
         expression,
         `optional expando ${property}`,
     );
-    context.emit(
-        `static_cast<void>(${context.compileNumber(expression.right, "double")});`,
-    );
+    context.emit({
+        kind: "expression",
+        code: `static_cast<void>(${context.compileNumber(expression.right, "double")});`,
+    });
     return true;
 }
 
@@ -1107,12 +1117,14 @@ function emitBridgeOriginWrite(
     }
     const value = context.compileValue(expression.right);
     context.expectKind(value, "number", expression.right);
-    context.emit(
-        "bbl::upstream::set_node_particle_2d_origin(" +
+    context.emit({
+        kind: "expression",
+        code:
+            "bbl::upstream::set_node_particle_2d_origin(" +
             `${owner.nodeParticleRequestIndex!}, ` +
             `${owner.nodeParticleBridgeIndex!}, ${axis.staticNumber}, ` +
             `${value.cpp});`,
-    );
+    });
     return true;
 }
 
@@ -1161,9 +1173,10 @@ export function emitPropertyAssignment(
                 "RegExp.lastIndex requires a simple assignment.",
             );
         }
-        context.emit(
-            `${regexpOwner.cpp}.last_index() = ${context.compileNumber(expression.right, "double")};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${regexpOwner.cpp}.last_index() = ${context.compileNumber(expression.right, "double")};`,
+        });
         return;
     }
     if (
@@ -1254,11 +1267,13 @@ export function emitPropertyAssignment(
     if (left.name.text === "hovering" || left.name.text === "enabled") {
         const drag = context.compileValue(left.expression);
         if (drag.kind === "pointer-drag") {
-            context.emit(
-                `${recordAt(`${context.requireEngine(drag, expression)}.edit_gizmos`, drag.cpp)}` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `${recordAt(`${context.requireEngine(drag, expression)}.edit_gizmos`, drag.cpp)}` +
                     `.${left.name.text} ${operator} ` +
                     `${context.compileBoolean(expression.right)};`,
-            );
+            });
             return;
         }
     }
@@ -1295,9 +1310,10 @@ export function emitPropertyAssignment(
                 existing?.nativeLvalue &&
                 existing.dataType?.kind === "function"
             ) {
-                context.emit(
-                    `${existing.cpp} = ${context.dataLowerer.compileForSink(expression.right, existing.dataType)};`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${existing.cpp} = ${context.dataLowerer.compileForSink(expression.right, existing.dataType)};`,
+                });
                 return;
             }
             const existingMethod = owner.recordMethods?.[left.name.text];
@@ -1492,9 +1508,10 @@ export function emitPropertyAssignment(
                 `image-processing property '${property}'`,
             );
             context.sceneManifest.recordToneMappingEnabledMutation();
-            context.emit(
-                `${scene.cpp}.environment.tone_mapping_enabled = ${context.compileBoolean(expression.right)};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${scene.cpp}.environment.tone_mapping_enabled = ${context.compileBoolean(expression.right)};`,
+            });
             return;
         }
         context.admissions.noteTemporalRecordBoundary(
@@ -1502,9 +1519,10 @@ export function emitPropertyAssignment(
             `authored imageProcessing.${property} writes require double-precision TAA cache-key transport`,
             "always",
         );
-        context.emit(
-            `${scene.cpp}.environment.${property} ${operator} ${context.compileNumber(expression.right)};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${scene.cpp}.environment.${property} ${operator} ${context.compileNumber(expression.right)};`,
+        });
         return;
     }
     if (
@@ -1533,9 +1551,10 @@ export function emitPropertyAssignment(
             expression.right,
             operator === "=",
         );
-        context.emit(
-            `${recordAt(`${context.requireEngine(scene, expression)}.cameras`, `${scene.cpp}.camera`)}.${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${context.requireEngine(scene, expression)}.cameras`, `${scene.cpp}.camera`)}.${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
+        });
         return;
     }
     if (left.expression.kind === ts.SyntaxKind.ThisKeyword) {
@@ -1560,9 +1579,10 @@ export function emitPropertyAssignment(
             existing.dataType &&
             operator === "="
         ) {
-            context.emit(
-                `${existing.cpp} = ${context.compileForDataSink(expression.right, existing.dataType)};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${existing.cpp} = ${context.compileForDataSink(expression.right, existing.dataType)};`,
+            });
             return;
         }
         if (
@@ -1630,7 +1650,12 @@ export function emitPropertyAssignment(
             const target = context.allocateTemporaryCppName(
                 "asset_transform_target",
             );
-            context.emit(`const auto ${target} = ${root.cpp};`);
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: target,
+                initializer: root.cpp,
+            });
             let previous: string | undefined;
             if (operator !== "=") {
                 previous = context.allocateTemporaryCppName(
@@ -1640,17 +1665,21 @@ export function emitPropertyAssignment(
                     vector === "rotation"
                         ? `bbl::asset_root_rotation(${engine}, ${target})`
                         : `${recordAt(`${engine}.assets`, target)}.root_${trsVector.nativeField}`;
-                context.emit(
-                    `const double ${previous} = ${vectorRead}.${component};`,
-                );
+                context.emit({
+                    kind: "declaration",
+                    type: "const double",
+                    name: previous,
+                    initializer: `${vectorRead}.${component}`,
+                });
             }
             const right = context.compileNumber(expression.right, "double");
             const replacement = previous
                 ? `(${previous} ${operator.slice(0, -1)} ${right})`
                 : right;
-            context.emit(
-                `bbl::${trsVector.assetComponentSetter}(${engine}, ${target}, ${axis}u, ${replacement});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `bbl::${trsVector.assetComponentSetter}(${engine}, ${target}, ${axis}u, ${replacement});`,
+            });
             return;
         }
     }
@@ -1689,19 +1718,21 @@ export function emitPropertyAssignment(
         context.expectKind(group, "animation-group", left.expression);
         requireSimpleAssignment(context, expression, "loopAnimation");
         if (group.animationGroupSource === "property") {
-            context.emit(
-                `${group.cpp}->loop = ${context.compileBoolean(expression.right)};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${group.cpp}->loop = ${context.compileBoolean(expression.right)};`,
+            });
             return;
         }
         requireGltfGroupSource(context, group, left, "loopAnimation");
         context.reachFeature("animation:gltf-groups", left);
-        context.emit(
-            `bbl::set_animation_loop(${context.requireEngine(
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_animation_loop(${context.requireEngine(
                 group,
                 expression,
             )}, ${group.cpp}, ${context.compileBoolean(expression.right)});`,
-        );
+        });
         return;
     }
 
@@ -1714,20 +1745,22 @@ export function emitPropertyAssignment(
         context.expectKind(group, "animation-group", left.expression);
         requireSimpleAssignment(context, expression, "speedRatio");
         if (group.animationGroupSource === "property") {
-            context.emit(
-                `${group.cpp}->speed_ratio = ${context.compileNumber(expression.right, "double")};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${group.cpp}->speed_ratio = ${context.compileNumber(expression.right, "double")};`,
+            });
             return;
         }
         requireGltfGroupSource(context, group, left, "speedRatio");
         context.reachFeature("animation:gltf-groups", left);
         context.reachFeature("animation:gltf-group-speed", left);
-        context.emit(
-            `bbl::set_animation_speed_ratio(${context.requireEngine(
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_animation_speed_ratio(${context.requireEngine(
                 group,
                 expression,
             )}, ${group.cpp}, ${context.compileNumber(expression.right, "double")});`,
-        );
+        });
         return;
     }
 
@@ -1741,8 +1774,9 @@ export function emitPropertyAssignment(
         context.expectKind(mask, "animation-group-mask", expression.right);
         const names = mask.animationGroupMask?.names ?? [];
         context.reachFeature("animation:gltf-group-mask", left);
-        context.emit(
-            `bbl::set_animation_mask(${context.requireEngine(
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_animation_mask(${context.requireEngine(
                 group,
                 expression,
             )}, ${group.cpp}, std::vector<std::string>{${names
@@ -1750,7 +1784,7 @@ export function emitPropertyAssignment(
                 .join(
                     ", ",
                 )}}, ${mask.animationGroupMask?.include ? "true" : "false"});`,
-        );
+        });
         return;
     }
 
@@ -1767,18 +1801,22 @@ export function emitPropertyAssignment(
         const value = context.compileValue(expression.right);
         context.expectKind(value, "number", expression.right);
         if (group.animationGroupSource === "property") {
-            context.emit(`${group.cpp}->current_time = ${value.cpp};`);
+            context.emit({
+                kind: "expression",
+                code: `${group.cpp}->current_time = ${value.cpp};`,
+            });
             return;
         }
         requireGltfGroupSource(context, group, left, "currentTime");
         context.reachFeature("animation:gltf-groups", left);
         context.reachFeature("animation:gltf-group-time", left);
-        context.emit(
-            `bbl::set_animation_current_time(${context.requireEngine(
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_animation_current_time(${context.requireEngine(
                 group,
                 expression,
             )}, ${group.cpp}, ${value.cpp});`,
-        );
+        });
         return;
     }
 
@@ -1814,8 +1852,10 @@ export function emitPropertyAssignment(
             // light-local matrix just like `.set(...)`. Preserve the other
             // two live lanes, then take the same generated setter route so
             // the field write and matrix refresh cannot drift apart.
-            context.emit(
-                `bbl::${setter}(${engine}, ${mesh.cpp}, bbl::Vec3{` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::${setter}(${engine}, ${mesh.cpp}, bbl::Vec3{` +
                     ["x", "y", "z"]
                         .map((lane) =>
                             lane === component
@@ -1824,7 +1864,7 @@ export function emitPropertyAssignment(
                         )
                         .join(", ") +
                     `});`,
-            );
+            });
             return;
         }
         if (mesh.kind === "camera") {
@@ -1837,9 +1877,10 @@ export function emitPropertyAssignment(
             }
             const component = ["x", "y", "z"][axis]!;
             const engine = context.requireEngine(mesh, expression);
-            context.emit(
-                `${recordAt(`${engine}.cameras`, mesh.cpp)}.${vector}.${component} ${operator} ${context.compileNumber(expression.right, "double")};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${recordAt(`${engine}.cameras`, mesh.cpp)}.${vector}.${component} ${operator} ${context.compileNumber(expression.right, "double")};`,
+            });
             return;
         }
         if (mesh.kind === "transform-node" || mesh.kind === "scene-node") {
@@ -1867,11 +1908,12 @@ export function emitPropertyAssignment(
                     previous = context.allocateTemporaryCppName(
                         "scene_node_transform_component",
                     );
-                    context.emit(
-                        `const ${trsVector.precision} ${previous} = ` +
-                            `bbl::scene_node_${trsVector.nativeField}(` +
-                            `${engine}, ${target}).${component};`,
-                    );
+                    context.emit({
+                        kind: "declaration",
+                        type: `const ${trsVector.precision}`,
+                        name: previous,
+                        initializer: `bbl::scene_node_${trsVector.nativeField}(${engine}, ${target}).${component}`,
+                    });
                 }
                 const right = context.compileNumber(
                     expression.right,
@@ -1880,10 +1922,12 @@ export function emitPropertyAssignment(
                 const replacement = previous
                     ? `(${previous} ${operator.slice(0, -1)} ${right})`
                     : right;
-                context.emit(
-                    `bbl::${trsVector.sceneNodeComponentSetter}(` +
+                context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::${trsVector.sceneNodeComponentSetter}(` +
                         `${engine}, ${target}, ${axis}u, ${replacement});`,
-                );
+                });
                 return;
             }
             const vectorRead =
@@ -1900,8 +1944,10 @@ export function emitPropertyAssignment(
                           expression.right,
                           trsVector.precision,
                       )})`;
-            context.emit(
-                `bbl::${trsVector.transformNodeSetter}(${engine}, ${mesh.cpp}, ${trsVector.cppType}{` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::${trsVector.transformNodeSetter}(${engine}, ${mesh.cpp}, ${trsVector.cppType}{` +
                     trsVector.components
                         .map((lane) =>
                             lane === component
@@ -1910,7 +1956,7 @@ export function emitPropertyAssignment(
                         )
                         .join(", ") +
                     `});`,
-            );
+            });
             return;
         }
         // A GaussianSplattingMesh is a SceneNode upstream, so its TRS lanes
@@ -1971,8 +2017,10 @@ export function emitPropertyAssignment(
                           expression.right,
                           trsVector.precision,
                       )})`;
-            context.emit(
-                `bbl::${trsVector.meshSetter}(${engine}, ${mesh.cpp}, ${trsVector.cppType}{` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::${trsVector.meshSetter}(${engine}, ${mesh.cpp}, ${trsVector.cppType}{` +
                     trsVector.components
                         .map((lane) =>
                             lane === component
@@ -1981,7 +2029,7 @@ export function emitPropertyAssignment(
                         )
                         .join(", ") +
                     `}, false);`,
-            );
+            });
             return;
         }
         const component = trsVector.components[axis]!;
@@ -1991,16 +2039,20 @@ export function emitPropertyAssignment(
         // widening back into the field would round a large-world
         // coordinate to the float32 grid, which is the whole reason the
         // field is a double.
-        context.emit(
-            `${recordAt(`${engine}.${record.collection}`, mesh.cpp)}.${trsVector.nativeField}.${component} ${operator} ${context.compileNumber(
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${engine}.${record.collection}`, mesh.cpp)}.${trsVector.nativeField}.${component} ${operator} ${context.compileNumber(
                 expression.right,
                 record.collection === "meshes" ? trsVector.precision : "float",
             )};`,
-        );
+        });
         // The world-matrix state's `markLocalDirty`: mark_mesh_dirty pushes
         // it through the subtree the parent setter registered.
         if (record.bumpsTransformVersion) {
-            context.emit(`bbl::mark_mesh_dirty(${engine}, ${mesh.cpp});`);
+            context.emit({
+                kind: "expression",
+                code: `bbl::mark_mesh_dirty(${engine}, ${mesh.cpp});`,
+            });
         }
         return;
     }
@@ -2175,10 +2227,12 @@ function emitCameraViewportAssignment(
         undefined,
         false,
     );
-    context.emit(
-        `${recordAt(`${context.requireEngine(scene, expression)}.cameras`, `${scene.cpp}.camera`)}` +
+    context.emit({
+        kind: "expression",
+        code:
+            `${recordAt(`${context.requireEngine(scene, expression)}.cameras`, `${scene.cpp}.camera`)}` +
             `.viewport = bbl::NormalizedViewport{${lanes.join(", ")}};`,
-    );
+    });
 }
 
 function requireSimpleAssignment(
@@ -2378,16 +2432,18 @@ function emitTargetPropertyAssignment(
                           inner: { kind: "number" },
                       },
                   )}).to_optional()`;
-        context.emit(
-            `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}.${field} = ${value};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}.${field} = ${value};`,
+        });
         return true;
     }
     if (target.kind === "task" && property === "executionEnabled") {
         requireSimpleAssignment(context, expression, "Task.executionEnabled");
-        context.emit(
-            `${recordAt(`${context.requireEngine(target, expression)}.frame_tasks`, target.cpp)}.execution_enabled = bbl::js::Nullable<bool>(${context.dataLowerer.compileForSink(expression.right, { kind: "optional", inner: { kind: "boolean" } })}).to_optional();`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${context.requireEngine(target, expression)}.frame_tasks`, target.cpp)}.execution_enabled = bbl::js::Nullable<bool>(${context.dataLowerer.compileForSink(expression.right, { kind: "optional", inner: { kind: "boolean" } })}).to_optional();`,
+        });
         return true;
     }
     if (
@@ -2403,16 +2459,18 @@ function emitTargetPropertyAssignment(
                 : property === "name"
                   ? { kind: "string" }
                   : { kind: "boolean" };
-        context.emit(
-            `bbl::compute_task_${field}(${target.cpp}) = ${context.dataLowerer.compileForSink(expression.right, type)};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::compute_task_${field}(${target.cpp}) = ${context.dataLowerer.compileForSink(expression.right, type)};`,
+        });
         return true;
     }
     if (target.kind === "compute-dispatch" && property === "enabled") {
         requireSimpleAssignment(context, expression, "ComputeDispatch.enabled");
-        context.emit(
-            `bbl::compute_dispatch_enabled(${target.cpp}) = ${context.dataLowerer.compileForSink(expression.right, { kind: "boolean" })};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::compute_dispatch_enabled(${target.cpp}) = ${context.dataLowerer.compileForSink(expression.right, { kind: "boolean" })};`,
+        });
         return true;
     }
     const handler0 = targetPropertyHandlers0.get(property);
@@ -2516,7 +2574,10 @@ function emitTargetPropertyAssignment(
             const folded = staticNumberValue(context, expression.right);
             if (folded !== undefined) writable(target).textureUvAng = folded;
         }
-        context.emit(`${owner}.${field.record} = ${rendered};`);
+        context.emit({
+            kind: "expression",
+            code: `${owner}.${field.record} = ${rendered};`,
+        });
         return true;
     }
     const handler2 = targetPropertyHandlers2.get(property);
@@ -2593,7 +2654,10 @@ function emitTargetPropertyAssignment(
                         recordField.scalarPrecision ?? "float",
                     ),
                 );
-                context.emit(`${record}.${field} = ` + `${value.cpp};`);
+                context.emit({
+                    kind: "expression",
+                    code: `${record}.${field} = ` + `${value.cpp};`,
+                });
                 if (recordField.kind === "material") {
                     const bindings =
                         target.materialUboArrayFields ??
@@ -2667,9 +2731,10 @@ function emitTargetPropertyAssignment(
                     kind: "vector",
                     element: { kind: "number" },
                 });
-                context.emit(
-                    `bbl::set_material_diffuse_color(${context.requireEngine(target, expression)}, ${owner}, ${values});`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `bbl::set_material_diffuse_color(${context.requireEngine(target, expression)}, ${owner}, ${values});`,
+                });
                 return true;
             }
         }
@@ -2717,17 +2782,22 @@ function emitTargetPropertyAssignment(
                 (writable(target).materialUboArrayFields = new EmissionMap());
             bindings.set(recordField.field, { ...compiled, cpp: stored });
         }
-        context.emit(
-            `${record}.${recordField.field} ` +
+        context.emit({
+            kind: "expression",
+            code:
+                `${record}.${recordField.field} ` +
                 `${recordField.simpleOnly ? "=" : operator} ${stored};`,
-        );
+        });
         if (
             recordField.kind === "material" &&
             recordField.property === "diffuseColor"
         ) {
             // This tuple adapter has no numeric-array identity. Its render
             // field must not be replaced later by the factory's array.
-            context.emit(`${record}.source_diffuse_color.reset();`);
+            context.emit({
+                kind: "expression",
+                code: `${record}.source_diffuse_color.reset();`,
+            });
         }
         return true;
     }
@@ -2737,9 +2807,10 @@ function emitTargetPropertyAssignment(
         // The program records the target the constructor gave; a later
         // write is not one of its scalar properties, so it invalidates.
         noteCameraRecordWrite(context, target, "target", undefined, false);
-        context.emit(
-            `${recordAt(`${context.requireEngine(target, expression)}.cameras`, target.cpp)}.target = ${context.compileVec3(expression.right, "double")};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${context.requireEngine(target, expression)}.cameras`, target.cpp)}.target = ${context.compileVec3(expression.right, "double")};`,
+        });
         return true;
     }
 
@@ -2753,9 +2824,10 @@ function emitTargetPropertyAssignment(
                 expression.right,
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken,
             );
-            context.emit(
-                `${recordAt(`${context.requireEngine(target, expression)}.cameras`, target.cpp)}.${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${recordAt(`${context.requireEngine(target, expression)}.cameras`, target.cpp)}.${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
+            });
             return true;
         }
     }
@@ -2775,9 +2847,10 @@ function emitTargetPropertyAssignment(
             context.expectSameEngine(target, parent, expression);
             context.assetRegistry.assertAssetRootWritable(parent, expression);
         }
-        context.emit(
-            `bbl::set_light_asset_parent(${context.requireEngine(target, expression)}, ${target.cpp}, ${parent ? parent.cpp : "bbl::AssetHandle{}"});`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_light_asset_parent(${context.requireEngine(target, expression)}, ${target.cpp}, ${parent ? parent.cpp : "bbl::AssetHandle{}"});`,
+        });
         return true;
     }
 
@@ -2787,12 +2860,14 @@ function emitTargetPropertyAssignment(
         // The pin recomputes the cone cosine from the JavaScript-number
         // angle and rounds only at its own UBO store, so the value stays
         // double across this boundary exactly as it does at creation.
-        context.emit(
-            `bbl::${scalarSetter}(` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::${scalarSetter}(` +
                 `${context.requireEngine(target, expression)}, ` +
                 `${target.cpp}, ` +
                 `${context.compileNumber(expression.right, "double")});`,
-        );
+        });
         return true;
     }
 
@@ -2814,9 +2889,10 @@ function emitTargetPropertyAssignment(
                           ? "double"
                           : "float",
                   );
-        context.emit(
-            `${recordAt(`${context.requireEngine(target, expression)}.${direct.collection}`, target.cpp)}.${direct.nativeProperty} ${operator} ${value};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${context.requireEngine(target, expression)}.${direct.collection}`, target.cpp)}.${direct.nativeProperty} ${operator} ${value};`,
+        });
         return true;
     }
     return false;
@@ -2899,9 +2975,10 @@ function emitClearColorAssignment(
     const { expression, target, property } = state;
     if (target.kind === "scene" && property === "clearColor") {
         requireSimpleAssignment(context, expression, "scene clearColor");
-        context.emit(
-            `${target.cpp}.clear_color = ${context.compileColor4(expression.right)};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${target.cpp}.clear_color = ${context.compileColor4(expression.right)};`,
+        });
         return true;
     }
     return false;
@@ -2922,7 +2999,10 @@ function emitCameraAssignment(
         // executed port -- the node-particle flow-map build -- reads
         // the scene's camera rather than the scene's own records.
         writable(target).sceneCamera = camera;
-        context.emit(`${target.cpp}.camera = ${camera.cpp};`);
+        context.emit({
+            kind: "expression",
+            code: `${target.cpp}.camera = ${camera.cpp};`,
+        });
         return true;
     }
     return false;
@@ -2934,9 +3014,10 @@ function emitFixedDeltaMsAssignment(
 ): boolean {
     const { expression, target, property, operator } = state;
     if (target.kind === "scene" && property === "fixedDeltaMs") {
-        context.emit(
-            `${target.cpp}.fixed_delta_ms ${operator} ${context.compileNumber(expression.right, "double")};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${target.cpp}.fixed_delta_ms ${operator} ${context.compileNumber(expression.right, "double")};`,
+        });
         return true;
     }
     return false;
@@ -2950,12 +3031,14 @@ function emitRenderOrderAssignment(
     if (target.kind === "mesh" && property === "renderOrder") {
         requireSimpleAssignment(context, expression, "mesh renderOrder");
         const engine = context.requireEngine(target, expression);
-        context.emit(
-            `${recordAt(`${engine}.meshes`, target.cpp)}.render_order = ${context.compileNumber(expression.right, "double")};`,
-        );
-        context.emit(
-            `${recordAt(`${engine}.meshes`, target.cpp)}.has_render_order = true;`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${engine}.meshes`, target.cpp)}.render_order = ${context.compileNumber(expression.right, "double")};`,
+        });
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${engine}.meshes`, target.cpp)}.has_render_order = true;`,
+        });
         return true;
     }
     return false;
@@ -2979,9 +3062,10 @@ function emitNameAssignment(
         );
         const name = context.compileValue(expression.right);
         context.expectKind(name, "string", expression.right);
-        context.emit(
-            `${recordAt(`${context.requireEngine(target, expression)}.${collection}`, target.cpp)}.name = ${name.cpp};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${context.requireEngine(target, expression)}.${collection}`, target.cpp)}.name = ${name.cpp};`,
+        });
         return true;
     }
     return false;
@@ -3044,10 +3128,12 @@ function emitReceiveShadowsAssignment(
         // rather than selecting a variant, so one composed module
         // serves a receiving mesh and a non-receiving one. The two
         // composed families never read the lane.
-        context.emit(
-            `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}` +
+        context.emit({
+            kind: "expression",
+            code:
+                `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}` +
                 `.receives_shadows = true;`,
-        );
+        });
         return true;
     }
     return false;
@@ -3122,9 +3208,10 @@ function emitShadowGeneratorAssignment(
         const generator = context.compileValue(expression.right);
         context.expectKind(generator, "shadow-generator", expression.right);
         context.expectSameEngine(target, generator, expression);
-        context.emit(
-            `${recordAt(`${context.requireEngine(target, expression)}.lights`, target.cpp)}.shadow_generator = ${generator.cpp};`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${context.requireEngine(target, expression)}.lights`, target.cpp)}.shadow_generator = ${generator.cpp};`,
+        });
         // The pin's `ShadowTask` walks `scene.lights` and its receiver
         // slots come from the same walk, so the generator has to be
         // reachable from the light -- and a later
@@ -3161,11 +3248,13 @@ function emitIncludedOnlyMeshIdsAssignment(
             expression.right,
         );
         context.reachFeature("light:included-meshes", expression);
-        context.emit(
-            `${recordAt(`${context.requireEngine(target, expression)}.lights`, target.cpp)}` +
+        context.emit({
+            kind: "expression",
+            code:
+                `${recordAt(`${context.requireEngine(target, expression)}.lights`, target.cpp)}` +
                 `.included_meshes = {` +
                 `${meshes.join(", ")}};`,
-        );
+        });
         return true;
     }
     return false;
@@ -3208,9 +3297,10 @@ function emitMaterialAssignment(
                     "keys are built from the attribute set.",
             );
         }
-        context.emit(
-            `bbl::set_mesh_material(${context.requireEngine(target, expression)}, ${target.cpp}, ${material.cpp});`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_mesh_material(${context.requireEngine(target, expression)}, ${target.cpp}, ${material.cpp});`,
+        });
         // The pin's opt-in setters take the material back off the mesh
         // (`setPbrSkybox(box.material)`) and mutate the same object, so
         // the mesh carries which scene material it was given and a
@@ -3301,12 +3391,14 @@ function emitBoundMinAssignment(
         const nativeProperty =
             property === "boundMin" ? "bounds_min" : "bounds_max";
         const side = property === "boundMin" ? "min" : "max";
-        context.emit(
-            `${recordAt(`${engine}.meshes`, target.cpp)}.${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
-        );
-        context.emit(
-            `${recordAt(`${engine}.meshes`, target.cpp)}.has_bounds_${side}_override = true;`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${engine}.meshes`, target.cpp)}.${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
+        });
+        context.emit({
+            kind: "expression",
+            code: `${recordAt(`${engine}.meshes`, target.cpp)}.has_bounds_${side}_override = true;`,
+        });
         return true;
     }
     return false;
@@ -3349,10 +3441,12 @@ function emitSkeletonAssignment(
         context.expectKind(skeleton, "scene-skeleton", expression.right);
         context.expectSameEngine(target, skeleton, expression);
         const engine = context.requireEngine(target, expression);
-        context.emit(
-            `bbl::attach_scene_skeleton(${engine}, ${target.cpp}, ` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::attach_scene_skeleton(${engine}, ${target.cpp}, ` +
                 `${skeleton.cpp});`,
-        );
+        });
         // The generation half of the same assignment: the pin's
         // `_computeMeshFeatures` reads `mesh.skeleton` for MSH_HAS_SKELETON,
         // and a scene-code mesh's feature word is derived from its recorded
@@ -3414,13 +3508,15 @@ function emitMorphTargetsAssignment(
             "morphTargets",
             expression,
         );
-        context.emit(
-            `bbl::attach_morph_target(${engine}, ${target.cpp}, ` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::attach_morph_target(${engine}, ${target.cpp}, ` +
                 `${morph.morphTarget.positionsCpp}, ` +
                 `${morph.morphTarget.normalsCpp}, ` +
                 `${morph.morphTarget.vertexCountCpp}, ` +
                 `${morph.morphTarget.weightCpp});`,
-        );
+        });
         writable(morph.morphTarget).meshCpp = target.cpp;
         context.reachFeature("mesh:morph-targets", expression);
         return true;
@@ -3459,9 +3555,10 @@ function emitOrmTextureAssignment(
                 expression.right,
                 "PBR ormTexture replacement currently requires a solid texture.",
             );
-        context.emit(
-            `bbl::set_material_orm_file(${context.requireEngine(target, expression)}, ${target.cpp}, bbl::solid_texture_file(${texture.cpp}));`,
-        );
+        context.emit({
+            kind: "expression",
+            code: `bbl::set_material_orm_file(${context.requireEngine(target, expression)}, ${target.cpp}, bbl::solid_texture_file(${texture.cpp}));`,
+        });
         return true;
     }
     return false;
@@ -3489,11 +3586,13 @@ function emitOcclusionTextureAssignment(
             );
         }
         context.expectSameEngine(target, texture, expression);
-        context.emit(
-            `bbl::set_pbr_occlusion_solid_texture(` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::set_pbr_occlusion_solid_texture(` +
                 `${context.requireEngine(target, expression)}, ` +
                 `${target.cpp}, ${texture.cpp});`,
-        );
+        });
         return true;
     }
     return false;
@@ -3524,9 +3623,10 @@ function emitDiffuseTextureAssignment(
                 "material:standard-diffuse-pixels-texture",
                 expression,
             );
-            context.emit(
-                `bbl::set_standard_diffuse_texture(${context.requireEngine(target, expression)}, ${target.cpp}, ${texture.cpp});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `bbl::set_standard_diffuse_texture(${context.requireEngine(target, expression)}, ${target.cpp}, ${texture.cpp});`,
+            });
             return true;
         }
         // A `createTexture2DFromPixels` texture is the second source
@@ -3540,11 +3640,13 @@ function emitDiffuseTextureAssignment(
                 expression,
             );
             context.boundPixelsTextures.add(texture.cpp);
-            context.emit(
-                `bbl::set_standard_diffuse_pixels_texture(` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::set_standard_diffuse_pixels_texture(` +
                     `${context.requireEngine(target, expression)}, ` +
                     `${target.cpp}, ${texture.cpp});`,
-            );
+            });
             return true;
         }
         // A loaded image is the third source, and the one the
@@ -3557,11 +3659,13 @@ function emitDiffuseTextureAssignment(
                 "material:standard-diffuse-file-texture",
                 expression,
             );
-            context.emit(
-                `bbl::set_standard_diffuse_file_texture(` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::set_standard_diffuse_file_texture(` +
                     `${context.requireEngine(target, expression)}, ` +
                     `${target.cpp}, ${texture.cpp});`,
-            );
+            });
             return true;
         }
         // A `createSolidTexture2D` texture is the fourth source. It is one
@@ -3580,11 +3684,13 @@ function emitDiffuseTextureAssignment(
                 "material:standard-diffuse-solid-texture",
                 expression,
             );
-            context.emit(
-                `bbl::set_standard_diffuse_solid_texture(` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::set_standard_diffuse_solid_texture(` +
                     `${context.requireEngine(target, expression)}, ` +
                     `${target.cpp}, ${texture.cpp});`,
-            );
+            });
             return true;
         }
         // What this slot accepts, said the way every frame-graph slot
@@ -3605,11 +3711,13 @@ function emitDiffuseTextureAssignment(
             "material:standard-diffuse-render-texture",
             expression,
         );
-        context.emit(
-            `bbl::set_standard_diffuse_render_texture(` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::set_standard_diffuse_render_texture(` +
                 `${context.requireEngine(target, expression)}, ` +
                 `${target.cpp}, ${textureCpp});`,
-        );
+        });
         return true;
     }
     return false;
@@ -3655,13 +3763,17 @@ function emitParentAssignment(
         if (meshParent) {
             context.reachFeature("mesh:parenting", expression);
         }
-        context.emit(
-            `bbl::${
-                mesh ? "set_mesh_transform_parent" : "set_transform_node_parent"
-            }(` +
+        context.emit({
+            kind: "expression",
+            code:
+                `bbl::${
+                    mesh
+                        ? "set_mesh_transform_parent"
+                        : "set_transform_node_parent"
+                }(` +
                 `${context.requireEngine(target, expression)}, ` +
                 `${target.cpp}, ${parent.cpp});`,
-        );
+        });
         return true;
     }
     return false;

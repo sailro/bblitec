@@ -42,7 +42,7 @@ import {
     type RecordShape,
     type RecordSpec,
 } from "./pinned-record-lowerer.js";
-import { pinnedTypedProgram } from "./pinned-typed-program.js";
+
 import {
     textGpuAdapters,
     textGpuConstants,
@@ -133,13 +133,13 @@ const records: readonly RecordSpec[] = [
         handle: "TextRenderable",
         reference: true,
         omit: new Map([
+            ["mesh", "text renderables carry no source mesh"],
             [
                 "_entityType",
                 "a literal tag; the native scene keeps text renderables in their own list",
             ],
         ]),
-        // `Renderable` (render/renderable.ts) is type-only.
-        erased: new Map<string, MemberSpec>([
+        members: new Map<string, MemberSpec>([
             ["isTransparent", { shape: flag }],
             [
                 "bind",
@@ -602,11 +602,12 @@ export function sharedTextRecordModel(): PinnedRecordModel {
 export function textRecordModel(context: LoweringContext): PinnedRecordModel {
     return new PinnedRecordModel(
         context,
-        pinnedTypedProgram(context.store, TEXT_ROOTS),
+        context.store.program.modules(TEXT_ROOTS),
         {
             records,
             values: new Map<string, RecordShape>([
                 ...textGpuValues,
+                ...textGpuUnresolved,
                 // The scene is the native runtime's, passed by reference.
                 ["SceneContext", { kind: "native", cpp: "bbl::Scene&" }],
                 [

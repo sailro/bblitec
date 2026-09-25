@@ -6,7 +6,6 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "../pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "../pinned-operators.js";
 
 import {
     pinnedMeshOptionLocals,
@@ -70,7 +69,6 @@ type MeshBuilderEmitter = (
     declaration: ts.FunctionDeclaration,
     optionBindings: ReadonlyMap<string, string>,
     optionTypes?: ReadonlyMap<string, PinnedBinding["type"]>,
-    booleanOr?: boolean,
     extra?: {
         statements?: readonly ts.Statement[];
         calls?: ReadonlyMap<string, (args: readonly string[]) => string>;
@@ -187,7 +185,6 @@ export class MeshBuilderLowerer {
         // `computeNormals` is emitted once beside them, so a call to it is
         // a call rather than another copy of its body.
         const meshMathCalls = new Map([
-            ...pinnedNumericMathCalls(),
             [
                 "len",
                 (args: readonly string[]): string =>
@@ -918,12 +915,6 @@ void enable_thin_instance_gpu_culling(
             // A binding whose type is not the scalar every option is: a
             // jagged table the pin indexes, or a flag it branches on.
             optionTypes: ReadonlyMap<string, PinnedBinding["type"]> = new Map(),
-            // Whether THIS body's `||` only joins conditions. Most of the
-            // family's do; `createRibbonData` also writes the
-            // value-selecting `Math.sqrt(...) || 1`, which the C++ operator
-            // would flatten to the constant 1 and stop normalizing a seam
-            // normal -- the exact rewrite this translator exists to refuse.
-            booleanOr = true,
             // A builder that declares a helper of its own beside the family
             // maths: `calls` spells it, and `fixedTupleCalls` states the
             // arity of a result the body binds whole and then indexes.
@@ -1021,12 +1012,14 @@ void enable_thin_instance_gpu_culling(
                             : value;
                     },
                 );
+                const localCount = (name: string): string | undefined =>
+                    lowerer.portBinding(name, expression)?.cpp;
                 const vertexCount = members.has("vertexCount")
                     ? lowerer.expression(required("vertexCount"))
-                    : bindings.get("vertexCount")?.cpp;
+                    : localCount("vertexCount");
                 const indexCount = members.has("indexCount")
                     ? lowerer.expression(required("indexCount"))
-                    : bindings.get("indexCount")?.cpp;
+                    : localCount("indexCount");
                 if (!vertexCount || !indexCount) {
                     return this.context.contractError(
                         expression,
@@ -1057,13 +1050,6 @@ void enable_thin_instance_gpu_culling(
                       }
                     : {}),
                 returnValue,
-                booleanOr,
-                // Every `&&` in the pinned builder family joins a CONDITION
-                // -- an `if` test, a `while` test, or a guard ternary's test
-                // -- and none of them selects a value. Audited across all
-                // ten builders; the five that were already lowered contain
-                // none at all, so this is inert for them.
-                booleanAnd: true,
                 maybeUnusedConst: true,
             });
             return (extra.statements ?? declaration.body.statements)
@@ -1112,9 +1098,6 @@ void enable_thin_instance_gpu_culling(
                             `static_cast<float>(${args[0]}))`,
                     ],
                 ]),
-                // NOT booleanOr: this body's two `|| 1` guards select a
-                // VALUE (a zero-length normal falls back to 1), which the
-                // C++ operator would flatten to a bool.
                 maybeUnusedConst: true,
             });
         };
@@ -1252,7 +1235,6 @@ MeshHandle create_cylinder(Engine& engine, CylinderOptions options) {
                       ["indexCount", "indices.size()"],
                   ]),
                   new Map(),
-                  true,
                   {
                       // `indices = indices.reverse()`: the pin's own last
                       // statement. `Array.prototype.reverse` reverses in
@@ -1342,8 +1324,7 @@ MeshHandle create_capsule(Engine& engine, CapsuleOptions options) {
                                             declaration,
                                             "Expected computeNormals to return.",
                                         ),
-                              booleanOr: true,
-                              booleanAnd: true,
+
                               maybeUnusedConst: true,
                           },
                       );
@@ -1410,8 +1391,6 @@ ${body}
                                             declaration,
                                             `${symbol} returns nothing.`,
                                         ),
-                              booleanOr: true,
-                              booleanAnd: true,
                           },
                       );
                       return `${signature} {\n${body}\n}\n\n`;
@@ -1476,7 +1455,6 @@ ${body}
                       ["closeArray", "bool"],
                       ["closePath", "bool"],
                   ]),
-                  false,
               );
         const ribbonFactory = !ribbon
             ? ""
@@ -1636,8 +1614,7 @@ MeshHandle create_ribbon(Engine& engine, RibbonOptions options) {
                                   expression,
                                   { arity, at: initializer },
                               ).join(", ")}}`,
-                          booleanOr: true,
-                          booleanAnd: true,
+
                           maybeUnusedConst: true,
                       },
                   );
@@ -1677,7 +1654,6 @@ ${body}
                       ["indexCount", "indices.size()"],
                   ]),
                   new Map(),
-                  true,
                   {
                       calls: new Map([
                           [
@@ -1916,7 +1892,6 @@ MeshHandle create_torus_knot(Engine& engine, TorusKnotOptions options) {
                 ["dimensions", "f64-buffer"],
                 ["BOX_POSITION_SIGNS", "u32"],
             ]),
-            true,
             { statements: box.body!.statements.slice(2), calls: copies },
         );
         return `MeshData create_box_data(double width, double height, double depth) {
@@ -2614,7 +2589,7 @@ void update_mesh_positions(
             ]);
             return lowerPinnedBody(file, declaration.body.statements, {
                 bindings,
-                calls: pinnedNumericMathCalls(),
+                calls: new Map(),
             });
         };
         const body = (

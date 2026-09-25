@@ -10,7 +10,7 @@ import { lowerBabylonHierarchy } from "./babylon-hierarchy.js";
 import { lowerBabylonMeshConstruction } from "./babylon-mesh-construction.js";
 import { lowerBabylonSceneData } from "./babylon-scene-data.js";
 import { lowerBabylonMaterialMaps } from "./babylon-material-maps.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { loadTexture2DUploadCpp } from "../pinned-address-modes.js";
 import { babylonLoaderCpp } from "./templates/babylon-loader-cpp.js";
 
@@ -141,8 +141,7 @@ export class BabylonLowerer {
             {
                 cppName: "bake_local_matrix",
                 returns: "void",
-                calls: pinnedNumericMathCalls(),
-                booleanAnd: true,
+                calls: new Map(),
             },
         );
     }

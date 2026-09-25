@@ -38,7 +38,7 @@
  * in for the pin's GPU texture records.
  */
 import { javascriptModuleUrl } from "./data-url.js";
-import { asNumbers, asObject, type JsonObject } from "./gltf-document.js";
+import { asNumbers, asObject, type JsonObject } from "./json-fields.js";
 import {
     assertPinnedSync,
     importPinnedModule,

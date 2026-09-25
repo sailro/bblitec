@@ -6,7 +6,7 @@ import {
     type PinnedBinding,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import type { RenderedCpp } from "./pinned-numeric-expression.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
@@ -36,7 +36,7 @@ function numericScope(
             ["Math.PI", { cpp: "pi_double", type: "scalar" }],
             ...bindings,
         ]),
-        calls: pinnedNumericMathCallsWithHypot(),
+        calls: new Map(),
         vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
     };
 }
@@ -102,7 +102,7 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
     public constructor(
         private readonly context: LoweringContext,
         source: ts.SourceFile,
-        private readonly geometryScope: PinnedNumericScope,
+        geometryScope: PinnedNumericScope,
         private readonly record?: {
             annotation: string;
             cpp: string;
@@ -124,7 +124,7 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
             const receiver = this.context.unwrapExpression(
                 node.expression.expression,
             );
-            const binding = this.geometryScope.bindings.get(receiver.getText());
+            const binding = this.binding(receiver);
             const shape = binding && this.lists.get(binding);
             if (shape && binding) {
                 if (
@@ -190,8 +190,7 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
     ): string {
         const returned =
             expression && this.context.unwrapExpression(expression);
-        const binding =
-            returned && this.geometryScope.bindings.get(returned.getText());
+        const binding = returned && this.binding(returned);
         if (!binding || this.lists.get(binding) !== shape) {
             this.context.contractError(
                 returned ?? at,
@@ -202,18 +201,18 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
     }
 
     private bindList(
-        name: string,
+        name: ts.Identifier,
         shape: "record" | "edge" | "pair",
         at: ts.Node,
     ): void {
-        if (this.geometryScope.bindings.has(name)) {
+        if (this.binding(name)) {
             this.context.contractError(
                 at,
                 "A pinned geometry list must not shadow another local.",
             );
         }
-        const binding: PinnedBinding = { cpp: name, type: "scalar" };
-        this.geometryScope.bindings.set(name, binding);
+        const binding: PinnedBinding = { cpp: name.text, type: "scalar" };
+        this.bindLocal(name, binding);
         this.lists.set(binding, shape);
     }
 
@@ -253,7 +252,7 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
                             "Expected an initially empty pinned geometry record list.",
                         );
                     }
-                    this.bindList(name, "record", declared);
+                    this.bindList(declared.name, "record", declared);
                     return [
                         `${indent}std::vector<${this.record.cpp}> ${name};`,
                     ];
@@ -270,7 +269,7 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
                             "Expected an initially empty pinned frustum edge list.",
                         );
                     }
-                    this.bindList(name, "edge", declared);
+                    this.bindList(declared.name, "edge", declared);
                     return [`${indent}std::vector<GizmoFrustumEdge> ${name};`];
                 }
                 if (
@@ -290,7 +289,7 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
                                 { arity: 2, at: row },
                             ).join(", ")}}`,
                     );
-                    this.bindList(name, "pair", declared);
+                    this.bindList(declared.name, "pair", declared);
                     return [
                         `${indent}std::vector<std::array<double, 2>> ${name}{${rows.join(", ")}};`,
                     ];
@@ -308,7 +307,7 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
                         (entry) =>
                             `Vec3d{${objectValues(this.context, this, entry, POINT_MEMBERS).join(", ")}}`,
                     );
-                    this.geometryScope.bindings.set(name, {
+                    this.bindLocal(declared.name, {
                         cpp: name,
                         type: "vec3-list",
                     });
@@ -346,11 +345,7 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
                         "Expected a pinned two-index edge destructuring.",
                     );
                 }
-                const rangeBinding = this.geometryScope.bindings.get(
-                    this.context
-                        .unwrapExpression(statement.expression)
-                        .getText(),
-                );
+                const rangeBinding = this.binding(statement.expression);
                 if (!rangeBinding || this.lists.get(rangeBinding) !== "pair") {
                     this.context.contractError(
                         statement,
@@ -370,13 +365,13 @@ class GeometryNumericLowerer extends PinnedNumericLowerer {
                             );
                         }
                         const name = element.name.text;
-                        if (this.geometryScope.bindings.has(name)) {
+                        if (this.binding(element.name)) {
                             this.context.contractError(
                                 element,
                                 "A pinned geometry index must not shadow another local.",
                             );
                         }
-                        this.geometryScope.bindings.set(name, {
+                        this.bindLocal(element.name, {
                             cpp: name,
                             type: "scalar",
                         });
@@ -430,7 +425,7 @@ function lowerHemisphere(context: LoweringContext): string {
         ],
         {
             cppName: "gizmo_hemisphere_geometry",
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
             memberBindings: new Map([
                 ["Math.PI", { cpp: "pi_double", type: "scalar" }],
             ]),

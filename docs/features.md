@@ -208,6 +208,8 @@ mutable inputs and runtime engine reads refuse. Live UI Canvas2D is separate.
 | Native pure 2D | Supported static emission, Point/Box shapes, position/color, texture, Input/Math/Lerp/Converter and random modes |
 | Emitter provider | Owned Float32 matrix callback sampled at wrapping and animation; definite initialization |
 
+Sprite2D warm-ups with zero update speed support runtime startup buffer writes and origins;
+subsequent updates run natively. Resuming emission or captured mutable graph state refuses.
 Mixed frozen/native sets, unsupported evaluators/hooks, dynamic emission shapes and post-registration
 texture/blend changes refuse. Finally across `startEngine` admits plain writes only. Snippets and
 flipped textures remain limited.

@@ -15,7 +15,7 @@ import {
     lowerTupleComponents,
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import {
     type PinnedBinding,
     type PinnedRecordShape,
@@ -352,9 +352,8 @@ export function clusteredConeWriter(context: LoweringContext): string {
             ...clusteredLightMembers(spot, `${spot}->`),
             ["Math.PI", { cpp: "std::numbers::pi", type: "scalar" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         // `len === 0 || len === 1` joins two comparisons.
-        booleanOr: true,
     });
     return `// ${context.provenance(clusteredSpotModule, "_write")}
 // The pin's own spot stride is ${stride}: three texels per light, the third
@@ -464,7 +463,6 @@ export function clusteredCalls(): Map<
     (args: readonly string[]) => string
 > {
     return new Map<string, (args: readonly string[]) => string>([
-        ...pinnedNumericMathCalls(),
         ...SCALAR_HELPERS.map(
             ({
                 pinned,
@@ -600,7 +598,7 @@ export function clusteredAddLightToClusters(context: LoweringContext): string {
             // `lastSlice < 0 || firstSlice >= zSlices` is a test, not the
             // value-selecting `||` the translator refuses by default: both
             // sides are comparisons, so the C++ operator is the same answer.
-            booleanOr: true,
+
             calls: clusteredCalls(),
             // Its own sibling returns four tile indices the body then
             // indexes; declaring the arity is what keeps that a fixed array
