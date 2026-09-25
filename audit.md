@@ -211,7 +211,7 @@ and performance.
 | DEAD-6 | low | Native symbols only fixtures called. | Fixtures use product API; release-accounting hooks kept. | fixed |
 | DEAD-7 | low | Legacy `classStyles` spelling. | Migrated and deleted. | fixed |
 | DEAD-8 | low | Self-described "legacy" compiler paths. | Measured: all reached by scenes or tests. | declined |
-| DEAD-9 | low | 258 exports used only in their own file. | Outside `src/compiler.ts`, `src/compiler/` and the compiler-input fixtures, 267 of 276 exports lose `export` (118 files, none unused after); 8 stay (6 tool/check JSDoc imports; 2 reached through an inferred return type or a typed lazy import). The compiler files follow CC-2. | partial |
+| DEAD-9 | low | 258 exports used only in their own file. | 328 exports used only in their own file lose `export` (267 outside the compiler, 61 in `src/compiler.ts`/`src/compiler/`; none unused after). 11 stay exported: 6 tool/check JSDoc imports, and 5 reached through an inferred return type, `import()` type references or typed lazy imports. | fixed |
 | DEAD-10 | low | Unused parameters, duplicated helpers, silently passing tests. | Fixed; the tooling `isRecord` copy stays (importing it would load TypeScript into `scene show`). | fixed |
 | DEAD-11 | low | Scene PBR manifest `transmission`, `ior` and `thickness` fields are written and never read. | Writer and type fields deleted; only the 35 PBR manifests moved. | fixed |
 | DEAD-12 | low | `PrimitiveKind` box/ground/sphere/torus are unused and `MeshRecord::dimensions` is never written (`runtime.hpp`). | The four kinds and `dimensions` deleted; the default camera skips a mesh without bounds, as the pin does. | fixed |
