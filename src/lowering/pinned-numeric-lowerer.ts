@@ -4485,7 +4485,8 @@ export class PinnedNumericLowerer {
             ).declarationOf(callee.expression);
             const global = declaration
                 ? declarationInDefaultLibrary(declaration)
-                : !moduleSymbols(callee.getSourceFile()).getSymbolAtLocation(
+                : !declaredSymbol(
+                      moduleSymbols(callee.getSourceFile()),
                       callee.expression,
                   );
             if (global) {
