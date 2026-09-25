@@ -6,6 +6,7 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Compiler
 
+- [ ] Record camera-mutation lowering's TAA and text camera writes through `AdmissionRecorder` methods instead of writing its `untrackedTaaCameraWrites` and `textCameraMutation` fields from `compileCameraMutation` (`compiler.ts`, `admissions.ts`).
 - [ ] Canvas sizes folded at generation fix render-target sizes and particle initialization to `--width`/`--height` (`staticCanvasSize` in `compiler.ts`; `option-helpers.ts`); read the running canvas or refuse where it can differ.
 - [ ] Resolve a dictionary's map owner once for reads and writes (`equalityComparison` and `dictionaryEntryTarget` in `data-lowering.ts`).
 - [ ] One mapper path for `Array.from` iterable and `{ length }` sources (`compileArrayFromMapped` and `compileArrayFrom` in `data-lowering.ts`).
