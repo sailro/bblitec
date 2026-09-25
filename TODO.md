@@ -11,7 +11,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Platform and runtime
 
-- [ ] One `handle_find` instead of a hand bounds check before `handle_at` in the light loops (`pal_gpu_shared.cpp`, `pal_gpu_scene_blocks.hpp`).
 - [ ] One runtime model for pinned records and application values: `pinned_records.hpp` restates `js::typed_array_set`, `array_pop_or_absent` and `MapGetResult` over `std::optional`/`std::shared_ptr`.
 - [ ] Dawn depth-only tasks bind no group 0 for morph storage, and SDL_GPU depth-only and ID-diagnostic draws never push the deformation block.
 - [ ] Include only the concern header a unit reads instead of the `pal_gpu_shared.hpp` umbrella chain.

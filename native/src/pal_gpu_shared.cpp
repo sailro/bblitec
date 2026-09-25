@@ -233,9 +233,9 @@ void apply_light_floating_origin(std::span<upstream::LightEntry> entries, std::u
     for (const LightHandle handle : scene.lights) {
         if (written >= count)
             break;
-        if (handle.value >= engine.lights.size())
+        const LightRecord* light = handle_find(engine.lights, handle);
+        if (!light)
             continue;
-        const LightRecord& light = handle_at(engine.lights, handle);
         // The pin's own test: the type tag in `vLightData.w`, 0 for a point
         // light and 2 for a spot. A direction-only entry is left alone.
         const float type = entries[written].vLightData[3];
@@ -250,9 +250,9 @@ void apply_light_floating_origin(std::span<upstream::LightEntry> entries, std::u
             // flattened world there and leaves `local_matrix` alone, so
             // reading that instead would put an imported light at the
             // origin.
-            entries[written].vLightData[0] = static_cast<float>(light.position.x - offset.x);
-            entries[written].vLightData[1] = static_cast<float>(light.position.y - offset.y);
-            entries[written].vLightData[2] = static_cast<float>(light.position.z - offset.z);
+            entries[written].vLightData[0] = static_cast<float>(light->position.x - offset.x);
+            entries[written].vLightData[1] = static_cast<float>(light->position.y - offset.y);
+            entries[written].vLightData[2] = static_cast<float>(light->position.z - offset.z);
         }
         ++written;
     }
@@ -1041,14 +1041,14 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
     // composed.
     std::uint32_t light_count = 0;
     for (const LightHandle handle : scene.lights) {
-        if (handle.value >= engine.lights.size())
+        const LightRecord* light = handle_find(engine.lights, handle);
+        if (!light)
             continue;
-        const LightRecord& light = handle_at(engine.lights, handle);
-        if (!upstream::light_affects_mesh(light, draw.item.mesh)) {
+        if (!upstream::light_affects_mesh(*light, draw.item.mesh)) {
             continue;
         }
         ++light_count;
-        key.single_light_type = upstream::pinned_single_light_type(light);
+        key.single_light_type = upstream::pinned_single_light_type(*light);
     }
     // The receive bit rides the mesh row rather than the material, which is
     // why it is read back from the mesh half of the key; the arm it selects
@@ -1580,12 +1580,12 @@ std::vector<std::uint8_t> pinned_lights_block(const Scene& scene, const Engine& 
     for (const LightHandle handle : scene.lights) {
         if (count >= upstream::pinned_max_lights)
             break;
-        if (handle.value >= engine.lights.size())
+        const LightRecord* light = handle_find(engine.lights, handle);
+        if (!light)
             continue;
-        const LightRecord& light = handle_at(engine.lights, handle);
         // Which writer each kind takes is generated: the scene compiles arms
         // only for the kinds it reaches, so the mapping cannot be restated here.
-        upstream::write_pinned_light(light, entries[count]);
+        upstream::write_pinned_light(*light, entries[count]);
         ++count;
     }
     header[0] = count;

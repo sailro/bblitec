@@ -141,9 +141,10 @@ inline void pinned_mesh_light_selection(const Scene& scene, const Engine& engine
         for (const LightHandle handle : scene.lights) {
             if (light_index >= upstream::pinned_max_lights)
                 break;
-            if (handle.value >= engine.lights.size())
+            const LightRecord* light = handle_find(engine.lights, handle);
+            if (!light)
                 continue;
-            if (upstream::light_affects_mesh(handle_at(engine.lights, handle), mesh)) {
+            if (upstream::light_affects_mesh(*light, mesh)) {
                 block.li[count / 4][count % 4] = light_index;
                 ++count;
             }
