@@ -340,6 +340,53 @@ test(
 );
 
 test(
+    "a dependency artifact's inputs are its manifest pin and builder, the patch owner and its series",
+    { skip: !tools.powershell || !tools.cmake },
+    () => {
+        const manifest = JSON.parse(
+            readFileSync("native/patches/manifest.json", "utf8"),
+        ) as {
+            libraries: Record<
+                string,
+                { pin: { file: string }; builder: string }
+            >;
+        };
+        for (const [library, variants] of [
+            ["sdl3", ["trimmed"]],
+            ["dawn", ["android"]],
+        ] as const) {
+            const quoted = `@(${variants.map((variant) => `'${variant}'`).join(",")})`;
+            const inputs = execFileSync(
+                tools.powershell!,
+                [
+                    "-NoProfile",
+                    "-Command",
+                    `Import-Module '${resolve("tools/bblite-tools.psm1")}' -Force; ` +
+                        `Get-DependencyInputs ${library} ${quoted} '${tools.cmake!}'`,
+                ],
+                { encoding: "utf8" },
+            )
+                .trim()
+                .split(/\r?\n/)
+                .map((path) => resolve(path));
+            const definition = manifest.libraries[library]!;
+            assert.deepEqual(inputs, [
+                resolve(definition.pin.file),
+                resolve(definition.builder),
+                resolve("native/patches/manifest.json"),
+                resolve("native/patch-identity.cmake"),
+                ...runPatchIdentity(tools.cmake!, "series", library, {
+                    variants,
+                })
+                    .split("\n")
+                    .filter(Boolean)
+                    .map((path) => resolve(path)),
+            ]);
+        }
+    },
+);
+
+test(
     "configure refuses an artifact whose record differs and reports an unrecorded one",
     { skip: !tools.cmake },
     (t) => {

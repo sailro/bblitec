@@ -216,6 +216,24 @@ function Get-MaintainedPatches([string]$Library, [string[]]$Variants = @(), [str
     })
 }
 
+# The files a $Library artifact built for $Variants depends on: its pin file
+# and builder (native/patches/manifest.json), the manifest, the patch-identity
+# owner and the patches the build applies. Build-DependencyArtifact's inputs.
+function Get-DependencyInputs([string]$Library, [string[]]$Variants = @(), [string]$CMake = "") {
+    $root = Get-RepositoryRoot
+    $manifestPath = Join-Path $root 'native/patches/manifest.json'
+    $definition = (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).libraries.$Library
+    if (-not $definition -or -not $definition.builder) {
+        throw "native/patches/manifest.json names no builder for '$Library'."
+    }
+    return @(
+        (Join-Path $root $definition.pin.file),
+        (Join-Path $root $definition.builder),
+        $manifestPath,
+        (Join-Path $root 'native/patch-identity.cmake')
+    ) + @(Get-MaintainedPatches $Library $Variants $CMake | ForEach-Object Path)
+}
+
 # Applies patches to a checkout its builder has just reset to the pin. Each
 # one is staged, so the next forced checkout also removes files an earlier
 # version of a patch added; a patch that does not apply is a refusal, and
@@ -405,6 +423,7 @@ Export-ModuleMember -Function @(
     "Sync-PinnedCheckout",
     "Sync-PatchedCheckout",
     "Get-MaintainedPatches",
+    "Get-DependencyInputs",
     "Install-MaintainedPatches",
     "Get-PatchRecord",
     "Set-ArtifactContent",
