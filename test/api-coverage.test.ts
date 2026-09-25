@@ -250,15 +250,15 @@ test("API body evidence comes from successful pinned translation and retains req
         (trace) => trace.symbolName === "normalizeVec3TupleOrUp",
     );
     assert.equal(normalized?.extent, "function");
-    assert.ok(normalized?.adapters.includes("calls"));
+    assert.ok(!normalized?.adapters.includes("calls"));
     assert.ok(normalized?.adapters.includes("return"));
-    assert.ok(normalized?.requests.includes("call: Math.hypot"));
+    assert.ok(!normalized?.requests.includes("call: Math.hypot"));
 });
 
 test("API body tracing follows original expressions through synthetic statements and records used adapters", () => {
     const file = ts.createSourceFile(
         "body.ts",
-        "function original() { return Math.sqrt(4); }",
+        "function original() { return customRoot(4); }",
         ts.ScriptTarget.Latest,
         true,
     );
@@ -276,7 +276,13 @@ test("API body tracing follows original expressions through synthetic statements
             [ts.factory.createReturnStatement(returned.expression)],
             {
                 bindings: new Map(),
-                calls: new Map([["unused", () => "unused()"]]),
+                calls: new Map([
+                    ["unused", () => "unused()"],
+                    [
+                        "customRoot",
+                        (args: readonly string[]) => `std::sqrt(${args[0]})`,
+                    ],
+                ]),
                 returnValue: (value, lowerer) => lowerer.expression(value!),
             },
         );
@@ -286,7 +292,7 @@ test("API body tracing follows original expressions through synthetic statements
     }
     assert.equal(traces.length, 1);
     assert.equal(traces[0]?.symbolName, "original");
-    assert.deepEqual(traces[0]?.requests, ["call: Math.sqrt"]);
+    assert.deepEqual(traces[0]?.requests, ["call: customRoot"]);
 });
 function baselineOf(
     uses: ReturnType<typeof scanApiUsage>["uses"],

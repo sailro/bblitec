@@ -43,7 +43,10 @@ test("look-direction quaternion is emitted from its pinned declarations", () => 
     assert.match(header, /quat_from_rotation_basis\(/);
     assert.match(header, /quat_from_look_direction_rh\(/);
     assert.match(header, /bbl::js::hypot_js\(/);
-    assert.match(header, /bbl::js::or_number\(/);
+    assert.match(
+        header,
+        /return bbl::js::number_truthy\(static_cast<double>\((pinned_\w+)\)\) \? static_cast<double>\(\1\) : static_cast<double>\(1\.0\)/,
+    );
 
     const result = compileSource(`
         import { createQuatFromLookDirectionRH } from "@babylonjs/lite";

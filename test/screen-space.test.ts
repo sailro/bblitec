@@ -172,7 +172,9 @@ test("the lowerer translates the temporal state machine and both uniform blocks 
     );
     // The reset matrix: camera motion is not an invalidation event.
     assert.ok(
-        source.includes("ev.enabled_transitioned_on) || ev.singular_inverse)"),
+        source.includes(
+            "(ev.enabled_transitioned_on)) || (ev.singular_inverse)",
+        ),
     );
     assert.ok(!source.includes("ev.camera_moved ||"));
     // Both frame functions: the disabled transition clears once, the
@@ -190,7 +192,7 @@ test("the lowerer translates the temporal state machine and both uniform blocks 
     );
     assert.match(
         source,
-        /const auto (pinned_\w+) = bbl::js::hypot_js\(\{light_direction.x, light_direction.y, light_direction.z\}\); return bbl::js::number_truthy\(static_cast<double>\(\1\)\) \? static_cast<double>\(\1\) : static_cast<double>\(1.0\);/,
+        /auto&& (pinned_\w+) = bbl::js::hypot_js\(\{light_direction.x, light_direction.y, light_direction.z\}\); return bbl::js::number_truthy\(static_cast<double>\(\1\)\) \? static_cast<double>\(\1\) : static_cast<double>\(1.0\);/,
     );
     assert.ok(
         source.includes(

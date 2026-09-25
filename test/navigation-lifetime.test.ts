@@ -125,7 +125,7 @@ test("navigation build plans are lowered from the recast-navigation packages", (
     );
     assert.match(
         solo,
-        /static_cast<double>\(rcConfig\.detailSampleDist\) < 0\.9\)/,
+        /static_cast<double>\(rcConfig\.detailSampleDist\) < 0\.9 \?/,
     );
     // The spreads between the pinned cfg and createRcConfig resolve per
     // key: a key the scene may give falls back to the wrapper's default,

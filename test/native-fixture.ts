@@ -6,6 +6,7 @@ import {
     mkdirSync,
     readFileSync,
     renameSync,
+    rmSync,
     writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -283,7 +284,15 @@ function fixtureMacroFolder(overrides: ReadonlyMap<string, boolean>): string {
         // reader from ever seeing a partial header.
         const temporary = `${path}.${process.pid}.tmp`;
         writeFileSync(temporary, text);
-        renameSync(temporary, path);
+        try {
+            renameSync(temporary, path);
+        } catch (error) {
+            // Another fixture may have published this immutable header while a
+            // compiler opened it. Windows then refuses its replacement.
+            if (!existsSync(path) || readFileSync(path, "utf8") !== text)
+                throw error;
+            rmSync(temporary);
+        }
     }
     writeFileSync(join(folder, "complete"), "");
     return folder;

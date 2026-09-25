@@ -59,7 +59,7 @@ test("the grown-array builders flow their pinned defaults and rounding", () => {
     // default or a rounding boundary fails here rather than at a parity
     // number: the disc's radius/tessellation, the cylinder's height and
     // tessellation floor, and the ribbon's value-selecting `|| 1`, which
-    // must stay `or_number` and not become a C++ boolean.
+    // must retain its selected number.
     const context = new LoweringContext();
     const lowered = new FactoryLowerer(context).lowerMeshFactories([
         "mesh:disc",
@@ -92,7 +92,10 @@ test("the grown-array builders flow their pinned defaults and rounding", () => {
     assert.match(lowered.source, /bbl::js::math_extreme<true>\(\{3\.0,/);
     // The ribbon's seam normal: a VALUE-selecting `||`, which a boolean
     // operator would flatten to the constant 1.
-    assert.match(lowered.source, /bbl::js::or_number\(/);
+    assert.match(
+        lowered.source,
+        /return bbl::js::number_truthy\(static_cast<double>\((pinned_\w+)\)\) \? static_cast<double>\(\1\) : static_cast<double>\(1\.0\)/,
+    );
     // A grown list rounds once, through the pin's own conversion.
     assert.match(lowered.source, /bbl::js::f32_array_from\(/);
     assert.match(lowered.source, /bbl::js::u32_array_from\(/);
@@ -126,17 +129,23 @@ test("the capsule builder flows the pin's truthiness defaults and its reverse", 
     );
     // Nothing is folded at generation: the ternary and both of the pin's
     // own constant defaults reach the emitted body.
-    assert.match(lowered.source, /options\.height \? options\.height : 1\.0/);
-    assert.match(lowered.source, /options\.radius \? options\.radius : 0\.25/);
+    assert.match(
+        lowered.source,
+        /bbl::js::number_truthy\(static_cast<double>\(options\.height\)\) \? options\.height : 1\.0/,
+    );
+    assert.match(
+        lowered.source,
+        /bbl::js::number_truthy\(static_cast<double>\(options\.radius\)\) \? options\.radius : 0\.25/,
+    );
     // The two fallbacks that name another RESOLVED local rather than a
     // constant, which is why the defaults cannot be folded into the record.
     assert.match(
         lowered.source,
-        /options\.radius_top \? options\.radius_top : radius/,
+        /bbl::js::number_truthy\(static_cast<double>\(options\.radius_top\)\) \? options\.radius_top : radius/,
     );
     assert.match(
         lowered.source,
-        /options\.top_cap_subdivisions \? options\.top_cap_subdivisions : capDetail/,
+        /bbl::js::number_truthy\(static_cast<double>\(options\.top_cap_subdivisions\)\) \? options\.top_cap_subdivisions : capDetail/,
     );
     // The hoisted `let x; let y;` are declared by the loops that assign
     // them, not as zeroed locals beside the arrays.

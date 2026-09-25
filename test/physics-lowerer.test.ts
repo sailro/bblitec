@@ -233,7 +233,7 @@ test("shape parameters are translated from _buildShapeParams", () => {
     );
     assert.match(
         lowered.source,
-        /shape\.scale_y = \(\(\(\(static_cast<double>\(scaling\.x\) \* static_cast<double>\(scaling\.y\)\) \* static_cast<double>\(scaling\.z\)\) < 0\.0\) \? \(-shape\.scale_y_magnitude\) : shape\.scale_y_magnitude\);/,
+        /shape\.scale_y = \(\(\(static_cast<double>\(scaling\.x\) \* static_cast<double>\(scaling\.y\)\) \* static_cast<double>\(scaling\.z\)\) < 0\.0 \? \(-shape\.scale_y_magnitude\) : shape\.scale_y_magnitude\);/,
     );
     assert.match(
         lowered.source,

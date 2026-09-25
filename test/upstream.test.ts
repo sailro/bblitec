@@ -325,7 +325,7 @@ test("preserves full pinned TRS when setParent relinks a mesh", () => {
     );
     assert.match(
         lowered.source,
-        /pinned_parent_mat4_determinant3\(m\) < 0\.0\) \? \(-syAbs\) : syAbs/,
+        /pinned_parent_mat4_determinant3\(m\) < 0\.0 \? \(-syAbs\) : syAbs/,
     );
     assert.match(
         lowered.source,
@@ -473,10 +473,7 @@ test("emits the weighted property mixer only when blending is reached", () => {
     // The two opt-ins share one handler slot, the way the pin's own
     // setAnimationTaskCategoryHandler does.
     assert.match(blended.source, /AnimationCategoryHandler::property_mixer;/);
-    assert.match(
-        blended.source,
-        /sign = \(\(dot < 0\.0\) \? \(-1\.0\) : 1\.0\);/,
-    );
+    assert.match(blended.source, /sign = \(dot < 0\.0 \? \(-1\.0\) : 1\.0\);/);
     assert.match(
         blended.source,
         /normalize_blended_quaternion\(bucket\.values\);/,
@@ -640,7 +637,7 @@ test("integrates the source property clock and pinned interpolation", () => {
     // key's value.
     assert.match(
         lowered.source,
-        /\(\(t >= t1\) \? \(idx \+ 1\.0\) : idx\) \* stride/,
+        /\(t >= t1 \? \(idx \+ 1\.0\) : idx\) \* stride/,
     );
 });
 
@@ -778,7 +775,7 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(animatedLights, /void gltf_write_world_light_direction\(/);
     assert.match(
         animatedLights,
-        /\(1\.0 \/ bbl::js::or_number\(bbl::js::hypot_js\(\{x, y, z\}\), 1\.0\)\)/,
+        /return bbl::js::number_truthy\(static_cast<double>\((pinned_\w+)\)\) \? static_cast<double>\(\1\) : static_cast<double>\(1\.0\)/,
     );
     assert.doesNotMatch(
         adapter.source,
@@ -1444,7 +1441,7 @@ test("generates ArcRotate and default camera factories from upstream constants",
     );
     assert.match(
         controls.source,
-        /if \(hasMovement \|\| hasRotation\) \{[^}]*set_camera_vector\(camera, &CameraRecord::target, Vec3d/,
+        /if \(\(\(hasMovement\) \|\| \(hasRotation\)\)\) \{[^}]*set_camera_vector\(camera, &CameraRecord::target, Vec3d/,
     );
     const ortho = lowerer.lowerOrthographic();
     assert.equal(ortho.modulePath, "src/camera/orthographic.ts");
@@ -1586,7 +1583,7 @@ test("lowers light direction through the SceneNode matrix with source normalizat
     assert.equal(lowered.modulePath, "src/light/light-base.ts");
     assert.match(
         lowered.source,
-        /bbl::js::or_number\(bbl::js::hypot_js\(\{x, y, z\}\), 1\.0\)/,
+        /return bbl::js::number_truthy\(static_cast<double>\((pinned_\w+)\)\) \? static_cast<double>\(\1\) : static_cast<double>\(1\.0\)/,
     );
     assert.match(lowered.source, /static_cast<double>\(direction\.x\)/);
     assert.match(lowered.source, /static_cast<float>\(\(z \* invLength\)\)/);
@@ -1714,7 +1711,7 @@ test("lowers the pinned inverse image processing whole", () => {
     assert.match(header, /for \(std::int64_t i = /);
     assert.match(header, /c = std::pow\(c, 2\.2\)/);
     assert.match(header, /\/ 1\.5905790328979492\)/);
-    assert.match(header, /\(\(exposure > 0\.0\) \? \(c \/ exposure\) : c\)/);
+    assert.match(header, /\(exposure > 0\.0 \? \(c \/ exposure\) : c\)/);
     assert.doesNotMatch(header, /float/);
     assert.match(header, pinnedProvenance());
 });
