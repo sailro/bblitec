@@ -90,18 +90,10 @@ function recordFields(
     interfaceName: string,
     types: ReadonlyMap<string, { annotation: string; cpp: string }>,
 ): readonly { name: string; cpp: string }[] {
-    const file = context.sourceFile(havokFloatingOriginModule);
-    const declared = file.statements.find(
-        (statement): statement is ts.InterfaceDeclaration =>
-            ts.isInterfaceDeclaration(statement) &&
-            statement.name.text === interfaceName,
+    const { file, declaration: declared } = context.interfaceDeclaration(
+        havokFloatingOriginModule,
+        interfaceName,
     );
-    if (!declared) {
-        return context.contractError(
-            file,
-            `Expected the pinned ${interfaceName} record.`,
-        );
-    }
     const fields: { name: string; cpp: string }[] = [];
     for (const member of declared.members) {
         const name = member.name

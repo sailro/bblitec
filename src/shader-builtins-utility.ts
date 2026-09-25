@@ -11,18 +11,6 @@ import { PinnedShaderBuilders } from "./lowering/pinned-shader-builders.js";
 import { parseWgslStages, type ShaderModule } from "./shader-ir.js";
 import { emitWgslModule } from "./shader-wgsl-emitter.js";
 
-/**
- * Indents a reconstructed stage body to sit inside the struct or function
- * this module wraps it in. Shared because every builtins module that
- * re-homes pinned text needs it.
- */
-export function indent(block: string, spaces: string): string {
-    return block
-        .split("\n")
-        .map((line) => (line.length > 0 ? `${spaces}${line}` : line))
-        .join("\n");
-}
-
 const copyTaskModule = "src/frame-graph/copy-to-texture-task.ts";
 
 /**

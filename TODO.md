@@ -6,6 +6,11 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Compiler
 
+- [ ] Build the engine-body analysis per queried module or cache its answers, so tetris and doom skip the program over every pinned source (about 0.9 s each; `engineCallMutatesArgument`).
+- [ ] One snake-case convention for pinned names (`cpp-literals.ts` `snakeCase`, `pinnedSnakeCase`).
+- [ ] Reuse `navigation-library.ts` `methodAccess` and `provenance` in `navigation-build-plan.ts`.
+- [ ] Spell C++ string literals with `stringLiteral`, not `JSON.stringify`, in the camera, character-kernel, device-recovery and pinned-numeric lowerers.
+- [ ] Read pinned WGSL constants one way (`pinned-material-vertex.ts` and `shader-builtins-utility.ts` read them through the shader builders with a hand type check).
 - [ ] Record `{type, constant}` per native binding instead of `constNativeBindings` and "const " prefixes on the first-wins `nativeBindingTypes` (`compiler.ts`, `statements.ts`, `body-outlining.ts`).
 - [ ] Find a closure's uncaptured names with one token pass (`unqualifiedIdentifiers`) instead of a regex per name, and build `environmentStruct` once per closure (`compiler.ts`).
 - [ ] Build one checked pinned program: text builds a second one (`pinned-typed-program.ts`) with its own library and `noUncheckedIndexedAccess`.

@@ -88,18 +88,10 @@ function nativeName(pinned: string): string {
 
 /** `Sprite2DYSortState`'s members, by the storage each one's type names. */
 function stateMembers(context: LoweringContext): readonly StateMember[] {
-    const file = context.sourceFile(ySortModule);
-    const declared = file.statements.find(
-        (statement): statement is ts.InterfaceDeclaration =>
-            ts.isInterfaceDeclaration(statement) &&
-            statement.name.text === "Sprite2DYSortState",
+    const { declaration: declared } = context.interfaceDeclaration(
+        ySortModule,
+        "Sprite2DYSortState",
     );
-    if (!declared) {
-        return context.contractError(
-            file,
-            "Expected the pinned Sprite2DYSortState record.",
-        );
-    }
     return declared.members.flatMap((member): StateMember[] => {
         const name =
             ts.isPropertySignature(member) && context.propertyName(member.name);

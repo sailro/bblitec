@@ -168,7 +168,10 @@ test("generates the shared Tint material vertex interface", () => {
     assert.doesNotMatch(staticVertex, /@location\(8\) joints/);
     assert.match(vertex, /@location\(6\) color: vec4<f32>/);
     assert.match(vertex, /@location\(5\) uv2: vec2<f32>/);
-    assert.match(vertex, /uniforms\.viewProjection \* vec4<f32>/);
+    assert.match(
+        vertex,
+        /uniforms\.viewProjection \* \(finalWorld \* vec4<f32>/,
+    );
     assert.match(vertex, /output\.worldPosition = worldPosition/);
     assert.match(vertex, /boneMatrices: array<mat4x4<f32>, 64>/);
     assert.match(vertex, /input\.morphPosition0/);

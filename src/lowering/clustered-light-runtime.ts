@@ -266,18 +266,10 @@ function spotCreate(context: LoweringContext): {
 function activeLightMembers(
     context: LoweringContext,
 ): readonly { name: string; record: boolean; optional: boolean }[] {
-    const file = context.sourceFile(clusteredModule);
-    const declared = file.statements.find(
-        (statement): statement is ts.InterfaceDeclaration =>
-            ts.isInterfaceDeclaration(statement) &&
-            statement.name.text === "_ClusteredActiveLight",
+    const { declaration: declared } = context.interfaceDeclaration(
+        clusteredModule,
+        "_ClusteredActiveLight",
     );
-    if (!declared) {
-        return context.contractError(
-            file,
-            "Expected the pinned _ClusteredActiveLight record.",
-        );
-    }
     return declared.members.map((member) => {
         const type = ts.isPropertySignature(member) ? member.type : undefined;
         if (!ts.isPropertySignature(member) || !type) {

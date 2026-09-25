@@ -21,7 +21,6 @@ import {
     vertexAttributeTableCpp,
     vertexFormatFloats,
 } from "./pinned-vertex-attributes.js";
-import { extraTextureRecords } from "../shader-builtins-sprite-fx.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import {
@@ -1197,7 +1196,7 @@ ${body}
                       ...parameters,
                       [
                           "extraTextures",
-                          extraTextureRecords(custom.extraTextures),
+                          custom.extraTextures.map((name) => ({ name })),
                       ],
                       ["fragment", custom.fragment],
                   ]),

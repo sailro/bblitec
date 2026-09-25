@@ -1,6 +1,5 @@
 import ts from "typescript";
 import { elementIndexText, LoweredSource, LoweringContext } from "./context.js";
-import { extraTextureRecords } from "../shader-builtins-sprite-fx.js";
 import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
 import type { ShaderTextBinding } from "./pinned-shader-builders.js";
 import {
@@ -693,7 +692,7 @@ inline double billboard_sort_compare(
                       ["orientation", orientation],
                       [
                           "extraTextures",
-                          extraTextureRecords(custom.extraTextures),
+                          custom.extraTextures.map((name) => ({ name })),
                       ],
                       ["fragment", custom.fragment],
                   ]),
