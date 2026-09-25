@@ -65,6 +65,7 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_gpu_shared.hpp"
+#include "pal_sdl_gpu_post_process.hpp"
 #include "pal_pass_camera.hpp"
 #include "pal_scene_synchronize.hpp"
 #include "pal_texture_upload_cache.hpp"
@@ -599,15 +600,6 @@ inline constexpr std::size_t max_post_process_textures = 8;
  * so building per pass would read the same files and compile the same shaders
  * once each. The key is everything a pipeline is made of.
  */
-struct GpuPostProcessProgram {
-    std::uint32_t module_index = 0;
-    SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_INVALID;
-    SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
-    std::uint32_t alpha_mode = 0;
-    OwnedSdlPipeline pipeline;
-    PinnedStageSlots vertex_slots;
-    PinnedStageSlots fragment_slots;
-};
 
 struct GpuPostProcessTask {
     /**
@@ -1778,11 +1770,6 @@ void prune_shared_composed_material_textures(GpuState& state);
 void release(GpuState& state);
 
 #if BBLITE_HAS_POST_PROCESS
-/** Builds the entry `post_process_program` below found missing. */
-GpuPostProcessProgram build_post_process_program(GpuState& state, std::uint32_t module_index,
-                                                 SDL_GPUTextureFormat format,
-                                                 SDL_GPUSampleCount samples,
-                                                 std::uint32_t alpha_mode);
 
 /**
  * The program a post-process pass draws with, built once per distinct one.

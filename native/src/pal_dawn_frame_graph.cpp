@@ -29,6 +29,7 @@
 #include <bblite/pal_gpu_task_timing.hpp>
 #endif
 #include "pal_gpu_shared.hpp"
+#include "pal_dawn_post_process.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
 
@@ -63,32 +64,7 @@ void release_target_resources(State*, TargetResources& target) noexcept {
 using Target = OwnedGpuRecord<TargetResources, State, &release_target_resources>;
 
 #if BBLITE_HAS_POST_PROCESS
-struct PostProcessProgramResources {
-    std::uint32_t module = 0;
-    WGPUTextureFormat format = WGPUTextureFormat_Undefined;
-    std::uint32_t samples = 1;
-    std::uint32_t alpha_mode = 0;
-    std::size_t extra_textures = 0;
-    std::uint32_t uniform_binding = 0;
-    std::uint32_t uniform_size = 0;
-    WGPUShaderModule shader = nullptr;
-    WGPUBindGroupLayout group_layout = nullptr;
-    WGPUPipelineLayout pipeline_layout = nullptr;
-    WGPURenderPipeline pipeline = nullptr;
-};
-
-void release_program_resources(State*, PostProcessProgramResources& program) noexcept {
-    if (program.pipeline)
-        wgpuRenderPipelineRelease(program.pipeline);
-    if (program.pipeline_layout)
-        wgpuPipelineLayoutRelease(program.pipeline_layout);
-    if (program.group_layout)
-        wgpuBindGroupLayoutRelease(program.group_layout);
-    if (program.shader)
-        wgpuShaderModuleRelease(program.shader);
-}
-using PostProcessProgram =
-    OwnedGpuRecord<PostProcessProgramResources, State, &release_program_resources>;
+using PostProcessProgram = DawnPostProcessProgram;
 
 struct PostProcessPassResources {
     std::size_t program = npos;
@@ -238,61 +214,6 @@ std::pair<WGPUTexture, WGPUTextureView> source_view(State& state, const Engine& 
     return {target.sampled, target.sampled_view};
 }
 
-/** Builds the entry `post_process_program` below found missing. */
-PostProcessProgram build_post_process_program(State& state,
-                                              const upstream::PostProcessShaderInfo& info,
-                                              WGPUTextureFormat format, std::uint32_t samples,
-                                              std::uint32_t alpha_mode, std::size_t extras,
-                                              std::uint32_t uniform_size) {
-    PostProcessProgram program{state};
-    program.module = info.module_index;
-    program.format = format;
-    program.samples = samples;
-    program.alpha_mode = alpha_mode;
-    program.extra_textures = extras;
-    program.uniform_binding = info.uniform_binding;
-    program.uniform_size = uniform_size;
-    const std::string stem = "postprocess-" + std::to_string(info.module_index);
-    const std::string vertex_stem = stem + ".vert", fragment_stem = stem + ".frag";
-    program.shader = load_wgsl_module(state.device, fragment_stem);
-    // Group 0 as the module declares it: the source sampler and texture,
-    // the program's extra textures, and its uniform block when it has one.
-    const std::array<DawnLayoutStage, 2> stages{{
-        {vertex_stem, WGPUShaderStage_Vertex},
-        {fragment_stem, WGPUShaderStage_Fragment},
-    }};
-    program.group_layout = create_dawn_reflected_layout(state.device, stages, 0);
-    WGPUPipelineLayoutDescriptor layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    layout.bindGroupLayoutCount = 1;
-    layout.bindGroupLayouts = &program.group_layout;
-    program.pipeline_layout = wgpuDeviceCreatePipelineLayout(state.device, &layout);
-    const upstream::PostProcessBlend blend = upstream::post_process_blend(alpha_mode);
-    const WGPUBlendState blend_state = blend_state_from(blend.factors);
-    WGPUColorTargetState color = WGPU_COLOR_TARGET_STATE_INIT;
-    color.format = format;
-    if (blend.enabled)
-        color.blend = &blend_state;
-    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = program.shader;
-    fragment.entryPoint = string_view("postProcessFragment");
-    fragment.targetCount = 1;
-    fragment.targets = &color;
-    WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.layout = program.pipeline_layout;
-    descriptor.vertex.module = program.shader;
-    descriptor.vertex.entryPoint = string_view("postProcessVertex");
-    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    descriptor.primitive.cullMode = WGPUCullMode_None;
-    descriptor.multisample.count = samples;
-    descriptor.multisample.mask = ~0u;
-    descriptor.fragment = &fragment;
-    program.pipeline = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
-    if (!program.pipeline) {
-        dawn_error("post-process pipeline creation failed.");
-    }
-    return program;
-}
-
 // The find-or-create walk is the shared `find_or_create_program`; the key
 // stays this driver's own -- its layout bakes in the bind-group shape.
 std::size_t post_process_program(State& state, const upstream::PostProcessShaderInfo& info,
@@ -302,15 +223,15 @@ std::size_t post_process_program(State& state, const upstream::PostProcessShader
     return find_or_create_program(
         state.programs,
         [&](const PostProcessProgram& found) {
-            return found.module == info.module_index && found.format == format &&
+            return found.module_index == info.module_index && found.format == format &&
                    found.samples == samples && found.alpha_mode == alpha_mode &&
                    found.extra_textures == extras &&
                    found.uniform_binding == info.uniform_binding &&
                    found.uniform_size == uniform_size;
         },
         [&] {
-            return build_post_process_program(state, info, format, samples, alpha_mode, extras,
-                                              uniform_size);
+            return build_dawn_post_process_program(state.device, info, format, samples, alpha_mode,
+                                                   extras, uniform_size);
         });
 }
 
@@ -503,8 +424,9 @@ public:
 #endif
         for (const TaskHandle handle : context->tasks) {
             FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
-            if (task.execution_enabled == false)
+            if (task.execution_enabled == false) {
                 continue;
+            }
 #if BBLITE_GPU_TASK_TIMING
             const auto timing_scope = timing_sequence.scoped_task(engine, handle);
 #endif

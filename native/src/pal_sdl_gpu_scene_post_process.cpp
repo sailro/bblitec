@@ -10,48 +10,6 @@ namespace bbl::pal {
 inline namespace sdl_scene {
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_POST_PROCESS
-GpuPostProcessProgram build_post_process_program(GpuState& state, std::uint32_t module_index,
-                                                 SDL_GPUTextureFormat format,
-                                                 SDL_GPUSampleCount samples,
-                                                 std::uint32_t alpha_mode) {
-    GpuPostProcessProgram program;
-    program.module_index = module_index;
-    program.format = format;
-    program.samples = samples;
-    program.alpha_mode = alpha_mode;
-    const std::string stem = "postprocess-" + std::to_string(module_index);
-    const std::string vertex_name = stem + ".vert";
-    const std::string fragment_name = stem + ".frag";
-    program.vertex_slots = read_pinned_stage_slots(vertex_name);
-    program.fragment_slots = read_pinned_stage_slots(fragment_name);
-    auto vertex_shader =
-        load_shader(state.device, vertex_name, SDL_GPU_SHADERSTAGE_VERTEX, program.vertex_slots);
-    auto fragment_shader = load_shader(state.device, fragment_name, SDL_GPU_SHADERSTAGE_FRAGMENT,
-                                       program.fragment_slots);
-    // The generated table names the pin's factors; turning them into this
-    // API's enums is the backend's own `blend_state_from`.
-    const upstream::PostProcessBlend blend = upstream::post_process_blend(alpha_mode);
-    SDL_GPUColorTargetDescription target{};
-    target.format = format;
-    if (blend.enabled) {
-        target.blend_state = blend_state_from(blend.factors);
-    }
-    SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex_shader.get();
-    info.fragment_shader = fragment_shader.get();
-    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-    info.multisample_state.sample_count = samples;
-    info.target_info.color_target_descriptions = &target;
-    info.target_info.num_color_targets = 1;
-    program.pipeline =
-        OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(state.device, &info), {state.device}};
-    if (!program.pipeline) {
-        gpu_error("SDL_CreateGPUGraphicsPipeline post-process");
-    }
-    return program;
-}
 
 std::size_t post_process_program(GpuState& state, std::uint32_t module_index,
                                  SDL_GPUTextureFormat format, SDL_GPUSampleCount samples,
@@ -63,7 +21,8 @@ std::size_t post_process_program(GpuState& state, std::uint32_t module_index,
                    program.samples == samples && program.alpha_mode == alpha_mode;
         },
         [&] {
-            return build_post_process_program(state, module_index, format, samples, alpha_mode);
+            return build_sdl_gpu_post_process_program(state.device, module_index, format, samples,
+                                                      alpha_mode);
         });
 }
 

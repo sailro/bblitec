@@ -83,6 +83,7 @@
 #include "pal_dawn_effect.hpp"
 #endif
 #include "pal_gpu_shared.hpp"
+#include "pal_dawn_post_process.hpp"
 #include "pal_pass_camera.hpp"
 #include "pal_scene_synchronize.hpp"
 #include "pal_texture_upload_cache.hpp"
@@ -568,19 +569,6 @@ struct DawnGeometryTask {
  * the same WGSL and compile the same pipeline once each. The key is
  * everything the layout and the pipeline are made of.
  */
-struct DawnPostProcessProgram {
-    std::uint32_t module_index = 0;
-    WGPUTextureFormat format = WGPUTextureFormat_Undefined;
-    std::uint32_t samples = 1;
-    std::uint32_t alpha_mode = 0;
-    std::size_t extra_textures = 0;
-    std::uint32_t uniform_binding = 0;
-    std::uint32_t uniform_size = 0;
-    DawnShaderModule module{};
-    DawnBindGroupLayout group_layout{};
-    DawnPipelineLayout pipeline_layout{};
-    DawnRenderPipeline pipeline{};
-};
 
 struct DawnPostProcessTask {
     /**
@@ -3065,13 +3053,6 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
                                   const Engine& engine, const std::string& path, bool cluster_ids);
 
 #if BBLITE_HAS_POST_PROCESS
-/** Builds the entry `post_process_program` below found missing. */
-DawnPostProcessProgram build_post_process_program(DawnState& state,
-                                                  const upstream::PostProcessShaderInfo& info,
-                                                  WGPUTextureFormat format, std::uint32_t samples,
-                                                  std::uint32_t alpha_mode,
-                                                  std::size_t extra_textures,
-                                                  std::uint32_t uniform_size);
 
 /**
  * The program a post-process pass draws with, built once per distinct one.
