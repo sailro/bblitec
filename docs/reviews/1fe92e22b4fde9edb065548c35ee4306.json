@@ -37,6 +37,10 @@
     {
       "summary": "Frame drivers use coroutine keywords directly, without redundant macros.",
       "applied": true
+    },
+    {
+      "summary": "Frame mutation fixtures register individual replacement scenes directly.",
+      "applied": true
     }
   ]
 }
