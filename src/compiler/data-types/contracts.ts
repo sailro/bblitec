@@ -8,8 +8,8 @@ export interface DataTypeCppContext {
     tableCppType(dimensions: number[]): string;
 }
 
-export type DataTypeKey = (type: DataType) => string;
-export type DataTypeEquality = (left: DataType, right: DataType) => boolean;
+type DataTypeKey = (type: DataType) => string;
+type DataTypeEquality = (left: DataType, right: DataType) => boolean;
 export type StructFieldTypes = (name: string) => readonly DataType[];
 
 /** Every data kind supplies the operations that depend on its payload. */

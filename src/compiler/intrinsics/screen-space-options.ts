@@ -21,7 +21,7 @@ import {
 } from "./engine-options.js";
 import { compileDescriptorOptions } from "./post-process-options.js";
 
-export interface CompiledScreenSpaceTask {
+interface CompiledScreenSpaceTask {
     /** The generated factory's arguments after the engine, in order. */
     argumentsCpp: string;
     manifest: ScreenSpaceTaskManifest;

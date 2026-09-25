@@ -47,7 +47,7 @@ export interface CapturedClosure {
  * the captured bindings; a concrete one is declared ahead of the prototypes
  * that name it, and one with an unresolved capture type is a template.
  */
-export interface EnvironmentStruct {
+interface EnvironmentStruct {
     readonly name: string;
     readonly lines: readonly string[];
     readonly declaration?: string;

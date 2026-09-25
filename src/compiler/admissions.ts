@@ -7,7 +7,7 @@ import type { EngineLifecycle } from "./engine-lifecycle.js";
 import type { LoweringServices } from "./lowering-services.js";
 
 /** What the admission recorder reads of the compiler. */
-export interface AdmissionContext
+interface AdmissionContext
     extends
         PositiveIntegerContext,
         Pick<

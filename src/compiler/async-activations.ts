@@ -13,7 +13,7 @@ import type {
 import type { AsyncLowerer } from "./async.js";
 
 /** What the async activations read of the compiler. */
-export interface AsyncActivationContext extends Pick<
+interface AsyncActivationContext extends Pick<
     LoweringServices,
     | "allocateTemporaryCppName"
     | "assetRegistry"

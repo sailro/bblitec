@@ -11,7 +11,7 @@ import {
 } from "./cpp-statements.js";
 
 /** A local the outlined statements may read, and its native type. */
-export interface OutlineFrameLocal {
+interface OutlineFrameLocal {
     readonly name: string;
     /** The object type (never a reference); undefined when it has no spelling. */
     readonly type: string | undefined;
@@ -24,7 +24,7 @@ export interface OutlinedSegment {
     readonly lines: readonly string[];
 }
 
-export interface OutlinedBody {
+interface OutlinedBody {
     readonly lines: readonly string[];
     readonly segments: readonly OutlinedSegment[];
 }

@@ -12,14 +12,14 @@ import {
 } from "./option-helpers.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 
-export interface IntegerLoopContext extends PositiveIntegerContext {
+interface IntegerLoopContext extends PositiveIntegerContext {
     readonly checker: ts.TypeChecker;
     readonly symbols: CompilerSymbols;
     unwrap(expression: ts.Expression): ts.Expression;
 }
 
 /** A `for` counter the emitter declares as a native 64-bit integer. */
-export interface IntegerLoopCounter {
+interface IntegerLoopCounter {
     readonly binding: ts.Identifier;
     readonly start: number;
     /** The signed amount the incrementor adds. */

@@ -77,7 +77,7 @@ import {
 import type { GeometryOutputTaskManifest, Value } from "./types.js";
 
 /** What the option adapters hand the per-intrinsic option lowerers. */
-export type IntrinsicOptionsContext = AssetOptionContext &
+type IntrinsicOptionsContext = AssetOptionContext &
     EngineOptionContext &
     MaterialOptionContext &
     MeshOptionContext &

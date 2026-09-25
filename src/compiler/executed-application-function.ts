@@ -44,7 +44,7 @@ import { sharedUpstreamStore } from "../upstream-source.js";
 /** A value generation hands the function or binds to a name it closes over. */
 export type ExecutedScalar = string | number | boolean;
 
-export interface ExecutedFunctionContext {
+interface ExecutedFunctionContext {
     readonly checker: ts.TypeChecker;
     fail(node: ts.Node, message: string): never;
     /**

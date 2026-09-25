@@ -8,7 +8,7 @@ import { typedArrayElement, type TypedArrayKind } from "./data-types.js";
  * integer kinds, so the table holds exactly what the typed array will and
  * the use site's conversion is the identity.
  */
-export interface TypedArrayTable {
+interface TypedArrayTable {
     readonly elementCppType: string;
     readonly elements: string[];
 }

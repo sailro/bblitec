@@ -126,13 +126,11 @@ const ABSENT_GLOBAL_MEMBERS: ReadonlySet<string> = new Set([
  * query bag, which a read the fold cannot answer parses natively
  * (`deploymentSearchParamsValue`). A rect or the primary canvas has none.
  */
-export function hasNativeSpelling(
-    value: NonNullable<Value["browserValue"]>,
-): boolean {
+function hasNativeSpelling(value: NonNullable<Value["browserValue"]>): boolean {
     return isPrimitiveBrowserValue(value) || value.kind === "search-params";
 }
 
-export interface BrowserErasureContext extends Pick<
+interface BrowserErasureContext extends Pick<
     LoweringServices,
     | "isNativeWorkerExpression"
     | "unwrap"

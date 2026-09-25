@@ -7,7 +7,7 @@ import { booleanValue, staticStringValue, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { compileEntryCollection } from "./collection-methods.js";
 
-export type ObjectStaticContext = Pick<
+type ObjectStaticContext = Pick<
     LoweringServices,
     | "compileValue"
     | "probeEmission"

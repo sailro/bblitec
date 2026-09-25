@@ -22,7 +22,7 @@ import type { UiProjection } from "./ui-projection.js";
 import type { LoweringServices } from "./lowering-services.js";
 
 /** What the engine lifecycle reads of the compiler. */
-export interface EngineLifecycleContext extends Pick<
+interface EngineLifecycleContext extends Pick<
     LoweringServices,
     | "allocateBlockPrefix"
     | "allocateTemporaryCppName"

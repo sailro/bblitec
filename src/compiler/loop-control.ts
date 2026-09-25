@@ -38,7 +38,7 @@ export function emitReachableStatements(
     return false;
 }
 
-export interface LoopControlQuery {
+interface LoopControlQuery {
     /** Count `break` (default true). */
     readonly breaks?: boolean;
     /** Count `continue` (default true). */
@@ -99,7 +99,7 @@ export function forEachReturn(
         );
 }
 
-export interface ReturnQuery {
+interface ReturnQuery {
     /** Count only a `return` that carries a value (default: any `return`). */
     readonly valued?: boolean;
 }

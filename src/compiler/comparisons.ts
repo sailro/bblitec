@@ -26,7 +26,7 @@ const STRICT_EQUALITY = new Map<ts.SyntaxKind, ts.SyntaxKind>([
 ]);
 
 /** A comparison lowered as the strict or ordering operator `kind`, spelled `cpp`. */
-export interface ConditionComparison {
+interface ConditionComparison {
     readonly kind: ts.SyntaxKind;
     readonly cpp: string;
 }

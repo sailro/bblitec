@@ -4,7 +4,7 @@ import type { CompileAdaptation } from "../fidelity.js";
 import { pixelsSourcePrefix } from "../executed-module-assets.js";
 import type { Feature } from "./types.js";
 
-export interface AdaptationContext extends Pick<
+interface AdaptationContext extends Pick<
     LoweringServices,
     | "hasMainEntry"
     | "erasedBrowserExpressions"

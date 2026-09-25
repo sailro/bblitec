@@ -8,7 +8,7 @@ import { stringLiteralText, unwrapExpression } from "./syntax.js";
 export const babylonPackages = ["babylon-lite", "@babylonjs/lite"] as const;
 
 /** The declaration files every compiler program reads a package's API from. */
-export interface CompilerPackageTypings {
+interface CompilerPackageTypings {
     /**
      * The pinned package's rolled-up `index.d.ts`: every Babylon specifier
      * (`babylonPackages`, either spelling, any subpath) resolves to it.

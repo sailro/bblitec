@@ -77,7 +77,7 @@ export function arrayElementType(
 }
 
 /** Which absent values a type admits. */
-export interface Nullability {
+interface Nullability {
     /** A member is `null`. */
     readonly null: boolean;
     /** A member is `undefined` or `void`, which reads as undefined. */

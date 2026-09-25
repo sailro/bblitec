@@ -26,7 +26,7 @@ import type { Value } from "./types.js";
 type MaterialPluginFamily = "standard" | "pbr";
 
 /** The compiler surface a fold needs; the entry orchestrator supplies it. */
-export interface MaterialPluginContext extends Pick<
+interface MaterialPluginContext extends Pick<
     LoweringServices,
     | "checker"
     | "resolveStaticExpression"
@@ -182,7 +182,7 @@ function resolveTextureIdentity(
 }
 
 /** A folded `material.plugins = [...]` right-hand side. */
-export interface FoldedMaterialPlugins {
+interface FoldedMaterialPlugins {
     /** The plugin list, in the order the scene wrote it. */
     manifests: MaterialPluginManifest[];
     /**

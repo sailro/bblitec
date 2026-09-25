@@ -11,11 +11,10 @@ export interface CppStatement {
  * expression statement introduces no name after itself; a declaration does;
  * anything else (a jump, a label, a using-declaration) stays where it is.
  */
-export type CppStatementShape =
-    "compound" | "expression" | "declaration" | "other";
+type CppStatementShape = "compound" | "expression" | "declaration" | "other";
 
 /** A parsed single-declarator local declaration. */
-export interface CppLocalDeclaration {
+interface CppLocalDeclaration {
     readonly name: string;
     /** The declared type as spelled, or undefined for `auto`/`decltype`. */
     readonly spelledType?: string;
@@ -620,7 +619,7 @@ export function splitCppDeclarations(text: string): CppStatement[] {
 }
 
 /** What a namespace-scope declaration introduces. */
-export interface CppDeclaredNames {
+interface CppDeclaredNames {
     readonly names: readonly string[];
     /** A function, which another declaration of its name overloads. */
     readonly function: boolean;

@@ -41,7 +41,7 @@ export function isModuleInitializerStatement(
 }
 
 /** A top-level class whose `static { ... }` block runs at module evaluation. */
-export function declaresClassStaticBlock(
+function declaresClassStaticBlock(
     statement: ts.Statement,
 ): statement is ts.ClassDeclaration {
     return (

@@ -249,7 +249,7 @@ export interface ShadowCasterMeshManifest {
     meshIndex: number;
 }
 
-export interface ShadowCasterManifest extends ShadowCasterMeshManifest {
+interface ShadowCasterManifest extends ShadowCasterMeshManifest {
     /**
      * Its `scenePbrMaterials` row, or `null` for a material of another
      * family -- which still takes a runtime handle.
@@ -1789,7 +1789,7 @@ export function runtimeMeshValue(value: Value): Value {
     };
 }
 
-export interface AssetRootState {
+interface AssetRootState {
     readonly reparented: boolean;
     readonly alternatives?: readonly AssetRootState[];
 }
