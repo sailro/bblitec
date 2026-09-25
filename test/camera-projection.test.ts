@@ -57,10 +57,9 @@ test("scene camera bindings preserve nullable-handle presence", () => {
         result.cpp,
         /missingByComparison = !\(v_[A-Za-z0-9_]*element_found/,
     );
-    assert.match(
-        result.cpp,
-        /presentByComparison = v_[A-Za-z0-9_]*element_found/,
-    );
+    // Right after `scene.camera = camera` the checker narrows the read to the
+    // camera's non-null type, so the comparison is always true.
+    assert.match(result.cpp, /presentByComparison = true;/);
 
     const guardedCamera = result.cpp.match(
         /auto (v_[A-Za-z0-9_]*cam) = v_[A-Za-z0-9_]*scene\.camera;\s*\[\[maybe_unused\]\] const bool (v_[A-Za-z0-9_]*element_found[A-Za-z0-9_]*) = \(\1\.value != bbl::invalid_handle\);/,

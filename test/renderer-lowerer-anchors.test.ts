@@ -192,7 +192,7 @@ test("derives the thin-instance TRS terms from the pinned writers", () => {
     );
     assert.match(
         plan.source,
-        /const TransformNodeRecord& node\) \{\n {4}return trs_matrix\(node\);/,
+        /const TransformNodeRecord& node\) \{\n {4}if \(node\.local_matrix\) return \*node\.local_matrix;\n {4}return trs_matrix\(node\);/,
     );
     assert.match(
         plan.source,

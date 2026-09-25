@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>

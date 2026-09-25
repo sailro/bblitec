@@ -29,9 +29,21 @@ test("Dawn lays a group out from its stages' reflected .slots lines and the site
     const start = source.indexOf(first);
     const end = source.indexOf(last);
     assert.ok(start >= 0 && end > start);
+    // The sidecar line walk and index parser both backends share.
+    const common = readFileSync("native/src/pal_gpu_common.hpp", "utf8");
+    const sidecarHelpers = [
+        cppFunction(
+            common,
+            "template <typename Visit> inline void for_each_sidecar_line(",
+        ),
+        cppFunction(
+            common,
+            "inline std::optional<std::uint32_t> parse_sidecar_index(",
+        ),
+    ].join("\n");
     writeFileSync(
         join(output, "reflected-layout.hpp"),
-        source.slice(start, end + last.length),
+        [sidecarHelpers, source.slice(start, end + last.length)].join("\n"),
     );
     const executable = join(output, "check.exe");
     runNativeFixtureCompiler(tools, [

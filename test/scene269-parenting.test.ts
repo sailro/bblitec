@@ -98,7 +98,7 @@ test("keeps imported authored winding separate from live parent reflection", () 
     );
     assert.match(
         loader,
-        /record\.scene_node_name = string_or\(node, "name"\);[\s\S]{0,180}"gltf_node_"/,
+        /record\.scene_node_name = node_name && !node_name->is_null\(\)\s*\? node_name->as_string\(\)\s*: "node_" \+ std::to_string\(node_index\);/,
     );
     assert.match(
         renderer,
