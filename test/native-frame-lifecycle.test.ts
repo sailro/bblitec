@@ -8,6 +8,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("native frame clocks, continuation drains and capture budgets preserve frame boundaries", (t) => {
@@ -18,7 +19,7 @@ test("native frame clocks, continuation drains and capture budgets preserve fram
     }
     const directory = resolve("artifacts/test-native-frame-lifecycle");
     mkdirSync(directory, { recursive: true });
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     const pal = readFileSync("native/src/pal.cpp", "utf8");
     writeFileSync(
         join(directory, "frame-lifecycle.hpp"),
@@ -29,16 +30,16 @@ test("native frame clocks, continuation drains and capture budgets preserve fram
                 "class FrameClock {",
                 "class CaptureGate {",
             ].map((signature) => cppRecord(shared, signature)),
-            cppFunction(shared, "inline void run_animation_frame_callbacks("),
+            cppFunction(shared, "void run_animation_frame_callbacks("),
             cppFunction(
                 shared,
-                "[[nodiscard]] inline double advance_frame(\n    Engine& engine,\n    FrameClock&",
+                "double advance_frame(Engine& engine, FrameClock&",
             ),
             cppFunction(
                 shared,
-                "[[nodiscard]] inline double advance_frame(\n    Engine& engine,\n    FrameGraphContext&",
+                "double advance_frame(Engine& engine, FrameGraphContext&",
             ),
-            cppFunction(shared, "inline void finish_frame("),
+            cppFunction(shared, "void finish_frame("),
         ].join("\n"),
     );
     writeFileSync(

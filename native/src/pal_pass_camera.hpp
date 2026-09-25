@@ -32,8 +32,8 @@ namespace bbl::pal {
 
 /**
  * One pass's camera and the matrices built from it. Without a camera the
- * matrices are the zeros of the scene block the pin never writes, so
- * everything the pass projects collapses and reaches no fragment.
+ * matrices are zeros; a pass that keeps its view-projection
+ * (`keep_view_projection`) then draws through the one its block last held.
  */
 struct PassCamera {
     const CameraRecord* camera = nullptr;
@@ -141,16 +141,21 @@ private:
     std::deque<Entry> tasks_;
 };
 
-#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
 /**
- * A pass's retained scene blocks: the one its materials and backgrounds
- * bind, and the same group as a billboard program binds it -- over the
- * matrices the pass draws billboards with. A backend that pushes blocks per
- * draw keeps these to push; one that keeps each pass's block in its own
- * buffer writes what these hold.
+ * A pass's retained blocks: the view-projection its scene block keeps,
+ * which the port's own lane (SDL_GPU's slot zero, Dawn's `view_projection`)
+ * and a shader draw's pass matrices carry for the stages that read no scene
+ * block; the scene block its materials and backgrounds bind; and the same
+ * group as a billboard program binds it -- over the matrices the pass draws
+ * billboards with. A backend that pushes blocks per draw keeps these to
+ * push; one that keeps each pass's block in its own buffer writes what these
+ * hold.
  */
 struct RetainedSceneBlock {
+    RetainedBlock<std::array<float, 16>> view_projection;
+#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
     RetainedBlock<upstream::SceneUniforms> pass;
+#endif
 #if BBLITE_HAS_BILLBOARDS
     RetainedBlock<upstream::SceneUniforms> billboard;
 #endif
@@ -158,6 +163,29 @@ struct RetainedSceneBlock {
 
 using RetainedSceneBlocks = PassBlocks<RetainedSceneBlock>;
 
+/**
+ * `matrices`' view-projection as the pass's scene block keeps it: the
+ * camera's, or -- for a camera-less pass, whose `_writePassSceneUBO`
+ * returns first -- the one the block last held. The pin draws every stage
+ * through that `viewProjection`; the view, projection and eye stay the
+ * camera-less pass's zeros.
+ */
+inline void keep_view_projection(CameraPassMatrices& matrices, const CameraRecord* camera,
+                                 RetainedSceneBlock& retained) {
+    matrices.view_projection = retained.view_projection.write(
+        camera, [&](const CameraRecord&) { return matrices.view_projection; });
+}
+
+/** `build_pass_camera` with the view-projection its pass keeps. */
+inline PassCamera build_kept_pass_camera(const Scene& scene, const Engine& engine,
+                                         const CameraRecord* camera, double width, double height,
+                                         RetainedSceneBlock& retained) {
+    PassCamera pass = build_pass_camera(scene, engine, camera, width, height);
+    keep_view_projection(pass.matrices, camera, retained);
+    return pass;
+}
+
+#if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
 /** `_writePassSceneUBO` over the pass camera and `view_projection`. */
 inline const upstream::SceneUniforms&
 write_pass_scene_block(RetainedSceneBlock& retained, const Scene& scene, const Engine& engine,

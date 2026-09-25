@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { emitAssetSpecializations } from "../src/asset-specializer.js";
@@ -30,6 +30,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const prefix = `
@@ -342,7 +343,7 @@ test(
         const renderPlan = new RendererLowerer(context).lowerRenderPlan(
             {},
         ).source;
-        const pal = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const pal = sharedGpuSource();
         const nodePipeline = await importPinnedModuleWithExports<{
             buildMeshStruct(this: void): string;
         }>("material/node/node-pipeline.js", ["buildMeshStruct"]);
@@ -439,11 +440,11 @@ ${[
     "std::vector<float> morph_weight_values(",
     "std::vector<std::uint8_t> pack_morph_weights(",
 ]
-    .map((name) => cppDefinition(pal, `inline ${name}`))
+    .map((name) => cppDefinition(pal, name))
     .join("\n")}
 template <typename Block>
 ${cppDefinition(pal, "inline void pinned_mesh_light_selection(")}
-${cppDefinition(pal, "inline upstream::NodeMeshUniforms node_mesh_block(")}
+${cppDefinition(pal, "upstream::NodeMeshUniforms node_mesh_block(")}
 }
 void same(const std::vector<float>& actual, const std::vector<std::uint32_t>& expected) {
     assert(actual.size() == expected.size());

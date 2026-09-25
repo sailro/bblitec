@@ -14,6 +14,7 @@ import {
     needsOfflineShaders,
 } from "../src/build-options.js";
 import { listFiles } from "../src/tooling/records.js";
+import { sceneBackendSource } from "./native-fixture.js";
 
 test("compiled backends have independent build and deployment directories", () => {
     const directory = "native/build-primitives-release";
@@ -95,8 +96,8 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
         "native/include/bblite/pal_system_fonts.hpp",
         "utf8",
     );
-    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
-    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const sdl = sceneBackendSource("sdl");
+    const dawn = sceneBackendSource("dawn");
     const spriteSdl = readFileSync("native/src/pal_sdl_gpu_sprite.cpp", "utf8");
     const spriteDawn = readFileSync("native/src/pal_dawn_sprite.cpp", "utf8");
     const spriteSdlUi = readFileSync(

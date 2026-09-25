@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
@@ -11,6 +11,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
@@ -33,10 +34,7 @@ test(
             assert.ok(Number.isInteger(bits[name]), name);
         const output = resolve("artifacts/material-variant-keys");
         mkdirSync(output, { recursive: true });
-        const source = readFileSync(
-            "native/src/pal_gpu_shared.hpp",
-            "utf8",
-        ).replaceAll("\r\n", "\n");
+        const source = sharedGpuSource().replaceAll("\r\n", "\n");
         const file = join(output, "check.cpp"),
             executable = join(output, "check.exe");
         writeFileSync(
@@ -78,8 +76,8 @@ ${["PinnedVariantKey", "StandardVariantKey"].map((name) => cppRecord(source, `st
 ${[
     "inline bool pinned_record_instanced(",
     "inline bool pinned_record_instance_colored(",
-    "inline PinnedVariantKey pinned_variant_key(",
-    "inline StandardVariantKey standard_variant_key(",
+    "PinnedVariantKey pinned_variant_key(",
+    "StandardVariantKey standard_variant_key(",
 ]
     .map((signature) => cppFunction(source, signature))
     .join("\n")}
