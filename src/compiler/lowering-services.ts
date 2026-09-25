@@ -9,10 +9,7 @@ import type {
 import type { NativeFunctionLowerer } from "./native-functions.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type { StaticEvaluator } from "./static-evaluator.js";
-import type {
-    HandleCollections,
-    HandleCollectionTarget,
-} from "./handle-collections.js";
+import type { HandleCollections } from "./handle-collections.js";
 import type {
     CallbackInvocationOptions,
     UserFunctionLowerer,
@@ -133,8 +130,6 @@ export interface LoweringServices {
     promoteTextData(node: ts.Node): void;
     emitDiscardedValue(value: Value): void;
     emitAssignment(expression: ts.BinaryExpression): void;
-    /** `??=`, `||=`, `&&=` over a data-model target; any other target refuses. */
-    emitLogicalAssignment(expression: ts.BinaryExpression): void;
     /** `delete object[key]` / `delete object.field` over the data model. */
     emitDelete(expression: ts.DeleteExpression): void;
     recordDataAssignmentMetadata(
@@ -143,8 +138,6 @@ export interface LoweringServices {
         destination?: ts.Expression,
     ): boolean;
     isNativeUiValueExpression(expression: ts.Expression): boolean;
-    readonly uiDegradedStyleProperties: Set<string>;
-    readonly uiScopedSheetSelectors: Set<string>;
     emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
     compileValue(expression: ts.Expression): Value;
     compileWorkerValue(expression: ts.Expression): Value | undefined;
@@ -178,12 +171,6 @@ export interface LoweringServices {
     ): Value | undefined;
     compilePixelsTextureUpload(call: ts.CallExpression): Value | undefined;
     guardStaticConstructionRead(operation: string): void;
-    compileRecordSetterValue(
-        owner: Value,
-        setter: ts.SetAccessorDeclaration,
-        node: ts.Expression,
-        value: Value,
-    ): void;
     expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression;
@@ -200,8 +187,6 @@ export interface LoweringServices {
         precision?: "float" | "double",
     ): string;
     castNumber(value: Value, precision: "float" | "double"): string;
-    compileVec2(expression: ts.Expression): string;
-    compileVec4(expression: ts.Expression): string;
     compileBoolean(expression: ts.Expression): string;
     compileColor3(expression: ts.Expression): string;
     compileColor4(expression: ts.Expression): string;
@@ -215,7 +200,6 @@ export interface LoweringServices {
             kind: "enum";
         },
     ): string | undefined;
-    isNumberExpression(expression: ts.Expression): boolean;
     expectObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression;
     objectProperty(
         object: ts.ObjectLiteralExpression,
@@ -276,8 +260,6 @@ export interface LoweringServices {
     reachFileReader(): void;
     reachLocalStorage(): void;
     reachImageDecode(): void;
-    snapshotAliasState(): Map<string, string>;
-    restoreAliasState(snapshot: Map<string, string>): void;
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;
     isInRuntimeControlFlow(): boolean;
@@ -387,7 +369,6 @@ export interface LoweringServices {
     activeNativeReturnType(): DataType | "void" | undefined;
     activeInlineWrapper(): boolean;
     emitNativeReturn(statement: ts.ReturnStatement): void;
-    emitDataAssignment(expression: ts.BinaryExpression): boolean;
     emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean;
     assignOptionalResourceValue(
         target: Value,
@@ -420,28 +401,6 @@ export interface LoweringServices {
     ): Value | undefined;
     emitNativeDataIteration<T>(statement: ts.Statement, emitBody: () => T): T;
     dataValue(cpp: string, dataType: DataType): Value;
-    compileAnimationGroupList(expression: ts.Expression): {
-        cpp: string;
-        engineCpp: string;
-    };
-    assetEntitiesIterationTarget(expression: ts.Expression): Value | undefined;
-    assetRootElementAccess(
-        expression: ts.ElementAccessExpression,
-    ): Value | undefined;
-    assetFlattenedMeshesIterationTarget(expression: ts.Expression):
-        | {
-              target: HandleCollectionTarget;
-              asset: CompileAsset;
-          }
-        | undefined;
-    isFoldedFlattenLoop(statement: ts.Statement): boolean;
-    assetRootChildrenIterationTarget(
-        expression: ts.Expression,
-    ): HandleCollectionTarget | undefined;
-    handleCollectionIterationTarget(
-        expression: ts.Expression,
-    ): HandleCollectionTarget | undefined;
-    assetMeshCollection(owner: Value, expression: ts.Expression): Value;
     bindDataIterationVariable(
         name: ts.BindingName,
         itemCpp: string,

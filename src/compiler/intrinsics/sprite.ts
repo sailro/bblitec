@@ -52,8 +52,7 @@ export interface SpriteIntrinsicContext
             | "compileBoolean"
             | "conditions"
             | "compileNumber"
-            | "compileVec2"
-            | "compileVec4"
+            | "evaluator"
             | "registerSpriteAtlasAsset"
             | "probePixelsAsset"
             | "allocateTemporaryCppName"
@@ -1818,7 +1817,7 @@ function compileSetSprite2DShaderParams(
         sprite ? "sprite-layer" : "billboard-system",
         argumentAt(call, 0),
     );
-    const params = context.compileVec4(argumentAt(call, 1));
+    const params = context.evaluator.compileVec4(argumentAt(call, 1));
     const engineCpp = context.engineFor(target, call);
     context.emit(
         `bbl::${
@@ -1911,7 +1910,7 @@ function compileSetSprite2DUvOffset(
     const layer = context.compileValue(argumentAt(call, 0));
     context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
     const index = context.compileNumber(argumentAt(call, 1));
-    const offset = context.compileVec2(argumentAt(call, 2));
+    const offset = context.evaluator.compileVec2(argumentAt(call, 2));
     const engineCpp = context.engineFor(layer, call);
     context.reachFeature("sprite:2d", call);
     // Importing the setter is the pin's own opt-in trigger for the

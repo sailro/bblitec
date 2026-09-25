@@ -3,6 +3,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { CompileAdaptation } from "../fidelity.js";
 import { pixelsSourcePrefix } from "../executed-module-assets.js";
 import type { Feature } from "./types.js";
+import type { UiProjection } from "./ui-projection.js";
 
 interface AdaptationContext extends Pick<
     LoweringServices,
@@ -19,9 +20,12 @@ interface AdaptationContext extends Pick<
     | "assets"
     | "sceneManifest"
     | "defaultRenderTaskAdapted"
-    | "uiDegradedStyleProperties"
-    | "uiScopedSheetSelectors"
-> {}
+> {
+    readonly ui: Pick<
+        UiProjection,
+        "uiDegradedStyleProperties" | "uiScopedSheetSelectors"
+    >;
+}
 
 /**
  * The rows the feature list alone decides, from the appenders that read
@@ -962,8 +966,8 @@ function appendUiAdaptations(
     adaptations: CompileAdaptation[],
 ): void {
     if (features.includes("ui:rml")) {
-        const degraded = [...context.uiDegradedStyleProperties].sort();
-        const scoped = [...context.uiScopedSheetSelectors].sort();
+        const degraded = [...context.ui.uiDegradedStyleProperties].sort();
+        const scoped = [...context.ui.uiScopedSheetSelectors].sort();
         adaptations.push({
             id: "substituted-ui-runtime",
             category: "platform",

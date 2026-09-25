@@ -22,7 +22,7 @@ export interface SceneIntrinsicContext
             | "admissions"
             | "compileNumber"
             | "compileColor3"
-            | "compileVec4"
+            | "evaluator"
             | "unwrap"
             | "expectObjectLiteral"
             | "objectProperty"
@@ -493,7 +493,7 @@ export function compileSceneIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::set_scene_clip_plane(${scene.cpp}, ` +
-                    `${context.compileVec4(argumentAt(call, 1))})`,
+                    `${context.evaluator.compileVec4(argumentAt(call, 1))})`,
             };
         }
 

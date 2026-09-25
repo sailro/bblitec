@@ -227,7 +227,6 @@ interface DataLoweringContext
             | "compileCallbackWithValues"
             | "captureManagedClosureLines"
             | "withRecordScopes"
-            | "compileRecordSetterValue"
             | "compilePredicateWithValues"
             | "compileStoredDataFunction"
             | "compileSpriteAtlasRecord"
@@ -8624,7 +8623,7 @@ export class DataLowerer {
                     nativeCaptures: [this.context.registerNativeBinding(cpp)],
                 };
                 this.context.withRecordScopes(owner, () =>
-                    this.context.compileRecordSetterValue(
+                    this.context.classLowerer.compileSetter(
                         owner,
                         setter,
                         name,
