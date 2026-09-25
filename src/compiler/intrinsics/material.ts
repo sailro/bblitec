@@ -67,26 +67,12 @@ export interface MaterialIntrinsicContext
             | "compileColor3"
             | "captureNativeExpression"
             | "compileStringLiteral"
-            | "compilePbrMaterialOptions"
-            | "compileMetallicReflectanceOptions"
+            | "intrinsicOptions"
             | "allocateTemporaryCppName"
             | "emit"
-            | "reachGridMaterial"
             | "isRuntimeResourceConstruction"
-            | "compileClearCoatOptions"
-            | "compileIridescenceOptions"
-            | "compileAnisotropyOptions"
-            | "compileSheenOptions"
-            | "compileSubsurfaceOptions"
-            | "compileShaderMaterialOptions"
-            | "reachLinearDepthMaterial"
             | "expectObjectLiteral"
             | "objectProperty"
-            | "compileNodeMaterialOptions"
-            | "resolveShaderUniform"
-            | "resolveShaderTextureSlot"
-            | "resolveShaderStorageBufferSlot"
-            | "compileShaderUniformComponents"
             | "cppString"
             | "fail"
         > {}
@@ -337,12 +323,12 @@ function compileShaderUniformWrite(
     call: ts.CallExpression,
     expectedCounts: number[],
 ): Value {
-    const { offset, count } = context.resolveShaderUniform(
+    const { offset, count } = context.intrinsicOptions.resolveShaderUniform(
         material,
         argumentAt(call, 1),
         expectedCounts,
     );
-    const components = context.compileShaderUniformComponents(
+    const components = context.intrinsicOptions.compileShaderUniformComponents(
         argumentAt(call, 2),
         count,
     );
@@ -495,7 +481,7 @@ function compileCreatePbrMaterial(
         usePhysicalLightFalloff,
         scenePbrMaterialIndex,
         plugins,
-    } = context.compilePbrMaterialOptions(argumentAt(call, 0));
+    } = context.intrinsicOptions.compilePbrMaterialOptions(argumentAt(call, 0));
     context.expectSameEngine(baseColor, orm, call);
     context.reachFeature("material:pbr", call);
     context.reachFeature("renderer:scene", call);
@@ -664,7 +650,10 @@ function compileCreateGridMaterial(
     const runtimeProfile = context.isRuntimeResourceConstruction();
     context.expectArgumentCount(call, 0, 1);
     const engine = context.requireDefaultEngine(call);
-    const grid = context.reachGridMaterial(call, call.arguments[0]);
+    const grid = context.intrinsicOptions.reachGridMaterial(
+        call,
+        call.arguments[0],
+    );
     context.reachFeature("material:shader", call);
     context.reachFeature("renderer:scene", call);
     const creation = `bbl::create_shader_material(${engine}, ${grid.id}u)`;
@@ -822,7 +811,9 @@ function compileCreateShaderMaterial(
     const runtimeProfile = context.isRuntimeResourceConstruction();
     context.expectArgumentCount(call, 1, 1);
     const engine = context.requireDefaultEngine(call);
-    const variant = context.compileShaderMaterialOptions(argumentAt(call, 0));
+    const variant = context.intrinsicOptions.compileShaderMaterialOptions(
+        argumentAt(call, 0),
+    );
     context.reachFeature("material:shader", call);
     context.reachFeature("renderer:scene", call);
     const creation = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
@@ -907,7 +898,7 @@ function compileSetShaderStorageBuffer(
     context.expectArgumentCount(call, 3, 3);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const slot = context.resolveShaderStorageBufferSlot(
+    const slot = context.intrinsicOptions.resolveShaderStorageBufferSlot(
         material,
         argumentAt(call, 1),
     );
@@ -987,7 +978,7 @@ function compileCreateLinearDepthMaterial(
         }
         return value;
     };
-    const variant = context.reachLinearDepthMaterial(call, {
+    const variant = context.intrinsicOptions.reachLinearDepthMaterial(call, {
         near: plane("near"),
         far: plane("far"),
     });
@@ -1024,7 +1015,7 @@ function compileSetShaderTexture(
     context.expectArgumentCount(call, 3, 3);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const slot = context.resolveShaderTextureSlot(
+    const slot = context.intrinsicOptions.resolveShaderTextureSlot(
         material,
         argumentAt(call, 1),
     );
@@ -1271,9 +1262,10 @@ function compileSetPbrMetallicReflectance(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const reflectance = context.compileMetallicReflectanceOptions(
-        argumentAt(call, 1),
-    );
+    const reflectance =
+        context.intrinsicOptions.compileMetallicReflectanceOptions(
+            argumentAt(call, 1),
+        );
     for (const texture of [
         reflectance.texture,
         reflectance.reflectanceTexture,
@@ -1307,7 +1299,9 @@ function compileSetPbrSubsurface(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const subsurface = context.compileSubsurfaceOptions(argumentAt(call, 1));
+    const subsurface = context.intrinsicOptions.compileSubsurfaceOptions(
+        argumentAt(call, 1),
+    );
     if (subsurface.thicknessTexture) {
         context.expectSameEngine(material, subsurface.thicknessTexture, call);
     }
@@ -1341,7 +1335,9 @@ function compileSetPbrClearCoat(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const clearCoat = context.compileClearCoatOptions(argumentAt(call, 1));
+    const clearCoat = context.intrinsicOptions.compileClearCoatOptions(
+        argumentAt(call, 1),
+    );
     context.sceneManifest.recordScenePbrClearCoat(
         clearCoat.manifest,
         material.scenePbrMaterialIndex,
@@ -1376,7 +1372,9 @@ function compileSetPbrIridescence(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const iridescence = context.compileIridescenceOptions(argumentAt(call, 1));
+    const iridescence = context.intrinsicOptions.compileIridescenceOptions(
+        argumentAt(call, 1),
+    );
     context.sceneManifest.recordScenePbrIridescence(
         iridescence.manifest,
         material.scenePbrMaterialIndex,
@@ -1551,7 +1549,9 @@ function compileSetPbrAnisotropy(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const anisotropy = context.compileAnisotropyOptions(argumentAt(call, 1));
+    const anisotropy = context.intrinsicOptions.compileAnisotropyOptions(
+        argumentAt(call, 1),
+    );
     context.sceneManifest.recordScenePbrAnisotropy(
         anisotropy.manifest,
         material.scenePbrMaterialIndex,
@@ -1605,7 +1605,9 @@ function compileSetPbrSheen(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const sheen = context.compileSheenOptions(argumentAt(call, 1));
+    const sheen = context.intrinsicOptions.compileSheenOptions(
+        argumentAt(call, 1),
+    );
     context.sceneManifest.recordScenePbrSheen(
         sheen.manifest,
         material.scenePbrMaterialIndex,
@@ -1699,7 +1701,7 @@ function compileParseNodeMaterialFromSnippet(
         context.compileValue(argumentAt(call, 0)),
         call,
     );
-    const graph = context.compileNodeMaterialOptions(
+    const graph = context.intrinsicOptions.compileNodeMaterialOptions(
         argumentAt(call, 1),
         call.arguments[2],
     );

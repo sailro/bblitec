@@ -42,10 +42,7 @@ export interface AssetIntrinsicContext
             | "expectObjectLiteral"
             | "compileStringLiteral"
             | "compileNumber"
-            | "compileEnvironmentOptions"
-            | "compileHdrEnvironmentOptions"
-            | "compileDdsEnvironmentOptions"
-            | "compileDdsEnvironmentBackgroundOptions"
+            | "intrinsicOptions"
             | "registerAsset"
             | "setAssetDecoderConfiguration"
             | "emitDiscardedValue"
@@ -718,7 +715,7 @@ function compileLoadEnvironment(
         "environment",
     );
     const options: CompiledEnvironmentOptions = call.arguments[2]
-        ? context.compileEnvironmentOptions(call.arguments[2])
+        ? context.intrinsicOptions.compileEnvironmentOptions(call.arguments[2])
         : {
               groundTextureUrl: "",
               skyboxUrl: "",
@@ -809,9 +806,10 @@ function compileAddDdsEnvironmentBackground(
     context.expectArgumentCount(call, 2, 2);
     const scene = context.compileValue(argumentAt(call, 0));
     context.expectKind(scene, "scene", argumentAt(call, 0));
-    const options = context.compileDdsEnvironmentBackgroundOptions(
-        argumentAt(call, 1),
-    );
+    const options =
+        context.intrinsicOptions.compileDdsEnvironmentBackgroundOptions(
+            argumentAt(call, 1),
+        );
     const groundAsset = context.registerAsset(
         options.groundTextureUrl,
         "texture",
@@ -855,7 +853,9 @@ function compileLoadDdsEnvironment(
     context.expectKind(scene, "scene", argumentAt(call, 0));
     const source = context.compileStringLiteral(argumentAt(call, 1));
     const brdfUrl = call.arguments[2]
-        ? context.compileDdsEnvironmentOptions(call.arguments[2])
+        ? context.intrinsicOptions.compileDdsEnvironmentOptions(
+              call.arguments[2],
+          )
         : "";
     const environmentAsset = context.registerAsset(source, "dds-environment");
     const brdfAsset = brdfUrl
@@ -882,7 +882,9 @@ function compileLoadHdrEnvironment(
     context.expectKind(scene, "scene", argumentAt(call, 0));
     const source = context.compileStringLiteral(argumentAt(call, 1));
     const options = call.arguments[2]
-        ? context.compileHdrEnvironmentOptions(call.arguments[2])
+        ? context.intrinsicOptions.compileHdrEnvironmentOptions(
+              call.arguments[2],
+          )
         : {
               faceSize: 256,
               useCubemapSkybox: false,

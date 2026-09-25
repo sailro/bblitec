@@ -38,6 +38,7 @@ import {
 } from "./compiler/native-declarations.js";
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
+import { IntrinsicOptions } from "./compiler/intrinsic-options.js";
 import {
     traceSourceApplication,
     traceSourceProgram,
@@ -59,7 +60,6 @@ import { resolve } from "node:path";
 import { framePollExecutor } from "./compiler/frame-poll.js";
 import { integerCounterOf } from "./compiler/integer-loops.js";
 import { PendingActivations } from "./compiler/pending-activations.js";
-import { reachPhysicsViewerMaterialProgram } from "./compiler/physics-viewer-material.js";
 import {
     compileTextModuleValue,
     compileTextMutation,
@@ -118,45 +118,9 @@ import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
 import { compileExecutedUrlFunctionCall } from "./compiler/executed-url-function.js";
 import {
-    compileDdsEnvironmentBackgroundOptions,
-    compileDdsEnvironmentOptions,
-    compileEnvironmentOptions,
-    compileHdrEnvironmentOptions,
-} from "./compiler/intrinsics/asset-options.js";
-import {
-    compileCopyTaskOptions,
     compileEnginePixelRatioCap,
     compileEnginePrecisionPolicy,
-    compileGeometryTaskOptions,
-    compileRenderTargetOptions,
-    compileRenderTaskOptions,
-    compileSceneDefaultRenderTask,
-    type CompiledRenderTargetOptions,
 } from "./compiler/intrinsics/engine-options.js";
-import {
-    compileAnisotropyOptions,
-    compileClearCoatOptions,
-    compileIridescenceOptions,
-    compileMetallicReflectanceOptions,
-    compilePbrMaterialOptions,
-    compileSheenOptions,
-    compileSubsurfaceOptions,
-    type CompiledAnisotropyOptions,
-    type CompiledClearCoatOptions,
-    type CompiledIridescenceOptions,
-    type CompiledMetallicReflectanceOptions,
-    type CompiledPbrMaterialOptions,
-    type CompiledSheenOptions,
-    type CompiledSubsurfaceOptions,
-} from "./compiler/intrinsics/material-options.js";
-import {
-    compileBoxOptions,
-    compileGroundFromHeightMapOptions,
-    compileGroundOptions,
-    compilePlaneOptions,
-    compileSphereOptions,
-    compileTorusOptions,
-} from "./compiler/intrinsics/mesh-options.js";
 import {
     compileRegisteredConstant,
     compileRegisteredIntrinsic,
@@ -168,38 +132,10 @@ import {
     validateObjectProperties,
 } from "./compiler/option-helpers.js";
 import {
-    PropertyAnimationTargetLowerer,
-    compilePropertyAnimationClip,
-    compilePropertyAnimationGroupOptions,
-} from "./compiler/property-animation.js";
-import {
-    compileNodeMaterialOptions,
-    type CompiledNodeMaterialCall,
-} from "./compiler/node-material.js";
-import {
-    lineMaterialPermutation,
-    reachLineMaterialProgram,
-    type LineMaterialPermutation,
-    type ReachedLineMaterial,
-} from "./compiler/line-material.js";
-import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
-import {
-    reachGridMaterial,
-    type ReachedGridMaterial,
-} from "./compiler/grid-material.js";
-import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
-import {
     executeApplicationFunction,
     type ExecutedScalar,
 } from "./compiler/executed-application-function.js";
 import { liftWgslModuleConstant } from "./shader-ir.js";
-import {
-    compileShaderMaterialOptions,
-    compileShaderUniformComponents,
-    resolveShaderStorageBufferSlot,
-    resolveShaderTextureSlot,
-    resolveShaderUniform,
-} from "./compiler/shader-material.js";
 import { DataLowerer } from "./compiler/data-lowering.js";
 import {
     cameraNumberWrite,
@@ -309,7 +245,6 @@ import type {
     DefaultRenderTaskEmission,
     Feature,
     FrameCallbackSignature,
-    GeometryOutputTaskManifest,
     ResolvedCompileOptions,
     Value,
     ValueKind,
@@ -688,6 +623,10 @@ class Compiler implements LoweringServices {
     /** Property access on every represented owner. */
     public readonly propertyAccess: PropertyAccessLowerer =
         new PropertyAccessLowerer(this);
+    /** Per-intrinsic option objects and the shader programs they reach. */
+    public readonly intrinsicOptions: IntrinsicOptions = new IntrinsicOptions(
+        this,
+    );
     private readonly statements = new StatementLowerer();
     public readonly userFunctions: UserFunctionLowerer;
     public readonly ui: UiProjection = new UiProjection(this);
@@ -3621,237 +3560,11 @@ class Compiler implements LoweringServices {
         return thinInstancesRead && directUpload && dirtyFields.size === 3;
     }
 
-    public compileBoxOptions(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): [string, string, string] {
-        return compileBoxOptions(this, expression, precision);
-    }
-
-    public compileRenderTargetOptions(
-        expression: ts.Expression,
-    ): CompiledRenderTargetOptions {
-        return compileRenderTargetOptions(this, expression);
-    }
-
-    public compileRenderTaskOptions(expression: ts.Expression): string {
-        return compileRenderTaskOptions(this, expression);
-    }
-
-    public compileGeometryTaskOptions(expression: ts.Expression): {
-        cpp: string;
-        manifest: GeometryOutputTaskManifest;
-    } {
-        return compileGeometryTaskOptions(this, expression);
-    }
-
-    public compileCopyTaskOptions(expression: ts.Expression): string {
-        return compileCopyTaskOptions(this, expression);
-    }
-
-    public compileGroundOptions(
-        expression: ts.Expression,
-    ): [string, string, string, string, string] {
-        return compileGroundOptions(this, expression);
-    }
-
-    public compileGroundFromHeightMapOptions(
-        expression: ts.Expression,
-    ): [string, string, string, string, string, string, string] {
-        return compileGroundFromHeightMapOptions(this, expression);
-    }
-
-    public compilePlaneOptions(expression: ts.Expression): [string, string] {
-        return compilePlaneOptions(this, expression);
-    }
-
-    public compileSphereOptions(
-        expression: ts.Expression,
-    ): [string, string, string, string] {
-        return compileSphereOptions(this, expression);
-    }
-
-    public compileTorusOptions(
-        expression: ts.Expression,
-    ): [string, string, string] {
-        return compileTorusOptions(this, expression);
-    }
-
-    public compilePbrMaterialOptions(
-        expression: ts.Expression,
-    ): CompiledPbrMaterialOptions {
-        return compilePbrMaterialOptions(this, expression);
-    }
-
-    public compileMetallicReflectanceOptions(
-        expression: ts.Expression,
-    ): CompiledMetallicReflectanceOptions {
-        return compileMetallicReflectanceOptions(this, expression);
-    }
-
-    public reachGridMaterial(
-        call: ts.CallExpression,
-        options: ts.Expression | undefined,
-    ): ReachedGridMaterial {
-        return reachGridMaterial(this, call, options);
-    }
-
-    public compileClearCoatOptions(
-        expression: ts.Expression,
-    ): CompiledClearCoatOptions {
-        return compileClearCoatOptions(this, expression);
-    }
-
-    public compileIridescenceOptions(
-        expression: ts.Expression,
-    ): CompiledIridescenceOptions {
-        return compileIridescenceOptions(this, expression);
-    }
-
-    public compileAnisotropyOptions(
-        expression: ts.Expression,
-    ): CompiledAnisotropyOptions {
-        return compileAnisotropyOptions(this, expression);
-    }
-
-    public compileSheenOptions(
-        expression: ts.Expression,
-    ): CompiledSheenOptions {
-        return compileSheenOptions(this, expression);
-    }
-
-    public compileSubsurfaceOptions(
-        expression: ts.Expression,
-    ): CompiledSubsurfaceOptions {
-        return compileSubsurfaceOptions(this, expression);
-    }
-
-    public compileShaderMaterialOptions(expression: ts.Expression): {
-        name: string;
-        id: number;
-        dynamicUniforms?: Array<{
-            offset: number;
-            components: string[];
-        }>;
-    } {
-        return compileShaderMaterialOptions(this, expression);
-    }
-
-    /**
-     * Registers the shader variant a `createLineMaterial` (or the material a
-     * `createLineSystem` builds for itself) composes. The program is folded
-     * from the pin's own factory; what is decided here is only that this
-     * scene reached it.
-     */
-    public reachLineMaterial(
-        node: ts.Node,
-        options: ReachedLineMaterial,
-    ): { name: string; id: number } {
-        return reachLineMaterialProgram(this, node, options);
-    }
-
-    public reachPhysicsViewerMaterial(
-        node: ts.Node,
-        color: readonly [number, number, number, number],
-    ): { name: string; id: number } {
-        return reachPhysicsViewerMaterialProgram(this, node, color);
-    }
-
     public guardStaticConstructionRead(operation: string): void {
         if (this.features.has("physics:viewer"))
             this.emit(
                 `bbl::pal::require_runtime_execution(${this.cppString(operation)});`,
             );
-    }
-
-    public reachLinearDepthMaterial(
-        node: ts.Node,
-        options: LinearDepthMaterialOptions,
-    ): { name: string; id: number } {
-        return reachLinearDepthMaterialProgram(this, node, options);
-    }
-
-    /** What a registered line variant settled, by variant name. */
-    public lineMaterialPermutation(
-        name: string,
-        node: ts.Node,
-    ): LineMaterialPermutation | undefined {
-        return lineMaterialPermutation(this, name, node);
-    }
-
-    public compileNodeMaterialOptions(
-        snippetExpression: ts.Expression,
-        optionsExpression: ts.Expression | undefined,
-    ): CompiledNodeMaterialCall {
-        return compileNodeMaterialOptions(
-            this,
-            snippetExpression,
-            optionsExpression,
-        );
-    }
-
-    public resolveShaderUniform(
-        material: Value,
-        nameExpression: ts.Expression,
-        expectedCounts: number[],
-    ): { offset: number; count: number } {
-        return resolveShaderUniform(
-            this,
-            material,
-            nameExpression,
-            expectedCounts,
-        );
-    }
-
-    public resolveShaderTextureSlot(
-        material: Value,
-        nameExpression: ts.Expression,
-    ): number {
-        return resolveShaderTextureSlot(this, material, nameExpression);
-    }
-
-    public resolveShaderStorageBufferSlot(
-        material: Value,
-        nameExpression: ts.Expression,
-    ): number {
-        return resolveShaderStorageBufferSlot(this, material, nameExpression);
-    }
-
-    public compileShaderUniformComponents(
-        expression: ts.Expression,
-        count: number,
-    ): string[] {
-        return compileShaderUniformComponents(this, expression, count);
-    }
-
-    public compilePropertyAnimationClip(
-        nameExpression: ts.Expression,
-        tracksExpression: ts.Expression,
-        optionsExpression: ts.Expression | undefined,
-    ): {
-        cpp: string;
-        frameRate: string;
-        duration: string;
-        target: "mesh" | "camera" | "record";
-        paths: readonly string[];
-    } {
-        return compilePropertyAnimationClip(
-            this,
-            nameExpression,
-            tracksExpression,
-            optionsExpression,
-        );
-    }
-
-    private readonly propertyAnimationTargets =
-        new PropertyAnimationTargetLowerer();
-
-    public compilePropertyAnimationTargets(
-        target: Value,
-        paths: readonly string[],
-        node: ts.Expression,
-    ): { cpp: string; engineCpp: string } {
-        return this.propertyAnimationTargets.compile(this, target, paths, node);
     }
 
     public compileRecordSetterValue(
@@ -3863,42 +3576,10 @@ class Compiler implements LoweringServices {
         this.classLowerer.compileSetter(owner, setter, node, value);
     }
 
-    public compilePropertyAnimationGroupOptions(
-        expression: ts.Expression | undefined,
-        clip: Value,
-    ): string {
-        return compilePropertyAnimationGroupOptions(this, expression, clip);
-    }
-
     public expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression {
         return this.evaluator.expectStaticArrayLiteral(expression);
-    }
-
-    public compileEnvironmentOptions(expression: ts.Expression): {
-        groundTextureUrl: string;
-        skyboxUrl: string;
-        skyboxSize: string;
-        brdfUrl: string;
-        brdfPathCpp?: string;
-        skipSkybox: boolean;
-        skipGround: boolean;
-    } {
-        return compileEnvironmentOptions(this, expression);
-    }
-
-    public compileDdsEnvironmentOptions(expression: ts.Expression): string {
-        return compileDdsEnvironmentOptions(this, expression);
-    }
-
-    public compileDdsEnvironmentBackgroundOptions(expression: ts.Expression): {
-        groundTextureUrl: string;
-        skyboxUrl: string;
-        skyboxSize: string;
-        enableNoise: boolean;
-    } {
-        return compileDdsEnvironmentBackgroundOptions(this, expression);
     }
 
     public referenceSearch(): string {
@@ -3918,22 +3599,6 @@ class Compiler implements LoweringServices {
             this.unwrap(wrapped),
         );
         return identifier && this.symbols.valueSymbol(identifier);
-    }
-
-    public compileSceneDefaultRenderTask(
-        expression: ts.Expression | undefined,
-    ): boolean {
-        return compileSceneDefaultRenderTask(this, expression);
-    }
-
-    public compileHdrEnvironmentOptions(expression: ts.Expression): {
-        faceSize: number;
-        useCubemapSkybox: boolean;
-        skipGround: boolean;
-        skyboxSize: string;
-        skyboxPosition: string;
-    } {
-        return compileHdrEnvironmentOptions(this, expression);
     }
 
     public compileVec3(

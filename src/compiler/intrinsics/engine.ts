@@ -38,12 +38,8 @@ export interface EngineIntrinsicContext
             | "requireEngine"
             | "allocateTemporaryCppName"
             | "compileEngineCreation"
-            | "compileRenderTargetOptions"
-            | "compileRenderTaskOptions"
-            | "compileGeometryTaskOptions"
-            | "compileCopyTaskOptions"
+            | "intrinsicOptions"
             | "sceneManifest"
-            | "compileSceneDefaultRenderTask"
             | "expectObjectLiteral"
             | "objectProperty"
             | "propertyName"
@@ -151,9 +147,10 @@ export function compileEngineIntrinsic(
             if (engine.kind !== "surface") {
                 context.expectKind(engine, "engine", argumentAt(call, 0));
             }
-            const defaultRenderTask = context.compileSceneDefaultRenderTask(
-                call.arguments[1],
-            );
+            const defaultRenderTask =
+                context.intrinsicOptions.compileSceneDefaultRenderTask(
+                    call.arguments[1],
+                );
             if (!defaultRenderTask)
                 context.noteTextSceneLifecycle(
                     call,
@@ -239,7 +236,7 @@ export function compileEngineIntrinsic(
         case "createRenderTarget": {
             context.expectArgumentCount(call, 1, 1);
             const engine = context.requireDefaultEngine(call);
-            const options = context.compileRenderTargetOptions(
+            const options = context.intrinsicOptions.compileRenderTargetOptions(
                 argumentAt(call, 0),
             );
             context.reachFeature("frame-graph:resources", call);
@@ -267,7 +264,7 @@ export function compileEngineIntrinsic(
             }
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "engine", argumentAt(call, 0));
-            const options = context.compileRenderTargetOptions(
+            const options = context.intrinsicOptions.compileRenderTargetOptions(
                 argumentAt(call, 1),
             );
             const surfaceSized =
@@ -358,7 +355,7 @@ export function compileEngineIntrinsic(
             context.expectKind(engine, "engine", argumentAt(call, 1));
             context.expectKind(scene, "scene", argumentAt(call, 2));
             context.expectSameEngine(engine, scene, call);
-            const options = context.compileRenderTaskOptions(
+            const options = context.intrinsicOptions.compileRenderTaskOptions(
                 argumentAt(call, 0),
             );
             reachRenderer(context, call);
@@ -384,9 +381,10 @@ export function compileEngineIntrinsic(
             context.expectKind(engine, "engine", argumentAt(call, 1));
             context.expectKind(scene, "scene", argumentAt(call, 2));
             context.expectSameEngine(engine, scene, call);
-            const compiled = context.compileGeometryTaskOptions(
-                argumentAt(call, 0),
-            );
+            const compiled =
+                context.intrinsicOptions.compileGeometryTaskOptions(
+                    argumentAt(call, 0),
+                );
             context.sceneManifest.recordGeometryOutputTask(compiled.manifest);
             reachRenderer(context, call);
             return {
@@ -412,7 +410,9 @@ export function compileEngineIntrinsic(
             context.expectKind(engine, "engine", argumentAt(call, 1));
             context.expectKind(scene, "scene", argumentAt(call, 2));
             context.expectSameEngine(engine, scene, call);
-            const options = context.compileCopyTaskOptions(argumentAt(call, 0));
+            const options = context.intrinsicOptions.compileCopyTaskOptions(
+                argumentAt(call, 0),
+            );
             reachRenderer(context, call);
             return {
                 kind: "task",

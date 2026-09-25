@@ -1,22 +1,5 @@
 import type ts from "typescript";
-import type { ReachedGridMaterial } from "./grid-material.js";
 import type { AssetDecoderConfiguration } from "../asset-decoders.js";
-import type { CompiledRenderTargetOptions } from "./intrinsics/engine-options.js";
-import type {
-    CompiledAnisotropyOptions,
-    CompiledClearCoatOptions,
-    CompiledIridescenceOptions,
-    CompiledSheenOptions,
-    CompiledSubsurfaceOptions,
-    CompiledPbrMaterialOptions,
-    CompiledMetallicReflectanceOptions,
-} from "./intrinsics/material-options.js";
-import type { CompiledNodeMaterialCall } from "./node-material.js";
-import type {
-    LineMaterialPermutation,
-    ReachedLineMaterial,
-} from "./line-material.js";
-import type { LinearDepthMaterialOptions } from "../lowering/linear-depth-lowerer.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type {
     DataTypeRegistry,
@@ -40,7 +23,6 @@ import type {
     CompileAsset,
     DefaultRenderTaskEmission,
     Feature,
-    GeometryOutputTaskManifest,
     ResolvedCompileOptions,
     FrameCallbackSignature,
     Value,
@@ -64,6 +46,7 @@ import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
 import type { PropertyAccessLowerer } from "./properties.js";
+import type { IntrinsicOptions } from "./intrinsic-options.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -134,6 +117,7 @@ export interface LoweringServices {
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
     readonly propertyAccess: PropertyAccessLowerer;
+    readonly intrinsicOptions: IntrinsicOptions;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
@@ -237,172 +221,19 @@ export interface LoweringServices {
         callee: ts.Identifier,
     ): Value | undefined;
     compilePixelsTextureUpload(call: ts.CallExpression): Value | undefined;
-    compileBoxOptions(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): [string, string, string];
-    compileRenderTargetOptions(
-        expression: ts.Expression,
-    ): CompiledRenderTargetOptions;
-    compileRenderTaskOptions(expression: ts.Expression): string;
-    compileGeometryTaskOptions(expression: ts.Expression): {
-        cpp: string;
-        manifest: GeometryOutputTaskManifest;
-    };
-    compileCopyTaskOptions(expression: ts.Expression): string;
-    compileGroundOptions(
-        expression: ts.Expression,
-    ): [string, string, string, string, string];
-    compileGroundFromHeightMapOptions(
-        expression: ts.Expression,
-    ): [string, string, string, string, string, string, string];
-    compilePlaneOptions(expression: ts.Expression): [string, string];
-    compileSphereOptions(
-        expression: ts.Expression,
-    ): [string, string, string, string];
-    compileTorusOptions(expression: ts.Expression): [string, string, string];
-    compilePbrMaterialOptions(
-        expression: ts.Expression,
-    ): CompiledPbrMaterialOptions;
-    compileMetallicReflectanceOptions(
-        expression: ts.Expression,
-    ): CompiledMetallicReflectanceOptions;
-    compileClearCoatOptions(
-        expression: ts.Expression,
-    ): CompiledClearCoatOptions;
-    compileIridescenceOptions(
-        expression: ts.Expression,
-    ): CompiledIridescenceOptions;
-    compileAnisotropyOptions(
-        expression: ts.Expression,
-    ): CompiledAnisotropyOptions;
-    compileSheenOptions(expression: ts.Expression): CompiledSheenOptions;
-    compileSubsurfaceOptions(
-        expression: ts.Expression,
-    ): CompiledSubsurfaceOptions;
-    compileShaderMaterialOptions(expression: ts.Expression): {
-        name: string;
-        id: number;
-        dynamicUniforms?: Array<{
-            offset: number;
-            components: string[];
-        }>;
-    };
-    reachGridMaterial(
-        call: ts.CallExpression,
-        options: ts.Expression | undefined,
-    ): ReachedGridMaterial;
-    reachLineMaterial(
-        node: ts.Node,
-        options: ReachedLineMaterial,
-    ): {
-        name: string;
-        id: number;
-    };
-    reachPhysicsViewerMaterial(
-        node: ts.Node,
-        color: readonly [number, number, number, number],
-    ): {
-        name: string;
-        id: number;
-    };
     guardStaticConstructionRead(operation: string): void;
-    reachLinearDepthMaterial(
-        node: ts.Node,
-        options: LinearDepthMaterialOptions,
-    ): {
-        name: string;
-        id: number;
-    };
-    lineMaterialPermutation(
-        name: string,
-        node: ts.Node,
-    ): LineMaterialPermutation | undefined;
-    compileNodeMaterialOptions(
-        snippetExpression: ts.Expression,
-        optionsExpression: ts.Expression | undefined,
-    ): CompiledNodeMaterialCall;
-    resolveShaderUniform(
-        material: Value,
-        nameExpression: ts.Expression,
-        expectedCounts: number[],
-    ): {
-        offset: number;
-        count: number;
-    };
-    resolveShaderTextureSlot(
-        material: Value,
-        nameExpression: ts.Expression,
-    ): number;
-    resolveShaderStorageBufferSlot(
-        material: Value,
-        nameExpression: ts.Expression,
-    ): number;
-    compileShaderUniformComponents(
-        expression: ts.Expression,
-        count: number,
-    ): string[];
-    compilePropertyAnimationClip(
-        nameExpression: ts.Expression,
-        tracksExpression: ts.Expression,
-        optionsExpression: ts.Expression | undefined,
-    ): {
-        cpp: string;
-        frameRate: string;
-        duration: string;
-        target: "mesh" | "camera" | "record";
-        paths: readonly string[];
-    };
-    compilePropertyAnimationTargets(
-        target: Value,
-        paths: readonly string[],
-        node: ts.Expression,
-    ): {
-        cpp: string;
-        engineCpp: string;
-    };
     compileRecordSetterValue(
         owner: Value,
         setter: ts.SetAccessorDeclaration,
         node: ts.Expression,
         value: Value,
     ): void;
-    compilePropertyAnimationGroupOptions(
-        expression: ts.Expression | undefined,
-        clip: Value,
-    ): string;
     expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression;
-    compileEnvironmentOptions(expression: ts.Expression): {
-        groundTextureUrl: string;
-        skyboxUrl: string;
-        skyboxSize: string;
-        brdfUrl: string;
-        brdfPathCpp?: string;
-        skipSkybox: boolean;
-        skipGround: boolean;
-    };
-    compileDdsEnvironmentOptions(expression: ts.Expression): string;
-    compileDdsEnvironmentBackgroundOptions(expression: ts.Expression): {
-        groundTextureUrl: string;
-        skyboxUrl: string;
-        skyboxSize: string;
-        enableNoise: boolean;
-    };
     referenceSearch(): string;
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
-    compileSceneDefaultRenderTask(
-        expression: ts.Expression | undefined,
-    ): boolean;
-    compileHdrEnvironmentOptions(expression: ts.Expression): {
-        faceSize: number;
-        useCubemapSkybox: boolean;
-        skipGround: boolean;
-        skyboxSize: string;
-        skyboxPosition: string;
-    };
     compileVec3(
         expression: ts.Expression,
         precision?: "float" | "double",

@@ -76,7 +76,7 @@ export interface PhysicsIntrinsicContext
             | "registerNativeBinding"
             | "emit"
             | "resolveStaticExpression"
-            | "reachPhysicsViewerMaterial"
+            | "intrinsicOptions"
             | "sceneManifest"
         > {}
 
@@ -927,7 +927,10 @@ function compileCreatePhysicsViewer(
         }
     }
     context.reachFeature("physics:viewer", call);
-    const variant = context.reachPhysicsViewerMaterial(call, color);
+    const variant = context.intrinsicOptions.reachPhysicsViewerMaterial(
+        call,
+        color,
+    );
     return {
         kind: "physics-viewer",
         cpp: `bbl::upstream::create_physics_viewer(${scene.cpp}, ${world.cpp}, ${variant.id}u)`,
