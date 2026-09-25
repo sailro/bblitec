@@ -713,10 +713,8 @@ class DawnSceneRun {
                 standard_state.group_key =
                     variant * 2 +
                     ((standard_material && standard_material->has_emissive_render_texture) ? 1 : 0);
-                write_standard_draw_blocks(
-                    state, *pass_scene, engine, draw, standard_state.mesh_uniforms,
-                    standard_state.material_uniforms, standard_state.uv_uniforms,
-                    standard_state.uv_transform_uniforms);
+                write_standard_draw_blocks(state, *pass_scene, engine, draw,
+                                           standard_state.mesh_uniforms, standard_state);
 #else
                 dawn_error("Standard draw in a build with no composed "
                            "variant table; the transcribed fragment is "
@@ -806,8 +804,7 @@ class DawnSceneRun {
                         state, draw_mesh, draw.item.material.value, variant,
                         handle_find(engine.materials, draw.item.material));
                     write_pinned_draw_blocks(state, *pass_scene, engine, draw, variant,
-                                             pinned_state.mesh_uniforms,
-                                             pinned_state.material_uniforms);
+                                             pinned_state);
                 }
 #else
                 dawn_error("PBR draw in a build with no composed variant "
@@ -1266,6 +1263,7 @@ public:
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
         state.node_capture.capture.begin_frame(static_cast<std::uint64_t>(frame));
 #endif
+        ++state.material_upload_frame;
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         poll_platform_events(
             engine, running, hidden_test_pass,

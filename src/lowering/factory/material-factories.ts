@@ -2134,6 +2134,8 @@ void mark_material_ubo_dirty(
     if (material.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid material handle.");
     }
+    const MaterialHandle source = ${recordAt("engine.materials", "material")}.source_material;
+    ++${recordAt("engine.materials", "source.value == invalid_handle ? material : source")}.ubo_version;
 }
 
 } // namespace bbl

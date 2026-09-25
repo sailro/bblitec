@@ -243,6 +243,8 @@ struct DawnDrawResources {
     /** The variant, times two plus the Standard unfilterable-emissive bit. */
     std::size_t group_key = npos;
     std::vector<std::uint32_t> plugin_texture_allocations;
+    std::optional<std::tuple<std::uint64_t, std::uint64_t, std::size_t, std::uint32_t>>
+        material_upload;
 };
 
 using DawnDrawState = OwnedGpuRecord<DawnDrawResources, DawnState>;
@@ -741,6 +743,7 @@ struct DawnBackgroundArm {
 #endif
 
 struct DawnState : DawnDevice {
+    std::uint64_t material_upload_frame = 0;
     // Declared first so it is destroyed last: every pipeline and bind group
     // built over these layouts is released before them.
     DawnLayoutCache layouts;
@@ -2308,7 +2311,7 @@ DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
  */
 void write_pinned_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                               const upstream::RenderDrawCommand& draw, std::size_t variant,
-                              WGPUBuffer mesh_uniforms, WGPUBuffer material_uniforms);
+                              DawnDrawState& draw_state);
 
 /**
  * Writes one geometry task's pinned blocks for the frame.
@@ -2583,8 +2586,7 @@ StandardRenderViews standard_render_views(DawnState& state, const Engine& engine
  */
 void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                                 const upstream::RenderDrawCommand& draw, WGPUBuffer mesh_uniforms,
-                                WGPUBuffer material_uniforms, WGPUBuffer uv_uniforms,
-                                [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
+                                DawnDrawState& material_state,
                                 const PinnedVelocityHistory* velocity_history = nullptr);
 
 /**

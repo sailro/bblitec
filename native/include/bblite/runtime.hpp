@@ -2506,6 +2506,7 @@ struct LocalCubemapRecord {
 };
 
 struct MaterialRecord {
+    std::uint64_t ubo_version = 0;
     std::shared_ptr<LocalCubemapRecord> local_environment;
     /** Material.name, copied from the authored asset when one exists. */
     std::string name;

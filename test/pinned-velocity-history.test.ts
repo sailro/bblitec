@@ -96,7 +96,7 @@ test("only the geometry task's Standard draws write the velocity tail", () => {
     );
     assert.match(
         dawn,
-        /colour_state\.uv_transform_uniforms, &geometry\.velocity\);/,
+        /colour_state, &geometry\.velocity\);/,
         "the Dawn geometry task hands its history to its draws",
     );
 });

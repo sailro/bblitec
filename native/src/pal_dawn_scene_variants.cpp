@@ -11,6 +11,13 @@
 namespace bbl::pal {
 inline namespace dawn_scene {
 
+inline std::uint64_t material_ubo_version(const Engine& engine, const MaterialRecord* material) {
+    if (!material)
+        return 0;
+    const auto* source = handle_find(engine.materials, material->source_material);
+    return source ? source->ubo_version : material->ubo_version;
+}
+
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) &&                                                \
     (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || BBLITE_NODE_VARIANTS > 0)
 void release_variant_family(
@@ -678,6 +685,7 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
             std::exchange(draw_state.material_uniforms, uniform_buffer(entry.material_ubo_bytes))) {
         wgpuBufferRelease(old);
     }
+    draw_state.material_upload.reset();
     draw_state.group = build_pinned_draw_group(state, mesh, variant, draw_state.mesh_uniforms,
                                                draw_state.material_uniforms, nullptr, record);
     draw_state.group_key = variant;
@@ -710,15 +718,22 @@ DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
 
 void write_pinned_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                               const upstream::RenderDrawCommand& draw, std::size_t variant,
-                              WGPUBuffer mesh_uniforms, WGPUBuffer material_uniforms) {
+                              DawnDrawState& draw_state) {
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
     const upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
-    wgpuQueueWriteBuffer(state.queue, mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
+    wgpuQueueWriteBuffer(state.queue, draw_state.mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
+    const auto& material = handle_at(engine.materials, draw.item.material);
+    const auto upload =
+        std::tuple(state.material_upload_frame, material_ubo_version(engine, &material), variant,
+                   draw.item.material.value);
+    if (draw_state.material_upload == upload)
+        return;
     std::vector<std::uint8_t> material_block(entry.material_ubo_bytes, 0);
-    upstream::write_pbr_variant_material(variant, handle_at(engine.materials, draw.item.material),
-                                         material_block.data(), entry.material_ubo_bytes);
-    wgpuQueueWriteBuffer(state.queue, material_uniforms, 0, material_block.data(),
+    upstream::write_pbr_variant_material(variant, material, material_block.data(),
+                                         entry.material_ubo_bytes);
+    wgpuQueueWriteBuffer(state.queue, draw_state.material_uniforms, 0, material_block.data(),
                          entry.material_ubo_bytes);
+    draw_state.material_upload = upload;
 }
 
 void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engine& engine,
@@ -746,8 +761,7 @@ void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engi
             DawnMesh& mesh = state.meshes[draw.item_index];
             DawnDrawState& draw_state = ensure_pinned_geometry_bindings(
                 state, mesh, variant, geometry.pinned_geometry_params);
-            write_pinned_draw_blocks(state, scene, engine, draw, variant, draw_state.mesh_uniforms,
-                                     draw_state.material_uniforms);
+            write_pinned_draw_blocks(state, scene, engine, draw, variant, draw_state);
         }
     }
 }
@@ -1080,8 +1094,7 @@ StandardRenderViews standard_render_views(DawnState& state, const Engine& engine
 
 void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                                 const upstream::RenderDrawCommand& draw, WGPUBuffer mesh_uniforms,
-                                WGPUBuffer material_uniforms, WGPUBuffer uv_uniforms,
-                                [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
+                                DawnDrawState& material_state,
                                 const PinnedVelocityHistory* velocity_history) {
     const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
     const upstream::MeshUniforms mesh_block =
@@ -1091,17 +1104,23 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
     if (material && material->no_color) {
         features |= upstream::standard_no_color_output_flag;
     }
+    const auto upload =
+        std::tuple(state.material_upload_frame, material_ubo_version(engine, material),
+                   static_cast<std::size_t>(features), draw.item.material.value);
+    if (material_state.material_upload == upload)
+        return;
     const upstream::StandardMaterialUniforms material_block =
         standard_material_block(material, features);
-    wgpuQueueWriteBuffer(state.queue, material_uniforms, 0, &material_block,
+    wgpuQueueWriteBuffer(state.queue, material_state.material_uniforms, 0, &material_block,
                          sizeof(material_block));
     const upstream::StandardUvTransformUniforms uv_block = standard_uv_block(material, features);
-    wgpuQueueWriteBuffer(state.queue, uv_uniforms, 0, &uv_block, sizeof(uv_block));
+    wgpuQueueWriteBuffer(state.queue, material_state.uv_uniforms, 0, &uv_block, sizeof(uv_block));
 #if BBLITE_HAS_STANDARD_UV_TRANSFORM
     const upstream::StandardUvTxUniforms uv_transform = standard_uv_transform_block(material);
-    wgpuQueueWriteBuffer(state.queue, uv_transform_uniforms, 0, &uv_transform,
+    wgpuQueueWriteBuffer(state.queue, material_state.uv_transform_uniforms, 0, &uv_transform,
                          sizeof(uv_transform));
 #endif
+    material_state.material_upload = upload;
 }
 
 void write_standard_geometry_task(DawnState& state, const Scene& scene, const Engine& engine,
@@ -1151,8 +1170,7 @@ void write_standard_geometry_task(DawnState& state, const Scene& scene, const En
                 }
             }
             write_standard_draw_blocks(state, scene, engine, draw, draw_state.mesh_uniforms,
-                                       colour_state.material_uniforms, colour_state.uv_uniforms,
-                                       colour_state.uv_transform_uniforms, &geometry.velocity);
+                                       colour_state, &geometry.velocity);
             if (!draw_state.group) {
                 draw_state.group = build_standard_draw_group(
                     state, mesh, material, variant, draw_state.mesh_uniforms,
