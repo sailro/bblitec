@@ -84,6 +84,14 @@ test("loop and branch locals preserve outer bindings and avoid native shadowing"
     assert.match(cpp, /p \+= pi_1;$/);
 });
 
+test("logical conditions preserve grouping supplied by boolean adapters", () => {
+    const cpp = lower("let result = 0; if (enabled || ready) result = 1;", [
+        ["enabled", { cpp: "enabled", type: "bool" }],
+        ["ready", { cpp: "(target && target->ready)", type: "bool" }],
+    ]);
+    assert.match(cpp, /\(enabled\) \|\| \(target && target->ready\)/);
+});
+
 test("a number declared from a counted loop index converts explicitly", () => {
     const cpp = lower(
         "let total = 0; for (let start = 0; start < 4; start++) { let left = start; total += left; }",

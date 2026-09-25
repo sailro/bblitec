@@ -3062,10 +3062,9 @@ export class PinnedNumericLowerer {
     }
 
     private conditionOperand(node: ts.Expression): string {
-        const condition = this.condition(node);
-        return ts.isConditionalExpression(unwrapExpression(node))
-            ? `(${condition})`
-            : condition;
+        // Conditions and adapters can contain operators; a logical operand
+        // supplies the grouping that a statement's condition would own.
+        return `(${cppCondition(this.condition(node))})`;
     }
 
     /** Value selection evaluates the left once and the selected right lazily. */

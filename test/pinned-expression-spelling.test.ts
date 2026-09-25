@@ -51,7 +51,7 @@ test("minimal spelling retains grouping and separates adjacent unary operators",
     assert.equal(render("+(+a)", minimal), "+(+a)");
     assert.equal(
         render("(a ? b : c) ? a : c", minimal),
-        "bbl::js::number_truthy(bbl::js::number_truthy(a) ? b : c) ? a : c",
+        "bbl::js::number_truthy(static_cast<double>(bbl::js::number_truthy(static_cast<double>(a)) ? b : c)) ? a : c",
     );
 });
 
@@ -60,7 +60,7 @@ test("source spelling preserves parentheses through non-null assertions and prin
     assert.equal(render("(a * (b + 1))!", source), "(a * (b + 1.0))");
     assert.equal(
         render("a ? Math.max(b, 1e-6) : 2", source),
-        "(bbl::js::number_truthy(a) ? bbl::js::math_extreme<true>({b, 0.000001}) : 2.0)",
+        "(bbl::js::number_truthy(static_cast<double>(a)) ? bbl::js::math_extreme<true>({b, 0.000001}) : 2.0)",
     );
     assert.equal(render("a % b", source), "std::fmod(a, b)");
     assert.equal(
@@ -77,7 +77,7 @@ const nativeTools = optionalNativeFixtureTools();
 test("glTF expression scopes carry arithmetic, comparisons and Math calls through the numeric renderer", () => {
     for (const [source, expected] of [
         ["(a + b) * c", "(a + b) * c"],
-        ["a <= b && b !== c", "(a <= b && b != c)"],
+        ["a <= b && b !== c", "((a <= b) && (b != c))"],
         [
             "a <= b ? Math.max(a, b) : c",
             "a <= b ? bbl::js::math_extreme<true>({a, b}) : c",
