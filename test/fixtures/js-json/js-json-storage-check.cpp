@@ -211,6 +211,22 @@ void check_parse() {
     check_equal(bbl::js::json_stringify(bbl::js::json_parse("{\"z\":1,\"a\":[true,null]}")),
                 "{\"z\":1,\"a\":[true,null]}",
                 "a parsed document round-trips with its own key order");
+    check_equal(bbl::js::json_stringify(bbl::js::json_parse(
+                    R"({"z":{"old":0},"2":2,"a":[],"1":1,"z":{"new":[false,{},"\u00e9"]}})")),
+                "{\"1\":1,\"2\":2,\"z\":{\"new\":[false,{},\"\xc3\xa9\"]},\"a\":[]}",
+                "duplicate keys replace nested values and retain property order");
+    check(bbl::js::json_parse("18446744073709551615").to_number() ==
+              static_cast<double>(std::numeric_limits<std::uint64_t>::max()),
+          "large unsigned JSON numbers become JavaScript numbers");
+    for (const std::string text : {"true false", "[1,]", "{\"a\":}", "\"\\uD800\""}) {
+        bool rejected = false;
+        try {
+            static_cast<void>(bbl::js::json_parse(text));
+        } catch (const nlohmann::json::parse_error&) {
+            rejected = true;
+        }
+        check(rejected, "malformed JSON preserves the parser exception: " + text);
+    }
 }
 
 void check_storage() {

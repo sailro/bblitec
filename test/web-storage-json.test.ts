@@ -428,7 +428,7 @@ test("the JSON runtime is included only by the scenes that reach it", () => {
     // Object key order is the writer's call order, so nothing sorts it:
     // the parsed value keeps the document's order and the writer keeps the
     // record's, which is why neither side is a sorted associative map.
-    assert.match(runtime, /nlohmann::ordered_json::parse/);
+    assert.match(runtime, /nlohmann::json::sax_parse/);
     assert.match(runtime, /using Object = std::vector<Entry>;/);
     // ts_runtime.hpp includes nlohmann's header unconditionally, and the
     // static shipping tree carries that include directory only behind the

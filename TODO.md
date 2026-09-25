@@ -24,7 +24,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 - [ ] Adopt SDL's main-callback loop for interactive builds so the Win32 move/resize modal loop no longer stalls iteration (`pal_platform_events.hpp`).
 - [ ] One file-type descriptor table for `<input accept>` validation and native dialog filters (`browser-file.ts`, `js_file.hpp`, `js_voxel_file.hpp`).
 - [ ] Shared bounded I/O returning absent/error/value (`pal_storage.cpp`, `pal_file_io.hpp`, `pal_ui_form.hpp`, `pal.cpp`).
-- [ ] Parse ordered `JsonValue` directly, without intermediate JSON conversion (`js_json.hpp`).
 - [ ] Reclaim retired shadow-generator records and map targets without compacting handles (`rebuild_scene_renderables` in `scene-lowerer.ts`).
 
 ## Qualification
