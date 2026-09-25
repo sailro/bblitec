@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// First, so the modules evaluated after it are compiled through the cache.
+import "./tooling/compile-cache.js";
 import { composePinnedBackgroundModules } from "./pinned-background-modules.js";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
