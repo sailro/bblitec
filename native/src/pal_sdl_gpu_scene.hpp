@@ -1107,11 +1107,16 @@ bool append_variant_attribute(std::string_view name, Uint32 location,
     std::array<SDL_GPUVertexBufferDescription, vertex_streams.size()>& buffers);
 #endif
 
+#if BBLITE_SHADOWS_ESM
+inline SDL_GPUTextureFormat esm_texture_format(upstream::EsmTextureFormat format) {
+    return format == upstream::EsmTextureFormat::depth32_float
+               ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
+               : SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+}
+#endif
+
 #if BBLITE_PINNED_MATERIALS
 #if BBLITE_SHADOWS_ESM
-// Defined with the ESM blur below; declared here because all three families'
-// pipeline builders sit above it and each needs the caster's colour format.
-SDL_GPUTextureFormat esm_texture_format(upstream::EsmTextureFormat format);
 
 /**
  * The colour target an ESM caster pipeline declares.
@@ -1335,8 +1340,6 @@ inline std::string pinned_stage_name(std::string_view file) {
     return "variant-" + std::string(file.substr(0, file.find(".wgsl")));
 }
 
-void ensure_pinned_slots(GpuState& state, std::size_t variant);
-
 /**
  * The graphics pipeline for one composed variant under one pipeline kind.
  *
@@ -1535,8 +1538,6 @@ void draw_node_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPURe
  * the vertex stage reads it as a uniform.
  */
 #if BBLITE_SHADOWS_ESM
-SDL_GPUTextureFormat esm_texture_format(upstream::EsmTextureFormat format);
-
 /**
  * One ESM generator's blur halves and the pipeline that fills them.
  *

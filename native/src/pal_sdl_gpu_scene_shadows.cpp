@@ -8,12 +8,6 @@ namespace bbl::pal {
 inline namespace sdl_scene {
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_SHADOW_RECEIVERS && BBLITE_SHADOWS_ESM
-SDL_GPUTextureFormat esm_texture_format(upstream::EsmTextureFormat format) {
-    return format == upstream::EsmTextureFormat::depth32_float
-               ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
-               : SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-}
-
 GpuState::EsmBlur& ensure_esm_blur(GpuState& state, const ShadowGeneratorRecord& generator,
                                    SDL_GPUTexture* source) {
     const std::uint32_t esm_index = generator.esm_index;
