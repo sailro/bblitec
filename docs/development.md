@@ -243,8 +243,10 @@ generated files.
 
 ## Validation
 
-Use focused checks per unit. Run the full checks below at integration milestones or on explicit request;
-do not repeat them after individual fixes:
+Use focused checks per unit. Run the full checks below only for final validation or on explicit request;
+do not repeat them after individual fixes. `npm run sweep` builds and measures every registered scene on
+both backends: about 20 minutes on a warm cache, hours from a cold one. A new worktree starts cold (its
+precompiled headers and the units built on them are cached per checkout).
 
 ```powershell
 npm run lint:ts
