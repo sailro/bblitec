@@ -208,24 +208,23 @@ export interface ExpressionContext
             | "withRecordScopes"
             | "captureRecordScopes"
             | "probeEmission"
-            | "recordAccessor"
+            | "nativeEmission"
             | "requireEngine"
             | "conditions"
             | "compileNumber"
             | "castNumber"
             | "compileBoolean"
             | "compileStringLiteral"
-            | "registerAsset"
+            | "assetRegistry"
             | "moduleRelativeAssetUrl"
             | "compileDynamicModuleRelativeAssetUrl"
-            | "materializeStaticNativeValue"
             | "isNumberExpression"
             | "propertyName"
             | "namesLocalFunction"
             | "cppString"
             | "browserErasure"
             | "libraryGlobal"
-            | "compileFrameCallback"
+            | "callbacks"
             | "requireDefaultEngine"
             | "handleCollections"
             | "handleCollectionIterationTarget"
@@ -235,14 +234,11 @@ export interface ExpressionContext
             | "compileThinInstanceUploadHelper"
             | "compilePixelsTextureUpload"
             | "compileStaticFetch"
-            | "compileSynchronousPromise"
+            | "asyncActivations"
             | "compileBrowserTextureFunctionCall"
             | "compileExecutedUrlFunctionCall"
             | "compileStaticFetchMethod"
             | "compilePlatformCall"
-            | "compilePlatformCallback"
-            | "platformEventCallbackIdentity"
-            | "hoistForwardCallbackBindings"
             | "reachJson"
             | "reachLocalStorage"
             | "reachFileReader"
@@ -252,7 +248,7 @@ export interface ExpressionContext
             | "resolveRecordMember"
             | "reachJsData"
             | "reachJsRandom"
-            | "noteMaterialColorRead"
+            | "admissions"
             | "enterRuntimeControlFlow"
             | "leaveRuntimeControlFlow"
             | "isInRuntimeIteration"
@@ -687,7 +683,7 @@ export class ExpressionLowerer {
             if (resolved !== unwrapped) {
                 const value = this.compileValue(resolved);
                 return value.kind === "regexp"
-                    ? this.context.materializeStaticNativeValue(
+                    ? this.context.nativeEmission.materializeStaticNativeValue(
                           unwrapped,
                           value,
                       )
@@ -921,7 +917,9 @@ export class ExpressionLowerer {
                 !this.context.options.workers &&
                 this.context.libraryGlobal(unwrapped.expression) === "Promise"
             )
-                return this.context.compileSynchronousPromise(unwrapped);
+                return this.context.asyncActivations.compileSynchronousPromise(
+                    unwrapped,
+                );
             this.context.fail(unwrapped, "Unsupported constructor expression.");
         }
         if (ts.isElementAccessExpression(unwrapped)) {
@@ -1844,7 +1842,7 @@ export class ExpressionLowerer {
                 );
             }
             const engine = this.context.requireDefaultEngine(call);
-            const callback = this.context.compileFrameCallback(
+            const callback = this.context.callbacks.compileFrameCallback(
                 argumentAt(call, 0),
                 "void",
             );
@@ -1855,7 +1853,7 @@ export class ExpressionLowerer {
             };
         }
         const engine = this.context.requireDefaultEngine(call);
-        const callback = this.context.compileFrameCallback(
+        const callback = this.context.callbacks.compileFrameCallback(
             argumentAt(call, 0),
             "void",
         );
@@ -3799,7 +3797,7 @@ export class ExpressionLowerer {
                 const keyCpp =
                     dynamicString || dynamicEnum ? "std::string" : "double";
                 const mapType = `bbl::js::Map<${keyCpp}, ${valueCpp}>`;
-                const table = this.context.recordAccessor(
+                const table = this.context.nativeEmission.recordAccessor(
                     owner,
                     mapType,
                     entries,
@@ -4614,7 +4612,7 @@ export class ExpressionLowerer {
                 cpp:
                     "bbl::sprite_renderer_before_update(" +
                     `${engineCpp}, ${renderer.cpp}, ` +
-                    `${this.context.compileFrameCallback(argumentAt(call, 0), "double-delta")})`,
+                    `${this.context.callbacks.compileFrameCallback(argumentAt(call, 0), "double-delta")})`,
                 engineCpp,
             };
         }

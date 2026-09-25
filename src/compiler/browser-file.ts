@@ -336,7 +336,7 @@ function compileFileReaderCall(
 export function emitBrowserFileAssignment(
     context: Pick<
         LoweringServices,
-        "bindings" | "unwrap" | "compilePlatformCallback" | "emit" | "fail"
+        "bindings" | "unwrap" | "callbacks" | "emit" | "fail"
     >,
     expression: ts.BinaryExpression,
     left: ts.PropertyAccessExpression,
@@ -361,7 +361,7 @@ export function emitBrowserFileAssignment(
             "FileReader handlers are assigned before readAsText; the native read completes inside the call.",
         );
     // The handler runs inside readAsText, like a listener its dispatch calls.
-    const handler = context.compilePlatformCallback(
+    const handler = context.callbacks.compilePlatformCallback(
         expression.right,
         undefined,
         [],

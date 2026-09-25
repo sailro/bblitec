@@ -368,3 +368,14 @@ export function objectProperty(
     }
     return undefined;
 }
+
+/** Whether a node is written inside another. */
+export function isDeclaredInside(
+    node: ts.Node,
+    target: ts.Node | undefined,
+): boolean {
+    return (
+        target !== undefined &&
+        ts.findAncestor(node, (owner) => owner === target) !== undefined
+    );
+}

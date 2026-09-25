@@ -96,7 +96,7 @@ interface ClassLoweringContext extends Pick<
     | "checker"
     | "evaluationOrder"
     | "options"
-    | "compileAsyncCall"
+    | "asyncActivations"
     | "dataTypes"
     | "dataLowerer"
     | "nativeFunctions"
@@ -108,7 +108,7 @@ interface ClassLoweringContext extends Pick<
     | "registerNativeConstBinding"
     | "registerNativeTemporary"
     | "cppString"
-    | "identifierIsRebound"
+    | "sharedClosures"
     | "compileValue"
     | "emitStatement"
     | "bindings"
@@ -1805,7 +1805,11 @@ export class ClassLowerer {
             const previousThis = this.context.activeThis();
             this.context.defineThis(instance);
             try {
-                return this.context.compileAsyncCall(method, arguments_, call)!;
+                return this.context.asyncActivations.compileAsyncCall(
+                    method,
+                    arguments_,
+                    call,
+                )!;
             } finally {
                 this.context.defineThis(previousThis);
             }

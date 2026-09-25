@@ -16,14 +16,12 @@ export interface AnimationIntrinsicContext
         Pick<
             LoweringServices,
             | "libraryGlobal"
-            | "compilePropertyAnimationClip"
-            | "compilePropertyAnimationGroupOptions"
-            | "compilePropertyAnimationTargets"
+            | "intrinsicOptions"
             | "compileNumber"
             | "resolveStaticExpression"
             | "bindings"
             | "requirePresentationHost"
-            | "compileFrameCallback"
+            | "callbacks"
             | "requireCompatibleFrameConductor"
             | "requireEngine"
             | "expectSameEngine"
@@ -147,7 +145,7 @@ export function compileAnimationIntrinsic(
                 );
             if (onUpdate)
                 fields.push(
-                    `.on_update = ${context.compileFrameCallback(onUpdate, "timestamp", true)}`,
+                    `.on_update = ${context.callbacks.compileFrameCallback(onUpdate, "timestamp", true)}`,
                 );
             if (onUpdate && !engineExpression)
                 fields.push(".source_engine_present = false");
@@ -210,11 +208,12 @@ export function compileAnimationIntrinsic(
 
         case "createPropertyAnimationClip": {
             context.expectArgumentCount(call, 2, 3);
-            const compiled = context.compilePropertyAnimationClip(
-                argumentAt(call, 0),
-                argumentAt(call, 1),
-                call.arguments[2],
-            );
+            const compiled =
+                context.intrinsicOptions.compilePropertyAnimationClip(
+                    argumentAt(call, 0),
+                    argumentAt(call, 1),
+                    call.arguments[2],
+                );
             context.reachFeature("animation:property", call);
             return {
                 kind: "animation-clip",
@@ -250,11 +249,12 @@ export function compileAnimationIntrinsic(
             let targetsCpp: string;
             let engine: string;
             if (target.kind === "data" || target.kind === "record") {
-                const compiled = context.compilePropertyAnimationTargets(
-                    target,
-                    paths,
-                    argumentAt(call, 1),
-                );
+                const compiled =
+                    context.intrinsicOptions.compilePropertyAnimationTargets(
+                        target,
+                        paths,
+                        argumentAt(call, 1),
+                    );
                 targetsCpp = compiled.cpp;
                 engine = compiled.engineCpp;
             } else {
@@ -272,10 +272,11 @@ export function compileAnimationIntrinsic(
                     .join(", ")}}`;
                 context.expectSameEngine(manager, target, call);
             }
-            const options = context.compilePropertyAnimationGroupOptions(
-                call.arguments[3],
-                clip,
-            );
+            const options =
+                context.intrinsicOptions.compilePropertyAnimationGroupOptions(
+                    call.arguments[3],
+                    clip,
+                );
             // A manager created without options acquires its engine from
             // the first property target bound into it. The pin stores that
             // association on each manager-owned task; carrying it on the

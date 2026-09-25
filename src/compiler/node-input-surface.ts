@@ -22,8 +22,7 @@ export interface NodeInputContext extends Pick<
     | "fail"
     | "reachFeature"
     | "reachJsData"
-    | "assertNodeInputMutable"
-    | "noteNodeInputAdmissionFailure"
+    | "admissions"
     | "libraryGlobal"
 > {}
 
@@ -123,7 +122,7 @@ export function compileNodeInputMutation(
         const target = node.arguments[0];
         const type = context.checker.getTypeAtLocation(target);
         if (isPinnedType(type, ["Texture2D"])) {
-            context.noteNodeInputAdmissionFailure(
+            context.admissions.noteNodeInputAdmissionFailure(
                 node,
                 "Node input bindings do not represent reflective texture producer mutation.",
             );
@@ -169,7 +168,7 @@ export function compileNodeInputMutation(
             "Node inputs support direct texture assignment only; numeric uniforms and computed mutation are not represented.",
         );
     }
-    context.assertNodeInputMutable(node);
+    context.admissions.assertNodeInputMutable(node);
     context.reachFeature("material:node-inputs", node);
     context.reachJsData();
     const owner = context.allocateTemporaryCppName("node_input");

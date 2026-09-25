@@ -181,17 +181,23 @@ test("the compiler delegates intrinsic families and feature lowering", () => {
         "UserFunctionLowerer",
         "StatementLowerer",
         "PropertyAccessLowerer",
+        "IntrinsicOptions",
     ]) {
         assert.ok(compiler.constructs.has(name), name);
     }
+    // The option adapters delegate each intrinsic family's options.
+    const options = sourceFacts("src/compiler/intrinsic-options.ts");
     for (const module of [
-        "option-helpers",
         "intrinsics/mesh-options",
         "intrinsics/engine-options",
         "intrinsics/material-options",
         "intrinsics/asset-options",
         "shader-material",
         "property-animation",
+    ])
+        assert.ok(options.imports.has("./" + module + ".js"), module);
+    for (const module of [
+        "option-helpers",
         "adaptations",
         "assets",
         "output-projection",

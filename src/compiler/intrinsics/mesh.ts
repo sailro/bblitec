@@ -82,15 +82,10 @@ export interface MeshIntrinsicContext
             LoweringServices,
             | "dataTypes"
             | "sceneManifest"
-            | "compileBoxOptions"
-            | "compileGroundOptions"
-            | "compileGroundFromHeightMapOptions"
-            | "registerAsset"
+            | "intrinsicOptions"
+            | "assetRegistry"
             | "cppString"
             | "requireDefaultEngine"
-            | "compilePlaneOptions"
-            | "compileSphereOptions"
-            | "compileTorusOptions"
             | "compileTypedArrayArgument"
             | "compileStringLiteral"
             | "compileVec3"
@@ -106,8 +101,6 @@ export interface MeshIntrinsicContext
             | "isEntryBodyScope"
             | "requireEngine"
             | "expectSameEngine"
-            | "markAssetRootReparented"
-            | "assertAssetRootWritable"
             | "unwrap"
             | "resolveStaticExpression"
             | "symbols"
@@ -1198,7 +1191,10 @@ function compileSetParent(
     }
     context.reachFeature("mesh:parenting", call);
     if (child.kind === "asset-root") {
-        context.markAssetRootReparented(child, argumentAt(call, 0));
+        context.assetRegistry.markAssetRootReparented(
+            child,
+            argumentAt(call, 0),
+        );
         return {
             kind: "void",
             cpp:
@@ -1498,7 +1494,7 @@ function compileCreateHierarchyInstancePool(
             "createHierarchyInstancePool currently lowers a cloned imported glTF root hierarchy.",
         );
     }
-    context.assertAssetRootWritable(root, call);
+    context.assetRegistry.assertAssetRootWritable(root, call);
     const capacity = context.compileNumber(argumentAt(call, 1), "double");
     const engine = context.requireEngine(root, call);
     const pool = context.allocateTemporaryCppName("hierarchy_instance_pool");
@@ -1952,7 +1948,7 @@ function compileCreateBox(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const options = call.arguments[1]
-        ? context.compileBoxOptions(call.arguments[1])
+        ? context.intrinsicOptions.compileBoxOptions(call.arguments[1])
         : ["1.0f", "1.0f", "1.0f"];
     context.reachFeature("mesh:box", call);
     return {
@@ -1975,7 +1971,7 @@ function compileCreateGround(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const options = call.arguments[1]
-        ? context.compileGroundOptions(call.arguments[1])
+        ? context.intrinsicOptions.compileGroundOptions(call.arguments[1])
         : GROUND_OPTION_DEFAULTS;
     context.reachFeature("mesh:ground", call);
     return {
@@ -1999,12 +1995,14 @@ function compileCreateGroundFromHeightMap(
     context.expectArgumentCount(call, 2, 3);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
-    const asset = context.registerAsset(
+    const asset = context.assetRegistry.registerAsset(
         context.compileStringLiteral(argumentAt(call, 1)),
         "texture",
     );
     const options = call.arguments[2]
-        ? context.compileGroundFromHeightMapOptions(call.arguments[2])
+        ? context.intrinsicOptions.compileGroundFromHeightMapOptions(
+              call.arguments[2],
+          )
         : [
               ...GROUND_OPTION_DEFAULTS,
               // createGroundFromHeightMap's own two.
@@ -2036,7 +2034,7 @@ function compileCreatePlane(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const options = call.arguments[1]
-        ? context.compilePlaneOptions(call.arguments[1])
+        ? context.intrinsicOptions.compilePlaneOptions(call.arguments[1])
         : ["1.0f", "1.0f"];
     context.reachFeature("mesh:plane", call);
     return {
@@ -2059,7 +2057,7 @@ function compileCreateSphere(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const options = call.arguments[1]
-        ? context.compileSphereOptions(call.arguments[1])
+        ? context.intrinsicOptions.compileSphereOptions(call.arguments[1])
         : ["32u", "1.0", "1.0", "1.0"];
     context.reachFeature("mesh:sphere", call);
     return {
@@ -2201,10 +2199,13 @@ function compileCreateBoxData(
     const box = importedName === "createBoxData";
     const options = box
         ? call.arguments[0]
-            ? context.compileBoxOptions(call.arguments[0], "double")
+            ? context.intrinsicOptions.compileBoxOptions(
+                  call.arguments[0],
+                  "double",
+              )
             : ["1.0", "1.0", "1.0"]
         : call.arguments[0]
-          ? context.compileSphereOptions(call.arguments[0])
+          ? context.intrinsicOptions.compileSphereOptions(call.arguments[0])
           : ["32u", "1.0", "1.0", "1.0"];
     const temporary = context.allocateTemporaryCppName(
         box ? "box_data" : "sphere_data",
@@ -2906,7 +2907,7 @@ function compileCreateTorus(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const options = call.arguments[1]
-        ? context.compileTorusOptions(call.arguments[1])
+        ? context.intrinsicOptions.compileTorusOptions(call.arguments[1])
         : ["1.0f", "0.5f", "16u"];
     context.reachFeature("mesh:torus", call);
     return {

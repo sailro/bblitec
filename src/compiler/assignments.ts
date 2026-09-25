@@ -490,16 +490,14 @@ export interface AssignmentContext
         Pick<
             LoweringServices,
             | "libraryGlobal"
-            | "noteNodeInputAdmissionFailure"
-            | "noteTextSceneCameraAssignment"
-            | "noteTemporalRecordBoundary"
+            | "admissions"
             | "isRuntimeResourceConstruction"
             | "checker"
             | "classLowerer"
             | "dataTypes"
             | "dataLowerer"
             | "sceneManifest"
-            | "engineHasStarted"
+            | "engineLifecycle"
             | "hasRegisteredScene"
             | "boundPixelsTextures"
             | "resolveStaticExpression"
@@ -513,7 +511,7 @@ export interface AssignmentContext
             | "bindClassField"
             | "emitOptionalResourceAssignment"
             | "emitUiPropertyAssignment"
-            | "compilePlatformCallback"
+            | "callbacks"
             | "compileNumber"
             | "compileBoolean"
             | "compileColor3"
@@ -526,7 +524,7 @@ export interface AssignmentContext
             | "expectKind"
             | "expectSameEngine"
             | "requireEngine"
-            | "assertAssetRootWritable"
+            | "assetRegistry"
             | "eraseBrowserInstrumentation"
             | "browserErasure"
             | "isNativeUiValueExpression"
@@ -534,9 +532,6 @@ export interface AssignmentContext
             | "allocateTemporaryCppName"
             | "reachFeature"
             | "reachJsData"
-            | "noteLegacyDiffuseColorWrite"
-            | "noteMaterialColorRead"
-            | "noteMaterialColorRenderBoundary"
             | "propertyName"
             | "probeStaticArrayLiteral"
             | "staticStringElements"
@@ -1502,7 +1497,7 @@ export function emitPropertyAssignment(
             );
             return;
         }
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             expression,
             `authored imageProcessing.${property} writes require double-precision TAA cache-key transport`,
             "always",
@@ -1616,7 +1611,7 @@ export function emitPropertyAssignment(
     if (trsVector && ts.isPropertyAccessExpression(left.expression)) {
         const root = context.compileValue(left.expression.expression);
         if (root.kind === "asset-root") {
-            context.assertAssetRootWritable(root, expression);
+            context.assetRegistry.assertAssetRootWritable(root, expression);
             const vector = left.expression.name.text;
             const axis = trsAxisIndex(left.name.text);
             if (axis === undefined) {
@@ -2460,7 +2455,7 @@ function emitTargetPropertyAssignment(
         return true;
 
     if (target.kind === "texture" && property in textureRecordFields) {
-        context.noteNodeInputAdmissionFailure(
+        context.admissions.noteNodeInputAdmissionFailure(
             expression,
             "Node input bindings do not represent texture producer metadata mutation; configure the texture at construction.",
         );
@@ -2620,7 +2615,7 @@ function emitTargetPropertyAssignment(
             recordField.kind === "material" &&
             recordField.property === "diffuseColor"
         ) {
-            context.noteMaterialColorRenderBoundary(
+            context.admissions.noteMaterialColorRenderBoundary(
                 expression,
                 "whole color replacement after registration",
             );
@@ -2638,7 +2633,9 @@ function emitTargetPropertyAssignment(
             // A `{ r, g, b }` object falls through to `compileColor3`,
             // which refuses it: the pin's `diffuseColor` is a number tuple.
             if (legacyTuple) {
-                context.noteLegacyDiffuseColorWrite(expression.right);
+                context.admissions.noteLegacyDiffuseColorWrite(
+                    expression.right,
+                );
             } else if (!ts.isObjectLiteralExpression(shape)) {
                 // A named or returned array can also be mutated through its other
                 // owner. A fresh literal has no external alias until a getter is read.
@@ -2647,7 +2644,7 @@ function emitTargetPropertyAssignment(
                         context.unwrap(expression.right),
                     )
                 ) {
-                    context.noteMaterialColorRead("diffuseColor");
+                    context.admissions.noteMaterialColorRead("diffuseColor");
                 }
                 if (
                     ts.isArrayLiteralExpression(shape) &&
@@ -2776,7 +2773,7 @@ function emitTargetPropertyAssignment(
                     "A light parent currently requires an imported transform root or null.",
                 );
             context.expectSameEngine(target, parent, expression);
-            context.assertAssetRootWritable(parent, expression);
+            context.assetRegistry.assertAssetRootWritable(parent, expression);
         }
         context.emit(
             `bbl::set_light_asset_parent(${context.requireEngine(target, expression)}, ${target.cpp}, ${parent ? parent.cpp : "bbl::AssetHandle{}"});`,
@@ -2847,7 +2844,7 @@ function emitLocalMatrixAssignment(
                 "An imported synthetic root only exposes clearing _localMatrix with undefined.",
             );
         }
-        context.assertAssetRootWritable(target, expression);
+        context.assetRegistry.assertAssetRootWritable(target, expression);
         // loadGltf's public root is the synthetic TRS node. It never owns a
         // raw glTF matrix in the flattened native representation, so clearing
         // that optional override is observably a no-op here as it is upstream.
@@ -2919,7 +2916,7 @@ function emitCameraAssignment(
         requireSimpleAssignment(context, expression, "scene camera");
         const camera = context.compileValue(expression.right);
         context.expectKind(camera, "camera", expression.right);
-        context.noteTextSceneCameraAssignment(left);
+        context.admissions.noteTextSceneCameraAssignment(left);
         // The scene keeps the camera VALUE, not a copy: a property
         // written after the assignment still reaches it, and one
         // executed port -- the node-particle flow-map build -- reads
@@ -3180,11 +3177,11 @@ function emitMaterialAssignment(
 ): boolean {
     const { expression, target, property } = state;
     if (target.kind === "mesh" && property === "material") {
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             expression,
             "mesh material replacement after scene registration",
         );
-        context.noteMaterialColorRenderBoundary(
+        context.admissions.noteMaterialColorRenderBoundary(
             expression,
             "mesh material replacement after registration",
         );
@@ -3341,7 +3338,7 @@ function emitSkeletonAssignment(
         }
         if (
             context.isRuntimeResourceConstruction() ||
-            context.engineHasStarted()
+            context.engineLifecycle.engineHasStarted()
         ) {
             context.fail(
                 expression,
@@ -3392,7 +3389,7 @@ function emitMorphTargetsAssignment(
         }
         if (
             context.isRuntimeResourceConstruction() ||
-            context.engineHasStarted()
+            context.engineLifecycle.engineHasStarted()
         ) {
             context.fail(
                 expression,
@@ -3440,7 +3437,7 @@ function emitOrmTextureAssignment(
         requireSimpleAssignment(context, expression, "PBR ormTexture");
         if (
             context.hasRegisteredScene() ||
-            context.engineHasStarted() ||
+            context.engineLifecycle.engineHasStarted() ||
             context.isRuntimeResourceConstruction()
         ) {
             context.fail(

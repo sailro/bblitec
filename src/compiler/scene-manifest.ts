@@ -53,7 +53,7 @@ import type {
 interface SceneManifestContext extends Pick<
     LoweringServices,
     | "assets"
-    | "engineHasStarted"
+    | "engineLifecycle"
     | "fail"
     | "failAtFile"
     | "hasFeature"
@@ -1135,7 +1135,7 @@ export class SceneManifestRecorder {
         }
         if (
             this.context.isInFrameCallback() ||
-            this.context.engineHasStarted()
+            this.context.engineLifecycle.engineHasStarted()
         ) {
             this.dynamicSceneLights = true;
         }
@@ -1175,7 +1175,7 @@ export class SceneManifestRecorder {
         }
         if (
             this.context.isInFrameCallback() ||
-            this.context.engineHasStarted()
+            this.context.engineLifecycle.engineHasStarted()
         ) {
             this.dynamicSceneLights = true;
         }
@@ -1314,7 +1314,7 @@ export class SceneManifestRecorder {
         if (
             manifest.intrinsic === "createTaaPostProcessTask" &&
             (this.context.isInFrameCallback() ||
-                this.context.engineHasStarted())
+                this.context.engineLifecycle.engineHasStarted())
         ) {
             this.context.fail(
                 site,

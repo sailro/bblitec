@@ -31,11 +31,10 @@ interface AsyncContext extends Pick<
     | "compileCallbackWithValues"
     | "captureManagedClosureLines"
     | "withOwnedCallbackBody"
-    | "withAsyncInvocation"
-    | "withEngineBootstrap"
+    | "asyncActivations"
     | "allocateTemporaryCppName"
     | "registerNativeBinding"
-    | "renderSharedCoroutine"
+    | "nativeEmission"
     | "emit"
     | "emitDiscardedValue"
     | "unwrap"
@@ -43,7 +42,6 @@ interface AsyncContext extends Pick<
     | "libraryGlobal"
     | "browserErasure"
     | "options"
-    | "pendingActivations"
     | "useNativeValue"
     | "fail"
 > {}
@@ -510,48 +508,59 @@ export class AsyncLowerer {
             : undefined;
         let compiled: CapturedClosure;
         try {
-            compiled = context.withEngineBootstrap(declaration, () =>
-                this.withActivation(() =>
-                    context.withAsyncInvocation(node, () =>
-                        context.captureManagedClosureLines(() => {
-                            const callable = ts.isFunctionDeclaration(callback)
-                                ? (callback.name ??
-                                  context.fail(
-                                      callback,
-                                      "Async function requires a name.",
-                                  ))
-                                : callback;
-                            result.value = context.compileCallbackWithValues(
-                                callable,
-                                values,
-                                node,
-                                false,
-                                { coroutine: true },
-                            );
-                            const signature =
-                                context.checker.getSignatureFromDeclaration(
-                                    declaration,
-                                );
-                            if (signature)
-                                result.value = this.normalizeUndefined(
+            compiled = context.asyncActivations.withEngineBootstrap(
+                declaration,
+                () =>
+                    this.withActivation(() =>
+                        context.asyncActivations.withAsyncInvocation(node, () =>
+                            context.captureManagedClosureLines(() => {
+                                const callable = ts.isFunctionDeclaration(
+                                    callback,
+                                )
+                                    ? (callback.name ??
+                                      context.fail(
+                                          callback,
+                                          "Async function requires a name.",
+                                      ))
+                                    : callback;
+                                result.value =
+                                    context.compileCallbackWithValues(
+                                        callable,
+                                        values,
+                                        node,
+                                        false,
+                                        { coroutine: true },
+                                    );
+                                const signature =
+                                    context.checker.getSignatureFromDeclaration(
+                                        declaration,
+                                    );
+                                if (signature)
+                                    result.value = this.normalizeUndefined(
+                                        result.value,
+                                        context.checker.getReturnTypeOfSignature(
+                                            signature,
+                                        ),
+                                    );
+                                result.value = this.ownResult(
                                     result.value,
-                                    context.checker.getReturnTypeOfSignature(
-                                        signature,
-                                    ),
+                                    node,
                                 );
-                            result.value = this.ownResult(result.value, node);
-                            if (
-                                result.value.kind === "void" &&
-                                result.value.cpp
-                            )
-                                context.emit(`${result.value.cpp};`);
-                            if (!rejectsOnly && !result.value.abruptCompletion)
-                                context.emit(
-                                    `co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : this.resultCpp(result.value, node)};`,
-                                );
-                        }),
+                                if (
+                                    result.value.kind === "void" &&
+                                    result.value.cpp
+                                )
+                                    context.emit(`${result.value.cpp};`);
+                                if (
+                                    !rejectsOnly &&
+                                    !result.value.abruptCompletion
+                                )
+                                    context.emit(
+                                        `co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : this.resultCpp(result.value, node)};`,
+                                    );
+                            }),
+                        ),
                     ),
-                ),
             );
         } finally {
             this.terminalThrow = previousThrow;
@@ -581,7 +590,7 @@ export class AsyncLowerer {
         // this pointer or a borrowed environment must never enter its frame.
         // Terminal throws share the native coroutine completion path, including
         // when earlier statements suspend. No unreachable epilogue is emitted.
-        const cpp = context.renderSharedCoroutine(
+        const cpp = context.nativeEmission.renderSharedCoroutine(
             compiled,
             `bbl::js::Promise<${cppType}>`,
             declaration,
@@ -629,7 +638,7 @@ export class AsyncLowerer {
             );
         if (!this.context.options.pendingActivations)
             throw new PendingActivationsRequired();
-        this.context.pendingActivations();
+        this.context.asyncActivations.pendingActivations();
         return this.compileConstructor(node, true);
     }
 

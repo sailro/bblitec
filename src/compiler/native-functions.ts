@@ -61,12 +61,12 @@ export interface NativeFunctionContext extends Pick<
     | "bindings"
     | "allocateUserFunctionPrefix"
     | "captureEmittedLines"
-    | "registerNativeFunction"
+    | "nativeEmission"
     | "registerNativeTemporary"
     | "registerNativeBinding"
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
-    | "identifierIsRebound"
+    | "sharedClosures"
     | "beginNativeFunctionBody"
     | "endNativeFunctionBody"
     | "reachJsData"
@@ -1242,7 +1242,9 @@ export class NativeFunctionLowerer {
             }
             if (
                 parameterType?.kind === "struct" &&
-                (this.context.identifierIsRebound(parameter.name) ||
+                (this.context.sharedClosures.identifierIsRebound(
+                    parameter.name,
+                ) ||
                     this.typeRequiresReferenceStorage(
                         parameterTsType,
                         parameterType.name,
@@ -1271,9 +1273,10 @@ export class NativeFunctionLowerer {
                 name: parameter.name,
                 type: parameterType,
                 ...(() => {
-                    const rebound = this.context.identifierIsRebound(
-                        parameter.name,
-                    );
+                    const rebound =
+                        this.context.sharedClosures.identifierIsRebound(
+                            parameter.name,
+                        );
                     const borrowedWrapper = borrowsReferenceParameter(
                         this.context,
                         parameter.name,
@@ -2372,7 +2375,7 @@ export class NativeFunctionLowerer {
         source: ts.Node,
     ): void {
         const parameterList = definition.parameterDeclarations.join(", ");
-        this.context.registerNativeFunction(
+        this.context.nativeEmission.registerNativeFunction(
             `${returnCpp} ${cppName}(${parameterList});`,
             [
                 `${returnCpp} ${cppName}(${parameterList}) {`,

@@ -1462,7 +1462,7 @@ export interface PropertyContext extends Pick<
     | "requireEngine"
     | "reachFeature"
     | "reachJsData"
-    | "noteMaterialColorRead"
+    | "admissions"
     | "fail"
     | "sceneManifest"
     | "dataValue"
@@ -1571,7 +1571,7 @@ export function readProperty(
         // Assignment probing asks the property table for the LHS shape too;
         // replacing that property does not read its previous array value.
         if (!simpleWriteTarget) {
-            context.noteMaterialColorRead(property);
+            context.admissions.noteMaterialColorRead(property);
         }
     }
     // An engine handle names itself; anything else carries the engine it

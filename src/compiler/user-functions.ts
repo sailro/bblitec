@@ -147,7 +147,7 @@ function dataArgumentMayRunCode(
 }
 
 export function borrowsReferenceParameter(
-    context: Pick<LoweringServices, "dataTypes" | "identifierIsRebound">,
+    context: Pick<LoweringServices, "dataTypes" | "sharedClosures">,
     parameter: ts.BindingName,
     type: DataType,
 ): boolean {
@@ -155,7 +155,7 @@ export function borrowsReferenceParameter(
         type.kind === "struct" &&
         context.dataTypes.isReferenceStruct(type.name) &&
         ts.isIdentifier(parameter) &&
-        !context.identifierIsRebound(parameter)
+        !context.sharedClosures.identifierIsRebound(parameter)
     );
 }
 
@@ -1140,9 +1140,7 @@ export interface UserFunctionContext
             | "evaluationOrder"
             | "cppString"
             | "options"
-            | "withAsyncActivation"
-            | "compileAsyncCall"
-            | "compileAsyncReturn"
+            | "asyncActivations"
             | "withOwnedCallbackBody"
             | "checker"
             | "dataTypes"
@@ -1151,7 +1149,7 @@ export interface UserFunctionContext
             | "compileValue"
             | "emitExpressionAsStatement"
             | "emitDiscardedValue"
-            | "identifierIsRebound"
+            | "sharedClosures"
             | "functionEmissionScope"
             | "activeThis"
             | "canShareFunctionBody"
@@ -1187,11 +1185,8 @@ export interface UserFunctionContext
             | "registerNativeBindingType"
             | "registerNativeConstBinding"
             | "registerNativeTemporary"
-            | "registerNativeFunction"
-            | "registerSharedNativeFunction"
+            | "nativeEmission"
             | "captureManagedClosureLines"
-            | "renderSharedCoroutine"
-            | "renderSharedClosure"
             | "callbackIdentity"
             | "emit"
             | "increaseIndent"
@@ -1561,7 +1556,11 @@ export class UserFunctionLowerer {
         );
         return this.withCallTypeArguments(context, call, ir.declaration, () => {
             const asynchronous = inBodyScope(() =>
-                context.compileAsyncCall(ir.declaration, argumentValues, call),
+                context.asyncActivations.compileAsyncCall(
+                    ir.declaration,
+                    argumentValues,
+                    call,
+                ),
             );
             if (asynchronous) return asynchronous;
             const recursiveGroup = this.recursiveGroup(ir.declaration);
@@ -1949,7 +1948,7 @@ export class UserFunctionLowerer {
         return this.withCallTypeArguments(context, call, ir.declaration, () =>
             inBodyScope(
                 () =>
-                    context.compileAsyncCall(
+                    context.asyncActivations.compileAsyncCall(
                         ir.declaration,
                         argumentValues,
                         call,
@@ -3624,23 +3623,24 @@ export class UserFunctionLowerer {
                     `[[maybe_unused]] Self& ${localGroup.self}`,
                     ...parameterDeclarations,
                 ];
-                const sharedName = context.registerSharedNativeFunction(
-                    name,
-                    [
-                        `struct ${name} {`,
-                        `    template<typename Environment, typename Self>`,
-                        `    ${returnCpp} operator()(${parameters.join(", ")}) const {`,
-                        ...captured.lines.map((line) => `        ${line}`),
-                        "    }",
-                        "};",
-                    ],
-                    [
-                        ...captured.localBindings,
-                        ...parameterNames,
-                        captured.environment,
-                        localGroup.self,
-                    ],
-                );
+                const sharedName =
+                    context.nativeEmission.registerSharedNativeFunction(
+                        name,
+                        [
+                            `struct ${name} {`,
+                            `    template<typename Environment, typename Self>`,
+                            `    ${returnCpp} operator()(${parameters.join(", ")}) const {`,
+                            ...captured.lines.map((line) => `        ${line}`),
+                            "    }",
+                            "};",
+                        ],
+                        [
+                            ...captured.localBindings,
+                            ...parameterNames,
+                            captured.environment,
+                            localGroup.self,
+                        ],
+                    );
                 closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName}{})`;
                 writable(entry.value).nativeCaptures = captured.nativeCaptures;
             } else if (localGroup?.sharedName) {
@@ -3648,7 +3648,7 @@ export class UserFunctionLowerer {
                 // its environment; a value that names one uncaptured stays
                 // with an inline specialization.
                 if (captured.uncaptured) throw new SharedCallRequiresInline();
-                closure = context.renderSharedClosure(
+                closure = context.nativeEmission.renderSharedClosure(
                     captured,
                     returnCpp,
                     entry.declaration,
@@ -3829,7 +3829,7 @@ export class UserFunctionLowerer {
         }
         const values = arguments_.slice(0, ir.parameters.length);
         if (!body?.coroutine) {
-            const asynchronous = context.compileAsyncCall(
+            const asynchronous = context.asyncActivations.compileAsyncCall(
                 ir.declaration,
                 values,
                 callNode,
@@ -4150,7 +4150,7 @@ export class UserFunctionLowerer {
                     if (!terminated && ir.returnExpression) {
                         if (asynchronous) {
                             context.emit(
-                                `co_return ${context.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
+                                `co_return ${context.asyncActivations.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
                             );
                         } else if (!bodyResult) {
                             context.emitExpressionAsStatement(
@@ -4181,7 +4181,7 @@ export class UserFunctionLowerer {
                 });
             closure = asynchronous
                 ? context.withOwnedCallbackBody(() =>
-                      context.withAsyncActivation(compileBody),
+                      context.asyncActivations.withAsyncActivation(compileBody),
                   )
                 : compileBody();
         } finally {
@@ -4214,7 +4214,7 @@ export class UserFunctionLowerer {
                   returnCpp,
                   !promiseType,
                   (closure, type, declarations, args, environment) =>
-                      context.renderSharedCoroutine(
+                      context.nativeEmission.renderSharedCoroutine(
                           closure,
                           type,
                           declaration,
@@ -4224,7 +4224,7 @@ export class UserFunctionLowerer {
                           parameters.map(({ cppName }) => cppName),
                       ),
               )
-            : context.renderSharedClosure(
+            : context.nativeEmission.renderSharedClosure(
                   closure,
                   returnCpp,
                   declaration,
@@ -4612,7 +4612,7 @@ export class UserFunctionLowerer {
                           expression: ts.Expression,
                           target: DataType,
                       ) =>
-                          context.compileAsyncReturn(
+                          context.asyncActivations.compileAsyncReturn(
                               expression,
                               target,
                               (value, result, node) =>

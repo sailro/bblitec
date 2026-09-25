@@ -44,8 +44,7 @@ export interface LineIntrinsicContext
             | "compileStringLiteral"
             | "cppString"
             | "requireDefaultEngine"
-            | "reachLineMaterial"
-            | "lineMaterialPermutation"
+            | "intrinsicOptions"
         > {}
 
 /** The options a reached `createLineMaterial` may name. */
@@ -97,7 +96,10 @@ export function compileLineIntrinsic(
                 requireStaticName(context, options);
             }
             const flags = lineMaterialFlags(context, options);
-            const variant = context.reachLineMaterial(call, flags);
+            const variant = context.intrinsicOptions.reachLineMaterial(
+                call,
+                flags,
+            );
             reachLineFeatures(context, call);
             return {
                 kind: "material",
@@ -163,17 +165,21 @@ export function compileLineIntrinsic(
                     // the geometry rather than taking it as an option.
                     useVertexColor: colors !== undefined,
                 };
-                const variant = context.reachLineMaterial(options, flags);
+                const variant = context.intrinsicOptions.reachLineMaterial(
+                    options,
+                    flags,
+                );
                 variantName = variant.name;
                 materialCpp =
                     `bbl::create_shader_material(${engine.cpp}, ` +
                     `${variant.id}u)`;
                 context.sceneManifest.recordSceneMaterialSlot();
             }
-            const permutation = context.lineMaterialPermutation(
-                variantName,
-                supplied ?? options,
-            );
+            const permutation =
+                context.intrinsicOptions.lineMaterialPermutation(
+                    variantName,
+                    supplied ?? options,
+                );
             if (!permutation) {
                 context.fail(
                     supplied ?? options,

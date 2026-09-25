@@ -69,14 +69,12 @@ export interface PhysicsIntrinsicContext
             | "propertyAccess"
             | "expectSameEngine"
             | "expectObjectLiteral"
-            | "compileFrameCallback"
-            | "compilePhysicsCollisionCallback"
-            | "compilePhysicsTriggerCallback"
+            | "callbacks"
             | "allocateTemporaryCppName"
             | "registerNativeBinding"
             | "emit"
             | "resolveStaticExpression"
-            | "reachPhysicsViewerMaterial"
+            | "intrinsicOptions"
             | "sceneManifest"
         > {}
 
@@ -927,7 +925,10 @@ function compileCreatePhysicsViewer(
         }
     }
     context.reachFeature("physics:viewer", call);
-    const variant = context.reachPhysicsViewerMaterial(call, color);
+    const variant = context.intrinsicOptions.reachPhysicsViewerMaterial(
+        call,
+        color,
+    );
     return {
         kind: "physics-viewer",
         cpp: `bbl::upstream::create_physics_viewer(${scene.cpp}, ${world.cpp}, ${variant.id}u)`,
@@ -1351,7 +1352,7 @@ function compileOnPhysicsTrigger(
         cpp:
             `bbl::upstream::on_physics_trigger(` +
             `${world.cpp}, ` +
-            `${context.compilePhysicsTriggerCallback(argumentAt(call, 1))})`,
+            `${context.callbacks.compilePhysicsTriggerCallback(argumentAt(call, 1))})`,
     };
 }
 
@@ -1367,7 +1368,7 @@ function compileOnPhysicsAfterStep(
         cpp:
             `bbl::upstream::on_physics_after_step(` +
             `${world.cpp}, ` +
-            `${context.compileFrameCallback(argumentAt(call, 1))})`,
+            `${context.callbacks.compileFrameCallback(argumentAt(call, 1))})`,
     };
 }
 
@@ -1622,7 +1623,7 @@ function compileOnPhysicsCollision(
         kind: "void",
         cpp:
             `bbl::upstream::on_physics_collision(` +
-            `${world.cpp}, ${context.compilePhysicsCollisionCallback(argumentAt(call, 1))})`,
+            `${world.cpp}, ${context.callbacks.compilePhysicsCollisionCallback(argumentAt(call, 1))})`,
     };
 }
 

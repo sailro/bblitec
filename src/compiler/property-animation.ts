@@ -34,7 +34,7 @@ export interface PropertyAnimationContext extends Pick<
     | "fail"
 > {}
 
-interface PropertyAnimationTargetContext extends Pick<
+export interface PropertyAnimationTargetContext extends Pick<
     LoweringServices,
     | "dataTypes"
     | "fail"

@@ -22,7 +22,7 @@ export interface CharacterIntrinsicContext
             | "allocateTemporaryCppName"
             | "emit"
             | "expectArgumentCount"
-            | "compilePhysicsCharacterCallback"
+            | "callbacks"
             | "compileVec3"
             | "compileBoolean"
             | "registerNativeBinding"
@@ -145,7 +145,7 @@ export function compileCharacterMethod(
         context.expectArgumentCount(call, 1, 1);
         return {
             kind: "data",
-            cpp: `${owner.cpp}->onTriggerCollisionObservable.add(${context.compilePhysicsCharacterCallback(argumentAt(call, 0))})`,
+            cpp: `${owner.cpp}->onTriggerCollisionObservable.add(${context.callbacks.compilePhysicsCharacterCallback(argumentAt(call, 0))})`,
             dataType: { kind: "function", parameters: [] },
         };
     }

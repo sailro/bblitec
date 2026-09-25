@@ -20,9 +20,9 @@ export interface LocalCubemapIntrinsicContext
             | "options"
             | "localCubemapState"
             | "sceneManifest"
-            | "registerAsset"
+            | "assetRegistry"
             | "expectSameEngine"
-            | "engineHasStarted"
+            | "engineLifecycle"
             | "hasRegisteredScene"
             | "emit"
             | "cppString"
@@ -84,7 +84,7 @@ function packetExpression(
     } catch (error) {
         return context.fail(node, String(error));
     }
-    const asset = context.registerAsset(
+    const asset = context.assetRegistry.registerAsset(
         `data:application/json;base64,${Buffer.from(payload).toString("base64")}`,
         "binary",
     );
@@ -108,7 +108,7 @@ export function compileLocalCubemapIntrinsic(
     if (!names.includes(name)) return undefined;
     if (
         context.hasRegisteredScene() ||
-        context.engineHasStarted() ||
+        context.engineLifecycle.engineHasStarted() ||
         context.isRuntimeResourceConstruction()
     )
         context.fail(

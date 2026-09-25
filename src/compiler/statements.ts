@@ -66,12 +66,9 @@ export interface StatementLoweringContext extends Pick<
     LoweringServices,
     | "classLowerer"
     | "resolveRecordValue"
-    | "noteCameraVectorSet"
-    | "workerCheckpointCpp"
-    | "workerAbortCpp"
+    | "admissions"
+    | "asyncActivations"
     | "options"
-    | "emitActivationBoundary"
-    | "refusePendingActivationUse"
     | "speculating"
     | "transaction"
     | "checker"
@@ -108,8 +105,7 @@ export interface StatementLoweringContext extends Pick<
     | "captureEmittedLines"
     | "reachesOnlyClosedEffects"
     | "useNativeValue"
-    | "emitFinallyGuard"
-    | "emitEngineFinally"
+    | "engineLifecycle"
     | "nativeBindingCheckpoint"
     | "registerNativeConstBinding"
     | "captureHoistedLines"
@@ -125,7 +121,6 @@ export interface StatementLoweringContext extends Pick<
     | "compileNodeInputMutation"
     | "checkNodeGeometryMutation"
     | "emitDiscardedValue"
-    | "emitAwaitExpression"
     | "conditions"
     | "browserErasure"
     | "libraryGlobal"
@@ -137,17 +132,11 @@ export interface StatementLoweringContext extends Pick<
     | "expectKind"
     | "expectSameEngine"
     | "requireEngine"
-    | "assertAssetRootWritable"
+    | "assetRegistry"
     | "expectArgumentCount"
     | "expectObjectLiteral"
     | "objectProperty"
     | "unwrap"
-    | "isFrameYield"
-    | "emitFrameYieldRequeue"
-    | "emitFramePollAwait"
-    | "isBoundedNestedFrameYield"
-    | "promiseLatchCondition"
-    | "emitStartContinuationGate"
     | "requireDefaultEngine"
     | "isBrowserInstrumentationCall"
     | "emitPlatformEventListener"
@@ -239,8 +228,8 @@ function containsFrameYield(
         ) {
             const awaited = context.unwrap(node.expression.expression);
             if (
-                context.isFrameYield(awaited) ||
-                context.isBoundedNestedFrameYield(awaited)
+                context.engineLifecycle.isFrameYield(awaited) ||
+                context.engineLifecycle.isBoundedNestedFrameYield(awaited)
             ) {
                 return true;
             }
@@ -471,7 +460,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {
-        context.refusePendingActivationUse(statement);
+        context.asyncActivations.refusePendingActivationUse(statement);
         if (
             ts.canHaveModifiers(statement) &&
             ts
@@ -497,7 +486,7 @@ export class StatementLowerer {
         if (ts.isExpressionStatement(statement)) {
             this.loweredTerminators.delete(statement);
             if (
-                context.emitActivationBoundary(statement, () =>
+                context.asyncActivations.emitActivationBoundary(statement, () =>
                     this.emitExpression(context, statement.expression),
                 )
             ) {
@@ -1243,7 +1232,7 @@ export class StatementLowerer {
             return;
         }
         if (
-            context.workerCheckpointCpp() &&
+            context.asyncActivations.workerCheckpointCpp() &&
             someAnalysisNode(finallyBlock, ts.isAwaitExpression, {
                 functions: "skip",
             })
@@ -1267,7 +1256,14 @@ export class StatementLowerer {
                 this.terminatesAfterLowering(statement.catchClause.block));
         const captureFinally = () =>
             this.captureFinallyGuard(context, finallyBlock, beforeBody);
-        if (context.emitEngineFinally(body, captureFinally, statement)) return;
+        if (
+            context.engineLifecycle.emitEngineFinally(
+                body,
+                captureFinally,
+                statement,
+            )
+        )
+            return;
         const capturedFinally = captureFinally();
         const finallyGuard = capturedFinally.length
             ? capturedFinally
@@ -1275,7 +1271,8 @@ export class StatementLowerer {
         if (finallyGuard) {
             context.emit("{");
             context.increaseIndent();
-            const guard = context.emitFinallyGuard(finallyGuard);
+            const guard =
+                context.engineLifecycle.emitFinallyGuard(finallyGuard);
             const pending =
                 context.allocateTemporaryCppName("finally_exception");
             context.emit(`std::exception_ptr ${pending};`);
@@ -1323,7 +1320,7 @@ export class StatementLowerer {
                 );
             }
             const suspendedCatch =
-                context.workerCheckpointCpp() &&
+                context.asyncActivations.workerCheckpointCpp() &&
                 someAnalysisNode(
                     statement.catchClause.block,
                     ts.isAwaitExpression,
@@ -1359,7 +1356,7 @@ export class StatementLowerer {
                 catchDeclaration && !erasedCatchBinding
                     ? context.allocateTemporaryCppName("caught_error")
                     : undefined;
-            if (context.workerCheckpointCpp())
+            if (context.asyncActivations.workerCheckpointCpp())
                 context.emit(
                     "} catch (const bbl::pal::WorkerTerminated&) { throw;",
                 );
@@ -1709,7 +1706,8 @@ export class StatementLowerer {
                         counter &&
                         counterCpp &&
                         integerLoopConditionCpp(counter, counterCpp);
-                    const checkpoint = context.workerCheckpointCpp();
+                    const checkpoint =
+                        context.asyncActivations.workerCheckpointCpp();
                     const condition = nativeCondition
                         ? checkpoint
                             ? `(${checkpoint}, ${nativeCondition})`
@@ -1979,7 +1977,7 @@ export class StatementLowerer {
                 condition = context.conditions.compileCondition(expression);
             }),
         );
-        const checkpoint = context.workerCheckpointCpp();
+        const checkpoint = context.asyncActivations.workerCheckpointCpp();
         if (checkpoint) condition = `(${checkpoint}, ${condition})`;
         if (lines.length === 0) return condition;
         return `([&]() -> bool { ${lines.join(" ")} return ${condition}; }())`;
@@ -3022,7 +3020,7 @@ export class StatementLowerer {
             context.emitDiscardedValue(text);
             return;
         }
-        if (context.emitAwaitExpression(expression)) return;
+        if (context.asyncActivations.emitAwaitExpression(expression)) return;
         const unwrapped = context.unwrap(expression);
         if (ts.isVoidExpression(unwrapped)) {
             const operand = context.unwrap(unwrapped.expression);
@@ -3252,7 +3250,7 @@ export class StatementLowerer {
             context.eraseBrowserInstrumentation(unwrapped.pos);
             return;
         }
-        if (context.isBoundedNestedFrameYield(unwrapped)) {
+        if (context.engineLifecycle.isBoundedNestedFrameYield(unwrapped)) {
             // The exact two-RAF Promise carries no value and no callback may
             // interleave, so its continuation can stay in the native tail.
             // Its settling time still gates capture: the frame conductor
@@ -3266,7 +3264,10 @@ export class StatementLowerer {
             );
             return;
         }
-        if (ts.isCallExpression(unwrapped) && context.isFrameYield(unwrapped)) {
+        if (
+            ts.isCallExpression(unwrapped) &&
+            context.engineLifecycle.isFrameYield(unwrapped)
+        ) {
             // A zero-argument helper can carry the same one-frame Promise.
             // Recognize it before ordinary call inlining reaches the
             // browser-only constructor in the helper's return expression.
@@ -3280,13 +3281,13 @@ export class StatementLowerer {
                         "frame the scene asks for, not a count of them.",
                 );
             }
-            context.emitFrameYieldRequeue(unwrapped);
+            context.engineLifecycle.emitFrameYieldRequeue(unwrapped);
             return;
         }
         if (ts.isCallExpression(unwrapped)) {
             if (
                 ts.isAwaitExpression(expression) &&
-                context.emitFramePollAwait(unwrapped)
+                context.engineLifecycle.emitFramePollAwait(unwrapped)
             )
                 return;
             const value = context.compileValue(unwrapped);
@@ -3298,9 +3299,13 @@ export class StatementLowerer {
             // frame waits below, nothing here counts boundaries: the
             // scene installed the callback that ends the wait, so the
             // rest of the continuation is parked until it runs.
-            const latch = context.promiseLatchCondition(unwrapped);
+            const latch =
+                context.engineLifecycle.promiseLatchCondition(unwrapped);
             if (latch) {
-                context.emitStartContinuationGate(unwrapped, latch);
+                context.engineLifecycle.emitStartContinuationGate(
+                    unwrapped,
+                    latch,
+                );
                 return;
             }
         }
@@ -3331,7 +3336,7 @@ export class StatementLowerer {
             );
             return;
         }
-        if (context.isFrameYield(unwrapped)) {
+        if (context.engineLifecycle.isFrameYield(unwrapped)) {
             // Before the frame loop exists, one frame's work has already
             // happened by the time this runtime reaches the statement after
             // it, so the yield erases; inside the hoisted continuation the
@@ -3349,7 +3354,7 @@ export class StatementLowerer {
                         "frame the scene asks for, not a count of them.",
                 );
             }
-            context.emitFrameYieldRequeue(unwrapped);
+            context.engineLifecycle.emitFrameYieldRequeue(unwrapped);
             return;
         }
         // `await <barrier property>` -- a read whose only meaning is the
@@ -3457,7 +3462,7 @@ export class StatementLowerer {
                 call,
                 "Camera vector.set expects exactly three numeric arguments.",
             );
-        context.noteCameraVectorSet(vector, call);
+        context.admissions.noteCameraVectorSet(vector, call);
         const handle = context.allocateTemporaryCppName("camera_set_owner");
         context.emit({
             kind: "declaration",
@@ -3545,7 +3550,7 @@ export class StatementLowerer {
         transform: SceneNodeTransformDescriptor,
     ): boolean {
         if (target.kind === "asset-root") {
-            context.assertAssetRootWritable(target, call);
+            context.assetRegistry.assertAssetRootWritable(target, call);
             const components = this.setCallComponents(
                 context,
                 call,

@@ -11,7 +11,7 @@ interface Context extends Pick<
     | "unwrap"
     | "knownValueWithoutEvaluation"
     | "libraryGlobal"
-    | "noteNodeGeometryMutation"
+    | "admissions"
 > {}
 
 const transforms = new EmissionSet([
@@ -102,7 +102,7 @@ export function checkNodeGeometryMutation(
                     transforms.has(name) &&
                     unprovenMesh(left.expression))
             ) {
-                context.noteNodeGeometryMutation(node);
+                context.admissions.noteNodeGeometryMutation(node);
             }
         }
     }
@@ -116,10 +116,10 @@ export function checkNodeGeometryMutation(
         node.arguments[0] &&
         unprovenMesh(node.arguments[0])
     )
-        context.noteNodeGeometryMutation(node);
+        context.admissions.noteNodeGeometryMutation(node);
     if (!ts.isPropertyAccessExpression(callee)) return;
     if (callee.name.text === "set" && importedVector(callee.expression))
-        context.noteNodeGeometryMutation(node);
+        context.admissions.noteNodeGeometryMutation(node);
     if (
         context.libraryGlobal(callee.expression) === "Object" &&
         [
@@ -131,5 +131,5 @@ export function checkNodeGeometryMutation(
         node.arguments[0] &&
         (unprovenMesh(node.arguments[0]) || importedVector(node.arguments[0]))
     )
-        context.noteNodeGeometryMutation(node);
+        context.admissions.noteNodeGeometryMutation(node);
 }

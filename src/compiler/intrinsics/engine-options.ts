@@ -39,7 +39,7 @@ export interface EngineOptionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
-            | "noteTemporalRecordBoundary"
+            | "admissions"
             | "symbols"
             | "sceneManifest"
             | "unwrap"
@@ -239,7 +239,7 @@ export function compileRenderTaskOptions(
         !signature.hasColor ||
         signature.depthFormat !== "depth24plus-stencil8"
     ) {
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             expression,
             "TAA source preparation requires the engine color format and depth24plus-stencil8 attachment",
             "always",
@@ -604,7 +604,7 @@ export function compileTextureReference(
         !value.renderTargetSignature ||
         value.renderTargetSignature.samples !== 1
     ) {
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             expression,
             "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state",
             "always",

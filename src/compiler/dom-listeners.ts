@@ -22,8 +22,7 @@ type Context = Pick<
     | "compileStringLiteral"
     | "dataLowerer"
     | "dataTypes"
-    | "hoistForwardCallbackBindings"
-    | "compilePlatformCallback"
+    | "callbacks"
     | "bindings"
     | "cppString"
     | "emit"
@@ -275,7 +274,7 @@ export function emitDomEventListener(
     if (!keyboard && !pagehide && !pointerNames.has(type)) return false;
     context.reachFeature("input:dom", call);
     const callback = call.arguments[1]!;
-    context.hoistForwardCallbackBindings(callback, call.pos);
+    context.callbacks.hoistForwardCallbackBindings(callback, call.pos);
     const removing = callee.name.text === "removeEventListener";
     const family = keyboard ? "keyboard" : "pointer";
     let identity: string;
@@ -289,7 +288,7 @@ export function emitDomEventListener(
         identity = callbackIdentity(pinned, callback);
     } else {
         const name = context.allocateTemporaryCppName("dom_event");
-        const compiled = context.compilePlatformCallback(
+        const compiled = context.callbacks.compilePlatformCallback(
             callback,
             {
                 cppType: keyboard
