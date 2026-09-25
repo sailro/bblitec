@@ -958,6 +958,7 @@ struct DawnState : DawnDevice {
     // Blit pipelines keyed by target (format, samples).
     std::map<std::pair<WGPUTextureFormat, std::uint32_t>, WGPURenderPipeline> blit_pipelines;
     std::uint32_t frame_graph_width = 0;
+    std::uint64_t render_targets_version = 0;
     std::uint32_t frame_graph_height = 0;
 
 #if BBLITE_PINNED_MATERIALS
@@ -995,6 +996,7 @@ struct DawnState : DawnDevice {
      * the texture the receiver samples.
      */
     struct EsmBlur {
+        WGPUTextureView source = nullptr;
         WGPUTexture blur_h = nullptr;
         WGPUTextureView blur_h_view = nullptr;
         WGPUTexture blur_v = nullptr;
@@ -1005,6 +1007,33 @@ struct DawnState : DawnDevice {
         WGPUBuffer vertical_uniforms = nullptr;
         WGPUBindGroup horizontal = nullptr;
         WGPUBindGroup vertical = nullptr;
+        void clear() {
+
+            if (horizontal)
+                wgpuBindGroupRelease(horizontal);
+            if (vertical)
+                wgpuBindGroupRelease(vertical);
+            if (pipeline)
+                wgpuRenderPipelineRelease(pipeline);
+            if (layout)
+                wgpuBindGroupLayoutRelease(layout);
+            if (horizontal_uniforms) {
+                wgpuBufferRelease(horizontal_uniforms);
+            }
+            if (vertical_uniforms) {
+                wgpuBufferRelease(vertical_uniforms);
+            }
+            if (blur_h_view)
+                wgpuTextureViewRelease(blur_h_view);
+            if (blur_h)
+                wgpuTextureRelease(blur_h);
+            if (blur_v_view)
+                wgpuTextureViewRelease(blur_v_view);
+            if (blur_v)
+                wgpuTextureRelease(blur_v);
+
+            *this = {};
+        }
     };
     std::vector<EsmBlur> esm_blurs;
 #endif
@@ -1687,30 +1716,8 @@ struct DawnState : DawnDevice {
             if (buffer)
                 wgpuBufferRelease(buffer);
         }
-        for (EsmBlur& blur : esm_blurs) {
-            if (blur.horizontal)
-                wgpuBindGroupRelease(blur.horizontal);
-            if (blur.vertical)
-                wgpuBindGroupRelease(blur.vertical);
-            if (blur.pipeline)
-                wgpuRenderPipelineRelease(blur.pipeline);
-            if (blur.layout)
-                wgpuBindGroupLayoutRelease(blur.layout);
-            if (blur.horizontal_uniforms) {
-                wgpuBufferRelease(blur.horizontal_uniforms);
-            }
-            if (blur.vertical_uniforms) {
-                wgpuBufferRelease(blur.vertical_uniforms);
-            }
-            if (blur.blur_h_view)
-                wgpuTextureViewRelease(blur.blur_h_view);
-            if (blur.blur_h)
-                wgpuTextureRelease(blur.blur_h);
-            if (blur.blur_v_view)
-                wgpuTextureViewRelease(blur.blur_v_view);
-            if (blur.blur_v)
-                wgpuTextureRelease(blur.blur_v);
-        }
+        for (EsmBlur& blur : esm_blurs)
+            blur.clear();
         esm_blurs.clear();
 #endif
 #endif

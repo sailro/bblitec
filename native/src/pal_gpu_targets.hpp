@@ -129,6 +129,10 @@ plan_render_targets(const Engine& engine, std::uint32_t width, std::uint32_t hei
     std::vector<RenderTargetPlan<Format>> plans;
     plans.reserve(engine.render_targets.size());
     for (const auto& record : engine.render_targets) {
+        if (record.retired) {
+            plans.push_back({0, 0, Format{}});
+            continue;
+        }
         auto [target_width, target_height] = surface_target_extent(engine, record, width, height);
         Format format = surface_format;
         if (record.scale_source.value != invalid_handle) {

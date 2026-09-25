@@ -255,7 +255,7 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     );
     assert.match(
         lowered.source,
-        /void rebuild_scene_renderables\(Scene& scene\)[\s\S]{0,2200}pending_shadow_retirements\.clear\(\);[\s\S]{0,120}topology_rebuild_pending = false;[\s\S]{0,100}\+\+scene\.render_topology_version;/,
+        /void rebuild_scene_renderables\(Scene& scene\)[\s\S]{0,2200}retire_scene_shadow_states\(scene\);[\s\S]{0,120}topology_rebuild_pending = false;[\s\S]{0,100}\+\+scene\.render_topology_version;/,
     );
     assert.match(
         lowered.source,

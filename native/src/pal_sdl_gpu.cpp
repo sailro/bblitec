@@ -238,18 +238,8 @@ void release(GpuState& state) {
     state.shadow_generators.clear();
 #if BBLITE_SHADOWS_ESM
     // `source` stays: it is the caster target's own colour map, borrowed.
-    for (const GpuState::EsmBlur& blur : state.esm_blurs) {
-        if (blur.blur_h)
-            SDL_ReleaseGPUTexture(state.device, blur.blur_h);
-        if (blur.blur_v)
-            SDL_ReleaseGPUTexture(state.device, blur.blur_v);
-        if (blur.pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(state.device, blur.pipeline);
-        }
-        if (blur.params_buffer) {
-            SDL_ReleaseGPUBuffer(state.device, blur.params_buffer);
-        }
-    }
+    for (GpuState::EsmBlur& blur : state.esm_blurs)
+        blur.clear(state.device);
     state.esm_blurs.clear();
 #endif
     if (state.shadow_comparison_sampler) {

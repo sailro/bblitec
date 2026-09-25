@@ -879,6 +879,21 @@ struct GpuState : SdlGpuDevice {
          * nmeLights, meshU and nodeU before this one arrives.
          */
         SDL_GPUBuffer* params_buffer = nullptr;
+        void clear(SDL_GPUDevice* device) {
+
+            if (blur_h)
+                SDL_ReleaseGPUTexture(device, blur_h);
+            if (blur_v)
+                SDL_ReleaseGPUTexture(device, blur_v);
+            if (pipeline) {
+                SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+            }
+            if (params_buffer) {
+                SDL_ReleaseGPUBuffer(device, params_buffer);
+            }
+
+            *this = {};
+        }
     };
     std::vector<EsmBlur> esm_blurs;
 #endif
@@ -984,6 +999,7 @@ struct GpuState : SdlGpuDevice {
     std::uint32_t depth_width = 0;
     std::uint32_t depth_height = 0;
     std::uint32_t frame_graph_width = 0;
+    std::uint64_t render_targets_version = 0;
     std::uint32_t frame_graph_height = 0;
     std::vector<GpuMesh> meshes;
     /**

@@ -1457,6 +1457,8 @@ struct RenderTargetRecord {
     SurfaceRenderTargetSizeResolver resolve_surface_size = nullptr;
     std::shared_ptr<RenderTargetLifecycle> lifecycle{};
     DepthTextureFormat depth_format = DepthTextureFormat::depth24_plus_stencil8;
+    /** A retired internal target keeps its handle slot without retaining attachments. */
+    bool retired = false;
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -3988,6 +3990,7 @@ struct Engine {
     std::vector<SceneSkeletonRecord> scene_skeletons;
     std::vector<BoneRecord> bones;
     std::vector<RenderTargetRecord> render_targets;
+    std::uint64_t render_targets_version = 0;
     std::vector<FrameTaskRecord> frame_tasks;
     std::shared_ptr<pal::ComputeCommandEncoder> current_compute_encoder;
     js::Callback<void(std::shared_ptr<pal::ComputeCommandEncoder>)> compute_one_shot_submitted;

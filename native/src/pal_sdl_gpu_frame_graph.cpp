@@ -72,6 +72,7 @@ struct State {
     SdlGpuDevice gpu;
     SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
     std::vector<Target> targets;
+    std::uint64_t render_targets_version = 0;
 #if BBLITE_HAS_EFFECT_TASK
     std::vector<EffectPass> effects;
 #endif
@@ -142,7 +143,8 @@ void release(State& state) {
 }
 
 void build_graph(State& state, const Engine& engine, std::uint32_t width, std::uint32_t height) {
-    if (state.targets.size() == engine.render_targets.size() && state.width == width &&
+    if (state.render_targets_version == engine.render_targets_version &&
+        state.targets.size() == engine.render_targets.size() && state.width == width &&
         state.height == height) {
         return;
     }
@@ -151,10 +153,13 @@ void build_graph(State& state, const Engine& engine, std::uint32_t width, std::u
                             [](TextureFormatClass format) { return texture_format(format); });
     release_graph(state);
     state.width = width;
+    state.render_targets_version = engine.render_targets_version;
     state.height = height;
     state.targets.resize(engine.render_targets.size());
     for (std::size_t index = 0; index < engine.render_targets.size(); ++index) {
         const RenderTargetRecord& record = engine.render_targets[index];
+        if (record.retired)
+            continue;
         Target& target = state.targets[index];
         target = Target{state.gpu.device};
         const auto& planned = target_plans[index];

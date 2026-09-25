@@ -6,6 +6,17 @@
 
 namespace bbl::pal {
 
+#if BBLITE_SHADOWS_ESM
+inline bool esm_map_is_active(const Engine& engine, std::uint32_t index) {
+    return std::any_of(engine.shadow_generators.begin(), engine.shadow_generators.end(),
+                       [index](const ShadowGeneratorRecord& generator) {
+                           return generator.filter == ShadowFilter::esm_directional &&
+                                  generator.esm_index == index &&
+                                  generator.map_target.value != invalid_handle;
+                       });
+}
+#endif
+
 /**
  * The depth state one pass takes: the pin's own convention, or the shadow
  * target's exception to it.

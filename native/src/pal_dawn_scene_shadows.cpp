@@ -63,8 +63,10 @@ DawnState::EsmBlur& ensure_esm_blur(DawnState& state, WGPUTextureView source,
         state.esm_blurs.resize(esm_index + 1);
     }
     DawnState::EsmBlur& blur = state.esm_blurs[esm_index];
-    if (blur.pipeline)
+    if (blur.pipeline && blur.source == source)
         return blur;
+    blur.clear();
+    blur.source = source;
     const upstream::EsmShadowResources& resources = upstream::esm_shadow_resources[esm_index];
     const upstream::EsmTextureDescriptor& half = resources.textures[2];
     const auto create_half = [&](WGPUTexture& texture, WGPUTextureView& view) {
@@ -322,6 +324,22 @@ WGPUBindGroup shadow_group_for(DawnState& state, const Scene& scene, const Engin
 void write_shadow_generators(DawnState& state, const Scene& scene, Engine& engine) {
     if (engine.shadow_generators.empty())
         return;
+    for (std::size_t index = 0; index < state.shadow_uniforms.size(); ++index) {
+        if (engine.shadow_generators[index].map_target.value != invalid_handle)
+            continue;
+        if (const auto buffer = std::exchange(state.shadow_uniforms[index], nullptr))
+            wgpuBufferRelease(buffer);
+#if BBLITE_SHADOWS_ESM
+        if (const auto buffer = std::exchange(state.shadow_params[index], nullptr))
+            wgpuBufferRelease(buffer);
+#endif
+    }
+#if BBLITE_SHADOWS_ESM
+    for (std::uint32_t index = 0; index < state.esm_blurs.size(); ++index) {
+        if (!esm_map_is_active(engine, index))
+            state.esm_blurs[index].clear();
+    }
+#endif
     if (state.shadow_uniforms.size() < engine.shadow_generators.size()) {
         state.shadow_uniforms.resize(engine.shadow_generators.size(), nullptr);
 #if BBLITE_SHADOWS_ESM

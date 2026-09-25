@@ -27,7 +27,8 @@ WGPUTexture create_frame_texture(DawnState& state, WGPUTextureFormat format, std
 
 void create_frame_graph_textures(DawnState& state, const Engine& engine, std::uint32_t width,
                                  std::uint32_t height) {
-    if (state.render_targets.size() == engine.render_targets.size() &&
+    if (state.render_targets_version == engine.render_targets_version &&
+        state.render_targets.size() == engine.render_targets.size() &&
         state.frame_graph_width == width && state.frame_graph_height == height &&
         !surface_targets_changed(engine, state.render_targets, width, height)) {
         synchronize_render_target_lifecycles(engine);
@@ -46,6 +47,8 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
     state.render_targets.resize(engine.render_targets.size());
     for (std::size_t index = 0; index < target_plans.size(); ++index) {
         const RenderTargetRecord record = engine.render_targets[index];
+        if (record.retired)
+            continue;
         const auto& planned = target_plans[index];
         auto& current = state.render_targets[index];
         std::shared_ptr<DawnRenderTarget> replacement;
@@ -223,6 +226,7 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
                                                    "wgpuTextureCreateView geometry task depth");
     }
     state.frame_graph_width = width;
+    state.render_targets_version = engine.render_targets_version;
     state.frame_graph_height = height;
 }
 
