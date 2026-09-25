@@ -15,6 +15,16 @@ namespace bbl::pal {
 inline namespace sdl_scene {
 
 #if BBLITE_HAS_PBR_RENDERER
+void push_mesh_stage_blocks(SDL_GPUCommandBuffer* command, const Scene& scene, const Engine& engine,
+                            const MeshRecord& mesh) {
+    const std::array<float, 16> world = mesh_block_world(scene, engine, mesh);
+    SDL_PushGPUVertexUniformData(command, mesh_world_uniform_slot, world.data(), sizeof(world));
+#if BBLITE_GPU_DEFORMATION
+    const DeformationUniforms deformation = build_deformation_uniforms(mesh);
+    SDL_PushGPUVertexUniformData(command, 1, &deformation, sizeof(deformation));
+#endif
+}
+
 SDL_GPUBuffer* morph_storage_buffer_for(const GpuMesh& mesh, const std::string& name) {
 #if BBLITE_GPU_MORPH_STORAGE
     if (name == "morphDeltas")

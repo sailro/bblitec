@@ -513,6 +513,9 @@ struct DawnRenderTarget {
 struct DawnDepthOnlyGroup {
     WGPUBuffer mesh_world = nullptr;
     DawnBindGroup group{};
+#if BBLITE_GPU_MORPH_STORAGE
+    DawnBindGroup morph{};
+#endif
 };
 
 struct DawnRenderTask {

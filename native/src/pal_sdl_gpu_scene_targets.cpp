@@ -546,10 +546,7 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
                 SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
             }
 
-            const std::array<float, 16> world =
-                mesh_block_world(scene, engine, handle_at(engine.meshes, item.mesh));
-            SDL_PushGPUVertexUniformData(command, mesh_world_uniform_slot, world.data(),
-                                         sizeof(world));
+            push_mesh_stage_blocks(command, scene, engine, handle_at(engine.meshes, item.mesh));
             const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
             const SDL_GPUTextureSamplerBinding texture_binding{
                 mesh.base_color,

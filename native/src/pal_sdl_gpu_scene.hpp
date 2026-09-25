@@ -1376,6 +1376,10 @@ void sync_morph_weights(GpuBufferUploadBatch& uploads, GpuMesh& mesh, const Mode
                         const MeshRecord& record);
 #endif
 
+/** The shared vertex stage's world and optional skin/morph uniforms. */
+void push_mesh_stage_blocks(SDL_GPUCommandBuffer* command, const Scene& scene, const Engine& engine,
+                            const MeshRecord& mesh);
+
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
 /**
  * One rgba32float upload through this backend's copy pass, staged through

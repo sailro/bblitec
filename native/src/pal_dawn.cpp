@@ -387,18 +387,41 @@ WGPURenderPipeline depth_only_pipeline_for(DawnState& state, bool double_sided,
     if (!state.depth_only_module) {
         state.depth_only_module = load_wgsl_module(state, "depth-only.frag");
     }
+    // Explicit stage layouts let both culling variants share the mesh's
+    // morph group and the task's camera/world/deformation group.
+    const std::array<DawnLayoutStage, 1> stages{{{"pbr.vert", WGPUShaderStage_Vertex}}};
+    DawnBindGroupLayout morph_layout{create_dawn_reflected_layout(state.device, stages, 0)};
+    DawnBindGroupLayout mesh_layout{create_dawn_reflected_layout(state.device, stages, 1)};
+    const std::array<WGPUBindGroupLayout, 2> group_layouts{morph_layout.get(), mesh_layout.get()};
+    WGPUPipelineLayoutDescriptor layout_descriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    layout_descriptor.bindGroupLayoutCount = group_layouts.size();
+    layout_descriptor.bindGroupLayouts = group_layouts.data();
+    DawnPipelineLayout layout{wgpuDeviceCreatePipelineLayout(state.device, &layout_descriptor)};
     auto attributes = vertex_attribute_array<base_vertex_attribute_count>();
     fill_base_vertex_attributes(attributes.data());
-    WGPUVertexBufferLayout vertex_layout{};
-    vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
-    vertex_layout.arrayStride = sizeof(GpuVertex);
-    vertex_layout.attributeCount = attributes.size();
-    vertex_layout.attributes = attributes.data();
+    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
+    vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layouts[0].arrayStride = sizeof(GpuVertex);
+    vertex_layouts[0].attributeCount = attributes.size();
+    vertex_layouts[0].attributes = attributes.data();
+#if BBLITE_GPU_INSTANCING
+    auto instance_attributes = vertex_attribute_array<4>();
+    for (std::uint32_t column = 0; column < 4; ++column) {
+        instance_attributes[column].format = WGPUVertexFormat_Float32x4;
+        instance_attributes[column].offset = column * 16;
+        instance_attributes[column].shaderLocation = instance_matrix_first_location + column;
+    }
+    vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
+    vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
+    vertex_layouts[1].attributeCount = instance_attributes.size();
+    vertex_layouts[1].attributes = instance_attributes.data();
+#endif
     WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = layout;
     descriptor.vertex.module = state.vertex_module;
     descriptor.vertex.entryPoint = string_view("mainVertex");
-    descriptor.vertex.bufferCount = 1;
-    descriptor.vertex.buffers = &vertex_layout;
+    descriptor.vertex.bufferCount = BBLITE_GPU_INSTANCING ? 2 : 1;
+    descriptor.vertex.buffers = vertex_layouts.data();
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = WGPUFrontFace_CCW;
     descriptor.primitive.cullMode = double_sided ? WGPUCullMode_None : WGPUCullMode_Back;
@@ -2830,12 +2853,12 @@ public:
                                 // deformation and world blocks.
                                 const auto depth_only_group =
                                     [&](const MeshHandle handle,
-                                        const DawnMesh& mesh) -> WGPUBindGroup {
+                                        const DawnMesh& mesh) -> const DawnDepthOnlyGroup& {
                                     DawnDepthOnlyGroup& cached =
                                         render_task.depth_only_groups[handle.value];
                                     if (cached.group &&
                                         cached.mesh_world == mesh.mesh_world_uniform)
-                                        return cached.group;
+                                        return cached;
                                     DawnBindGroupLayout layout{wgpuRenderPipelineGetBindGroupLayout(
                                         depth_only_pipeline_for(state, false, samples,
                                                                 target.depth_format),
@@ -2862,8 +2885,30 @@ public:
                                     cached.group = DawnBindGroup{require_dawn_resource(
                                         wgpuDeviceCreateBindGroup(state.device, &descriptor),
                                         "depth-only bind group")};
+#if BBLITE_GPU_MORPH_STORAGE
+                                    DawnBindGroupLayout morph_layout{
+                                        wgpuRenderPipelineGetBindGroupLayout(
+                                            depth_only_pipeline_for(state, false, samples,
+                                                                    target.depth_format),
+                                            0)};
+                                    std::array<WGPUBindGroupEntry, 2> morph_entries{};
+                                    for (std::uint32_t binding = 0; binding < morph_entries.size();
+                                         ++binding) {
+                                        morph_entries[binding] = WGPU_BIND_GROUP_ENTRY_INIT;
+                                        morph_entries[binding].binding = binding;
+                                        morph_entries[binding].buffer =
+                                            binding == 0 ? mesh.morph_deltas : mesh.morph_weights;
+                                        morph_entries[binding].size = WGPU_WHOLE_SIZE;
+                                    }
+                                    descriptor.layout = morph_layout;
+                                    descriptor.entryCount = morph_entries.size();
+                                    descriptor.entries = morph_entries.data();
+                                    cached.morph = DawnBindGroup{require_dawn_resource(
+                                        wgpuDeviceCreateBindGroup(state.device, &descriptor),
+                                        "depth-only morph bind group")};
+#endif
                                     cached.mesh_world = mesh.mesh_world_uniform;
-                                    return cached.group;
+                                    return cached;
                                 };
                                 for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
                                     wgpuRenderPassEncoderSetPipeline(
@@ -2916,9 +2961,14 @@ public:
                                                 state, graph_scene, engine,
                                                 handle_at(engine.meshes, entry.mesh), mesh);
                                         }
+                                        const DawnDepthOnlyGroup& bindings =
+                                            depth_only_group(entry.mesh, mesh);
+#if BBLITE_GPU_MORPH_STORAGE
                                         wgpuRenderPassEncoderSetBindGroup(
-                                            task_pass, 1, depth_only_group(entry.mesh, mesh), 0,
-                                            nullptr);
+                                            task_pass, 0, bindings.morph, 0, nullptr);
+#endif
+                                        wgpuRenderPassEncoderSetBindGroup(
+                                            task_pass, 1, bindings.group, 0, nullptr);
                                         wgpuRenderPassEncoderSetVertexBuffer(
                                             task_pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
 #if BBLITE_GPU_INSTANCING

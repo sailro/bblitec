@@ -12,7 +12,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 ## Platform and runtime
 
 - [ ] One runtime model for pinned records and application values: `pinned_records.hpp` restates `js::typed_array_set`, `array_pop_or_absent` and `MapGetResult` over `std::optional`/`std::shared_ptr`.
-- [ ] Dawn depth-only tasks bind no group 0 for morph storage, and SDL_GPU depth-only and ID-diagnostic draws never push the deformation block.
 - [ ] Include only the concern header a unit reads instead of the `pal_gpu_shared.hpp` umbrella chain.
 - [ ] Share one post-process program builder per backend between the scene and frame-graph drivers (`pal_*_scene_post_process.cpp`, `pal_*_frame_graph.cpp`).
 - [ ] Use `begin_dawn_surface_capture`/`finish_dawn_surface_capture` and one readback-map helper in the Dawn scene driver (`pal_dawn.cpp`, `pal_dawn_scene_targets.cpp`, `pal_dawn_scene_picking.cpp`).

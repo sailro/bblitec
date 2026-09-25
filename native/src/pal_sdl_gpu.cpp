@@ -2745,13 +2745,9 @@ public:
                                                 "Depth task mesh is not in the scene.");
                                         }
                                         const GpuMesh& mesh = graph_meshes[mesh_index];
-                                        // The stage's mesh block: the mesh's own world.
-                                        const std::array<float, 16> world =
-                                            mesh_block_world(graph_scene, engine,
-                                                             handle_at(engine.meshes, entry.mesh));
-                                        SDL_PushGPUVertexUniformData(command,
-                                                                     mesh_world_uniform_slot,
-                                                                     world.data(), sizeof(world));
+                                        push_mesh_stage_blocks(
+                                            command, graph_scene, engine,
+                                            handle_at(engine.meshes, entry.mesh));
                                         const SDL_GPUBufferBinding index_binding{
                                             mesh.indices,
                                             0,
