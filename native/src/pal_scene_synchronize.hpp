@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -88,13 +89,15 @@ inline bool refresh_overlay_render_plans(Engine& engine, std::vector<upstream::R
                                          std::vector<std::uint64_t>& versions,
                                          bool draw_lists_changed, ReleaseMesh&& release_mesh,
                                          UploadItem&& upload_item) {
+    const auto scenes = engine.scenes();
     if (plans.size() != meshes.size() || plans.size() != versions.size() ||
-        plans.size() + 1 != engine.scenes().size()) {
+        plans.size() + 1 != scenes.size()) {
         throw std::runtime_error("Overlay registration changed after renderer initialization.");
     }
     bool changed = false;
-    for (std::size_t layer = 0; layer < plans.size(); ++layer) {
-        Scene& scene = *engine.scenes()[layer + 1];
+    auto overlay = std::next(scenes.begin());
+    for (std::size_t layer = 0; layer < plans.size(); ++layer, ++overlay) {
+        Scene& scene = **overlay;
         if (scene.render_topology_version != versions[layer]) {
             reject_uncomposed_family_growth(scene.material_family_mask);
             upstream::RenderPlan updated = upstream::build_render_plan(scene, engine);
@@ -287,9 +290,12 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     // retired, whose slot a new mesh may already hold.
     auto& rows = backend.mesh_rows();
     sync_plan_mesh_rows(scene, engine, sync.render_plan, sync.meshes, rows);
+    const auto scenes = engine.scenes();
+    auto overlay = std::next(scenes.begin());
     for (std::size_t layer = 0;
-         layer < sync.overlay_plans.size() && layer < sync.overlay_meshes.size(); ++layer) {
-        sync_plan_mesh_rows(*engine.scenes()[layer + 1u], engine, sync.overlay_plans[layer],
+         layer < sync.overlay_plans.size() && layer < sync.overlay_meshes.size();
+         ++layer, ++overlay) {
+        sync_plan_mesh_rows(**overlay, engine, sync.overlay_plans[layer],
                             sync.overlay_meshes[layer], rows);
     }
     // RAF callbacks write ShaderMaterial storage: publish it with the

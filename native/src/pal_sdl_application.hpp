@@ -98,7 +98,7 @@ struct SdlApplication {
     void fail(std::exception_ptr error) {
         std::lock_guard lock(events_mutex);
         if (!failure)
-            failure = std::move(error);
+            failure = error;
     }
 };
 inline thread_local SdlApplication* active_sdl_application = nullptr;

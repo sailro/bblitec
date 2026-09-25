@@ -94,7 +94,10 @@ test("both record lowerers preserve reference absence and optional scalar truthi
             ],
             values: new Map(),
             adapters: new Map(),
-            exported: new Set([`${modulePath}#probe`, `${modulePath}#collections`]),
+            exported: new Set([
+                `${modulePath}#probe`,
+                `${modulePath}#collections`,
+            ]),
         },
     );
     const lowered = model.lower([
@@ -200,5 +203,9 @@ int main() {
     const output = execFileSync(exe, { encoding: "utf8" })
         .trim()
         .split(/\r?\n/);
-    assert.deepEqual(output, [expected, expected, reference.collections().join(" ")]);
+    assert.deepEqual(output, [
+        expected,
+        expected,
+        reference.collections().join(" "),
+    ]);
 });

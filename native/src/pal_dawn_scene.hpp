@@ -1041,6 +1041,7 @@ struct DawnState : DawnDevice {
         }
     };
     std::vector<EsmBlur> esm_blurs;
+    std::vector<bool> active_esm_maps;
 #endif
     /**
      * Refilled per generator by the caster fold, never reallocated.

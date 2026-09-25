@@ -112,6 +112,3 @@ namespace bbl::pal {
 using SceneRun = Iteration<bool>;
 }
 #endif
-
-#define BBLITE_RUN_RETURN(value) co_return value
-#define BBLITE_FRAME_YIELD(rendered) co_yield rendered

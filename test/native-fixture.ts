@@ -137,7 +137,9 @@ export function sharedGpuSource(): string {
         ),
     );
     return [
-        ...[...headers].map((name) => readFileSync(join("native/src", name), "utf8")),
+        ...[...headers].map((name) =>
+            readFileSync(join("native/src", name), "utf8"),
+        ),
         ...units,
     ].join("\n");
 }

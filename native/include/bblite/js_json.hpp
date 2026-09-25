@@ -585,13 +585,7 @@ public:
     void set(std::string_view key, JsonValue value) const {
         if (kind_ != Kind::object || native_)
             throw std::runtime_error("Dynamic property assignment requires an owned object.");
-        for (Entry& entry : *object_) {
-            if (entry.first == key) {
-                entry.second = std::move(value);
-                return;
-            }
-        }
-        object_->emplace_back(key, std::move(value));
+        set_entry(*object_, key, std::move(value));
     }
 
     [[nodiscard]] JsonArrayView elements() const;
@@ -773,6 +767,16 @@ public:
     }
 
 private:
+    friend class JsonValueParser;
+    template <typename Key> static void set_entry(Object& entries, Key&& key, JsonValue value) {
+        for (Entry& entry : entries) {
+            if (entry.first == key) {
+                entry.second = std::move(value);
+                return;
+            }
+        }
+        entries.emplace_back(std::forward<Key>(key), std::move(value));
+    }
     [[nodiscard]] std::size_t array_size() const {
         return native_array_ ? native_array_->size() : array_->size();
     }
@@ -1023,14 +1027,7 @@ class JsonValueParser {
         if (frames_.empty()) {
             result_ = std::move(value);
         } else if (Frame& frame = frames_.back(); frame.object) {
-            // A repeated key replaces its value without changing its position.
-            for (auto& entry : frame.entries) {
-                if (entry.first == frame.key) {
-                    entry.second = std::move(value);
-                    return true;
-                }
-            }
-            frame.entries.emplace_back(std::move(frame.key), std::move(value));
+            JsonValue::set_entry(frame.entries, std::move(frame.key), std::move(value));
         } else {
             frame.elements.push_back(std::move(value));
         }

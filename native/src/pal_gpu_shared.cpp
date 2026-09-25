@@ -43,6 +43,7 @@
 #endif
 
 #include <cstring>
+#include <iterator>
 #include <sstream>
 
 namespace bbl::pal {
@@ -135,15 +136,16 @@ std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scen
                                                 std::uint32_t target_width,
                                                 std::uint32_t target_height) {
 #if BBLITE_HAS_UI
-    if (engine.scenes().empty())
+    const auto scenes = engine.scenes();
+    if (scenes.empty())
         return std::nullopt;
     std::size_t pane_count = 1;
     std::size_t pane_index = npos;
-    const std::shared_ptr<Scene>& primary = engine.scenes().front();
+    const std::shared_ptr<Scene>& primary = scenes.front();
     if (primary && primary->shares_identity(scene))
         pane_index = 0;
-    for (std::size_t i = 1; i < engine.scenes().size(); ++i) {
-        const std::shared_ptr<Scene>& registered = engine.scenes()[i];
+    for (auto at = std::next(scenes.begin()); at != scenes.end(); ++at) {
+        const auto& registered = *at;
         if (!registered || !unplaced_surface_scene(engine, *registered))
             continue;
         if (registered->shares_identity(scene))
@@ -190,8 +192,7 @@ std::optional<PixelViewport> surface_canvas_pane(const Engine& engine,
     if (surface_canvas_laid_out(engine, *surface_canvas)) {
         return laid_out_canvas_pane(engine, *surface_canvas, target_width, target_height);
     }
-    for (std::size_t i = 0; i < engine.scenes().size(); ++i) {
-        const std::shared_ptr<Scene>& registered = engine.scenes()[i];
+    for (const auto& registered : engine.scenes()) {
         if (!registered || !registered->surface_canvas)
             continue;
         if (registered->surface_canvas->value != surface_canvas->value)

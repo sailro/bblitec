@@ -27,13 +27,14 @@
 namespace bbl::pal {
 
 #if BBLITE_SHADOWS_ESM
-inline bool esm_map_is_active(const Engine& engine, std::uint32_t index) {
-    return std::any_of(engine.shadow_generators.begin(), engine.shadow_generators.end(),
-                       [index](const ShadowGeneratorRecord& generator) {
-                           return generator.filter == ShadowFilter::esm_directional &&
-                                  generator.esm_index == index &&
-                                  generator.map_target.value != invalid_handle;
-                       });
+inline void mark_active_esm_maps(const Engine& engine, std::vector<bool>& active,
+                                 std::size_t map_count) {
+    active.assign(map_count, false);
+    for (const auto& generator : engine.shadow_generators) {
+        if (generator.filter == ShadowFilter::esm_directional &&
+            generator.map_target.value != invalid_handle && generator.esm_index < map_count)
+            active[generator.esm_index] = true;
+    }
 }
 #endif
 

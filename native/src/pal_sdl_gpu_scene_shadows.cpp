@@ -105,8 +105,9 @@ void update_shadow_generators(GpuState& state, const Scene& scene, Engine& engin
         retired = {};
     }
 #if BBLITE_SHADOWS_ESM
+    mark_active_esm_maps(engine, state.active_esm_maps, state.esm_blurs.size());
     for (std::uint32_t index = 0; index < state.esm_blurs.size(); ++index) {
-        if (!esm_map_is_active(engine, index))
+        if (!state.active_esm_maps[index])
             state.esm_blurs[index].clear(state.device);
     }
 #endif

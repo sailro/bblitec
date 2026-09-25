@@ -36,6 +36,9 @@
 #include <bblite/features/workers.hpp>
 
 #include "pal_dawn_scene.hpp"
+#if BBLITE_COMPUTE_FRAME_GRAPH
+#include <bblite/pal_compute_frame_graph.hpp>
+#endif
 
 namespace bbl::pal {
 inline namespace dawn_scene {
@@ -611,8 +614,8 @@ class DawnSceneRun {
         if (state.render_tasks.size() < engine.frame_tasks.size()) {
             state.render_tasks.resize(engine.frame_tasks.size());
         }
-        for (std::size_t layer = 0; layer < engine.scenes().size(); ++layer) {
-            const Scene& task_scene = *engine.scenes()[layer];
+        for (std::size_t layer = 0; layer < data_.active_registered_scenes.size(); ++layer) {
+            const Scene& task_scene = *data_.active_registered_scenes[layer];
             const auto& task_plan = layer == 0 ? render_plan : overlay_plans[layer - 1];
             for (const TaskHandle handle : task_scene.tasks) {
                 if (handle.value >= engine.frame_tasks.size()) {
@@ -1116,8 +1119,8 @@ public:
             for (const upstream::RenderItem& item : render_plan.items) {
                 state.meshes.push_back(upload_dawn_scene_mesh(state, engine, item));
             }
-            for (std::size_t layer = 1; layer < engine.scenes().size(); ++layer) {
-                Scene* overlay_scene = engine.scenes()[layer].get();
+            for (std::size_t layer = 1; layer < data_.active_registered_scenes.size(); ++layer) {
+                Scene* overlay_scene = data_.active_registered_scenes[layer].get();
                 if (!overlay_scene)
                     continue;
                 upstream::RenderPlan overlay_plan =
@@ -1682,7 +1685,7 @@ public:
         // rewritten between the two passes.
         for (std::size_t layer = 0;
              layer < overlay_plans.size() && layer < state.overlay_frames.size(); ++layer) {
-            Scene* overlay_scene = engine.scenes()[layer + 1u].get();
+            Scene* overlay_scene = data_.active_registered_scenes[layer + 1u].get();
             if (!overlay_scene)
                 continue;
             DawnState::OverlayFrame& overlay = state.overlay_frames[layer];
@@ -1758,7 +1761,7 @@ public:
         // layer's own draw lists and its own uploaded meshes.
         for (std::size_t layer = 0;
              layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
-            Scene* overlay_scene = engine.scenes()[layer + 1u].get();
+            Scene* overlay_scene = data_.active_registered_scenes[layer + 1u].get();
             if (!overlay_scene)
                 continue;
             // The layer's own effective aspect: a viewport is the camera's,
@@ -1790,8 +1793,9 @@ public:
             // writes the blocks and the rest name only their own matrices.
             std::vector<bool> wrote_caster_blocks(engine.shadow_generators.size(), false);
 #endif
-            for (std::size_t graph_layer = 0; graph_layer < engine.scenes().size(); ++graph_layer) {
-                const Scene& graph_scene = *engine.scenes()[graph_layer];
+            for (std::size_t graph_layer = 0; graph_layer < data_.active_registered_scenes.size();
+                 ++graph_layer) {
+                const Scene& graph_scene = *data_.active_registered_scenes[graph_layer];
                 const auto graph_extent = scene_surface_extent(engine, graph_scene, width, height);
                 // A geometry task renders through its scene's camera.
                 const PassCamera geometry_pass = build_pass_camera(
@@ -2504,7 +2508,7 @@ public:
             // in front of everything below it.
             for (std::size_t layer = 0;
                  layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
-                Scene* overlay_scene = engine.scenes()[layer + 1u].get();
+                Scene* overlay_scene = data_.active_registered_scenes[layer + 1u].get();
                 if (!overlay_scene)
                     continue;
                 if (layer < overlay_topology_versions.size() &&
@@ -2645,9 +2649,9 @@ public:
                     }
                 }
 #endif
-                for (std::size_t graph_layer = 0; graph_layer < engine.scenes().size();
-                     ++graph_layer) {
-                    const Scene& graph_scene = *engine.scenes()[graph_layer];
+                for (std::size_t graph_layer = 0;
+                     graph_layer < data_.active_registered_scenes.size(); ++graph_layer) {
+                    const Scene& graph_scene = *data_.active_registered_scenes[graph_layer];
                     const auto& graph_plan =
                         graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1];
                     auto& graph_meshes =
@@ -3168,7 +3172,8 @@ public:
                             task_pass.reset();
                             if (graph_layer == 0 && task.render.scene_stages) {
                                 for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
-                                    const Scene& utility = *engine.scenes()[layer + 1];
+                                    const Scene& utility =
+                                        *data_.active_registered_scenes[layer + 1];
                                     if (utility.surface_canvas || !utility.tasks.empty())
                                         continue;
                                     color_attachment.loadOp = WGPULoadOp_Load;
@@ -3967,11 +3972,11 @@ SceneRun run_dawn_engine(Engine& engine) {
 #if BBLITE_WORKERS
         if (outcome == FrameOutcome::rendered || renderer.yield_when_skipped())
 #endif
-            BBLITE_FRAME_YIELD(outcome == FrameOutcome::rendered);
+            co_yield outcome == FrameOutcome::rendered;
     }
     renderer.discard_frame();
     renderer.finish_run();
-    BBLITE_RUN_RETURN(true);
+    co_return true;
 }
 
 } // namespace bbl::pal

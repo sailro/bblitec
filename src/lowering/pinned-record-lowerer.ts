@@ -4163,7 +4163,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                             : `(${values.map((value) => `${place}.push_back(${value})`).join(", ")})`;
                     }
                     case "pop":
-                        return this.collectionResult(`bbl::js::array_pop_or_absent(${receiver()})`, element);
+                        return this.collectionResult(
+                            `bbl::js::array_pop_or_absent(${receiver()})`,
+                            element,
+                        );
                     case "indexOf":
                         return `bbl::js::array_index_of(${receiver()}, ${this.convert(node.arguments[0]!, element)})`;
                     case "slice":
@@ -4218,7 +4221,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "map":
                 switch (name) {
                     case "get":
-                        return this.collectionResult(`${receiver()}.get_owned(${this.convert(node.arguments[0]!, shape.key)})`, shape.value);
+                        return this.collectionResult(
+                            `${receiver()}.get_owned(${this.convert(node.arguments[0]!, shape.key)})`,
+                            shape.value,
+                        );
                     case "has":
                         return `${receiver()}.has(${this.convert(node.arguments[0]!, shape.key)})`;
                     case "set":
@@ -4234,7 +4240,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "weakmap":
                 switch (name) {
                     case "get":
-                        return this.collectionResult(`${receiver()}.get_owned(std::weak_ptr<const void>(${this.value(node.arguments[0]!)}))`, shape.value);
+                        return this.collectionResult(
+                            `${receiver()}.get_owned(std::weak_ptr<const void>(${this.value(node.arguments[0]!)}))`,
+                            shape.value,
+                        );
                     case "has":
                         return `${receiver()}.has(std::weak_ptr<const void>(${this.value(node.arguments[0]!)}))`;
                     case "set":

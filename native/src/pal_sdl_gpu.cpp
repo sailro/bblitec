@@ -37,6 +37,9 @@
 #include <bblite/features/workers.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
+#if BBLITE_COMPUTE_FRAME_GRAPH
+#include <bblite/pal_compute_frame_graph.hpp>
+#endif
 
 namespace bbl::pal {
 inline namespace sdl_scene {
@@ -461,8 +464,8 @@ class SdlSceneRun {
         for (upstream::RenderDrawLists& lists : task_draw_lists) {
             lists = {};
         }
-        for (std::size_t layer = 0; layer < engine.scenes().size(); ++layer) {
-            const Scene& task_scene = *engine.scenes()[layer];
+        for (std::size_t layer = 0; layer < data_.active_registered_scenes.size(); ++layer) {
+            const Scene& task_scene = *data_.active_registered_scenes[layer];
             const upstream::RenderPlan& task_plan =
                 layer == 0 ? render_plan : overlay_plans[layer - 1];
             for (const TaskHandle handle : task_scene.tasks) {
@@ -1265,8 +1268,8 @@ public:
         // an uploaded mesh array because a draw command indexes its plan.
         // Each layer rematches changed rows before encoding the next frame.
 
-        for (std::size_t layer = 1; layer < engine.scenes().size(); ++layer) {
-            Scene* overlay_scene = engine.scenes()[layer].get();
+        for (std::size_t layer = 1; layer < data_.active_registered_scenes.size(); ++layer) {
+            Scene* overlay_scene = data_.active_registered_scenes[layer].get();
             if (!overlay_scene)
                 continue;
             upstream::RenderPlan overlay_plan = upstream::build_render_plan(*overlay_scene, engine);
@@ -1738,7 +1741,7 @@ public:
             for (std::size_t layer = 0;
                  layer < data.overlay_plans.size() && layer < state.overlay_meshes.size();
                  ++layer) {
-                const Scene* overlay_scene = engine.scenes()[layer + 1u].get();
+                const Scene* overlay_scene = data.active_registered_scenes[layer + 1u].get();
                 if (!overlay_scene)
                     continue;
                 auto& meshes = state.overlay_meshes[layer];
@@ -1930,9 +1933,9 @@ public:
 #endif
                 // Each registered context owns its tasks, camera and draw indices.
                 // Finish its graph before composing the next context's surface.
-                for (std::size_t graph_layer = 0; graph_layer < engine.scenes().size();
-                     ++graph_layer) {
-                    const Scene& graph_scene = *engine.scenes()[graph_layer];
+                for (std::size_t graph_layer = 0;
+                     graph_layer < data_.active_registered_scenes.size(); ++graph_layer) {
+                    const Scene& graph_scene = *data_.active_registered_scenes[graph_layer];
                     const auto& graph_meshes =
                         graph_layer == 0 ? state.meshes : state.overlay_meshes[graph_layer - 1];
                     const auto& graph_plan =
@@ -2913,7 +2916,8 @@ public:
                                 // Utility layers share the primary surface's MSAA
                                 // attachment, before its resolve/present tasks run.
                                 for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
-                                    const Scene& utility = *engine.scenes()[layer + 1];
+                                    const Scene& utility =
+                                        *data_.active_registered_scenes[layer + 1];
                                     if (utility.surface_canvas || !utility.tasks.empty())
                                         continue;
                                     // The layer's own scene pass: its camera,
@@ -3821,7 +3825,7 @@ public:
             // back faces while sitting in front of everything below it.
             for (std::size_t layer = 0;
                  layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
-                Scene* overlay_scene = engine.scenes()[layer + 1u].get();
+                Scene* overlay_scene = data_.active_registered_scenes[layer + 1u].get();
                 if (!overlay_scene)
                     continue;
                 if (layer < overlay_topology_versions.size() &&
@@ -4180,18 +4184,18 @@ SceneRun run_gpu_engine(Engine& engine) {
 #if BBLITE_WORKERS
         if (outcome == FrameOutcome::rendered || renderer.yield_when_skipped())
 #endif
-            BBLITE_FRAME_YIELD(outcome == FrameOutcome::rendered);
+            co_yield outcome == FrameOutcome::rendered;
     }
     renderer.discard_frame();
     renderer.finish_run();
-    BBLITE_RUN_RETURN(true);
+    co_return true;
 #else
     const FrameOptions frame_options = read_frame_options();
     reject_unsupported_frame_options(frame_options, "SDL_GPU",
                                      /*supports_single_sample=*/true,
                                      /*supports_copy_task=*/true);
     (void)engine;
-    BBLITE_RUN_RETURN(false);
+    co_return false;
 #endif
 }
 

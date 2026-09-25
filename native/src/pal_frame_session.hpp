@@ -98,10 +98,10 @@ public:
         Derived renderer(engine);
         renderer.setup();
         while (conduct_frame(renderer) != FrameOutcome::stopped) {
-            BBLITE_FRAME_YIELD(true);
+            co_yield true;
         }
         renderer.finish_run();
-        BBLITE_RUN_RETURN(true);
+        co_return true;
     }
 
     FramePreparation prepare() {

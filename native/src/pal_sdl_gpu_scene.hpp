@@ -902,6 +902,7 @@ struct GpuState : SdlGpuDevice {
         }
     };
     std::vector<EsmBlur> esm_blurs;
+    std::vector<bool> active_esm_maps;
 #endif
     /** The shared walk's carriers, whose layout it owns. */
     pal::ShadowRefreshState shadow_refresh;
