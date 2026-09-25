@@ -1,3 +1,4 @@
+import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
 import { declaredSymbol, resolvedSymbol } from "../compiler/symbols.js";
 import { doubleLiteral } from "../cpp-literals.js";
@@ -8,6 +9,7 @@ import { CPP_SCALAR } from "./cpp-types.js";
 import {
     PinnedNumericLowerer,
     type PinnedNumericScope,
+    type PinnedIteration,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
@@ -145,8 +147,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         const numeric: PinnedNumericScope = {
             bindings: new Map(),
             calls: pinnedNumericMathCalls(),
-            booleanAnd: true,
-            booleanOr: true,
+
             localPrefix: "local_",
         };
         super(file, numeric);
@@ -369,8 +370,6 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             const lines = this.referenceStatement(statement, indent);
             if (lines) return lines;
         }
-        if (ts.isForOfStatement(statement))
-            return this.forOf(statement, indent);
         return super.statement(statement, indent);
     }
 
@@ -526,17 +525,16 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         ];
     }
 
-    private forOf(statement: ts.ForOfStatement, indent: string): string[] {
+    protected override forOfIteration(
+        statement: ts.ForOfStatement,
+        binding: ts.BindingName,
+    ): PinnedIteration {
         const list = statement.initializer;
         const element =
             ts.isVariableDeclarationList(list) && list.declarations.length === 1
                 ? list.declarations[0]!
                 : undefined;
-        if (
-            statement.awaitModifier ||
-            !element ||
-            !ts.isIdentifier(element.name)
-        )
+        if (statement.awaitModifier || !element || !ts.isIdentifier(binding))
             return this.refuse(
                 statement,
                 "Pinned for-of loop requires one ordinary binding.",
@@ -549,7 +547,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             );
         const array = `iterable_${this.temporary++}`,
             index = `index_${this.temporary++}`,
-            item = this.localName(element.name.text);
+            item = this.localName(binding.text);
         const type = values.type.slice(0, -2);
         this.schema.values.set(element, {
             cpp: item,
@@ -561,17 +559,11 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             type,
             borrowed: "mutable",
         };
-        const body = ts.isBlock(statement.statement)
-            ? statement.statement.statements
-            : [statement.statement];
-        return [
-            `${indent}{ auto ${array} = ${this.owned(values)};`,
-            `${indent}for (std::size_t ${index} = 0; ${index} < ${array}.size(); ++${index}) {`,
-            `${indent}    auto ${item} = ${this.owned(selected)};`,
-            this.body(body, indent + "    "),
-            `${indent}}`,
-            `${indent}}`,
-        ];
+        return {
+            prefix: [`auto ${array} = ${this.owned(values)};`],
+            header: `std::size_t ${index} = 0; ${index} < ${array}.size(); ++${index}`,
+            bindings: [`auto ${item} = ${this.owned(selected)};`],
+        };
     }
 
     protected override assignmentDomain(
@@ -637,7 +629,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         const adapted = this.schema.expression?.(node, expected, this);
         if (adapted) return adapted;
         if (ts.isStringLiteral(node))
-            return { cpp: JSON.stringify(node.text), type: "string" };
+            return { cpp: stringLiteral(node.text), type: "string" };
         if (ts.isIdentifier(node)) return this.identifier(node, expected);
         if (ts.isPropertyAccessExpression(node)) return this.property(node);
         if (ts.isElementAccessExpression(node)) return this.element(node);

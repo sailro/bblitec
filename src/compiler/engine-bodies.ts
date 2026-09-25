@@ -18,6 +18,8 @@ import { sharedUpstreamStore } from "../upstream-source.js";
  * pinned hierarchy has.
  */
 export interface EngineBodies {
+    /** Type questions about one body need only its module and imports. */
+    checkerFor(node: ts.Node): ts.TypeChecker;
     /** The checker and class hierarchy of the program over every pinned source, built on first read. */
     readonly checker: ts.TypeChecker;
     readonly hierarchy: ClassHierarchy;
@@ -70,6 +72,7 @@ function createEngineBodies(): EngineBodies {
     };
 
     return {
+        checkerFor: (node) => pinned.checkerFor(node),
         get checker() {
             return pinned.checker;
         },

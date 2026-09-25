@@ -187,8 +187,7 @@ export function lowerGpuTaskTiming(context: LoweringContext): LoweredSource {
                         `${target}(${args.join(", ")})`,
                 ]),
             ),
-            booleanOr: true,
-            booleanAnd: true,
+
             expression,
             returnValue: (
                 value: ts.Expression | undefined,

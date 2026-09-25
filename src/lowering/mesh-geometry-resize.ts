@@ -26,7 +26,7 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
                 ],
             ]),
             calls: new Map(),
-            booleanOr: true,
+
             expression(node, lowerer) {
                 if (context.expressionMatchesShape(node, "count === undefined"))
                     return "false";
@@ -163,8 +163,7 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
         return lowerPinnedBody(file, declaration.body!.statements, {
             bindings,
             calls,
-            booleanAnd: true,
-            booleanOr: true,
+
             foldConditions: false,
             callShapes: new Map([
                 ["release", "bool"],

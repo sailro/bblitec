@@ -412,3 +412,16 @@ export function isDeclaredInside(
         ts.findAncestor(node, (owner) => owner === target) !== undefined
     );
 }
+
+/** The expression of a concise body or a block consisting only of a return. */
+export function soleReturnedExpression(
+    body: ts.ConciseBody,
+): ts.Expression | undefined {
+    if (!ts.isBlock(body)) return body;
+    const [statement] = body.statements;
+    return body.statements.length === 1 &&
+        statement &&
+        ts.isReturnStatement(statement)
+        ? statement.expression
+        : undefined;
+}

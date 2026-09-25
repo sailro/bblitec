@@ -100,7 +100,7 @@ function scope(
     return {
         bindings,
         calls,
-        booleanOr: true,
+
         foldConditions: false,
         callShapes: new Map([["Number.isInteger", "bool"]]),
         expression(node, lowerer) {

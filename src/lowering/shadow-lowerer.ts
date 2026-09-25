@@ -426,7 +426,7 @@ function lowerComputeDirectionalLightMatrix(context: LoweringContext): string {
                     ]),
                 };
             },
-            booleanOr: true,
+
             returns: {
                 type: "ShadowLightMatrix",
                 value: (lowerer, expression): string => {

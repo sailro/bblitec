@@ -29,7 +29,7 @@ import {
 } from "./asset-specializer.js";
 import { babylonLights, type BabylonLight } from "./babylon-asset-features.js";
 import { SPLAT_CONTAINERS } from "./compiler/assets.js";
-import type { JsonRecord } from "./gltf-document.js";
+import type { JsonRecord } from "./json-fields.js";
 import {
     packagedGltfTransmissionPlan,
     selectedGltfTransmission,

@@ -109,8 +109,7 @@ export function lowerBabylonHierarchy(context: LoweringContext): string {
     const body = lowerPinnedBody(file, [loop, ...rootStatements], {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression,
         forOf(iterated, element) {
             const range =

@@ -52,13 +52,7 @@ function pinnedCopyBlit(context: LoweringContext): {
         );
     }
     const builders = new PinnedShaderBuilders(context);
-    const vertexText = builders.value(copyTaskModule, "VERTEX_WGSL");
-    if (typeof vertexText !== "string") {
-        return context.contractError(
-            declaration,
-            "Pinned copy task no longer declares its VERTEX_WGSL text.",
-        );
-    }
+    const vertexText = context.pinnedString(copyTaskModule, "VERTEX_WGSL");
     const fragmentText = builders.evaluate(
         copyTaskModule,
         "fragmentForSingle",

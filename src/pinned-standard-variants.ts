@@ -2236,7 +2236,7 @@ export function pinnedStandardSupportBlock(
         const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
             bindings,
             calls: new Map(),
-            booleanOr: true,
+
             returnValue: (expression) => {
                 if (!expression)
                     refuseGeneration(

@@ -21,7 +21,7 @@
  * rather than a scan of the JSON — and the flag list is closed, so a pin that
  * adds one refuses rather than composing a module this port cannot serve.
  */
-import type { JsonObject } from "./gltf-document.js";
+import type { JsonObject } from "./json-fields.js";
 import type {
     CompiledNodeMaterial,
     NodeMaterialBlockEmitter,

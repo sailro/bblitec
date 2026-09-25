@@ -1,3 +1,4 @@
+import { stringLiteral } from "../cpp-literals.js";
 /**
  * Translates a pinned numeric function body to C++, statement by statement.
  *
@@ -24,6 +25,17 @@
  * keeps a changed pinned body visible instead of silently stale.
  */
 import ts from "typescript";
+import { findAnalysisNode } from "../compiler/analysis-walk.js";
+import {
+    moduleSymbols,
+    pinnedCheckerOf,
+    pinnedNamesOf,
+} from "../pinned-program.js";
+import {
+    declarationInDefaultLibrary,
+    declaredSymbol,
+} from "../compiler/symbols.js";
+import { MATH_MEMBERS } from "../compiler/math-intrinsics.js";
 import {
     pinnedTranslationObserved,
     TranslationActivity,
@@ -52,6 +64,7 @@ import {
     JS_BITWISE_FUNCTIONS,
     foldNumericUnary,
     jsBitwiseCall,
+    mathExtremeCall,
 } from "./pinned-operators.js";
 
 /**
@@ -606,10 +619,6 @@ export interface PinnedNumericScope {
      * copying method from silently losing its result.
      */
     receiverReturningMethods?: ReadonlySet<string>;
-    /** This body uses `||` only to join boolean conditions. */
-    booleanOr?: boolean;
-    /** This body uses `&&` only to join boolean conditions. */
-    booleanAnd?: boolean;
     /** Native option specialization may make a pinned fallback local dead. */
     maybeUnusedConst?: boolean;
     /**
@@ -734,7 +743,14 @@ const TYPED_ARRAY_CONVERSIONS: ReadonlyMap<
     ["Uint32Array", { conversion: "u32_array_from", type: "u32" as const }],
 ]);
 
+export interface PinnedIteration {
+    readonly prefix?: readonly string[];
+    readonly header: string;
+    readonly bindings?: readonly string[];
+}
+
 export class PinnedNumericLowerer {
+    private caughtSymbol: ts.Symbol | undefined;
     readonly translationActivity = pinnedTranslationObserved()
         ? new TranslationActivity()
         : undefined;
@@ -818,66 +834,8 @@ export class PinnedNumericLowerer {
             );
             return [...adapted];
         }
-        if (ts.isTryStatement(statement)) {
-            if (statement.catchClause || !statement.finallyBlock)
-                return this.fail(
-                    statement,
-                    "try requires a catch-free finally block",
-                );
-            const rejectExit = (
-                node: ts.Node,
-                loops = 0,
-                switches = 0,
-            ): void => {
-                if (ts.isFunctionLike(node)) return;
-                if (
-                    ts.isReturnStatement(node) ||
-                    ts.isLabeledStatement(node) ||
-                    (ts.isBreakStatement(node) &&
-                        (node.label || loops + switches === 0)) ||
-                    (ts.isContinueStatement(node) &&
-                        (node.label || loops === 0))
-                )
-                    this.fail(
-                        node,
-                        "finally lowering does not admit early returns or loop exits",
-                    );
-                const loop =
-                    ts.isForStatement(node) ||
-                    ts.isForOfStatement(node) ||
-                    ts.isForInStatement(node) ||
-                    ts.isWhileStatement(node) ||
-                    ts.isDoStatement(node);
-                ts.forEachChild(node, (child) =>
-                    rejectExit(
-                        child,
-                        loops + Number(loop),
-                        switches + Number(ts.isSwitchStatement(node)),
-                    ),
-                );
-            };
-            rejectExit(statement);
-            const body = this.withBindings(() =>
-                this.statements(statement.tryBlock.statements, `${indent}    `),
-            );
-            const cleanup = this.withBindings(() =>
-                this.statements(
-                    statement.finallyBlock!.statements,
-                    `${indent}    `,
-                ),
-            );
-            return [
-                `${indent}try {`,
-                ...body,
-                `${indent}} catch (...) {`,
-                ...cleanup,
-                `${indent}    throw;`,
-                `${indent}}`,
-                `${indent}{`,
-                ...cleanup,
-                `${indent}}`,
-            ];
-        }
+        if (ts.isTryStatement(statement))
+            return this.tryStatement(statement, indent);
         if (ts.isContinueStatement(statement) && !statement.label) {
             return [`${indent}continue;`];
         }
@@ -918,7 +876,7 @@ export class PinnedNumericLowerer {
                         (argument) =>
                             `${indent}(void)(${this.expression(argument)});`,
                     ),
-                    `${indent}throw std::runtime_error(${JSON.stringify(`#${code.text}`)});`,
+                    `${indent}throw std::runtime_error(${stringLiteral(`#${code.text}`)});`,
                 ];
             }
             if (
@@ -1034,95 +992,62 @@ export class PinnedNumericLowerer {
             ];
         }
         if (ts.isForStatement(statement)) {
-            const initializer = statement.initializer;
-            // A hoisted loop variable's `for` assigns rather than declares
-            // (`for (y = 0; ...)`); it is the same loop, and the index it
-            // binds lives for the same body either way.
-            const assigned =
-                initializer !== undefined &&
-                ts.isBinaryExpression(initializer) &&
-                initializer.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isIdentifier(initializer.left)
-                    ? {
-                          name: initializer.left.text,
-                          initial: initializer.right,
-                      }
-                    : undefined;
-            const declaring =
-                initializer !== undefined &&
-                ts.isVariableDeclarationList(initializer)
-                    ? initializer
-                    : undefined;
-            if ((!assigned && !declaring) || !statement.condition) {
-                this.fail(statement, "for statement");
-            }
-            // The loop variable indexes typed arrays, so it is an integer
-            // rather than the f64 every other local is.
-            const { condition, incrementor } = statement;
             return this.withBindings(() => {
-                const declared = assigned
-                    ? this.declaredLoopVariable(assigned.name, assigned.initial)
-                    : this.loopVariable(declaring!);
+                const declared = this.forInitializer(statement.initializer);
                 return [
-                    `${indent}for (${declared}; ` +
-                        `${this.condition(condition)}; ` +
-                        `${incrementor ? this.expressionStatement(incrementor) : ""}) {`,
+                    `${indent}for (${declared}; ${statement.condition ? this.condition(statement.condition) : ""}; ${statement.incrementor ? this.loopIncrementor(statement.incrementor) : ""}) {`,
                     ...this.branch(statement.statement, indent),
                     `${indent}}`,
                 ];
             });
         }
         if (ts.isForOfStatement(statement)) {
-            const initializer = statement.initializer;
+            const list = statement.initializer;
             if (
-                !ts.isVariableDeclarationList(initializer) ||
-                initializer.declarations.length !== 1 ||
-                !(
-                    ts.isIdentifier(initializer.declarations[0]!.name) ||
-                    (ts.isArrayBindingPattern(
-                        initializer.declarations[0]!.name,
-                    ) &&
-                        initializer.declarations[0]!.name.elements.every(
-                            (element) =>
-                                ts.isBindingElement(element) &&
-                                ts.isIdentifier(element.name) &&
-                                !element.dotDotDotToken &&
-                                !element.initializer,
-                        ))
-                )
-            ) {
-                this.fail(statement, "for-of initializer");
-            }
-            const element = initializer.declarations[0]!.name.getText(
-                this.file,
-            );
-            const iterated = statement.expression.getText(this.file);
-            const resolved =
-                this.scope.forOf?.(
-                    iterated,
-                    element,
-                    this.scope.bindings.get(iterated),
-                ) ??
-                (ts.isIdentifier(initializer.declarations[0]!.name)
-                    ? this.recordListForOf(iterated, element)
-                    : undefined);
-            if (!resolved) {
-                this.fail(statement, `for-of over '${iterated}'`);
-            }
-            // The element's bindings live only for the body, so a later
-            // loop over a different collection cannot see them.
+                statement.awaitModifier ||
+                !ts.isVariableDeclarationList(list) ||
+                list.declarations.length !== 1
+            )
+                return this.fail(
+                    statement,
+                    "for-of requires one ordinary binding",
+                );
             return this.withBindings(() => {
-                for (const [name, binding] of resolved.bindings)
-                    this.scope.bindings.set(name, binding);
+                const iteration = this.forOfIteration(
+                    statement,
+                    list.declarations[0]!.name,
+                );
+                const loopIndent = iteration.prefix?.length
+                    ? indent + "    "
+                    : indent;
                 return [
-                    `${indent}for (const auto& ${element} : ${resolved.range}) {`,
-                    ...this.branch(statement.statement, indent),
-                    `${indent}}`,
+                    ...(iteration.prefix?.length
+                        ? [
+                              `${indent}{`,
+                              ...iteration.prefix.map(
+                                  (line) => loopIndent + line,
+                              ),
+                          ]
+                        : []),
+                    `${loopIndent}for (${iteration.header}) {`,
+                    ...(iteration.bindings ?? []).map(
+                        (line) => loopIndent + "    " + line,
+                    ),
+                    ...this.branch(statement.statement, loopIndent),
+                    `${loopIndent}}`,
+                    ...(iteration.prefix?.length ? [`${indent}}`] : []),
                 ];
             });
         }
         if (ts.isThrowStatement(statement)) {
-            const thrown = statement.expression;
+            const thrown = unwrapExpression(statement.expression);
+            if (
+                this.caughtSymbol &&
+                ts.isIdentifier(thrown) &&
+                declaredSymbol(pinnedCheckerOf(this.file), thrown) ===
+                    this.caughtSymbol
+            )
+                return [`${indent}throw;`];
             if (
                 !ts.isNewExpression(thrown) ||
                 !ts.isIdentifier(thrown.expression) ||
@@ -1135,7 +1060,7 @@ export class PinnedNumericLowerer {
             // A literal message is the literal; a composed one (a template
             // naming what failed) is the string the pin builds.
             const message = ts.isStringLiteral(argument)
-                ? JSON.stringify(argument.text)
+                ? stringLiteral(argument.text)
                 : this.stringExpression(argument);
             return [`${indent}throw std::runtime_error(${message});`];
         }
@@ -1165,6 +1090,156 @@ export class PinnedNumericLowerer {
             ];
         }
         return this.fail(statement, "statement");
+    }
+
+    protected forInitializer(
+        initializer: ts.ForInitializer | undefined,
+    ): string {
+        if (!initializer) return "";
+        if (ts.isVariableDeclarationList(initializer))
+            return this.loopVariable(initializer);
+        if (
+            ts.isBinaryExpression(initializer) &&
+            initializer.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isIdentifier(initializer.left)
+        )
+            return this.declaredLoopVariable(
+                initializer.left.text,
+                initializer.right,
+            );
+        return this.fail(initializer, "for initializer");
+    }
+
+    protected loopIncrementor(expression: ts.Expression): string {
+        return this.expressionStatement(expression);
+    }
+
+    protected forOfIteration(
+        statement: ts.ForOfStatement,
+        binding: ts.BindingName,
+    ): PinnedIteration {
+        if (!(
+            ts.isIdentifier(binding) ||
+            (ts.isArrayBindingPattern(binding) &&
+                binding.elements.every(
+                    (element) =>
+                        ts.isBindingElement(element) &&
+                        ts.isIdentifier(element.name) &&
+                        !element.dotDotDotToken &&
+                        !element.initializer,
+                ))
+        ))
+            return this.fail(binding, "for-of initializer");
+        const element = binding.getText(this.file);
+        const iterated = statement.expression.getText(this.file);
+        const resolved =
+            this.scope.forOf?.(
+                iterated,
+                element,
+                this.scope.bindings.get(iterated),
+            ) ??
+            (ts.isIdentifier(binding)
+                ? this.recordListForOf(iterated, element)
+                : undefined);
+        if (!resolved) return this.fail(statement, `for-of over '${iterated}'`);
+        for (const [name, value] of resolved.bindings)
+            this.scope.bindings.set(name, value);
+        return { header: `const auto& ${element} : ${resolved.range}` };
+    }
+
+    protected tryStatement(
+        statement: ts.TryStatement,
+        indent: string,
+    ): string[] {
+        if (!statement.finallyBlock && statement.catchClause) {
+            const clause = statement.catchClause;
+            const variable = clause.variableDeclaration;
+            const previous = this.caughtSymbol;
+            const checker = pinnedCheckerOf(this.file);
+            this.caughtSymbol =
+                variable && ts.isIdentifier(variable.name)
+                    ? declaredSymbol(checker, variable.name)
+                    : undefined;
+            try {
+                const invalid =
+                    this.caughtSymbol &&
+                    findAnalysisNode(
+                        clause.block,
+                        (node) =>
+                            ts.isIdentifier(node) &&
+                            declaredSymbol(checker, node) ===
+                                this.caughtSymbol &&
+                            !ts.isThrowStatement(node.parent),
+                    );
+                if (invalid)
+                    this.fail(
+                        invalid,
+                        "catch reads its error beyond rethrowing it",
+                    );
+                return [
+                    `${indent}try {`,
+                    ...this.branch(statement.tryBlock, indent),
+                    `${indent}} catch (...) {`,
+                    ...this.branch(clause.block, indent),
+                    `${indent}}`,
+                ];
+            } finally {
+                this.caughtSymbol = previous;
+            }
+        }
+        if (statement.catchClause || !statement.finallyBlock)
+            return this.fail(
+                statement,
+                "try requires a catch-free finally block",
+            );
+        const rejectExit = (node: ts.Node, loops = 0, switches = 0): void => {
+            if (ts.isFunctionLike(node)) return;
+            if (
+                ts.isReturnStatement(node) ||
+                ts.isLabeledStatement(node) ||
+                (ts.isBreakStatement(node) &&
+                    (node.label || loops + switches === 0)) ||
+                (ts.isContinueStatement(node) && (node.label || loops === 0))
+            )
+                this.fail(
+                    node,
+                    "finally lowering does not admit early returns or loop exits",
+                );
+            const loop =
+                ts.isForStatement(node) ||
+                ts.isForOfStatement(node) ||
+                ts.isForInStatement(node) ||
+                ts.isWhileStatement(node) ||
+                ts.isDoStatement(node);
+            ts.forEachChild(node, (child) =>
+                rejectExit(
+                    child,
+                    loops + Number(loop),
+                    switches + Number(ts.isSwitchStatement(node)),
+                ),
+            );
+        };
+        rejectExit(statement);
+        const body = this.withBindings(() =>
+            this.statements(statement.tryBlock.statements, `${indent}    `),
+        );
+        const cleanup = this.withBindings(() =>
+            this.statements(
+                statement.finallyBlock!.statements,
+                `${indent}    `,
+            ),
+        );
+        return [
+            `${indent}try {`,
+            ...body,
+            `${indent}} catch (...) {`,
+            ...cleanup,
+            `${indent}    throw;`,
+            `${indent}}`,
+            `${indent}{`,
+            ...cleanup,
+            `${indent}}`,
+        ];
     }
 
     private branch(statement: ts.Statement, indent: string): string[] {
@@ -1943,7 +2018,9 @@ export class PinnedNumericLowerer {
             // A local the pin initializes with a truth (a literal, a
             // comparison, a join of truths) is a boolean, and stays one:
             // `||=` onto it is a logical store, not a value selection.
-            const isBoolean = this.booleanValue(initializer);
+            const kind = this.valueKind(initializer);
+            const isBoolean = kind === "boolean";
+            const isString = kind === "string";
             // A number copied from a counted loop's `std::int64_t` index
             // converts explicitly, as a store of one does.
             const value =
@@ -1953,7 +2030,7 @@ export class PinnedNumericLowerer {
                     : this.expression(source);
             this.scope.bindings.set(name, {
                 cpp,
-                type: isBoolean ? "bool" : "scalar",
+                type: isBoolean ? "bool" : isString ? "string" : "scalar",
             });
             lines.push(
                 `${indent}${
@@ -1962,7 +2039,8 @@ export class PinnedNumericLowerer {
                         : isConst
                           ? "const "
                           : ""
-                }` + `${isBoolean ? "bool" : "double"} ${cpp} = ${value};`,
+                }` +
+                    `${isBoolean ? "bool" : isString ? "std::string" : "double"} ${cpp} = ${value};`,
             );
         }
         return lines;
@@ -2877,16 +2955,16 @@ export class PinnedNumericLowerer {
             ts.isStringLiteral(node) ||
             ts.isNoSubstitutionTemplateLiteral(node)
         ) {
-            return `std::string(${JSON.stringify(node.text)})`;
+            return `std::string(${stringLiteral(node.text)})`;
         }
         const bound = this.scope.bindings.get(node.getText(this.file));
         if (bound?.type === "string") return bound.cpp;
         if (ts.isTemplateExpression(node)) {
-            const parts = [`std::string(${JSON.stringify(node.head.text)})`];
+            const parts = [`std::string(${stringLiteral(node.head.text)})`];
             for (const span of node.templateSpans) {
                 parts.push(this.stringExpression(span.expression));
                 if (span.literal.text)
-                    parts.push(JSON.stringify(span.literal.text));
+                    parts.push(stringLiteral(span.literal.text));
             }
             return `(${parts.join(" + ")})`;
         }
@@ -2945,12 +3023,61 @@ export class PinnedNumericLowerer {
         return this.fail(node, "string array");
     }
 
-    private condition(expression: ts.Expression): string {
+    protected condition(expression: ts.Expression): string {
         const known = this.staticCondition(expression);
         if (known !== undefined) return known ? "true" : "false";
         const absent = this.absenceTest(expression);
         if (absent !== undefined) return `!(${absent})`;
-        return cppCondition(this.expression(expression));
+        const node = unwrapExpression(expression);
+        if (
+            ts.isBinaryExpression(node) &&
+            (node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken)
+        )
+            return `(${this.condition(node.left)} ${node.operatorToken.kind === ts.SyntaxKind.BarBarToken ? "||" : "&&"} ${this.condition(node.right)})`;
+        const kind = this.valueKind(expression);
+        const value = this.expression(expression);
+        return kind === "boolean"
+            ? cppCondition(value)
+            : this.truthyValue(kind, value);
+    }
+
+    private truthyValue(
+        kind: ReturnType<PinnedNumericLowerer["valueKind"]>,
+        cpp: string,
+    ): string {
+        if (kind === "boolean") return cpp;
+        if (kind === "string") return `!std::string(${cpp}).empty()`;
+        if (kind === "object") return "true";
+        if (kind === "nullable") return `static_cast<bool>(${cpp})`;
+        return `bbl::js::number_truthy(${cpp})`;
+    }
+
+    /** Value selection evaluates the left once and the selected right lazily. */
+    private logicalValue(node: ts.BinaryExpression): string {
+        const or = node.operatorToken.kind === ts.SyntaxKind.BarBarToken;
+        const kind = this.valueKind(node.left);
+        const rightKind = this.valueKind(node.right);
+        if (
+            kind !== rightKind ||
+            (kind !== "boolean" && kind !== "number" && kind !== "string")
+        )
+            return this.fail(
+                node,
+                "logical value selection between incompatible representations",
+            );
+        if (kind === "boolean")
+            return `(${this.condition(node.left)} ${or ? "||" : "&&"} ${this.condition(node.right)})`;
+        const left = this.expression(node.left);
+        const right = this.expression(node.right);
+        const temporary = this.temporaryName(node, 0);
+        const select = (cpp: string) =>
+            kind === "number"
+                ? `static_cast<double>(${cpp})`
+                : `std::string(${cpp})`;
+        const test = this.truthyValue(kind, temporary);
+        return `([&]() { const auto ${temporary} = ${left}; return ${test} ? ${select(or ? temporary : right)} : ${select(or ? right : temporary)}; }())`;
     }
 
     /**
@@ -3319,6 +3446,8 @@ export class PinnedNumericLowerer {
     protected expressionDomain(
         node: ts.Expression,
     ): string | RenderedCpp | undefined {
+        if (ts.isStringLiteralLike(node))
+            return `std::string(${stringLiteral(node.text)})`;
         if (ts.isIdentifier(node)) {
             if (node.text === "Infinity") {
                 return "std::numeric_limits<double>::infinity()";
@@ -3326,7 +3455,7 @@ export class PinnedNumericLowerer {
             const binding =
                 this.scope.bindings.get(node.text) ?? this.moduleConstant(node);
             if (!binding) this.fail(node, "identifier");
-            if (binding.nullish !== undefined) {
+            if (binding.nullish !== undefined && !this.provenPresent(node)) {
                 this.fail(node, "read of a nullable value outside '??'");
             }
             // A view is a pointer; naming it bare would be an address.
@@ -3362,6 +3491,7 @@ export class PinnedNumericLowerer {
                 if (known !== undefined) return known ? "true" : "false";
                 const absent = this.absenceTest(node.operand);
                 if (absent) return `(${absent})`;
+                return `!(${this.condition(node.operand)})`;
             }
         }
         // `[ar1, ar2]` -- a list of lists written out. The pin builds one
@@ -3447,9 +3577,8 @@ export class PinnedNumericLowerer {
             return renderPinnedArithmetic(
                 node,
                 (child) =>
-                    child === node.condition &&
-                    this.absenceTest(child) !== undefined
-                        ? cppPrimary(`!(${this.absenceTest(child)})`)
+                    child === node.condition
+                        ? cppPrimary(this.condition(child))
                         : this.renderExpression(child),
                 this.scope.expressionSpelling,
             );
@@ -3557,7 +3686,10 @@ export class PinnedNumericLowerer {
                 return true;
             }
             if (bound.staticNumber !== undefined)
-                return bound.staticNumber !== 0;
+                return (
+                    bound.staticNumber !== 0 &&
+                    !Number.isNaN(bound.staticNumber)
+                );
             return undefined;
         }
         if (
@@ -3574,14 +3706,14 @@ export class PinnedNumericLowerer {
             if (left === false) return false;
             const right = this.staticCondition(node.right);
             if (left === true) return right;
-            return right === false ? false : undefined;
+            return undefined;
         }
         if (kind === ts.SyntaxKind.BarBarToken) {
             const left = this.staticCondition(node.left);
             if (left === true) return true;
             const right = this.staticCondition(node.right);
             if (left === false) return right;
-            return right === true ? true : undefined;
+            return undefined;
         }
         if (kind === ts.SyntaxKind.InKeyword) {
             const member = unwrapExpression(node.left);
@@ -3838,7 +3970,10 @@ export class PinnedNumericLowerer {
                 ? clauseLines(clauses[selected]!, indent)
                 : [];
         }
-        const discriminant = this.expression(statement.expression);
+        const discriminant = this.temporaryName(statement, 0);
+        const selection = `${indent}    const auto ${discriminant} = ${this.expression(statement.expression)};`;
+        const outer = indent;
+        indent += "    ";
         const lines: string[] = [];
         let defaultClause: ts.DefaultClause | undefined;
         clauses.forEach((clause, index) => {
@@ -3856,14 +3991,20 @@ export class PinnedNumericLowerer {
             );
         });
         if (defaultClause) {
-            if (lines.length === 0) return clauseLines(defaultClause, indent);
+            if (lines.length === 0)
+                return [
+                    `${outer}{`,
+                    selection,
+                    ...clauseLines(defaultClause, indent),
+                    `${outer}}`,
+                ];
             lines.push(
                 `${indent}} else {`,
                 ...clauseLines(defaultClause, `${indent}    `),
             );
         }
         if (lines.length > 0) lines.push(`${indent}}`);
-        return lines;
+        return [`${outer}{`, selection, ...lines, `${outer}}`];
     }
 
     /** `{ x, y, z }` -- the pin's own positional record, as the caller spells it. */
@@ -3905,45 +4046,57 @@ export class PinnedNumericLowerer {
         return this.scope.bindings.get(node.getText(this.file))?.absentCpp;
     }
 
-    /**
-     * One operand of the pin's `&&`/`||`, where a nullable container in a
-     * boolean position means "it is there".
-     */
-    private booleanOperand(expression: ts.Expression): string {
-        const absent = this.absenceTest(expression);
-        return absent ? `!(${absent})` : this.expression(expression);
+    private booleanValue(expression: ts.Expression): boolean {
+        return this.valueKind(expression) === "boolean";
     }
 
-    /** Joins of proven boolean operands retain boolean storage and short-circuiting. */
-    private booleanValue(expression: ts.Expression): boolean {
+    /** One representation decision for storage, truth tests and value selection. */
+    private valueKind(
+        expression: ts.Expression,
+    ): "boolean" | "number" | "string" | "object" | "nullable" {
         const node = unwrapExpression(expression);
-        if (ts.isCallExpression(node))
-            return (
-                callShapeOf(this.scope.callShapes, node, this.file) === "bool"
-            );
+        const binding = this.scope.bindings.get(node.getText(this.file));
+        if (binding) {
+            if (binding.type === "bool") return "boolean";
+            if (binding.type === "scalar" || binding.type === "index")
+                return "number";
+            if (binding.type === "string") return "string";
+            return binding.absentCpp || binding.nullish ? "nullable" : "object";
+        }
+        if (
+            ts.isCallExpression(node) &&
+            callShapeOf(this.scope.callShapes, node, this.file) === "bool"
+        )
+            return "boolean";
         if (
             node.kind === ts.SyntaxKind.TrueKeyword ||
             node.kind === ts.SyntaxKind.FalseKeyword ||
             (ts.isPrefixUnaryExpression(node) &&
                 node.operator === ts.SyntaxKind.ExclamationToken)
         )
-            return true;
+            return "boolean";
+        if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node))
+            return "string";
         if (ts.isBinaryExpression(node)) {
             if (PINNED_COMPARISON_OPERATORS.has(node.operatorToken.kind))
-                return true;
+                return "boolean";
             if (
                 node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
                 node.operatorToken.kind ===
                     ts.SyntaxKind.AmpersandAmpersandToken
             )
-                return (
-                    this.booleanValue(node.left) &&
-                    this.booleanValue(node.right)
-                );
+                return this.valueKind(node.left);
         }
-        return (
-            this.scope.bindings.get(node.getText(this.file))?.type === "bool"
-        );
+        const type = pinnedCheckerOf(this.file).getTypeAtLocation(node);
+        const parts = type.isUnion() ? type.types : [type];
+        if (
+            parts.every((part) => (part.flags & ts.TypeFlags.BooleanLike) !== 0)
+        )
+            return "boolean";
+        if (parts.every((part) => (part.flags & ts.TypeFlags.StringLike) !== 0))
+            return "string";
+        // The numeric port's untyped adapters and arithmetic return numbers.
+        return "number";
     }
 
     /** One property read off a binding the pin treats as optional. */
@@ -4029,13 +4182,27 @@ export class PinnedNumericLowerer {
         return `pinned_${ordinal}_${node.getStart(this.file)}`;
     }
 
+    private provenPresent(node: ts.Expression): boolean {
+        const at = ts.isNonNullExpression(node.parent) ? node.parent : node;
+        const type = pinnedCheckerOf(this.file).getTypeAtLocation(at);
+        const absent =
+            ts.TypeFlags.Undefined |
+            ts.TypeFlags.Null |
+            ts.TypeFlags.Void |
+            ts.TypeFlags.Any |
+            ts.TypeFlags.Unknown;
+        return (type.isUnion() ? type.types : [type]).every(
+            (part) => (part.flags & absent) === 0,
+        );
+    }
+
     private propertyAccess(
         node: ts.PropertyAccessExpression,
         absentOverride?: string,
     ): string {
         const named = this.scope.bindings.get(node.getText(this.file));
-        // A nullable value is read only by the `??` that resolves it.
-        if (named?.nullish !== undefined) {
+        // A source guard or non-null assertion can narrow the represented absence.
+        if (named?.nullish !== undefined && !this.provenPresent(node)) {
             this.fail(node, "read of a nullable value outside '??'");
         }
         if (named) return named.cpp;
@@ -4313,6 +4480,36 @@ export class PinnedNumericLowerer {
             return builtin.spell(args);
         }
         const spelling = this.scope.calls.get(name);
+        if (
+            !spelling &&
+            ts.isPropertyAccessExpression(callee) &&
+            ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "Math"
+        ) {
+            const declaration = pinnedNamesOf(this.file).declarationOf(
+                callee.expression,
+            );
+            const global = declaration
+                ? declarationInDefaultLibrary(declaration)
+                : !moduleSymbols(this.file).getSymbolAtLocation(
+                      callee.expression,
+                  );
+            if (global) {
+                const method = callee.name.text;
+                if (method === "min" || method === "max")
+                    return mathExtremeCall(method, args);
+                const member = MATH_MEMBERS.get(method);
+                if (member) {
+                    if (
+                        member.variadic
+                            ? args.length < member.arity
+                            : args.length !== member.arity
+                    )
+                        this.fail(node, `'${name}' arity`);
+                    return member.cpp(args);
+                }
+            }
+        }
         if (!spelling) this.fail(node, `call '${name}'`);
         const result = spelling(args);
         this.translationActivity?.request("call", node, this.file);
@@ -4331,6 +4528,11 @@ export class PinnedNumericLowerer {
         // A comparison generation already answers is its answer, so the
         // untranslatable half of a shape test (`"r" in min`) never reaches
         // the operator table below.
+        if (
+            node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+            node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+        )
+            return this.logicalValue(node);
         const known = this.staticCondition(node);
         if (known !== undefined) return known ? "true" : "false";
         // A `typeof` test generation cannot answer but the binding can is
@@ -4345,22 +4547,6 @@ export class PinnedNumericLowerer {
             return typeofAnswer.whenAbsent === typeofComparison.equality
                 ? `(${typeofAnswer.absent})`
                 : `!(${typeofAnswer.absent})`;
-        }
-        // A boolean join with one static side keeps only the side that
-        // still decides, by JavaScript's own short-circuit rule.
-        if (
-            node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-            node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
-        ) {
-            const or = node.operatorToken.kind === ts.SyntaxKind.BarBarToken;
-            const left = this.staticCondition(node.left);
-            const right = this.staticCondition(node.right);
-            if (left !== undefined && (or ? !left : left)) {
-                return this.booleanOperand(node.right);
-            }
-            if (right !== undefined && (or ? !right : right)) {
-                return this.booleanOperand(node.left);
-            }
         }
         // Every bitwise operator through its `bbl::js` helper: JavaScript
         // coerces both sides with ToInt32 (ToUint32 for `>>>`) and masks a
@@ -4501,55 +4687,6 @@ export class PinnedNumericLowerer {
                 return this.propertyAccess(left, this.expression(node.right));
             }
 
-            case ts.SyntaxKind.BarBarToken:
-                if (
-                    this.scope.booleanOr ||
-                    (this.booleanValue(node.left) &&
-                        this.booleanValue(node.right))
-                ) {
-                    if (
-                        this.absenceTest(node.left) === undefined &&
-                        this.absenceTest(node.right) === undefined
-                    )
-                        return undefined;
-                    return (
-                        `(${this.booleanOperand(node.left)} || ` +
-                        `${this.booleanOperand(node.right)})`
-                    );
-                }
-                // JS `a || b` evaluates to `a` when `a` is truthy and to `b`
-                // otherwise; C++ `a || b` evaluates to a bool. Emitting the
-                // C++ operator turned the pin's `Math.hypot(...) || 1` into
-                // the constant 1 and stopped normalising the quaternion,
-                // which is exactly the class of silent rewrite this
-                // translator exists to prevent. Lowered to the value-selecting
-                // form instead: `bbl::js::or_number`, which the other
-                // lowerers already emit and which also falls through on NaN
-                // -- a local copy of this dropped that arm.
-                return (
-                    `bbl::js::or_number(${this.expression(node.left)}, ` +
-                    `${this.expression(node.right)})`
-                );
-            case ts.SyntaxKind.AmpersandAmpersandToken:
-                if (
-                    this.scope.booleanAnd ||
-                    (this.booleanValue(node.left) &&
-                        this.booleanValue(node.right))
-                ) {
-                    if (
-                        this.absenceTest(node.left) === undefined &&
-                        this.absenceTest(node.right) === undefined
-                    )
-                        return undefined;
-                    return (
-                        `(${this.booleanOperand(node.left)} && ` +
-                        `${this.booleanOperand(node.right)})`
-                    );
-                }
-                // The same hazard in the other direction. No pinned body
-                // this translator serves uses it as a value yet, so it
-                // refuses rather than guessing which meaning is wanted.
-                return this.fail(node, "value-selecting '&&'");
             default:
                 return undefined;
         }

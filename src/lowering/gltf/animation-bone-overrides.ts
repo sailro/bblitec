@@ -34,8 +34,7 @@ export function lowerGltfAnimationBoneOverrides(
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         statement(statement, lowerer, indent) {
             if (
                 hidden !== undefined &&

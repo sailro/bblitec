@@ -57,8 +57,7 @@ export function lowerGltfWeightedAnimationPasses(
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression(node, lowerer) {
             if (!ts.isCallExpression(node)) return undefined;
             const callee = node.expression.getText(file);

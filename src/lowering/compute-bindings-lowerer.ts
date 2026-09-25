@@ -169,8 +169,7 @@ function scope(
     return {
         bindings,
         calls,
-        booleanOr: true,
-        booleanAnd: true,
+
         foldConditions: false,
         callShapes: new Map([
             ["shader._slots.has", "bool"],

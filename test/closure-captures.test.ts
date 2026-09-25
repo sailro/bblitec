@@ -3,6 +3,51 @@ import test from "node:test";
 import { ClosureCaptures } from "../src/compiler/closure-captures.js";
 import { cppIdentifiers } from "../src/compiler/cpp-identifiers.js";
 import { compileSource } from "../src/compiler.js";
+import { NativeCaptureCache } from "../src/compiler/native-capture-cache.js";
+import type { Value } from "../src/compiler/types.js";
+import {
+    EmissionMap,
+    EmissionTransaction,
+    emissionRecord,
+    emissionArray,
+    writable,
+} from "../src/compiler/emission-transaction.js";
+
+test("cached captures follow nested writes, native aliases and speculative rollback", () => {
+    const first = {
+        name: "first",
+        sequence: 1,
+        borrowed: false,
+        allowReference: false,
+        entryLifetime: false,
+    };
+    const second = { ...first, name: "second", sequence: 2 };
+    const names = new EmissionMap([
+        [first.name, first],
+        [second.name, second],
+    ]);
+    const cache = new NativeCaptureCache(names);
+    const leaf: Value = { kind: "number", cpp: first.name };
+    const fields = emissionRecord<Record<string, Value>>({ child: leaf });
+    const row: Value = { kind: "record", cpp: "", recordProperties: fields };
+    const elements = emissionArray<Value>([row]);
+    const root: Value = { kind: "tuple", cpp: "", tupleElements: elements };
+    const original = cache.bindingsOf(root);
+    assert.deepEqual(original, [first]);
+    assert.strictEqual(cache.bindingsOf(root), original);
+    new EmissionTransaction().run(() => {
+        writable(leaf).cpp = second.name;
+        assert.deepEqual(cache.bindingsOf(root), [second]);
+        fields.child = root; // A cyclic graph terminates and has no leaf capture.
+        assert.deepEqual(cache.bindingsOf(root), []);
+        elements.push(leaf);
+        assert.deepEqual(cache.bindingsOf(root), [second]);
+        return false;
+    }, Boolean);
+    assert.deepEqual(cache.bindingsOf(root), [first]);
+    names.set(first.name, second);
+    assert.deepEqual(cache.bindingsOf(root), [second]);
+});
 
 test("capture reads exclude comments, strings, characters and raw strings", () => {
     const reads = cppIdentifiers(String.raw`
@@ -38,7 +83,9 @@ test("capture pruning preserves order and reference ownership", () => {
             entryLifetime: false,
         });
     }
-    capture.retainReferenced([`first += last; log("unused"); // unused`]);
+    capture.retainReferenced(
+        cppIdentifiers(`first += last; log("unused"); // unused`),
+    );
     const struct = capture.environmentStruct;
     assert.equal(
         capture.initializer,
@@ -76,7 +123,7 @@ test("typed captures name a concrete environment struct", () => {
             entryLifetime: false,
         });
     }
-    capture.retainReferenced(["count += engine.frame;"]);
+    capture.retainReferenced(cppIdentifiers("count += engine.frame;"));
     const struct = capture.environmentStruct;
     assert.equal(struct.declaration, `struct ${struct.name};`);
     assert.equal(capture.environmentType, `bblscene::${struct.name}`);

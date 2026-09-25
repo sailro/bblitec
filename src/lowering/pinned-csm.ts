@@ -1,3 +1,4 @@
+import { pinnedRoundCall } from "./pinned-operators.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
@@ -441,9 +442,9 @@ interface Parameter {
 
 function numericScope(): PinnedNumericScope {
     const calls = pinnedNumericMathCallsWithHypot();
-    calls.set("Math.round", (args) => `bbl::js::round_js(${args.join(", ")})`);
+    calls.set("Math.round", pinnedRoundCall);
     calls.set("Number.isFinite", (args) => `std::isfinite(${args.join(", ")})`);
-    return { bindings: new Map(), calls, booleanAnd: true };
+    return { bindings: new Map(), calls };
 }
 
 function bindParameters(
@@ -650,7 +651,7 @@ function lowerCsmMatrixHelpers(context: LoweringContext): string {
                 cppName: "csm_world_bias_clip_offset",
                 inline: true,
                 calls: numericScope().calls,
-                booleanOr: true,
+
                 returns: "double",
             },
         ),

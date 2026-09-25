@@ -176,8 +176,7 @@ export function lowerGpuTaskTimer(context: LoweringContext): string {
             bindings,
             calls: new Map(),
             foldConditions: false,
-            booleanOr: true,
-            booleanAnd: true,
+
             expression,
             forOf: (source, element) =>
                 source === "pending.records"

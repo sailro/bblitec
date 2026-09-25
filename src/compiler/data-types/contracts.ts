@@ -36,6 +36,6 @@ export type DataKindOperations<K extends DataKind = DataKind> = {
          * stored children, or decided by the payload.
          */
         readonly tracedEdges:
-            "always" | "never" | "children" | ((type: DataType<P>) => boolean);
+            "always" | "never" | "children" | ((type: DataType<P>) => string);
     };
 };

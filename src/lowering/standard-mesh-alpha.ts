@@ -113,8 +113,6 @@ export function lowerStandardMeshAlpha(
     const lowerer = new PinnedNumericLowerer(file, {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
     });
     // BBLITE_STANDARD_VERTEX_ALPHA, which gates the shared PAL header's use
     // of this block, is render_capabilities.hpp's.

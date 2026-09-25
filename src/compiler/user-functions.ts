@@ -524,6 +524,11 @@ export function parameterIsMutated(
  * analyses must allow the write: one follows every store the parameter
  * reaches, the other proves a parameter it only reads unchanged.
  */
+const engineParameterMutations = new WeakMap<
+    ts.FunctionLikeDeclaration,
+    Map<number, boolean>
+>();
+
 export function engineCallMutatesArgument(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
@@ -533,14 +538,23 @@ export function engineCallMutatesArgument(
     if (!declaration || !isEngineDeclaration(declaration)) return false;
     const engine = engineBodies();
     return (engine.bodies(declaration) ?? []).some((body) => {
+        let mutations = engineParameterMutations.get(body);
+        const cached = mutations?.get(index);
+        if (cached !== undefined) return cached;
         const parameter = body.parameters[index]?.name;
-        return (
+        const bodyChecker = engine.checkerFor(body);
+        const mutated =
             isSupportedFunction(body) &&
             parameter !== undefined &&
             ts.isIdentifier(parameter) &&
-            parameterIsMutated(engine.checker, body, parameter) &&
-            !parameterIsReadOnly(engine.checker, body, parameter)
-        );
+            parameterIsMutated(bodyChecker, body, parameter) &&
+            !parameterIsReadOnly(bodyChecker, body, parameter);
+        if (!mutations) {
+            mutations = new Map();
+            engineParameterMutations.set(body, mutations);
+        }
+        mutations.set(index, mutated);
+        return mutated;
     });
 }
 

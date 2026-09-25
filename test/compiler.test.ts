@@ -5434,6 +5434,21 @@ test("keeps data URL asset payloads out of the generated manifest", () => {
     assert.match(asset.output, /^[0-9a-f]{8}-inline\.png$/);
 });
 
+test("refuses distinct asset URLs with the same packaged hash and basename", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createEngine, loadTexture2D } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            await loadTexture2D(engine, "https://example.com/image.png?id=1rjxuof");
+            await loadTexture2D(engine, "https://example.com/image.png?id=qhmpx9");
+        }
+    `),
+        /Packaged asset path '54a76ecc-image.png' names both/,
+    );
+});
+
 test("carries file-texture address modes into the sampler", () => {
     const result = compileSource(
         `
@@ -12127,10 +12142,7 @@ test("keeps lowering a helper this evaluator cannot answer", () => {
     assert.match(result.cpp, /readCaptureFrame/);
 });
 
-test("erases a Math transform over an unresolved browser value", () => {
-    // The other half of the same rule: nothing answers `devicePixelRatio` at
-    // generation, so the whole diagnostic erases with its browser source
-    // rather than compiling a call over a value this port does not carry.
+test("folds a Math transform over the native device pixel ratio", () => {
     const result = compileSource(`
         import {
             createBox,
@@ -12144,7 +12156,8 @@ test("erases a Math transform over an unresolved browser value", () => {
             box.position.x = 2;
         }
     `);
-    assert.doesNotMatch(result.cpp, /round_js|devicePixelRatio/);
+    assert.doesNotMatch(result.cpp, /devicePixelRatio/);
+    assert.match(result.cpp, /round_js\(1(?:\.0)?\)/);
     assert.match(result.cpp, /\.position\.x = 2\.0/);
 });
 
@@ -15812,7 +15825,7 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     // readback's nullable point, and the distance beside it.
     assert.match(
         result.cpp,
-        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system;\s*double spriteIndex\{\};\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint;\s*double distance\{\};\s*\};/,
+        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system;\s*double spriteIndex\{\};\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint;\s*double distance\{\};\s*template <typename = void> requires \(bbl::js::gc_traceable<bbl::BillboardSystemHandle>\)[\s\S]*?\n\};/,
     );
     // A miss is the pin's `_spritePick ?? null`: an id no billboard
     // contributor owns leaves the payload unset.
@@ -20664,5 +20677,28 @@ test("refuses a flow graph's accessors", () => {
         void main();
     `),
         /accessor records \(path-converter\.ts\) stay at generation/,
+    );
+});
+
+test("fixed render targets snapshot runtime canvas dimensions", () => {
+    const result = compileSource(
+        `
+        import {createEngine, createRenderTarget} from 'babylon-lite';
+        async function main() {
+            const canvas = document.getElementById('renderCanvas') as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const target = createRenderTarget({format: engine.format, size: {width: canvas.width, height: Math.floor(canvas.height / 2)}});
+        }
+        main();
+    `,
+        { width: 1234, height: 678 },
+    );
+    assert.match(
+        result.cpp,
+        /render_target_dimension\(static_cast<double>\(v_engine.options.width\)\)/,
+    );
+    assert.match(
+        result.cpp,
+        /render_target_dimension\(std::floor\([^;]*v_engine.options.height/,
     );
 });

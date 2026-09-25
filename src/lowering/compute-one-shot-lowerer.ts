@@ -188,8 +188,7 @@ function bodyScope(
     return {
         bindings,
         calls,
-        booleanOr: true,
-        booleanAnd: true,
+
         foldConditions: false,
         forOf(iterated, element) {
             if (

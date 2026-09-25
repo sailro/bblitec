@@ -130,7 +130,10 @@ test("navigation build plans are lowered from the recast-navigation packages", (
     // The spreads between the pinned cfg and createRcConfig resolve per
     // key: a key the scene may give falls back to the wrapper's default,
     // and one the solo arm's cfg never carries is that default alone.
-    assert.match(solo, /params\.cs\.value_or\(0\.2\)/);
+    assert.match(
+        solo,
+        /params\.cs\.has_value\(\).*bbl::pinned::present\(params\.cs\) : 0\.2/,
+    );
     assert.match(
         solo,
         /rcConfig\.tileSize = bbl::js::numeric_store_value<[^;]*>\(0\.0\);/,
@@ -141,7 +144,7 @@ test("navigation build plans are lowered from the recast-navigation packages", (
     // the scene gives a non-empty list.
     assert.match(
         solo,
-        /if \(!params\.off_mesh_connections\.empty\(\)\) \{\s*navMeshCreateParams\.offMeshConnections = set_off_mesh_connections\(params\.off_mesh_connections\);/,
+        /if \([^\n]*params\.off_mesh_connections\.size\(\)[^\n]*> 0\.0[^\n]*\) \{\s*navMeshCreateParams\.offMeshConnections = set_off_mesh_connections\(params\.off_mesh_connections\);/,
     );
     assert.match(solo, /return bbl::pal::NavOffMeshPacking\{\};/);
     assert.match(
@@ -151,7 +154,10 @@ test("navigation build plans are lowered from the recast-navigation packages", (
     const tile = navigationBuildPlanDeclarations(["tileCache"]);
     // The tile-cache arm's cfg always sets its own three, the pin's `?? N`
     // included.
-    assert.match(tile, /params\.expected_layers_per_tile\.value_or\(1\.0\)/);
+    assert.match(
+        tile,
+        /params\.expected_layers_per_tile\.has_value\(\) \? 1\.0 : bbl::pinned::present\(params\.expected_layers_per_tile\)/,
+    );
     assert.match(tile, /bbl::pinned::present\(params\.max_obstacles\)/);
     // The package's own tile/poly bit split, over its own dtIlog2.
     assert.match(tile, /inline double dt_ilog2\(\s*double v\)/);

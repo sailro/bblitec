@@ -29,7 +29,7 @@ export function lowerPhysicsHeightfield(context: LoweringContext): {
                 },
             ],
         ]),
-        booleanOr: true,
+
         calls: new Map([
             ...pinnedNumericMathCalls(),
             ["Math.round", pinnedRoundCall],

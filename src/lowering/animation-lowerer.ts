@@ -905,7 +905,7 @@ void set_animation_additive_from_frame(
                 cppName: "accumulate_weighted_track",
                 returns: "void",
                 calls,
-                booleanAnd: true,
+
                 memberBindings: new Map<string, PinnedBinding>([
                     ["bucket.active", { cpp: "bucket.active", type: "bool" }],
                     [
@@ -963,8 +963,7 @@ void set_animation_additive_from_frame(
                 cppName: "advance_property_group_time",
                 returns: "double",
                 calls,
-                booleanAnd: true,
-                booleanOr: true,
+
                 memberBindings: new Map<string, PinnedBinding>([
                     ["group.isPlaying", { cpp: "group.playing", type: "bool" }],
                     [

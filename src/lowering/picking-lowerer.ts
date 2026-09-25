@@ -848,7 +848,7 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
             {
                 cppName: "faces_pick_ray",
                 calls,
-                booleanAnd: true,
+
                 memberBindings: new Map<string, PinnedBinding>([
                     ...tupleMembers("normal", "normal"),
                     PICK_INFO_RAY,
@@ -926,8 +926,7 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
                 cppName: "populate_detailed_mesh_info",
                 returns: "void",
                 calls,
-                booleanAnd: true,
-                booleanOr: true,
+
                 fixedTupleCalls: new Map([
                     ["normalizeVec3TupleOrUp", 3],
                     ["transformNormal", 3],
@@ -1011,8 +1010,7 @@ ${this.lowerPickedNormalImpl(calls)}
             {
                 cppName: "picked_normal_impl",
                 calls,
-                booleanAnd: true,
-                booleanOr: true,
+
                 leadingParameters: [
                     "const std::vector<float>& mesh_normals",
                     "const std::vector<std::uint32_t>& mesh_indices",
@@ -1367,7 +1365,7 @@ void populate_pick_ray(
                         `upstream::camera_position(${args.join(", ")})`,
                 ],
             ]),
-            booleanAnd: true,
+
             vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
             statement: (statement, inner, indent) => {
                 if (statement === originStatement) {

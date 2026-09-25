@@ -289,7 +289,6 @@ export class TubeLowerer {
                     returns: this.returnsVec3(PATH_MODULE, symbol),
                     calls: this.vectorCalls,
                     callShapes: this.vectorShapes,
-                    booleanAnd: true,
                 },
             );
         const normalVector = lowerPinnedFunction(
@@ -348,7 +347,7 @@ export class TubeLowerer {
             callShapes: this.vectorShapes,
             recordLiteral: this.vec3Literal,
             vec3Literal: (x, y, z) => recordLiteralCpp("vec3", [x, y, z]),
-            booleanAnd: true,
+
             returnValue: (expression) => {
                 const returned = expression
                     ? this.context.unwrapExpression(expression)
@@ -490,8 +489,7 @@ ${body}
                 callShapes: this.vectorShapes,
                 recordLiteral: this.vec3Literal,
                 vec3Literal: (x, y, z) => recordLiteralCpp("vec3", [x, y, z]),
-                booleanAnd: true,
-                booleanOr: true,
+
                 returnValue: (expression, lowerer) => {
                     const call = expression
                         ? this.context.unwrapExpression(expression)

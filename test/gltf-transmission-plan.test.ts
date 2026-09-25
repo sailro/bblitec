@@ -7,11 +7,8 @@ import {
     gltfAssetDocuments,
     specializeGltf,
 } from "../src/asset-specializer.js";
-import {
-    GLTF_TRANSMISSION_PLAN,
-    parseGlbJson,
-    type JsonObject,
-} from "../src/gltf-document.js";
+import { GLTF_TRANSMISSION_PLAN, parseGlbJson } from "../src/gltf-document.js";
+import { type JsonObject } from "../src/json-fields.js";
 import { packageGltfMeshPlan } from "../src/gltf-mesh-plan.js";
 import { packagedGltfTransmissionPlan } from "../src/gltf-transmission-plan.js";
 import {

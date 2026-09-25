@@ -4,12 +4,8 @@ import { PNG } from "pngjs";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-    asObject,
-    asRecords,
-    GLTF_MESH_PLAN,
-    type JsonObject,
-} from "../src/gltf-document.js";
+import { GLTF_MESH_PLAN } from "../src/gltf-document.js";
+import { asObject, asRecords, type JsonObject } from "../src/json-fields.js";
 import {
     packageGltfMeshPlan,
     packagedGltfMeshPlan,

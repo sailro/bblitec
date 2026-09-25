@@ -126,6 +126,13 @@ namespace bbl {
 ${lowerSurfaceRenderTargetSize(this.context)}
 ${this.surface ? lowerRenderTargetLifecycle(this.context) : ""}
 
+std::uint32_t render_target_dimension(double value) {
+    if (!std::isfinite(value) || value < 1 || std::floor(value) != value ||
+        value > static_cast<double>(std::numeric_limits<std::uint32_t>::max()))
+        throw std::runtime_error("Render target dimension must be a positive uint32 integer.");
+    return static_cast<std::uint32_t>(value);
+}
+
 RenderTargetHandle create_render_target(
     Engine& engine,
     RenderTargetOptions options) {

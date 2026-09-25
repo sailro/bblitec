@@ -44,14 +44,14 @@ function fixtureRoot(t: { after: (cleanup: () => void) => void }): string {
 }
 
 /** Compiles `shader`'s stages for `target` and returns the directory. */
-function compileStages(
+async function compileStages(
     root: string,
     name: string,
     shader: string,
     stages: readonly { stem: string; entryPoint: string }[],
     pinnedBindings: boolean,
     target: "d3d12" | "vulkan" | "metal" | "all" = "d3d12",
-): string {
+): Promise<string> {
     const directory = join(root, "generated", name, "upstream/shaders");
     mkdirSync(directory, { recursive: true });
     const [first, ...rest] = stages;
@@ -70,7 +70,7 @@ function compileStages(
             ],
         }),
     );
-    compileOfflineShaders({
+    await compileOfflineShaders({
         directories: [directory],
         repositoryRoot: root,
         target,
@@ -116,8 +116,8 @@ fn resources(i: u32) -> vec4f {
 test(
     "pinned registers order textures before storage and preserve uniform order across groups",
     { skip: !tools.bbliteTint || !tools.dxc },
-    (t) => {
-        const directory = compileStages(
+    async (t) => {
+        const directory = await compileStages(
             fixtureRoot(t),
             "pinned",
             pinnedResources,
@@ -191,8 +191,8 @@ const varyingStages = [
 test(
     "native bindings compact within their SDL space and the position leads every interstage structure",
     { skip: !tools.bbliteTint || !tools.dxc },
-    (t) => {
-        const directory = compileStages(
+    async (t) => {
+        const directory = await compileStages(
             fixtureRoot(t),
             "native",
             nativeVaryings,
@@ -227,9 +227,9 @@ test(
 test(
     "pinned interstage structures keep Tint's order, the position after the locations",
     { skip: !tools.bbliteTint || !tools.dxc },
-    (t) => {
+    async (t) => {
         // A pinned fragment that omits the position reads a prefix of these.
-        const directory = compileStages(
+        const directory = await compileStages(
             fixtureRoot(t),
             "pinned-varyings",
             nativeVaryings,
@@ -253,7 +253,7 @@ test(
 test(
     "integer and multisampled loads occupy SDL storage texture slots between sampled textures and buffers",
     { skip: !tools.bbliteTint || !tools.dxc },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const shader = `
 @group(2) @binding(0) var<storage, read> morph: array<vec4f>;
@@ -268,7 +268,7 @@ test(
         textureLoad(samples, vec2i(0), 0);
 }`;
         for (const pinned of [false, true]) {
-            const directory = compileStages(
+            const directory = await compileStages(
                 root,
                 `loads-${pinned}`,
                 shader,
@@ -375,9 +375,9 @@ var<uniform> nmeShadowParams: Node;`;
 test(
     "stage layout lines reflect every declared binding's bind-group layout shape",
     { skip: !tools.bbliteTint || !tools.dxc },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
-        const directory = compileStages(
+        const directory = await compileStages(
             root,
             "layout",
             `struct U { v: vec4f };
@@ -433,9 +433,9 @@ fn tint(t: texture_2d<f32>, s: sampler, uv: vec2f) -> vec4f { return textureSamp
                 "@binding 2 0 written storage-texture write-only rgba8unorm 2d",
             ],
         );
-        assert.throws(
-            () =>
-                compileStages(
+        await assert.rejects(
+            async () =>
+                await compileStages(
                     root,
                     "external",
                     `@group(2) @binding(0) var video: texture_external;
@@ -595,7 +595,7 @@ function imageSampled(image: Buffer | undefined): number | undefined {
 test(
     "compute stages compile writable resources into SDL compute binding spaces",
     { skip: !tools.bbliteTint || !tools.dxc },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const directory = join(root, "generated/compute/upstream/shaders");
         mkdirSync(directory, { recursive: true });
@@ -628,7 +628,7 @@ fn run(@builtin(global_invocation_id) id: vec3u) {
                 ],
             }),
         );
-        const result = compileOfflineShaders({
+        const result = await compileOfflineShaders({
             directories: [directory],
             repositoryRoot: root,
             target: "all",
@@ -684,7 +684,7 @@ fn run(@builtin(global_invocation_id) id: vec3u) {
 test(
     "Vulkan discard has a helper-invocation variant and a baseline device fallback",
     { skip: !tools.bbliteTint },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const directory = shaderDirectory(
             root,
@@ -695,7 +695,7 @@ test(
     return vec4f(dpdx(p.x), 0.0, 0.0, 1.0);
 }`,
         );
-        compileOfflineShaders({
+        await compileOfflineShaders({
             directories: [directory],
             repositoryRoot: root,
             target: "vulkan",
@@ -723,7 +723,7 @@ test(
 test(
     "Vulkan preserves floating-point division and its dependent sampled branch",
     { skip: !tools.bbliteTint },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const directory = shaderDirectory(
             root,
@@ -738,7 +738,7 @@ test(
     return textureSample(color, colorSampler, position.xy / params.yz);
 }`,
         );
-        compileOfflineShaders({
+        await compileOfflineShaders({
             directories: [directory],
             repositoryRoot: root,
             target: "vulkan",
@@ -779,7 +779,7 @@ test(
 test(
     "Metal uses SDL buffer slots and preserves bounds checks across reordered runtime arrays",
     { skip: !tools.bbliteTint },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const directory = shaderDirectory(
             root,
@@ -795,7 +795,7 @@ test(
     return later[index] + second + fixed[index] + earlier[index] + first;
 }`,
         );
-        compileOfflineShaders({
+        await compileOfflineShaders({
             repositoryRoot: root,
             directories: [directory],
             tools,
@@ -834,7 +834,7 @@ test(
 test(
     "Metal sampler slots follow sampled textures after textureLoad removes an earlier sampler",
     { skip: !tools.bbliteTint },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const directory = shaderDirectory(
             root,
@@ -847,7 +847,7 @@ test(
     return textureSample(color, colorSampler, vec2f(0.5)) * textureLoad(depth, vec2i(0), 0);
 }`,
         );
-        compileOfflineShaders({
+        await compileOfflineShaders({
             repositoryRoot: root,
             directories: [directory],
             tools,
@@ -863,32 +863,32 @@ test(
 test(
     "directory checkpoints isolate edits, ignore unchanged writes, and repair missing or changed products",
     { skip: !tools.bbliteTint },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const directories = [
             shaderDirectory(root, "first"),
             shaderDirectory(root, "second"),
         ];
-        const compile = () =>
-            compileOfflineShaders({
+        const compile = async () =>
+            await compileOfflineShaders({
                 repositoryRoot: root,
                 directories,
                 tools,
                 target: "metal",
             });
-        assert.equal(compile().directoriesCompiled, 2);
-        assert.equal(compile().directoriesReused, 2);
+        assert.equal((await compile()).directoriesCompiled, 2);
+        assert.equal((await compile()).directoriesReused, 2);
         const first = directories[0]!;
         const second = directories[1]!;
         const firstSource = join(first, "simple.frag.native.wgsl");
         utimesSync(firstSource, new Date(2000, 0), new Date(2000, 0));
         assert.equal(
-            compile().directoriesReused,
+            (await compile()).directoriesReused,
             2,
             "a checkout of identical bytes keeps the checkpoint",
         );
         writeFileSync(firstSource, fragment.replace("0.25", "0.75"));
-        const changed = compile();
+        const changed = await compile();
         assert.equal(changed.directoriesCompiled, 1);
         assert.equal(changed.directoriesReused, 1);
         assert.equal(changed.tintCompiled, 1);
@@ -897,41 +897,41 @@ test(
         writeFileSync(artifact, "corrupt");
         const snapshotTime = new Date(2001, 0);
         utimesSync(artifact, snapshotTime, snapshotTime);
-        const repaired = compile();
+        const repaired = await compile();
         assert.equal(repaired.directoriesReused, 1);
         assert.equal(repaired.tintCompiled, 0);
         assert.equal(repaired.tintReused, 1);
         assert.deepEqual(readFileSync(artifact), expected);
         assert.ok(statSync(artifact).mtimeMs > snapshotTime.getTime());
         rmSync(join(second, "simple.frag.slots"));
-        const restored = compile();
+        const restored = await compile();
         assert.equal(restored.directoriesReused, 1);
         assert.equal(restored.tintReused, 1);
         assert.ok(existsSync(join(second, "simple.frag.slots")));
         const checkpoints = join(root, "artifacts/shader-cache/directories");
         for (const name of readdirSync(checkpoints))
             writeFileSync(join(checkpoints, name), "invalid JSON");
-        assert.equal(compile().directoriesCompiled, 2);
+        assert.equal((await compile()).directoriesCompiled, 2);
     },
 );
 
-test("shader checkpoints include DXC codegen DLL contents only for DXC targets", (t) => {
+test("shader checkpoints include DXC codegen DLL contents only for DXC targets", async (t) => {
     const root = fixtureRoot(t);
     const directory = join(root, "shaders");
     mkdirSync(directory);
     const dxc = join(root, "dxc.exe");
     writeFileSync(dxc, "compiler identity");
     const localTools = { dxc, bbliteTint: undefined, cmake: tools.cmake };
-    const compile = (target: "metal" | "d3d12") =>
-        compileOfflineShaders({
+    const compile = async (target: "metal" | "d3d12") =>
+        await compileOfflineShaders({
             repositoryRoot: root,
             directories: [directory],
             tools: localTools,
             target,
         });
     // An empty shader directory records tools without executing these identity fixtures.
-    assert.equal(compile("d3d12").directoriesCompiled, 1);
-    assert.equal(compile("d3d12").directoriesReused, 1);
+    assert.equal((await compile("d3d12")).directoriesCompiled, 1);
+    assert.equal((await compile("d3d12")).directoriesReused, 1);
     for (const name of [
         "dxcompiler.dll",
         "dxil.dll",
@@ -940,20 +940,20 @@ test("shader checkpoints include DXC codegen DLL contents only for DXC targets",
     ]) {
         const path = join(root, name);
         writeFileSync(path, "installed");
-        assert.equal(compile("d3d12").directoriesCompiled, 1);
-        assert.equal(compile("d3d12").directoriesReused, 1);
+        assert.equal((await compile("d3d12")).directoriesCompiled, 1);
+        assert.equal((await compile("d3d12")).directoriesReused, 1);
         writeFileSync(path, "replaced compiler");
-        assert.equal(compile("d3d12").directoriesCompiled, 1);
-        assert.equal(compile("metal").directoriesCompiled, 1);
+        assert.equal((await compile("d3d12")).directoriesCompiled, 1);
+        assert.equal((await compile("metal")).directoriesCompiled, 1);
         writeFileSync(path, "ignored by Metal");
-        assert.equal(compile("metal").directoriesReused, 1);
+        assert.equal((await compile("metal")).directoriesReused, 1);
     }
 });
 
 test(
     "Vulkan shader binaries match SDL sampled and storage image descriptors",
     { skip: !tools.bbliteTint },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         // SDL binds a sampled texture and its sampler as one combined image
         // sampler at the texture's slot, which the image and the sampler
@@ -1034,7 +1034,7 @@ fn sampleColor(tex: texture_2d<f32>, smp: sampler) -> vec4f {
             ],
         ] as const) {
             const directory = shaderDirectory(root, name, shader);
-            compileOfflineShaders({
+            await compileOfflineShaders({
                 directories: [directory],
                 repositoryRoot: root,
                 tools,
@@ -1074,7 +1074,7 @@ fn sampleColor(tex: texture_2d<f32>, smp: sampler) -> vec4f {
 test(
     "Vulkan binaries preserve sparse vertex and interstage locations",
     { skip: !tools.bbliteTint },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const directory = join(root, "shaders");
         mkdirSync(directory);
@@ -1113,7 +1113,7 @@ struct Output {
             join(directory, "sparse.vert.demote.spv"),
             "stale fragment-only variant",
         );
-        compileOfflineShaders({
+        await compileOfflineShaders({
             repositoryRoot: root,
             directories: [directory],
             tools,
@@ -1140,7 +1140,7 @@ struct Output {
 test(
     "a rebuilt bblite-tint invalidates cached stage products",
     { skip: !tools.bbliteTint || !tools.dxc },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const tint = tools.bbliteTint;
         assert.ok(tint);
@@ -1163,21 +1163,21 @@ test(
             join(dirname(tint), "provenance.json"),
             join(root, "provenance.json"),
         );
-        const compile = (bbliteTint: string) =>
-            compileOfflineShaders({
+        const compile = async (bbliteTint: string) =>
+            await compileOfflineShaders({
                 repositoryRoot: root,
                 directories: [directory],
                 tools: { dxc: tools.dxc, bbliteTint, cmake: tools.cmake },
                 target: "d3d12",
             });
-        assert.equal(compile(tint).tintCompiled, 1);
-        assert.equal(compile(tint).directoriesReused, 1);
+        assert.equal((await compile(tint)).tintCompiled, 1);
+        assert.equal((await compile(tint)).directoriesReused, 1);
         const slots = readFileSync(
             join(directory, "simple.frag.slots"),
             "utf8",
         );
         assert.match(slots, /i0 values/);
-        const refreshed = compile(rebuilt);
+        const refreshed = await compile(rebuilt);
         assert.equal(refreshed.directoriesCompiled, 1);
         assert.equal(refreshed.tintCompiled, 1);
         assert.equal(refreshed.compiled, 0, "identical HLSL replays its DXIL");
@@ -1185,20 +1185,20 @@ test(
             readFileSync(join(directory, "simple.frag.slots"), "utf8"),
             slots,
         );
-        assert.equal(compile(rebuilt).directoriesReused, 1);
+        assert.equal((await compile(rebuilt)).directoriesReused, 1);
     },
 );
 
 test(
     "a bblite-tint built from other tool sources than this checkout's is refused",
     { skip: !tools.bbliteTint },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const tint = tools.bbliteTint;
         assert.ok(tint);
         const directory = shaderDirectory(root, "stale-tool");
-        const compile = (bbliteTint: string) =>
-            compileOfflineShaders({
+        const compile = async (bbliteTint: string) =>
+            await compileOfflineShaders({
                 repositoryRoot: root,
                 directories: [directory],
                 tools: { dxc: tools.dxc, bbliteTint, cmake: tools.cmake },
@@ -1230,8 +1230,8 @@ test(
                 },
             }),
         );
-        assert.throws(
-            () => compile(join(stale, basename(tint))),
+        await assert.rejects(
+            async () => await compile(join(stale, basename(tint))),
             (error: unknown) =>
                 error instanceof Error &&
                 error.message.includes("tools/tint-sdl/main.cc differs") &&
@@ -1244,23 +1244,23 @@ test(
         const bare = join(root, "bare");
         mkdirSync(bare);
         copyFileSync(tint, join(bare, basename(tint)));
-        assert.throws(
-            () => compile(join(bare, basename(tint))),
+        await assert.rejects(
+            async () => await compile(join(bare, basename(tint))),
             /provenance\.json does not exist\. Run pwsh -File tools\/build-tint\.ps1/,
         );
         // Neither failed run left a checkpoint; this checkout's tool compiles.
-        assert.equal(compile(tint).directoriesCompiled, 1);
+        assert.equal((await compile(tint)).directoriesCompiled, 1);
     },
 );
 
 test(
     "target switches remove unrequested products and specialize all formats",
     { skip: !tools.bbliteTint || !tools.dxc },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const directory = shaderDirectory(root, "formats");
         for (const target of ["all", "metal", "d3d12", "vulkan"] as const) {
-            compileOfflineShaders({
+            await compileOfflineShaders({
                 repositoryRoot: root,
                 directories: [directory],
                 tools,
@@ -1282,12 +1282,12 @@ test(
 test(
     "failed shader directories never acquire a completion checkpoint",
     { skip: !tools.bbliteTint },
-    (t) => {
+    async (t) => {
         const root = fixtureRoot(t);
         const first = shaderDirectory(root, "a-first");
         const second = shaderDirectory(root, "b-second", "invalid WGSL");
-        const compile = () =>
-            compileOfflineShaders({
+        const compile = async () =>
+            await compileOfflineShaders({
                 repositoryRoot: root,
                 directories: [first, second],
                 tools,
@@ -1295,9 +1295,9 @@ test(
             });
         // The stage's binding reflection reads the module before Tint does,
         // so an invalid module refuses there first.
-        assert.throws(compile, /Unsupported WGSL declaration 'invalid'/);
+        await assert.rejects(compile, /Unsupported WGSL declaration 'invalid'/);
         writeFileSync(join(second, "simple.frag.native.wgsl"), fragment);
-        const result = compile();
+        const result = await compile();
         assert.equal(result.directoriesReused, 1);
         assert.equal(result.directoriesCompiled, 1);
         assert.equal(result.tintReused, 1);

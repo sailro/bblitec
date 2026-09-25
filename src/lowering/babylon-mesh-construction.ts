@@ -113,7 +113,7 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
         ),
         {
             bindings,
-            booleanAnd: true,
+
             calls: new Map([
                 ...transform.calls,
                 ...material.calls,

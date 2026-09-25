@@ -35,6 +35,7 @@ import type { CompileAsset, Feature } from "./types.js";
 export interface AssetRegistryContext extends Pick<
     LoweringServices,
     | "assets"
+    | "assetOutputs"
     | "assetPayloads"
     | "symbols"
     | "options"
@@ -195,6 +196,7 @@ export function registerAsset(
     const asset = assetRecord(source, kind, context.assetPayloads, {
         faceSize,
     });
+    requireUniqueOutput(context.assetOutputs, asset);
     context.assets.set(key, asset);
     return asset;
 }
@@ -232,20 +234,28 @@ export function registerUiImageAsset(
     const key = `ui-image:${source}:${output}`;
     const existing = context.assets.get(key);
     if (existing) return existing;
-    const collision = [...context.assets.values()].find(
-        (asset) => asset.output === output && asset.source !== source,
-    );
-    if (collision) {
-        throw new Error(
-            `Retained UI image path '${output}' names both '${collision.source}' and '${source}'.`,
-        );
-    }
     const asset = {
         ...assetRecord(source, "texture", context.assetPayloads),
         output,
     };
+    requireUniqueOutput(context.assetOutputs, asset);
     context.assets.set(key, asset);
     return asset;
+}
+
+/** Packaged names must be unambiguous on every supported filesystem. */
+function requireUniqueOutput(
+    outputs: Map<string, CompileAsset>,
+    candidate: CompileAsset,
+): void {
+    const name = candidate.output.toLowerCase();
+    const existing = outputs.get(name);
+    if (existing && existing.source !== candidate.source) {
+        throw new Error(
+            `Packaged asset path '${candidate.output}' names both '${existing.source}' and '${candidate.source}'.`,
+        );
+    }
+    outputs.set(name, candidate);
 }
 
 /**

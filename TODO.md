@@ -6,37 +6,11 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Compiler
 
-- [ ] Stop the name-keyed native binding registry from keeping a shared-cell type a local's emitted declaration does not use (scene173's `navDebug`); body outlining declines such locals meanwhile (`compiler.ts` `describeNativeValue`, `body-outlining.ts`).
-- [ ] Build the engine-body analysis per queried module or cache its answers, so tetris and doom skip the program over every pinned source (about 0.9 s each; `engineCallMutatesArgument`).
-- [ ] One snake-case convention for pinned names (`cpp-literals.ts` `snakeCase`, `pinnedSnakeCase`).
-- [ ] Reuse `navigation-library.ts` `methodAccess` and `provenance` in `navigation-build-plan.ts`.
-- [ ] Spell C++ string literals with `stringLiteral`, not `JSON.stringify`, in the camera, character-kernel, device-recovery and pinned-numeric lowerers.
-- [ ] Read pinned WGSL constants one way (`pinned-material-vertex.ts` and `shader-builtins-utility.ts` read them through the shader builders with a hand type check).
-- [ ] Record `{type, constant}` per native binding instead of `constNativeBindings` and "const " prefixes on the first-wins `nativeBindingTypes` (`compiler.ts`, `statements.ts`, `body-outlining.ts`).
-- [ ] Find a closure's uncaptured names with one token pass (`unqualifiedIdentifiers`) instead of a regex per name, and build `environmentStruct` once per closure (`compiler.ts`).
-- [ ] Build one checked pinned program: text builds a second one (`pinned-typed-program.ts`) with its own library and `noUncheckedIndexedAccess`.
-- [ ] Converge the pinned record lowerers (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`) on one record and absence model, and emit the per-family structs of `sprite-y-sort-lowerer.ts`, `physics-floating-origin-lowerer.ts` and `clustered-light-runtime.ts` through `PinnedRecordModel`.
-- [ ] Share the base numeric lowerer's for/for-of/switch/try arms with its subclasses instead of their copies (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`).
+- [ ] Converge the pinned record lowerers (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`) on one record and absence model.
 - [ ] Key pinned-lowerer bindings by declaration symbol, not comparison source text (`pinned-numeric-lowerer.ts` binding map).
-- [ ] Decide `||`/`&&` value semantics from operand types and drop the `booleanOr`/`booleanAnd` caller flags (`pinned-numeric-lowerer.ts`).
-- [ ] Resolve `Math.*` from `MATH_MEMBERS` by default in the pinned numeric lowerer instead of per-call math maps.
+- [ ] Remove redundant per-call math maps now that the pinned numeric lowerer resolves `Math.*` from `MATH_MEMBERS` by default.
 - [ ] Outline large bodies from structured statements at emission instead of re-parsing emitted C++ (`body-outlining.ts`, `cpp-statements.ts`).
-- [ ] Decide handle-field traceability in C++ (`gc_traceable`) instead of restating it in `untracedHandleKinds` (`data-types/handles.ts`).
-- [ ] Lower `_createNavMeshFromMerged`'s guards through the numeric lowerer instead of reading them by name (`navigation-build-plan.ts`).
-- [ ] Lower the grid atlas whole through `PinnedRecordModel` instead of hooking `pivot`/`frames` by name (`pinned-grid-atlas.ts`).
-- [ ] Emit a local's slot-found flag only when a presence consumer reads it (`declarations.ts`, `data-lowering.ts` guarded element reads).
 - [ ] Register platform locals as capture bindings so closure capture needs no name scan (`compiler.ts` uncaptured-name check).
-- [ ] One pinned module loader for export augmentation (`pinned-shader-builders.ts` `pinnedModuleValue`, `pinned-shader-composer.ts` `importPinnedModuleWithExports`).
-- [ ] Spell pinned rounding through `pinnedRoundCall` in `pinned-csm.ts` and `splat-lowerer.ts`.
-- [ ] One `soleReturnedExpression` matcher in `engine-lifecycle.ts` and one `bindOptionalResource` in `declarations.ts`.
-- [ ] One JSON field-reader module for `patch-inventory.ts`, `api-surface.ts`, `tooling/generated-readers.ts`, `tooling/check-spec.ts` and `gltf-document.ts`.
-- [ ] Record camera-mutation lowering's TAA and text camera writes through `AdmissionRecorder` methods instead of writing its `untrackedTaaCameraWrites` and `textCameraMutation` fields from `compileCameraMutation` (`compiler.ts`, `admissions.ts`).
-- [ ] Canvas sizes folded at generation fix render-target sizes and particle initialization to `--width`/`--height` (`staticCanvasSize` in `compiler.ts`; `option-helpers.ts`); read the running canvas or refuse where it can differ.
-- [ ] Resolve a dictionary's map owner once for reads and writes (`equalityComparison` and `dictionaryEntryTarget` in `data-lowering.ts`).
-- [ ] One mapper path for `Array.from` iterable and `{ length }` sources (`compileArrayFromMapped` and `compileArrayFrom` in `data-lowering.ts`).
-- [ ] Lower `devicePixelRatio` in one place (`browser-erasure.ts`, `expressions.ts`, `canvas.ts`) and fold a nested browser-operand chain once per node.
-- [ ] Parse a runtime deployment query bag once per realm instead of once per emitting function (`deploymentSearchParamsValue` in `search-params.ts`).
-- [ ] Refuse two packaged sources that map to one output name (`hash` and the output name in `compiler/assets.ts`).
 
 ## UI
 
@@ -80,13 +54,9 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Performance
 
-- [ ] Cache which engine parameters a call mutates per pin instead of building a program per compile (`engineCallMutatesArgument`).
-- [ ] Decline method-call and element-read probes by type before speculating (tetris rolls back 77% of 3,895 transactions; `expressions.ts`).
 - [ ] Memoize reached-loop walks per root and flags (`resource-loops.ts` `walkReachedLoopNodes`, 13% of doom's generation).
-- [ ] Cache each value's captured bindings in `useNativeValue` and use a plain `Set` for its guard (17% of tetris's generation).
 - [ ] Send lowered modules through unit packing and outlining (scene1's `gltf_loader.cpp` is 283 KB, 7.8 s alone).
 - [ ] Make record layouts feature-independent so one shared PCH serves every scene (`runtime.hpp` includes 15 feature headers).
-- [ ] Run cold `bblite-tint` stage compiles in parallel (`compile-shaders.ts`).
 - [ ] `minecraft`: worst frame of a chunk-crossing sprint replay at most 16.7 ms (`BBLITE_FPS_PROFILE` maximum interval), with meshing, lighting, water settling and allocation attributed separately (`BBLITE_CPU_PROFILE`).
 - [ ] `scene290`: at least 100 FPS uncapped through impact and settling (`BBLITE_BENCHMARK_FRAMES=0`, `BBLITE_FPS_PROFILE`); Bullet stepping is the bottleneck (`pal_physics_bullet.cpp`).
 

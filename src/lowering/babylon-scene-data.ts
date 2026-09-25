@@ -77,7 +77,7 @@ export function lowerBabylonSceneData(
                     },
                 ],
             ]),
-            booleanAnd: true,
+
             forOf(iterated, element) {
                 if (iterated !== "data.lights") return undefined;
                 return {

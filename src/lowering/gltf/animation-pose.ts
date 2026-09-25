@@ -206,8 +206,7 @@ export function lowerGltfAnimationPose(context: LoweringContext): string {
     const body = lowerPinnedBody(file, statements.slice(clock + 1), {
         bindings,
         calls,
-        booleanAnd: true,
-        booleanOr: true,
+
         expression(node, lowerer) {
             const read = arrayRead(node, lowerer);
             if (read) return read;

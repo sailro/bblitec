@@ -91,7 +91,7 @@ export function lowerPbrTransmissionSelection(
     const body = lowerPinnedBody(file, statements.slice(0, activation), {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
+
         expression(node, lowerer) {
             if (
                 ts.isBinaryExpression(node) &&
@@ -316,7 +316,7 @@ export function lowerPbrSceneHookRegistry(context: LoweringContext): string {
                     () => "(enable_scene_transmission(scene), false)",
                 ],
             ]),
-            booleanOr: true,
+
             expression(node) {
                 if (
                     !context.expressionMatchesShape(

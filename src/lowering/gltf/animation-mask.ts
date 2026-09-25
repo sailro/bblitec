@@ -159,8 +159,7 @@ export function lowerGltfAnimationMask(context: LoweringContext): string {
     const setterBody = lowerPinnedBody(controller.file, value.body.statements, {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression: sharedExpression,
         statement(statement, lowerer, indent) {
             if (

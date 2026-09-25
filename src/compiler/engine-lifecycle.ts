@@ -15,6 +15,7 @@ import {
     tryResolveFunctionDeclaration,
 } from "./user-functions.js";
 import { argumentAt, isDeclaredInside } from "./syntax.js";
+import { soleReturnedExpression } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import type { NativeDeclaration } from "./native-declarations.js";
@@ -107,23 +108,18 @@ export class EngineLifecycle {
             !declaration ||
             declaration.parameters.length !== 0 ||
             !declaration.body ||
-            !ts.isBlock(declaration.body) ||
-            declaration.body.statements.length !== 1
+            !ts.isBlock(declaration.body)
         ) {
             return false;
         }
-        const returned = declaration.body.statements[0];
+        const returned = soleReturnedExpression(declaration.body);
         if (
             returned === undefined ||
-            !ts.isReturnStatement(returned) ||
-            returned.expression === undefined ||
-            !this.context.browserErasure.isBoundedNestedFrameYield(
-                returned.expression,
-            )
+            !this.context.browserErasure.isBoundedNestedFrameYield(returned)
         ) {
             return false;
         }
-        return this.requireClosedBoundedFrameYield(returned.expression);
+        return this.requireClosedBoundedFrameYield(returned);
     }
 
     /**
@@ -189,12 +185,7 @@ export class EngineLifecycle {
         ) {
             return false;
         }
-        const returned = ts.isBlock(declaration.body)
-            ? declaration.body.statements.length === 1 &&
-              ts.isReturnStatement(declaration.body.statements[0]!)
-                ? declaration.body.statements[0].expression
-                : undefined
-            : declaration.body;
+        const returned = soleReturnedExpression(declaration.body);
         return Boolean(
             returned && this.context.browserErasure.isFrameYield(returned),
         );
@@ -212,11 +203,10 @@ export class EngineLifecycle {
             declaration.body.statements.length !== 1
         )
             return false;
-        const returned = declaration.body.statements[0]!;
-        if (!ts.isReturnStatement(returned) || !returned.expression)
-            return false;
+        const returned = soleReturnedExpression(declaration.body);
+        if (!returned) return false;
         const poll = framePollExecutor(
-            this.context.unwrap(returned.expression),
+            this.context.unwrap(returned),
             this.context.checker,
             (callee) => this.context.libraryGlobal(callee),
         );

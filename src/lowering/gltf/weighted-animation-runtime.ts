@@ -176,8 +176,7 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
         ]);
         return lowerPinnedBody(file, declaration.body!.statements, {
             bindings: bindingScope(),
-            booleanAnd: true,
-            booleanOr: true,
+
             methods: new Map([
                 [
                     "fill",
@@ -525,8 +524,7 @@ function lowerWeightedMask(context: LoweringContext): string {
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression(node) {
             if (
                 context.expressionMatchesShape(

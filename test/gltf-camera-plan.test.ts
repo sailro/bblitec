@@ -4,12 +4,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import {
-    asObject,
-    asRecords,
-    GLTF_MESH_PLAN,
-    type JsonObject,
-} from "../src/gltf-document.js";
+import { GLTF_MESH_PLAN } from "../src/gltf-document.js";
+import { asObject, asRecords, type JsonObject } from "../src/json-fields.js";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
 import {
     packageGltfMeshPlan,

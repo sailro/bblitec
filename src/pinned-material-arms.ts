@@ -20,13 +20,11 @@
 import {
     animatedMaterialPointerPatterns,
     asIndex,
-    asObject,
-    asRecords,
     glbDocument,
     GLTF_TRANSMISSION_PLAN,
     selectedVariantIndex,
-    type JsonObject,
 } from "./gltf-document.js";
+import { asObject, asRecords, type JsonObject } from "./json-fields.js";
 import {
     ensurePinnedLoaderExecution,
     gltfAnimatedExtensionTargets,

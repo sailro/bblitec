@@ -1,3 +1,4 @@
+import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
@@ -65,6 +66,11 @@ export function compileCanvasValue(
 ): Value | undefined {
     if (!context.options.workers) return undefined;
     const node = context.unwrap(expression);
+    const ratio = devicePixelRatioValue(context, node);
+    if (ratio) {
+        requireWindowHost(context, node);
+        return ratio;
+    }
     if (
         ts.isPropertyAccessExpression(node) &&
         ["matches", "media"].includes(node.name.text) &&
@@ -91,9 +97,7 @@ export function compileCanvasValue(
     }
     if (
         ts.isPropertyAccessExpression(node) &&
-        ["devicePixelRatio", "innerWidth", "innerHeight"].includes(
-            node.name.text,
-        ) &&
+        ["innerWidth", "innerHeight"].includes(node.name.text) &&
         ["globalThis", "window"].includes(
             context.libraryGlobal(node.expression) ?? "",
         )
@@ -101,10 +105,7 @@ export function compileCanvasValue(
         requireWindowHost(context, node);
         return {
             kind: "number",
-            cpp:
-                node.name.text === "devicePixelRatio"
-                    ? "bbl::pal::window_device_pixel_ratio()"
-                    : `bbl::pal::window_viewport_size().${node.name.text === "innerWidth" ? "width" : "height"}`,
+            cpp: `bbl::pal::window_viewport_size().${node.name.text === "innerWidth" ? "width" : "height"}`,
             dataType: { kind: "number" },
         };
     }

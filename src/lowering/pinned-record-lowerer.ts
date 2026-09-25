@@ -5,7 +5,7 @@
  * `PinnedNumericLowerer` owns arithmetic, JavaScript's operators and the
  * statements it already translates; this layer adds the record model on
  * top of it, typed by the TypeScript checker over the recovered pinned
- * sources (`pinned-typed-program.ts`). Every expression's native form is
+ * sources (`pinned-program.ts`). Every expression's native form is
  * chosen from its checked type, never from its spelling:
  *
  *  - an object type the schema names is a native record, held through
@@ -27,12 +27,16 @@
  * generation with the pinned source location.
  */
 import ts from "typescript";
-import { declaredSymbol, resolvedSymbol } from "../compiler/symbols.js";
+import {
+    declaredInDefaultLibrary,
+    declaredSymbol,
+    resolvedSymbol,
+} from "../compiler/symbols.js";
 import { posix } from "node:path";
 import {
     cppIdentifier,
     doubleLiteral,
-    pinnedSnakeCase,
+    snakeCase,
     stringLiteral,
 } from "../cpp-literals.js";
 import type {
@@ -46,6 +50,7 @@ import type { LoweringContext } from "./context.js";
 import { cppPrimary, type RenderedCpp } from "./pinned-numeric-expression.js";
 import {
     PinnedNumericLowerer,
+    type PinnedIteration,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import {
@@ -55,7 +60,7 @@ import {
 } from "./pinned-operators.js";
 import { isPinnedErrorCall } from "./pinned-error.js";
 import { cppCondition } from "../cpp-expressions.js";
-import type { PinnedTypedProgram } from "./pinned-typed-program.js";
+import type { CheckedPinnedProgram } from "../pinned-program.js";
 
 /** The native form of one pinned type. */
 export type RecordShape =
@@ -141,12 +146,6 @@ export interface RecordSpec {
      * each is a `get_`/`set_` function pair on the struct.
      */
     readonly accessors?: ReadonlySet<string>;
-    /**
-     * Members an erased base interface declares -- one from a type-only
-     * module the source maps do not carry (`Renderable`) -- typed by the
-     * port, as `unresolved` types erased names.
-     */
-    readonly erased?: ReadonlyMap<string, MemberSpec>;
     /**
      * `module#Interface.member`: the struct is the type literal that
      * member declares (an options object's anonymous quaternion).
@@ -398,7 +397,7 @@ export class PinnedRecordModel {
 
     public constructor(
         public readonly context: LoweringContext,
-        public readonly typed: PinnedTypedProgram,
+        public readonly typed: CheckedPinnedProgram,
         public readonly schema: RecordSchema,
     ) {
         this.checker = typed.checker;
@@ -617,6 +616,12 @@ export class PinnedRecordModel {
         const anonymous = this.anonymous.get(type);
         if (anonymous !== undefined) return { kind: "record", name: anonymous };
         const alias = type.aliasSymbol?.name;
+        if (
+            alias === "Readonly" &&
+            declaredInDefaultLibrary(type.aliasSymbol) &&
+            type.aliasTypeArguments?.length === 1
+        )
+            return this.shapeOf(type.aliasTypeArguments[0]!, site);
         if (alias !== undefined) {
             const value = this.schema.values.get(alias);
             if (value) return value;
@@ -1031,7 +1036,7 @@ export class PinnedRecordModel {
             name: string,
             shape: RecordShape,
             override?: MemberSpec,
-            field = override?.field ?? cppIdentifier(pinnedSnakeCase(name)),
+            field = override?.field ?? cppIdentifier(snakeCase(name)),
         ) => {
             // A member the pin's literals implement with accessors is a
             // getter/setter pair; the struct stores the two functions.
@@ -1133,14 +1138,6 @@ export class PinnedRecordModel {
                     site,
                     `Pinned record member '${name}' is not declared.`,
                 );
-        for (const [name, member] of spec.erased ?? []) {
-            if (members.has(name))
-                this.fail(
-                    site,
-                    `Pinned record member '${name}' is declared; it is not erased.`,
-                );
-            add(name, member.shape, member);
-        }
         for (const base of spec.bases ?? []) {
             for (const inherited of this.record(base).members().values()) {
                 const own = members.get(inherited.name);
@@ -1221,7 +1218,7 @@ export class PinnedRecordModel {
                 );
             const base = {
                 name,
-                field: cppIdentifier(pinnedSnakeCase(name)),
+                field: cppIdentifier(snakeCase(name)),
                 declaredBy: record,
             };
             const getter = declarations.find(ts.isGetAccessorDeclaration);
@@ -1802,7 +1799,7 @@ export class PinnedRecordModel {
             const name = declaration.name.text;
             return {
                 name,
-                cpp: cppIdentifier(pinnedSnakeCase(name)),
+                cpp: cppIdentifier(snakeCase(name)),
                 exported: name,
                 declared: declaration,
             };
@@ -1821,7 +1818,7 @@ export class PinnedRecordModel {
                 owner,
                 `Pinned class ${className} is not a record of this model.`,
             );
-        const stem = cppIdentifier(pinnedSnakeCase(className));
+        const stem = cppIdentifier(snakeCase(className));
         const base = {
             declared: owner,
             owner: this.recordKey(className),
@@ -1837,7 +1834,7 @@ export class PinnedRecordModel {
                 exported: `${className}.constructor`,
             };
         const member = declaration.name.getText();
-        const snake = pinnedSnakeCase(member);
+        const snake = snakeCase(member);
         if (ts.isGetAccessorDeclaration(declaration))
             return {
                 ...base,
@@ -1931,7 +1928,7 @@ export class PinnedRecordModel {
         );
         const entry: ModuleVariable = {
             declaration,
-            cpp: cppIdentifier(pinnedSnakeCase(declaration.name.text)),
+            cpp: cppIdentifier(snakeCase(declaration.name.text)),
             // Realm state sits in its own namespace, so no lowered local of
             // the same name hides it.
             namespace: `${isExported(statement) ? "bbl" : detailNamespace(module)}::realm`,
@@ -2212,7 +2209,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     private readonly substitutions = new Map<ts.Node, string>();
     private readonly source: ts.SourceFile;
     private temporaries = 0;
-    private catchVariable: ts.Symbol | undefined;
     /** Bindings a closure inside this function reads or writes. */
     private readonly captured = new Set<ts.Symbol>();
     /** Where the first closure over each captured binding is created. */
@@ -2240,8 +2236,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         const scope: PinnedNumericScope = {
             bindings: new Map(),
             calls,
-            booleanAnd: true,
-            booleanOr: true,
         };
         super(entry.declaration.getSourceFile(), scope);
         this.source = entry.declaration.getSourceFile();
@@ -2975,10 +2969,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         return name;
     }
 
-    private scoped<T>(action: () => T): T {
+    protected override withBindings<T>(action: () => T): T {
         this.names.push(new Set());
         try {
-            return this.withBindings(action);
+            return super.withBindings(action);
         } finally {
             const closed = this.names.pop()!;
             // Sibling scopes may reuse a name; an enclosing one may not,
@@ -2997,6 +2991,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         if (node.kind === ts.SyntaxKind.ThisKeyword && this.entry.owner)
             return { kind: "record", name: this.entry.owner };
         if (ts.isIdentifier(node)) {
+            const symbol = declaredSymbol(this.checker, node);
+            const local = symbol ? this.locals.get(symbol) : undefined;
+            if (local?.storage.kind === "record") return local.storage;
             const declaration = this.model.declarationOf(node);
             const platform = declaration
                 ? this.moduleValue(declaration)
@@ -3063,6 +3060,12 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     private recordShapeOf(node: ts.Expression): RecordShape | undefined {
+        node = this.skipParentheses(node);
+        if (ts.isIdentifier(node)) {
+            const symbol = declaredSymbol(this.checker, node);
+            const local = symbol ? this.locals.get(symbol) : undefined;
+            if (local) return this.stripOptional(local.storage);
+        }
         if (node.kind === ts.SyntaxKind.ThisKeyword && this.entry.owner)
             return { kind: "record", name: this.entry.owner };
         if (ts.isPropertyAccessExpression(node)) {
@@ -3652,7 +3655,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     // ── Truthiness and comparisons ──────────────────────────────────────
 
     /** A statement's condition, without the grouping its operator carries. */
-    private statementCondition(node: ts.Expression): string {
+    protected override condition(node: ts.Expression): string {
         return cppCondition(this.truthy(node));
     }
 
@@ -4193,12 +4196,19 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     ): (RecordShape | undefined)[] {
         return declaration.parameters.map((parameter, index) => {
             const type = this.checker.getTypeAtLocation(parameter.name);
-            if (
-                !this.containsAny(type) ||
-                this.model.unresolvedShape(type, parameter) !== undefined
-            )
-                return undefined;
             const argument = node.arguments[index];
+            if (!this.containsAny(type)) {
+                if (!argument) return undefined;
+                const expected = this.model.declaredShape(type, parameter);
+                if (expected.kind !== "record") return undefined;
+                const actual = this.recordShapeOf(argument);
+                return actual?.kind === "record" &&
+                    this.cpp(actual) !== this.cpp(expected)
+                    ? actual
+                    : undefined;
+            }
+            if (this.model.unresolvedShape(type, parameter) !== undefined)
+                return undefined;
             if (!argument)
                 return this.refuse(
                     node,
@@ -5030,7 +5040,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return this.expressionLines(statement, indent);
         if (ts.isIfStatement(statement)) {
             const lines = [
-                `${indent}if (${this.statementCondition(statement.expression)}) {`,
+                `${indent}if (${this.condition(statement.expression)}) {`,
                 ...this.nested(statement.thenStatement, indent),
             ];
             if (statement.elseStatement)
@@ -5041,13 +5051,9 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             lines.push(`${indent}}`);
             return lines;
         }
-        if (ts.isForStatement(statement))
-            return this.forStatement(statement, indent);
-        if (ts.isForOfStatement(statement))
-            return this.forOf(statement, indent);
         if (ts.isWhileStatement(statement))
             return [
-                `${indent}while (${this.statementCondition(statement.expression)}) {`,
+                `${indent}while (${this.condition(statement.expression)}) {`,
                 ...this.nested(statement.statement, indent),
                 `${indent}}`,
             ];
@@ -5056,18 +5062,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             return [
                 `${indent}return ${this.convert(statement.expression, this.returns)};`,
             ];
-        }
-        if (ts.isSwitchStatement(statement))
-            return this.switchChain(statement, indent);
-        if (ts.isTryStatement(statement))
-            return this.tryStatement(statement, indent);
-        if (ts.isThrowStatement(statement) && this.catchVariable) {
-            const thrown = this.skipParentheses(statement.expression);
-            if (
-                ts.isIdentifier(thrown) &&
-                declaredSymbol(this.checker, thrown) === this.catchVariable
-            )
-                return [`${indent}throw;`];
         }
         if (ts.isBlock(statement))
             return [
@@ -5080,7 +5074,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
 
     private nested(statement: ts.Statement, indent: string): string[] {
         const inner = `${indent}    `;
-        return this.scoped(() =>
+        return this.withBindings(() =>
             ts.isBlock(statement)
                 ? this.statements(statement.statements, inner)
                 : this.statement(statement, inner),
@@ -5339,65 +5333,49 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         );
     }
 
-    private forStatement(statement: ts.ForStatement, indent: string): string[] {
-        return this.scoped(() => {
-            const initializer = statement.initializer;
-            let declared = "";
-            if (initializer) {
-                if (!ts.isVariableDeclarationList(initializer))
-                    return this.refuse(statement, "Pinned for initializer.");
-                const parts = initializer.declarations.map((declaration) => {
-                    if (
-                        !ts.isIdentifier(declaration.name) ||
-                        !declaration.initializer
-                    )
-                        return this.refuse(
-                            declaration,
-                            "Pinned for initializer.",
-                        );
-                    const storage = this.model.shapeOf(
-                        this.checker.getTypeAtLocation(declaration.name),
+    protected override forInitializer(
+        initializer: ts.ForInitializer | undefined,
+    ): string {
+        let declared = "";
+        if (initializer) {
+            if (!ts.isVariableDeclarationList(initializer))
+                return this.refuse(initializer, "Pinned for initializer.");
+            const parts = initializer.declarations.map((declaration) => {
+                if (
+                    !ts.isIdentifier(declaration.name) ||
+                    !declaration.initializer
+                )
+                    return this.refuse(declaration, "Pinned for initializer.");
+                const storage = this.model.shapeOf(
+                    this.checker.getTypeAtLocation(declaration.name),
+                    declaration,
+                );
+                if (storage.kind !== "number")
+                    return this.refuse(
                         declaration,
+                        "Pinned for loops count numbers.",
                     );
-                    if (storage.kind !== "number")
-                        return this.refuse(
-                            declaration,
-                            "Pinned for loops count numbers.",
-                        );
-                    const value = this.convert(
-                        declaration.initializer,
-                        storage,
-                    );
-                    return `${this.declare(declaration.name, storage)} = ${value}`;
-                });
-                declared = `double ${parts.join(", ")}`;
-            }
-            const condition = statement.condition
-                ? this.statementCondition(statement.condition)
-                : "";
-            const incrementor = statement.incrementor
-                ? (this.effect(this.skipParentheses(statement.incrementor)) ??
-                  this.refuse(
-                      statement.incrementor,
-                      "Pinned loop incrementor without a native effect.",
-                  ))
-                : "";
-            return [
-                `${indent}for (${declared}; ${condition}; ${incrementor}) {`,
-                ...this.nested(statement.statement, indent),
-                `${indent}}`,
-            ];
-        });
+                const value = this.convert(declaration.initializer, storage);
+                return `${this.declare(declaration.name, storage)} = ${value}`;
+            });
+            declared = `double ${parts.join(", ")}`;
+        }
+        return declared;
+    }
+    protected override loopIncrementor(expression: ts.Expression): string {
+        return (
+            this.effect(this.skipParentheses(expression)) ??
+            this.refuse(
+                expression,
+                "Pinned loop incrementor without a native effect.",
+            )
+        );
     }
 
-    private forOf(statement: ts.ForOfStatement, indent: string): string[] {
-        const list = statement.initializer;
-        if (
-            !ts.isVariableDeclarationList(list) ||
-            list.declarations.length !== 1
-        )
-            return this.refuse(statement, "Pinned for-of binding.");
-        const binding = list.declarations[0]!.name;
+    protected override forOfIteration(
+        statement: ts.ForOfStatement,
+        binding: ts.BindingName,
+    ): PinnedIteration {
         let iterated = this.skipParentheses(statement.expression);
         let view: "values" | "entries" = "entries";
         if (
@@ -5416,21 +5394,14 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         }
         const shape = this.ownerShape(iterated);
         const range = this.temporary("range");
-        const lines = [
-            `${indent}{`,
-            `${indent}    auto ${range} = ${this.presentValue(iterated)};`,
-        ];
-        const body = (bindings: () => string[]): string[] =>
-            this.scoped(() => {
-                const bound = bindings();
-                const inner = `${indent}        `;
-                return [
-                    ...bound.map((line) => `${inner}${line}`),
-                    ...(ts.isBlock(statement.statement)
-                        ? this.statements(statement.statement.statements, inner)
-                        : this.statement(statement.statement, inner)),
-                ];
-            });
+        const prefix = [`auto ${range} = ${this.presentValue(iterated)};`];
+        const bind = (name: ts.Identifier, value: string): string => {
+            const storage = this.model.shapeOf(
+                this.checker.getTypeAtLocation(name),
+                name,
+            );
+            return `${this.cpp(storage)} ${this.declare(name, storage)} = ${value};`;
+        };
         if (shape.kind === "array") {
             if (!ts.isIdentifier(binding))
                 return this.refuse(
@@ -5438,180 +5409,48 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                     "Pinned array iteration binds one name.",
                 );
             const index = this.temporary("index");
-            lines.push(
-                `${indent}    for (std::size_t ${index} = 0; ${index} < ${range}.size(); ++${index}) {`,
-                ...body(() => {
-                    const storage = this.model.shapeOf(
-                        this.checker.getTypeAtLocation(binding),
-                        binding,
-                    );
-                    const name = this.declare(binding, storage);
-                    return [
-                        `${this.cpp(storage)} ${name} = ${range}[${index}];`,
-                    ];
-                }),
-                `${indent}    }`,
-            );
-        } else if (shape.kind === "map" || shape.kind === "set") {
-            const entry = this.temporary("entry");
-            lines.push(
-                `${indent}    for (auto& ${entry} : ${range}) {`,
-                ...body(() => {
-                    if (shape.kind === "set" || view === "values") {
-                        if (!ts.isIdentifier(binding))
-                            return this.refuse(
-                                binding,
-                                "Pinned value iteration binds one name.",
-                            );
-                        const storage = this.model.shapeOf(
-                            this.checker.getTypeAtLocation(binding),
-                            binding,
-                        );
-                        const name = this.declare(binding, storage);
-                        return [
-                            `${this.cpp(storage)} ${name} = ${entry}${shape.kind === "map" ? ".second" : ""};`,
-                        ];
-                    }
-                    const names = ts.isArrayBindingPattern(binding)
-                        ? binding.elements.flatMap((element) =>
-                              ts.isBindingElement(element) &&
-                              ts.isIdentifier(element.name)
-                                  ? [element.name]
-                                  : [],
-                          )
-                        : [];
-                    if (
-                        !ts.isArrayBindingPattern(binding) ||
-                        binding.elements.length !== 2 ||
-                        names.length !== 2
-                    )
-                        return this.refuse(
-                            binding,
-                            "Pinned map entry binding.",
-                        );
-                    return names.map((name, index) => {
-                        const storage = this.model.shapeOf(
-                            this.checker.getTypeAtLocation(name),
-                            name,
-                        );
-                        const cpp = this.declare(name, storage);
-                        return `${this.cpp(storage)} ${cpp} = ${entry}.${index === 0 ? "first" : "second"};`;
-                    });
-                }),
-                `${indent}    }`,
-            );
-        } else
+            return {
+                prefix,
+                header: `std::size_t ${index} = 0; ${index} < ${range}.size(); ++${index}`,
+                bindings: [bind(binding, `${range}[${index}]`)],
+            };
+        }
+        if (shape.kind !== "map" && shape.kind !== "set")
             return this.refuse(
                 statement,
                 "Pinned iteration of a non-collection.",
             );
-        lines.push(`${indent}}`);
-        return lines;
-    }
-
-    private switchChain(
-        statement: ts.SwitchStatement,
-        indent: string,
-    ): string[] {
-        const discriminant = this.temporary("selected");
-        const shape = this.shapeAt(statement.expression);
-        if (shape.kind !== "string" && shape.kind !== "number")
-            return this.refuse(
-                statement,
-                "Pinned switch over a non-primitive.",
-            );
-        const lines = [
-            `${indent}{`,
-            `${indent}    const ${this.cpp(shape)} ${discriminant} = ${this.value(statement.expression)};`,
-        ];
-        let first = true;
-        let defaultClause: ts.DefaultClause | undefined;
-        const clauses = statement.caseBlock.clauses;
-        for (const [index, clause] of clauses.entries()) {
-            if (ts.isDefaultClause(clause)) {
-                defaultClause = clause;
-                continue;
-            }
-            const statements = [...clause.statements];
-            const last = statements[statements.length - 1];
-            if (last && ts.isBreakStatement(last)) statements.pop();
-            else if (
-                index !== clauses.length - 1 &&
-                !(
-                    last &&
-                    (ts.isReturnStatement(last) ||
-                        ts.isThrowStatement(last) ||
-                        ts.isBlock(last))
-                )
-            )
+        const entry = this.temporary("entry");
+        let bindings: string[];
+        if (shape.kind === "set" || view === "values") {
+            if (!ts.isIdentifier(binding))
                 return this.refuse(
-                    clause,
-                    "Pinned switch clause falls through.",
+                    binding,
+                    "Pinned value iteration binds one name.",
                 );
-            lines.push(
-                `${indent}    ${first ? "" : "} else "}if (${discriminant} == ${this.value(clause.expression)}) {`,
-                ...this.scoped(() =>
-                    this.statements(statements, `${indent}        `),
-                ),
-            );
-            first = false;
-        }
-        if (defaultClause)
-            lines.push(
-                `${indent}    ${first ? "{" : "} else {"}`,
-                ...this.scoped(() =>
-                    this.statements(
-                        defaultClause.statements,
-                        `${indent}        `,
-                    ),
-                ),
-            );
-        if (!first || defaultClause) lines.push(`${indent}    }`);
-        lines.push(`${indent}}`);
-        return lines;
-    }
-
-    private tryStatement(statement: ts.TryStatement, indent: string): string[] {
-        if (statement.finallyBlock) return super.statement(statement, indent);
-        const clause = statement.catchClause;
-        if (!clause) return this.refuse(statement, "Pinned try without catch.");
-        const variable = clause.variableDeclaration;
-        const previous = this.catchVariable;
-        this.catchVariable =
-            variable && ts.isIdentifier(variable.name)
-                ? declaredSymbol(this.checker, variable.name)
-                : undefined;
-        try {
-            if (variable && ts.isIdentifier(variable.name)) {
-                const symbol = this.catchVariable;
-                const reads = this.model.context.findNodes(
-                    clause.block,
-                    (node): node is ts.Identifier =>
-                        ts.isIdentifier(node) &&
-                        declaredSymbol(this.checker, node) === symbol,
-                );
-                if (reads.some((read) => !ts.isThrowStatement(read.parent)))
-                    return this.refuse(
-                        clause,
-                        "Pinned catch reads its error beyond rethrowing it.",
-                    );
-            }
-            return [
-                `${indent}try {`,
-                ...this.scoped(() =>
-                    this.statements(
-                        statement.tryBlock.statements,
-                        `${indent}    `,
-                    ),
-                ),
-                `${indent}} catch (...) {`,
-                ...this.scoped(() =>
-                    this.statements(clause.block.statements, `${indent}    `),
-                ),
-                `${indent}}`,
+            bindings = [
+                bind(binding, entry + (shape.kind === "map" ? ".second" : "")),
             ];
-        } finally {
-            this.catchVariable = previous;
+        } else {
+            if (
+                !ts.isArrayBindingPattern(binding) ||
+                binding.elements.length !== 2
+            )
+                return this.refuse(binding, "Pinned map entry binding.");
+            bindings = binding.elements.map((element, index) => {
+                if (
+                    !ts.isBindingElement(element) ||
+                    !ts.isIdentifier(element.name) ||
+                    element.initializer ||
+                    element.dotDotDotToken
+                )
+                    return this.refuse(element, "Pinned map entry binding.");
+                return bind(
+                    element.name,
+                    entry + (index === 0 ? ".first" : ".second"),
+                );
+            });
         }
+        return { prefix, header: `auto& ${entry} : ${range}`, bindings };
     }
 }

@@ -20,41 +20,15 @@ const registration = `
     registerNodeParticleSet2D(renderer, set, { autoStart: false });
 `;
 
-test("unchanged scene300 derives frozen marker placement from the configured canvas", () => {
+test("frozen particle initialization refuses runtime canvas sizes instead of baking CLI dimensions", () => {
     for (const [width, height] of [
         [1280, 720],
         [800, 600],
     ] as const) {
-        const result = compileSource(original, { fileName, width, height });
-        const program = result.nodeParticles!;
-        assert.deepEqual(program.sprite2d[0]!.originPx, [
-            width * 0.5,
-            height * 0.72,
-        ]);
-        assert.equal(program.sprite2d[0]!.retainFrozen, true);
-        const writes = program.steps.filter(
-            (step) => step.op === "buffer-write",
+        assert.throws(
+            () => compileSource(original, { fileName, width, height }),
+            /A particle column takes a static number/,
         );
-        assert.deepEqual(writes.slice(0, 2), [
-            {
-                op: "buffer-write",
-                set: 0,
-                system: 0,
-                column: "posX",
-                index: 0,
-                value: (96 - width * 0.5) / 220,
-            },
-            {
-                op: "buffer-write",
-                set: 0,
-                system: 0,
-                column: "posY",
-                index: 0,
-                value: (height * 0.72 - 96) / 220,
-            },
-        ]);
-        assert.match(result.cpp, /sprite_renderer_before_update/);
-        assert.match(result.cpp, /\(\*v_liveSamples\)\+\+/);
     }
 });
 

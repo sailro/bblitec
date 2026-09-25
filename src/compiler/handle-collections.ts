@@ -36,13 +36,11 @@ import type {
 } from "./types.js";
 import {
     asIndex,
-    asRecords,
-    asString,
     glbJsonText,
     instantiatedPrimitiveRecords,
     isGaussianSplatPrimitive,
-    type JsonObject,
 } from "../gltf-document.js";
+import { asRecords, asString, type JsonObject } from "../json-fields.js";
 // The same reader the material arms key their skinned mesh features by, so
 // "which meshes of this file are skinned" has one answer in the compiler.
 // The same reader the material arms key their skinned mesh features by, so

@@ -132,8 +132,7 @@ export function lowerPbrMaterialGroups(context: LoweringContext): string {
     const body = lowerPinnedBody(file, [statement, next], {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression(node) {
             if (context.expressionMatchesShape(node, "mesh.material"))
                 return "material";
@@ -451,8 +450,7 @@ function lowerPbrGroupBuild(context: LoweringContext): string {
         {
             bindings,
             calls: new Map(),
-            booleanAnd: true,
-            booleanOr: true,
+
             statement(statement, lowerer, indent) {
                 if (
                     ts.isExpressionStatement(statement) &&
@@ -665,8 +663,7 @@ function lowerPbrGroupUpdates(context: LoweringContext): string {
         {
             bindings,
             calls: new Map(),
-            booleanAnd: true,
-            booleanOr: true,
+
             forOf: (iterated, element) =>
                 iterated === "q"
                     ? {
@@ -812,7 +809,7 @@ function lowerPbrGroupUpdates(context: LoweringContext): string {
             ["force", { cpp: "force", type: "bool" }],
         ]),
         calls: new Map(),
-        booleanAnd: true,
+
         returnValue: (expression) => {
             if (expression)
                 context.contractError(
@@ -878,8 +875,7 @@ function lowerPbrGroupReconciliation(context: LoweringContext): string {
             {
                 bindings,
                 calls: new Map(),
-                booleanAnd: true,
-                booleanOr: true,
+
                 forOf: (iterated, element) =>
                     iterated === "scene.meshes"
                         ? {
@@ -1173,8 +1169,7 @@ function lowerPbrGroupRebuildBody(context: LoweringContext): string {
                     `pbr_mesh_list_contains(scene.meshes, ${args.join(", ")})`,
             ],
         ]),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression(node: ts.Expression) {
             if (
                 context.expressionMatchesShape(
@@ -1326,8 +1321,7 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
                         `source_group_mesh_index(meshes->meshes, ${args.join(", ")})`,
                 ],
             ]),
-            booleanAnd: true,
-            booleanOr: true,
+
             returnValue: () => "",
             statement(node, _numeric, indent): string[] | undefined {
                 if (ts.isForOfStatement(node)) {
@@ -1493,8 +1487,7 @@ function lowerPbrRuntimeDispatch(context: LoweringContext): string {
                 ],
             ]),
             calls: new Map(),
-            booleanAnd: true,
-            booleanOr: true,
+
             expression(node) {
                 if (
                     context.expressionMatchesShape(

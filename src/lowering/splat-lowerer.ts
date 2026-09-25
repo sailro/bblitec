@@ -1,3 +1,4 @@
+import { pinnedRoundCall } from "./pinned-operators.js";
 /**
  * Lowers Babylon Lite's Gaussian-splat CPU work to C++.
  *
@@ -119,7 +120,7 @@ const MATH_CALLS: ReadonlyMap<string, (args: readonly string[]) => string> =
         ...pinnedNumericMathCalls(),
         // JS rounds a half toward +Infinity; std::round rounds it away from zero,
         // so the two disagree at -0.5, -1.5, ...
-        ["Math.round", (a) => `bbl::js::round_js(${a[0]})`],
+        ["Math.round", pinnedRoundCall],
         // Math.hypot is implementation-approximated by the ECMAScript spec; see
         // the module comment for the measured effect of using the plain root.
         ["Math.hypot", pinnedHypotCall],

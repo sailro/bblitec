@@ -257,26 +257,12 @@ export function sanitizeCppIdentifier(name: string): string {
     return name.replace(/[^A-Za-z0-9_]/g, "_");
 }
 
-/** A source-level name that is safe as an unprefixed C++ identifier. */
 /**
- * A pinned camelCase name as the snake_case member the native records
- * spell it: `posX` -> `pos_x`, `colorStepR` -> `color_step_r`,
- * `_scaledStep` -> `scaled_step`. One spelling, so a lowerer reading a
- * pinned field and the runtime record declaring it cannot disagree.
- */
-export function snakeCase(name: string): string {
-    return name
-        .replace(/^_+/, "")
-        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-        .toLowerCase();
-}
-
-/**
- * A pinned member name as a native member: like {@link snakeCase}, and an
- * acronym run splits before its last capital (`_slotStart` -> `slot_start`,
+ * A pinned member name as a native member; acronym runs split before their
+ * last capital (`_slotStart` -> `slot_start`,
  * `instancesU32` -> `instances_u32`, `GPUBuffer` -> `gpu_buffer`).
  */
-export function pinnedSnakeCase(name: string): string {
+export function snakeCase(name: string): string {
     return name
         .replace(/^_+/, "")
         .replace(/([a-z0-9])([A-Z])/g, "$1_$2")

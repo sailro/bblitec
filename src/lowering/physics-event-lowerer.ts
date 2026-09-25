@@ -295,7 +295,7 @@ export function lowerPhysicsCollisionInfo(context: LoweringContext): {
     const lowerer = new PinnedNumericLowerer(file, {
         bindings,
         calls: new Map(),
-        booleanOr: true,
+
         expression(expression) {
             if (
                 ts.isStringLiteral(expression) &&

@@ -25,8 +25,7 @@ export function renderCppExpression(
         lowerer = new PinnedNumericLowerer(scope.file, {
             bindings: new Map(),
             calls: expressionMathCalls,
-            booleanOr: true,
-            booleanAnd: true,
+
             foldConditions: false,
             expressionSpelling: {
                 parentheses: "minimal",

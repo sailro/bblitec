@@ -341,8 +341,6 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
                 ] as const,
         ),
     ]),
-    booleanAnd: true,
-    booleanOr: true,
 })}
 }`;
         })

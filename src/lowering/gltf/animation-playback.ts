@@ -152,8 +152,7 @@ export function lowerGltfAnimationPlayback(
     const controllerScope = {
         bindings: bindings(),
         calls: pinnedNumericMathCalls(),
-        booleanOr: true,
-        booleanAnd: true,
+
         expression(node: ts.Expression, lowerer: PinnedNumericLowerer) {
             if (
                 ts.isBinaryExpression(node) &&
@@ -251,8 +250,7 @@ export function lowerGltfAnimationPlayback(
         );
         return lowerPinnedBody(file, declaration.body!.statements, {
             bindings: bindings(),
-            booleanOr: true,
-            booleanAnd: true,
+
             expression(node, lowerer) {
                 if (
                     ts.isCallExpression(node) &&
@@ -414,8 +412,7 @@ export function lowerGltfAnimationPlayback(
               return lowerPinnedBody(file, declaration.body!.statements, {
                   bindings: bindings(),
                   calls: pinnedNumericMathCalls(),
-                  booleanOr: true,
-                  booleanAnd: true,
+
                   statement(statement, lowerer, indent) {
                       const remainder = remainderStore(
                           statement,

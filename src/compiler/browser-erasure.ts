@@ -1,3 +1,4 @@
+import { devicePixelRatioValue } from "./device-pixel-ratio.js";
 import {
     emissionArray,
     EmissionSet,
@@ -455,6 +456,11 @@ export function browserDeploymentValue(
             : null;
     }
     return undefined;
+}
+
+interface BrowserEvaluation {
+    values: Map<ts.Expression, Value["browserValue"]>;
+    browserOnly: Map<ts.Expression, boolean>;
 }
 
 export class BrowserErasure {
@@ -1016,9 +1022,53 @@ export class BrowserErasure {
         );
     }
 
+    /** @unjournaled Query-local memoization is cleared in finally, including declined probes. */
+    private evaluation: Map<object | undefined, BrowserEvaluation> | undefined;
+
+    private evaluateOnce<T>(
+        node: ts.Expression,
+        select: (cache: BrowserEvaluation) => Map<ts.Expression, T>,
+        compute: () => T,
+    ): T {
+        const root = this.evaluation === undefined;
+        this.evaluation ??= new Map();
+        const frame = this.helperBodies.at(-1);
+        let cache = this.evaluation.get(frame);
+        if (!cache) {
+            cache = { values: new Map(), browserOnly: new Map() };
+            this.evaluation.set(frame, cache);
+        }
+        const entries = select(cache);
+        try {
+            if (entries.has(node)) return entries.get(node)!;
+            const value = compute();
+            entries.set(node, value);
+            return value;
+        } finally {
+            if (root) this.evaluation = undefined;
+        }
+    }
+
     private isBrowserOnlyNode(expression: ts.Expression): boolean {
+        return this.evaluateOnce(
+            expression,
+            (cache) => cache.browserOnly,
+            () => this.isBrowserOnlyNodeUncached(expression),
+        );
+    }
+
+    private browserValueOf(expression: ts.Expression): Value["browserValue"] {
+        return this.evaluateOnce(
+            expression,
+            (cache) => cache.values,
+            () => this.browserValueOfUncached(expression),
+        );
+    }
+
+    private isBrowserOnlyNodeUncached(expression: ts.Expression): boolean {
         if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
+        if (devicePixelRatioValue(this.context, unwrapped)) return false;
         if (
             ts.isCallExpression(unwrapped) &&
             ts.isPropertyAccessExpression(unwrapped.expression) &&
@@ -1145,7 +1195,6 @@ export class BrowserErasure {
             if (
                 [
                     "console",
-                    "devicePixelRatio",
                     "document",
                     "globalThis",
                     "performance",
@@ -1189,15 +1238,7 @@ export class BrowserErasure {
             return this.browserReceiverTaint(unwrapped.expression, unwrapped);
         }
         if (ts.isBinaryExpression(unwrapped)) {
-            // `devicePixelRatio` alone has a native lowering of its own.
-            const operands = [unwrapped.left, unwrapped.right].filter(
-                (operand) =>
-                    !(
-                        ts.isIdentifier(operand) &&
-                        this.context.libraryGlobal(operand) ===
-                            "devicePixelRatio"
-                    ),
-            );
+            const operands = [unwrapped.left, unwrapped.right];
             // An assignment to browser state stays browser state whatever
             // the deployment answers about it: a folded value is not a
             // place to write.
@@ -1464,10 +1505,15 @@ export class BrowserErasure {
         return condition;
     }
 
-    private browserValueOf(
+    private browserValueOfUncached(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
         const unwrapped = this.context.unwrap(expression);
+        const ratio = devicePixelRatioValue(this.context, unwrapped);
+        if (ratio)
+            return ratio.staticNumber === undefined
+                ? undefined
+                : { kind: "number", value: ratio.staticNumber };
         const deployed = browserDeploymentValue(this.context, unwrapped);
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
@@ -1530,11 +1576,6 @@ export class BrowserErasure {
             // scope, and nothing below can see it.
             const local = this.helperBinding(unwrapped);
             if (local !== undefined) return local;
-            if (this.context.libraryGlobal(unwrapped) === "devicePixelRatio") {
-                // Native has no CSS/backing-store split. Its single surface
-                // corresponds to the browser reference at DPR 1.
-                return { kind: "number", value: 1 };
-            }
             const bound = this.context.bindings.lookupOptional(unwrapped);
             if (bound !== undefined) {
                 if (bound.browserValue !== undefined) return bound.browserValue;

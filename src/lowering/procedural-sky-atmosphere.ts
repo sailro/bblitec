@@ -138,8 +138,7 @@ export function lowerProceduralSkyAtmosphere(
         const scope: PinnedBodyScope = {
             bindings,
             calls,
-            booleanAnd: true,
-            booleanOr: true,
+
             callShapes: new Map([["polynomialToPreScaledHarmonics", "f32"]]),
             expression(node, lowerer) {
                 if (node.kind === ts.SyntaxKind.NullKeyword)

@@ -160,7 +160,7 @@ function factoryScope(
     return {
         bindings,
         calls,
-        booleanOr: true,
+
         foldConditions: false,
         expression(node, lowerer) {
             if (ts.isStringLiteralLike(node))
@@ -376,7 +376,7 @@ export function lowerComputeBindingDecl(
         "_isComputeStorageTextureFormat",
     );
     output.push(
-        `static bool is_compute_storage_texture_format(const std::string& format) {\n${lowerPinnedBody(format.file, format.declaration.body!.statements, { bindings: new Map([["format", { cpp: "format", type: "opaque" }]]), calls: new Map(), booleanOr: true, expression: (node) => (ts.isStringLiteralLike(node) ? `std::string{${stringLiteral(node.text)}}` : undefined), returnValue: (node, l) => l.expression(node!) })}\n}`,
+        `static bool is_compute_storage_texture_format(const std::string& format) {\n${lowerPinnedBody(format.file, format.declaration.body!.statements, { bindings: new Map([["format", { cpp: "format", type: "opaque" }]]), calls: new Map(), expression: (node) => (ts.isStringLiteralLike(node) ? `std::string{${stringLiteral(node.text)}}` : undefined), returnValue: (node, l) => l.expression(node!) })}\n}`,
     );
     for (const [name, fn] of Object.entries(computeBindingFactories)) {
         const path = `src/compute/${fn.module}.ts`,

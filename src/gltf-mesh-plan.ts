@@ -1,12 +1,6 @@
 import ts from "typescript";
-import {
-    asIndex,
-    asObject,
-    asRecords,
-    areGltfIndices,
-    GLTF_MESH_PLAN,
-    type JsonObject,
-} from "./gltf-document.js";
+import { asIndex, areGltfIndices, GLTF_MESH_PLAN } from "./gltf-document.js";
+import { asObject, asRecords, type JsonObject } from "./json-fields.js";
 import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 import { gltfBaseMaterialConstruction } from "./lowering/gltf/material-construction.js";
 import { featureMethod } from "./lowering/gltf/shared.js";

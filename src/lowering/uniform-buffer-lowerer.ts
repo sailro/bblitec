@@ -45,7 +45,7 @@ function factory(context: LoweringContext): string {
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls,
-        booleanOr: true,
+
         foldConditions: false,
         callShapes: new Map([
             ["Number.isSafeInteger", "bool"],
@@ -276,7 +276,7 @@ function operation(
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls,
-        booleanOr: true,
+
         callShapes: new Map([["Number.isInteger", "bool"]]),
         expression(node) {
             if (

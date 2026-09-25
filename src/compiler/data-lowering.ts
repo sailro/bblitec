@@ -185,74 +185,71 @@ export function isNeverResized(
     );
 }
 
-interface DataLoweringContext
-    extends
-        Pick<
-            LoweringServices,
-            | "options"
-            | "expectArgumentCount"
-            | "sourceFile"
-            | "admissions"
-            | "libraryGlobal"
-            | "useNativeValue"
-            | "registerNativeBinding"
-            | "registerNativeBindingType"
-            | "registerNativeTemporary"
-            | "nativeBindingCheckpoint"
-            | "takeNativeTemporary"
-            | "nativeEmission"
-            | "checker"
-            | "bindings"
-            | "dataTypes"
-            | "classLowerer"
-            | "compileValue"
-            | "emitDiscardedValue"
-            | "compileNumber"
-            | "castNumber"
-            | "conditions"
-            | "cppString"
-            | "propertyName"
-            | "recordDataAssignmentMetadata"
-            | "sceneManifest"
-            | "propertyAccess"
-            | "resolveStaticExpression"
-            | "unwrap"
-            | "emit"
-            | "probeEmission"
-            | "captureEmittedLines"
-            | "allocateTemporaryCppName"
-            | "increaseIndent"
-            | "decreaseIndent"
-            | "allocateBlockPrefix"
-            | "compileCallbackWithValues"
-            | "captureManagedClosureLines"
-            | "withRecordScopes"
-            | "compilePredicateWithValues"
-            | "compileStoredDataFunction"
-            | "compileSpriteAtlasRecord"
-            | "resolveThisField"
-            | "resolveRecordMember"
-            | "resolveRecordValue"
-            | "enterRuntimeControlFlow"
-            | "leaveRuntimeControlFlow"
-            | "isInRuntimeControlFlow"
-            | "enterRuntimeIteration"
-            | "leaveRuntimeIteration"
-            | "recordArrayPush"
-            | "knownCollectionCardinality"
-            | "recordCollectionKey"
-            | "recordCollectionClear"
-            | "reachJsData"
-            | "reachJson"
-            | "reachFeature"
-            | "reachJsRandom"
-            | "defaultEngine"
-            | "requireDefaultEngine"
-            | "requireEngine"
-            | "refuseBorrowedPlatformEventEscape"
-            | "fail"
-        >,
-        Partial<Pick<LoweringServices, "staticCanvasSize">> {}
+interface DataLoweringContext extends Pick<
+    LoweringServices,
+    | "options"
+    | "expectArgumentCount"
+    | "sourceFile"
+    | "admissions"
+    | "libraryGlobal"
+    | "useNativeValue"
+    | "registerNativeBinding"
+    | "registerNativeBindingType"
+    | "registerNativeTemporary"
+    | "nativeBindingCheckpoint"
+    | "takeNativeTemporary"
+    | "nativeEmission"
+    | "checker"
+    | "bindings"
+    | "dataTypes"
+    | "classLowerer"
+    | "compileValue"
+    | "emitDiscardedValue"
+    | "compileNumber"
+    | "castNumber"
+    | "conditions"
+    | "cppString"
+    | "propertyName"
+    | "recordDataAssignmentMetadata"
+    | "sceneManifest"
+    | "propertyAccess"
+    | "resolveStaticExpression"
+    | "unwrap"
+    | "emit"
+    | "probeEmission"
+    | "captureEmittedLines"
+    | "allocateTemporaryCppName"
+    | "increaseIndent"
+    | "decreaseIndent"
+    | "allocateBlockPrefix"
+    | "compileCallbackWithValues"
+    | "captureManagedClosureLines"
+    | "withRecordScopes"
+    | "compilePredicateWithValues"
+    | "compileStoredDataFunction"
+    | "compileSpriteAtlasRecord"
+    | "resolveThisField"
+    | "resolveRecordMember"
+    | "resolveRecordValue"
+    | "enterRuntimeControlFlow"
+    | "leaveRuntimeControlFlow"
+    | "isInRuntimeControlFlow"
+    | "enterRuntimeIteration"
+    | "leaveRuntimeIteration"
+    | "recordArrayPush"
+    | "knownCollectionCardinality"
+    | "recordCollectionKey"
+    | "recordCollectionClear"
+    | "reachJsData"
+    | "reachJson"
+    | "reachFeature"
+    | "reachJsRandom"
+    | "defaultEngine"
+    | "requireDefaultEngine"
+    | "requireEngine"
+    | "refuseBorrowedPlatformEventEscape"
+    | "fail"
+> {}
 
 /**
  * `owned` — the local holds a value it constructed.
@@ -3648,6 +3645,30 @@ export class DataLowerer {
         );
     }
 
+    public mayCompileGuardableElementAccess(
+        access: ts.ElementAccessExpression,
+    ): boolean {
+        const checker = this.context.checker;
+        const possible = (type: ts.Type): boolean => {
+            if (type.isUnion()) return type.types.some(possible);
+            return (
+                checker.isArrayType(type) ||
+                checker.isTupleType(type) ||
+                (type.flags &
+                    (ts.TypeFlags.Any |
+                        ts.TypeFlags.Unknown |
+                        ts.TypeFlags.TypeParameter |
+                        ts.TypeFlags.Intersection)) !==
+                    0
+            );
+        };
+        return possible(
+            checker.getNonNullableType(
+                checker.getTypeAtLocation(access.expression),
+            ),
+        );
+    }
+
     public compileGuardableElementAccess(
         access: ts.ElementAccessExpression,
     ): Value | undefined {
@@ -4235,69 +4256,108 @@ export class DataLowerer {
      * range: one walk that appends each mapped value, evaluating the
      * mapper once per element in iteration order.
      */
-    private compileArrayFromMapped(call: ts.CallExpression): Value | undefined {
-        // `Array.from({ length: n }, ...)` is the allocation form below; an
-        // object literal is never a range worth probing.
-        if (
-            ts.isObjectLiteralExpression(
-                this.context.unwrap(argumentAt(call, 0)),
-            )
-        ) {
-            return undefined;
-        }
-        const range = this.context.probeEmission(() =>
-            this.iterationTarget(argumentAt(call, 0)),
-        );
-        if (
-            !range ||
-            range.element.kind === "array-entry" ||
-            range.element.kind === "array-index"
-        ) {
-            return undefined;
-        }
-        const resultType = this.dataTypeAt(call);
-        if (resultType?.kind !== "vector") {
-            this.context.fail(
+    private compileArrayFromMapped(call: ts.CallExpression): Value {
+        const context = this.context;
+        const sourceNode = context.unwrap(argumentAt(call, 0));
+        const directType = this.dataTypeAt(call);
+        const contextualTsType = context.checker.getContextualType(call);
+        const type =
+            directType?.kind === "vector"
+                ? directType
+                : contextualTsType
+                  ? context.dataTypes.fromTsType(contextualTsType, call)
+                  : undefined;
+        if (type?.kind !== "vector")
+            return context.fail(
                 call,
-                "Array.from with a mapper requires a concrete array result type.",
+                "Array.from mapper results must belong to the native data model.",
             );
-        }
-        const mapper = this.context.unwrap(argumentAt(call, 1));
+        const mapper = context.unwrap(argumentAt(call, 1));
         if (
+            !ts.isIdentifier(mapper) &&
             !ts.isArrowFunction(mapper) &&
-            !ts.isFunctionExpression(mapper) &&
-            !ts.isIdentifier(mapper)
-        ) {
-            this.context.fail(
-                argumentAt(call, 1),
-                "Array.from's mapper must be a function literal or a local function.",
+            !ts.isFunctionExpression(mapper)
+        )
+            return context.fail(
+                mapper,
+                "Array.from requires a local function or function literal mapper.",
             );
+        context.reachJsData();
+        const index = context.allocateTemporaryCppName("array_from_index");
+        let count: string | undefined;
+        let loop: string;
+        let element: () => Value;
+        let increment = false;
+        if (ts.isObjectLiteralExpression(sourceNode)) {
+            const length = sourceNode.properties.find(
+                (property): property is ts.PropertyAssignment =>
+                    ts.isPropertyAssignment(property) &&
+                    ts.isIdentifier(property.name) &&
+                    property.name.text === "length",
+            );
+            if (!length)
+                return context.fail(
+                    sourceNode,
+                    "Array.from array-like object requires a length property.",
+                );
+            if (sourceNode.properties.length !== 1)
+                return context.fail(
+                    sourceNode,
+                    "Array.from length objects cannot contain additional properties.",
+                );
+            count = context.allocateTemporaryCppName("array_from_count");
+            context.emit({
+                kind: "declaration",
+                type: "const std::size_t",
+                name: count,
+                initializer: `bbl::js::array_from_length(${context.compileNumber(length.initializer, "double")})`,
+            });
+            loop = `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`;
+            element = () => ({ kind: "json-null", cpp: "std::nullopt" });
+        } else {
+            const range = context.probeEmission(() =>
+                this.iterationTarget(sourceNode),
+            );
+            if (
+                !range ||
+                range.element.kind === "array-entry" ||
+                range.element.kind === "array-index"
+            )
+                return context.fail(
+                    sourceNode,
+                    "Array.from with a mapper takes a native array, Set or Map values range, or an object literal with a length property.",
+                );
+            const source =
+                context.allocateTemporaryCppName("array_from_source");
+            context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: source,
+                initializer: range.container.cpp,
+            });
+            const item = context.allocateTemporaryCppName("array_from_item");
+            if (range.container.dataType?.kind !== "iterator")
+                count = `${source}.size()`;
+            loop = `for (auto ${item} : ${source}) {`;
+            increment = true;
+            const entry = range.element;
+            element = () =>
+                entry.kind === "map-entry" || entry.kind === "set-entry"
+                    ? this.materializeIterationPair(item, entry, call)
+                    : this.iterationElementValue(item, entry);
         }
-        this.context.reachJsData();
-        const source =
-            this.context.allocateTemporaryCppName("array_from_source");
-        this.context.emit(`const auto ${source} = ${range.container.cpp};`);
         const storedMapper = this.prepareCallbackValue(mapper, "array_from");
-        const result =
-            this.context.allocateTemporaryCppName("array_from_result");
-        this.context.emit(
-            `${this.context.dataTypes.cppType(resultType)} ${result};`,
-        );
-        if (range.container.dataType?.kind !== "iterator")
-            this.context.emit(`${result}.reserve(${source}.size());`);
-        const index = this.context.allocateTemporaryCppName("array_from_index");
-        this.context.emit(`std::size_t ${index} = 0;`);
-        const item = this.context.allocateTemporaryCppName("array_from_item");
-        const element = range.element;
-        const lines = this.context.captureEmittedLines(() => {
-            this.context.bindings.pushScope(this.context.allocateBlockPrefix());
-            this.context.enterRuntimeControlFlow();
-            this.context.enterRuntimeIteration();
+        const result = context.allocateTemporaryCppName("array_from_result");
+        context.emit(`${context.dataTypes.cppType(type)} ${result};`);
+        if (count !== undefined) context.emit(`${result}.reserve(${count});`);
+        if (increment) context.emit(`std::size_t ${index} = 0;`);
+        const lines = context.captureEmittedLines(() => {
+            context.bindings.pushScope(context.allocateBlockPrefix());
+            context.enterRuntimeControlFlow();
+            context.enterRuntimeIteration();
             try {
-                const arguments_: Value[] = [
-                    element.kind === "map-entry" || element.kind === "set-entry"
-                        ? this.materializeIterationPair(item, element, call)
-                        : this.iterationElementValue(item, element),
+                const args: Value[] = [
+                    element(),
                     {
                         kind: "number",
                         cpp: `static_cast<double>(${index})`,
@@ -4305,45 +4365,27 @@ export class DataLowerer {
                     },
                 ];
                 const value = storedMapper
-                    ? this.compileFunctionValueCall(
-                          storedMapper,
-                          arguments_,
-                          call,
-                      )
-                    : this.context.compileCallbackWithValues(
-                          mapper,
-                          arguments_,
-                          call,
-                      );
-                this.context.emit(
-                    `${result}.push_back(${this.compileKnownValueForSink(value, resultType.element, call)});`,
+                    ? this.compileFunctionValueCall(storedMapper, args, call)
+                    : context.compileCallbackWithValues(mapper, args, call);
+                context.emit(
+                    `${result}.push_back(${this.compileKnownValueForSink(value, type.element, call)});`,
                 );
-                this.context.emit(`++${index};`);
+                if (increment) context.emit(`++${index};`);
             } finally {
-                this.context.leaveRuntimeIteration();
-                this.context.leaveRuntimeControlFlow();
-                this.context.bindings.popScope();
+                context.leaveRuntimeIteration();
+                context.leaveRuntimeControlFlow();
+                context.bindings.popScope();
             }
         });
-        this.context.emit(`for (auto ${item} : ${source}) {`);
-        this.context.increaseIndent();
-        for (const line of lines) this.context.emit(line);
-        this.context.decreaseIndent();
-        this.context.emit("}");
+        context.emit(loop);
+        context.increaseIndent();
+        for (const line of lines) context.emit(line);
+        context.decreaseIndent();
+        context.emit("}");
         this.registerLocal(result, "owned");
-        return { kind: "data", cpp: result, dataType: resultType };
+        return { kind: "data", cpp: result, dataType: type };
     }
 
-    /**
-     * Compiles the reached array-allocation form
-     * `Array.from({ length: n }, () => value)`.
-     *
-     * The array-like source has no indexed properties, so JavaScript supplies
-     * `undefined` as the mapper's first argument. Undefined is not a native
-     * data-model value, and the reached form does not consume either callback
-     * argument; keep that boundary explicit instead of fabricating a value
-     * whose native meaning would be wrong.
-     */
     public compileArrayFrom(call: ts.CallExpression): Value | undefined {
         const callee = this.context.unwrap(call.expression);
         if (
@@ -4431,115 +4473,7 @@ export class DataLowerer {
                 "Array.from currently requires an array-like length object and one mapper callback.",
             );
         }
-        const mapped = this.compileArrayFromMapped(call);
-        if (mapped) {
-            return mapped;
-        }
-        const source = this.context.unwrap(argumentAt(call, 0));
-        if (!ts.isObjectLiteralExpression(source)) {
-            this.context.fail(
-                source,
-                "Array.from with a mapper takes a native array, Set or Map values range, or an object literal with a length property.",
-            );
-        }
-        const lengthProperty = source.properties.find(
-            (property): property is ts.PropertyAssignment =>
-                ts.isPropertyAssignment(property) &&
-                ts.isIdentifier(property.name) &&
-                property.name.text === "length",
-        );
-        if (!lengthProperty) {
-            this.context.fail(
-                source,
-                "Array.from array-like object requires a length property.",
-            );
-        }
-        if (source.properties.length !== 1)
-            this.context.fail(
-                source,
-                "Array.from length objects cannot contain additional properties.",
-            );
-        const callback = this.context.unwrap(argumentAt(call, 1));
-        if (
-            !ts.isIdentifier(callback) &&
-            !ts.isArrowFunction(callback) &&
-            !ts.isFunctionExpression(callback)
-        ) {
-            this.context.fail(
-                callback,
-                "Array.from requires a local function or function literal mapper.",
-            );
-        }
-        const directType = this.dataTypeAt(call);
-        const contextualTsType = this.context.checker.getContextualType(call);
-        const contextualType = contextualTsType
-            ? this.context.dataTypes.fromTsType(contextualTsType, call)
-            : undefined;
-        // An empty mapper literal is inferred as `never[]`; the annotated
-        // destination supplies its actual JavaScript array element type.
-        const mappedType =
-            directType?.kind === "vector" ? directType : contextualType;
-        if (mappedType?.kind !== "vector") {
-            this.context.fail(
-                call,
-                "Array.from mapper results must belong to the native data model.",
-            );
-        }
-        const count = this.context.allocateTemporaryCppName("array_from_count");
-        const index = this.context.allocateTemporaryCppName("array_from_index");
-        const output =
-            this.context.allocateTemporaryCppName("array_from_result");
-        const cppType = this.context.dataTypes.cppType(mappedType.element);
-        this.context.reachJsData();
-        this.context.emit({
-            kind: "declaration",
-            type: "const std::size_t",
-            name: count,
-            initializer: `bbl::js::array_from_length(${this.context.compileNumber(lengthProperty.initializer, "double")})`,
-        });
-        const storedMapper = this.prepareCallbackValue(callback, "array_from");
-        this.context.emit(`bbl::js::Array<${cppType}> ${output};`);
-        this.context.emit(`${output}.reserve(${count});`);
-        this.context.emit(
-            `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
-        );
-        this.context.increaseIndent();
-        this.context.bindings.pushScope(this.context.allocateBlockPrefix());
-        this.context.enterRuntimeIteration();
-        try {
-            const arguments_: Value[] = [
-                { kind: "json-null", cpp: "std::nullopt" },
-                {
-                    kind: "number",
-                    cpp: `static_cast<double>(${index})`,
-                    dataType: { kind: "number" },
-                },
-            ];
-            const result = storedMapper
-                ? this.compileFunctionValueCall(storedMapper, arguments_, call)
-                : this.context.compileCallbackWithValues(
-                      callback,
-                      arguments_,
-                      call,
-                  );
-            const value = this.compileKnownValueForSink(
-                result,
-                mappedType.element,
-                callback,
-            );
-            this.context.emit(`${output}.push_back(${value});`);
-        } finally {
-            this.context.leaveRuntimeIteration();
-            this.context.bindings.popScope();
-            this.context.decreaseIndent();
-        }
-        this.context.emit("}");
-        this.registerLocal(output, "owned");
-        return {
-            kind: "data",
-            cpp: output,
-            dataType: mappedType,
-        };
+        return this.compileArrayFromMapped(call);
     }
 
     /**
@@ -4570,8 +4504,7 @@ export class DataLowerer {
             // Folded from the SOURCE, never from a compiled value: this arm
             // runs before the runtime path compiles the argument, and
             // compiling it speculatively would emit an inlined body twice
-            // when the fold misses. A canvas size reaches the same evaluator
-            // through `staticCanvasSize`, so it folds here too.
+            // when the fold misses.
             const argument = staticNumberValue(
                 this.context,
                 argumentAt(call, 0),
@@ -7507,12 +7440,11 @@ export class DataLowerer {
     }
 
     /**
-     * `dictionary[key]` or `dictionary.name` as an assignment target: the
-     * map and the key expression, when the owner is a map. Asked of the
+     * The map owner and key shared by dictionary reads and writes. Asked of the
      * checker first, so a struct field store never pays for a probe that
      * resolves its owner and discards it.
      */
-    private dictionaryEntryTarget(
+    private dictionaryEntry(
         left: ts.Expression,
     ):
         | { owner: Value; dataType: DataType & { kind: "map" }; keyCpp: string }
@@ -7527,7 +7459,7 @@ export class DataLowerer {
             ? this.context.bindings.lookupOptional(root)?.dataType
             : undefined;
         if (
-            represented?.kind !== "map" &&
+            !(represented?.kind === "map" && represented.dictionary) &&
             !this.declaredAsDictionary(left.expression)
         )
             return undefined;
@@ -7713,7 +7645,7 @@ export class DataLowerer {
         }
         // A dictionary entry has no native lvalue: its presence is the
         // guard and the store is `set`.
-        const entry = this.dictionaryEntryTarget(left);
+        const entry = this.dictionaryEntry(left);
         if (entry) {
             this.emitLogicalEntryAssignment(expression, entry);
             return;
@@ -8094,7 +8026,7 @@ export class DataLowerer {
         }
         if (ts.isPropertyAccessExpression(left)) {
             // `dictionary.name = value`: the named member is an entry.
-            const entry = this.dictionaryEntryTarget(left);
+            const entry = this.dictionaryEntry(left);
             if (entry) {
                 if (operator !== "=") {
                     this.context.fail(
@@ -8639,7 +8571,7 @@ export class DataLowerer {
             // Evaluate each reference after the RHS completes, immediately
             // before consuming that element. Earlier stores can change later
             // computed targets. Pin the slot before source reads/conversions.
-            const entry = this.dictionaryEntryTarget(name);
+            const entry = this.dictionaryEntry(name);
             const indexed =
                 !entry && ts.isElementAccessExpression(name)
                     ? this.prepareArrayAssignmentTarget(name)
@@ -9538,16 +9470,20 @@ export class DataLowerer {
             ) {
                 return this.context.compileValue(unwrapped);
             }
-            // A dictionary lookup (`counts[key] === 2`) is the same
-            // nullable-or-value operand without the chain spelling. The
-            // owner's declared type decides, so no probe runs for the
-            // ordinary comparisons that are not one.
-            const dictionaryLookup =
-                !ts.isOptionalChain(unwrapped) &&
-                (ts.isElementAccessExpression(unwrapped) ||
-                    ts.isPropertyAccessExpression(unwrapped)) &&
-                this.declaredAsDictionary(unwrapped.expression);
-            if (!ts.isOptionalChain(unwrapped) && !dictionaryLookup) {
+            if (!ts.isOptionalChain(unwrapped)) {
+                const dictionary = this.context.probeEmission(() => {
+                    const entry = this.dictionaryEntry(unwrapped);
+                    if (!entry) return undefined;
+                    const value = this.mapPropertyValue(
+                        entry.owner.cpp,
+                        entry.keyCpp,
+                        entry.dataType.value,
+                    );
+                    return optionalComparable(value.dataType)
+                        ? value
+                        : undefined;
+                });
+                if (dictionary) return dictionary;
                 if (
                     !ts.isElementAccessExpression(unwrapped) &&
                     !ts.isPropertyAccessExpression(unwrapped)

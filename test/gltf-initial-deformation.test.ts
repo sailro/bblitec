@@ -8,7 +8,7 @@ import {
     gltfAssetDocuments,
 } from "../src/asset-specializer.js";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
-import type { JsonObject } from "../src/gltf-document.js";
+import type { JsonObject } from "../src/json-fields.js";
 import {
     packageGltfMeshPlan,
     packagedGltfMeshPlan,

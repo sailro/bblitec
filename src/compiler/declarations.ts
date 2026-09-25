@@ -134,6 +134,47 @@ interface DeclarationContext
 export class DeclarationLowerer {
     constructor(private readonly context: DeclarationContext) {}
 
+    private bindOptionalResource(
+        name: ts.Identifier,
+        cppName: string,
+        resource: { kind: ValueKind; cppType: string },
+        shared: boolean,
+        value: Value,
+        initializer = "",
+    ): void {
+        const type = `std::optional<${resource.cppType}>`;
+        this.context.emit(
+            shared
+                ? {
+                      kind: "declaration",
+                      type: `std::shared_ptr<${type}>`,
+                      name: cppName,
+                      initializer: `bbl::js::make_gc_shared<${type}>(${initializer})`,
+                  }
+                : {
+                      kind: "declaration",
+                      type,
+                      name: cppName,
+                      initializer,
+                      ...(initializer === ""
+                          ? { initialization: "default" as const }
+                          : {}),
+                      attributes: "[[maybe_unused]] ",
+                  },
+        );
+        const stored: Value = {
+            ...value,
+            cpp: shared ? `(**${cppName})` : `(*${cppName})`,
+            optionalFoundCpp: shared
+                ? `${cppName}->has_value()`
+                : optionalPresentCpp(cppName),
+            optionalStorageCpp: shared ? `(*${cppName})` : cppName,
+        };
+        if (shared) writable(stored).sharedStorageCpp = cppName;
+        else delete writable(stored).sharedStorageCpp;
+        this.context.bindings.defineVariable(name, stored);
+    }
+
     private initializerCapturesBinding(
         initializer: ts.Expression,
         symbol: ts.Symbol,
@@ -529,43 +570,18 @@ export class DeclarationLowerer {
             declaration.initializer.kind === ts.SyntaxKind.NullKeyword &&
             nullableResource
         ) {
-            this.context.emit(
-                sharedClosureStorage
-                    ? {
-                          kind: "declaration",
-                          type: `std::shared_ptr<std::optional<${nullableResource.cppType}>>`,
-                          name: cppName,
-                          initializer: `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>()`,
-                      }
-                    : {
-                          kind: "declaration",
-                          type: `std::optional<${nullableResource.cppType}>`,
-                          name: cppName,
-                          initializer: "",
-                          initialization: "default",
-                          attributes: "[[maybe_unused]] ",
-                      },
-            );
-            this.context.bindings.defineVariable(
+            this.bindOptionalResource(
                 declaration.name,
+                cppName,
+                nullableResource,
+                sharedClosureStorage,
                 valueForKind(nullableResource.kind, {
-                    cpp: sharedClosureStorage
-                        ? `(**${cppName})`
-                        : `(*${cppName})`,
+                    cpp: "",
                     ...((nullableResource.kind === "ui-element" ||
                         nullableResource.kind === "pointer-drag") &&
                     this.context.defaultEngineCpp
                         ? { engineCpp: this.context.defaultEngineCpp }
                         : {}),
-                    optionalFoundCpp: sharedClosureStorage
-                        ? `${cppName}->has_value()`
-                        : optionalPresentCpp(cppName),
-                    ...(sharedClosureStorage
-                        ? { sharedStorageCpp: cppName }
-                        : {}),
-                    optionalStorageCpp: sharedClosureStorage
-                        ? `(*${cppName})`
-                        : cppName,
                 }),
             );
             return;
@@ -728,33 +744,14 @@ export class DeclarationLowerer {
                     this.context.optionalResourceCpp(value),
                 initializerBoundary,
             );
-            this.context.emit(
-                sharedClosureStorage
-                    ? {
-                          kind: "declaration",
-                          type: `std::shared_ptr<std::optional<${nullableResource.cppType}>>`,
-                          name: cppName,
-                          initializer: `bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>(${initializerCpp})`,
-                      }
-                    : {
-                          kind: "declaration",
-                          type: `std::optional<${nullableResource.cppType}>`,
-                          name: cppName,
-                          initializer: initializerCpp,
-                          attributes: "[[maybe_unused]] ",
-                      },
+            this.bindOptionalResource(
+                declaration.name,
+                cppName,
+                nullableResource,
+                sharedClosureStorage,
+                value,
+                initializerCpp,
             );
-            this.context.bindings.defineVariable(declaration.name, {
-                ...value,
-                cpp: sharedClosureStorage ? `(**${cppName})` : `(*${cppName})`,
-                optionalFoundCpp: sharedClosureStorage
-                    ? `${cppName}->has_value()`
-                    : optionalPresentCpp(cppName),
-                ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
-                optionalStorageCpp: sharedClosureStorage
-                    ? `(*${cppName})`
-                    : cppName,
-            });
             return;
         }
         if (
@@ -1229,7 +1226,7 @@ export class DeclarationLowerer {
     private pinSlotFound(
         slotFoundCpp: string | undefined,
         presenceTest: string | undefined,
-        presenceSnapshot: string | undefined,
+        discardIfUnused: string | undefined,
     ): string | undefined {
         if (
             slotFoundCpp === undefined ||
@@ -1237,8 +1234,8 @@ export class DeclarationLowerer {
         ) {
             return slotFoundCpp;
         }
-        if (presenceSnapshot && slotFoundCpp === presenceTest) {
-            return presenceSnapshot;
+        if (discardIfUnused && slotFoundCpp === presenceTest) {
+            return discardIfUnused;
         }
         const name = this.context.allocateTemporaryCppName("slot_found");
         this.context.emit({
@@ -1247,6 +1244,7 @@ export class DeclarationLowerer {
             name,
             initializer: slotFoundCpp,
             attributes: "[[maybe_unused]] ",
+            discardIfUnused: true,
         });
         return name;
     }

@@ -37,7 +37,7 @@ export function lowerGltfBoneVisibility(context: LoweringContext): string {
                     `(entries.at(static_cast<std::size_t>(${args[0]})).mask = 0u)`,
             ],
         ]),
-        booleanAnd: true,
+
         expression(node, numeric) {
             if (
                 ts.isPrefixUnaryExpression(node) &&

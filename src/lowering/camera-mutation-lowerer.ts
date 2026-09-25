@@ -1,3 +1,4 @@
+import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
 import { cameraRecordField } from "../compiler/properties.js";
 import { snakeCase } from "../cpp-literals.js";
@@ -92,8 +93,7 @@ export class CameraMutationLowerer {
         return lowerPinnedBody(file, body.statements, {
             bindings,
             calls,
-            booleanAnd: true,
-            booleanOr: true,
+
             ...(adapter.statement ? { statement: adapter.statement } : {}),
             ...(adapter.expression ? { expression: adapter.expression } : {}),
         });
@@ -315,7 +315,7 @@ export class CameraMutationLowerer {
                     this.context.propertyPath(node.expression)?.join(".") ===
                         "Object.defineProperty" &&
                     node.arguments[1]?.getText(freeFile) ===
-                        JSON.stringify(field),
+                        stringLiteral(field),
             )[0];
             const descriptor = define?.arguments[2];
             if (!descriptor || !ts.isObjectLiteralExpression(descriptor))
@@ -669,7 +669,7 @@ ${bulkBody}
             },
             expression: (node) =>
                 ts.isStringLiteral(node)
-                    ? `std::string_view{${JSON.stringify(node.text)}}`
+                    ? `std::string_view{${stringLiteral(node.text)}}`
                     : ts.isIdentifier(node) && node.text === "undefined"
                       ? "std::optional<std::string_view>{}"
                       : undefined,

@@ -354,7 +354,6 @@ export function clusteredConeWriter(context: LoweringContext): string {
         ]),
         calls: pinnedNumericMathCalls(),
         // `len === 0 || len === 1` joins two comparisons.
-        booleanOr: true,
     });
     return `// ${context.provenance(clusteredSpotModule, "_write")}
 // The pin's own spot stride is ${stride}: three texels per light, the third
@@ -600,7 +599,7 @@ export function clusteredAddLightToClusters(context: LoweringContext): string {
             // `lastSlice < 0 || firstSlice >= zSlices` is a test, not the
             // value-selecting `||` the translator refuses by default: both
             // sides are comparisons, so the C++ operator is the same answer.
-            booleanOr: true,
+
             calls: clusteredCalls(),
             // Its own sibling returns four tile indices the body then
             // indexes; declaring the arity is what keeps that a fixed array

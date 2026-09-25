@@ -1,9 +1,5 @@
-import {
-    asIndex,
-    asObject,
-    areGltfIndices,
-    type JsonObject,
-} from "./gltf-document.js";
+import { asIndex, areGltfIndices } from "./gltf-document.js";
+import { asObject, type JsonObject } from "./json-fields.js";
 import { GltfGeometryPacker } from "./gltf-mesh-geometry.js";
 import { RecordedBuffer, RecordedTexture } from "./recording-device.js";
 

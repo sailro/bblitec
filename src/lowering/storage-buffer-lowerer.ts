@@ -47,7 +47,7 @@ function ownerMethod(
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls,
-        booleanOr: true,
+
         callShapes: new Map([
             ["Number.isInteger", "bool"],
             ["engine._storageBuffers?.has", "bool"],
@@ -306,7 +306,7 @@ function factory(context: LoweringContext): string {
     const body = lowerPinnedBody(file, entries.slice(start), {
         bindings,
         calls: new Map(),
-        booleanOr: true,
+
         statement(node, lowerer, indent) {
             if (ts.isVariableStatement(node)) {
                 const entry = node.declarationList.declarations[0];

@@ -162,7 +162,7 @@ export function lowerShadowEnabled(context: LoweringContext): string {
                     (args: readonly string[]) => `upload(${args.join(", ")})`,
                 ],
             ]),
-            booleanAnd: true,
+
             foldConditions: false,
             returnValue: (expression, lowerer) =>
                 expression

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GLTF_MESH_PLAN, type JsonObject } from "../src/gltf-document.js";
+import { GLTF_MESH_PLAN } from "../src/gltf-document.js";
+import { type JsonObject } from "../src/json-fields.js";
 import {
     packageGltfMeshPlan,
     packagedGltfMeshPlan,

@@ -19,12 +19,8 @@
  * pinned bodies over it.
  */
 import ts from "typescript";
-import {
-    asObject,
-    asIndex,
-    GLTF_MESH_PLAN,
-    type JsonRecord,
-} from "./gltf-document.js";
+import { asIndex, GLTF_MESH_PLAN } from "./gltf-document.js";
+import { asObject, type JsonRecord } from "./json-fields.js";
 import type { LoweringContext } from "./lowering/context.js";
 import { pinnedModuleTextUrl } from "./pinned-shader-composer.js";
 import { transpileForBrowser } from "./typescript-transpile.js";

@@ -185,7 +185,10 @@ test("a string set and a composed throw message lower as JavaScript's", (t) => {
     );
     assert.match(body, /bbl::js::Set<std::string> names;/);
     assert.match(body, /names\.add\(first\);/);
-    assert.match(body, /if \(static_cast<double>\(names\.size\(\)\)\) \{/);
+    assert.match(
+        body,
+        /if \(bbl::js::number_truthy\(static_cast<double>\(names\.size\(\)\)\)\) \{/,
+    );
     // A number inside a template would need JavaScript's own formatting.
     assert.throws(
         () =>
@@ -580,13 +583,16 @@ test("nullable vector aliases retain presence in conditional expressions", () =>
     assert.doesNotMatch(cpp, /axis \?/);
 });
 
-test("lowers a JavaScript numeric or-else to the value-selecting helper", () => {
+test("lowers a JavaScript numeric or-else to lazy value selection", () => {
     const emitted = lower("const length = value || 1;", [
         ["value", { cpp: "value", type: "scalar" }],
     ]);
     // Not `(value || 1.0)`: that is a bool in C++, so every non-zero input
     // would collapse to 1.
-    assert.match(emitted, /bbl::js::or_number\(value, 1\.0\)/);
+    assert.match(
+        emitted,
+        /number_truthy\(pinned_0_\d+\) \? static_cast<double>/,
+    );
     assert.doesNotMatch(emitted, /value \|\| /);
 });
 
@@ -672,21 +678,21 @@ test("keeps every bitwise operator on JavaScript's own int32 coercion", () => {
     }
 });
 
-test("refuses a value-selecting and, rather than guessing its meaning", () => {
+test("numeric and selects a value and Math members resolve without caller maps", () => {
+    assert.match(
+        lower("const kept = value && fallback;", [
+            ["value", { cpp: "value", type: "scalar" }],
+            ["fallback", { cpp: "fallback", type: "scalar" }],
+        ]),
+        /number_truthy/,
+    );
+    assert.match(lower("const x = Math.tan(1);"), /std::tan\(1\.0\)/);
     assert.throws(
         () =>
-            lower("const kept = value && fallback;", [
-                ["value", { cpp: "value", type: "scalar" }],
-                ["fallback", { cpp: "fallback", type: "scalar" }],
-            ]),
-        /Unsupported pinned value-selecting/,
-    );
-});
-
-test("refuses a call the caller did not declare", () => {
-    assert.throws(
-        () => lower("const x = Math.tan(1);"),
-        /Unsupported pinned call 'Math\.tan'/,
+            lower(
+                "const Math = { tan: (x: number) => x }; const x = Math.tan(1);",
+            ),
+        /Unsupported pinned/,
     );
 });
 
@@ -726,7 +732,77 @@ test("lowers a switch over a run-time discriminant to strict-equality arms", () 
     );
     assert.match(
         emitted,
-        /if \(mode == 0\.0\) \{\s*value = 1\.0;\s*\} else if \(mode == 4\.0\) \{\s*value = 2\.0;\s*\} else \{\s*value = 3\.0;\s*\}/,
+        /const auto (pinned_\w+) = mode;\s*if \(\1 == 0\.0\) \{\s*value = 1\.0;\s*\} else if \(\1 == 4\.0\) \{\s*value = 2\.0;\s*\} else \{\s*value = 3\.0;\s*\}/,
+    );
+});
+
+test("logical values and switch selectors preserve lazy, single evaluation natively", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const body = lower(
+        `
+        let left = 0;
+        const a = left || next();
+        const b = left && next();
+        left = NaN;
+        const c = left || next();
+        left = -0;
+        const d = left && next();
+        const text = "" || "ok";
+        const mixedCondition = (left && (left <= 0 || left > 1)) ? 1 : 2;
+        let selected = 0;
+        switch (next()) { case 0: selected = 10; break; case 3: selected = 20; break; default: selected = 30; }
+    `,
+        [
+            [
+                "NaN",
+                {
+                    cpp: "std::numeric_limits<double>::quiet_NaN()",
+                    type: "scalar",
+                },
+            ],
+        ],
+        { calls: new Map([["next", () => "next()"]]) },
+    );
+    const output = resolve("artifacts/pinned-numeric-logical-values");
+    mkdirSync(output, { recursive: true });
+    const file = join(output, "check.cpp"),
+        executable = join(output, "check.exe");
+    writeFileSync(
+        file,
+        `#include <bblite/js_data.hpp>
+        #include <cassert>
+        #include <cmath>
+        int main() {
+            int calls = 0;
+            auto next = [&]() { return static_cast<double>(++calls); };
+            ${body}
+            assert(a == 1 && b == 0 && c == 2 && d == 0 && std::signbit(d));
+            assert(text == "ok" && selected == 20 && calls == 3 && mixedCondition == 2);
+        }`,
+    );
+    runNativeFixtureCompiler(tools, [
+        "/nologo",
+        "/std:c++20",
+        "/W4",
+        "/WX",
+        "/permissive-",
+        "/EHsc",
+        "/MD",
+        "/Od",
+        `/Fo:${output}/`,
+        `/Fe:${executable}`,
+        "/I",
+        "native/include",
+        file,
+    ]);
+    assert.equal(execFileSync(executable, { encoding: "utf8" }), "");
+    assert.throws(
+        () => lower(`const value = 1 || "text";`),
+        /incompatible representations/,
     );
 });
 

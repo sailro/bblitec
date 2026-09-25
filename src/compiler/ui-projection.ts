@@ -144,6 +144,7 @@ interface UiProjectionContext extends Pick<
     LoweringServices,
     | "activeThis"
     | "assets"
+    | "assetOutputs"
     | "assetPayloads"
     | "allocateTemporaryCppName"
     | "sourceFile"

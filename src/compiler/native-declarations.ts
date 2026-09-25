@@ -7,6 +7,8 @@ export interface NativeDeclaration {
     readonly attributes?: string;
     readonly initialization?: "default" | "direct";
     readonly dependencies?: readonly string[];
+    /** A pure initializer and trivial lifetime allow this declaration to disappear when unread. */
+    readonly discardIfUnused?: true;
 }
 
 /**

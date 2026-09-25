@@ -13,10 +13,8 @@ import {
     GLB_JSON_CHUNK,
     GLB_MAGIC,
     asIndex,
-    asObject,
-    asStrings,
-    type JsonRecord,
 } from "./gltf-document.js";
+import { asObject, asStrings, type JsonRecord } from "./json-fields.js";
 import {
     importPinnedModule,
     importPinnedModuleWithExports,

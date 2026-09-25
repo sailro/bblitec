@@ -893,7 +893,6 @@ export class GizmoLowerer {
                         `rotate_vec3_by_quat(${args.join(", ")})`,
                 ],
             ]),
-            booleanAnd: true,
         });
     }
 
@@ -3388,7 +3387,7 @@ std::array<float, 16> bbox_mat4_from_quat(
                     },
                 ],
             ]),
-            booleanAnd: true,
+
             vec3Literal: (x, y, z) => vec3d([x, y, z]),
         };
     }
@@ -3611,7 +3610,6 @@ std::array<float, 16> bbox_mat4_from_quat(
                     ["az", { cpp: "az", type: "scalar" }],
                 ]),
                 calls: pinnedNumericMathCallsWithHypot(),
-                booleanAnd: true,
             }),
             ["1.0", "1.0", "1.0"],
         );

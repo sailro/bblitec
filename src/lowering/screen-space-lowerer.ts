@@ -578,7 +578,7 @@ double screen_space_clamp(double ${names.join(", double ")}) {
                         );
                     },
                 },
-                booleanOr: true,
+
                 memberBindings,
             },
         );
@@ -1328,7 +1328,6 @@ class FrameWalker {
         this.numeric = new PinnedNumericLowerer(file, scope);
         this.boolean = new PinnedNumericLowerer(file, {
             ...scope,
-            booleanOr: true,
         });
     }
 

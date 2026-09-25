@@ -335,7 +335,7 @@ export function lowerGltfMaterialAssembly(context: LoweringContext): string {
     const fetchBody = lowerPinnedBody(file, arrow.body.statements, {
         bindings: fetchBindings,
         calls: new Map(),
-        booleanOr: true,
+
         expression(node, lowerer) {
             if (context.expressionMatchesShape(node, "Promise.resolve(null)"))
                 return "GltfMaterialImagePromise{GltfMaterialImage{}}";

@@ -348,7 +348,6 @@ export function lowerQuatFromRotationBasis(
             ...(inline ? { inline } : {}),
             // The trace method picks its branch with `&&` over numeric
             // comparisons.
-            booleanAnd: true,
         },
     );
     if (!defaultOverload) return body;

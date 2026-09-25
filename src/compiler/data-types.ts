@@ -7,8 +7,8 @@ import {
     dataTypesEqual,
     passesByReferenceKind,
     containsDataKind,
-    ownsTracedEdge,
-    untracedRecords,
+    tracedEdgeCondition,
+    recordTraceConditions,
     type DataTypeCppContext,
 } from "./data-types/operations.js";
 export type { DataType, TypedArrayKind } from "./data-types/model.js";
@@ -3725,7 +3725,10 @@ export class DataTypeRegistry {
         }
         const fieldTypes = (name: string): DataType[] =>
             this.structFieldTypes(name);
-        const untraced = untracedRecords(this.structsByName.keys(), fieldTypes);
+        const traceConditions = recordTraceConditions(
+            this.structsByName.keys(),
+            fieldTypes,
+        );
         const emitStruct = (definition: DataStructDefinition): void => {
             if (emitted.has(definition.name)) {
                 return;
@@ -3763,6 +3766,13 @@ export class DataTypeRegistry {
                 clonePending.delete(field);
             };
             if (structuredClone) definition.fields.forEach(visitCloneField);
+            const traceCondition = traceConditions.get(definition.name)!;
+            const traceFields = definition.fields.map((field) => ({
+                field,
+                condition: tracedEdgeCondition(field.type, (name) =>
+                    traceConditions.get(name)!,
+                ),
+            }));
             lines.push(
                 `struct ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""} {`,
                 // Scalar members are value-initialized, so a record built
@@ -3785,21 +3795,20 @@ export class DataTypeRegistry {
                     : []),
                 // Only a record that can own a traced edge joins cycle
                 // collection, and it visits only the fields that can.
-                ...(untraced.has(definition.name)
+                ...(traceCondition === false
                     ? []
                     : [
+                          ...(typeof traceCondition === "string"
+                              ? [
+                                    `    template <typename = void> requires (${traceCondition})`,
+                                ]
+                              : []),
                           `    friend void gc_trace_edges(const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, const bbl::js::TraceVisitor& visitor) {`,
-                          ...definition.fields
-                              .filter((field) =>
-                                  ownsTracedEdge(
-                                      field.type,
-                                      fieldTypes,
-                                      untraced,
-                                  ),
-                              )
+                          ...traceFields
+                              .filter((entry) => entry.condition !== false)
                               .map(
-                                  (field) =>
-                                      `        visitor(record.${field.name});`,
+                                  ({ field, condition }) =>
+                                      `        ${typeof condition === "string" ? `if constexpr (${condition}) ` : ""}visitor(record.${field.name});`,
                               ),
                           "    }",
                       ]),

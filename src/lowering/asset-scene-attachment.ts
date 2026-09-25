@@ -74,8 +74,7 @@ export function lowerAssetSceneAttachment(context: LoweringContext): string {
         {
             bindings,
             calls: new Map(),
-            booleanAnd: true,
-            booleanOr: true,
+
             returnValue: (expression) => {
                 if (expression)
                     context.contractError(

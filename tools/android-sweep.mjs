@@ -149,7 +149,7 @@ if (values.scene) {
 if (backend === "sdl_gpu") {
     writeJsonRecord(
         join(output, "shaders.json"),
-        compileOfflineShaders({
+        await compileOfflineShaders({
             directories: selected
                 .map((scene) => resolve(scene.output, "upstream/shaders"))
                 .filter(existsSync),

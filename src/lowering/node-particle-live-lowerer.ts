@@ -1421,8 +1421,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             bindings,
             calls,
             callShapes,
-            booleanAnd: true,
-            booleanOr: true,
+
             recordLiteral: recordLiteralCpp,
             indexedCall,
         };
@@ -1799,8 +1798,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
                     cppName: cpp,
                     returns,
                     calls,
-                    booleanAnd: true,
-                    booleanOr: true,
+
                     memberBindings,
                     leadingParameters: ["State& state"],
                     indexedCall,
@@ -2433,8 +2431,6 @@ export class NodeParticleLiveLowerer {
                         ? "void"
                         : "double",
                 calls: pinnedCalls(),
-                booleanAnd: true,
-                booleanOr: true,
             }),
         );
         return cpp;

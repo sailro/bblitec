@@ -181,7 +181,7 @@ export function lowerWorldAabbHelpers(
         return lowerPinnedBody(file, declaration.body!.statements, {
             bindings: scope,
             calls: extra.calls ?? new Map(),
-            booleanOr: true,
+
             statement: (statement, lowerer, indent) => {
                 if (
                     !ts.isVariableStatement(statement) ||

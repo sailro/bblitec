@@ -2,8 +2,8 @@ import {
     GLB_BINARY_CHUNK as BINARY_CHUNK,
     GLB_JSON_CHUNK as JSON_CHUNK,
     GLB_MAGIC,
-    type JsonRecord,
 } from "./gltf-document.js";
+import { type JsonRecord } from "./json-fields.js";
 export interface GlbChunks {
     json: JsonRecord;
     binary: Buffer;

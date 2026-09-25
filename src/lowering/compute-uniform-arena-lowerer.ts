@@ -149,7 +149,7 @@ function scope(
     return {
         bindings,
         calls,
-        booleanOr: true,
+
         callShapes: new Map([
             ["Number.isInteger", "bool"],
             ["Number.isSafeInteger", "bool"],

@@ -474,7 +474,7 @@ export function transparentSortSkipCpp(context: LoweringContext): string {
                 },
             ],
         ]),
-        booleanOr: true,
+
         calls: new Map(),
     }).expression(guard.expression);
 }

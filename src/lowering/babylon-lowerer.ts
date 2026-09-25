@@ -142,7 +142,6 @@ export class BabylonLowerer {
                 cppName: "bake_local_matrix",
                 returns: "void",
                 calls: pinnedNumericMathCalls(),
-                booleanAnd: true,
             },
         );
     }

@@ -748,7 +748,7 @@ CameraHandle create_banked_free_camera(
                 ["emptyWorldAabb", "f64-buffer"],
                 ["vec3", "vec3"],
             ]),
-            booleanOr: true,
+
             forOf: (iterated, element) =>
                 iterated === "scene.meshes"
                     ? {

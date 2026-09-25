@@ -5,10 +5,9 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import type { DataType } from "../src/compiler/data-types.js";
-import { untracedHandleKinds } from "../src/compiler/data-types/handles.js";
 import {
     dataTypeCppType,
-    ownsTracedEdge,
+    tracedEdgeCondition,
     type DataTypeCppContext,
 } from "../src/compiler/data-types/operations.js";
 import {
@@ -61,6 +60,48 @@ test("records that own no traced edge stay out of cycle collection", () => {
 const tools = optionalNativeFixtureTools();
 
 test(
+    "record handle fields inherit native traceability through constrained hooks",
+    { skip: !tools },
+    () => {
+        const result = compileSource(`
+        import { createEngine, createBox, createTransformNode, type Mesh, type TransformNode } from "@babylonjs/lite";
+        interface Untraced { mesh: Mesh; }
+        interface Traced { node: TransformNode; }
+        async function main() {
+            const engine = await createEngine({});
+            const a: Untraced = { mesh: createBox(engine) };
+            const b: Traced = { node: createTransformNode("node") };
+            console.log(a.mesh, b.node);
+        }
+    `);
+        const output = resolve("artifacts/js-cycles-handle-traits");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        writeFileSync(
+            source,
+            [
+                "#include <bblite/runtime.hpp>",
+                cppRecord(result.cpp, "struct Untraced {"),
+                cppRecord(result.cpp, "struct Traced {"),
+                "static_assert(!bbl::js::gc_traceable<Untraced>);",
+                "static_assert(bbl::js::gc_traceable<Traced>);",
+            ].join("\n"),
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/EHsc",
+            "/W4",
+            "/WX",
+            "/Zs",
+            `/I${resolve("native/include")}`,
+            `/I${join(nativeFixtureVcpkgRoot, "include")}`,
+            source,
+        ]);
+    },
+);
+
+test(
     "kinds lowered as owning no traced edge are untraceable natively",
     { skip: !tools },
     () => {
@@ -79,15 +120,6 @@ test(
             { kind: "u32array" },
             { kind: "vector", element: { kind: "number" } },
             { kind: "optional", inner: { kind: "string" } },
-            {
-                kind: "map",
-                key: { kind: "string" },
-                value: { kind: "handle", handle: "mesh" },
-            },
-            ...[...untracedHandleKinds].map((handle): DataType => ({
-                kind: "handle",
-                handle,
-            })),
         ];
         const context: DataTypeCppContext = {
             cppType: (type) => dataTypeCppType(type, context),
@@ -98,7 +130,7 @@ test(
         };
         const lines = untraced.map((type) => {
             assert.equal(
-                ownsTracedEdge(type, () => [], new Set()),
+                tracedEdgeCondition(type, () => false),
                 false,
                 JSON.stringify(type),
             );

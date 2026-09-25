@@ -1030,7 +1030,7 @@ inline void sort_sprite_renderer_layers(
         const body = lowerPinnedBody(file, declaration.body!.statements, {
             bindings,
             calls: pinnedNumericMathCalls(),
-            booleanAnd: true,
+
             statement: (statement, lowerer, indent) => {
                 if (!ts.isVariableStatement(statement)) return undefined;
                 const local = statement.declarationList.declarations[0]!;
@@ -1272,6 +1272,7 @@ ${body}
 // ${this.context.provenance(pipelineModule, "buildSpriteLayerUbo")}
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
+#include <bblite/pinned_records.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1282,8 +1283,6 @@ ${body}
 #include <stdexcept>
 #include <vector>
 
-namespace bbl::upstream {
-
 /**
  * shared/sprite-atlas.ts#createGridSpriteAtlas, the one partition every grid
  * loader shares: \`loadSpriteAtlas\`, the particle bridges and scene code's
@@ -1291,6 +1290,8 @@ namespace bbl::upstream {
  * header because it is the shared atlas module's.
  */
 ${gridSpriteAtlasCpp(this.context)}
+
+namespace bbl::upstream {
 
 /**
  * sprite-pipeline.ts: the pure-2D per-instance vertex attributes at the

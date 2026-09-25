@@ -114,8 +114,7 @@ export function lowerComputeTaskExecution(
         return {
             bindings,
             calls,
-            booleanAnd: true,
-            booleanOr: true,
+
             forOf(iterated, element) {
                 const range =
                     iterated === "tasks"

@@ -95,7 +95,6 @@ function loweredStepper(context: LoweringContext): string {
             // `Number.isFinite(delayMs) && delayMs > 1` is a test, not the
             // value-selecting `&&` the translator refuses by default: both
             // sides are predicates, so the C++ operator is the same answer.
-            booleanAnd: true,
         },
     );
     const advance = lowerPinnedFunction(
@@ -132,7 +131,6 @@ function loweredStepper(context: LoweringContext): string {
             memberBindings: members,
             // `!passedEnd` and `animation.loop` are tests, and
             // `direction > 0 ? ... : ...` selects between two of them.
-            booleanOr: true,
         },
     );
     return `${normalize}\n\n${advance}`;

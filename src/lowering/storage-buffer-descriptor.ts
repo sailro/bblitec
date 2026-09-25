@@ -56,7 +56,7 @@ export function storageBufferDescriptorCpp(context: LoweringContext): string {
     const body = lowerPinnedBody(file, statements.slice(start, end + 1), {
         bindings,
         calls,
-        booleanOr: true,
+
         callShapes: new Map([["Number.isSafeInteger", "bool"]]),
     });
     return `${bufferAlignmentCpp(context, "storage_buffer_align")}

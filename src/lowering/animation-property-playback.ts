@@ -44,8 +44,7 @@ export function lowerPropertyAnimationPlayback(
     const clock = lowerPinnedBody(file, tick.body.statements, {
         bindings,
         calls: pinnedNumericMathCalls(),
-        booleanAnd: true,
-        booleanOr: true,
+
         statement(statement, _lowerer, indent) {
             if (!ts.isForStatement(statement)) return undefined;
             context.assertStatementShapes(
@@ -96,8 +95,7 @@ ${lowerPinnedBody(source.file, source.declaration.body!.statements, {
                 ["engine", { cpp: "true", type: "bool" }],
             ]),
             calls: new Map(),
-            booleanAnd: true,
-            booleanOr: true,
+
             statement(statement, _lowerer, indent) {
                 if (
                     !ts.isExpressionStatement(statement) ||

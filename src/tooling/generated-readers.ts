@@ -1,3 +1,4 @@
+import { isRecord, isString } from "../json-fields.js";
 /**
  * Readers over what generation writes per scene, for `scene -- show
  * <id> --activation|--adaptations|--provenance` and `scene -- status
@@ -15,10 +16,6 @@ import {
     deployedPayloads,
     readCacheConfiguration,
 } from "../build-stamp.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function readJsonFile(path: string, what: string, sceneId?: string): unknown {
     if (!existsSync(path)) {
@@ -40,8 +37,6 @@ export interface CompiledSceneManifest {
     features: readonly string[];
     adaptations: readonly string[];
 }
-
-const isString = (value: unknown): value is string => typeof value === "string";
 
 /** The generated tree's manifest; a tree without one refuses. */
 export function readCompiledSceneManifest(

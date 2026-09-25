@@ -551,10 +551,7 @@ export function lowerPinnedFunction(
         tupleCalls?: ReadonlyMap<string, number>;
         /** See `PinnedNumericScope.fixedTupleCalls`. */
         fixedTupleCalls?: ReadonlyMap<string, number>;
-        /** See `PinnedNumericScope.booleanAnd`. */
-        booleanAnd?: boolean;
-        /** See `PinnedNumericScope.booleanOr`. */
-        booleanOr?: boolean;
+
         /**
          * Bindings keyed by the SOURCE TEXT the body reads them through,
          * for a member of a record parameter: the translator resolves
@@ -791,8 +788,7 @@ export function lowerPinnedFunctionParts(
         ...(options.fixedTupleCalls
             ? { fixedTupleCalls: options.fixedTupleCalls }
             : {}),
-        ...(options.booleanAnd ? { booleanAnd: true } : {}),
-        ...(options.booleanOr ? { booleanOr: true } : {}),
+
         ...(options.indexedCall ? { indexedCall: options.indexedCall } : {}),
         ...(options.callShapes ? { callShapes: options.callShapes } : {}),
         ...(options.recordLiteral

@@ -1,3 +1,12 @@
+import {
+    isRecord,
+    isString,
+    isFiniteNumber,
+    isBoolean,
+    arrayOf,
+    recordOf,
+    optionalJsonField,
+} from "../json-fields.js";
 /**
  * The declared interaction check of a scene: `checks/<id>.json`.
  *
@@ -266,10 +275,6 @@ function checkSpecPath(checkId: string): string {
 
 type Json = Record<string, unknown>;
 
-function isRecord(value: unknown): value is Json {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function fail(location: string, message: string): never {
     throw new Error(`${location}: ${message}`);
 }
@@ -291,10 +296,12 @@ function optionalString(
     key: string,
     location: string,
 ): string | undefined {
-    const value = record[key];
-    if (value === undefined) return undefined;
-    if (typeof value !== "string") fail(location, `'${key}' must be a string`);
-    return value;
+    return optionalJsonField(
+        record,
+        key,
+        isString,
+        `${location}: '${key}' must be a string`,
+    );
 }
 
 function requiredString(record: Json, key: string, location: string): string {
@@ -309,12 +316,12 @@ function optionalNumber(
     key: string,
     location: string,
 ): number | undefined {
-    const value = record[key];
-    if (value === undefined) return undefined;
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-        fail(location, `'${key}' must be a finite number`);
-    }
-    return value;
+    return optionalJsonField(
+        record,
+        key,
+        isFiniteNumber,
+        `${location}: '${key}' must be a finite number`,
+    );
 }
 
 function optionalBoolean(
@@ -322,11 +329,12 @@ function optionalBoolean(
     key: string,
     location: string,
 ): boolean | undefined {
-    const value = record[key];
-    if (value === undefined) return undefined;
-    if (typeof value !== "boolean")
-        fail(location, `'${key}' must be true or false`);
-    return value;
+    return optionalJsonField(
+        record,
+        key,
+        isBoolean,
+        `${location}: '${key}' must be true or false`,
+    );
 }
 
 function optionalStringRecord(
@@ -334,15 +342,12 @@ function optionalStringRecord(
     key: string,
     location: string,
 ): Record<string, string> | undefined {
-    const value = record[key];
-    if (value === undefined) return undefined;
-    if (
-        !isRecord(value) ||
-        !Object.values(value).every((entry) => typeof entry === "string")
-    ) {
-        fail(location, `'${key}' must map names to strings`);
-    }
-    return value as Record<string, string>;
+    return optionalJsonField(
+        record,
+        key,
+        (value): value is Record<string, string> => recordOf(value, isString),
+        `${location}: '${key}' must map names to strings`,
+    );
 }
 
 function optionalStringArray(
@@ -350,15 +355,12 @@ function optionalStringArray(
     key: string,
     location: string,
 ): string[] | undefined {
-    const value = record[key];
-    if (value === undefined) return undefined;
-    if (
-        !Array.isArray(value) ||
-        !value.every((entry) => typeof entry === "string")
-    ) {
-        fail(location, `'${key}' must be an array of strings`);
-    }
-    return value;
+    return optionalJsonField(
+        record,
+        key,
+        (value): value is string[] => arrayOf(value, isString),
+        `${location}: '${key}' must be an array of strings`,
+    );
 }
 
 function pair(value: unknown, location: string, key: string): [number, number] {

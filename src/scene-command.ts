@@ -1612,7 +1612,7 @@ function shaderStage(selected: readonly SceneDefinition[]): Stage {
                 await import("./compile-shaders.js");
             console.log(
                 formatShaderCompilation(
-                    compileOfflineShaders({
+                    await compileOfflineShaders({
                         directories,
                         target: shaderTarget(),
                         tools: setup.tools,

@@ -2218,7 +2218,7 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
         /bbl::js::typed_array_set\(permutation, state\._permutation, 0\.0\);\n\s*state\._permutation = std::move\(permutation\);/,
     );
     // A key that did not move under Object.is leaves the order alone.
-    assert.match(sorted, /!bbl::js::same_value\(key, /);
+    assert.match(sorted, /!\(bbl::js::same_value\(key, /);
     // The enabler is the opt-in: it installs the hook the always-loaded
     // upload and pick paths read, and nothing else does.
     assert.match(sorted, /engine\.sprite_y_sort_hook\.upload = y_sort_upload;/);

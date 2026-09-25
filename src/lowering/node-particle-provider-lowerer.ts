@@ -81,8 +81,6 @@ export function lowerNodeParticleProviderShared(
                 ],
             ]),
             calls,
-            booleanAnd: true,
-            booleanOr: true,
         },
     );
     const translation = lowerPinnedFunction(
@@ -258,8 +256,6 @@ export function lowerNodeParticleProviderState(
         new PinnedNumericLowerer(file, {
             bindings: bindings(),
             calls,
-            booleanAnd: true,
-            booleanOr: true,
         })
             .statements(body, "    ")
             .join("\n");

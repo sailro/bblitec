@@ -3,13 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import {
-    asObject,
-    asRecords,
-    GLTF_MESH_PLAN,
-    parseGlbJson,
-    type JsonObject,
-} from "../src/gltf-document.js";
+import { GLTF_MESH_PLAN, parseGlbJson } from "../src/gltf-document.js";
+import { asObject, asRecords, type JsonObject } from "../src/json-fields.js";
 import {
     packageGltfMeshPlan,
     packagedGltfMeshPlan,

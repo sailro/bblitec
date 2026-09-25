@@ -182,8 +182,7 @@ ${body}
         const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
             bindings,
             calls,
-            booleanOr: true,
-            booleanAnd: true,
+
             returnValue: (expression) =>
                 expression
                     ? lowerer.expression(expression)

@@ -30,9 +30,8 @@ import {
     GAUSSIAN_SPLATTING_EXTENSION,
     GAUSSIAN_SPLAT_DOCUMENT_KEY,
     isGaussianSplatPrimitive,
-    asObject,
-    type JsonRecord,
 } from "./gltf-document.js";
+import { asObject, type JsonRecord } from "./json-fields.js";
 import {
     importPinnedModule,
     importPinnedModuleWithExports,

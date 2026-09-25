@@ -48,6 +48,7 @@ const PINNED_PROGRAM_OPTIONS: ts.CompilerOptions = {
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     types: [],
     strict: true,
+    noUncheckedIndexedAccess: true,
     noEmit: true,
     skipLibCheck: true,
 };
@@ -160,6 +161,7 @@ export class PinnedProgram implements PinnedNames {
     private readonly webGpu: string;
     private readonly host: ts.CompilerHost;
     private readonly rooted = new WeakMap<ts.SourceFile, ts.TypeChecker>();
+    private readonly modulePrograms = new Map<string, CheckedPinnedProgram>();
     private whole:
         | { readonly program: ts.Program; readonly checker: ts.TypeChecker }
         | undefined;
@@ -262,6 +264,32 @@ export class PinnedProgram implements PinnedNames {
         });
     }
 
+    /** One checked source graph per root set, using the pin's common host and options. */
+    public modules(roots: readonly string[]): CheckedPinnedProgram {
+        const key = [...new Set(roots)].sort().join("\n");
+        const cached = this.modulePrograms.get(key);
+        if (cached) return cached;
+        const program = this.createProgram([...roots, this.webGpu]);
+        const checked: CheckedPinnedProgram = {
+            program,
+            checker: program.getTypeChecker(),
+            sourceFile(modulePath) {
+                const file = program.getSourceFile(modulePath);
+                if (!file)
+                    throw new Error(
+                        `Pinned module ${modulePath} is not part of the typed program.`,
+                    );
+                return file;
+            },
+        };
+        this.modulePrograms.set(key, checked);
+        for (const file of program.getSourceFiles()) {
+            if (this.sources.hasSource(file.fileName) && !this.rooted.has(file))
+                this.rooted.set(file, checked.checker);
+        }
+        return checked;
+    }
+
     private wholeProgram(): {
         readonly program: ts.Program;
         readonly checker: ts.TypeChecker;
@@ -304,10 +332,13 @@ export class PinnedProgram implements PinnedNames {
         }
         let checker = this.rooted.get(file);
         if (!checker) {
-            checker = this.createProgram(
-                [file.fileName, this.webGpu],
-                file,
-            ).getTypeChecker();
+            checker =
+                file === this.sources.getSourceFile(file.fileName)
+                    ? this.modules([file.fileName]).checker
+                    : this.createProgram(
+                          [file.fileName, this.webGpu],
+                          file,
+                      ).getTypeChecker();
             this.rooted.set(file, checker);
         }
         return checker;
@@ -542,6 +573,12 @@ export class PinnedProgram implements PinnedNames {
     }
 }
 
+export interface CheckedPinnedProgram {
+    readonly program: ts.Program;
+    readonly checker: ts.TypeChecker;
+    sourceFile(modulePath: string): ts.SourceFile;
+}
+
 /**
  * The names one lone source file declares, for a file no store owns (a
  * test's fixture, a doctored module): its own symbols, so a name resolves
@@ -588,6 +625,11 @@ export function pinnedNamesOf(file: ts.SourceFile): PinnedNames {
         singleFiles.set(file, single);
     }
     return single;
+}
+
+/** Types from the same checked program as the pin's name resolution. */
+export function pinnedCheckerOf(file: ts.SourceFile): ts.TypeChecker {
+    return owners.get(file)?.().checkerFor(file) ?? moduleSymbols(file);
 }
 
 /**

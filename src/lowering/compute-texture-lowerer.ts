@@ -154,7 +154,7 @@ function sampledResourcesCpp(context: LoweringContext): string {
                     () => "(resource->texture.data.gpu_source->owners == 0)",
                 ],
             ]),
-            booleanOr: true,
+
             expression(node) {
                 if (ts.isStringLiteral(node)) return stringLiteral(node.text);
                 if (
@@ -290,7 +290,7 @@ function factoryCpp(context: LoweringContext): string {
     const body = lowerPinnedBody(file, statements.slice(scopeIndex + 1), {
         bindings,
         calls: new Map([["gpu.texture.destroy", () => "gpu->destroy()"]]),
-        booleanOr: true,
+
         expression(node) {
             if (
                 ts.isCallExpression(node) &&

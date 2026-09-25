@@ -55,8 +55,7 @@ export function lowerGltfAssetSceneSetup(context: LoweringContext): string {
     const body = lowerPinnedBody(file, [loop], {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         forOf(iterated, element) {
             if (iterated !== "assetFragments" || element !== "frag")
                 return undefined;

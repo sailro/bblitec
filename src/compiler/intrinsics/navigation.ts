@@ -171,7 +171,7 @@ export function compileNavigationIntrinsic(
             // the feature is what carries it to the emitted dispatch, to
             // the PAL half that gets compiled, and to the third-party
             // library that gets linked.
-            const tileCache = buildGate(context, options, "maxObstacles") !== 0;
+            const tileCache = buildGate(context, options, "maxObstacles") > 0;
             if (tileCache) {
                 context.reachFeature("navigation:tile-cache", call);
             }
@@ -579,7 +579,7 @@ function validateNavMeshParams(
     //   > 0        0          a cache of zero-cell tiles, refused
     const obstacles = buildGate(context, options, "maxObstacles");
     const tiles = buildGate(context, options, "tileSize");
-    if (obstacles === 0 && tiles !== 0) {
+    if (obstacles <= 0 && tiles > 0) {
         context.fail(
             requiredProperty(context, options, "tileSize"),
             "createNavMesh with tileSize > 0 and no obstacles builds a " +
@@ -588,7 +588,7 @@ function validateNavMeshParams(
         );
     }
     if (
-        obstacles !== 0 &&
+        obstacles > 0 &&
         tiles === 0 &&
         context.objectProperty(options, "tileSize")
     ) {
@@ -603,7 +603,7 @@ function validateNavMeshParams(
     // the PAL's tile cache installs the wrapper's default process only.
     const connections = context.objectProperty(options, "offMeshConnections");
     if (
-        obstacles !== 0 &&
+        obstacles > 0 &&
         connections &&
         context.expectStaticArrayLiteral(connections).elements.length > 0
     ) {

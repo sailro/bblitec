@@ -20,7 +20,7 @@ import { isStringValue, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { pinnedHandleKind } from "../data-types.js";
 import {
-    pinnedSnakeCase,
+    snakeCase,
     stringLiteral as cppStringLiteral,
 } from "../../cpp-literals.js";
 import type { TransportSchema } from "../../pinned-record-transport.js";
@@ -117,7 +117,7 @@ export function compileTextIntrinsic(
             context,
             call.arguments[1],
         )) {
-            const field = `${update}.${pinnedSnakeCase(member)}`;
+            const field = `${update}.${snakeCase(member)}`;
             if (member === "update")
                 context.emit(
                     `${field} = ${cppStringLiteral(context.compileStaticString(expression))};`,
@@ -174,7 +174,7 @@ export function compileTextIntrinsic(
             context,
             call.arguments[1],
         )) {
-            const native = pinnedSnakeCase(field);
+            const native = snakeCase(field);
             if (field === "positionPx") {
                 const components = textOptionEntries(context, value);
                 if (
@@ -628,7 +628,7 @@ function textRunValue(
         )
             context.fail(member, "Text run members must be named assignments.");
         const name = member.name.text;
-        const field = `${run}->${pinnedSnakeCase(name)}`;
+        const field = `${run}->${snakeCase(name)}`;
         if (name === "defaultColor")
             context.emit(
                 `${field} = ${context.compileForDataSink(member.initializer, { kind: "tuple", arity: 4 })};`,

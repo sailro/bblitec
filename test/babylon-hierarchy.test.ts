@@ -6,7 +6,8 @@ import { lowerBabylonMeshConstruction } from "../src/lowering/babylon-mesh-const
 import { importPinnedModuleFetching } from "../src/pinned-shader-composer.js";
 import { babylonRenderableCount } from "../src/pinned-standard-variants.js";
 import { packageBabylonMeshWalks } from "../src/babylon-mesh-walks.js";
-import { GLTF_MESH_WALKS, type JsonObject } from "../src/gltf-document.js";
+import { GLTF_MESH_WALKS } from "../src/gltf-document.js";
+import { type JsonObject } from "../src/json-fields.js";
 import { runBabylonLoaderCheck } from "./babylon-loader-fixture.js";
 import { optionalNativeFixtureTools } from "./native-fixture.js";
 import { doctoredContext } from "./doctored-store.js";

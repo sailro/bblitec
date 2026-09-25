@@ -5995,6 +5995,7 @@ CameraHandle enable_orthographic_camera(Engine& engine, CameraHandle camera, dou
 RenderTargetHandle create_render_target(Engine& engine, RenderTargetOptions options);
 RenderTargetTexture create_render_target_texture(Engine& engine, RenderTargetOptions options,
                                                  bool surface_sized = false);
+std::uint32_t render_target_dimension(double value);
 std::array<double, 2> resolve_surface_render_target_size(double width, double height,
                                                          double surface_scale);
 js::Callback<void()> on_render_target_texture_resize(Engine& engine, RenderTargetTexture result,

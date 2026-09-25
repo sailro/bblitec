@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { CompileAsset } from "./compiler/types.js";
-import { asObject, asRecords, glbJsonText } from "./gltf-document.js";
+import { glbJsonText } from "./gltf-document.js";
+import { asObject, asRecords } from "./json-fields.js";
 import { imageCodecForFileName, imageCodecs } from "./image-codec-manifest.js";
 
 function* strings(value: unknown): Generator<string> {

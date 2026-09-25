@@ -283,8 +283,7 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
         const body = lowerPinnedBody(file, statements, {
             bindings,
             calls: new Map(),
-            booleanAnd: true,
-            booleanOr: true,
+
             expression(node, lowerer) {
                 if (node.kind === ts.SyntaxKind.NullKeyword) return "nullptr";
                 if (ts.isIdentifier(node) && node.text === "undefined")

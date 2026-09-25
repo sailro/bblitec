@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
-import { asRecords, type JsonObject } from "../src/gltf-document.js";
+import { asRecords, type JsonObject } from "../src/json-fields.js";
 import {
     packageGltfMeshPlan,
     packagedGltfMeshPlan,

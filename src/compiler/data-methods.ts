@@ -36,6 +36,8 @@ import { compileCollectionForEach } from "./collection-methods.js";
 
 import {
     dataTypesEqual,
+    pinnedHandleKind,
+    platformHandleKind,
     isTypedArrayType,
     typedArrayStoreExpression,
     type DataType,
@@ -296,6 +298,23 @@ const snapshotInvalidatingMethods: ReadonlySet<string> = new EmissionSet([
  * Compiles data-container method calls (`push`, `pop`, `fill`) and the
  * `new Array(n).fill(v)` chain.
  */
+export function mayCompileDataMethodCall(
+    checker: ts.TypeChecker,
+    callee: ts.PropertyAccessExpression,
+): boolean {
+    const owner = checker.getNonNullableType(
+        checker.getTypeAtLocation(callee.expression),
+    );
+    // Handle methods belong to their platform adapter. Plain records may
+    // contain stored callbacks and still need the data-method dispatcher.
+    return (
+        !pinnedHandleKind(owner) &&
+        !platformHandleKind(owner) &&
+        (owner.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.BooleanLike)) ===
+            0
+    );
+}
+
 export function compileDataMethodCall(
     lowerer: DataLowerer,
     call: ts.CallExpression,

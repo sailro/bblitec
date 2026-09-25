@@ -1,3 +1,8 @@
+import {
+    WRAPPER_CORE,
+    wrapperModule,
+    wrapperPackageVersion,
+} from "./navigation-wrappers.js";
 /**
  * The navigation family, lowered from `src/navigation/navigation.ts`.
  *
@@ -51,9 +56,6 @@ import {
 import {
     navigationBuildPlanDeclarations,
     type NavigationBuildArm,
-    WRAPPER_CORE,
-    wrapperModule,
-    wrapperPackageVersion,
 } from "./navigation-build-plan.js";
 import { navigationDebugGeometryDefinition } from "./navigation-library.js";
 import { pinnedHeader } from "./pinned-header.js";

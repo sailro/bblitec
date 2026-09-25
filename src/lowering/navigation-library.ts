@@ -31,12 +31,14 @@ import {
 import {
     blockArrow,
     declarationOf,
-    propertyPath,
     WRAPPER_CORE,
     WRAPPER_GENERATORS,
     wrapperModule,
-    wrapperPackageVersion,
-} from "./navigation-build-plan.js";
+    methodAccess,
+    provenance,
+    type RawAccess,
+    type RawSource,
+} from "./navigation-wrappers.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { isPinnedErrorCall, pinnedErrorMessage } from "./pinned-error.js";
 import {
@@ -49,140 +51,6 @@ import { MATH_MEMBERS } from "../compiler/math-intrinsics.js";
 import { stringLiteral } from "../cpp-literals.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
-
-/** Where a wrapper method's value comes from on its raw object. */
-type RawSource =
-    | { kind: "field"; field: string }
-    | { kind: "element"; field: string }
-    | { kind: "call"; method: string };
-
-/** What one wrapper method does to its raw object. */
-type RawAccess =
-    | { kind: "read"; source: RawSource }
-    | { kind: "store"; field: string; element: boolean }
-    | { kind: "view"; className: string; source: RawSource }
-    | { kind: "nullableView"; className: string; field: string };
-
-/** `this.raw.f`, `this.raw.get_f(p)` or `this.raw.m(params)`, over `params`. */
-function rawSource(
-    expression: ts.Expression,
-    parameters: readonly string[],
-): RawSource | undefined {
-    const node = unwrapExpression(expression);
-    const path = propertyPath(node);
-    if (path?.length === 3 && path[0] === "this" && path[1] === "raw") {
-        return { kind: "field", field: path[2]! };
-    }
-    if (!ts.isCallExpression(node)) return undefined;
-    const callee = propertyPath(node.expression);
-    const args = node.arguments.map((argument) => argument.getText());
-    if (
-        callee?.length !== 3 ||
-        callee[0] !== "this" ||
-        callee[1] !== "raw" ||
-        args.join(",") !== parameters.join(",")
-    ) {
-        return undefined;
-    }
-    const method = callee[2]!;
-    return method.startsWith("get_") && args.length === 1
-        ? { kind: "element", field: method.slice("get_".length) }
-        : { kind: "call", method };
-}
-
-/** One method of a core wrapper class, as the raw access it performs. */
-function methodAccess(method: ts.MethodDeclaration): RawAccess | undefined {
-    const parameters = method.parameters.map((parameter) =>
-        parameter.name.getText(),
-    );
-    const [only] = method.body?.statements ?? [];
-    if (!only || method.body!.statements.length !== 1) return undefined;
-    if (ts.isReturnStatement(only) && only.expression) {
-        const returned = unwrapExpression(only.expression);
-        // `!Raw.isNull(this.raw.f) ? new C(this.raw.f) : null`
-        if (
-            ts.isConditionalExpression(returned) &&
-            unwrapExpression(returned.whenFalse).kind ===
-                ts.SyntaxKind.NullKeyword
-        ) {
-            const test = unwrapExpression(returned.condition);
-            const made = unwrapExpression(returned.whenTrue);
-            const tested =
-                ts.isPrefixUnaryExpression(test) &&
-                test.operator === ts.SyntaxKind.ExclamationToken &&
-                ts.isCallExpression(test.operand) &&
-                test.operand.expression.getText() === "Raw.isNull" &&
-                test.operand.arguments.length === 1
-                    ? rawSource(test.operand.arguments[0]!, parameters)
-                    : undefined;
-            if (
-                tested?.kind === "field" &&
-                ts.isNewExpression(made) &&
-                ts.isIdentifier(made.expression) &&
-                made.arguments?.length === 1 &&
-                made.arguments[0]!.getText() === `this.raw.${tested.field}`
-            ) {
-                return {
-                    kind: "nullableView",
-                    className: made.expression.text,
-                    field: tested.field,
-                };
-            }
-            return undefined;
-        }
-        // `new C(<raw source>)`
-        if (
-            ts.isNewExpression(returned) &&
-            ts.isIdentifier(returned.expression) &&
-            returned.arguments?.length === 1
-        ) {
-            const source = rawSource(returned.arguments[0]!, parameters);
-            return source
-                ? {
-                      kind: "view",
-                      className: returned.expression.text,
-                      source,
-                  }
-                : undefined;
-        }
-        const source = rawSource(returned, parameters);
-        return source ? { kind: "read", source } : undefined;
-    }
-    if (!ts.isExpressionStatement(only)) return undefined;
-    const statement = unwrapExpression(only.expression);
-    // `this.raw.f = value`
-    if (
-        ts.isBinaryExpression(statement) &&
-        statement.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        parameters.length === 1 &&
-        statement.right.getText() === parameters[0]
-    ) {
-        const path = propertyPath(statement.left);
-        return path?.length === 3 && path[0] === "this" && path[1] === "raw"
-            ? { kind: "store", field: path[2]!, element: false }
-            : undefined;
-    }
-    // `this.raw.set_f(index, value)`
-    if (ts.isCallExpression(statement) && parameters.length === 2) {
-        const callee = propertyPath(statement.expression);
-        if (
-            callee?.length === 3 &&
-            callee[0] === "this" &&
-            callee[1] === "raw" &&
-            callee[2]!.startsWith("set_") &&
-            statement.arguments
-                .map((argument) => argument.getText())
-                .join(",") === parameters.join(",")
-        ) {
-            return {
-                kind: "store",
-                field: callee[2]!.slice("set_".length),
-                element: true,
-            };
-        }
-    }
-    return undefined;
-}
 
 /**
  * The glue's own array helper, whose raw `get(i)`/`set(i, v)` read and store
@@ -427,14 +295,6 @@ function templateCpp(template: LibraryTemplate): string {
         `template <${template.typenames.map((name) => `typename ${name}`).join(", ")}>\n` +
         `inline ${template.returns} ${template.name}(\n    ` +
         `${template.parameters.join(",\n    ")}) {\n${template.body.join("\n")}\n}`
-    );
-}
-
-function provenance(pack: "core" | "generators", symbol: string): string {
-    return (
-        `\`${symbol}\` from @recast-navigation/${pack}@` +
-        `${wrapperPackageVersion(`@recast-navigation/${pack}`)}, lowered from ` +
-        "the installed package."
     );
 }
 

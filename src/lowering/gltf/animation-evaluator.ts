@@ -80,8 +80,7 @@ export function lowerGltfAnimationEvaluator(
                 });
             const body = lowerPinnedBody(file, declaration.body!.statements, {
                 bindings,
-                booleanAnd: true,
-                booleanOr: true,
+
                 returnValue: (expression, lowerer) =>
                     expression ? lowerer.expression(expression) : "",
                 calls: new Map([

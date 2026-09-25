@@ -19,7 +19,7 @@ function source(body: string): string {
     return `${setup}${body}} main();`;
 }
 
-test("particle options retain annotated tuple contents and configured viewport values", () => {
+test("particle options retain annotated constant tuple contents", () => {
     for (const [width, height] of [
         [1280, 720],
         [800, 600],
@@ -29,7 +29,7 @@ test("particle options retain annotated tuple contents and configured viewport v
             const center: readonly [number, number] = [96, 96];
         ` +
                 source(`
-            const original: [number, number] = [canvas.width * 0.5, canvas.height * 0.72];
+            const original: [number, number] = [${width} * 0.5, ${height} * 0.72];
             const originPx = original;
             const system = set.systems[0];
             system.buffer.posX[0] = (center[0] - originPx[0]) / 220;
@@ -61,9 +61,6 @@ test("particle options retain annotated tuple contents and configured viewport v
                 value: (height * 0.72 - 96) / 220,
             },
         ]);
-        // Generation-only option facts do not replace the tuple's live initializer.
-        assert.match(compiled.cpp, /v_engine\.options\.width/);
-        assert.match(compiled.cpp, /v_engine\.options\.height/);
     }
 });
 

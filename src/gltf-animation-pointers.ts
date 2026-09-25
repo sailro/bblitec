@@ -8,13 +8,8 @@ import { pinnedModuleTextUrl } from "./pinned-shader-composer.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import { transpileForBrowser } from "./typescript-transpile.js";
 import { GltfGeometryPacker } from "./gltf-mesh-geometry.js";
-import {
-    asIndex,
-    asObject,
-    asRecords,
-    areGltfIndices,
-    type JsonObject,
-} from "./gltf-document.js";
+import { asIndex, areGltfIndices } from "./gltf-document.js";
+import { asObject, asRecords, type JsonObject } from "./json-fields.js";
 import type { RecordedMeshDeformation } from "./gltf-mesh-deformation.js";
 import type { SourceAnimationBindings } from "./gltf-animation-bindings.js";
 import {

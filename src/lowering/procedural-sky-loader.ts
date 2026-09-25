@@ -185,8 +185,7 @@ export function lowerProceduralSkyLoader(
         const scope: PinnedBodyScope = {
             bindings,
             calls,
-            booleanAnd: true,
-            booleanOr: true,
+
             foldConditions: false,
             callShapes: new Map([
                 ["isPending", "bool"],

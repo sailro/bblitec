@@ -27,7 +27,7 @@ export function babylonSubmeshMaterialScope(
         calls: new Map([
             ["createStandardMaterial", () => "default_material(engine)"],
         ]),
-        booleanAnd: true,
+
         expression(node, lowerer) {
             if (
                 ts.isElementAccessExpression(node) &&

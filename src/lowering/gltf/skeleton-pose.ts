@@ -104,8 +104,7 @@ export function lowerGltfSkeletonPose(context: LoweringContext): string {
             ],
         ]),
         expression,
-        booleanAnd: true,
-        booleanOr: true,
+
         statement(node, numeric, indent) {
             if (ts.isFunctionDeclaration(node)) {
                 if (

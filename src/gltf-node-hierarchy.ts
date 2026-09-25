@@ -10,7 +10,8 @@
  * rather than flattening it onto the meshes. Every value here is read off the
  * pin's live nodes, after addToScene linked their parents.
  */
-import { asIndex, asObject } from "./gltf-document.js";
+import { asIndex } from "./gltf-document.js";
+import { asObject } from "./json-fields.js";
 import type { GltfGeometryPacker } from "./gltf-mesh-geometry.js";
 
 /** A node's TRS lanes, as the pin's observable vectors hold them. */

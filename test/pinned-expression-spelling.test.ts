@@ -37,8 +37,7 @@ function render(
         ),
         calls: pinnedNumericMathCalls(),
         expressionSpelling: spelling,
-        booleanAnd: true,
-        booleanOr: true,
+
         foldConditions: false,
     }).expression(statement.expression);
 }

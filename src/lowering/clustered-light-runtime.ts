@@ -1,3 +1,4 @@
+import { PinnedRecordModel, type MemberSpec } from "./pinned-record-lowerer.js";
 /**
  * The clustered light field as one generated translation unit.
  *
@@ -303,15 +304,38 @@ function activeLightMembers(
 }
 
 function activeLightStruct(context: LoweringContext): string {
-    const fields = activeLightMembers(context).map(({ name, record }) =>
-        record
-            ? `    const ClusteredLight* ${name} = nullptr;`
-            : `    double ${name} = 0.0;`,
+    const members = new Map<string, MemberSpec>(
+        activeLightMembers(context).map(({ name, record }) => [
+            name,
+            {
+                field: name,
+                shape: record
+                    ? {
+                          kind: "native",
+                          cpp: "const ClusteredLight*",
+                          nullable: true,
+                      }
+                    : { kind: "number" },
+            },
+        ]),
     );
-    return `// ${context.provenance(clusteredModule, "_ClusteredActiveLight")}
-struct ClusteredActiveLight {
-${fields.join("\n")}
-};`;
+    const model = new PinnedRecordModel(
+        context,
+        context.program.modules([clusteredModule]),
+        {
+            records: [
+                {
+                    pinned: ["_ClusteredActiveLight"],
+                    cpp: "ClusteredActiveLight",
+                    reference: false,
+                    members,
+                },
+            ],
+            values: new Map(),
+            adapters: new Map(),
+        },
+    );
+    return model.structs(["_ClusteredActiveLight"]);
 }
 
 /**
@@ -1693,8 +1717,7 @@ function lowerRefresh(
         callShapes: new Map([["spotSupport._coneChanged", "bool" as const]]),
         matrixCalls: new Set(["getViewMatrix", "getProjectionMatrix"]),
         arrayCopy: copyToFloats,
-        booleanAnd: true,
-        booleanOr: true,
+
         expression: platformCalls(
             context,
             file,

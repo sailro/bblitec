@@ -63,59 +63,67 @@ export function containsDataKind(
     );
 }
 
-/**
- * Whether a stored value of `type` can own an edge the native cycle collector
- * traces. A record answers from `untraced`, the records proven to own none.
- */
-export function ownsTracedEdge(
+/** A native predicate is needed only for fields whose handle decides traceability. */
+export type TraceCondition = boolean | string;
+
+export function tracedEdgeCondition(
     type: DataType,
-    fields: StructFieldTypes,
-    untraced: ReadonlySet<string>,
-): boolean {
-    if (type.kind === "struct") return !untraced.has(type.name);
-    const traced = tracedEdges(type);
-    return traced === "children"
-        ? children(type, fields, false).some((child) =>
-              ownsTracedEdge(child, fields, untraced),
-          )
-        : traced === "always";
+    record: (name: string) => TraceCondition,
+): TraceCondition {
+    if (type.kind === "struct") return record(type.name);
+    return kindTraceCondition(type, record);
 }
 
-/**
- * The records that own no traced edge, as the least fixed point: a record that
- * reaches itself through references stays traced, since it can close a cycle.
- * Such a record declares no `gc_trace_edges`, so `bbl::js::make_ref` leaves
- * it out of the collector's registry.
- */
-export function untracedRecords(
+function kindTraceCondition<K extends DataKind>(
+    type: DataType<K>,
+    record: (name: string) => TraceCondition,
+): TraceCondition {
+    const traced = kinds[type.kind].tracedEdges;
+    if (typeof traced === "function") return traced(type);
+    if (traced !== "children") return traced === "always";
+    return anyTraceCondition(
+        children(type, () => [], false).map((child) =>
+            tracedEdgeCondition(child, record),
+        ),
+    );
+}
+
+function anyTraceCondition(
+    conditions: readonly TraceCondition[],
+): TraceCondition {
+    if (conditions.includes(true)) return true;
+    const predicates = [
+        ...new Set(
+            conditions.filter(
+                (condition): condition is string =>
+                    typeof condition === "string",
+            ),
+        ),
+    ];
+    return predicates.length ? predicates.join(" || ") : false;
+}
+
+/** Recursive records remain traced; acyclic handle fields defer to the native trait. */
+export function recordTraceConditions(
     names: Iterable<string>,
     fields: StructFieldTypes,
-): Set<string> {
-    const untraced = new Set<string>();
-    const candidates = [...names];
-    for (let changed = true; changed;) {
-        changed = false;
-        for (const name of candidates) {
-            if (
-                !untraced.has(name) &&
-                fields(name).every(
-                    (field) => !ownsTracedEdge(field, fields, untraced),
-                )
-            ) {
-                untraced.add(name);
-                changed = true;
-            }
-        }
-    }
-    return untraced;
-}
-
-function tracedEdges<K extends DataKind>(
-    type: DataType<K>,
-): "always" | "never" | "children" {
-    const traced = kinds[type.kind].tracedEdges;
-    if (typeof traced !== "function") return traced;
-    return traced(type) ? "always" : "never";
+): ReadonlyMap<string, TraceCondition> {
+    const conditions = new Map<string, TraceCondition>();
+    const pending = new Set<string>();
+    const record = (name: string): TraceCondition => {
+        const cached = conditions.get(name);
+        if (cached !== undefined) return cached;
+        if (pending.has(name)) return true;
+        pending.add(name);
+        const condition = anyTraceCondition(
+            fields(name).map((field) => tracedEdgeCondition(field, record)),
+        );
+        pending.delete(name);
+        conditions.set(name, condition);
+        return condition;
+    };
+    for (const name of names) record(name);
+    return conditions;
 }
 
 function children<K extends DataKind>(

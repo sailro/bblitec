@@ -1,3 +1,6 @@
+import { requireWindowHost } from "./window-events.js";
+import { devicePixelRatioValue } from "./device-pixel-ratio.js";
+import { mayCompileDataMethodCall } from "./data-methods.js";
 import { EmissionSet, writable } from "./emission-transaction.js";
 import { traceSourceNode } from "./source-trace.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -477,6 +480,12 @@ export class ExpressionLowerer {
         }
         const storage = compileWebStorageValue(this.context, unwrapped);
         if (storage) return storage;
+        const ratio = devicePixelRatioValue(this.context, unwrapped);
+        if (ratio) {
+            if (ratio.staticNumber === undefined)
+                requireWindowHost(this.context, unwrapped);
+            return ratio;
+        }
         const environment = browserEnvironmentValue(this.context, unwrapped);
         if (environment) return environment;
         const http = compileHttpFunction(this.context, unwrapped);
@@ -639,14 +648,6 @@ export class ExpressionLowerer {
                     unwrapped,
                     `Private name '${unwrapped.text}' is a member, not a value.`,
                 );
-            }
-            if (this.context.libraryGlobal(unwrapped) === "devicePixelRatio") {
-                return {
-                    kind: "number",
-                    cpp: "1.0",
-                    staticNumber: 1,
-                    dataType: { kind: "number" },
-                };
             }
             if (this.context.symbols.isGlobalUndefined(unwrapped)) {
                 return { kind: "json-null", cpp: "std::nullopt" };
@@ -3502,7 +3503,10 @@ export class ExpressionLowerer {
             });
             if (constant) return constant;
         }
-        if (!assertedNonNull) {
+        if (
+            !assertedNonNull &&
+            this.context.dataLowerer.mayCompileGuardableElementAccess(unwrapped)
+        ) {
             // Determining whether an unchecked element read can carry an
             // existence predicate resolves its owner. A call-shaped owner
             // emits while it resolves, so a declined probe must discard
@@ -4940,9 +4944,11 @@ export class ExpressionLowerer {
         if (found) {
             return found;
         }
-        const method = this.context.probeEmission(() =>
-            this.context.dataLowerer.compileDataMethodCall(call),
-        );
+        const method = mayCompileDataMethodCall(this.context.checker, callee)
+            ? this.context.probeEmission(() =>
+                  this.context.dataLowerer.compileDataMethodCall(call),
+              )
+            : undefined;
         if (method) {
             return method;
         }

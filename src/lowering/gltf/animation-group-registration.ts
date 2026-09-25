@@ -64,8 +64,7 @@ export function lowerAnimationGroupRegistration(
         {
             bindings,
             calls: new Map(),
-            booleanAnd: true,
-            booleanOr: true,
+
             expression(node) {
                 if (ts.isTemplateExpression(node)) {
                     const parts = [

@@ -120,7 +120,7 @@ function bufferScope(
     return {
         bindings,
         calls,
-        booleanOr: true,
+
         foldConditions: false,
         callShapes: new Map(
             [

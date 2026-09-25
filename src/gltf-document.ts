@@ -1,3 +1,10 @@
+import {
+    asObject,
+    asRecords,
+    asString,
+    type JsonObject,
+    type JsonRecord,
+} from "./json-fields.js";
 /**
  * The one authority for reading a GLB's JSON chunk.
  *
@@ -48,29 +55,6 @@ export const GLTF_VARIANT_PLAN = "__bblitecVariantMaterials";
 export const GLTF_MESH_PLAN = "__bblitecMeshPlan";
 export const GLTF_TRANSMISSION_PLAN = "__bblitecTransmissionPlan";
 
-/** A parsed JSON object — the shape every glTF document read shares. */
-export type JsonObject = Record<string, unknown>;
-/** The same type under the packagers' historical name. */
-export type JsonRecord = JsonObject;
-
-export const asObject = (value: unknown): JsonObject | undefined =>
-    typeof value === "object" && value !== null && !Array.isArray(value)
-        ? (value as JsonObject)
-        : undefined;
-
-/**
- * The array's object entries, dropping everything else.
- *
- * `compressed-geometry.ts` keeps a cast-only variant on purpose: its chunk
- * rewriter trusts documents it just built, which is a different contract.
- */
-export const asRecords = (value: unknown): JsonObject[] =>
-    Array.isArray(value)
-        ? value
-              .map(asObject)
-              .filter((entry): entry is JsonObject => entry !== undefined)
-        : [];
-
 /** Every primitive in the document, flattened out of its meshes. */
 export const primitiveRecords = (document: JsonRecord): JsonRecord[] =>
     asRecords(document.meshes).flatMap((mesh) => asRecords(mesh.primitives));
@@ -112,11 +96,6 @@ export const isGaussianSplatPrimitive = (primitive: JsonObject): boolean => {
     );
 };
 
-export const asNumbers = (value: unknown): number[] | undefined =>
-    Array.isArray(value) && value.every((entry) => typeof entry === "number")
-        ? value
-        : undefined;
-
 /**
  * A glTF index field: a non-negative integer. Every field read through this
  * names a position in a document array, so a fractional or negative one is
@@ -134,14 +113,6 @@ export const areGltfIndices = (
 ): value is number[] =>
     Array.isArray(value) &&
     value.every((index) => asIndex(index) !== undefined && index < limit);
-
-export const asString = (value: unknown): string | undefined =>
-    typeof value === "string" ? value : undefined;
-
-export const asStrings = (value: unknown): string[] =>
-    Array.isArray(value)
-        ? value.filter((entry): entry is string => typeof entry === "string")
-        : [];
 
 /**
  * The JSON chunk's raw text of a GLB buffer, or nothing when the buffer is

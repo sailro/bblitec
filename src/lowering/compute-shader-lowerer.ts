@@ -202,7 +202,7 @@ function scope(
     return {
         bindings,
         calls,
-        booleanOr: true,
+
         callShapes: new Map([
             ["Number.isInteger", "bool"],
             ["slots.has", "bool"],
@@ -435,7 +435,6 @@ function scope(
                                 ],
                             ]),
                             calls: new Map(),
-                            booleanOr: true,
                         },
                     );
                     return [

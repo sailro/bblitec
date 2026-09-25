@@ -802,8 +802,7 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         lowerer = new PinnedNumericLowerer(state.file, {
             bindings: new Map(),
             calls: writerMathCalls,
-            booleanOr: true,
-            booleanAnd: true,
+
             foldConditions: false,
             expressionSpelling: { parentheses: "source" },
             expression: (node) => emitRecordExpression(state, node),

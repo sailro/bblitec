@@ -79,6 +79,7 @@ interface PlatformCallContext
         Pick<
             LoweringServices,
             | "assets"
+            | "assetOutputs"
             | "assetPayloads"
             | "allocateTemporaryCppName"
             | "callbackIdentity"

@@ -1,22 +1,12 @@
-import { createHash } from "node:crypto";
-import {
-    existsSync,
-    mkdirSync,
-    readFileSync,
-    renameSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
-import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import {
     anchorSpecifiersInText,
     pinnedLibraryRoot,
 } from "../pinned-shader-composer.js";
+import { loadAugmentedModule } from "../pinned-module-loader.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
-import { statementDeclaredNames } from "../compiler/syntax.js";
 
 /**
  * One record in a list a builder loops over -- an extra texture's `name`, an
@@ -226,19 +216,6 @@ function bracedShaderText(source: string, open: string, label: string): string {
     throw new Error(`Pinned ${label} has no closing brace.`);
 }
 
-const loadModule = createRequire(import.meta.url);
-
-/**
- * One loaded instance per packaged module text: its declarations by name.
- * Keyed by the text itself (the augmented file it loads from is named by a
- * digest of it), so the installed module loads once and a doctored copy is
- * a module of its own.
- */
-const loadedModules = new Map<string, ReadonlyMap<string, unknown>>();
-
-/** The prefix a module-scope declaration is exported under. */
-const exportedAlias = "__bblitecExecuted_";
-
 /**
  * One module-scope binding of a pinned source module as its packaged module
  * holds it once loaded -- the installed text, or `text` standing in for it.
@@ -284,72 +261,31 @@ export function pinnedModuleFunction(
  * loaded once, with every top-level declaration exported, so two builders
  * of one module share its instance.
  */
+const loadedModules = new Map<
+    string,
+    { text: string; bindings: Readonly<Record<string, unknown>> }
+>();
+
 function pinnedModuleValue(
     packaged: string,
     text: string,
     name: string,
 ): unknown {
-    let bindings = loadedModules.get(text);
-    if (bindings === undefined) {
-        const names = topLevelDeclarations(text, packaged);
-        const augmented = `${anchorSpecifiersInText(text, packaged)}\nexport { ${names
-            .map((declared) => `${declared} as ${exportedAlias}${declared}`)
-            .join(", ")} };\n`;
-        const loaded: unknown = loadModule(augmentedModuleFile(augmented));
-        bindings = new Map(
-            names.map((declared) => [
-                declared,
-                typeof loaded === "object" && loaded !== null
-                    ? (Reflect.get(
-                          loaded,
-                          `${exportedAlias}${declared}`,
-                      ) as unknown)
-                    : undefined,
-            ]),
-        );
-        loadedModules.set(text, bindings);
+    let loaded = loadedModules.get(packaged);
+    if (!loaded || loaded.text !== text) {
+        loaded = {
+            text,
+            bindings: loadAugmentedModule(
+                anchorSpecifiersInText(text, packaged),
+                packaged,
+            ),
+        };
+        loadedModules.set(packaged, loaded);
     }
-    if (!bindings.has(name)) {
+    const { bindings } = loaded;
+    if (!Object.hasOwn(bindings, name))
         throw new Error(
             `Pinned ${packaged} declares no module-scope '${name}'.`,
         );
-    }
-    return bindings.get(name);
-}
-
-/** The names a packaged module declares at its top level, from its syntax. */
-function topLevelDeclarations(text: string, fileName: string): string[] {
-    const file = ts.createSourceFile(
-        fileName,
-        text,
-        ts.ScriptTarget.Latest,
-        false,
-        ts.ScriptKind.JS,
-    );
-    return file.statements.flatMap((statement) =>
-        statementDeclaredNames(statement).map((name) => name.text),
-    );
-}
-
-/** The augmented module, written once per content under the OS temp directory. */
-function augmentedModuleFile(text: string): string {
-    const directory = join(tmpdir(), "bblitec-pinned-modules");
-    mkdirSync(directory, { recursive: true });
-    const file = join(
-        directory,
-        `${createHash("sha256").update(text).digest("hex")}.mjs`,
-    );
-    if (!existsSync(file)) {
-        // Parallel generations may write the same content; the rename makes
-        // the file whole before anyone can load it.
-        const pending = `${file}.${process.pid}.tmp`;
-        writeFileSync(pending, text);
-        try {
-            renameSync(pending, file);
-        } catch (error: unknown) {
-            rmSync(pending, { force: true });
-            if (!existsSync(file)) throw error;
-        }
-    }
-    return file;
+    return bindings[name];
 }

@@ -182,7 +182,7 @@ ${indent}return [&json, cache = std::move(extImageCache), resolve_image](const t
             ],
             ["wrapTex", (args) => `wrap_texture(${args.join(", ")})`],
         ]),
-        booleanOr: true,
+
         foldConditions: false,
         expression(node, lowerer) {
             if (ts.isIdentifier(node) && node.text === "undefined")

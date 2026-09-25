@@ -33,7 +33,7 @@ export function lowerBabylonCubeTexture(context: LoweringContext): string {
     const body = lowerPinnedBody(file, [branch], {
         bindings: new Map([[prefix, { cpp: present, type: "bool" }]]),
         calls: new Map(),
-        booleanAnd: true,
+
         expression(node) {
             if (
                 context.expressionMatchesShape(

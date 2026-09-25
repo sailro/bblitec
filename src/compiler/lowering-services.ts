@@ -110,6 +110,7 @@ export interface LoweringServices {
     readonly canvasReadbackFunctions: Set<string>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
     readonly assets: Map<string, CompileAsset>;
+    readonly assetOutputs: Map<string, CompileAsset>;
     readonly assetPayloads: Map<string, string>;
     readonly boundPixelsTextures: Set<string>;
     readonly erasedBrowserExpressions: Set<number>;
@@ -425,7 +426,6 @@ export interface LoweringServices {
     canvasSizeProperty(
         expression: ts.Expression,
     ): "width" | "height" | undefined;
-    staticCanvasSize(expression: ts.Expression): number | undefined;
     canvasSizeValue(expression: ts.Expression): Value | undefined;
     isBrowserInstrumentationCall(call: ts.CallExpression): boolean;
     platformDocumentHidden(): string | undefined;

@@ -49,6 +49,33 @@ export class NativeEmissionRegistry {
      * emitted helper lines at the call site keeps its inline form.
      */
     private readonly staticRecordAccessors = new EmissionMap<string, string>();
+    private readonly queryAccessors = new EmissionMap<string, string>();
+
+    /** One immutable deployment bag per realm, shared by every emitting function. */
+    public deploymentQuery(
+        initializer: string,
+        cppType: string,
+        realmScoped: boolean,
+    ): string {
+        const existing = this.queryAccessors.get(initializer);
+        if (existing) return `bblscene::${existing}()`;
+        const name = this.context.allocateTemporaryCppName("deployment_query");
+        this.registerNativeFunction(`const ${cppType}& ${name}();`, [
+            `const ${cppType}& ${name}() {`,
+            ...(realmScoped
+                ? [
+                      `    struct Storage { ${cppType} value = ${initializer}; };`,
+                      "    return bbl::js::realm_scratch<Storage>().value;",
+                  ]
+                : [
+                      `    static thread_local const ${cppType} value = ${initializer};`,
+                      "    return value;",
+                  ]),
+            "}",
+        ]);
+        this.queryAccessors.set(initializer, name);
+        return `bblscene::${name}()`;
+    }
 
     /** Closure environment structs already registered, by name. */
     public readonly environmentStructs = new EmissionSet<string>();

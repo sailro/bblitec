@@ -1,3 +1,6 @@
+import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
+import { cppTokens } from "./compiler/cpp-identifiers.js";
+import { unqualifiedIdentifiers } from "./compiler/cpp-statements.js";
 import {
     isStringValue,
     optionalPresentCpp,
@@ -671,6 +674,7 @@ class Compiler implements LoweringServices {
     public readonly features = new EmissionSet<Feature>(["core"]);
     private readonly featureSites = new EmissionMap<Feature, string>();
     public readonly assets = new EmissionMap<string, CompileAsset>();
+    public readonly assetOutputs = new EmissionMap<string, CompileAsset>();
     public readonly assetPayloads = new EmissionMap<string, string>();
     /**
      * Pixels-texture locals already handed to a material slot.
@@ -701,9 +705,10 @@ class Compiler implements LoweringServices {
         string,
         NativeCaptureBinding
     >();
-    private readonly nativeBindingTypes = new EmissionMap<string, string>();
-    /** Locals declared `const`: an environment borrows them as constant. */
-    private readonly constNativeBindings = new EmissionSet<string>();
+    private readonly nativeBindingTypes = new EmissionMap<
+        string,
+        { readonly type: string | undefined; readonly constant: boolean }
+    >();
     private readonly allocatedCppNames = new EmissionMap<string, number>();
     private readonly nativeTemporaries =
         new EmissionWeakSet<NativeCaptureBinding>();
@@ -4704,20 +4709,20 @@ class Compiler implements LoweringServices {
 
     /** A capture's native type, constant when its local is declared so. */
     private nativeBindingCaptureType(name: string): string | undefined {
-        const type = this.nativeBindingTypes.get(name);
-        return type !== undefined &&
-            this.constNativeBindings.has(name) &&
-            !type.startsWith("const ")
-            ? `const ${type}`
-            : type;
+        const binding = this.nativeBindingTypes.get(name);
+        return binding?.type !== undefined && binding.constant
+            ? `const ${binding.type}`
+            : binding?.type;
     }
 
     public registerNativeBindingType(name: string, cppType: string): void {
-        if (
-            cppIdentifierPattern.test(name) &&
-            !this.nativeBindingTypes.has(name)
-        )
-            this.nativeBindingTypes.set(name, cppType);
+        if (!cppIdentifierPattern.test(name)) return;
+        const previous = this.nativeBindingTypes.get(name);
+        if (previous?.type !== undefined) return;
+        this.nativeBindingTypes.set(name, {
+            type: cppType.replace(/^const /, ""),
+            constant: previous?.constant ?? cppType.startsWith("const "),
+        });
     }
 
     public nativeBindingCheckpoint(): number {
@@ -4931,43 +4936,13 @@ class Compiler implements LoweringServices {
         }
     }
 
-    public useNativeValue(value: Value, seen = new EmissionSet<Value>()): void {
-        if (seen.has(value)) return;
-        seen.add(value);
-        if (value.kind !== "record" && value.kind !== "tuple") {
-            for (const binding of value.nativeCaptures ?? [])
-                this.useNativeBinding(binding);
-            const binding = this.nativeBindings.get(value.cpp);
-            if (binding) this.useNativeBinding(binding);
-        }
-        for (const key of nativeCompanionKeys) {
-            const companion = value[key];
-            if (companion === undefined) continue;
-            const dependencies = value.nativeCompanionCaptures?.[key];
-            if (dependencies) {
-                for (const binding of dependencies)
-                    this.useNativeBinding(binding);
-            } else {
-                const binding = this.nativeBindings.get(companion);
-                if (binding) this.useNativeBinding(binding);
-            }
-        }
-        if (value.kind === "record") {
-            if (value.sceneNodeVector)
-                this.useNativeValue(value.sceneNodeVector.owner, seen);
-            if (value.cameraVector)
-                this.useNativeValue(value.cameraVector.owner, seen);
-            for (const field of Object.values(value.recordProperties ?? {}))
-                this.useNativeValue(field, seen);
-        }
-        if (value.kind === "tuple") {
-            for (const field of value.tupleElements ?? [])
-                this.useNativeValue(field, seen);
-        }
-        for (const expression of value.materialUboArrayFields?.values() ?? []) {
-            for (const binding of expression.nativeCaptures)
-                this.useNativeBinding(binding);
-        }
+    private readonly nativeValueCaptures = new NativeCaptureCache(
+        this.nativeBindings,
+    );
+
+    public useNativeValue(value: Value): void {
+        for (const binding of this.nativeValueCaptures.bindingsOf(value))
+            this.useNativeBinding(binding);
     }
 
     public captureNativeExpression(
@@ -5014,7 +4989,13 @@ class Compiler implements LoweringServices {
             }
             this.managedCaptures.pop();
         }
-        const identifiers = capture.retainReferenced(lines);
+        const tokens = [...cppTokens(lines.join("\n"))];
+        const identifiers = new Set(
+            tokens
+                .filter((token) => token.kind === "identifier")
+                .map((token) => token.text),
+        );
+        capture.retainReferenced(identifiers);
         const localBindings = [...identifiers].filter(
             (name) =>
                 (this.nativeBindings.get(name)?.sequence ?? 0) >
@@ -5034,8 +5015,8 @@ class Compiler implements LoweringServices {
         // Enclosing names the body reads without its environment: bindings
         // it did not capture, and other enclosing locals (a platform event
         // parameter) it names unqualified.
-        const captured = new EmissionSet(capture.nativeCaptures);
-        const text = lines.join("\n");
+        const captured = new Set(capture.nativeCaptures);
+        const unqualified = new Set(unqualifiedIdentifiers(tokens));
         const uncaptured = [...identifiers].filter((name) => {
             const binding = this.nativeBindings.get(name);
             if (binding)
@@ -5047,7 +5028,7 @@ class Compiler implements LoweringServices {
             return (
                 allocated !== undefined &&
                 allocated <= allocationBoundary &&
-                new RegExp(`(?:^|[^:\\w])${name}\\b`).test(text)
+                unqualified.has(name)
             );
         });
         return {
@@ -5295,7 +5276,7 @@ class Compiler implements LoweringServices {
                     ) &&
                     isCameraExpression(this, owner.expression))
             ) {
-                this.admissions.untrackedTaaCameraWrites.push({
+                this.admissions.noteUntrackedCameraWrite({
                     node: left,
                     reason: "this camera mutation syntax does not invoke its pinned setter",
                 });
@@ -5310,14 +5291,14 @@ class Compiler implements LoweringServices {
             ) &&
             isCameraExpression(this, left.expression)
         ) {
-            this.admissions.untrackedTaaCameraWrites.push({
+            this.admissions.noteUntrackedCameraWrite({
                 node: left,
                 reason: `replacing camera.${left.name.text} changes its observable owner`,
             });
         }
         const target = cameraNumberWrite(this, left);
         if (!target) return undefined;
-        this.admissions.textCameraMutation ??= left;
+        this.admissions.noteTextCameraMutation(left);
         noteCameraRecordWrite(
             this,
             target.camera,
@@ -5327,7 +5308,7 @@ class Compiler implements LoweringServices {
                 !["target", "position", "up_vector"].includes(target.property),
         );
         if (target.property === "position" || target.property === "up_vector") {
-            this.admissions.untrackedTaaCameraWrites.push({
+            this.admissions.noteUntrackedCameraWrite({
                 node: left,
                 reason: `camera.${target.property} is not the arc camera's observable target`,
                 ...(target.camera.cameraKind === "free"
@@ -5816,17 +5797,6 @@ class Compiler implements LoweringServices {
         return this.canvasSizeInfo(expression)?.axis;
     }
 
-    public staticCanvasSize(expression: ts.Expression): number | undefined {
-        const property = this.canvasSizeInfo(expression);
-        if (!property) return undefined;
-        // A retained primary canvas can redraw after a window resize; its
-        // client extent is a host observation, including inside Math calls.
-        if (this.presentationHostCpp) return undefined;
-        return property.axis === "width"
-            ? this.options.width
-            : this.options.height;
-    }
-
     public canvasSizeValue(expression: ts.Expression): Value | undefined {
         const unwrapped = this.unwrap(expression);
         if (
@@ -5878,7 +5848,7 @@ class Compiler implements LoweringServices {
         ) {
             // This erased browser helper cannot invoke observable setters,
             // including through a helper-returned camera/vector argument.
-            this.admissions.untrackedTaaCameraWrites.push({
+            this.admissions.noteUntrackedCameraWrite({
                 node: call,
                 reason: "Object.assign does not lower observable camera setters",
             });
@@ -6934,23 +6904,23 @@ class Compiler implements LoweringServices {
         const code =
             typeof line === "string" ? line : renderNativeDeclaration(line);
         if (typeof line !== "string") {
-            if (line.type.startsWith("const "))
-                this.constNativeBindings.add(line.name);
-            if (!/\bauto\b|\bdecltype\b/.test(line.type))
-                this.registerNativeBindingType(
-                    line.name,
-                    line.type.replace(/&+$/, "").trim(),
-                );
-            else if (line.type === "auto&" || line.type === "auto&&") {
-                const sourceType = this.nativeBindingTypes.get(
-                    line.initializer,
-                );
-                if (sourceType)
-                    this.registerNativeBindingType(line.name, sourceType);
-                // A deduced reference to a const local is const itself.
-                if (this.constNativeBindings.has(line.initializer))
-                    this.constNativeBindings.add(line.name);
-            }
+            const aliased =
+                line.type === "auto&" || line.type === "auto&&"
+                    ? this.nativeBindingTypes.get(line.initializer)
+                    : undefined;
+            // A declaration starts this local's storage facts. An earlier
+            // speculative shared-cell description cannot type its new local.
+            this.nativeBindingTypes.set(line.name, {
+                type: /\bauto\b|\bdecltype\b/.test(line.type)
+                    ? aliased?.type
+                    : line.type
+                          .replace(/^const /, "")
+                          .replace(/&+$/, "")
+                          .trim(),
+                constant:
+                    line.type.startsWith("const ") ||
+                    aliased?.constant === true,
+            });
             this.nativeDeclarations.set(code, {
                 ...line,
                 dependencies: [
@@ -7082,6 +7052,7 @@ class Compiler implements LoweringServices {
             renderDataPreamble: () =>
                 this.dataTypes.renderPreamble(!!this.options.workers),
             nativeFunctions: this.nativeEmission.nativeDefinitions,
+            nativeDeclarations: this.nativeDeclarations,
             staticNativeDeclarations:
                 this.nativeEmission.staticNativeDeclarations,
             bindingType: (name) => this.nativeBindingCaptureType(name),

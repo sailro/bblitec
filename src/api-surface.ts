@@ -1,3 +1,4 @@
+import { isRecord } from "./json-fields.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -399,10 +400,6 @@ export function readApiSnapshot(path: string): ApiSnapshot {
         exports,
         items,
     };
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function diffApi(

@@ -62,8 +62,7 @@ export function lowerGltfWeightedAnimationTargets(
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings,
         calls: new Map(),
-        booleanAnd: true,
-        booleanOr: true,
+
         expression(node, lowerer) {
             if (context.expressionMatchesShape(node, "mixer[GLTF_NODES]"))
                 return "transport.nodes(mixer)";

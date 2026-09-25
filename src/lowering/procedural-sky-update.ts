@@ -173,8 +173,7 @@ export function lowerProceduralSkyUpdate(
             const scope: PinnedBodyScope = {
                 bindings,
                 calls,
-                booleanAnd: true,
-                booleanOr: true,
+
                 foldConditions: false,
                 forOf(iterated, element) {
                     if (iterated !== "environment._mipmaps") return undefined;

@@ -138,7 +138,7 @@ export function computeTaskDispatchRecordingCpp(
                 ],
             ]),
             calls: new Map(),
-            booleanOr: true,
+
             expression(node, lowerer) {
                 if (!ts.isElementAccessExpression(node)) return undefined;
                 const owner = node.expression.getText(offsets.file);
@@ -252,8 +252,7 @@ export function computeTaskDispatchRecordingCpp(
     const body = lowerPinnedBody(file, sourceBody.statements, {
         bindings,
         calls,
-        booleanAnd: true,
-        booleanOr: true,
+
         callShapes: new Map([
             ["validatedBindings.has", "bool"],
             ["offsetsEqual", "bool"],

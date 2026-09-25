@@ -1,3 +1,4 @@
+import { stringLiteral } from "../cpp-literals.js";
 /**
  * `device-lost-recovery.ts`'s coordinator, lowered from the pin.
  *
@@ -234,8 +235,6 @@ function coordinatorScope(
     calls: Map<string, (args: readonly string[]) => string>;
     methods: NonNullable<PinnedNumericScope["methods"]>;
     statement: NonNullable<PinnedNumericScope["statement"]>;
-    booleanOr: true;
-    booleanAnd: true;
 } {
     const file = context.sourceFile(recoveryModule);
     const statement: NonNullable<PinnedNumericScope["statement"]> = (
@@ -284,8 +283,6 @@ function coordinatorScope(
         ]),
         methods: listMethods,
         statement,
-        booleanOr: true,
-        booleanAnd: true,
     };
 }
 
@@ -649,7 +646,7 @@ std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(En
     if (engine.device_recovery && engine.device_recovery->disposed)
         throw std::runtime_error("Cannot register recovery on a disposed engine.");
     auto registration = std::make_shared<DeviceRecoveryRegistration>();
-    registration->kind = ${JSON.stringify(kind.initializer.text)};
+    registration->kind = ${stringLiteral(kind.initializer.text)};
     return enable_device_lost_recovery(engine, std::move(registration));
 }`;
 }
@@ -720,7 +717,7 @@ function contextKindAssertionCpp(context: LoweringContext): string {
     });
     const registries = contextRegistries
         .map((entry, index) => {
-            const line = `    kinds.insert(kinds.end(), ${entry.count}, std::string(${JSON.stringify(kinds[index])}));`;
+            const line = `    kinds.insert(kinds.end(), ${entry.count}, std::string(${stringLiteral(kinds[index]!)}));`;
             return entry.macro ? `#if ${entry.macro}\n${line}\n#endif` : line;
         })
         .join("\n");

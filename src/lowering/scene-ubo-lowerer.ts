@@ -58,7 +58,7 @@ export class SceneUboLowerer {
                 cppName: "pack_scene_matrix",
                 returns: "void",
                 templateParameters: ["class Matrix"],
-                booleanAnd: true,
+
                 arrayCopy: copyFloats,
             },
         );
@@ -424,7 +424,7 @@ void write_pass_scene_ubo(Source& source, const Engine& engine, const Scene& sce
     CameraKey&& camera_key, WriteFull&& write_full) {
 ${lowerPinnedBody(file, declaration.body!.statements.slice(0, tailIndex), {
     bindings,
-    booleanAnd: true,
+
     calls: new Map([
         ["_cameraChangeKey", (args) => `camera_key(${args.join(", ")})`],
     ]),
@@ -510,7 +510,7 @@ ${lowerPinnedBody(file, declaration.body!.statements.slice(0, tailIndex), {
 void advance_taa_jitter(State& state, Source& source, double width, double height, WriteSpan&& write_span) {
 ${lowerPinnedBody(file, declaration.body!.statements, {
     bindings,
-    booleanOr: true,
+
     calls: new Map([
         [
             "task.engine._device.queue.writeBuffer",
