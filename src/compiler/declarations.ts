@@ -89,6 +89,7 @@ interface DeclarationContext
             | "defaultEngine"
             | "emitDiscardedValue"
             | "emitNativeCallbackStorage"
+            | "engineLifecycle"
             | "evaluator"
             | "handleCollections"
             | "isNativeHostUiLookup"
@@ -116,10 +117,6 @@ interface DeclarationContext
     /** Module constants the static evaluator still folds. */
     readonly staticConstants: Map<ts.Symbol, ts.Expression>;
     readonly ui: Pick<UiProjection, "nativeHostUiTags">;
-    emitEscapingResolvePromise(
-        declaration: ts.VariableDeclaration,
-        cppName: string,
-    ): boolean;
     hasStableNativeBinding(value: Value): boolean;
     importedCall(
         expression: ts.Expression,
@@ -481,7 +478,12 @@ export class DeclarationLowerer {
         // A promise whose executor only escapes its own `resolve`, which
         // the scene later calls from a frame callback: a latch plus a
         // resolver, and an await that defers behind the latch.
-        if (this.context.emitEscapingResolvePromise(declaration, cppName)) {
+        if (
+            this.context.engineLifecycle.emitEscapingResolvePromise(
+                declaration,
+                cppName,
+            )
+        ) {
             return;
         }
 

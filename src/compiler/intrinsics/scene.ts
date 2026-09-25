@@ -18,7 +18,7 @@ export interface SceneIntrinsicContext
         CameraDeferralContext,
         Pick<
             LoweringServices,
-            | "compileDeviceRecoveryIntrinsic"
+            | "engineLifecycle"
             | "admissions"
             | "compileNumber"
             | "compileColor3"
@@ -34,7 +34,6 @@ export interface SceneIntrinsicContext
             | "compileStringLiteral"
             | "dataLowerer"
             | "emit"
-            | "markEngineStart"
             | "compileAsyncEngineStart"
             | "sceneManifest"
             | "requireEngine"
@@ -48,7 +47,10 @@ export function compileSceneIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
-    const recovery = context.compileDeviceRecoveryIntrinsic(importedName, call);
+    const recovery = context.engineLifecycle.compileDeviceRecoveryIntrinsic(
+        importedName,
+        call,
+    );
     if (recovery) return recovery;
     if (
         [
@@ -553,7 +555,10 @@ export function compileSceneIntrinsic(
             // the frames it just scheduled; here the call blocks, so the
             // statements after it are hoisted into the frame conductor's
             // deferred queue.
-            context.markEngineStart(engine.engineCpp ?? engine.cpp, call);
+            context.engineLifecycle.markEngineStart(
+                engine.engineCpp ?? engine.cpp,
+                call,
+            );
             return {
                 kind: "void",
                 cpp: `bbl::start_engine(${engine.cpp})`,

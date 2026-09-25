@@ -108,8 +108,7 @@ export interface StatementLoweringContext extends Pick<
     | "captureEmittedLines"
     | "reachesOnlyClosedEffects"
     | "useNativeValue"
-    | "emitFinallyGuard"
-    | "emitEngineFinally"
+    | "engineLifecycle"
     | "nativeBindingCheckpoint"
     | "registerNativeConstBinding"
     | "captureHoistedLines"
@@ -142,12 +141,6 @@ export interface StatementLoweringContext extends Pick<
     | "expectObjectLiteral"
     | "objectProperty"
     | "unwrap"
-    | "isFrameYield"
-    | "emitFrameYieldRequeue"
-    | "emitFramePollAwait"
-    | "isBoundedNestedFrameYield"
-    | "promiseLatchCondition"
-    | "emitStartContinuationGate"
     | "requireDefaultEngine"
     | "isBrowserInstrumentationCall"
     | "emitPlatformEventListener"
@@ -239,8 +232,8 @@ function containsFrameYield(
         ) {
             const awaited = context.unwrap(node.expression.expression);
             if (
-                context.isFrameYield(awaited) ||
-                context.isBoundedNestedFrameYield(awaited)
+                context.engineLifecycle.isFrameYield(awaited) ||
+                context.engineLifecycle.isBoundedNestedFrameYield(awaited)
             ) {
                 return true;
             }
@@ -1267,7 +1260,14 @@ export class StatementLowerer {
                 this.terminatesAfterLowering(statement.catchClause.block));
         const captureFinally = () =>
             this.captureFinallyGuard(context, finallyBlock, beforeBody);
-        if (context.emitEngineFinally(body, captureFinally, statement)) return;
+        if (
+            context.engineLifecycle.emitEngineFinally(
+                body,
+                captureFinally,
+                statement,
+            )
+        )
+            return;
         const capturedFinally = captureFinally();
         const finallyGuard = capturedFinally.length
             ? capturedFinally
@@ -1275,7 +1275,8 @@ export class StatementLowerer {
         if (finallyGuard) {
             context.emit("{");
             context.increaseIndent();
-            const guard = context.emitFinallyGuard(finallyGuard);
+            const guard =
+                context.engineLifecycle.emitFinallyGuard(finallyGuard);
             const pending =
                 context.allocateTemporaryCppName("finally_exception");
             context.emit(`std::exception_ptr ${pending};`);
@@ -3252,7 +3253,7 @@ export class StatementLowerer {
             context.eraseBrowserInstrumentation(unwrapped.pos);
             return;
         }
-        if (context.isBoundedNestedFrameYield(unwrapped)) {
+        if (context.engineLifecycle.isBoundedNestedFrameYield(unwrapped)) {
             // The exact two-RAF Promise carries no value and no callback may
             // interleave, so its continuation can stay in the native tail.
             // Its settling time still gates capture: the frame conductor
@@ -3266,7 +3267,10 @@ export class StatementLowerer {
             );
             return;
         }
-        if (ts.isCallExpression(unwrapped) && context.isFrameYield(unwrapped)) {
+        if (
+            ts.isCallExpression(unwrapped) &&
+            context.engineLifecycle.isFrameYield(unwrapped)
+        ) {
             // A zero-argument helper can carry the same one-frame Promise.
             // Recognize it before ordinary call inlining reaches the
             // browser-only constructor in the helper's return expression.
@@ -3280,13 +3284,13 @@ export class StatementLowerer {
                         "frame the scene asks for, not a count of them.",
                 );
             }
-            context.emitFrameYieldRequeue(unwrapped);
+            context.engineLifecycle.emitFrameYieldRequeue(unwrapped);
             return;
         }
         if (ts.isCallExpression(unwrapped)) {
             if (
                 ts.isAwaitExpression(expression) &&
-                context.emitFramePollAwait(unwrapped)
+                context.engineLifecycle.emitFramePollAwait(unwrapped)
             )
                 return;
             const value = context.compileValue(unwrapped);
@@ -3298,9 +3302,13 @@ export class StatementLowerer {
             // frame waits below, nothing here counts boundaries: the
             // scene installed the callback that ends the wait, so the
             // rest of the continuation is parked until it runs.
-            const latch = context.promiseLatchCondition(unwrapped);
+            const latch =
+                context.engineLifecycle.promiseLatchCondition(unwrapped);
             if (latch) {
-                context.emitStartContinuationGate(unwrapped, latch);
+                context.engineLifecycle.emitStartContinuationGate(
+                    unwrapped,
+                    latch,
+                );
                 return;
             }
         }
@@ -3331,7 +3339,7 @@ export class StatementLowerer {
             );
             return;
         }
-        if (context.isFrameYield(unwrapped)) {
+        if (context.engineLifecycle.isFrameYield(unwrapped)) {
             // Before the frame loop exists, one frame's work has already
             // happened by the time this runtime reaches the statement after
             // it, so the yield erases; inside the hoisted continuation the
@@ -3349,7 +3357,7 @@ export class StatementLowerer {
                         "frame the scene asks for, not a count of them.",
                 );
             }
-            context.emitFrameYieldRequeue(unwrapped);
+            context.engineLifecycle.emitFrameYieldRequeue(unwrapped);
             return;
         }
         // `await <barrier property>` -- a read whose only meaning is the

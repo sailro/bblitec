@@ -96,7 +96,7 @@ interface PlatformCallContext
             | "dataLowerer"
             | "dataTypes"
             | "emit"
-            | "engineHasStarted"
+            | "engineLifecycle"
             | "browserErasure"
             | "evaluator"
             | "expectArgumentCount"
@@ -510,7 +510,7 @@ export class PlatformCalls {
             };
         }
         this.requireCompatibleFrameConductor("persistent", call);
-        const callbacks = this.context.engineHasStarted()
+        const callbacks = this.context.engineLifecycle.engineHasStarted()
             ? "post_render_animation_frame_callbacks"
             : "animation_frame_callbacks";
         return {

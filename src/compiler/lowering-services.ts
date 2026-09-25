@@ -45,6 +45,7 @@ import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
 import type { PropertyAccessLowerer } from "./properties.js";
+import type { EngineLifecycle } from "./engine-lifecycle.js";
 import type { SharedClosureAnalysis } from "./shared-closure-analysis.js";
 import type { NativeEmissionRegistry } from "./native-emission-registry.js";
 import type { AssetRegistry } from "./asset-registry.js";
@@ -120,6 +121,7 @@ export interface LoweringServices {
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
     readonly propertyAccess: PropertyAccessLowerer;
+    readonly engineLifecycle: EngineLifecycle;
     readonly sharedClosures: SharedClosureAnalysis;
     readonly nativeEmission: NativeEmissionRegistry;
     readonly assetRegistry: AssetRegistry;
@@ -509,7 +511,6 @@ export interface LoweringServices {
     ): "width" | "height" | undefined;
     staticCanvasSize(expression: ts.Expression): number | undefined;
     canvasSizeValue(expression: ts.Expression): Value | undefined;
-    isBoundedNestedFrameYield(expression: ts.Expression): boolean;
     isBrowserInstrumentationCall(call: ts.CallExpression): boolean;
     platformDocumentHidden(): string | undefined;
     compilePlatformCall(call: ts.CallExpression): Value | undefined;
@@ -520,11 +521,6 @@ export interface LoweringServices {
     ): void;
     emitPlatformEventListener(call: ts.CallExpression): boolean;
     isCanvasElement(expression: ts.Expression): boolean;
-    isFrameYield(expression: ts.Expression): boolean;
-    emitFramePollAwait(call: ts.CallExpression): boolean;
-    emitFrameYieldRequeue(expression: ts.Expression): void;
-    promiseLatchCondition(expression: ts.Expression): string | undefined;
-    emitStartContinuationGate(expression: ts.Expression, latch: string): void;
     constantInitializer(identifier: ts.Identifier): ts.Expression | undefined;
     moduleFunctionDeclaration(
         identifier: ts.Identifier,
@@ -610,20 +606,8 @@ export interface LoweringServices {
         maximum: number,
     ): void;
     cppString(value: string): string;
-    engineHasStarted(): boolean;
     hasRegisteredScene(): boolean;
     emit(line: string | NativeDeclaration): void;
-    compileDeviceRecoveryIntrinsic(
-        name: string,
-        call: ts.CallExpression,
-    ): Value | undefined;
-    markEngineStart(engineCpp: string, node: ts.Node): void;
-    emitFinallyGuard(cleanup: readonly string[]): string;
-    emitEngineFinally(
-        body: readonly string[],
-        cleanup: () => readonly string[],
-        site: ts.TryStatement,
-    ): boolean;
     isEntryBodyScope(): boolean;
     increaseIndent(): void;
     decreaseIndent(): void;

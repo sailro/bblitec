@@ -497,7 +497,7 @@ export interface AssignmentContext
             | "dataTypes"
             | "dataLowerer"
             | "sceneManifest"
-            | "engineHasStarted"
+            | "engineLifecycle"
             | "hasRegisteredScene"
             | "boundPixelsTextures"
             | "resolveStaticExpression"
@@ -3338,7 +3338,7 @@ function emitSkeletonAssignment(
         }
         if (
             context.isRuntimeResourceConstruction() ||
-            context.engineHasStarted()
+            context.engineLifecycle.engineHasStarted()
         ) {
             context.fail(
                 expression,
@@ -3389,7 +3389,7 @@ function emitMorphTargetsAssignment(
         }
         if (
             context.isRuntimeResourceConstruction() ||
-            context.engineHasStarted()
+            context.engineLifecycle.engineHasStarted()
         ) {
             context.fail(
                 expression,
@@ -3437,7 +3437,7 @@ function emitOrmTextureAssignment(
         requireSimpleAssignment(context, expression, "PBR ormTexture");
         if (
             context.hasRegisteredScene() ||
-            context.engineHasStarted() ||
+            context.engineLifecycle.engineHasStarted() ||
             context.isRuntimeResourceConstruction()
         ) {
             context.fail(

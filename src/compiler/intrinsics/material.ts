@@ -52,7 +52,7 @@ export interface MaterialIntrinsicContext
         MaterialPluginResourceContext,
         Pick<
             LoweringServices,
-            | "engineHasStarted"
+            | "engineLifecycle"
             | "hasRegisteredScene"
             | "sceneManifest"
             | "assetRegistry"
@@ -719,7 +719,10 @@ function compileSetStandardLightmapTexture(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
-    if (context.hasRegisteredScene() || context.engineHasStarted())
+    if (
+        context.hasRegisteredScene() ||
+        context.engineLifecycle.engineHasStarted()
+    )
         context.fail(
             call,
             "Standard lightmap texture binding requires setup before scene registration.",
@@ -1132,7 +1135,7 @@ function compileSetShadowOnly(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     if (
-        context.engineHasStarted() ||
+        context.engineLifecycle.engineHasStarted() ||
         context.hasRegisteredScene() ||
         context.isRuntimeResourceConstruction()
     )
@@ -1832,7 +1835,7 @@ function compileRebuildMaterial(
     context.expectKind(scene, "scene", argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 1));
     context.expectSameEngine(scene, material, call);
-    if (context.engineHasStarted()) {
+    if (context.engineLifecycle.engineHasStarted()) {
         context.fail(
             call,
             "rebuildMaterial after startEngine requires live GPU material resource replacement.",

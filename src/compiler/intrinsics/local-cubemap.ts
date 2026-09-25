@@ -22,7 +22,7 @@ export interface LocalCubemapIntrinsicContext
             | "sceneManifest"
             | "assetRegistry"
             | "expectSameEngine"
-            | "engineHasStarted"
+            | "engineLifecycle"
             | "hasRegisteredScene"
             | "emit"
             | "cppString"
@@ -108,7 +108,7 @@ export function compileLocalCubemapIntrinsic(
     if (!names.includes(name)) return undefined;
     if (
         context.hasRegisteredScene() ||
-        context.engineHasStarted() ||
+        context.engineLifecycle.engineHasStarted() ||
         context.isRuntimeResourceConstruction()
     )
         context.fail(

@@ -3,6 +3,7 @@ import ts from "typescript";
 import { noteCameraRecordWrite } from "./intrinsics/camera.js";
 import type { Feature, Value } from "./types.js";
 import type { PositiveIntegerContext } from "./option-helpers.js";
+import type { EngineLifecycle } from "./engine-lifecycle.js";
 import type { LoweringServices } from "./lowering-services.js";
 
 /** What the admission recorder reads of the compiler. */
@@ -17,7 +18,7 @@ export interface AdmissionContext
             | "sourceFile"
         > {
     /** Where `startEngine` landed, once it has. */
-    readonly engineStartMark: object | undefined;
+    readonly engineLifecycle: Pick<EngineLifecycle, "engineStartMark">;
     readonly features: ReadonlySet<Feature>;
     /** How many frame callbacks enclose the current emission. */
     readonly frameCallbackDepth: number;
@@ -169,7 +170,7 @@ export class AdmissionRecorder {
     public assertNodeInputMutable(node: ts.Node): void {
         if (
             this.context.frameCallbackDepth > 0 ||
-            this.context.engineStartMark !== undefined ||
+            this.context.engineLifecycle.engineStartMark !== undefined ||
             this.temporalSceneRegistration
         ) {
             this.context.fail(
@@ -219,7 +220,7 @@ export class AdmissionRecorder {
     public noteTextSceneCameraAssignment(node: ts.Node): void {
         if (
             this.context.isRuntimeResourceConstruction() ||
-            this.context.engineStartMark !== undefined
+            this.context.engineLifecycle.engineStartMark !== undefined
         )
             this.textCameraMutation ??= node;
     }
@@ -228,7 +229,7 @@ export class AdmissionRecorder {
         if (
             this.context.isRuntimeResourceConstruction() ||
             this.textAttachmentReached ||
-            this.context.engineStartMark !== undefined
+            this.context.engineLifecycle.engineStartMark !== undefined
         ) {
             this.context.fail(
                 node,
@@ -240,7 +241,7 @@ export class AdmissionRecorder {
     public recordTextAttachment(node: ts.Node): void {
         if (
             this.context.isRuntimeResourceConstruction() ||
-            this.context.engineStartMark !== undefined
+            this.context.engineLifecycle.engineStartMark !== undefined
         )
             this.context.fail(
                 node,
@@ -253,7 +254,7 @@ export class AdmissionRecorder {
         if (
             this.textAttachmentReached ||
             this.context.isRuntimeResourceConstruction() ||
-            this.context.engineStartMark !== undefined
+            this.context.engineLifecycle.engineStartMark !== undefined
         ) {
             this.context.fail(
                 node,
@@ -323,7 +324,7 @@ export class AdmissionRecorder {
         if (
             always ||
             this.context.frameCallbackDepth > 0 ||
-            this.context.engineStartMark !== undefined ||
+            this.context.engineLifecycle.engineStartMark !== undefined ||
             this.temporalSceneRegistration
         ) {
             this.deferredAdmissionFailures.push({
@@ -342,7 +343,7 @@ export class AdmissionRecorder {
     ): void {
         const runtime =
             this.context.frameCallbackDepth > 0 ||
-            this.context.engineStartMark !== undefined;
+            this.context.engineLifecycle.engineStartMark !== undefined;
         if (
             mode === "always" ||
             runtime ||
@@ -388,7 +389,7 @@ export class AdmissionRecorder {
         if (
             this.temporalControlAttachment ||
             this.context.frameCallbackDepth > 0 ||
-            this.context.engineStartMark !== undefined
+            this.context.engineLifecycle.engineStartMark !== undefined
         ) {
             this.untrackedTaaCameraWrites.push({
                 node,
