@@ -1,7 +1,7 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 /** The scaled arm of the public descriptor resolver; surface selection stays in PAL. */
 export function lowerSurfaceRenderTargetSize(context: LoweringContext): string {
@@ -20,7 +20,7 @@ export function lowerSurfaceRenderTargetSize(context: LoweringContext): string {
         '"surface" in size',
         "Surface size selection",
     );
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set("Number.isFinite", (args) => `std::isfinite(${args.join(", ")})`);
     const body = lowerPinnedBody(file, branch.thenStatement.statements, {
         bindings: new Map([

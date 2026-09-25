@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { sharedPinnedContext } from "../context.js";
 import { lowerPinnedFunction } from "../pinned-function-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "../pinned-operators.js";
+
 import type { GltfLoaderOptions } from "./loader.js";
 import { recordAt } from "../../compiler/record-access.js";
 
@@ -44,7 +44,7 @@ export function gltfAnimatedLightCpp(): {
         {
             cppName: "gltf_write_world_light_direction",
             returns: "void",
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
             memberBindings: new Map(
                 (["x", "y", "z"] as const).map((axis) => [
                     `direction.${axis}`,

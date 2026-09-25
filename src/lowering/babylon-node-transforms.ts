@@ -2,7 +2,6 @@ import ts from "typescript";
 import { LoweringContext } from "./context.js";
 import type { PinnedBodyScope } from "./pinned-body-lowerer.js";
 import type { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 export function babylonNodeTransformScope(
     context: LoweringContext,
@@ -64,7 +63,7 @@ export function babylonNodeTransformScope(
     };
     return {
         bindings: new Map(),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         expression(node, lowerer) {
             if (
                 ts.isBinaryExpression(node) &&

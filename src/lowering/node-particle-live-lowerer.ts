@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * A LIVE node-particle system, lowered from the pin's own block evaluators.
  *
@@ -56,7 +57,7 @@ import {
     recordTypeOfAnnotation,
     recordTypeOfMembers,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import {
     type Callable,
     type Classified,
@@ -256,8 +257,8 @@ type NpEnv = Env<StaticValue>;
 
 /** The calls every residual body may make: the Math table and the pinned generator. */
 function pinnedCalls(): Map<string, (args: readonly string[]) => string> {
-    const calls = pinnedNumericMathCalls();
-    calls.set("Math.random", () => "bbl::js::random_js()");
+    const calls = new Map<string, PinnedCallSpelling>();
+
     return calls;
 }
 

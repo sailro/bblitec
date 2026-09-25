@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * Lowers Babylon Lite's own material-UBO writers to C++.
  *
@@ -37,7 +38,7 @@ import {
     samePinnedDefault,
     type PinnedDefaultValue,
 } from "./pinned-option-defaults.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 
 export interface UboFieldSlot {
@@ -794,7 +795,7 @@ function vectorMember(
 }
 
 const numericWriters = new WeakMap<WriterState, PinnedNumericLowerer>();
-const writerMathCalls = pinnedNumericMathCalls();
+const writerMathCalls = new Map<string, PinnedCallSpelling>();
 
 function emitExpression(state: WriterState, expression: ts.Expression): string {
     let lowerer = numericWriters.get(state);

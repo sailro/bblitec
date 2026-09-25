@@ -31,7 +31,7 @@ import {
     type PinnedNumericLowerer,
     recordLiteralCpp,
 } from "../pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "../pinned-operators.js";
+
 import { pinnedOptionNumber } from "../pinned-option-defaults.js";
 
 /** A pinned `Vec3` parameter, landing on the runtime's double record. */
@@ -85,7 +85,6 @@ export class TubeLowerer {
         string,
         (args: readonly string[]) => string
     >([
-        ...pinnedNumericMathCalls(),
         ...(
             [
                 ["lengthVec3", "tube_length"],

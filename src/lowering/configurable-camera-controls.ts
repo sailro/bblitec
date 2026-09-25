@@ -2,7 +2,7 @@ import { stringLiteral as cppStringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
 import { type LoweringContext, type LoweredSource } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import type {
     PinnedBinding,
     PinnedCallSpelling,
@@ -67,7 +67,7 @@ function freeCameraBindings(): Map<string, PinnedBinding> {
 }
 
 function freeCameraCalls(): Map<string, PinnedCallSpelling> {
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set("keys.has", (args) => `pressed(${args.join(", ")})`);
     calls.set(
         "camera.target.set",

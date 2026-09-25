@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import {
     methodAccess,
     provenance,
@@ -55,7 +56,7 @@ import {
     type PinnedRecordMember,
     type PinnedRecordShape,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedMathCall, pinnedNumericMathCalls } from "./pinned-operators.js";
+import { pinnedMathCall } from "./pinned-operators.js";
 import { doubleLiteral } from "../cpp-literals.js";
 
 const NAVIGATION_MODULE = "src/navigation/navigation.ts";
@@ -1110,7 +1111,7 @@ function boundingBoxFunction(): PlanFunction {
     };
     const lowerer = new PinnedNumericLowerer(file, {
         bindings,
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         vec3Literal: (x, y, z) => `bbl::Vec3d{${x}, ${y}, ${z}}`,
         returnValue: (expression) => {
             if (!expression) {
@@ -1340,7 +1341,7 @@ function configStepFunction(
     ]);
     const lowerer = new PinnedNumericLowerer(file, {
         bindings,
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         statement: (statement, active, indent) => {
             if (statement === measure.statement) return [];
             const store = rawStore(statement);
@@ -1821,7 +1822,7 @@ function tileNavMeshParamsFunction(generator: GeneratorConfig): PlanFunction {
         }
     }
     const { bindings, readsParams } = tileCacheBindings(generator);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const [name, cppName] of DETOUR_BIT_HELPERS) {
         calls.set(name, (args) => {
             if (args.length !== 1) {
@@ -1987,7 +1988,7 @@ function tileConfigFunction(generator: GeneratorConfig): PlanFunction {
     const fields = wrapperRcConfigFields();
     const lowerer = new PinnedNumericLowerer(file, {
         bindings,
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         statement: (statement, active, indent) => {
             if (statement === statements[clone.index]) {
                 for (const [text, binding] of rcConfigReads(

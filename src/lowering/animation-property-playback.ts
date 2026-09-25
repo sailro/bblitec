@@ -2,7 +2,6 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 /** Property groups use the source clock and public controls within mixed manager traversal. */
 export function lowerPropertyAnimationPlayback(
@@ -43,7 +42,7 @@ export function lowerPropertyAnimationPlayback(
     ]);
     const clock = lowerPinnedBody(file, tick.body.statements, {
         bindings,
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
 
         statement(statement, _lowerer, indent) {
             if (!ts.isForStatement(statement)) return undefined;

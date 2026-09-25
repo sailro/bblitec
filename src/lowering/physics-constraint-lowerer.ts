@@ -4,7 +4,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 const module = "src/physics/havok.ts";
@@ -375,7 +375,6 @@ export function lowerPhysicsConstraints(context: LoweringContext): {
                         [parameter, { cpp: parameter, type: "vec3" as const }],
                     ]),
                     calls: new Map([
-                        ...pinnedNumericMathCallsWithHypot(),
                         [
                             "normalizeVec3",
                             (args) =>

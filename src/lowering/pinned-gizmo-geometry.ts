@@ -6,7 +6,7 @@ import {
     type PinnedBinding,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import type { RenderedCpp } from "./pinned-numeric-expression.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
@@ -36,7 +36,7 @@ function numericScope(
             ["Math.PI", { cpp: "pi_double", type: "scalar" }],
             ...bindings,
         ]),
-        calls: pinnedNumericMathCallsWithHypot(),
+        calls: new Map(),
         vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
     };
 }
@@ -430,7 +430,7 @@ function lowerHemisphere(context: LoweringContext): string {
         ],
         {
             cppName: "gizmo_hemisphere_geometry",
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
             memberBindings: new Map([
                 ["Math.PI", { cpp: "pi_double", type: "scalar" }],
             ]),

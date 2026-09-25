@@ -31,6 +31,7 @@
  * name rather than approximating.
  */
 import ts from "typescript";
+import { mathCallSpelling } from "../compiler/math-intrinsics.js";
 import {
     doubleLiteral,
     sanitizeCppIdentifier,
@@ -56,7 +57,6 @@ import {
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
-    pinnedNumericMathCalls,
     pinnedRemainderCall,
 } from "./pinned-operators.js";
 import {
@@ -78,9 +78,6 @@ import { recordAt } from "../compiler/record-access.js";
 function identifier(name: string): string {
     return snakeCase(sanitizeCppIdentifier(name));
 }
-
-/** `Math.*` over a run-time number, spelled by the shared table. */
-const PINNED_MATH_CALLS = pinnedNumericMathCalls();
 
 const RUNTIME_MODULE = "src/flow-graph/runtime.ts";
 const REGISTRY_MODULE = "src/flow-graph/block-registry.ts";
@@ -1853,7 +1850,7 @@ class Interpreter implements ValueModel<Val, Binding> {
             if (typeof fn !== "function") this.fail(node, `Math.${method}`);
             return staticNumber(fn(...numbers));
         }
-        const spell = PINNED_MATH_CALLS.get(`Math.${method}`);
+        const spell = mathCallSpelling(method);
         if (!spell) this.fail(node, `Math.${method} over a run-time value`);
         return {
             k: "residual",

@@ -6,7 +6,6 @@ import type {
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
 import { lowerObjectComponents } from "./pinned-function-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const boundsModule = "src/mesh/mesh-world-bounds.ts";
 const thinInstanceBoundsModule =
@@ -292,7 +291,7 @@ export function lowerWorldAabbHelpers(
                 "thinInstances",
                 "matrices",
             ]),
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
             laneKeys: true,
         },
     );
@@ -311,7 +310,6 @@ export function lowerWorldAabbHelpers(
         ]),
         {
             calls: new Map([
-                ...pinnedNumericMathCalls(),
                 [
                     "addRange",
                     (args: readonly string[]) =>

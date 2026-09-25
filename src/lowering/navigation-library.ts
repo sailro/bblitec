@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * The navigation JavaScript that runs over library data, lowered from the
  * installed @recast-navigation packages and the pinned module.
@@ -46,7 +47,7 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { MATH_MEMBERS } from "../compiler/math-intrinsics.js";
 import { stringLiteral } from "../cpp-literals.js";
 
@@ -160,7 +161,7 @@ function sourceCpp(
  */
 class LibraryViews {
     public readonly bindings = new Map<string, PinnedBinding>();
-    public readonly calls = pinnedNumericMathCalls();
+    public readonly calls = new Map<string, PinnedCallSpelling>();
     private readonly classes = new Map<string, string>();
 
     /** `name` is a pointer to the raw object a `className` wraps. */
@@ -671,7 +672,7 @@ export function navigationDebugGeometryDefinition(
         [lists[0]!, { cpp: "walk.positions", type: "f64-list" }],
         [lists[1]!, { cpp: "walk.indices", type: "f64-list" }],
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const name of ["hypot", "round", "imul"]) {
         const member = MATH_MEMBERS.get(name);
         if (!member) throw new Error(`Math.${name} has no shared spelling.`);

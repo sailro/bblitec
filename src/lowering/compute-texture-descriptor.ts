@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -5,7 +6,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { stringLiteral } from "../cpp-literals.js";
 
 export function computeTextureAccessCpp(context: LoweringContext): string {
@@ -99,7 +100,7 @@ export function computeTextureAccessCpp(context: LoweringContext): string {
 export function computeTextureDescriptorCpp(context: LoweringContext): string {
     const path = "src/resource/compute-storage-texture-view.ts";
     const validate = context.functionDeclaration(path, "validatePositive");
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set(
         "Number.isInteger",
         (args) =>

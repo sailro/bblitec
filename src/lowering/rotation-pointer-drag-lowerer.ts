@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /** Source-translated plane-rotation drag; retained native handles replace node identities. */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
@@ -9,7 +10,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import { PINNED_DECOMPOSE_ROTATION } from "./pinned-mat4-decompose.js";
 import { assertRotationPointerContract } from "./rotation-pointer-contract.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -19,7 +20,7 @@ const MATH = "src/gizmo/gizmo-math.ts";
 const ROTATION = "src/gizmo/plane-rotation-gizmo.ts";
 
 export function lowerRotationPointerDrag(context: LoweringContext): string {
-    const calls = new Map(pinnedNumericMathCallsWithHypot());
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const [source, native] of [
         ["dotVec3", "drag_dot"],
         ["crossVec3", "drag_cross"],

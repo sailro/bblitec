@@ -28,7 +28,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { recordAt } from "../compiler/record-access.js";
 import {
     ySortCoreCpp,
@@ -1029,7 +1029,7 @@ inline void sort_sprite_renderer_layers(
         ]);
         const body = lowerPinnedBody(file, declaration.body!.statements, {
             bindings,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
 
             statement: (statement, lowerer, indent) => {
                 if (!ts.isVariableStatement(statement)) return undefined;
@@ -2063,7 +2063,6 @@ void update_sprite_2d_index(
         false);
     touch_sprite_instances(layer, index, index + 1u);
 }
-
 
 // sprite-2d-handle.ts: a stable id over a moving index. Upstream keeps the
 // pair in a Map and a Uint32Array beside the layer, updated by a hook the

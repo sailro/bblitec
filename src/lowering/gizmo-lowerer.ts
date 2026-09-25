@@ -55,7 +55,7 @@ import {
     PinnedNumericLowerer,
     recordLiteralCpp,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import {
     PINNED_DECOMPOSE_ROTATION,
     lowerMat4DecomposeRotation,
@@ -403,7 +403,6 @@ export class GizmoLowerer {
     /** The pin's own quaternion helpers, as C++. */
     private mathHelpers(): string {
         const calls = new Map([
-            ...pinnedNumericMathCallsWithHypot(),
             [
                 "quatFromBjsEuler",
                 (args: readonly string[]): string =>
@@ -867,7 +866,7 @@ export class GizmoLowerer {
                     ],
                 ),
             ]),
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
         });
     }
 
@@ -881,7 +880,6 @@ export class GizmoLowerer {
                 ...bindings,
             ]),
             calls: new Map([
-                ...pinnedNumericMathCallsWithHypot(),
                 [
                     "quatFromBjsEuler",
                     (args: readonly string[]) =>
@@ -1100,7 +1098,7 @@ export class GizmoLowerer {
             this.context.sourceFile(modulePath),
             {
                 bindings: scalars,
-                calls: pinnedNumericMathCallsWithHypot(),
+                calls: new Map(),
             },
         );
         const render = (expression: ts.Expression): string => {
@@ -1999,7 +1997,7 @@ EditGizmoHandle push_edit_gizmo(
                     ],
                 ),
             ]),
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
         });
         const prologue: string[] = [];
         /** The C++ type each option's `value_or` resolves to. */
@@ -3364,7 +3362,6 @@ std::array<float, 16> bbox_mat4_from_quat(
                 ...extra,
             ]),
             calls: new Map([
-                ...pinnedNumericMathCallsWithHypot(),
                 [
                     "rotatePoint",
                     (args: readonly string[]): string =>
@@ -3609,7 +3606,7 @@ std::array<float, 16> bbox_mat4_from_quat(
                     ["ay", { cpp: "ay", type: "scalar" }],
                     ["az", { cpp: "az", type: "scalar" }],
                 ]),
-                calls: pinnedNumericMathCallsWithHypot(),
+                calls: new Map(),
             }),
             ["1.0", "1.0", "1.0"],
         );
@@ -3626,7 +3623,7 @@ std::array<float, 16> bbox_mat4_from_quat(
                 ["armLen", { cpp: "corner_arm_len", type: "scalar" }],
                 ["axisSigns", { cpp: "axis_signs", type: "scalar" }],
             ]),
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
         });
         const cornerParts = [
             { local: "anchor", target: "corner.anchor" },
@@ -5587,7 +5584,6 @@ void set_composite_gizmo_local_coordinates(
             engine, gizmo.parts[i], use_local);
     }
 }
-
 
 void dispose_composite_gizmo(
     Engine& engine,

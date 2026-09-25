@@ -2,7 +2,6 @@ import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "../pinned-operators.js";
 
 /**
  * Complete source sampling over native Float32 storage, including arbitrary
@@ -84,7 +83,6 @@ export function lowerGltfAnimationEvaluator(
                 returnValue: (expression, lowerer) =>
                     expression ? lowerer.expression(expression) : "",
                 calls: new Map([
-                    ...pinnedNumericMathCalls(),
                     ...functions.map(
                         ([name, target]) =>
                             [

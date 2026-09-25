@@ -3,10 +3,6 @@ import { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
 import {
-    pinnedNumericMathCalls,
-    pinnedRoundCall,
-} from "../pinned-operators.js";
-import {
     lowerGltfExtendedTexturePicker,
     lowerGltfSampledTexture,
     lowerGltfTextureCache,
@@ -47,8 +43,6 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
         );
         const bindings = new Map<string, PinnedBinding>(parameters);
         const calls = new Map<string, (args: readonly string[]) => string>([
-            ...pinnedNumericMathCalls(),
-            ["Math.round", pinnedRoundCall],
             [
                 "linearToSrgbByte",
                 (args) => `linear_to_srgb_byte(${args.join(", ")})`,

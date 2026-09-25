@@ -1,8 +1,9 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { storageBufferDescriptorCpp } from "./storage-buffer-descriptor.js";
 import { assertMappedBufferAdapter } from "./gpu-buffer-adapters.js";
@@ -39,7 +40,7 @@ function ownerMethod(
         ],
         ["shadow", { cpp: "record.has_shadow", type: "bool" }],
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set(
         "Number.isInteger",
         (args) => `js::number_is_integer(${args.join(", ")})`,

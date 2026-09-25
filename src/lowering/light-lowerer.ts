@@ -1,10 +1,7 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
-import {
-    pinnedMathSpelling,
-    pinnedNumericMathCallsWithHypot,
-} from "./pinned-operators.js";
+import { pinnedMathSpelling } from "./pinned-operators.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { recordAt } from "../compiler/record-access.js";
@@ -165,7 +162,7 @@ ${body}
                     },
                 ]),
             ]),
-            calls: pinnedNumericMathCallsWithHypot(),
+            calls: new Map(),
         });
     }
 

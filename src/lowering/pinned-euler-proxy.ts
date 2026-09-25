@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -10,7 +11,7 @@ import {
     type PinnedBinding,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { pinnedHeader } from "./pinned-header.js";
 
 export function pinnedQuaternionHeader(context: LoweringContext): string {
@@ -22,7 +23,7 @@ export function pinnedQuaternionHeader(context: LoweringContext): string {
 
 /** The pin's quaternion conversions, shared by observable transform adapters. */
 export function pinnedQuaternionMath(context: LoweringContext): string {
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     return (
         [
             ["eulerXYZToQuatTuple", "euler_to_quat", ["rx", "ry", "rz"], 4],

@@ -20,7 +20,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { pinnedHeader } from "./pinned-header.js";
 import { reflectWgslModule, statementSome } from "../shader-ir.js";
 
@@ -147,7 +147,6 @@ export function pinnedInverseImageProcessingHeader(
     }
     assertForwardCurveScale(context, scale);
     const calls = new Map([
-        ...pinnedNumericMathCalls(),
         ["clamp01", (args: readonly string[]) => `clamp01(${args.join(", ")})`],
     ]);
     const clamp = lowerPinnedFunction(

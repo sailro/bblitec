@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * `sprite-2d-y-sort.ts`, translated from its own bodies.
  *
@@ -38,7 +39,7 @@ import type {
     PinnedNumericLowerer,
     PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { recordAt } from "../compiler/record-access.js";
 
 export const ySortModule = "src/sprite/sprite-2d-y-sort.ts";
@@ -217,7 +218,7 @@ function layerBindings(layer: string): [string, PinnedBinding][] {
 
 /** The calls every body may make: the module's own functions and Math. */
 function ySortCalls(): Map<string, (args: readonly string[]) => string> {
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const [pinned, native] of Y_SORT_FUNCTIONS) {
         calls.set(pinned, (args) => `${native}(${args.join(", ")})`);
     }

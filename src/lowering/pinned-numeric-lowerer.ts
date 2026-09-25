@@ -35,7 +35,7 @@ import {
     declarationInDefaultLibrary,
     declaredSymbol,
 } from "../compiler/symbols.js";
-import { MATH_MEMBERS } from "../compiler/math-intrinsics.js";
+import { MATH_MEMBERS, mathCallSpelling } from "../compiler/math-intrinsics.js";
 import {
     pinnedTranslationObserved,
     TranslationActivity,
@@ -64,7 +64,6 @@ import {
     JS_BITWISE_FUNCTIONS,
     foldNumericUnary,
     jsBitwiseCall,
-    mathExtremeCall,
 } from "./pinned-operators.js";
 
 /**
@@ -511,6 +510,11 @@ export interface PinnedNumericScope {
         lowerer: PinnedNumericLowerer,
     ) => string | RenderedCpp | undefined;
     expressionSpelling?: PinnedExpressionSpelling;
+    /** Truthiness at a domain-owned value representation boundary. */
+    condition?: (
+        expression: ts.Expression,
+        lowerer: PinnedNumericLowerer,
+    ) => string;
     foldConditions?: boolean;
     /** An explicitly validated platform boundary within an otherwise lowered
      * body. Undefined retains the ordinary translator and its refusals. */
@@ -529,6 +533,12 @@ export interface PinnedNumericScope {
     recordTypes?: ReadonlyMap<string, PinnedRecordShape>;
     /** Calls this body may make, as a C++ spelling per pinned callee. */
     calls: ReadonlyMap<string, PinnedCallSpelling>;
+    /** Numeric conversion at an opaque value boundary; Math still uses its shared table. */
+    mathValue?: {
+        argument: (cpp: string) => string;
+        result: (cpp: string) => string;
+    };
+
     /**
      * Methods called ON a bound buffer, spelled from the RESOLVED receiver.
      * Keyed by method name alone: `counts.fill(0)` reaches the same rule
@@ -3024,6 +3034,7 @@ export class PinnedNumericLowerer {
     }
 
     protected condition(expression: ts.Expression): string {
+        if (this.scope.condition) return this.scope.condition(expression, this);
         const known = this.staticCondition(expression);
         if (known !== undefined) return known ? "true" : "false";
         const absent = this.absenceTest(expression);
@@ -4496,18 +4507,20 @@ export class PinnedNumericLowerer {
                   );
             if (global) {
                 const method = callee.name.text;
-                if (method === "min" || method === "max")
-                    return mathExtremeCall(method, args);
                 const member = MATH_MEMBERS.get(method);
-                if (member) {
-                    if (
-                        member.variadic
-                            ? args.length < member.arity
-                            : args.length !== member.arity
-                    )
-                        this.fail(node, `'${name}' arity`);
-                    return member.cpp(args);
-                }
+                if (
+                    member &&
+                    (member.variadic
+                        ? args.length < member.arity
+                        : args.length !== member.arity)
+                )
+                    this.fail(node, `'${name}' arity`);
+                const arguments_ = this.scope.mathValue
+                    ? args.map(this.scope.mathValue.argument)
+                    : args;
+                const result = mathCallSpelling(method)?.(arguments_);
+                if (result !== undefined)
+                    return this.scope.mathValue?.result(result) ?? result;
             }
         }
         if (!spelling) this.fail(node, `call '${name}'`);

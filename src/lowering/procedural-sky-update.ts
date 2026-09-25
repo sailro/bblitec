@@ -168,7 +168,6 @@ export function lowerProceduralSkyUpdate(
                         `pass.dispatch(${args.map((argument) => `static_cast<std::uint32_t>(${argument})`).join(",")})`,
                 ],
                 ["pass.end", () => "pass.end()"],
-                ["Math.ceil", (args) => `std::ceil(${args.join(",")})`],
             ]);
             const scope: PinnedBodyScope = {
                 bindings,

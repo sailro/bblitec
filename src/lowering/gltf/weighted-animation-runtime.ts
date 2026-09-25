@@ -2,7 +2,6 @@ import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
 import type { PinnedBinding } from "../pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "../pinned-operators.js";
 
 const module = "src/animation/weighted-gltf-mixer.ts";
 
@@ -51,7 +50,6 @@ export function lowerGltfWeightedAnimationRuntime(
 ${lowerPinnedBody(file, declaration.body!.statements, {
     bindings,
     calls: new Map([
-        ...pinnedNumericMathCalls(),
         ...[...quaternionCpp].map(
             ([source, cpp]) =>
                 [
@@ -191,7 +189,6 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
                 ],
             ]),
             calls: new Map([
-                ...pinnedNumericMathCalls(),
                 ...[...quaternionCpp].map(
                     ([source, cpp]) =>
                         [

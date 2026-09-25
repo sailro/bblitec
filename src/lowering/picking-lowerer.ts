@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
@@ -5,10 +6,7 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import {
-    pinnedNumericMathCalls,
-    pinnedNumericMathCallsWithHypot,
-} from "./pinned-operators.js";
+
 import { normalizeVec3Call } from "./pinned-normalize-vec3.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
@@ -358,7 +356,6 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
         const body = lowerPinnedBody(file, statements.slice(first, last + 1), {
             bindings,
             calls: new Map([
-                ...pinnedNumericMathCalls(),
                 [
                     "computePickVP",
                     (args: readonly string[]) =>
@@ -777,7 +774,7 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
      * pin exports the face reader, this binding is where it fails.
      */
     private lowerDetailedHelpers(): string {
-        const calls = pinnedNumericMathCallsWithHypot();
+        const calls = new Map<string, PinnedCallSpelling>();
         calls.set("normalizeVec3TupleOrUp", normalizeVec3Call);
         calls.set(
             "clampTinyBarycentric",
@@ -1177,7 +1174,7 @@ js::Nullable<js::Tuple<3>> picked_normal(
      * arms answer `null`, which is the empty optional the info carries.
      */
     private lowerPickRay(): string {
-        const calls = pinnedNumericMathCallsWithHypot();
+        const calls = new Map<string, PinnedCallSpelling>();
         calls.set("invertMat4", (args) => `mat4_invert(${args.join(", ")})`);
         calls.set(
             "unprojectPoint",
@@ -1358,7 +1355,6 @@ void populate_pick_ray(
                 ...vec3MemberBindings("origin"),
             ]),
             calls: new Map([
-                ...pinnedNumericMathCallsWithHypot(),
                 [
                     "getCameraPosition",
                     (args: readonly string[]) =>

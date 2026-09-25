@@ -1,10 +1,11 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { lowerQuatFromRotationBasis } from "./pinned-mat4-decompose.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import { recordAt } from "../compiler/record-access.js";
 
 const modulePath = "src/physics/havok-thin-instances.ts";
@@ -14,7 +15,7 @@ export function lowerPhysicsThinInstances(
     context: LoweringContext,
     floatingOrigin: boolean,
 ) {
-    const calls = pinnedNumericMathCallsWithHypot();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set(
         "_quatFromRotationBasis",
         (args) => `thin_quat_from_basis(${args.join(", ")})`,

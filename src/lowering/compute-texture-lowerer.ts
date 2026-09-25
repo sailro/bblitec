@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import { type LoweredSource, type LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -6,7 +7,7 @@ import {
     computeTextureSamplingCpp,
     computeTextureAccessCpp,
 } from "./compute-texture-descriptor.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { pinnedRecordLiteral } from "./pinned-record-literal.js";
@@ -567,7 +568,7 @@ function disposalCpp(context: LoweringContext): string {
             },
         ],
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set(
         "_textureOwners",
         () => "resource->sampled_texture->data.gpu_source->owners",

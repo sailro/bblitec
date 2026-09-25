@@ -327,10 +327,6 @@ test("compound bitwise stores, array literals and written const records run as J
     const body = lower(source, [], {
         calls: new Map([
             ["Number", (args) => `static_cast<double>(${args[0]})`],
-            [
-                "Math.min",
-                (args) => `bbl::js::math_extreme<false>({${args.join(", ")}})`,
-            ],
         ]),
         vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
     });

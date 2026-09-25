@@ -11,7 +11,6 @@ import {
     type PinnedNumericScope,
     type PinnedIteration,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 /**
  * A value of the character controller's reference kernel: its C++ spelling
@@ -146,7 +145,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
     ) {
         const numeric: PinnedNumericScope = {
             bindings: new Map(),
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
 
             localPrefix: "local_",
         };

@@ -2,7 +2,7 @@ import ts from "typescript";
 import { cameraChangeKeyHeader } from "./camera-change-key-lowerer.js";
 import { LoweringContext } from "./context.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
@@ -446,7 +446,7 @@ ${lowerPinnedBody(file, declaration.body!.statements.slice(0, tailIndex), {
                 cppName: "taa_halton",
                 returns: "double",
                 inline: true,
-                calls: pinnedNumericMathCalls(),
+                calls: new Map(),
             },
         );
     }

@@ -48,7 +48,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import {
     pinnedOptionDefaults,
     pinnedOptionFallback,
@@ -332,7 +332,7 @@ export class PhysicsLowerer {
         ]);
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
         });
         const vector = (expression: ts.Expression): string => {
             const unwrapped = this.context.unwrapExpression(expression);
@@ -577,7 +577,7 @@ ${PRIMITIVE_SHAPE_ARMS.map((arm) =>
         const bindings = new Map<string, PinnedBinding>();
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
         });
         const supplied = new Map<string, string>(
             SHAPE_PARAMETERS.map(([pinned, field]) => [pinned, field]),
@@ -1540,7 +1540,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
                         [name, { cpp: name, type: "scalar" as const }] as const,
                 ),
             ]),
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
         });
         const distanceLocals = ["dx", "dy", "dz"]
             .map(

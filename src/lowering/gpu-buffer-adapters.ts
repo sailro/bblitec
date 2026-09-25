@@ -1,6 +1,5 @@
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 export function bufferAlignmentCpp(
     context: LoweringContext,
@@ -13,7 +12,7 @@ export function bufferAlignmentCpp(
             ["n", { cpp: "n", type: "scalar" }],
             ["to", { cpp: "to", type: "scalar" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         returnValue: (node, lowerer) =>
             node
                 ? lowerer.expression(node)

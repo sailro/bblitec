@@ -4,7 +4,6 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const renderTaskModule = "src/frame-graph/render-task-base.ts";
 const sceneModule = "src/scene/scene-core.ts";
@@ -327,7 +326,7 @@ export function passCameraViewportCpp(context: LoweringContext): string {
     const lower = (expression: ts.Expression): string =>
         new PinnedNumericLowerer(file, {
             bindings,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
         }).expression(expression);
     const skips = lower(guard.expression);
     const lanes = (["x", "y", "width", "height"] as const).map(

@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import {
     type LoweredSource,
@@ -9,7 +10,7 @@ import {
     type PinnedBodyScope,
 } from "./pinned-body-lowerer.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { pinnedRecordLiteral } from "./pinned-record-literal.js";
 
 export const proceduralSkyModule =
@@ -119,9 +120,8 @@ export function lowerProceduralSkyAtmosphere(
                 ),
             ),
         );
-        const calls = pinnedNumericMathCalls();
-        calls.set("Math.exp", (args) => `std::exp(${args.join(", ")})`);
-        calls.set("Math.hypot", (args) => `std::hypot(${args.join(", ")})`);
+        const calls = new Map<string, PinnedCallSpelling>();
+
         calls.set(
             "Number.isFinite",
             (args) => `std::isfinite(${args.join(", ")})`,

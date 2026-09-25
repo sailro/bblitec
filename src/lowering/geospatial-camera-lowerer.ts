@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * The pinned geospatial (globe-orbit) camera, translated whole.
  *
@@ -27,7 +28,7 @@ import {
     recordLiteralCpp,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 
@@ -69,7 +70,7 @@ const SCALE_FIELD = "pitchDisabledRadiusScale";
 export class GeospatialCameraLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    private readonly calls = pinnedNumericMathCallsWithHypot();
+    private readonly calls = new Map<string, PinnedCallSpelling>();
 
     /** `{x, y, z}` and `{x, y}` as the two records this port stores them in. */
     private readonly recordLiteral = (

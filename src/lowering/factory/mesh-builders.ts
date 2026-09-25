@@ -6,7 +6,6 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "../pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "../pinned-operators.js";
 
 import {
     pinnedMeshOptionLocals,
@@ -186,7 +185,6 @@ export class MeshBuilderLowerer {
         // `computeNormals` is emitted once beside them, so a call to it is
         // a call rather than another copy of its body.
         const meshMathCalls = new Map([
-            ...pinnedNumericMathCalls(),
             [
                 "len",
                 (args: readonly string[]): string =>
@@ -2589,7 +2587,7 @@ void update_mesh_positions(
             ]);
             return lowerPinnedBody(file, declaration.body.statements, {
                 bindings,
-                calls: pinnedNumericMathCalls(),
+                calls: new Map(),
             });
         };
         const body = (

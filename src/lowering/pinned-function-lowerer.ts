@@ -469,20 +469,7 @@ export function lowerMat4InvertCpp(
                     declaration: "std::array<float, 16> out{};",
                 },
             ],
-            calls: new Map([
-                [
-                    "Math.abs",
-                    (args) => {
-                        if (args.length !== 1) {
-                            return context.contractError(
-                                at,
-                                "Expected pinned invertMat4 Math.abs to take one argument.",
-                            );
-                        }
-                        return "std::abs(" + args[0] + ")";
-                    },
-                ],
-            ]),
+            calls: new Map([]),
             returns: {
                 type: "std::optional<std::array<float, 16>>",
                 value: (_lowerer, expression) => {

@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * Lowers pinned modules whose state is plain JavaScript records: objects
  * with identity, arrays, maps, sets, typed arrays and optional values.
@@ -56,7 +57,6 @@ import {
 import {
     jsBitwiseCall,
     PINNED_BITWISE_ASSIGNMENT_OPERATORS,
-    pinnedNumericMathCalls,
 } from "./pinned-operators.js";
 import { isPinnedErrorCall } from "./pinned-error.js";
 import { cppCondition } from "../cpp-expressions.js";
@@ -2227,11 +2227,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
         private readonly model: PinnedRecordModel,
         private readonly entry: LoweredFunction,
     ) {
-        const calls = pinnedNumericMathCalls();
-        calls.set(
-            "Math.fround",
-            (args) => `static_cast<double>(static_cast<float>(${args[0]}))`,
-        );
+        const calls = new Map<string, PinnedCallSpelling>();
+
         calls.set("Number.isFinite", (args) => `std::isfinite(${args[0]})`);
         const scope: PinnedNumericScope = {
             bindings: new Map(),

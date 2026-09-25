@@ -60,7 +60,7 @@ import {
     type PinnedNumericScope,
     type PinnedRecordShape,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { recordAt, recordFind } from "../compiler/record-access.js";
 
 const buildSymbol = "buildClusteredLightGpuState";
@@ -914,7 +914,7 @@ function dataTextureRows(
                 },
             ),
         ),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
     });
     return rows.expression(height);
 }
@@ -966,7 +966,7 @@ function dataTextureWriter(context: LoweringContext): string {
     );
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings: new Map(numbers.map((name) => [name, scalar(name)])),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         statement: (node, lowerer, indent) => {
             const call = statementCall(context, node);
             if (
@@ -1044,7 +1044,7 @@ function snapshotWriter(context: LoweringContext): string {
             cppName: "snapshot_light",
             returns: "double",
             inline: true,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
             arrayCopy: copyToFloats,
             memberBindings: new Map(clusteredLightMembers("light", "light.")),
         },
@@ -1076,7 +1076,7 @@ function coneChangedWriter(context: LoweringContext): string {
                 { cpp: "snapshot", type: "f32", mutable: true },
             ],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         expression: (node) =>
             ts.isIdentifier(node) &&
             node.text === snapshot.name.getText(file) &&
@@ -1157,7 +1157,7 @@ function collectWriter(context: LoweringContext): string {
             ],
             [view, { cpp: view, type: "f32" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
     });
     return `// ${context.provenance(clusteredSpotModule, "spotSupport._create._collect")}
 inline void collect_clustered_spots(
@@ -1614,7 +1614,7 @@ function spotSupportCreation(
         statements.slice(0, support),
         {
             bindings,
-            calls: pinnedNumericMathCalls(),
+            calls: new Map(),
             methods: sharedScope(context).methods,
             statement: (inner, nested, innerIndent) => {
                 if (onlyDeclaration(inner) !== snapshot) return undefined;
@@ -1795,7 +1795,7 @@ function containerFactory(context: LoweringContext): string {
         bindings: new Map(
             clusteredOptionBindings(context, CONTAINER_OPTIONS, options),
         ),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         returnValue: (expression, lowerer) => {
             const literal = expression
                 ? context.unwrapExpression(expression)
@@ -1896,7 +1896,7 @@ function lightFactory(
             ["ClusteredPointLight", light],
             ["ClusteredSpotLight", light],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         // The spot support's installation, recognised by the pinned
         // function the call resolves to, lowered beside this factory.
         expression: (node, lowerer) =>
@@ -1959,7 +1959,7 @@ function spotSupportEnabler(context: LoweringContext): string {
             ],
             ["spotSupport", { cpp: "true", type: "bool" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         expression: (node) =>
             ts.isIdentifier(node) &&
             node.text === "spotSupport" &&
@@ -2076,7 +2076,7 @@ function containerAdder(context: LoweringContext): string {
             ],
             [container, { cpp: container, type: "opaque" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         statement,
     });
     return `// ${context.provenance(clusteredModule, "addClusteredLightContainer")}

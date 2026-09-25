@@ -1,7 +1,6 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls, pinnedRoundCall } from "./pinned-operators.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 
@@ -31,8 +30,6 @@ export function lowerPhysicsHeightfield(context: LoweringContext): {
         ]),
 
         calls: new Map([
-            ...pinnedNumericMathCalls(),
-            ["Math.round", pinnedRoundCall],
             [
                 "Number.isInteger",
                 (args) =>
@@ -159,7 +156,7 @@ export function lowerPhysicsHeightfield(context: LoweringContext): {
             ["data", { cpp: "resolved.data", type: "f32" }],
             ["heightBuffer", { cpp: "heights", type: "f32", mutable: true }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
     });
     return {
         header: "PhysicsShape create_physics_heightfield_from_ground(PhysicsWorldHandle world, MeshHandle mesh);\n",

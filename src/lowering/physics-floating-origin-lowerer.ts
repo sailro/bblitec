@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * `havok-floating-origin.ts`, translated from its own bodies.
  *
@@ -39,7 +40,6 @@ import {
     type PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 export const havokFloatingOriginModule = "src/physics/havok-floating-origin.ts";
 const havokModule = "src/physics/havok.ts";
@@ -345,7 +345,7 @@ function floatingOriginScope(
         ]),
         ...extra,
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     for (const [pinned, native] of FLOATING_ORIGIN_FUNCTIONS) {
         calls.set(pinned, (args) => `${native}(${args.join(", ")})`);
     }

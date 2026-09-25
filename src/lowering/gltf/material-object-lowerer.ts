@@ -13,8 +13,6 @@ import type {
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_RELATIONAL_OPERATORS,
-    pinnedNumericMathCalls,
-    pinnedRoundCall,
 } from "../pinned-operators.js";
 
 const numericOperators = new Map([
@@ -100,15 +98,6 @@ export function lowerGltfMaterialObjectFunction(
             : `GltfPbrValue ${sourceName}`;
     });
     const calls = new Map<string, (args: readonly string[]) => string>();
-    for (const [name, emit] of [
-        ...pinnedNumericMathCalls(),
-        ["Math.round", pinnedRoundCall],
-    ] as const)
-        calls.set(
-            name,
-            (args) =>
-                `GltfPbrValue{${emit(args.map((argument) => `(${argument}).number()`))}}`,
-        );
     let temporary = 0;
     const value = (expression: ts.Expression, lowerer: PinnedNumericLowerer) =>
         `(${lowerer.expression(expression)})`;
@@ -169,6 +158,12 @@ export function lowerGltfMaterialObjectFunction(
     const body = lowerPinnedBody(file, declaration.body.statements, {
         bindings,
         calls,
+        mathValue: {
+            argument: (cpp) => `(${cpp}).number()`,
+            result: (cpp) => `GltfPbrValue{${cpp}}`,
+        },
+        condition: (expression, lowerer) =>
+            `${value(expression, lowerer)}.truthy()`,
         foldConditions: false,
         forOf(iterated, element) {
             const range = bindings.get(iterated);

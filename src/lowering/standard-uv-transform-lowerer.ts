@@ -26,7 +26,7 @@
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
@@ -247,7 +247,7 @@ export function lowerStandardUvTransformWriter(
 
     const channelBody = lowerPinnedBody(file, channelWriter.body.statements, {
         bindings,
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
     });
 
     // The data writer's own two reads and the two folded arguments, asserted

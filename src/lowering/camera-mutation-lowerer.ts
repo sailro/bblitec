@@ -11,7 +11,6 @@ import {
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const ARC = "src/camera/arc-rotate.ts";
 const CONTROLS = "src/camera/arc-rotate-controls.ts";
@@ -557,7 +556,6 @@ ${bulkBody}
             body.body,
             bindings,
             new Map([
-                ...pinnedNumericMathCalls(),
                 ...scalarFields.map((field): [string, PinnedCallSpelling] => [
                     `write_${field}`,
                     (args) =>

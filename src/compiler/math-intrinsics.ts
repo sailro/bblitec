@@ -27,6 +27,7 @@ import type { DataType } from "./data-types.js";
 import { nativeFunctionValue } from "./native-function-values.js";
 import {
     mathExtremeCpp,
+    mathExtremeCall,
     pinnedHypotCall,
     pinnedMathSpelling,
     pinnedRoundCall,
@@ -133,7 +134,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     // length has no spelling there at all, and it rounds differently from
     // JavaScript's besides. `hypot_js` is the whole-list root of the sum of
     // squares every pinned lowering already reaches through
-    // `pinnedNumericMathCallsWithHypot`, and the one spelling `fidelity.md`
+    // the shared numeric lowerer, and the one spelling `fidelity.md`
     // records as `splat-hypot-approximation` -- so scene code and pinned
     // code agree on it rather than this one call site being the exception.
     [
@@ -156,6 +157,13 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
         },
     ],
 ]);
+
+/** Numeric call spelling, including the extrema whose spread/fold paths are separate. */
+export function mathCallSpelling(name: string): MathMember["cpp"] | undefined {
+    return name === "min" || name === "max"
+        ? (args) => mathExtremeCall(name, args)
+        : MATH_MEMBERS.get(name)?.cpp;
+}
 
 /** The exact fold of a one-argument member, where the table carries one. */
 export function mathUnaryFold(

@@ -1,8 +1,9 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 import { unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import {
     bufferAlignmentCpp,
@@ -31,7 +32,7 @@ function factory(context: LoweringContext): string {
         ["buffer", { cpp: "buffer", type: "opaque" }],
         ["engine", { cpp: "engine", type: "opaque" }],
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set("align", (args) => `uniform_buffer_align(${args.join(", ")})`);
     calls.set(
         "Number.isSafeInteger",
@@ -260,7 +261,7 @@ function operation(
             },
         ],
     ]);
-    const calls = pinnedNumericMathCalls();
+    const calls = new Map<string, PinnedCallSpelling>();
     calls.set(
         "Number.isInteger",
         (args) => `js::number_is_integer(${args.join(", ")})`,

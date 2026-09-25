@@ -15,7 +15,7 @@ import {
     lowerTupleComponents,
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+
 import {
     type PinnedBinding,
     type PinnedRecordShape,
@@ -352,7 +352,7 @@ export function clusteredConeWriter(context: LoweringContext): string {
             ...clusteredLightMembers(spot, `${spot}->`),
             ["Math.PI", { cpp: "std::numbers::pi", type: "scalar" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         // `len === 0 || len === 1` joins two comparisons.
     });
     return `// ${context.provenance(clusteredSpotModule, "_write")}
@@ -463,7 +463,6 @@ export function clusteredCalls(): Map<
     (args: readonly string[]) => string
 > {
     return new Map<string, (args: readonly string[]) => string>([
-        ...pinnedNumericMathCalls(),
         ...SCALAR_HELPERS.map(
             ({
                 pinned,

@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /** Pinned tuple and object normalization, including their distinct degenerate results. */
 import type { LoweringContext } from "./context.js";
 import {
@@ -6,7 +7,7 @@ import {
     lowerObjectComponents,
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import { pinnedHeader } from "./pinned-header.js";
 
 const normalizeModule = "src/math/normalize-vec3-tuple-or-up.ts";
@@ -20,7 +21,7 @@ export function normalizeVec3Call(args: readonly string[]): string {
 
 /** The header carrying the pinned tuple normalization, whole. */
 export function pinnedNormalizeVec3Header(context: LoweringContext): string {
-    const mathCalls = pinnedNumericMathCallsWithHypot();
+    const mathCalls = new Map<string, PinnedCallSpelling>();
     const normalize = lowerPinnedFunction(
         context,
         normalizeModule,

@@ -1,3 +1,4 @@
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 /**
  * A `MeshRecord`'s local world matrix, emitted from the pin's own
  * writers: `src/math/quat-euler.ts`'s `eulerXYZToQuatTuple` and
@@ -24,7 +25,6 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 /**
  * The whole emitted body, from the quaternion locals through the last
@@ -129,7 +129,7 @@ export function pinnedTrsComposition(
         ["cz", "cz"],
         ["sz_", "sz"],
     ];
-    const mathCalls = pinnedNumericMathCalls();
+    const mathCalls = new Map<string, PinnedCallSpelling>();
     const halfAngleLocals = eulerLocalNames
         .map(
             ([pinned, cpp]) =>

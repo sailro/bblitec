@@ -276,14 +276,7 @@ test("API body tracing follows original expressions through synthetic statements
             [ts.factory.createReturnStatement(returned.expression)],
             {
                 bindings: new Map(),
-                calls: new Map([
-                    [
-                        "Math.sqrt",
-                        (args: readonly string[]) =>
-                            `std::sqrt(${args.join(", ")})`,
-                    ],
-                    ["unused", () => "unused()"],
-                ]),
+                calls: new Map([["unused", () => "unused()"]]),
                 returnValue: (value, lowerer) => lowerer.expression(value!),
             },
         );

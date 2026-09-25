@@ -9,7 +9,7 @@ import {
     type PinnedBinding,
 } from "../src/lowering/pinned-numeric-lowerer.js";
 import type { PinnedExpressionSpelling } from "../src/lowering/pinned-numeric-expression.js";
-import { pinnedNumericMathCalls } from "../src/lowering/pinned-operators.js";
+
 import { renderCppExpression } from "../src/lowering/gltf/cpp-expression.js";
 import {
     optionalNativeFixtureTools,
@@ -35,7 +35,7 @@ function render(
                 { cpp: name, type: "scalar" },
             ]),
         ),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
         expressionSpelling: spelling,
 
         foldConditions: false,
@@ -49,7 +49,10 @@ test("minimal spelling retains grouping and separates adjacent unary operators",
     assert.equal(render("(a + b) * c", minimal), "(a + b) * c");
     assert.equal(render("-(-a)", minimal), "-(-a)");
     assert.equal(render("+(+a)", minimal), "+(+a)");
-    assert.equal(render("(a ? b : c) ? a : c", minimal), "(a ? b : c) ? a : c");
+    assert.equal(
+        render("(a ? b : c) ? a : c", minimal),
+        "bbl::js::number_truthy(bbl::js::number_truthy(a) ? b : c) ? a : c",
+    );
 });
 
 test("source spelling preserves parentheses through non-null assertions and prints double literals", () => {
@@ -57,7 +60,7 @@ test("source spelling preserves parentheses through non-null assertions and prin
     assert.equal(render("(a * (b + 1))!", source), "(a * (b + 1.0))");
     assert.equal(
         render("a ? Math.max(b, 1e-6) : 2", source),
-        "(a ? bbl::js::math_extreme<true>({b, 0.000001}) : 2.0)",
+        "(bbl::js::number_truthy(a) ? bbl::js::math_extreme<true>({b, 0.000001}) : 2.0)",
     );
     assert.equal(render("a % b", source), "std::fmod(a, b)");
     assert.equal(
@@ -74,7 +77,7 @@ const nativeTools = optionalNativeFixtureTools();
 test("glTF expression scopes carry arithmetic, comparisons and Math calls through the numeric renderer", () => {
     for (const [source, expected] of [
         ["(a + b) * c", "(a + b) * c"],
-        ["a <= b && b !== c", "a <= b && b != c"],
+        ["a <= b && b !== c", "(a <= b && b != c)"],
         [
             "a <= b ? Math.max(a, b) : c",
             "a <= b ? bbl::js::math_extreme<true>({a, b}) : c",
@@ -158,7 +161,7 @@ function lowerStatements(source: string): string {
             ]),
             ["mask", { cpp: "mask", type: "u32" }],
         ]),
-        calls: pinnedNumericMathCalls(),
+        calls: new Map(),
     })
         .statements(file.statements, "        ")
         .join("\n");

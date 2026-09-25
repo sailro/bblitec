@@ -1,4 +1,4 @@
-import { pinnedRoundCall } from "./pinned-operators.js";
+import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
@@ -9,7 +9,7 @@ import {
     PinnedNumericLowerer,
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+
 import type { RenderedCpp } from "./pinned-numeric-expression.js";
 
 const modulePath = "src/shadow/csm-shadow-task-hooks.ts";
@@ -441,8 +441,8 @@ interface Parameter {
 }
 
 function numericScope(): PinnedNumericScope {
-    const calls = pinnedNumericMathCallsWithHypot();
-    calls.set("Math.round", pinnedRoundCall);
+    const calls = new Map<string, PinnedCallSpelling>();
+
     calls.set("Number.isFinite", (args) => `std::isfinite(${args.join(", ")})`);
     return { bindings: new Map(), calls };
 }

@@ -1,4 +1,3 @@
-import { pinnedRoundCall } from "./pinned-operators.js";
 /**
  * Lowers Babylon Lite's Gaussian-splat CPU work to C++.
  *
@@ -39,7 +38,6 @@ import {
     PINNED_DECOMPOSE_ROTATION,
     lowerMat4DecomposeRotation,
 } from "./pinned-mat4-decompose.js";
-import { pinnedHypotCall, pinnedNumericMathCalls } from "./pinned-operators.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
 import {
     SPLAT_CONTAINERS,
@@ -107,24 +105,6 @@ function nativeAddressMode(mode: string): string {
     }
     return `TextureAddressMode::${mapped}`;
 }
-
-/**
- * `Math.*` as the pinned splat bodies reach it.
- *
- * The one-to-one names come from `pinnedNumericMathCalls`, so a member one
- * lowerer learns is a member all of them know. Only the two that are NOT a
- * `<cmath>` call of the same meaning are stated here, and each says why.
- */
-const MATH_CALLS: ReadonlyMap<string, (args: readonly string[]) => string> =
-    new Map<string, (args: readonly string[]) => string>([
-        ...pinnedNumericMathCalls(),
-        // JS rounds a half toward +Infinity; std::round rounds it away from zero,
-        // so the two disagree at -0.5, -1.5, ...
-        ["Math.round", pinnedRoundCall],
-        // Math.hypot is implementation-approximated by the ECMAScript spec; see
-        // the module comment for the measured effect of using the plain root.
-        ["Math.hypot", pinnedHypotCall],
-    ]);
 
 export class SplatLowerer {
     /**
@@ -229,7 +209,7 @@ export class SplatLowerer {
 
         const body = lowerPinnedBody(file, found.body.statements, {
             bindings,
-            calls: MATH_CALLS,
+            calls: new Map(),
             returnValue: (expression, lowerer): string => {
                 if (!expression || !ts.isObjectLiteralExpression(expression)) {
                     return this.context.contractError(
@@ -543,7 +523,6 @@ ${payloads.map((field) => `        &record.${field}_rgba,`).join("\n")}
         const body = lowerPinnedBody(file, declaration.body!.statements, {
             bindings,
             calls: new Map([
-                ...MATH_CALLS,
                 [
                     "chooseTextureSize",
                     (a) => `choose_splat_texture_size(${a[0]})`,
@@ -760,7 +739,7 @@ ${body}
         }
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
-            calls: MATH_CALLS,
+            calls: new Map(),
         });
         return lowerer.statement(loop, "    ").join("\n");
     }
@@ -847,7 +826,7 @@ ${body}
 
         return lowerPinnedBody(file, writes, {
             bindings,
-            calls: MATH_CALLS,
+            calls: new Map(),
             arrayCopy: (receiver, source, offset) =>
                 `std::copy(${source}.begin(), ${source}.end(), ` +
                 `${receiver}.begin() + static_cast<std::ptrdiff_t>(${offset}))`,
@@ -1429,7 +1408,7 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
         ]);
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
-            calls: MATH_CALLS,
+            calls: new Map(),
         });
 
         // Everything ahead of the loop except the four GPU-side bindings,
@@ -1696,7 +1675,7 @@ ${body}
                             { arity: 3, at: coordAt },
                         ).join(", ")}}`,
                 },
-                calls: MATH_CALLS,
+                calls: new Map(),
             },
         );
         const multiply = lowerPinnedFunction(
@@ -1720,7 +1699,7 @@ ${body}
                             { arity: 4, at: multiplyAt },
                         ).join(", ")}}`,
                 },
-                calls: MATH_CALLS,
+                calls: new Map(),
             },
         );
 
@@ -1959,7 +1938,6 @@ ${writes.join("\n")}
         const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
             bindings,
             calls: new Map<string, (args: readonly string[]) => string>([
-                ...MATH_CALLS,
                 [
                     "mat4TransformCoord",
                     (a) => `pinned_mat4_transform_coord(${a.join(", ")})`,
@@ -2092,7 +2070,7 @@ void bake_current_transform_into_vertices(
                 bindings: new Map<string, PinnedBinding>([
                     ["vertexCount", { cpp: "vertex_count", type: "scalar" }],
                 ]),
-                calls: MATH_CALLS,
+                calls: new Map(),
                 returnValue: (expression, bucketLowerer) =>
                     expression ? bucketLowerer.expression(expression) : "0.0",
             },
@@ -2107,7 +2085,7 @@ void bake_current_transform_into_vertices(
         ]);
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
-            calls: MATH_CALLS,
+            calls: new Map(),
             methods: new Map([
                 [
                     "fill",
