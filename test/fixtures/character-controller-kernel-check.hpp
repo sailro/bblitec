@@ -101,7 +101,9 @@ struct Kernel final : CharacterControllerKernel {
     js::Array<js::Ref<PhysicsBody>> _world_bodies() override { return bodies; }
     double _world_step_seconds() override { return dt; }
     double _body_motion_type(js::Ref<PhysicsBody> body) override { return body->motion; }
-    std::optional<double> _body_identity(js::Ref<PhysicsBody> body) override { return body->id; }
+    bbl::js::Nullable<double> _body_identity(js::Ref<PhysicsBody> body) override {
+        return body->id;
+    }
     js::Ref<NativeBody> _native_body(js::Ref<PhysicsBody> body) override {
         if (!body->native) {
             body->native = js::make_ref<NativeBody>();
@@ -109,15 +111,15 @@ struct Kernel final : CharacterControllerKernel {
         }
         return body->native;
     }
-    std::optional<std::tuple<js::Ref<PhysicsBody>, js::Ref<NativeBody>, double>>
-    _thin_resolve(std::optional<double>) override {
+    bbl::js::Nullable<std::tuple<js::Ref<PhysicsBody>, js::Ref<NativeBody>, double>>
+    _thin_resolve(bbl::js::Nullable<double>) override {
         return std::nullopt;
     }
     js::Ref<Vec3> _thin_com(js::Ref<PhysicsBody>, js::Ref<NativeBody>, js::Array<double>) override {
         return {};
     }
-    std::optional<js::Array<double>> _thin_matrix(js::Ref<PhysicsBody>,
-                                                  js::Ref<NativeBody>) override {
+    bbl::js::Nullable<js::Array<double>> _thin_matrix(js::Ref<PhysicsBody>,
+                                                      js::Ref<NativeBody>) override {
         return std::nullopt;
     }
     js::Array<double> _body_world_matrix(js::Ref<PhysicsBody> body) override {

@@ -11,7 +11,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Platform and runtime
 
-- [ ] One runtime model for pinned records and application values: `pinned_records.hpp` restates `js::typed_array_set`, `array_pop_or_absent` and `MapGetResult` over `std::optional`/`std::shared_ptr`.
 - [ ] Include only the concern header a unit reads instead of the `pal_gpu_shared.hpp` umbrella chain.
 - [ ] Compact SPIR-V vertex inputs at build time in `tools/tint-sdl` and delete the runtime registry (`pal_spirv_vertex.hpp`, `pal_sdl_gpu_resources.hpp`).
 - [ ] Keep one engine rendering-context list whose entries carry their `_kind`, as the pin does (device recovery's per-registry counts).

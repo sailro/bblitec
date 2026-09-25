@@ -149,7 +149,7 @@ export class RecordRepresentation {
             case "optional":
                 return this.nullable(shape.value)
                     ? this.cppType(shape.value)
-                    : `std::optional<${this.cppType(shape.value)}>`;
+                    : `${js}::Nullable<${this.cppType(shape.value)}>`;
             case "variant":
                 return `std::variant<${shape.members.map((member) => this.cppType(member)).join(", ")}>`;
         }

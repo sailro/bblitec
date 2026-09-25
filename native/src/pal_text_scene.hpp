@@ -70,8 +70,8 @@ struct TextScenePass {
      */
     void update_for_pass(CameraRecord* camera, const std::array<float, 16>& view_projection,
                          double aspect, double width, double height) const {
-        const std::optional<TextCameraInput> input =
-            camera ? std::optional<TextCameraInput>{TextCameraInput{
+        const bbl::js::Nullable<TextCameraInput> input =
+            camera ? bbl::js::Nullable<TextCameraInput>{TextCameraInput{
                          js::TypedArray<float>(view_projection.begin(), view_projection.end()),
                          upstream::scene_camera_change_key(*camera), aspect}}
                    : std::nullopt;

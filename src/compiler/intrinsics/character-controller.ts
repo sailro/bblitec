@@ -42,8 +42,8 @@ function options(
     const field = (name: string): string => {
         const value = context.objectProperty(object, name);
         return value
-            ? `std::optional<double>{${context.compileNumber(value, "double")}}`
-            : "std::optional<double>{}";
+            ? `bbl::js::Nullable<double>{${context.compileNumber(value, "double")}}`
+            : "bbl::js::Nullable<double>{}";
     };
     return `bbl::character::options(${field("capsuleHeight")}, ${field("capsuleRadius")})`;
 }

@@ -83,7 +83,7 @@ struct SdlTextGpuDevice final : SdlTextGpuResources {
     }
 
     TextPipelineSet text_pipeline(const std::string& format, double sample_count,
-                                  const std::optional<std::string>& depth_stencil_format,
+                                  const bbl::js::Nullable<std::string>& depth_stencil_format,
                                   bool depth_write, const std::shared_ptr<const void>& owner_object,
                                   const std::string& depth_compare) override {
         if (format != sdl_text_format_name(color_format))

@@ -103,7 +103,7 @@ struct RecorderDevice final : TextGpuDevice {
     TextPipelineSet pipelines;
     int bundles = 0;
     RecorderDevice(Ops& target, TextPipelineSet set) : ops(target), pipelines(std::move(set)) {}
-    std::shared_ptr<Resource> resource(const std::optional<std::string>& label, double size) {
+    std::shared_ptr<Resource> resource(const bbl::js::Nullable<std::string>& label, double size) {
         const std::string name = label.value_or("");
         ops.failure("create:" + name);
         auto created = std::make_shared<Resource>();
@@ -138,7 +138,7 @@ struct RecorderDevice final : TextGpuDevice {
     }
     TextGpuEncoderHandle
     create_render_bundle_encoder(const TextRenderBundleEncoderDescriptor& descriptor) override {
-        if (descriptor.color_formats.size() != 1 || descriptor.sample_count != 1.0)
+        if (descriptor.color_formats.size() != 1 || descriptor.sample_count.value_or(1) != 1.0)
             throw std::runtime_error("bundle descriptor");
         ++bundles;
         return std::make_shared<RecorderEncoder>(ops, true);
@@ -160,7 +160,7 @@ struct RecorderDevice final : TextGpuDevice {
         ops.write({data.data() + static_cast<std::size_t>(layout.offset.value_or(0)),
                    static_cast<std::size_t>(count)});
     }
-    TextPipelineSet text_pipeline(const std::string&, double, const std::optional<std::string>&,
+    TextPipelineSet text_pipeline(const std::string&, double, const bbl::js::Nullable<std::string>&,
                                   bool, const std::shared_ptr<const void>&,
                                   const std::string&) override {
         return pipelines;

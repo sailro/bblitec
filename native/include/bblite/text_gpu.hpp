@@ -40,7 +40,7 @@ struct TextGpuObject {
 using TextGpuHandle = std::shared_ptr<TextGpuObject>;
 
 struct TextBufferDescriptor {
-    std::optional<std::string> label;
+    bbl::js::Nullable<std::string> label;
     double size = 0;
     double usage = 0;
 };
@@ -50,15 +50,15 @@ struct TextExtent3D {
     double depth_or_array_layers = 1;
 };
 struct TextTextureDescriptor {
-    std::optional<std::string> label;
+    bbl::js::Nullable<std::string> label;
     std::string format;
     TextExtent3D size;
     double usage = 0;
 };
 struct TextBufferBinding {
     TextGpuHandle buffer;
-    std::optional<double> offset;
-    std::optional<double> size;
+    bbl::js::Nullable<double> offset;
+    bbl::js::Nullable<double> size;
 };
 /** `GPUBindingResource`: a buffer binding, or a view or sampler. */
 using TextBindingResource = std::variant<TextBufferBinding, TextGpuHandle>;
@@ -67,7 +67,7 @@ struct TextBindGroupEntry {
     TextBindingResource resource;
 };
 struct TextBindGroupDescriptor {
-    std::optional<std::string> label;
+    bbl::js::Nullable<std::string> label;
     TextGpuHandle layout;
     js::Array<TextBindGroupEntry> entries;
 };
@@ -75,17 +75,17 @@ struct TextTexelCopyTextureInfo {
     TextGpuHandle texture;
 };
 struct TextTexelCopyBufferLayout {
-    std::optional<double> offset;
-    std::optional<double> bytes_per_row;
-    std::optional<double> rows_per_image;
+    bbl::js::Nullable<double> offset;
+    bbl::js::Nullable<double> bytes_per_row;
+    bbl::js::Nullable<double> rows_per_image;
 };
 struct TextRenderBundleEncoderDescriptor {
     js::Array<std::string> color_formats;
-    std::optional<double> sample_count;
+    bbl::js::Nullable<double> sample_count;
 };
 struct TextRenderPassColorAttachment {
     TextGpuHandle view;
-    std::optional<Color4d> clear_value;
+    bbl::js::Nullable<Color4d> clear_value;
     std::string load_op;
     std::string store_op;
 };
@@ -176,11 +176,10 @@ struct TextGpuDevice {
                                const TextExtent3D& size) = 0;
     /** `getOrCreateTextPipeline(engine, format, sampleCount, depthStencilFormat, depthWrite,
      *  owner, depthCompare)`. */
-    virtual TextPipelineSet text_pipeline(const std::string& format, double sample_count,
-                                          const std::optional<std::string>& depth_stencil_format,
-                                          bool depth_write,
-                                          const std::shared_ptr<const void>& owner,
-                                          const std::string& depth_compare) = 0;
+    virtual TextPipelineSet
+    text_pipeline(const std::string& format, double sample_count,
+                  const bbl::js::Nullable<std::string>& depth_stencil_format, bool depth_write,
+                  const std::shared_ptr<const void>& owner, const std::string& depth_compare) = 0;
     /** `getTextPipelineCache(engine)`. */
     virtual TextPipelineDeviceCacheHandle text_pipeline_cache() = 0;
 };

@@ -100,7 +100,7 @@ export function compiledTextDataSource(
 ${buffers.join("\n")}
             return ${storage};
         };
-        return bbl::create_default_text_data(font, ${doubleLiteral(row.layout.fontSizePx)}, std::move(text), ${color ? `color ? std::move(color) : std::optional<bbl::js::Tuple<4>>(${color})` : "std::move(color)"}, ${optionsCpp(row)});
+        return bbl::create_default_text_data(font, ${doubleLiteral(row.layout.fontSizePx)}, std::move(text), ${color ? `color ? std::move(color) : bbl::js::Nullable<bbl::js::Tuple<4>>(${color})` : "std::move(color)"}, ${optionsCpp(row)});
     }`;
     });
     return `#include <bblite/upstream_text.hpp>
@@ -120,7 +120,7 @@ ${compiled.join("\n")}
 ${
     layout
         ? `TextData create_live_text_data(std::uint32_t index, std::string text,
-    std::optional<bbl::js::Tuple<4>> color) {
+    bbl::js::Nullable<bbl::js::Tuple<4>> color) {
 ${
     live.length
         ? `    switch (index) {
@@ -160,7 +160,7 @@ namespace bbl {
 ${declarations}
 ${definitions}
 TextData create_live_text_data(std::uint32_t index, std::string text,
-    std::optional<bbl::js::Tuple<4>> color = std::nullopt);
+    bbl::js::Nullable<bbl::js::Tuple<4>> color = std::nullopt);
 } // namespace bbl
 `;
     }

@@ -1085,6 +1085,19 @@ public:
     [[nodiscard]] std::optional<T> to_optional() const {
         return has_value() ? std::optional<T>{value()} : std::nullopt;
     }
+    template <typename U> [[nodiscard]] T value_or(U&& fallback) const {
+        return has_value() ? value() : T(std::forward<U>(fallback));
+    }
+    [[nodiscard]] bool operator==(const Nullable& other) const
+        requires requires(const T& left, const T& right) { left == right; }
+    {
+        return has_value() == other.has_value() && (!has_value() || value() == other.value());
+    }
+    [[nodiscard]] bool operator==(const T& other) const
+        requires requires(const T& left, const T& right) { left == right; }
+    {
+        return has_value() && value() == other;
+    }
     void gc_trace(const TraceVisitor& visitor) const { visitor(owned_); }
 
     Nullable& operator=(std::nullopt_t) {
@@ -1804,6 +1817,11 @@ public:
         }
         return found == storage_->entries.end() ? MapGetResult<V>::missing()
                                                 : MapGetResult<V>::found(found->second);
+    }
+    [[nodiscard]] auto get_owned(const WeakIdentity& key) const { return snapshot_value(get(key)); }
+    [[nodiscard]] bool has(const WeakIdentity& key) const {
+        storage_->prune();
+        return !key.expired() && storage_->entries.contains(key);
     }
     WeakMap& set(const WeakIdentity& key, const V& value) {
         storage_->prune();

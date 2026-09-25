@@ -246,13 +246,13 @@ ${
     }
     double _world_step_seconds() override { return upstream::physics_world_step_seconds(_world->value); }
     double _body_motion_type(js::Ref<PhysicsBody> body) override { return static_cast<double>(upstream::owning_body_record(body->value).motion_type); }
-    std::optional<double> _body_identity(js::Ref<PhysicsBody> body) override { return body->value.handle.value; }
+    bbl::js::Nullable<double> _body_identity(js::Ref<PhysicsBody> body) override { return body->value.handle.value; }
     js::Ref<NativeBody> _native_body(js::Ref<PhysicsBody> body) override {
         if (!body->native) body->native = js::make_ref<NativeBody>();
         body->native->handle = body->value.handle;
         return body->native;
     }
-    std::optional<std::tuple<js::Ref<PhysicsBody>, js::Ref<NativeBody>, double>> _thin_resolve([[maybe_unused]] std::optional<double> id) override {
+    bbl::js::Nullable<std::tuple<js::Ref<PhysicsBody>, js::Ref<NativeBody>, double>> _thin_resolve([[maybe_unused]] bbl::js::Nullable<double> id) override {
 ${
     thinInstances
         ? `        if (!id) return std::nullopt;
@@ -272,7 +272,7 @@ ${
         : "        return {};"
 }
     }
-    std::optional<js::Array<double>> _thin_matrix([[maybe_unused]] js::Ref<PhysicsBody> body, [[maybe_unused]] js::Ref<NativeBody> native) override {
+    bbl::js::Nullable<js::Array<double>> _thin_matrix([[maybe_unused]] js::Ref<PhysicsBody> body, [[maybe_unused]] js::Ref<NativeBody> native) override {
 ${
     thinInstances
         ? `        const auto value = upstream::physics_thin_world_matrix(_world->value, body->value, native->handle);
@@ -315,7 +315,7 @@ inline std::shared_ptr<PhysicsCharacterController> create_physics_character_cont
     return controller;
 }
 inline js::Ref<Vec3> vector(Vec3d value) { return v(value.x, value.y, value.z); }
-inline js::Ref<PhysicsCharacterControllerOptions> options(std::optional<double> height, std::optional<double> radius) {
+inline js::Ref<PhysicsCharacterControllerOptions> options(bbl::js::Nullable<double> height, bbl::js::Nullable<double> radius) {
     auto result = js::make_ref<PhysicsCharacterControllerOptions>(); result->capsuleHeight=height;result->capsuleRadius=radius;return result;
 }
 `;

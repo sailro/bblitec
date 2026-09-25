@@ -710,7 +710,7 @@ ${helpers.map((declaration) => `inline ${definition(declaration)}`).join("\n")}
 ${
     full
         ? `${lowerMat4InvertCpp(context, { inline: true, cppName: "_inverse_storage" })}
-inline std::optional<js::Array<double>> _matrix_inverse(const js::Array<double>& input) {
+inline bbl::js::Nullable<js::Array<double>> _matrix_inverse(const js::Array<double>& input) {
     std::array<float, 16> values{};
     for (std::size_t i = 0; i < values.size(); ++i) values[i] = static_cast<float>(input.at(i));
     const auto inverse = _inverse_storage(values);
@@ -736,11 +736,11 @@ ${
     virtual void _release_collector(js::Ref<QueryCollector>) = 0;
     virtual double _world_step_seconds() = 0;
     virtual double _body_motion_type(js::Ref<PhysicsBody>) = 0;
-    virtual std::optional<double> _body_identity(js::Ref<PhysicsBody>) = 0;
+    virtual bbl::js::Nullable<double> _body_identity(js::Ref<PhysicsBody>) = 0;
     virtual js::Ref<NativeBody> _native_body(js::Ref<PhysicsBody>) = 0;
-    virtual std::optional<std::tuple<js::Ref<PhysicsBody>, js::Ref<NativeBody>, double>> _thin_resolve(std::optional<double>) = 0;
+    virtual bbl::js::Nullable<std::tuple<js::Ref<PhysicsBody>, js::Ref<NativeBody>, double>> _thin_resolve(bbl::js::Nullable<double>) = 0;
     virtual js::Ref<Vec3> _thin_com(js::Ref<PhysicsBody>, js::Ref<NativeBody>, js::Array<double>) = 0;
-    virtual std::optional<js::Array<double>> _thin_matrix(js::Ref<PhysicsBody>, js::Ref<NativeBody>) = 0;
+    virtual bbl::js::Nullable<js::Array<double>> _thin_matrix(js::Ref<PhysicsBody>, js::Ref<NativeBody>) = 0;
     virtual js::Array<double> _body_world_matrix(js::Ref<PhysicsBody>) = 0;
     virtual ${lowerer.storage(massPropertiesType)} _mass_properties(js::Ref<NativeBody>) = 0;
     virtual js::Array<double> _angular_velocity(js::Ref<NativeBody>) = 0;

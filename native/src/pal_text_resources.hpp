@@ -69,7 +69,7 @@ inline constexpr std::uint32_t text_buffer_usage_vertex = 0x20, text_buffer_usag
  * The capture role of a resource the pin created, by its own label; a
  * render capture names resources the way the browser observation does.
  */
-inline std::string_view text_resource_role(const std::optional<std::string>& label) {
+inline std::string_view text_resource_role(const bbl::js::Nullable<std::string>& label) {
     const std::string_view name = label ? std::string_view(*label) : std::string_view();
     if (name == "text-renderable-ubo" || name == "text-layer-ubo")
         return "uniform";

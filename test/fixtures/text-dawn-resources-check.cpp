@@ -108,7 +108,7 @@ using namespace bbl::pal;
 // The WebGPU half of the Dawn text device, without its pipeline cache.
 struct Device final : DawnTextGpuResources {
     using DawnTextGpuResources::DawnTextGpuResources;
-    TextPipelineSet text_pipeline(const std::string&, double, const std::optional<std::string>&,
+    TextPipelineSet text_pipeline(const std::string&, double, const bbl::js::Nullable<std::string>&,
                                   bool, const std::shared_ptr<const void>&,
                                   const std::string&) override {
         throw std::logic_error("no pipelines");

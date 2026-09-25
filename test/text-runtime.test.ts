@@ -351,7 +351,7 @@ struct UniformWrites final : TextGpuDevice {
     TextGpuHandle create_bind_group(const TextBindGroupDescriptor&) override { throw std::runtime_error("group"); }
     TextGpuEncoderHandle create_render_bundle_encoder(const TextRenderBundleEncoderDescriptor&) override { throw std::runtime_error("bundle"); }
     void write_texture(const TextTexelCopyTextureInfo&, const js::ArrayBuffer&, const TextTexelCopyBufferLayout&, const TextExtent3D&) override { throw std::runtime_error("texture write"); }
-    TextPipelineSet text_pipeline(const std::string&, double, const std::optional<std::string>&, bool, const std::shared_ptr<const void>&, const std::string&) override { throw std::runtime_error("pipeline"); }
+    TextPipelineSet text_pipeline(const std::string&, double, const bbl::js::Nullable<std::string>&, bool, const std::shared_ptr<const void>&, const std::string&) override { throw std::runtime_error("pipeline"); }
     TextPipelineDeviceCacheHandle text_pipeline_cache() override { throw std::runtime_error("cache"); }
 };
 int main() {
@@ -623,6 +623,7 @@ test("deferred scene registration observes snapshot order, identity guards, fail
         "void drain_scene_deferred_builders(",
         "void register_scene(",
         "void unregister_scene(",
+        "void retire_scene_shadow_states(",
         "void dispose_scene(",
     ]
         .map((name) => cppFunction(source, name))

@@ -53,7 +53,7 @@ int main() {
     const auto draw = [&] { ops.event("draws", text_renderer_detail::text_renderer_record(rr)); };
     const auto record = [&] {
         for (const auto& layer : rr->layers_) {
-            const auto lg = pinned::map_get(rr->layer_gpu, layer);
+            const auto lg = rr->layer_gpu.get_owned(layer).value();
             ops.event("state", layer == a ? "a" : "b", lg->instance_cap, lg->uploaded_data_version,
                       lg->uploaded_style_version, lg->uploaded_viewport_w, lg->uploaded_viewport_h,
                       lg->bundle_layout_version, lg->bundle_draw_calls,
