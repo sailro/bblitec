@@ -10,53 +10,83 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
-import { readPatchManifest } from "./patch-inventory.js";
-import { listFiles } from "./tooling/records.js";
+import { runPatchIdentity } from "./patch-inventory.js";
+import { contentDigest, listFiles } from "./tooling/records.js";
 
 /** The command that builds this checkout's bblite-tint. */
 export const tintToolBuildCommand = "pwsh -File tools/build-tint.ps1";
 
-function sha256(path: string): string {
-    return createHash("sha256").update(readFileSync(path)).digest("hex");
+/** Dawn's `tint` series per checkout, CMake and manifest/owner content. */
+const tintSeries = new Map<string, readonly string[]>();
+
+/**
+ * Dawn's `tint` patch series of the checkout at `root`, as
+ * native/patch-identity.cmake selects it (none without a manifest).
+ */
+function tintPatchSeries(
+    root: string,
+    cmake: string | undefined,
+): readonly string[] {
+    const manifest = join(root, "native", "patches", "manifest.json");
+    if (!existsSync(manifest)) return [];
+    if (cmake === undefined)
+        throw new Error(
+            "Reading bblite-tint's sources needs CMake for Dawn's tint patch series (native/patch-identity.cmake); run npm run doctor.",
+        );
+    const owner = join(root, "native", "patch-identity.cmake");
+    const key = [
+        root,
+        cmake,
+        contentDigest(manifest),
+        contentDigest(owner),
+    ].join("\n");
+    let series = tintSeries.get(key);
+    if (series === undefined) {
+        series = runPatchIdentity(
+            cmake,
+            "series",
+            "dawn",
+            { variants: ["tint"] },
+            root,
+        )
+            .split("\n")
+            .filter(Boolean);
+        tintSeries.set(key, series);
+    }
+    return series;
 }
 
 /**
  * Every source a bblite-tint build of the checkout at `root` reads, keyed by
  * repository-relative POSIX path, with its SHA-256; a source the checkout
- * lacks is absent.
+ * lacks is absent. `cmake` reads Dawn's `tint` patch series.
  */
-export function tintToolSources(root: string): Map<string, string> {
-    const manifest = join(root, "native", "patches", "manifest.json");
-    // Dawn's `tint` series, as native/patch-identity.cmake selects it.
-    const patches = existsSync(manifest)
-        ? readPatchManifest(root)
-              .patches.filter(
-                  (patch) =>
-                      patch.library === "dawn" &&
-                      (patch.variants.includes("tint") ||
-                          patch.variants.includes("all")),
-              )
-              .map((patch) => join(root, patch.file))
-        : [];
+export function tintToolSources(
+    root: string,
+    cmake: string | undefined,
+): Map<string, string> {
     const files = [
         join(root, "tools", "build-tint.ps1"),
         join(root, "upstream", "tint.json"),
         ...listFiles(join(root, "tools", "tint-sdl")),
-        ...patches,
+        ...tintPatchSeries(root, cmake),
     ].filter((path) => existsSync(path));
     return new Map(
         files.map((path) => [
             relative(root, path).split(sep).join("/"),
-            sha256(path),
+            contentDigest(path),
         ]),
     );
 }
 
 /** One digest of every source a bblite-tint build of the checkout at `root` reads. */
-export function tintToolSourceDigest(root: string): string {
+export function tintToolSourceDigest(
+    root: string,
+    cmake: string | undefined,
+): string {
     return createHash("sha256")
         .update(
-            [...tintToolSources(root)]
+            [...tintToolSources(root, cmake)]
                 .map(([source, digest]) => `${source}:${digest}`)
                 .sort()
                 .join("\n"),
@@ -99,10 +129,16 @@ function recordedSources(tool: string): Map<string, string> | string {
 export function tintToolMismatch(
     tool: string,
     root: string,
+    cmake: string | undefined,
 ): string | undefined {
     const recorded = recordedSources(tool);
     if (typeof recorded === "string") return recorded;
-    const expected = tintToolSources(root);
+    let expected: Map<string, string>;
+    try {
+        expected = tintToolSources(root, cmake);
+    } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+    }
     const differences = [
         ...[...expected]
             .filter(([source, digest]) => recorded.get(source) !== digest)
@@ -123,9 +159,10 @@ export function tintToolMismatch(
 /** The pinned `tint` command built beside the checkout at `root`'s bblite-tint, if any. */
 export function findPinnedTint(
     root: string,
+    cmake: string | undefined,
     platform: NodeJS.Platform = process.platform,
 ): string | undefined {
-    const tool = findTintTool(root, platform);
+    const tool = findTintTool(root, cmake, platform);
     const command =
         tool && join(dirname(tool), platform === "win32" ? "tint.exe" : "tint");
     return command && existsSync(command) ? command : undefined;
@@ -134,6 +171,7 @@ export function findPinnedTint(
 /** The bblite-tint built from the checkout at `root`'s own sources, if any. */
 export function findTintTool(
     root: string,
+    cmake: string | undefined,
     platform: NodeJS.Platform = process.platform,
 ): string | undefined {
     const directory = join(root, "artifacts", "tools", "tint");
@@ -144,6 +182,7 @@ export function findTintTool(
         .map((entry) => join(directory, entry.name, executable))
         .find(
             (tool) =>
-                existsSync(tool) && tintToolMismatch(tool, root) === undefined,
+                existsSync(tool) &&
+                tintToolMismatch(tool, root, cmake) === undefined,
         );
 }

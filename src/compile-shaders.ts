@@ -115,7 +115,7 @@ export interface ShaderCompilationOptions {
     directories: readonly string[];
     repositoryRoot?: string;
     target?: OfflineShaderTarget;
-    tools?: Pick<DevelopmentTools, "dxc" | "bbliteTint">;
+    tools?: Pick<DevelopmentTools, "dxc" | "bbliteTint" | "cmake">;
     environment?: NodeJS.ProcessEnv;
     cold?: boolean;
 }
@@ -333,7 +333,11 @@ export function compileOfflineShaders(
                 `Reached WGSL requires the bblite-tint built from this checkout's tools/tint-sdl; run ${tintToolBuildCommand} or set BBLITE_TINT_PATH.`,
             );
         if (!tintVerified) {
-            const mismatch = tintToolMismatch(tint, compilerRepositoryRoot());
+            const mismatch = tintToolMismatch(
+                tint,
+                compilerRepositoryRoot(),
+                tools.cmake,
+            );
             if (mismatch !== undefined)
                 throw new Error(
                     `The bblite-tint at ${tint} is not this checkout's: ${mismatch}. Run ${tintToolBuildCommand}.`,
@@ -354,7 +358,7 @@ export function compileOfflineShaders(
         tintHash,
         implementationHash,
         pinHash,
-        tintToolSourceDigest(compilerRepositoryRoot()),
+        tintToolSourceDigest(compilerRepositoryRoot(), tools.cmake),
     ]);
     const cacheRoot = join(root, "artifacts", "shader-cache");
     mkdirSync(cacheRoot, { recursive: true });
