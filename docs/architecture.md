@@ -66,7 +66,8 @@ HarfBuzz (`text_layout.hpp`). A lazy loader's root is the module function its
 
 Namespace-scope application functions and constant tables compile in C++ translation units per owning source,
 listed in `manifest.json` as `sourceUnits`; a source whose code exceeds `unitMaximumWeight` compiles as
-several `.part<N>.cpp` units. `main.cpp` owns entry execution; worker entries have separate units and
+several `.part<N>.cpp` units, each grouping the definitions that name the same templates, records and
+runtime functions, so each part compiles those once. `main.cpp` owns entry execution; worker entries have separate units and
 namespaces. `sources/application.hpp` (one per realm) holds the includes; each unit declares only the
 types, functions and tables its code reaches, with the overloads their signatures name, and template
 bodies appear only in units that use them. Paths mirror source folders from their common directory;

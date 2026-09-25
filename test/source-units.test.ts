@@ -344,3 +344,39 @@ test("a source over the unit budget compiles as parts while literal tables stay 
         /double first\(double a\) \{/,
     );
 });
+
+test("a source's parts group the definitions that name the same things", () => {
+    const names = (prefix: string) =>
+        Array.from(
+            { length: Math.ceil(unitMaximumWeight * 0.45) },
+            (_, index) => `${prefix}${index}`,
+        ).join(" + ");
+    const piece = (name: string, prefix: string) =>
+        `double ${name}() { return ${names(prefix)}; }`;
+    const output = renderSourceUnits({
+        source: "entry.ts",
+        realm: undefined,
+        includes: "",
+        declarations: [],
+        definitions: [
+            { source: "code.ts", definition: piece("firstA", "alpha") },
+            { source: "code.ts", definition: piece("firstB", "beta") },
+            { source: "code.ts", definition: piece("secondA", "alpha") },
+            { source: "code.ts", definition: piece("secondB", "beta") },
+        ],
+        templates: [],
+        entry: "int main() { return 0; }",
+        cpp: "standalone",
+    });
+    const unit = (path: string) => output.files.get(path) ?? "";
+    assert.match(
+        unit("sources/code.cpp"),
+        /double firstA\(\)[^]*double secondA\(\)/,
+    );
+    assert.doesNotMatch(unit("sources/code.cpp"), /beta/);
+    assert.match(
+        unit("sources/code.part1.cpp"),
+        /double firstB\(\)[^]*double secondB\(\)/,
+    );
+    assert.doesNotMatch(unit("sources/code.part1.cpp"), /alpha/);
+});

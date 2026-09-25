@@ -90,39 +90,145 @@ function codeWeight(code: string): number {
 }
 
 /**
- * Splits a unit's pieces, in order, into parts of at most the unit budget. A
- * piece weighs its own code and the templates it is first in its part to
- * reach, since each part instantiates those again.
+ * What one piece of a unit costs a part. Its code and the template
+ * definitions it reaches count toward the unit budget; a template, and every
+ * distinct name the code uses (a record, an environment, a runtime
+ * function), is compiled once per part however many of its pieces use it,
+ * so pieces sharing them belong together.
+ */
+interface PieceCost {
+    readonly code: number;
+    /** Template definitions the piece reaches, by their code weight. */
+    readonly templates: ReadonlyMap<string, number>;
+    /** What the part compiles for the piece: its templates and names. */
+    readonly shared: ReadonlyMap<string, number>;
+}
+
+/** A distinct name's weight when grouping pieces: the instantiations it brings. */
+const sharedNameWeight = 20;
+
+function pieceCost(
+    piece: string,
+    reachedTemplates: (code: string) => ReadonlySet<string>,
+    templateWeight: (name: string) => number,
+): PieceCost {
+    const templates = new Map<string, number>();
+    for (const name of reachedTemplates(piece))
+        templates.set(name, templateWeight(name));
+    const shared = new Map<string, number>();
+    for (const name of cppIdentifiers(piece))
+        shared.set(name, sharedNameWeight);
+    for (const [name, weight] of templates) shared.set(name, weight);
+    return { code: codeWeight(piece), templates, shared };
+}
+
+/**
+ * Splits a unit's pieces into parts of at most the unit budget, grouping
+ * pieces that share templates and names so each part compiles as few of
+ * them again as it can. A part starts from the heaviest piece left (the
+ * first piece, when it is pinned there) and then takes, while the budget
+ * holds, the piece that brings the least new shared weight per unit of its
+ * own code. Pieces keep their order within a part, and parts are ordered by
+ * their first piece.
  */
 function packUnitParts(
     pieces: readonly string[],
     reachedTemplates: (code: string) => ReadonlySet<string>,
     templateWeight: (name: string) => number,
+    pinFirst: boolean,
 ): string[][] {
-    const parts: string[][] = [[]];
-    let weight = 0;
-    let instantiated = new Set<string>();
-    for (const piece of pieces) {
-        const reached = reachedTemplates(piece);
-        const weigh = (templates: Iterable<string>): number => {
-            let total = codeWeight(piece);
-            for (const name of templates) total += templateWeight(name);
-            return total;
-        };
-        const added = [...reached].filter((name) => !instantiated.has(name));
-        const pieceWeight = weigh(added);
-        const current = parts.at(-1)!;
-        if (current.length > 0 && weight + pieceWeight > unitMaximumWeight) {
-            parts.push([piece]);
-            instantiated = new Set(reached);
-            weight = weigh(reached);
-        } else {
-            current.push(piece);
-            for (const name of added) instantiated.add(name);
-            weight += pieceWeight;
-        }
+    const costs = pieces.map((piece) =>
+        pieceCost(piece, reachedTemplates, templateWeight),
+    );
+    const allTemplates = new Map<string, number>();
+    let whole = 0;
+    for (const cost of costs) {
+        whole += cost.code;
+        for (const [name, weight] of cost.templates)
+            allTemplates.set(name, weight);
     }
-    return parts;
+    for (const weight of allTemplates.values()) whole += weight;
+    if (whole <= unitMaximumWeight || pieces.length <= 1) return [[...pieces]];
+    const users = new Map<string, number[]>();
+    for (const [index, cost] of costs.entries())
+        for (const name of cost.shared.keys()) {
+            const list = users.get(name);
+            if (list) list.push(index);
+            else users.set(name, [index]);
+        }
+    const unassigned = new Set(pieces.keys());
+    const parts: number[][] = [];
+    while (unassigned.size > 0) {
+        const seed =
+            pinFirst && parts.length === 0
+                ? 0
+                : [...unassigned].reduce((best, index) =>
+                      costs[index]!.code > costs[best]!.code ? index : best,
+                  );
+        const part = [seed];
+        unassigned.delete(seed);
+        const held = new Set<string>();
+        let weight = 0;
+        // What each piece would add to the budget, and to shared weight.
+        const addedBudget = new Map<number, number>();
+        const addedShared = new Map<number, number>();
+        for (const index of unassigned) {
+            const cost = costs[index]!;
+            let templates = 0;
+            for (const templateWeight of cost.templates.values())
+                templates += templateWeight;
+            let shared = 0;
+            for (const sharedWeight of cost.shared.values())
+                shared += sharedWeight;
+            addedBudget.set(index, cost.code + templates);
+            addedShared.set(index, shared);
+        }
+        const hold = (index: number): void => {
+            const cost = costs[index]!;
+            weight += cost.code;
+            for (const [name, sharedWeight] of cost.shared) {
+                if (held.has(name)) continue;
+                held.add(name);
+                const templateWeight = cost.templates.get(name) ?? 0;
+                weight += templateWeight;
+                for (const user of users.get(name)!) {
+                    if (!addedShared.has(user)) continue;
+                    addedShared.set(
+                        user,
+                        addedShared.get(user)! - sharedWeight,
+                    );
+                    addedBudget.set(
+                        user,
+                        addedBudget.get(user)! - templateWeight,
+                    );
+                }
+            }
+        };
+        hold(seed);
+        for (;;) {
+            let best: number | undefined;
+            let bestScore = Infinity;
+            for (const [index, shared] of addedShared) {
+                if (weight + addedBudget.get(index)! > unitMaximumWeight)
+                    continue;
+                const score = shared / (costs[index]!.code + 1);
+                if (score < bestScore) {
+                    best = index;
+                    bestScore = score;
+                }
+            }
+            if (best === undefined) break;
+            part.push(best);
+            unassigned.delete(best);
+            addedShared.delete(best);
+            addedBudget.delete(best);
+            hold(best);
+        }
+        parts.push(part.sort((a, b) => a - b));
+    }
+    return parts
+        .sort((a, b) => a[0]! - b[0]!)
+        .map((part) => part.map((index) => pieces[index]!));
 }
 
 /** A namespace-level declaration, which a unit holds when its code names it. */
@@ -277,6 +383,7 @@ export function renderSourceUnits(options: {
                 : group.definitions,
             reachedTemplates,
             (name) => templates.get(name)!.weight,
+            key === resolve(source),
         ),
     }));
     if (parts.length === 1 && parts[0]!.pieces.length === 1) {
