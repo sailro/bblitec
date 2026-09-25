@@ -130,7 +130,7 @@ test("controller arithmetic is read from the pin and unrepresented statements re
     );
     assert.match(
         full,
-        /const auto& optional = local_thinWorld; return optional \? \*optional : _body_world_matrix/,
+        /bbl::pinned::nullish<js::Array<double>>\(local_thinWorld, \[&\]\(\) \{ return _body_world_matrix/,
     );
     assert.match(
         full,

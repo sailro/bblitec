@@ -57,7 +57,9 @@ distinct captures and resource identities. Pinned functions use `lowerPinnedFunc
 use `lowerPinnedBody`. Pinned modules over plain records (the text family: data, layout, renderable,
 renderer, GPU writers and alpha-to-coverage membership) use `PinnedRecordModel`: a checked program over
 the pinned sources types every value, structs are emitted from the pinned declarations, and
-`pinned-record-transport.ts` rebuilds records the pin built at generation. Pinned classes are structs of
+`pinned-record-transport.ts` rebuilds records the pin built at generation. Both `PinnedRecordModel` and
+`CharacterKernelLowerer` use `record-shapes.ts` for typed shapes, storage, absence and truthiness;
+their storage policies select record ownership. Pinned classes are structs of
 their fields with their accessors, methods and constructor lowered over the instance. A closure is a
 `bbl::js::Callback` over its frame's environment struct, which holds the bindings closures capture and is
 shared by the frame and all of its closures; records and environments that can close a cycle describe

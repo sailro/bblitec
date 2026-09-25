@@ -1,3 +1,10 @@
+import {
+    type RecordShape,
+    recordScalars,
+    recordOf,
+    arrayOf,
+    optionalOf,
+} from "./record-shapes.js";
 import ts from "typescript";
 import { resolvedSymbol } from "../compiler/symbols.js";
 import { forEachAnalysisNode } from "../compiler/analysis-walk.js";
@@ -75,10 +82,10 @@ export function lowerCharacterControllerKernel(
         "PhysicsCharacterController",
     );
     const checker = context.program.checkerFor(file);
-    const records = new Map<string, Map<string, string>>();
+    const records = new Map<string, Map<string, RecordShape>>();
     const functions = new Map<ts.Declaration, KernelFunction>();
     const values = new Map<ts.Declaration, KernelValue>();
-    const declared = new Map<ts.Declaration, string>();
+    const declared = new Map<ts.Declaration, RecordShape>();
     const interfaces = file.statements.filter(
         (node): node is ts.InterfaceDeclaration =>
             ts.isInterfaceDeclaration(node),
@@ -115,22 +122,22 @@ export function lowerCharacterControllerKernel(
             : []),
         ...interfaces.map((record) => record.name.text),
     ])
-        records.set(name, new Map());
+        records.set(name, new Map<string, RecordShape>());
     const schema: KernelSchema = {
         records,
         functions,
         values,
         declared,
-        returnType: "void",
+        returnType: recordScalars.void,
         ...(full
             ? {
-                  unknown: "optional:number",
+                  unknown: optionalOf(recordScalars.number),
                   ...characterTransportSchema(context),
               }
             : {}),
     };
     const lowerer = new CharacterKernelLowerer(context, file, schema);
-    const typeFields = (type: ts.Type, at: ts.Node): Map<string, string> =>
+    const typeFields = (type: ts.Type, at: ts.Node): Map<string, RecordShape> =>
         new Map(
             checker
                 .getPropertiesOfType(type)
@@ -157,28 +164,31 @@ export function lowerCharacterControllerKernel(
     if (full) {
         records.set(
             "QueryPoint",
-            new Map([
-                ["identity", "number[]"],
-                ["position", "number[]"],
-                ["normal", "number[]"],
+            new Map<string, RecordShape>([
+                ["identity", arrayOf(recordScalars.number)],
+                ["position", arrayOf(recordScalars.number)],
+                ["normal", arrayOf(recordScalars.number)],
             ]),
         );
         records.set(
             "CapsuleParameters",
-            new Map([
-                ["pointA", "Vec3"],
-                ["pointB", "Vec3"],
-                ["radius", "number"],
+            new Map<string, RecordShape>([
+                ["pointA", recordOf("Vec3")],
+                ["pointB", recordOf("Vec3")],
+                ["radius", recordScalars.number],
             ]),
         );
         records.set(
             "ShapeDescription",
-            new Map([
-                ["type", "number"],
-                ["parameters", "CapsuleParameters"],
+            new Map<string, RecordShape>([
+                ["type", recordScalars.number],
+                ["parameters", recordOf("CapsuleParameters")],
             ]),
         );
-        records.set("InertiaOverride", new Map([["inertia", "Vec3"]]));
+        records.set(
+            "InertiaOverride",
+            new Map<string, RecordShape>([["inertia", recordOf("Vec3")]]),
+        );
     }
     for (const record of interfaces) {
         const fields = records.get(record.name.text)!;
@@ -200,13 +210,13 @@ export function lowerCharacterControllerKernel(
                         member,
                         "Contact native handle type changed.",
                     );
-                declared.set(member, "NativeBody");
+                declared.set(member, recordOf("NativeBody"));
             }
             const type = lowerer.declarationType(member);
             fields.set(
                 member.name.text,
                 full && record.name.text === "PhysicsCharacterControllerOptions"
-                    ? `optional:${type}`
+                    ? optionalOf(type)
                     : type,
             );
         }
@@ -284,12 +294,12 @@ export function lowerCharacterControllerKernel(
                         parameter,
                         "Native body handle annotation changed.",
                     );
-                declared.set(parameter, "NativeBody");
+                declared.set(parameter, recordOf("NativeBody"));
             } else if (
                 parameter.type?.kind === ts.SyntaxKind.AnyKeyword &&
                 name === "_contactFromCast"
             )
-                declared.set(parameter, "QueryPoint");
+                declared.set(parameter, recordOf("QueryPoint"));
         }
         if (
             declaration.type.kind === ts.SyntaxKind.AnyKeyword &&
@@ -339,9 +349,13 @@ export function lowerCharacterControllerKernel(
             );
         functions.set(set, {
             cpp: "_set_node_position",
-            parameters: ["number", "number", "number"],
+            parameters: [
+                recordScalars.number,
+                recordScalars.number,
+                recordScalars.number,
+            ],
             requiredParameters: 3,
-            returns: "void",
+            returns: recordScalars.void,
         });
         const observable = context.classDeclaration(
             characterControllerModule,
@@ -359,18 +373,18 @@ export function lowerCharacterControllerKernel(
             );
         functions.set(notify, {
             cpp: "_notify",
-            parameters: ["CharacterCollisionEvent"],
+            parameters: [recordOf("CharacterCollisionEvent")],
             requiredParameters: 1,
-            returns: "void",
+            returns: recordScalars.void,
         });
         functions.set(
             context.functionDeclaration("src/math/invert-mat4.ts", "invertMat4")
                 .declaration,
             {
                 cpp: "_matrix_inverse",
-                parameters: ["number[]"],
+                parameters: [arrayOf(recordScalars.number)],
                 requiredParameters: 1,
-                returns: "optional:number[]",
+                returns: optionalOf(arrayOf(recordScalars.number)),
             },
         );
         const borrowedAdapterParameters = new Map<string, readonly number[]>([
@@ -386,50 +400,67 @@ export function lowerCharacterControllerKernel(
                 "src/physics/havok.ts",
                 "createPhysicsShape",
                 "_create_shape",
-                ["PhysicsWorld", "ShapeDescription"],
-                "PhysicsShape",
+                [recordOf("PhysicsWorld"), recordOf("ShapeDescription")],
+                recordOf("PhysicsShape"),
             ],
             [
                 "src/scene/transform-node.ts",
                 "createTransformNode",
                 "_create_node",
-                ["string", "number", "number", "number"],
-                "TransformNode",
+                [
+                    recordScalars.string,
+                    recordScalars.number,
+                    recordScalars.number,
+                    recordScalars.number,
+                ],
+                recordOf("TransformNode"),
             ],
             [
                 "src/physics/havok.ts",
                 "createPhysicsBody",
                 "_create_body",
-                ["PhysicsWorld", "TransformNode", "number"],
-                "PhysicsBody",
+                [
+                    recordOf("PhysicsWorld"),
+                    recordOf("TransformNode"),
+                    recordScalars.number,
+                ],
+                recordOf("PhysicsBody"),
             ],
             [
                 "src/physics/havok.ts",
                 "setPhysicsBodyShape",
                 "_set_body_shape",
-                ["PhysicsWorld", "PhysicsBody", "PhysicsShape"],
-                "void",
+                [
+                    recordOf("PhysicsWorld"),
+                    recordOf("PhysicsBody"),
+                    recordOf("PhysicsShape"),
+                ],
+                recordScalars.void,
             ],
             [
                 "src/physics/havok.ts",
                 "setPhysicsBodyMassProperties",
                 "_set_body_mass_properties",
-                ["PhysicsWorld", "PhysicsBody", "InertiaOverride"],
-                "void",
+                [
+                    recordOf("PhysicsWorld"),
+                    recordOf("PhysicsBody"),
+                    recordOf("InertiaOverride"),
+                ],
+                recordScalars.void,
             ],
             [
                 "src/physics/havok.ts",
                 "setPhysicsBodyPreStep",
                 "_set_body_pre_step",
-                ["PhysicsBody", "boolean"],
-                "void",
+                [recordOf("PhysicsBody"), recordScalars.boolean],
+                recordScalars.void,
             ],
             [
                 "src/physics/havok.ts",
                 "removePhysicsBody",
                 "_remove_body",
-                ["PhysicsWorld", "PhysicsBody"],
-                "void",
+                [recordOf("PhysicsWorld"), recordOf("PhysicsBody")],
+                recordScalars.void,
             ],
         ] as const)
             functions.set(
@@ -482,7 +513,7 @@ export function lowerCharacterControllerKernel(
     );
     for (const field of fields) {
         if (["_startCollector", "_castCollector"].includes(field.name.text))
-            declared.set(field, "QueryCollector");
+            declared.set(field, recordOf("QueryCollector"));
         values.set(field, {
             cpp: field.name.text,
             type: lowerer.declarationType(field),
@@ -533,7 +564,7 @@ export function lowerCharacterControllerKernel(
     };
     const parameterValues = (
         declaration: KernelDeclaration | ts.ConstructorDeclaration,
-        types: readonly string[],
+        types: readonly RecordShape[],
     ): Map<ts.Declaration, KernelValue> => {
         const locals = new Map(values);
         const rebound = reboundParameters(declaration);
@@ -666,7 +697,7 @@ export function lowerCharacterControllerKernel(
         initialize = `void initialize(const js::Ref<PhysicsWorld>& world, js::Ref<Vec3> position, js::Ref<PhysicsCharacterControllerOptions> options) {\n${initializer.body(constructor.body!.statements, "    ")}\n}`;
     }
     return `#pragma once
-#include <bblite/js_data.hpp>
+#include <bblite/pinned_records.hpp>
 #include <tuple>
 namespace bbl::character {
 struct PhysicsBody;

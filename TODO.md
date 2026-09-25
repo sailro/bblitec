@@ -4,10 +4,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 [features](docs/features.md) and [UI](docs/ui.md); [audit](audit.md) tracks audit findings;
 [status](docs/status.md) owns measurements.
 
-## Compiler
-
-- [ ] Converge the pinned record lowerers (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`) on one record and absence model.
-
 ## UI
 
 - [ ] Match live style rules through RmlUi instead of `UiSelectorMatcher` (`ui_selector_match.hpp`; `pal_ui_rml.cpp`), keeping authored-tree queries, generated nodes and input state; measure `Element::Matches` reparsing before caching it.
