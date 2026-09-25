@@ -1,6 +1,6 @@
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
 import { outlineEmittedBody } from "./compiler/body-outlining.js";
-import { cppTokens } from "./compiler/cpp-identifiers.js";
+import { cppIdentifiers } from "./compiler/cpp-identifiers.js";
 import {
     isStringValue,
     optionalPresentCpp,
@@ -5090,12 +5090,7 @@ class Compiler implements LoweringServices {
             }
             this.managedCaptures.pop();
         }
-        const tokens = [...cppTokens(lines.join("\n"))];
-        const identifiers = new Set(
-            tokens
-                .filter((token) => token.kind === "identifier")
-                .map((token) => token.text),
-        );
+        const identifiers = cppIdentifiers(lines.join("\n"));
         capture.retainReferenced(identifiers);
         const localBindings = [...identifiers].filter(
             (name) =>

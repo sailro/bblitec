@@ -223,6 +223,8 @@ export function functionDependencies(
         // Document visibility is supplied by the current platform dispatch.
         // A helper used by two listeners must capture each listener's parameter.
         const visibility =
+            !value &&
+            identifier.text === "document" &&
             libraryGlobal(context.checker, identifier) === "document"
                 ? context.platformDocumentHidden()
                 : undefined;

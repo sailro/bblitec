@@ -182,7 +182,7 @@ interface ReachedLoopNode {
     readonly node: ts.Node;
     /** First row after this syntax subtree, for a visitor's pruning decision. */
     end: number;
-    readonly expansions: Map<
+    expansions?: Map<
         string,
         {
             readonly called: ts.Signature["declaration"];
@@ -289,7 +289,6 @@ export function walkReachedLoopNodes(
                 const row: ReachedLoopNode = {
                     node,
                     end: 0,
-                    expansions: new Map(),
                 };
                 built.push(row);
                 ts.forEachChild(node, append);
@@ -327,7 +326,7 @@ export function walkReachedLoopNodes(
                 continue;
             }
             if (!invocation && !ts.isPropertyAccessExpression(node)) continue;
-            let expansion = row.expansions.get(key);
+            let expansion = row.expansions?.get(key);
             if (!expansion || expansion.called !== called) {
                 const edges: ReachedLoopEdge[] = [];
                 if (invocation && callee) {
@@ -444,7 +443,7 @@ export function walkReachedLoopNodes(
                     }
                 }
                 expansion = { called, edges };
-                row.expansions.set(key, expansion);
+                (row.expansions ??= new Map()).set(key, expansion);
             }
             for (const edge of expansion.edges) {
                 if (edge.functionKey !== undefined) {

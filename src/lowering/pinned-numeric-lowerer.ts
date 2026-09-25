@@ -3054,7 +3054,7 @@ export class PinnedNumericLowerer {
         cpp: string,
     ): string {
         if (kind === "boolean") return cpp;
-        if (kind === "string") return `!std::string(${cpp}).empty()`;
+        if (kind === "string") return `!std::string_view(${cpp}).empty()`;
         if (kind === "object") return "true";
         if (kind === "nullable" || kind === "native")
             return `static_cast<bool>(${cpp})`;
@@ -3090,7 +3090,7 @@ export class PinnedNumericLowerer {
                 ? `static_cast<double>(${cpp})`
                 : `std::string(${cpp})`;
         const test = this.truthyValue(kind, temporary);
-        return `([&]() { const auto ${temporary} = ${left}; return ${test} ? ${select(or ? temporary : right)} : ${select(or ? right : temporary)}; }())`;
+        return `([&]() { auto&& ${temporary} = ${left}; return ${test} ? ${select(or ? temporary : right)} : ${select(or ? right : temporary)}; }())`;
     }
 
     /**

@@ -2659,7 +2659,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             returns: to.result,
             ...(received ? { received } : {}),
         });
-        this.names.push(new Set());
         try {
             return this.withBindings(() => {
                 const parameters = to.parameters.map((shape, index) => {
@@ -2712,8 +2711,6 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             });
         } finally {
             this.frames.pop();
-            const closed = this.names.pop()!;
-            for (const name of closed) this.declared.delete(name);
         }
     }
 

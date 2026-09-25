@@ -256,11 +256,11 @@ export class EmissionMap<K, V> extends Map<K, V> {
     }
 
     public override set(key: K, value: V): this {
-        if (!super.has(key) || !Object.is(super.get(key), value)) changed(this);
-        if (!journaling(this.#born)) return super.set(key, value);
         const present = super.has(key);
         const previous = super.get(key);
         if (present && Object.is(previous, value)) return this;
+        changed(this);
+        if (!journaling(this.#born)) return super.set(key, value);
         const record = this.#record();
         if (record && record.entries === undefined)
             saveOriginal(record.saved, key, () =>
