@@ -136,8 +136,8 @@ int main() {
         const auto first_identity = alias.weak_identity();
         const auto second_identity = std::get<1>(*second).weak_identity();
         alias = {};
-        first.reset();
-        second.reset();
+        first = std::nullopt;
+        second = std::nullopt;
         controller.dispose();
         assert(first_identity.expired() && second_identity.expired());
         u::remove_physics_body(handle, instances);

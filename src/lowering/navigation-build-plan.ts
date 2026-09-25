@@ -375,7 +375,7 @@ function cfgLowerer(): PinnedNumericLowerer {
     for (const [key, field] of NAV_MESH_BUILD_PARAM_FIELDS) {
         const storage = `params.${field}`;
         bindings.set(`params.${key}`, {
-            cpp: `bbl::pinned::present(${storage})`,
+            cpp: `${storage}.value()`,
             type: "scalar",
             nullish: `!${storage}.has_value()`,
             absentCpp: `!${storage}.has_value()`,

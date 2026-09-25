@@ -316,25 +316,25 @@ void surface_boundaries() {
 }
 
 template <typename Renderer> void scene_replacement(bool sdl) {
-    for (bool remove : {false, true}) {
+    enum class Mutation { replace, remove, append };
+    for (const auto mutation : {Mutation::replace, Mutation::remove, Mutation::append}) {
         reset();
         Engine engine;
         engine.rendering_contexts.push_back("scene", std::make_shared<Scene>());
         on_advance = [&] {
-            if (remove)
+            if (mutation == Mutation::remove)
                 engine.rendering_contexts.clear();
+            else if (mutation == Mutation::append)
+                engine.rendering_contexts.push_back("scene", std::make_shared<Scene>());
             else {
-                const std::initializer_list<std::shared_ptr<Scene>> contexts = {
-                    std::make_shared<Scene>()};
                 engine.rendering_contexts.clear();
-                for (const auto& context : contexts)
-                    engine.rendering_contexts.push_back("scene", context);
+                engine.rendering_contexts.push_back("scene", std::make_shared<Scene>());
             }
         };
         {
             Renderer renderer(engine);
             assert(conduct_frame(renderer) == FrameOutcome::restart);
-            assert(engine.renderer_restart_requested == !remove);
+            assert(engine.renderer_restart_requested == (mutation != Mutation::remove));
             assert((events == (sdl ? std::vector<std::string>{"acquire", "advance"}
                                    : std::vector<std::string>{"advance"})));
             assert(submissions == (sdl ? 1u : 0u));
@@ -345,13 +345,9 @@ template <typename Renderer> void scene_replacement(bool sdl) {
     Engine engine;
     engine.rendering_contexts.push_back("scene", std::make_shared<Scene>());
     on_advance = [&] {
-        {
-            const std::initializer_list<std::shared_ptr<Scene>> contexts = {
-                std::make_shared<Scene>(*engine.scenes().front())};
-            engine.rendering_contexts.clear();
-            for (const auto& context : contexts)
-                engine.rendering_contexts.push_back("scene", context);
-        }
+        auto replacement = std::make_shared<Scene>(*engine.scenes().front());
+        engine.rendering_contexts.clear();
+        engine.rendering_contexts.push_back("scene", std::move(replacement));
     };
     {
         Renderer renderer(engine);

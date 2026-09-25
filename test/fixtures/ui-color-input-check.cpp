@@ -1,5 +1,6 @@
 #include "pal_ui_rml.cpp"
 #include <cassert>
+#include <fstream>
 
 namespace bbl::pal {
 std::string asset_path(std::string_view) {

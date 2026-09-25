@@ -1,5 +1,6 @@
 #include <bblite/runtime.hpp>
 #include "pal_sdl_gpu_resources.hpp"
+#include "pal_sdl_gpu_writes.hpp"
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -25,6 +26,7 @@ struct SDL_GPUComputePass {
     SDL_GPUCommandBuffer* command;
     bool ended = false;
 };
+struct SDL_GPUDevice {};
 struct SDL_GPUTexture {};
 struct SDL_GPUFence {};
 struct SDL_GPUBuffer {
@@ -210,6 +212,7 @@ int main() {
     }
     assert(events == "EES");
     const std::array<std::uint8_t, 4> bytes{1, 3, 5, 7};
+    SDL_GPUDevice device;
     for (fail_step = 0; fail_step <= 6; ++fail_step) {
         events.clear();
         uploaded_buffer = {};
@@ -219,7 +222,7 @@ int main() {
         bool failed = false;
         try {
             auto* buffer =
-                upload_buffer(nullptr, SDL_GPU_BUFFERUSAGE_VERTEX, bytes.data(), bytes.size());
+                upload_buffer(&device, SDL_GPU_BUFFERUSAGE_VERTEX, bytes.data(), bytes.size());
             assert(fail_step == 0 && buffer == &uploaded_buffer && !buffer->released);
             assert(uploaded_transfer.released && uploaded_transfer.bytes == bytes);
             SDL_ReleaseGPUBuffer(nullptr, buffer);

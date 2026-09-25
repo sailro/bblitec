@@ -8,6 +8,7 @@
 // scene block kept as it was, no other scene's camera, a skipped geometry
 // task, the scene's own clear colour and the pass viewport it sets.
 #include "pal_scene_synchronize.hpp"
+#include "pal_gpu_images.hpp"
 
 #include <algorithm>
 #include <array>

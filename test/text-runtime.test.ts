@@ -333,26 +333,15 @@ struct Marked final : GpuObject {
     char mark = 0;
     void destroy() override { *log += mark; }
 };
-/** The device the uniform tail writes through: each write's range and bytes. */
-struct UniformWrites final : GpuDevice {
+/** The buffer the uniform tail writes through: each write's range and bytes. */
+struct UniformWrites final : GpuObject {
     std::ofstream& out;
-    GpuHandle target;
     explicit UniformWrites(std::ofstream& output) : out(output) {}
-    void write_buffer(const GpuHandle& buffer, double offset, const js::ArrayBuffer& data,
-                      double data_offset, double size) override {
-        if (buffer != target) throw std::runtime_error("uniform target");
-        const std::uint32_t prefix[] = {static_cast<std::uint32_t>(offset),static_cast<std::uint32_t>(size)};
+    void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
+        const std::uint32_t prefix[] = {static_cast<std::uint32_t>(offset),static_cast<std::uint32_t>(bytes.size())};
         out.write(reinterpret_cast<const char*>(prefix),sizeof(prefix));
-        out.write(reinterpret_cast<const char*>(data.data()) + static_cast<std::size_t>(data_offset),
-                  static_cast<std::streamsize>(size));
+        out.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
     }
-    GpuHandle create_buffer(const GpuBufferDescriptor&) override { throw std::runtime_error("buffer"); }
-    GpuHandle create_texture(const GpuTextureDescriptor&) override { throw std::runtime_error("texture"); }
-    GpuHandle create_bind_group(const GpuBindGroupDescriptor&) override { throw std::runtime_error("group"); }
-    GpuEncoderHandle create_render_bundle_encoder(const GpuRenderBundleEncoderDescriptor&) override { throw std::runtime_error("bundle"); }
-    void write_texture(const GpuTexelCopyTextureInfo&, const js::ArrayBuffer&, const GpuTexelCopyBufferLayout&, const GpuExtent3D&) override { throw std::runtime_error("texture write"); }
-    TextPipelineSet text_pipeline(const std::string&, double, const bbl::js::Nullable<std::string>&, bool, const std::shared_ptr<const void>&, const std::string&) override { throw std::runtime_error("pipeline"); }
-    TextPipelineDeviceCacheHandle text_pipeline_cache() override { throw std::runtime_error("cache"); }
 };
 int main() {
     auto data = std::make_shared<TextDataState>();
@@ -372,14 +361,13 @@ int main() {
         for (std::size_t index = 0; index < world.size(); ++index) { const double wide=world.load(index); state.write(reinterpret_cast<const char*>(&wide),sizeof(wide)); }
     };
     TextCameraInput camera{js::TypedArray<float>{${Array.from(vp, (value) => `${Number.isInteger(value) ? value.toFixed(1) : value}f`).join(",")}},4,1.25};
-    auto device = std::make_shared<UniformWrites>(writes);
+    auto device = std::make_shared<GpuDevice>();
     auto surface = std::make_shared<TextSurface>();
     surface->device = device;
     // The renderable's GPU record as \`ensureGpu\` creates it.
     auto gpu = std::make_shared<TextRenderableGpu>();
     gpu->device = device;
-    gpu->text_u = std::make_shared<GpuObject>();
-    device->target = gpu->text_u;
+    gpu->text_u = std::make_shared<UniformWrites>(writes);
     gpu->style_buf = std::make_shared<GpuObject>();
     gpu->style_buf->size = 32;
     gpu->instance_cap = 8;

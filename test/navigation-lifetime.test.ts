@@ -132,7 +132,7 @@ test("navigation build plans are lowered from the recast-navigation packages", (
     // and one the solo arm's cfg never carries is that default alone.
     assert.match(
         solo,
-        /params\.cs\.has_value\(\).*bbl::pinned::present\(params\.cs\) : 0\.2/,
+        /params\.cs\.has_value\(\).*params\.cs\.value\(\) : 0\.2/,
     );
     assert.match(
         solo,
@@ -156,9 +156,9 @@ test("navigation build plans are lowered from the recast-navigation packages", (
     // included.
     assert.match(
         tile,
-        /params\.expected_layers_per_tile\.has_value\(\) \? 1\.0 : bbl::pinned::present\(params\.expected_layers_per_tile\)/,
+        /params\.expected_layers_per_tile\.has_value\(\) \? 1\.0 : params\.expected_layers_per_tile\.value\(\)/,
     );
-    assert.match(tile, /bbl::pinned::present\(params\.max_obstacles\)/);
+    assert.match(tile, /params\.max_obstacles\.value\(\)/);
     // The package's own tile/poly bit split, over its own dtIlog2.
     assert.match(tile, /inline double dt_ilog2\(\s*double v\)/);
     assert.match(tile, /dt_ilog2\(dt_next_pow2\(/);

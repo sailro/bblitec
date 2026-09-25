@@ -3,6 +3,7 @@
 #include <bblite/runtime.hpp>
 #include <SDL3/SDL_gpu.h>
 #include "pal_sdl_gpu_commands.hpp"
+#include "pal_sdl_gpu_writes.hpp"
 
 #include <array>
 #include <cstring>

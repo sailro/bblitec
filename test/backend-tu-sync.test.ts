@@ -147,12 +147,6 @@ test("scene replacement restarts both backends without retaining a dead root", (
     );
 });
 
-test("late auxiliary scene registration rebuilds both backend plans", () => {
-    const shared = sharedGpuSource();
-    assert.match(shared, /engine\.scenes\(\)\.size\(\) != planned\.size\(\)/);
-    assert.match(shared, /current->shares_identity\(\*planned\[i\]\)/);
-});
-
 test("diagnostic input resumes across renderer restarts", () => {
     const runtime = readFileSync("native/include/bblite/runtime.hpp", "utf8");
     const replay = readFileSync("native/src/pal_platform_events.hpp", "utf8");
