@@ -16,8 +16,6 @@ import { inlineCpp } from "./generated-cpp.js";
  *    `standard_plugin_bindings` table.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { CompileError, compileSource } from "../src/compiler.js";
@@ -29,6 +27,7 @@ import {
     standardBuiltinBindingNames,
     type PinnedStandardSupportOptions,
 } from "../src/pinned-standard-variants.js";
+import { sceneBackendSource } from "./native-fixture.js";
 
 /** A 1x1 PNG, so a plugin's file-texture arm needs no remote asset. */
 const INLINE_PNG =
@@ -656,9 +655,8 @@ test("emits no plugin binding table for a scene whose plugins declare none", () 
 });
 
 test("both backends resolve a plugin binding through the generated table", () => {
-    const backends = ["native/src/pal_dawn.cpp", "native/src/pal_sdl_gpu.cpp"];
-    for (const path of backends) {
-        const source = readFileSync(resolve(path), "utf8");
+    for (const path of ["dawn", "sdl"] as const) {
+        const source = sceneBackendSource(path);
         // The same recorded metadata on both sides: the row is found by the
         // material's own signature index, never by a scene-specific slot.
         assert.match(

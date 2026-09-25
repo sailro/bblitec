@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
@@ -11,6 +11,8 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools();
@@ -19,12 +21,12 @@ test(
     "compressed texture candidates use device support in source order and both API tables agree",
     { skip: !native },
     () => {
-        const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const shared = sharedGpuSource();
         const sdl = cppFunction(
-            readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"),
+            sceneBackendSource("sdl"),
             "SDL_GPUTextureFormat compressed_texture_format(",
         );
-        const dawnSource = readFileSync("native/src/pal_dawn.cpp", "utf8");
+        const dawnSource = sceneBackendSource("dawn");
         const dawn = cppFunction(
             dawnSource,
             "WGPUTextureFormat compressed_texture_format(",
@@ -46,7 +48,7 @@ test(
 #include <cassert>
 namespace bbl::pal {
 ${cppRecord(shared, "enum class CompressedBlockFormat")}
-${cppFunction(shared, "inline CompressedBlockFormat compressed_block_format(")}
+${cppFunction(shared, "CompressedBlockFormat compressed_block_format(")}
 template <typename Supports>
 ${cppFunction(shared, "const CompressedTexture& select_compressed_texture(")}
 }

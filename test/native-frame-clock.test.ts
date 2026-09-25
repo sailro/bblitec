@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("Window scene clocks use supplied RAF time across delayed and coalesced frames", (t) => {
@@ -18,10 +19,7 @@ test("Window scene clocks use supplied RAF time across delayed and coalesced fra
     mkdirSync(directory, { recursive: true });
     writeFileSync(
         join(directory, "frame-clock.hpp"),
-        cppRecord(
-            readFileSync("native/src/pal_gpu_shared.hpp", "utf8"),
-            "class FrameClock {",
-        ),
+        cppRecord(sharedGpuSource(), "class FrameClock {"),
     );
     const executable = join(directory, "check.exe");
     runNativeFixtureCompiler(tools, [

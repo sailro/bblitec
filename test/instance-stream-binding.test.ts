@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedSharedVariantDecls } from "../src/pinned-pbr-variant-cpp.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
+    cppDeclaration,
     cppFunction,
     cppRecord,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("PBR feature keys and both backend stream bindings agree with pinned instance colors", async (t) => {
@@ -23,13 +26,10 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
     }
     const output = resolve("artifacts/instance-stream-binding");
     mkdirSync(output, { recursive: true });
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
-    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"),
-        dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
-    const key = cppFunction(
-        shared,
-        "inline PinnedVariantKey pinned_variant_key(",
-    );
+    const shared = sharedGpuSource();
+    const sdl = sceneBackendSource("sdl"),
+        dawn = sceneBackendSource("dawn");
+    const key = cppFunction(shared, "PinnedVariantKey pinned_variant_key(");
     const start = key.indexOf(
         "if (draw.item.mesh.value < engine.meshes.size())",
     );
@@ -68,6 +68,8 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
             ${sdlDraw.slice(bindStart, bindEnd)} }`,
             cppRecord(dawn, "struct InstanceStreams {"),
             cppFunction(dawn, "InstanceStreams instance_streams_for("),
+            // The scene header declares its default arguments.
+            cppDeclaration(dawn, "void encode_variant_draw("),
             cppFunction(dawn, "void encode_variant_draw("),
         ].join("\n"),
     );

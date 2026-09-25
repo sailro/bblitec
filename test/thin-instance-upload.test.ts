@@ -12,6 +12,7 @@ import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
@@ -224,7 +225,7 @@ test(
         const renderer = new RendererLowerer(context).lowerRenderPlan({
             gpuInstancing: true,
         }).source;
-        const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const shared = sharedGpuSource();
         const upstream = [
             "std::array<float, 16> mesh_local_matrix(",
             "std::array<float, 16> transform_node_local_matrix(",
@@ -253,7 +254,7 @@ namespace bbl::upstream {
 ${upstream}
 }
 namespace bbl::pal {
-${cppFunction(shared, "inline std::array<float, 16> mesh_block_world(")}
+${cppFunction(shared, "std::array<float, 16> mesh_block_world(")}
 }
 void check(const std::array<float, 16>& actual, const std::array<float, 16>& expected) {
     for (std::size_t lane = 0; lane < 16; ++lane)
@@ -297,35 +298,57 @@ test(
     () => {
         const output = resolve("artifacts/thin-instance-upload");
         mkdirSync(output, { recursive: true });
-        const shared = readFileSync(
-            "native/src/pal_gpu_shared.hpp",
-            "utf8",
-        ).replaceAll("\r\n", "\n");
+        const shared = sharedGpuSource().replaceAll("\r\n", "\n");
         const helpers = [
             "inline bool thin_instance_pool_grew(",
             "inline std::size_t thin_instance_active_count(\n",
-            "inline std::vector<float> instance_colors_for_upload(",
+            "std::vector<float> instance_colors_for_upload(",
         ]
             .map((signature) => cppFunction(shared, signature))
             .join("\n");
-        const updates = ["sdl_gpu", "dawn"].map((backend) => {
+        // The pool's refresh is the shared row sync's (`sync_plan_mesh_rows`);
+        // each backend supplies only the two writes it asks for.
+        const synchronize = readFileSync(
+            "native/src/pal_scene_synchronize.hpp",
+            "utf8",
+        );
+        const condition = synchronize.indexOf("mesh.thin_instanced &&");
+        const start = synchronize.lastIndexOf("if (", condition);
+        assert.ok(condition >= 0 && start >= 0, "the shared pool refresh");
+        const refresh = `template <class Rows>
+        void refresh_pool(const MeshRecord& mesh, UploadedMesh& gpu, Rows& rows) {
+            ${cppFunction(synchronize.slice(start), "if (")}
+        }`;
+        const updates = [
+            ["sdl_gpu", "MeshRowUploads", "Uploads& uploads;"],
+            ["dawn", "MeshRowWrites", "Engine* engine = nullptr;"],
+        ].map(([backend, rows, member]) => {
             const source = readFileSync(
                 `native/src/pal_${backend}.cpp`,
                 "utf8",
             );
-            const condition = source.indexOf("mesh.thin_instanced &&");
-            const start = source.lastIndexOf("if (", condition);
-            assert.ok(condition >= 0 && start >= 0, backend);
-            const block = cppFunction(source.slice(start), "if (");
-            return `void update_${backend}(const MeshRecord& mesh, UploadedMesh& ${backend === "dawn" ? "dawn_mesh" : "gpu_mesh"}) {
-            [[maybe_unused]] State state;
-            [[maybe_unused]] Uploads frame_buffer_uploads;
-            ${block}
+            const record = source.slice(source.indexOf(`struct ${rows} {`));
+            const writes = [
+                "void recreate_instances(",
+                "void update_instances(",
+            ]
+                .map((signature) => cppFunction(record, signature))
+                .join("\n");
+            return `struct ${rows} {
+            State& state;
+            ${member}
+            ${writes}
+        };
+        void update_${backend}(const MeshRecord& mesh, UploadedMesh& gpu) {
+            State state;
+            [[maybe_unused]] Uploads uploads;
+            ${rows} rows{state, ${backend === "dawn" ? "nullptr" : "uploads"}};
+            refresh_pool(mesh, gpu, rows);
         }`;
         });
         writeFileSync(
             join(output, "updates.hpp"),
-            `namespace bbl { ${helpers}\n${updates.join("\n")} }`,
+            `namespace bbl { ${helpers}\n${refresh}\n${updates.join("\n")} }`,
         );
         const file = join(output, "check.cpp"),
             executable = join(output, "check.exe");

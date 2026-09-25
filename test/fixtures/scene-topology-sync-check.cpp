@@ -16,6 +16,7 @@
 #include <memory>
 #include <numbers>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,6 +31,12 @@ const bool* SDL_GetKeyboardState(int* count) {
 
 // The harness runs with no runtime trace requested.
 std::string bbl::pal::environment_variable(const char*) { return {}; }
+
+// The shared unit's environment decode reaches the image PAL; the harness
+// loads no texture.
+bbl::pal::DecodedImage bbl::pal::decode_image(const bbl::js::ArrayBuffer&) {
+    throw std::logic_error("Unexpected fixture image decode");
+}
 
 // The row sync's vertex write is compiled in, as a position-updating scene's.
 static_assert(BBLITE_MESH_POSITION_UPDATE);
@@ -140,6 +147,7 @@ struct Run {
     std::uint64_t synced_topology = 0, synced_epoch = 0;
     std::uint32_t synced_families = 0;
     CameraTraceState trace;
+    RetainedSceneBlocks pass_blocks;
     long frame = 0;
 
     Run() { engine.registered_scenes.push_back(std::make_shared<Scene>(scene)); }
@@ -159,7 +167,8 @@ struct Run {
                                  synced_topology,
                                  synced_epoch,
                                  synced_families,
-                                 trace};
+                                 trace,
+                                 pass_blocks};
         return synchronize_scene(sync, hooks);
     }
 };
@@ -347,6 +356,18 @@ void check_transparent_sort() {
     assert(sorted.text_camera == outcome.pass.camera && !all_zero(outcome.pass.matrices));
     assert(transparent.commands.size() == 2 && transparent.commands[0].item.mesh.value == 1 &&
            transparent.commands[1].item.mesh.value == 0);
+
+    // A scene that loses its camera draws through the view-projection its
+    // pass block kept; the view, projection and eye are the zeros of a
+    // camera-less pass.
+    const std::array<float, 16> kept = outcome.pass.matrices.view_projection;
+    run.scene.camera = CameraHandle{};
+    Hooks lost;
+    const SceneSyncOutcome after = run.synchronize(lost);
+    assert(!after.pass.camera && after.pass.matrices.view_projection == kept);
+    const std::array<float, 16> zeros{};
+    assert(after.pass.matrices.view == zeros && after.pass.matrices.projection == zeros);
+    assert(after.pass.pass().view_projection == after.pass.matrices.view_projection.data());
 }
 
 /**
