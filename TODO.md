@@ -54,6 +54,9 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Qualification
 
+- [ ] One captured-spawn variant beside `runChecked` for `package-demo.ts`, `package-output.ts`, `shipping-profile.ts` and `patch-inventory.ts`.
+- [ ] Move the scene180 uniform plugin onto `webgpu-recorder.init.js` and share one `observedState` helper in `checks/plugins/support.mjs`.
+- [ ] Read `test/native-fixture.ts` unit lists from the `pal_*_scene_all.cpp` includes and share one camera test fixture.
 - [ ] Give sliced PAL code standalone concern headers that harness fixtures include (`pinned-velocity-history` and the other `cppFunction` slices).
 - [ ] Prune `artifacts/native-cache` `headers/`, `sources/` and `pch/` by age in `clean`.
 - [ ] Compile each backend family file on its own in native lint (`src/code-quality.ts`): they build only inside `pal_{sdl_gpu,dawn}_scene_all.cpp`, so a missing include is hidden by the files before it.
