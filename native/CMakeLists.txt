@@ -345,10 +345,12 @@ list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "${BBLITE_PAL_COMMON_PATTERN}")
 # warning and size options -- carried by one interface target both the
 # object library and the executable consume.
 add_library(bblite_features INTERFACE)
+add_library(bblite_core INTERFACE)
+target_link_libraries(bblite_features INTERFACE bblite_core)
 if(APPLE)
     find_package(boost_charconv CONFIG REQUIRED)
     find_library(BBLITE_CORE_FOUNDATION CoreFoundation REQUIRED)
-    target_link_libraries(bblite_features INTERFACE Boost::charconv "${BBLITE_CORE_FOUNDATION}")
+    target_link_libraries(bblite_core INTERFACE Boost::charconv "${BBLITE_CORE_FOUNDATION}")
 endif()
 add_library(bblite_pal_common OBJECT ${BBLITE_PAL_COMMON_SOURCES})
 target_link_libraries(bblite_pal_common PRIVATE bblite_features)
@@ -401,7 +403,7 @@ target_link_libraries(bblite_native PRIVATE bblite_features bblite_pal_common)
 # render_capabilities.hpp. Every macro is always 0/1 and tested with a plain
 # `#if X`; the undefined-macro diagnostic (the warning options below) makes a
 # missing definition a compile error.
-target_compile_definitions(bblite_features INTERFACE BBLITE_CHECKED_HANDLES=$<BOOL:${BBLITE_CHECKED_HANDLES}>)
+target_compile_definitions(bblite_core INTERFACE BBLITE_CHECKED_HANDLES=$<BOOL:${BBLITE_CHECKED_HANDLES}>)
 if(NOT EXISTS "${BBLITE_GENERATED_DIR}/upstream/include/bblite/features")
     message(
         FATAL_ERROR
@@ -436,14 +438,14 @@ if(BBLITE_GENERATED_SHADER_FILES)
     add_dependencies(bblite_native bblite_shader_snapshot)
 endif()
 
-target_compile_features(bblite_features INTERFACE cxx_std_20)
-target_include_directories(bblite_features INTERFACE "${BBLITE_NATIVE_ROOT}/include")
-target_compile_definitions(bblite_features INTERFACE BBLITE_ASSET_DIR="assets")
-target_compile_definitions(bblite_features INTERFACE
+target_compile_features(bblite_core INTERFACE cxx_std_20)
+target_include_directories(bblite_core INTERFACE "${BBLITE_NATIVE_ROOT}/include")
+target_compile_definitions(bblite_core INTERFACE BBLITE_ASSET_DIR="assets")
+target_compile_definitions(bblite_core INTERFACE
     BBLITE_VISUAL_CAPTURE=$<BOOL:${BBLITE_VISUAL_CAPTURE}>
     BBLITE_AUDIO_CAPTURE=$<BOOL:${BBLITE_AUDIO_CAPTURE}>
 )
-target_compile_definitions(bblite_features INTERFACE BBLITE_GPU_SHADER_DIR="shaders")
+target_compile_definitions(bblite_core INTERFACE BBLITE_GPU_SHADER_DIR="shaders")
 
 if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
     # Deployed by its own always-run target rather than POST_BUILD on the
@@ -571,7 +573,7 @@ if(NOT SDL3_FOUND)
         "BBLITE_SDL_DIR) and configure this build directory again."
     )
 endif()
-target_link_libraries(bblite_features INTERFACE SDL3::SDL3)
+target_link_libraries(bblite_core INTERFACE SDL3::SDL3)
 if(IOS AND "browser:file" IN_LIST BBLITE_RUNTIME_FEATURES)
     enable_language(OBJCXX)
     set_target_properties(bblite_pal_common PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
@@ -582,7 +584,7 @@ if(IOS AND "browser:file" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_link_libraries(bblite_features INTERFACE "${BBLITE_UNIFORM_TYPE_IDENTIFIERS}")
 endif()
 
-target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_SDL_GPU=$<BOOL:${BBLITE_BACKEND_SDL_GPU}>)
+target_compile_definitions(bblite_core INTERFACE BBLITE_HAS_SDL_GPU=$<BOOL:${BBLITE_BACKEND_SDL_GPU}>)
 
 # Runtime libraries the executable loads beside itself, placed after each
 # link (the vcpkg install's DLLs join them at the end of this file).
@@ -615,8 +617,8 @@ if(BBLITE_BACKEND_DAWN)
     )
     # The Dawn twins of the selected SDL_GPU units (derived above).
     target_sources(bblite_native PRIVATE ${BBLITE_DAWN_SOURCES})
-    target_link_libraries(bblite_features INTERFACE dawn::webgpu_dawn)
-    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_DAWN=1)
+    target_link_libraries(bblite_core INTERFACE dawn::webgpu_dawn)
+    target_compile_definitions(bblite_core INTERFACE BBLITE_HAS_DAWN=1)
     get_target_property(BBLITE_DAWN_LIBRARY_TYPE dawn::webgpu_dawn TYPE)
     if(ANDROID AND NOT BBLITE_DAWN_LIBRARY_TYPE STREQUAL "STATIC_LIBRARY")
         message(FATAL_ERROR "Android requires a monolithic static Dawn install from tools/build-dawn.ps1 -AndroidAbi.")
@@ -650,12 +652,12 @@ if(BBLITE_BACKEND_DAWN)
     # request is only worth making when DXC is actually present.
     if(EXISTS "${BBLITE_DAWN_DIR}/bin/dxcompiler.dll" AND
        EXISTS "${BBLITE_DAWN_DIR}/bin/dxil.dll")
-        target_compile_definitions(bblite_features INTERFACE BBLITE_DAWN_DXC=1)
+        target_compile_definitions(bblite_core INTERFACE BBLITE_DAWN_DXC=1)
     else()
-        target_compile_definitions(bblite_features INTERFACE BBLITE_DAWN_DXC=0)
+        target_compile_definitions(bblite_core INTERFACE BBLITE_DAWN_DXC=0)
     endif()
 else()
-    target_compile_definitions(bblite_features INTERFACE BBLITE_HAS_DAWN=0 BBLITE_DAWN_DXC=0)
+    target_compile_definitions(bblite_core INTERFACE BBLITE_HAS_DAWN=0 BBLITE_DAWN_DXC=0)
 endif()
 
 if(SDL3_FOUND AND BBLITE_REQUIRED_IMAGE_CODECS)
@@ -970,14 +972,14 @@ endif()
 # and for MSVC also the INCLUDE directories (the SDK and the standard library,
 # which test undefined names themselves) -- so the check never fires there.
 if(MSVC)
-    target_compile_options(bblite_features INTERFACE /W4 /WX /permissive- /EHsc /bigobj)
+    target_compile_options(bblite_core INTERFACE /W4 /WX /permissive- /EHsc /bigobj)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-        target_compile_options(bblite_features INTERFACE /we4668 /external:env:INCLUDE /external:W0)
+        target_compile_options(bblite_core INTERFACE /we4668 /external:env:INCLUDE /external:W0)
     else()
-        target_compile_options(bblite_features INTERFACE -Wundef -Werror=undef)
+        target_compile_options(bblite_core INTERFACE -Wundef -Werror=undef)
     endif()
 else()
-    target_compile_options(bblite_features INTERFACE -Wall -Wextra -Wpedantic -Werror -Wundef)
+    target_compile_options(bblite_core INTERFACE -Wall -Wextra -Wpedantic -Werror -Wundef)
 endif()
 
 if(BBLITE_MINSIZE)
@@ -986,18 +988,18 @@ if(BBLITE_MINSIZE)
             # clang-cl needs LLVM LTO rather than MSVC's /GL. Keep the
             # Microsoft ABI and COFF section switches so the same static
             # dependencies remain link-compatible.
-            target_compile_options(bblite_features INTERFACE /clang:-Oz /clang:-flto /Gy /Gw /Zc:inline
+            target_compile_options(bblite_core INTERFACE /clang:-Oz /clang:-flto /Gy /Gw /Zc:inline
             )
             target_link_options(
                 bblite_native
                 PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
             )
         elseif(APPLE)
-            target_compile_options(bblite_features INTERFACE -Oz -flto)
+            target_compile_options(bblite_core INTERFACE -Oz -flto)
             target_link_options(bblite_native PRIVATE -flto -Wl,-dead_strip)
         else()
             find_program(BBLITE_LLD NAMES ld.lld REQUIRED)
-            target_compile_options(bblite_features INTERFACE -Oz -flto -ffunction-sections
+            target_compile_options(bblite_core INTERFACE -Oz -flto -ffunction-sections
                 -fdata-sections
             )
             target_link_options(
@@ -1008,7 +1010,7 @@ if(BBLITE_MINSIZE)
         # The scene command configures Release even for this opt-in shape.
         # Override Release's /O2 /Ob2 for the application just as the trimmed
         # dependency builds do; the later options win in MSVC's command line.
-        target_compile_options(bblite_features INTERFACE /O1 /Ob1 /GL /Gw /Zc:inline
+        target_compile_options(bblite_core INTERFACE /O1 /Ob1 /GL /Gw /Zc:inline
         )
         # /MAP emits the linker map beside the executable for
         # tools/map-size-report.mjs attribution.
@@ -1017,7 +1019,7 @@ if(BBLITE_MINSIZE)
             PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
         )
     else()
-        target_compile_options(bblite_features INTERFACE -Os -ffunction-sections -fdata-sections
+        target_compile_options(bblite_core INTERFACE -Os -ffunction-sections -fdata-sections
         )
         target_link_options(bblite_native PRIVATE -Wl,--gc-sections)
     endif()
@@ -1037,10 +1039,8 @@ bblite_verify_dependency_artifacts()
 
 # Precompiled header. Every translation unit parses runtime.hpp, js_data.hpp
 # and their standard-library closure before its own text; a small generated
-# unit spends most of its compile there (docs/development.md carries the
-# measurement). Precompiling that set once per tree removes the parse from
-# every unit; of the generated headers only the activation macros its own
-# headers test enter it. Off for the shipping shape: that build is the one
+# unit spends most of its compile there. Precompiling that invariant set
+# removes the parse from every unit across scene trees. Off for shipping: that build is the one
 # compile of every unit without a precompiled closure, so an include a unit
 # owes and only the PCH supplied fails there instead of in no build at all.
 if(BBLITE_MINSIZE)
@@ -1061,13 +1061,12 @@ option(
 set(BBLITE_SHARED_PCH OFF)
 if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
     if(BBLITE_NATIVE_CACHE_ACTIVE)
-        target_compile_options(bblite_features INTERFACE "SHELL:-Xclang -fno-pch-timestamp")
+        target_compile_options(bblite_core INTERFACE "SHELL:-Xclang -fno-pch-timestamp")
     endif()
-    # The four repository headers bring the standard library they use; the
+    # The invariant repository headers bring the standard library they use; the
     # rest are what the PAL units include beyond them.
     set(
         BBLITE_PCH_HEADERS
-        <bblite/pal.hpp>
         <bblite/pal_image.hpp>
         <bblite/runtime.hpp>
         <SDL3/SDL.h>
@@ -1087,19 +1086,10 @@ if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQ
     if(BBLITE_BACKEND_DAWN)
         list(APPEND BBLITE_PCH_HEADERS <webgpu/webgpu.h>)
     endif()
-    # The JSON runtime rides the same gate as its nlohmann include path: a
-    # unit that includes it without reaching JSON must fail here as it
-    # does in the static shipping tree, not compile through the PCH.
-    if(
-        "loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR
-        "loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES OR
-        "data:json" IN_LIST BBLITE_RUNTIME_FEATURES
-    )
-        list(APPEND BBLITE_PCH_HEADERS <bblite/ts_runtime.hpp>)
-    endif()
+    # Feature-owned APIs and JSON stay in their users' include closures.
     # Built once and used by every unit of the object library and the
-    # executable: both consume the same interface requirements, and the PCH
-    # closure reaches no generated header beyond activation macros.
+    # executable. The PCH consumes only bblite_core; scene-owned dependencies
+    # and definitions belong to bblite_features.
     if(BBLITE_NATIVE_CACHE_ACTIVE AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
         set(BBLITE_SHARED_PCH ON)
     else()
@@ -1114,8 +1104,8 @@ endif()
 # folder holding exactly the generated headers its include closure names
 # (native-header-cache.cmake), so its compile line and dependencies follow
 # what it reads, and a scene-invariant PAL unit's line is the same in every
-# scene whose activation macros it reads agree. The precompiled header reads
-# the folder of its own closure.
+# scene whose activation macros it reads agree. The precompiled header must
+# have no generated inputs.
 if(BBLITE_NATIVE_CACHE_ACTIVE)
     set_source_files_properties(
         "${BBLITE_ENTRY_SOURCE}"
@@ -1134,19 +1124,15 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
         endif()
     endforeach()
     bblite_generated_inputs(BBLITE_PCH_GENERATED ${BBLITE_PCH_ROOTS})
-    set(BBLITE_PCH_GENERATED_DIR "")
     if(BBLITE_PCH_GENERATED)
-        bblite_cached_headers(BBLITE_PCH_GENERATED_DIR ${BBLITE_PCH_GENERATED})
+        message(FATAL_ERROR "The shared PCH must not depend on generated headers: ${BBLITE_PCH_GENERATED}")
     endif()
     if(BBLITE_SHARED_PCH)
         bblite_shared_pch(
             NAME bblite_pch
             TARGETS bblite_pal_common bblite_native
             HEADERS ${BBLITE_PCH_HEADERS}
-            INCLUDE_DIRECTORY "${BBLITE_PCH_GENERATED_DIR}"
         )
-    elseif(BBLITE_PCH_GENERATED_DIR)
-        target_include_directories(bblite_pal_common PRIVATE "${BBLITE_PCH_GENERATED_DIR}")
     endif()
 else()
     target_include_directories(bblite_features INTERFACE "${BBLITE_GENERATED_DIR}/upstream/include")

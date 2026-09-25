@@ -216,26 +216,26 @@ set(BBLITE_NATIVE_ROOT "${native.replaceAll("\\", "/")}")
 include("${repository}/compiler-cache.cmake")
 include("${repository}/native-header-cache.cmake")
 add_library(bblite_features INTERFACE)
-target_compile_features(bblite_features INTERFACE cxx_std_20)
-target_include_directories(bblite_features INTERFACE "\${BBLITE_NATIVE_ROOT}/include")
-target_compile_options(bblite_features INTERFACE "SHELL:-Xclang -fno-pch-timestamp")
+add_library(bblite_core INTERFACE)
+target_link_libraries(bblite_features INTERFACE bblite_core)
+target_compile_features(bblite_core INTERFACE cxx_std_20)
+target_include_directories(bblite_core INTERFACE "\${BBLITE_NATIVE_ROOT}/include")
+target_compile_options(bblite_core INTERFACE "SHELL:-Xclang -fno-pch-timestamp")
 bblite_content_addressed_sources(modules "\${BBLITE_GENERATED_DIR}/upstream/src/module.cpp")
 add_executable(check src/main.cpp \${modules})
 target_link_libraries(check PRIVATE bblite_features)
 bblite_cache_unit_headers(TARGETS check)
-bblite_generated_inputs(pch_generated "\${BBLITE_NATIVE_ROOT}/include/bblite/shared.hpp")
-bblite_cached_headers(pch_directory \${pch_generated})
-bblite_shared_pch(NAME check_pch TARGETS check HEADERS <bblite/shared.hpp> <vector> INCLUDE_DIRECTORY "\${pch_directory}")
+bblite_shared_pch(NAME check_pch TARGETS check HEADERS <bblite/shared.hpp> <vector>)
 `,
         );
-        // The precompiled header reads an activation macro of the tree.
+        // Records and the PCH are invariant; only the entry reads activation.
         writeFileSync(
             join(native, "include/bblite/shared.hpp"),
-            "#pragma once\n#include <bblite/features/has_value.hpp>\n#include <vector>\ninline int shared_value() { return HAS_VALUE ? 4 : 0; }\n",
+            "#pragma once\n#include <vector>\ninline int shared_value() { return 4; }\n",
         );
         writeFileSync(
             join(native, "src/main.cpp"),
-            '#include <bblite/shared.hpp>\n#include <cstdio>\nint module_value();\nint main() { std::printf("%d%d", shared_value(), module_value()); }\n',
+            '#include <bblite/shared.hpp>\n#include <bblite/features/has_value.hpp>\n#include <cstdio>\nint module_value();\nint main() { std::printf("%d%d", HAS_VALUE ? shared_value() : 0, module_value()); }\n',
         );
         return native;
     };
@@ -248,7 +248,7 @@ bblite_shared_pch(NAME check_pch TARGETS check HEADERS <bblite/shared.hpp> <vect
         mkdirSync(join(generated, "upstream/src"), { recursive: true });
         writeFileSync(
             join(generated, "upstream/include/bblite/features/has_value.hpp"),
-            "#pragma once\n#define HAS_VALUE 1\n",
+            `#pragma once\n#define HAS_VALUE ${name === "disabled" ? 0 : 1}\n`,
         );
         writeFileSync(
             join(generated, "upstream/src/module.cpp"),
@@ -279,7 +279,7 @@ bblite_shared_pch(NAME check_pch TARGETS check HEADERS <bblite/shared.hpp> <vect
         run(["--build", directory]);
         assert.equal(
             execFileSync(join(directory, "check.exe"), { encoding: "utf8" }),
-            "45",
+            name === "disabled" ? "05" : "45",
         );
         return { build: directory, log: readFileSync(log, "utf8") };
     };
@@ -304,11 +304,17 @@ bblite_shared_pch(NAME check_pch TARGETS check HEADERS <bblite/shared.hpp> <vect
         "direct_cache_hit",
         "direct_cache_hit",
     ]);
+    const disabled = build(checkoutA, "disabled");
+    assert.deepEqual(compiles(disabled.log).sort(), [
+        "cache_miss",
+        "direct_cache_hit",
+        "direct_cache_hit",
+    ]);
     // A header the PCH holds changes: the PCH is rebuilt and every unit
     // compiles against it, none from an entry keyed on the old PCH.
     writeFileSync(
         join(checkoutA, "include/bblite/shared.hpp"),
-        "#pragma once\n#include <bblite/features/has_value.hpp>\n#include <vector>\ninline int shared_value() { return HAS_VALUE ? 3 : 0; }\n",
+        "#pragma once\n#include <vector>\ninline int shared_value() { return 3; }\n",
     );
     run(["--build", second.build]);
     assert.equal(

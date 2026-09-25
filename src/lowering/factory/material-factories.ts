@@ -393,6 +393,7 @@ void queue_node_material_group(Scene& scene, MeshHandle mesh) {
             header: "",
             source: `// ${this.context.provenance(modulePath, "createShaderMaterial")}
 #include <bblite/runtime.hpp>
+#include <bblite/features/shadows_csm.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 
 #include <algorithm>
@@ -691,6 +692,7 @@ void set_alpha_to_coverage(
             header: "",
             source: `// ${this.context.provenance(module, "createTexture2DFromPixels")}
 #include <bblite/runtime.hpp>
+#include <bblite/features/has_sprites.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
 

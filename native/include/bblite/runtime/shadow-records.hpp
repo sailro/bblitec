@@ -1,7 +1,5 @@
 #pragma once
-// Included within namespace bbl by runtime.hpp, after the macro headers.
-#include <bblite/features/shadow_morph_bounds.hpp>
-#include <bblite/features/shadows_csm.hpp>
+// Included within namespace bbl by runtime.hpp.
 
 enum class ShadowFilter {
     pcf_spot,
@@ -29,7 +27,6 @@ enum class ShadowFilter {
  * renders through `caster_view_projection` — the PCF family's unbiased /
  * biased split, applied per cascade.
  */
-#if BBLITE_SHADOWS_CSM
 struct ShadowCascade {
     /** The cascade's light-space view, from the pinned light basis. */
     std::array<float, 16> view{};
@@ -42,7 +39,6 @@ struct ShadowCascade {
     /** `frustumLengths[i]`: this slice's own length. */
     double frustum_length = 0.0;
 };
-#endif
 
 /**
  * One `ShadowGenerator`, as the three pinned factories build it.
@@ -88,12 +84,10 @@ struct ShadowGeneratorRecord {
      * this counter is that identity change, read by the render gate.
      */
     std::uint64_t caster_list_version = 0;
-#if BBLITE_SHADOW_MORPH_BOUNDS
     // enableMorphTargetShadows: bound each caster by its morph-expanded
     // AABB rather than its unmorphed geometry box. Off unless the scene
     // asks, exactly as upstream installs no provider unless it is called.
     bool morph_shadow_bounds = false;
-#endif
     /**
      * `sg._config._forceRefreshEveryFrame`: when set, the pinned render
      * gate never skips (`renderEsmShadowMap` / `renderPcfShadowMap` /
@@ -130,7 +124,6 @@ struct ShadowGeneratorRecord {
      * `csm_shadow_max_z` is the pin's own `?? null`, resolved against the
      * active camera's far plane where the split is computed.
      */
-#if BBLITE_SHADOWS_CSM
     std::uint32_t csm_num_cascades = 0;
     double csm_lambda = 0.0;
     double csm_cascade_blend_percentage = 0.0;
@@ -138,7 +131,6 @@ struct ShadowGeneratorRecord {
     std::vector<ShadowCascade> csm_cascades;
     /** Subscribers to the exact packed CSM receiver block for this frame. */
     std::shared_ptr<PlatformEventListeners<void(const js::F32Array&)>> csm_receiver_callbacks;
-#endif
     /**
      * ESM only: this generator's ordinal among the ESM ones, which is the
      * row generation emitted its recorded resources under.

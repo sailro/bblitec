@@ -64,14 +64,7 @@ export const featureMacros: readonly FeatureMacro[] = [
             "renderer:sprite",
         ],
     },
-    { macro: "BBLITE_HAS_SPRITE_ANIMATION", anyOf: ["sprite:animation"] },
-    {
-        macro: "BBLITE_HAS_ANIMATION",
-        anyOf: ["animation:property", "animation:managed-groups"],
-    },
     { macro: "BBLITE_HAS_GIZMOS", anyOf: ["gizmo:utility-layer"] },
-    { macro: "BBLITE_HAS_CAMERA_GIZMOS", anyOf: ["gizmo:camera"] },
-    { macro: "BBLITE_HAS_LIGHT_GIZMOS", anyOf: ["gizmo:light"] },
     // A shadow generator's own records, reached by either filter; the
     // directional and cascaded factories reach `shadow:pcf` beside their own
     // feature, and `shadow:task` schedules without owning a generator.

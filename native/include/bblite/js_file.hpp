@@ -261,6 +261,8 @@ private:
 
 inline void replace_browser_file(Engine& engine, BrowserFileHandle& destination,
                                  pal::SelectedFileSnapshot selected) {
+    if (!engine.browser_file_storage)
+        engine.browser_file_storage = std::make_shared<BrowserFileStorage>();
     BrowserFileRecord* current = destination.get();
     if (current && destination.unique() && current->belongs_to(engine.browser_file_storage)) {
         current->replace(std::move(selected.bytes), std::move(selected.display_name));

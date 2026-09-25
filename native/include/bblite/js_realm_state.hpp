@@ -10,7 +10,7 @@
 
 namespace bbl::js {
 
-/** Reached only in worker-enabled builds; ordinary JS operations keep their ABI. */
+/** Thread-owned JavaScript state, shared by ordinary entry code and explicit worker realms. */
 struct RealmState {
     std::uint32_t random = 1;
     std::size_t callback_identity = std::numeric_limits<std::size_t>::max() / 2;
@@ -42,9 +42,11 @@ private:
 };
 
 template <typename T> T& realm_scratch() {
+    if (!realm_state.active) {
+        static thread_local T implicit{};
+        return implicit;
+    }
     static thread_local std::optional<T> value;
-    if (!realm_state.active)
-        throw std::logic_error("JavaScript scratch storage requires an active realm.");
     if (!value) {
         value.emplace();
         realm_state.clear_scratch.push_back([] { value.reset(); });

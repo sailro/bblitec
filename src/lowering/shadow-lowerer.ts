@@ -1490,6 +1490,7 @@ export function pinnedShadowHeader(
 
 #include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/features/shadows_csm.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/light_matrix.hpp>
 #include <bblite/upstream/renderer_plan.hpp>

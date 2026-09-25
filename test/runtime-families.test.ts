@@ -17,7 +17,7 @@ const families = {
     PICKING: "gpu_pickers",
 } as const;
 
-test("runtime families omit unreached storage and preserve layout across translation units", (t) => {
+test("runtime record layouts agree across feature sets and translation units", (t) => {
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("A native compiler is required.");
@@ -49,7 +49,7 @@ test("runtime families omit unreached storage and preserve layout across transla
             .map(
                 ([family, field]) => `
             template<class T> concept Has${family} = requires(T& value) { value.${field}; };
-            static_assert(Has${family}<bbl::Engine> == bool(BBLITE_HAS_${family}));
+            static_assert(Has${family}<bbl::Engine>);
         `,
             )
             .join("\n")}
@@ -95,12 +95,6 @@ test("runtime families omit unreached storage and preserve layout across transla
             Number(execFileSync(executable, { encoding: "utf8" })),
         );
     }
-    for (const family of Object.keys(families))
-        assert.ok(sizes.get(family)! > sizes.get("none")!, family);
-    assert.ok(
-        sizes.get("all")! >
-            Math.max(
-                ...Object.keys(families).map((family) => sizes.get(family)!),
-            ),
-    );
+    for (const [family, size] of sizes)
+        assert.equal(size, sizes.get("none"), family);
 });

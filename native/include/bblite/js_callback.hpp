@@ -1,11 +1,7 @@
 #pragma once
 
-#include <bblite/features/workers.hpp>
-
 #include <bblite/js_gc.hpp>
-#if BBLITE_WORKERS
 #include <bblite/js_realm_state.hpp>
-#endif
 
 #include <cstddef>
 #include <functional>
@@ -82,14 +78,7 @@ template <typename... Functions> [[nodiscard]] auto make_recursive_group(Functio
     return RecursiveGroup<Functions...>{std::tuple<Functions...>{std::move(functions)...}};
 }
 
-inline std::size_t next_callback_identity() {
-#if BBLITE_WORKERS
-    return realm_state.callback_identity++;
-#else
-    static std::size_t next = std::numeric_limits<std::size_t>::max() / 2;
-    return next++;
-#endif
-}
+inline std::size_t next_callback_identity() { return realm_state.callback_identity++; }
 
 /** A JavaScript function object: copies share identity and mutable captures. */
 template <typename R, typename... Args> class Callback<R(Args...)> {

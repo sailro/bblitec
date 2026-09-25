@@ -47,7 +47,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 ## Performance
 
 - [ ] Send lowered modules through unit packing and outlining (scene1's `gltf_loader.cpp` is 283 KB, 7.8 s alone).
-- [ ] Make record layouts feature-independent so one shared PCH serves every scene (`runtime.hpp` includes 15 feature headers).
 - [ ] `minecraft`: worst frame of a chunk-crossing sprint replay at most 16.7 ms (`BBLITE_FPS_PROFILE` maximum interval), with meshing, lighting, water settling and allocation attributed separately (`BBLITE_CPU_PROFILE`).
 - [ ] `scene290`: at least 100 FPS uncapped through impact and settling (`BBLITE_BENCHMARK_FRAMES=0`, `BBLITE_FPS_PROFILE`); Bullet stepping is the bottleneck (`pal_physics_bullet.cpp`).
 

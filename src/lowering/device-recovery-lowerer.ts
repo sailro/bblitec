@@ -912,6 +912,7 @@ export function lowerDeviceRecovery(context: LoweringContext): LoweredSource {
 // ${context.provenance(recoveryModule, "_enableDeviceLostRecovery, arm")}
 // Native device recreation replays generated upload/composition products over retained CPU owners.
 #include <bblite/runtime.hpp>
+#include <bblite/features/has_sprites.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/text_gpu.hpp>

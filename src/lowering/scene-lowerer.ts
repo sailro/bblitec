@@ -739,6 +739,9 @@ export class SceneLowerer {
             header: "",
             source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${disposeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
 #include <bblite/runtime.hpp>
+#include <bblite/features/has_ui.hpp>
+#include <bblite/features/has_shadows.hpp>
+#include <bblite/features/has_sprites.hpp>
 ${options.text ? "#include <bblite/upstream_text_records.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
@@ -2438,7 +2441,7 @@ void on_scene_dispose(
 void on_key_down(
     Engine& engine,
     std::size_t identity,
-    std::function<void(const PlatformKeyboardEvent&)> callback,
+    js::Callback<void(const PlatformKeyboardEvent&)> callback,
     bool once) {
     engine.key_down_callbacks.add(identity, std::move(callback), once);
 }
@@ -2449,7 +2452,7 @@ void off_key_down(Engine& engine, std::size_t identity) {
 void on_key_up(
     Engine& engine,
     std::size_t identity,
-    std::function<void(const PlatformKeyboardEvent&)> callback,
+    js::Callback<void(const PlatformKeyboardEvent&)> callback,
     bool once) {
     engine.key_up_callbacks.add(identity, std::move(callback), once);
 }
@@ -2460,7 +2463,7 @@ void off_key_up(Engine& engine, std::size_t identity) {
 void on_pointer_down(
     Engine& engine,
     std::size_t identity,
-    std::function<void()> callback,
+    js::Callback<void()> callback,
     bool once) {
     engine.pointer_down_callbacks.add(identity, std::move(callback), once);
 }
@@ -2471,7 +2474,7 @@ void off_pointer_down(Engine& engine, std::size_t identity) {
 void on_canvas_click(
     Engine& engine,
     std::size_t identity,
-    std::function<void()> callback,
+    js::Callback<void()> callback,
     bool once) {
     engine.canvas_click_callbacks.add(identity, std::move(callback), once);
 }
@@ -2482,7 +2485,7 @@ void off_canvas_click(Engine& engine, std::size_t identity) {
 void on_mouse_down(
     Engine& engine,
     std::size_t identity,
-    std::function<void(const PlatformMouseEvent&)> callback,
+    js::Callback<void(const PlatformMouseEvent&)> callback,
     bool once) {
     engine.mouse_down_callbacks.add(identity, std::move(callback), once);
 }
@@ -2493,7 +2496,7 @@ void off_mouse_down(Engine& engine, std::size_t identity) {
 void on_mouse_up(
     Engine& engine,
     std::size_t identity,
-    std::function<void(const PlatformMouseEvent&)> callback,
+    js::Callback<void(const PlatformMouseEvent&)> callback,
     bool once) {
     engine.mouse_up_callbacks.add(identity, std::move(callback), once);
 }
@@ -2504,7 +2507,7 @@ void off_mouse_up(Engine& engine, std::size_t identity) {
 void on_mouse_move(
     Engine& engine,
     std::size_t identity,
-    std::function<void(const PlatformMouseEvent&)> callback,
+    js::Callback<void(const PlatformMouseEvent&)> callback,
     bool once) {
     engine.mouse_move_callbacks.add(identity, std::move(callback), once);
 }
@@ -2515,7 +2518,7 @@ void off_mouse_move(Engine& engine, std::size_t identity) {
 void on_mouse_wheel(
     Engine& engine,
     std::size_t identity,
-    std::function<void(const PlatformMouseEvent&)> callback,
+    js::Callback<void(const PlatformMouseEvent&)> callback,
     bool once) {
     engine.mouse_wheel_callbacks.add(identity, std::move(callback), once);
 }
@@ -2526,7 +2529,7 @@ void off_mouse_wheel(Engine& engine, std::size_t identity) {
 void on_mouse_cancel(
     Engine& engine,
     std::size_t identity,
-    std::function<void(const PlatformMouseEvent&)> callback,
+    js::Callback<void(const PlatformMouseEvent&)> callback,
     bool once) {
     engine.mouse_cancel_callbacks.add(identity, std::move(callback), once);
 }
@@ -2537,7 +2540,7 @@ void off_mouse_cancel(Engine& engine, std::size_t identity) {
 void on_window_resize(
     Engine& engine,
     std::size_t identity,
-    std::function<void()> callback,
+    js::Callback<void()> callback,
     bool once) {
     engine.window_resize_callbacks.add(identity, std::move(callback), once);
 }
@@ -2548,7 +2551,7 @@ void off_window_resize(Engine& engine, std::size_t identity) {
 void on_pointer_lock_change(
     Engine& engine,
     std::size_t identity,
-    std::function<void()> callback,
+    js::Callback<void()> callback,
     bool once) {
     engine.pointer_lock_change_callbacks.add(identity, std::move(callback), once);
 }
@@ -2582,7 +2585,7 @@ void exit_pointer_lock(Engine& engine) {
 void on_visibility_change(
     Engine& engine,
     std::size_t identity,
-    std::function<void(bool)> callback,
+    js::Callback<void(bool)> callback,
     bool once) {
     engine.visibility_change_callbacks.add(identity, std::move(callback), once);
 }
