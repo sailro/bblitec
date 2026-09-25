@@ -61,7 +61,7 @@ interface BindingScopesContext extends Pick<
     | "dataTypes"
     | "emit"
     | "fail"
-    | "identifierIsRebound"
+    | "sharedClosures"
     | "isInFrameCallback"
     | "options"
     | "reachJsData"
@@ -79,7 +79,6 @@ interface BindingScopesContext extends Pick<
     bindAudioMainBusStorage(value: Value): void;
     describeNativeValue(value: Value): void;
     hasStableNativeBinding(value: Value): boolean;
-    isSharedClosureScalar(kind: string): boolean;
     markImmutableNativeStorage(value: Value, immutable: boolean): void;
     mutableCapturedParameter(identifier: ts.Identifier, value: Value): boolean;
     trackCollectionCardinality(identifier: ts.MemberName, value: Value): void;
@@ -812,7 +811,7 @@ export class BindingScopes {
             ts.isCatchClause(declaration.parent) &&
             name !== undefined
         )
-            return !this.context.identifierIsRebound(name);
+            return !this.context.sharedClosures.identifierIsRebound(name);
         return (
             declaration !== undefined &&
             ts.isVariableDeclaration(declaration) &&
@@ -820,7 +819,7 @@ export class BindingScopes {
             name !== undefined &&
             ts.isVariableDeclarationList(declaration.parent) &&
             (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
-            !this.context.identifierIsRebound(name)
+            !this.context.sharedClosures.identifierIsRebound(name)
         );
     }
 
@@ -860,7 +859,7 @@ export class BindingScopes {
                 : value;
         if (
             narrowed.dataType?.kind === "struct" &&
-            this.context.identifierIsRebound(identifier)
+            this.context.sharedClosures.identifierIsRebound(identifier)
         ) {
             this.context.dataTypes.markStoredObjectReferences(
                 narrowed.dataType,
@@ -939,8 +938,8 @@ export class BindingScopes {
         const reboundParameter =
             parameter &&
             ts.isIdentifier(identifier) &&
-            (this.context.identifierIsRebound(identifier) ||
-                (this.context.isSharedClosureScalar(
+            (this.context.sharedClosures.identifierIsRebound(identifier) ||
+                (this.context.sharedClosures.isSharedClosureScalar(
                     value.dataType?.kind ?? value.kind,
                 ) &&
                     !readOnlyParameter));

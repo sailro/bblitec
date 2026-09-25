@@ -147,7 +147,7 @@ function dataArgumentMayRunCode(
 }
 
 export function borrowsReferenceParameter(
-    context: Pick<LoweringServices, "dataTypes" | "identifierIsRebound">,
+    context: Pick<LoweringServices, "dataTypes" | "sharedClosures">,
     parameter: ts.BindingName,
     type: DataType,
 ): boolean {
@@ -155,7 +155,7 @@ export function borrowsReferenceParameter(
         type.kind === "struct" &&
         context.dataTypes.isReferenceStruct(type.name) &&
         ts.isIdentifier(parameter) &&
-        !context.identifierIsRebound(parameter)
+        !context.sharedClosures.identifierIsRebound(parameter)
     );
 }
 
@@ -1151,7 +1151,7 @@ export interface UserFunctionContext
             | "compileValue"
             | "emitExpressionAsStatement"
             | "emitDiscardedValue"
-            | "identifierIsRebound"
+            | "sharedClosures"
             | "functionEmissionScope"
             | "activeThis"
             | "canShareFunctionBody"

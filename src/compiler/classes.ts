@@ -108,7 +108,7 @@ interface ClassLoweringContext extends Pick<
     | "registerNativeConstBinding"
     | "registerNativeTemporary"
     | "cppString"
-    | "identifierIsRebound"
+    | "sharedClosures"
     | "compileValue"
     | "emitStatement"
     | "bindings"

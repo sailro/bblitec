@@ -116,11 +116,6 @@ interface DeclarationContext
     /** Module constants the static evaluator still folds. */
     readonly staticConstants: Map<ts.Symbol, ts.Expression>;
     readonly ui: Pick<UiProjection, "nativeHostUiTags">;
-    callRetainsArgument(
-        call: ts.CallExpression,
-        index: number,
-        includeFrameRegistrations: boolean,
-    ): boolean;
     emitEscapingResolvePromise(
         declaration: ts.VariableDeclaration,
         cppName: string,
@@ -130,12 +125,7 @@ interface DeclarationContext
         expression: ts.Expression,
         importedName: string,
     ): ts.CallExpression | undefined;
-    isSharedClosureScalar(kind: string): boolean;
     mutableCapturedParameter(identifier: ts.Identifier, value: Value): boolean;
-    needsSharedClosureStorage(
-        declaration: ts.VariableDeclaration | ts.ParameterDeclaration,
-        binding?: ts.Identifier,
-    ): boolean;
     nullableResourceKind(
         node: ts.Node,
         allowDirect?: boolean,
@@ -176,7 +166,11 @@ export class DeclarationLowerer {
                     );
                     return (
                         !!callback?.body &&
-                        this.context.callRetainsArgument(node, index, true) &&
+                        this.context.sharedClosures.callRetainsArgument(
+                            node,
+                            index,
+                            true,
+                        ) &&
                         someAnalysisNode(callback.body, namesBinding)
                     );
                 }),
@@ -313,7 +307,7 @@ export class DeclarationLowerer {
             return;
         }
         const sharedClosureStorage =
-            this.context.needsSharedClosureStorage(declaration);
+            this.context.sharedClosures.needsSharedClosureStorage(declaration);
         if (!declaration.initializer) {
             if (
                 declaration.parent === undefined ||
@@ -613,7 +607,9 @@ export class DeclarationLowerer {
             if (!(
                 browserValue &&
                 isPrimitiveBrowserValue(browserValue) &&
-                this.context.identifierIsRebound(declaration.name)
+                this.context.sharedClosures.identifierIsRebound(
+                    declaration.name,
+                )
             )) {
                 this.context.bindings.defineVariable(declaration.name, {
                     kind: "browser",
@@ -676,7 +672,7 @@ export class DeclarationLowerer {
                 const expected = type.result
                     ? this.context.dataTypes.cppType(type.result)
                     : "bbl::js::PromiseVoid";
-                const rebound = this.context.identifierIsRebound(
+                const rebound = this.context.sharedClosures.identifierIsRebound(
                     declaration.name,
                 );
                 if (expected === value.promiseType) {
@@ -793,7 +789,11 @@ export class DeclarationLowerer {
             // createEngine already emitted the owning engine. A helper's
             // return value or an alias names that same identity; copying it
             // would separate the scene registry from callbacks retaining it.
-            if (this.context.identifierIsRebound(declaration.name)) {
+            if (
+                this.context.sharedClosures.identifierIsRebound(
+                    declaration.name,
+                )
+            ) {
                 this.context.fail(
                     declaration,
                     "Reassigning an engine alias is not supported.",
@@ -933,7 +933,9 @@ export class DeclarationLowerer {
                 : this.context.dataTypes.cppType(narrowed.dataType);
             const sharedDataBinding =
                 sharedClosureStorage &&
-                this.context.identifierIsRebound(declaration.name);
+                this.context.sharedClosures.identifierIsRebound(
+                    declaration.name,
+                );
             const boundCpp = sharedDataBinding ? `(*${cppName})` : cppName;
             const selectedCpp = narrowed.ownedCpp ?? narrowed.cpp;
             const transferredCpp = narrowed.borrowedData
@@ -1127,7 +1129,7 @@ export class DeclarationLowerer {
         }
         const sharedPrimitive =
             sharedClosureStorage &&
-            this.context.isSharedClosureScalar(
+            this.context.sharedClosures.isSharedClosureScalar(
                 value.dataType?.kind === "enum" ? "enum" : value.kind,
             );
         const boundCpp = sharedPrimitive ? `(*${cppName})` : cppName;
@@ -2000,7 +2002,7 @@ export class DeclarationLowerer {
         // representation here exactly as it would as a field or an element;
         // otherwise `let c: C | null = null` would keep the initializer's
         // null as the binding's only representation.
-        let annotated = this.context.identifierIsRebound(name)
+        let annotated = this.context.sharedClosures.identifierIsRebound(name)
             ? this.context.dataTypes.fromStoredTsType(declaredType, typeSite)
             : this.context.dataTypes.fromTsType(declaredType, typeSite);
         if (
@@ -2061,7 +2063,7 @@ export class DeclarationLowerer {
         if (
             annotatedOpenRecordLiteral &&
             !this.openRecordContainerIsMutated(name) &&
-            !this.context.identifierIsRebound(name)
+            !this.context.sharedClosures.identifierIsRebound(name)
         ) {
             // An immutable Record literal stays a compile-time record. A
             // dynamic read materializes the existing namespace-scope Map,
@@ -2086,7 +2088,7 @@ export class DeclarationLowerer {
             (ts.isObjectLiteralExpression(initializer) ||
             ts.isConditionalExpression(initializer)
                 ? this.inferredObjectIsMutated(name)
-                : this.context.identifierIsRebound(name));
+                : this.context.sharedClosures.identifierIsRebound(name));
         const inferredMutableObject = !declaration.type && mutablePlainObject;
         const explicitlyTypedMutableEntryObject =
             declaration.type !== undefined &&
@@ -2284,7 +2286,7 @@ export class DeclarationLowerer {
         const sharedDataBinding =
             !selfReferentialBinding &&
             sharedClosureStorage &&
-            this.context.identifierIsRebound(name);
+            this.context.sharedClosures.identifierIsRebound(name);
         if (selfReferentialBinding) {
             // A method in the initializer closes over the JavaScript binding,
             // not over the empty value it has while that initializer is being
@@ -2462,7 +2464,7 @@ export class DeclarationLowerer {
                   }
                 : annotated.kind === "enummap" &&
                     ts.isObjectLiteralExpression(initializer) &&
-                    !this.context.identifierIsRebound(name)
+                    !this.context.sharedClosures.identifierIsRebound(name)
                   ? {
                         recordOwnKeys: Object.keys(
                             Object.fromEntries(
@@ -2476,7 +2478,7 @@ export class DeclarationLowerer {
             // Shared storage does not change a selected object's presence.
             ...(ts.isConditionalExpression(initializer) &&
             settledPresence !== undefined &&
-            !this.context.identifierIsRebound(name)
+            !this.context.sharedClosures.identifierIsRebound(name)
                 ? { optionalFoundCpp: settledPresence }
                 : {}),
             ...(annotated.kind === "map" &&

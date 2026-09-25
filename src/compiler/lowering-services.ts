@@ -45,6 +45,7 @@ import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
 import type { PropertyAccessLowerer } from "./properties.js";
+import type { SharedClosureAnalysis } from "./shared-closure-analysis.js";
 import type { NativeEmissionRegistry } from "./native-emission-registry.js";
 import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
@@ -119,6 +120,7 @@ export interface LoweringServices {
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
     readonly propertyAccess: PropertyAccessLowerer;
+    readonly sharedClosures: SharedClosureAnalysis;
     readonly nativeEmission: NativeEmissionRegistry;
     readonly assetRegistry: AssetRegistry;
     readonly admissions: AdmissionRecorder;
@@ -277,7 +279,6 @@ export interface LoweringServices {
     takeNativeTemporary(cpp: string, boundary: number): string;
     /** Whether a value names a native binding nothing reassigns. */
     hasStableNativeBinding(value: Value): boolean;
-    identifierIsRebound(identifier: ts.Identifier): boolean;
     allocateUserFunctionPrefix(): string;
     allocateBlockPrefix(): string;
     compileStaticString(expression: ts.Expression): string;
