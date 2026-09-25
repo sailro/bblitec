@@ -4,7 +4,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { renderSourceUnits } from "../src/compiler/source-units.js";
+import {
+    renderSourceUnits,
+    unitMaximumWeight,
+} from "../src/compiler/source-units.js";
 import {
     buildNativeFixture,
     nativeFixtureVcpkgRoot,
@@ -57,11 +60,19 @@ test("source units link shared types, tables and calls across equal module basen
         2,
     );
     assert.ok(units.every(({ source }) => !source.endsWith("unused.ts")));
+    // Each unit declares only what its code reaches.
     assert.match(
-        result.cppFiles.get("sources/application.hpp")!,
+        result.cppFiles.get("sources/left/shared.cpp")!,
         /const .*& weights\(\);/,
     );
-    assert.doesNotMatch(result.cppFiles.get("main.cpp")!, /double step\(/);
+    assert.doesNotMatch(
+        result.cppFiles.get("sources/application.hpp")!,
+        /weights|step/,
+    );
+    assert.doesNotMatch(
+        result.cppFiles.get("main.cpp")!,
+        /weights|double step\(/,
+    );
     assert.deepEqual(
         [...compileSource(source, options).cppFiles],
         [...result.cppFiles],
@@ -246,7 +257,10 @@ test("template placement follows transitive code references and ignores literals
         source: "entry.ts",
         realm: undefined,
         includes: "",
-        declarations: "namespace bblscene { double first(); double second(); }",
+        declarations: [
+            { scene: true, text: "double first();" },
+            { scene: true, text: "double second();" },
+        ],
         definitions: [
             {
                 source: "first.ts",
@@ -286,4 +300,83 @@ test("template placement follows transitive code references and ignores literals
         if (path !== first.path)
             assert.doesNotMatch(code, /template<typename T>/);
     }
+});
+
+test("a source over the unit budget compiles as parts while literal tables stay whole", () => {
+    const sum = (name: string) =>
+        `double ${name}(double a) { return ${"a + ".repeat(Math.ceil(unitMaximumWeight * 0.6))}a; }`;
+    const output = renderSourceUnits({
+        source: "entry.ts",
+        realm: undefined,
+        includes: "",
+        declarations: [
+            { scene: true, text: "double first(double a);" },
+            { scene: true, text: "double second(double a);" },
+            {
+                scene: true,
+                text: "extern const std::array<double, 30001> TABLE;",
+            },
+        ],
+        definitions: [
+            { source: "code.ts", definition: sum("first") },
+            { source: "code.ts", definition: sum("second") },
+            {
+                source: "data.ts",
+                definition: `const std::array<double, 30001> TABLE{${"1.0, ".repeat(30_000)}1.0};`,
+            },
+        ],
+        templates: [],
+        entry: "int main() { return bblscene::first(1.0) + bblscene::second(1.0) > bblscene::TABLE[0] ? 0 : 1; }",
+        cpp: "standalone",
+    });
+    assert.deepEqual(output.sourceUnits.map(({ path }) => path).sort(), [
+        "main.cpp",
+        "sources/code.cpp",
+        "sources/code.part1.cpp",
+        "sources/data.cpp",
+    ]);
+    assert.match(
+        output.files.get("sources/code.part1.cpp")!,
+        /double second\(double a\) \{/,
+    );
+    assert.doesNotMatch(
+        output.files.get("sources/code.part1.cpp")!,
+        /double first\(double a\) \{/,
+    );
+});
+
+test("a source's parts group the definitions that name the same things", () => {
+    const names = (prefix: string) =>
+        Array.from(
+            { length: Math.ceil(unitMaximumWeight * 0.45) },
+            (_, index) => `${prefix}${index}`,
+        ).join(" + ");
+    const piece = (name: string, prefix: string) =>
+        `double ${name}() { return ${names(prefix)}; }`;
+    const output = renderSourceUnits({
+        source: "entry.ts",
+        realm: undefined,
+        includes: "",
+        declarations: [],
+        definitions: [
+            { source: "code.ts", definition: piece("firstA", "alpha") },
+            { source: "code.ts", definition: piece("firstB", "beta") },
+            { source: "code.ts", definition: piece("secondA", "alpha") },
+            { source: "code.ts", definition: piece("secondB", "beta") },
+        ],
+        templates: [],
+        entry: "int main() { return 0; }",
+        cpp: "standalone",
+    });
+    const unit = (path: string) => output.files.get(path) ?? "";
+    assert.match(
+        unit("sources/code.cpp"),
+        /double firstA\(\)[^]*double secondA\(\)/,
+    );
+    assert.doesNotMatch(unit("sources/code.cpp"), /beta/);
+    assert.match(
+        unit("sources/code.part1.cpp"),
+        /double firstB\(\)[^]*double secondB\(\)/,
+    );
+    assert.doesNotMatch(unit("sources/code.part1.cpp"), /alpha/);
 });

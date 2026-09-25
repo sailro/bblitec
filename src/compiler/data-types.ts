@@ -12,7 +12,11 @@ import {
     type DataTypeCppContext,
 } from "./data-types/operations.js";
 export type { DataType, TypedArrayKind } from "./data-types/model.js";
-export { isHandleKind, handleCppType } from "./data-types/handles.js";
+export {
+    isHandleKind,
+    handleCppType,
+    resourceValueCppType,
+} from "./data-types/handles.js";
 export {
     TYPED_ARRAY_KINDS,
     BUFFER_VIEW_KINDS,

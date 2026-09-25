@@ -4,11 +4,18 @@ import { reachesShadowGenerator } from "../shadow-capabilities.js";
 import { reachedGeneratedSources } from "../generated-sources.js";
 import {
     renderSourceUnits,
+    sceneDeclarations,
+    type UnitDeclaration,
     type ApplicationCpp,
     type NativeDefinition,
     type NativeFunctionDefinition,
     type DataPreamble,
 } from "./source-units.js";
+import {
+    outlineFunctionBody,
+    outlineFunctionDefinition,
+    type OutlinedSegment,
+} from "./body-outlining.js";
 
 /**
  * The output projection: the feature→sources authority and the renders
@@ -481,6 +488,12 @@ export function constructorEntryBody(body: readonly string[]): string[] {
     );
 }
 
+/** Names for the functions outlined out of one application's bodies. */
+function outlinedNames(): () => string {
+    let next = 0;
+    return () => `bbl_outlined_${next++}`;
+}
+
 function markUnreferencedLocals(body: string[]): void {
     // Initialized locals, and the empty `std::optional<...>` storage a
     // materialized module predeclares for a nullable resource: a browser-only
@@ -547,6 +560,8 @@ interface MainCppProjection {
     body: string[];
     /** The admitted entry statements before the sole top-level startEngine. */
     physicsDebugConstructionBody?: readonly string[];
+    /** The native type of an emitted local, when the compiler registered one. */
+    bindingType: (name: string) => string | undefined;
 }
 
 export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
@@ -559,10 +574,56 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         postProcessCompositeCount,
         screenSpaceTaskCount,
         renderDataPreamble,
-        nativeFunctions,
         staticNativeDeclarations,
-        body,
     } = projection;
+    // The body is finished, so a local nothing referenced is now
+    // decidable — mark those, and only those.
+    markUnreferencedLocals(projection.body);
+    // A large entry body moves its statements to functions that other
+    // translation units compile; a worker realm's entry keeps its own.
+    const allocateName = outlinedNames();
+    const outlined = projection.workers
+        ? { lines: projection.body, segments: [] }
+        : outlineFunctionBody({
+              lines: projection.body,
+              parameters: projection.audioSessionReached
+                  ? [
+                        {
+                            name: "bbl_audio_session",
+                            type: "std::shared_ptr<bbl::pal::AudioSession>",
+                        },
+                    ]
+                  : [],
+              bindingType: projection.bindingType,
+              allocateName,
+          });
+    const body = outlined.lines;
+    const segmentsOf = (
+        source: string,
+        segments: readonly OutlinedSegment[],
+    ): NativeFunctionDefinition[] =>
+        segments.map((segment) => ({
+            kind: "function",
+            source,
+            prototype: segment.prototype,
+            lines: segment.lines,
+        }));
+    // So does a large function definition, into its own source's units.
+    const nativeFunctions: readonly NativeFunctionDefinition[] = [
+        ...projection.nativeFunctions.flatMap((fn) => {
+            if (fn.kind !== "function") return [fn];
+            const definition = outlineFunctionDefinition({
+                lines: fn.lines,
+                bindingType: projection.bindingType,
+                allocateName,
+            });
+            return [
+                { ...fn, lines: definition.lines },
+                ...segmentsOf(fn.source, definition.segments),
+            ];
+        }),
+        ...segmentsOf(projection.source, outlined.segments),
+    ];
     const nativeFunctionPrototypes = nativeFunctions.flatMap((fn) =>
         fn.prototype === undefined ? [] : [fn.prototype],
     );
@@ -747,9 +808,6 @@ inline void begin_scene_mesh_profile(Engine&, std::uint32_t) {}
             ].join("\n"),
         );
     }
-    // The body is finished, so a local nothing referenced is now
-    // decidable — mark those, and only those.
-    markUnreferencedLocals(body);
     const preamble =
         preambleSections.length > 0
             ? `\n${preambleSections.join("\n\n")}\n`
@@ -836,16 +894,20 @@ ${features.includes("input:dom") ? "#include <bblite/pal_dom_events.hpp>\n" : ""
                     definition: fn.lines.join("\n"),
                 });
         }
-        const shared = [
-            ...staticNativeDeclarations.map(
-                (declaration) => `inline ${declaration}`,
-            ),
-            meshProfileFallback,
-            dataPreamble.shared,
-            "namespace bblscene {",
-            ...nativeFunctionPrototypes,
-            "}\n",
-        ].join("\n");
+        const shared: UnitDeclaration[] = [
+            ...staticNativeDeclarations.map((declaration) => ({
+                scene: false,
+                text: `inline ${declaration}`,
+            })),
+            ...(meshProfileFallback
+                ? [{ scene: false, text: meshProfileFallback }]
+                : []),
+            ...sceneDeclarations(dataPreamble.shared),
+            ...nativeFunctionPrototypes.map((prototype) => ({
+                scene: true,
+                text: prototype,
+            })),
+        ];
         return renderSourceUnits({
             source: projection.source,
             realm: workerNamespace,

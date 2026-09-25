@@ -18,6 +18,7 @@ import {
     isOpaqueReference,
     isTypedArrayType,
     passesByReferenceKind,
+    resourceValueCppType,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
@@ -721,6 +722,12 @@ export class BindingScopes {
         // callee could change was read before it ran.
         if (!ts.isParameter(identifier.parent))
             value = this.settleBuiltValue(value);
+        // A resource whose native value has one type declares it for the
+        // local holding it, whichever declaration emitted that local, so a
+        // closure capturing it has a concrete environment.
+        const resourceType = resourceValueCppType(value.kind);
+        if (resourceType && cppIdentifierPattern.test(value.cpp))
+            this.context.registerNativeBindingType(value.cpp, resourceType);
         const immutable = this.isImmutableVariable(identifier.parent);
         if (value.nativeOwnedRvalue) {
             value = { ...value };
@@ -1034,6 +1041,14 @@ export class BindingScopes {
                 `std::shared_ptr<${handleType}>`,
             );
         }
+        // So does a shared cell of a resource whose native value has one type
+        // (`defineVariable` types the plain local).
+        const resourceType = resourceValueCppType(value.kind);
+        if (resourceType && sharedStorage)
+            this.context.registerNativeBindingType(
+                cppName,
+                `std::shared_ptr<${resourceType}>`,
+            );
         const storedCpp = sharedStorage ? `(*${cppName})` : cppName;
         const constantParameter =
             readOnlyParameter &&

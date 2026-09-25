@@ -235,7 +235,13 @@ function(bblite_shared_pch)
     if(arg_INCLUDE_DIRECTORY)
         target_include_directories(bblite_pch PRIVATE "${arg_INCLUDE_DIRECTORY}")
     endif()
-    set_source_files_properties("${source}" PROPERTIES COMPILE_OPTIONS "-Xclang;-emit-pch")
+    # Instantiating the templates the headers use while building the PCH, as
+    # clang-cl's /Yc does, spares every unit repeating them (about 0.75 s a
+    # unit for the JSON parser and wide regex the runtime headers name).
+    set_source_files_properties(
+        "${source}"
+        PROPERTIES COMPILE_OPTIONS "-Xclang;-emit-pch;-Xclang;-fpch-instantiate-templates"
+    )
     set(launcher ${CMAKE_CXX_COMPILER_LAUNCHER})
     list(FILTER launcher EXCLUDE REGEX "^base_dir=")
     set_property(TARGET bblite_pch PROPERTY CXX_COMPILER_LAUNCHER "${launcher}")

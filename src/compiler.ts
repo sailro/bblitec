@@ -215,6 +215,7 @@ import {
     isPinnedType,
     opaqueEngineValue,
     pinnedHandleKind,
+    resourceValueCppType,
     type DataIterationElement,
     type DataType,
     type TypedArrayKind,
@@ -431,7 +432,7 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
         {
             origin: "babylon",
             kind: "sprite-renderer",
-            cppType: "bbl::SpriteRendererHandle",
+            cppType: resourceValueCppType("sprite-renderer")!,
         },
     ],
     [
@@ -10113,6 +10114,9 @@ class Compiler implements LoweringServices {
                 );
                 if (sourceType)
                     this.registerNativeBindingType(line.name, sourceType);
+                // A deduced reference to a const local is const itself.
+                if (this.constNativeBindings.has(line.initializer))
+                    this.constNativeBindings.add(line.name);
             }
             this.nativeDeclarations.set(code, {
                 ...line,
@@ -10678,6 +10682,7 @@ class Compiler implements LoweringServices {
                 this.dataTypes.renderPreamble(!!this.options.workers),
             nativeFunctions: this.nativeDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
+            bindingType: (name) => this.nativeBindingCaptureType(name),
             ...(physicsDebugConstructionBody
                 ? { physicsDebugConstructionBody }
                 : {}),
