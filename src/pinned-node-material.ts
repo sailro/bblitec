@@ -32,14 +32,13 @@ import {
     importPinnedModule,
     importPinnedModuleWithExports,
 } from "./pinned-shader-composer.js";
-import { LoweringContext } from "./lowering/context.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 import {
     createRecordingDevice,
     writtenFloats,
     type DescriptorShapes,
     type Recorder,
 } from "./recording-device.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
 
 /** One vertex input the composed module declares, at its own location. */
 export interface ComposedNodeAttribute {
@@ -1011,7 +1010,7 @@ async function composeNodeEsmCaster(
         // the depth variant, so its declarations have to come with it.
         _envEmitter: material._envHelpers?.emitEnv,
     };
-    new LoweringContext(sharedUpstreamStore()).assertSuppliedOptions(
+    sharedPinnedContext().assertSuppliedOptions(
         "src/material/node/node-pipeline.ts",
         "CompileOpts",
         Object.keys(casterOptions),
@@ -1080,7 +1079,7 @@ async function composeNodePcfCaster(
         _alphaMode: undefined,
         _envEmitter: material._envHelpers?.emitEnv,
     };
-    new LoweringContext(sharedUpstreamStore()).assertSuppliedOptions(
+    sharedPinnedContext().assertSuppliedOptions(
         "src/material/node/node-pipeline.ts",
         "CompileOpts",
         Object.keys(casterOptions),

@@ -70,7 +70,7 @@ test("text data bodies are lowered from the pin's own statements", () => {
                 "options?.lineHeight ?? 1.5",
             ),
         ).header(),
-        /\*options->line_height : 1\.5\)/,
+        /line_height : std::nullopt\), \[&\]\(\) -> double \{ return 1\.5; \}\)/,
     );
     // A local only an adapted platform call reads keeps its declaration
     // (its initializer's effects are the pin's) and may be unread.

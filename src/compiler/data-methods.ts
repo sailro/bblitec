@@ -43,6 +43,7 @@ import { declarationInDefaultLibrary, libraryGlobal } from "./symbols.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
+import { nullability } from "./type-facts.js";
 
 /**
  * `Array.isArray(value)` over the data model. Parsed JSON remains dynamic;
@@ -2378,11 +2379,33 @@ function compileMapDataMethod(
             );
         }
         const keyValue = lowerer.context.compileValue(argumentAt(call, 0));
-        const key = lowerer.compileLookupKey(
+        let key = lowerer.compileLookupKey(
             keyValue,
             dataType.key,
             argumentAt(call, 0),
         );
+        // A lookup among values that may be `null` records whether its key
+        // was there (`Value.keyFoundCpp`), reading the key once for both.
+        let keyFoundCpp: string | undefined;
+        if (
+            method === "get" &&
+            nullability(lowerer.context.checker.getTypeAtLocation(call)).null
+        ) {
+            // The test reads the key again, so a key that is not a name or
+            // a literal is read once, first.
+            if (!cppIdentifierPattern.test(key) && !/^"[^"\\]*"$/.test(key)) {
+                const pinned =
+                    lowerer.context.allocateTemporaryCppName("map_key");
+                lowerer.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: pinned,
+                    initializer: key,
+                });
+                key = pinned;
+            }
+            keyFoundCpp = `${narrowed.cpp}.has(${key})`;
+        }
         const staticKey =
             keyValue.staticString ??
             (keyValue.staticNumber !== undefined
@@ -2428,6 +2451,7 @@ function compileMapDataMethod(
                 ),
                 optionalFoundCpp: optionalPresentCpp(result),
                 optionalStorageCpp: `${result}.to_optional()`,
+                ...(keyFoundCpp ? { keyFoundCpp } : {}),
             };
         }
         if (
@@ -2444,12 +2468,14 @@ function compileMapDataMethod(
                 ),
                 ownedCpp: `${narrowed.cpp}.get_owned(${key})`,
                 nativeLvalue: true,
+                ...(keyFoundCpp ? { keyFoundCpp } : {}),
             };
         }
         return {
             kind: "data",
             cpp: `${narrowed.cpp}.get(${key})`,
             ownedCpp: `${narrowed.cpp}.get_owned(${key})`,
+            ...(keyFoundCpp ? { keyFoundCpp } : {}),
             // TypeScript flattens `(T | null) | undefined` to one
             // nullable union. Preserve that shape so a single
             // source guard narrows a Map whose value is nullable.

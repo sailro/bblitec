@@ -77,7 +77,11 @@ An engine function or class method is read from the pinned body behind its typin
 pinned body (an interface method) counts as touching everything. An object or array literal kept past
 the statement that builds it holds each member's value as it was built, and an object an engine
 function writes through (`normalizeVec3ToRef(v, out)`) keeps native storage. Loose
-equality between operands of one primitive type is strict equality; across types it refuses. Destructuring finishes the source before
+equality between operands of one primitive type is strict equality; across types it refuses. `=== null`
+and `=== undefined` on an absent value answer from what its type admits, and a `Map.get` among values
+that may be `null` knows whether its key was there; a value whose type admits both refuses a strict
+comparison (`== null` answers either). An enum member reads as its constant wherever it is written,
+`Tone["Soft"]` included. Destructuring finishes the source before
 left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings and plain struct fields;
 nested/default/renamed struct bindings refuse.
@@ -118,7 +122,7 @@ MessageChannel and runtime compression streams refuse; gzip/base64 JSON decoded 
 | Tuples | Shared identity, typed and dynamic lanes, mutations, shallow rest arrays, destructuring | Sparse length growth and ambiguous null/undefined defaults refuse |
 | Map/Set | Ordered construction, queries, mutation, spreads, entries, live `forEach` | An iterator value of a nullable reference type reads as present |
 | Iterators | Direct array/Map/Set iteration; retained Set keys/values/entries cursors, `next`, spreads, `Array.from` | Generators and general `Symbol.iterator` objects refuse |
-| Strings | UTF-16 indexing/length, substring/repeat/concat, padding/trimming, replacement strings/callbacks, `+=` on locals, fields and elements | A concatenated operand is built before it is appended |
+| Strings | UTF-16 indexing/length, substring/repeat/concat, padding, trimming of JavaScript white space, replacement strings/callbacks, `+=` on locals, fields and elements; an absent value in concatenation, a template or `String()` spells `undefined` or `null` as its type admits | A concatenated operand is built before it is appended; a value whose type admits both `null` and `undefined` refuses in text |
 | RegExp | Supported `g`/`i` patterns and replacement callbacks with captures/offset/original string | RegExp `replaceAll` with string replacement refuses |
 | Unicode | NFC/NFD/NFKC/NFKD normalization; `localeCompare` locale/options | Option getters and non-string locale entries refuse |
 | Objects | Supported keys/values/entries, assign/fromEntries/hasOwn/is, shallow spreads, delete/in | Fixed own-key proof required for optional structs; Object.assign targets records, object literals and structs, other targets refuse |

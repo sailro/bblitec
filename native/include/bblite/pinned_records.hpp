@@ -163,6 +163,14 @@ js::Array<T>& array_sort(js::Array<T>& values, const Compare& compare) {
     return values;
 }
 
+/** A value element read the pin may find absent: past the end is `undefined`. */
+template <class T>
+[[nodiscard]] std::optional<T> array_at_optional(const js::Array<T>& values, double index) {
+    return js::array_has_index(values, index)
+               ? std::optional<T>(values[static_cast<std::size_t>(index)])
+               : std::optional<T>{};
+}
+
 /** A numeric array read: an absent element is `undefined`, NaN as a number. */
 [[nodiscard]] inline double number_at(const js::Array<double>& values, double index) {
     return js::array_has_index(values, index) ? values[static_cast<std::size_t>(index)]

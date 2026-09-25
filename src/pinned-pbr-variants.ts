@@ -26,8 +26,7 @@ import {
 import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
 import { pinnedClusteredLightExtensions } from "./pinned-clustered-lights.js";
 import type { PinnedToneMapping } from "./pinned-tone-mapping.js";
-import { LoweringContext } from "./lowering/context.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 
 /** The pinned interface naming everything `createPbrComposer` reads. */
 const composerDepsModule = "src/material/pbr/pbr-compose.ts";
@@ -483,7 +482,7 @@ export async function composePinnedPbrVariant(
         _shadowLights: shadowLights,
         _createThinInstanceFragment: thinInstance.createThinInstanceFragment,
     };
-    new LoweringContext(sharedUpstreamStore()).assertSuppliedOptions(
+    sharedPinnedContext().assertSuppliedOptions(
         composerDepsModule,
         composerDepsInterface,
         Object.keys(deps),

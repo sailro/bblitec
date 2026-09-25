@@ -1,7 +1,6 @@
 import type ts from "typescript";
-import { LoweringContext } from "../lowering/context.js";
+import { sharedPinnedContext } from "../lowering/context.js";
 import { physicsViewerMaterialProgram } from "../lowering/physics-viewer-material.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
 import {
     reachFoldedShaderProgram,
     type ShaderMaterialContext,
@@ -17,10 +16,6 @@ export function reachPhysicsViewerMaterialProgram(
         node,
         `physics-debug-lines-${color.join("-")}`,
         "physics debug line",
-        () =>
-            physicsViewerMaterialProgram(
-                new LoweringContext(sharedUpstreamStore()),
-                color,
-            ),
+        () => physicsViewerMaterialProgram(sharedPinnedContext(), color),
     );
 }

@@ -2594,9 +2594,10 @@ export class PropertyAccessLowerer {
                         ))
                 ) {
                     // Object literals omit optional fields entirely. A
-                    // compile-time record preserves that absence as the
-                    // nullish value consumed by `??` and equality guards.
-                    return { kind: "json-null", cpp: "" };
+                    // compile-time record preserves that absence as
+                    // JavaScript's `undefined`, which `??`, equality
+                    // guards, `typeof` and concatenation read.
+                    return { kind: "json-null", cpp: "std::nullopt" };
                 }
                 this.context.fail(
                     expression,

@@ -12,13 +12,12 @@
  * vertex-colour form registers two.
  */
 import type ts from "typescript";
-import { LoweringContext } from "../lowering/context.js";
+import { sharedPinnedContext } from "../lowering/context.js";
 import {
     LineLowerer,
     variantName,
     type LineMaterialOptions,
 } from "../lowering/line-lowerer.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
 import {
     reachFoldedShaderProgram,
     type ShaderMaterialContext,
@@ -32,7 +31,7 @@ let cached: LineLowerer | undefined;
 
 function lineLowerer(): LineLowerer {
     if (!cached) {
-        cached = new LineLowerer(new LoweringContext(sharedUpstreamStore()));
+        cached = new LineLowerer(sharedPinnedContext());
     }
     return cached;
 }

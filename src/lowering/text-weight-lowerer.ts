@@ -9,20 +9,12 @@ import { lowerTextFunctions } from "./text-records.js";
 export class TextWeightLowerer {
     constructor(private readonly context: LoweringContext) {}
     header(): string {
-        // The lazy loader's value is the setter this header lowers; the
-        // compiler binds `loadFontWeightOffset()` to it.
-        this.context.assertFunctionBodyShape(
-            this.context.functionDeclaration(
-                "src/text/load-font-weight-offset.ts",
-                "loadFontWeightOffset",
-            ).declaration,
-            '{return (await import("./set-font-weight-offset.js")).setFontWeightOffset;}',
-            "Text weight lazy setter export",
-        );
+        // The root is what the pin's lazy loader returns; the compiler
+        // binds `loadFontWeightOffset()` to the same function.
         const { declarations, definitions } = lowerTextFunctions(
             this.context,
             "weight",
-            ["records", "update"],
+            ["records", "layout", "update"],
         );
         return `#pragma once
 #include <bblite/upstream_text_update.hpp>
