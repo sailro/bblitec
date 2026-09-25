@@ -39,7 +39,7 @@ export interface NoticeRequest {
     ndk?: string;
 }
 
-export interface PackageNotice {
+interface PackageNotice {
     /** The file name under the package's `licenses` directory. */
     name: string;
     source: string;

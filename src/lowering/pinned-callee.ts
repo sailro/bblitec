@@ -46,7 +46,7 @@ export function pinnedDeclaration(
 }
 
 /** A pinned function, by the module that declares it and its name. */
-export interface PinnedFunctionRef {
+interface PinnedFunctionRef {
     readonly module: string;
     readonly name: string;
 }

@@ -5,13 +5,13 @@ import type {
 } from "./physics-debug-geometry.js";
 
 /** Transport order is the native HP constructor call order, with no body state. */
-export interface PhysicsDebugDescriptor {
+interface PhysicsDebugDescriptor {
     type: string;
     parameters: number[];
     indices: number[];
     children: PhysicsDebugDescriptor[];
 }
-export interface PhysicsDebugCatalogEntry {
+interface PhysicsDebugCatalogEntry {
     descriptor: PhysicsDebugDescriptor;
     shapeIdentity: string;
     geometry: PhysicsDebugGeometry;

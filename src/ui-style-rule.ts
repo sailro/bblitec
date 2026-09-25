@@ -81,7 +81,7 @@ const UI_SCROLLBAR_PARTS = {
     corner: "Corner",
 } as const;
 
-export type UiScrollbarPart = keyof typeof UI_SCROLLBAR_PARTS;
+type UiScrollbarPart = keyof typeof UI_SCROLLBAR_PARTS;
 
 export function isUiScrollbarPart(value: unknown): value is UiScrollbarPart {
     return (
@@ -94,7 +94,7 @@ export function uiScrollbarPartCpp(part: UiScrollbarPart | undefined): string {
 }
 
 const UI_RANGE_PARTS = { thumb: "Thumb", track: "Track" } as const;
-export type UiRangePart = keyof typeof UI_RANGE_PARTS;
+type UiRangePart = keyof typeof UI_RANGE_PARTS;
 export function isUiRangePart(value: unknown): value is UiRangePart {
     return typeof value === "string" && Object.hasOwn(UI_RANGE_PARTS, value);
 }

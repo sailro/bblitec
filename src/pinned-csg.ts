@@ -56,14 +56,14 @@ export type CsgSourceMesh =
       }
     | { readonly factory: "createSphere"; readonly options: CsgSphereOptions };
 
-export interface CsgBoxOptions {
+interface CsgBoxOptions {
     readonly size?: number;
     readonly width?: number;
     readonly height?: number;
     readonly depth?: number;
 }
 
-export interface CsgSphereOptions {
+interface CsgSphereOptions {
     readonly segments?: number;
     readonly diameter?: number;
     readonly diameterX?: number;
@@ -92,7 +92,7 @@ export const csgBooleanNames = [
     "csgIntersect",
 ] as const;
 
-export type CsgBooleanName = (typeof csgBooleanNames)[number];
+type CsgBooleanName = (typeof csgBooleanNames)[number];
 
 /** The four streams `createMeshFromCsg` hands `createMeshFromData`. */
 export interface BakedCsgMesh {

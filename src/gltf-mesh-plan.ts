@@ -1431,7 +1431,7 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
  * What the pinned loader's own run decided for a packaged document: the
  * features it ran and the primitive topology it gave each planned mesh.
  */
-export interface PackagedGltfLoaderFacts {
+interface PackagedGltfLoaderFacts {
     features: ReadonlySet<string>;
     topologies: readonly string[];
 }

@@ -87,7 +87,7 @@ export const mipmapModeByPin: Readonly<Record<string, string>> = {
 };
 
 /** `Texture2DOptions`' own defaults, keyed by the option's pinned name. */
-export interface LoadTexture2DDefaults {
+interface LoadTexture2DDefaults {
     minFilter: string;
     magFilter: string;
     mipMaps: boolean;
@@ -388,7 +388,7 @@ export function loadTexture2DSamplerCpp(sampler: {
 }
 
 /** Everything `bbl::load_file_texture` takes past the path. */
-export interface LoadTexture2DUpload {
+interface LoadTexture2DUpload {
     sampler: string;
     invertY: boolean;
     srgb: boolean;

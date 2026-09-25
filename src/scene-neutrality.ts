@@ -70,7 +70,7 @@ import { artifactDirectory, parityReportPath } from "./tooling/artifacts.js";
  * 126's Dawn band is the family's widest at 1.7e-3 with max 18. Every band
  * sits at least an order of magnitude under the scene's thresholds.
  */
-export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
     ["scene14", new Set(["sdl_gpu"])],
     ["scene37", new Set(["dawn", "sdl_gpu"])],
@@ -172,7 +172,7 @@ function reportsIn(directory: string): Map<string, Map<string, number>> {
 
 /** The verdict of one neutrality comparison; `neutral` when no measured
  *  cell moved and every baseline scene was measured again. */
-export interface NeutralityVerdict {
+interface NeutralityVerdict {
     neutral: boolean;
     unchanged: number;
     moved: string[];

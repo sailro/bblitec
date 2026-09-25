@@ -78,7 +78,7 @@ import {
 import { refuseGeneration } from "./generation-refusal.js";
 
 /** What the moved orchestration reads from `main`, under `main`'s names. */
-export interface ComposePipelineContext {
+interface ComposePipelineContext {
     result: CompileResult;
     outputPath: string;
     /** What the assets joined, and the activation plan decided with it. */
@@ -154,7 +154,7 @@ function standardPluginMeshFeatureValues(
 
 /** The values `main`'s remainder (emit options, activation inventory)
  *  consumes, under the names it consumed them by when they were inline. */
-export interface ComposedScenePipeline {
+interface ComposedScenePipeline {
     lightKinds: PinnedSingleLightType[];
     /** The upstream loader/runtime tone-mapping states this scene can reach. */
     toneMappingStates: boolean[];

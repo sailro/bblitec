@@ -34,7 +34,7 @@ export interface LocalCubemapPlan {
     readonly options: { [key: string]: LocalCubemapJson };
     readonly debug?: boolean;
 }
-export interface LocalCubemapPacket {
+interface LocalCubemapPacket {
     overridesEnvironment: boolean;
     uniform: number[];
     grid: number[];

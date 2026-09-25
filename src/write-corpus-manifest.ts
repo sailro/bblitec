@@ -44,7 +44,7 @@ import { isMainModule, parseFlags } from "./tooling/flags.js";
  */
 
 /** One scene's row, as the manifest stores it. */
-export interface ExactCorpusReference {
+interface ExactCorpusReference {
     id: string;
     sourceSha256: string;
     reference: string;
@@ -63,7 +63,7 @@ interface ExactCorpusDocument {
 }
 
 /** The pinned pair a set of rows was written under. */
-export interface UpstreamPinPair {
+interface UpstreamPinPair {
     version: string;
     sourceVersion: string;
 }
@@ -80,7 +80,7 @@ function sha256(bytes: Buffer | string): string {
 }
 
 /** What a rewrite moved, for the caller to report. */
-export interface ManifestRewrite {
+interface ManifestRewrite {
     /** The serialized document, whether or not it was written. */
     content: string;
     /** True when it differs from what is on disk. */
@@ -232,7 +232,7 @@ function rewriteExactCorpusManifest(
 }
 
 /** What the repository holds now for one row's inputs. */
-export interface ReferenceInputs {
+interface ReferenceInputs {
     corpusSha256: string;
     moduleSha256: string;
     referenceSearch: string | undefined;

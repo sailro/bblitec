@@ -34,7 +34,7 @@ import {
 } from "./tooling/artifacts.js";
 import { readReport } from "./tooling/reports.js";
 
-export interface PublishedRow {
+interface PublishedRow {
     sceneId: string;
     line: number;
     values: string[];
@@ -161,7 +161,7 @@ export function outOfOrderRows(
 
 /** The registry name a numbered row's coverage cell is derived from:
  *  the entry's `name` without its `Scene N - ` prefix. */
-export function expectedCoverage(name: string): string {
+function expectedCoverage(name: string): string {
     return name.replace(/^Scene [0-9]+ - /, "");
 }
 
@@ -303,7 +303,7 @@ export function canvasProblems(
     return problems;
 }
 
-export interface VerifyStatusOptions {
+interface VerifyStatusOptions {
     statusPath?: string;
     /** The parity reports root (`artifacts/parity`). */
     parityRoot?: string;
@@ -311,7 +311,7 @@ export interface VerifyStatusOptions {
     canvasRoot?: string;
 }
 
-export interface StatusVerdict {
+interface StatusVerdict {
     problems: string[];
     /**
      * The wobble-exempt cells, one line each with the published and the

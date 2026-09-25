@@ -19,7 +19,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 /** A registry scene's native environment base for every phase. */
-export type CheckEnvironmentBase = "registry" | "adhoc" | "fixed" | "none";
+type CheckEnvironmentBase = "registry" | "adhoc" | "fixed" | "none";
 
 export interface CheckPhase {
     id: string;
@@ -39,14 +39,14 @@ export interface CheckPhase {
 }
 
 /** A phase id, or `*` for every phase. */
-export type PhaseSelector = string;
+type PhaseSelector = string;
 
 /**
  * The image another image is compared against: another phase of the same
  * backend, the committed golden, or a browser observation step's
  * screenshot (`browser:<step>`).
  */
-export type ImageReference = string;
+type ImageReference = string;
 
 export type CheckExpectation =
     | {
@@ -161,7 +161,7 @@ export type ObserveAction =
     | { workerEvaluate: string; as?: string }
     | { waitFor: string; timeoutMs?: number };
 
-export interface ObserveStep {
+interface ObserveStep {
     id: string;
     actions?: ObserveAction[];
     /** Screenshot after the actions: the page (default), the canvas only, or none. */
@@ -180,7 +180,7 @@ export interface ObserveStep {
     notes?: string;
 }
 
-export interface ObserveHook {
+interface ObserveHook {
     /** A source line the scene must contain exactly once. */
     marker: string;
     /** Source injected before or after (default) the marker. */
@@ -258,9 +258,9 @@ export interface CheckSpec {
     notes?: string;
 }
 
-export const CHECKS_DIRECTORY = "checks";
+const CHECKS_DIRECTORY = "checks";
 
-export function checkSpecPath(checkId: string): string {
+function checkSpecPath(checkId: string): string {
     return resolve(CHECKS_DIRECTORY, `${checkId}.json`);
 }
 
@@ -1005,7 +1005,7 @@ function memoryTapePath(sceneId: string): string {
 }
 
 /** A demo's default memory tape (`readMemoryTape`). */
-export interface MemoryTape {
+interface MemoryTape {
     path: string;
     /**
      * The run length the demo needs: its warm-up third has to cover the

@@ -69,7 +69,7 @@ const solidTextureDataFunction = `
  * why the unit is named for the material rather than for its textures. The
  * flags travel named because seven positional booleans read as an accident.
  */
-export interface StandardMaterialSetters {
+interface StandardMaterialSetters {
     diffuse: boolean;
     emissive: boolean;
     pixels: boolean;

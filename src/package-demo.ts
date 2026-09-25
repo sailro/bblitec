@@ -70,7 +70,7 @@ export function shippingPlatform(
 }
 
 /** The package file name stem of `scene`'s `backend` package on `platform`. */
-export function desktopPackageName(
+function desktopPackageName(
     scene: string,
     backend: "SDL_GPU" | "DAWN",
     platform: ShippingPlatform,
@@ -84,7 +84,7 @@ export function desktopPackageName(
     }`;
 }
 
-export interface DesktopPackageOptions {
+interface DesktopPackageOptions {
     scene: string;
     /** The mini build tree (macOS: the x86_64 slice). */
     buildDirectory: string;
@@ -97,7 +97,7 @@ export interface DesktopPackageOptions {
     root?: string;
 }
 
-export interface DesktopPackageReceipt {
+interface DesktopPackageReceipt {
     scene: string;
     backend: "SDL_GPU" | "DAWN";
     platform: "windows" | "linux" | "macos";
@@ -198,7 +198,7 @@ const samePath = (left: string, right: string, platform: ShippingPlatform) =>
         ? resolve(left).toLowerCase() === resolve(right).toLowerCase()
         : resolve(left) === resolve(right);
 
-export interface Slice {
+interface Slice {
     buildDirectory: string;
     cache: Record<string, string>;
     executable: string;

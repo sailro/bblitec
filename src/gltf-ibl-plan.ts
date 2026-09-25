@@ -23,7 +23,7 @@ import {
     type RecordedOrigin,
 } from "./recording-device.js";
 
-export interface GltfIblTextures {
+interface GltfIblTextures {
     width: number;
     mipCount: number;
     faces: Array<{ bufferView: number; mimeType: string }>;
@@ -31,7 +31,7 @@ export interface GltfIblTextures {
     lodScale: number;
     brdfWidth: number;
 }
-export type GltfIblWrite =
+type GltfIblWrite =
     | { kind: "textures"; index: number }
     | { kind: "rotation" | "exposure" | "contrast"; value: number }
     | { kind: "toneMappingEnabled"; value: boolean };

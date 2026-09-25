@@ -52,13 +52,13 @@ const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
 const pickSpriteModule = "src/sprite/picking/pick-sprite-2d.ts";
 
 /** A reached sprite permutation: the depth host and uv-scroll opt-ins. */
-export interface SpritePermutation {
+interface SpritePermutation {
     hasDepth: boolean;
     uvScroll: boolean;
 }
 
 /** A custom-shader program: the caller's fragment body and its extra textures. */
-export interface SpriteCustomProgram {
+interface SpriteCustomProgram {
     fragment: string;
     extraTextures: readonly string[];
 }

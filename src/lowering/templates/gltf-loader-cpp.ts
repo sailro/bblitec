@@ -35,7 +35,7 @@ import { recordAt } from "../../compiler/record-access.js";
  * changes — or refuses — the emitted loader instead of leaving stale
  * text behind an unrelated assertion.
  */
-export interface GltfLoaderLoweredSegments {
+interface GltfLoaderLoweredSegments {
     animationStorage: string;
     animationMask: string;
     animationPlayback: string;

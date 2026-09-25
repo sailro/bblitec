@@ -26,7 +26,7 @@ export const csg2BooleanNames = [
     "csg2Intersect",
     "csg2Add",
 ] as const;
-export type Csg2BooleanName = (typeof csg2BooleanNames)[number];
+type Csg2BooleanName = (typeof csg2BooleanNames)[number];
 let materialSlotCount: number | undefined;
 export function csg2MaterialSlotCount(): number {
     if (materialSlotCount === undefined) {
@@ -51,13 +51,13 @@ export type Csg2SolidPlan =
           readonly right: Csg2SolidPlan;
       };
 
-export interface Csg2BakeRequest {
+interface Csg2BakeRequest {
     readonly plan: Csg2SolidPlan;
     readonly name: string;
     /** Absent selects the single-mesh factory. */
     readonly materialCount?: number;
 }
-export interface BakedCsg2Mesh {
+interface BakedCsg2Mesh {
     readonly name: string;
     readonly materialSlot?: number;
     readonly geometry: BakedCsgMesh;

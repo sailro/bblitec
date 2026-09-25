@@ -34,7 +34,7 @@ const assign = (name: string, value: ShaderExpression): ShaderStatement => ({
     value,
 });
 /** Whether a shader expression is exactly the dotted path `parts` spells. */
-export const isPath = (value: ShaderExpression, ...parts: string[]): boolean =>
+const isPath = (value: ShaderExpression, ...parts: string[]): boolean =>
     value.kind === "path" &&
     value.parts.length === parts.length &&
     value.parts.every((part, index) => part === parts[index]);

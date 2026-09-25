@@ -184,7 +184,7 @@ export interface PostProcessComposite {
     sourceTasks?: readonly string[];
 }
 
-export const POST_PROCESS_COMPOSITES: readonly PostProcessComposite[] = [
+const POST_PROCESS_COMPOSITES: readonly PostProcessComposite[] = [
     {
         intrinsic: "createTaaPostProcessTask",
         module: "src/post-process/taa.ts",

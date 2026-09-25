@@ -680,7 +680,7 @@ const SHADER_FAMILIES = {
 type ShaderFamily = keyof typeof SHADER_FAMILIES;
 
 /** A reached sprite permutation, and the suffix its programs' stems take. */
-export interface SpriteProgramPermutation {
+interface SpriteProgramPermutation {
     suffix: string;
     uvScroll: boolean;
     depthHosted: boolean;

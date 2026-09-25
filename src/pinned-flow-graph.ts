@@ -42,7 +42,7 @@ export interface FlowGraphSocket {
     defaultValue?: unknown;
 }
 
-export interface FlowGraphSignalOutput {
+interface FlowGraphSignalOutput {
     name: string;
     targets: { blockId: string; socket: string }[];
 }
@@ -60,13 +60,13 @@ export interface FlowGraphBlock {
 }
 
 /** A recording stand-in for one entity of the loaded asset. */
-export interface FlowGraphRecordingRoot {
+interface FlowGraphRecordingRoot {
     kind: "node" | "material";
     index: number;
 }
 
 /** One leaf member the pin's accessor read or wrote on a stand-in. */
-export interface FlowGraphTouch extends FlowGraphRecordingRoot {
+interface FlowGraphTouch extends FlowGraphRecordingRoot {
     /** Dotted member path on the stand-in (`baseColorTexture.uOffset`). */
     path: string;
     write: boolean;
@@ -80,7 +80,7 @@ export interface FlowGraphTouch extends FlowGraphRecordingRoot {
  * getter reads and its setter writes. The lowering maps those members to
  * native fields and refuses an accessor that touches anything else.
  */
-export interface FlowGraphPointerAccessor {
+interface FlowGraphPointerAccessor {
     pointer: string;
     /** The pin's `FgType` name (`"boolean"`, `"Vector2"`, ...). */
     type: string;

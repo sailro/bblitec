@@ -13,7 +13,7 @@
 import { readFileSync } from "node:fs";
 import { PNG } from "pngjs";
 
-export interface PngMeasurement {
+interface PngMeasurement {
     width: number;
     height: number;
     background: [number, number, number];

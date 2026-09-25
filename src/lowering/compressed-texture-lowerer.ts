@@ -54,7 +54,7 @@ interface CompressedFormatRow {
 }
 
 /** One field the parser validates rather than binds: where, and against what. */
-export interface KtxHeaderGuard {
+interface KtxHeaderGuard {
     offset: number;
     expected: number;
 }

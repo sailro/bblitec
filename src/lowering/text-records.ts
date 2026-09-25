@@ -691,7 +691,7 @@ export const TEXT_RECORDS = [
     "TextDataUpdate",
 ] as const;
 
-export interface TextFunction {
+interface TextFunction {
     module: string;
     name: string;
     /** A class member of `name`, the class. */
@@ -717,7 +717,7 @@ const transformRoots = (
 ];
 
 /** The pinned text functions each generated header owns. */
-export const TEXT_HEADER_ROOTS: Readonly<
+const TEXT_HEADER_ROOTS: Readonly<
     Record<
         | "records"
         | "update"

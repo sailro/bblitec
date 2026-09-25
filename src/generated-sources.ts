@@ -16,7 +16,7 @@
 import type { Feature } from "./compiler/types.js";
 import { shadowGeneratorFeatures } from "./shadow-capabilities.js";
 
-export interface GeneratedSourceRule {
+interface GeneratedSourceRule {
     source: string;
     /** Reached when ANY listed feature is present; empty means always. */
     features: readonly Feature[];
@@ -445,7 +445,7 @@ export function reachedGeneratedSources(features: readonly string[]): string[] {
  * bring a generated file into existence — and a header whose reach drifts
  * from its includers fails in the native build with nothing pointing back.
  */
-export const sharedSpriteAtlasHeaderFeatures = [
+const sharedSpriteAtlasHeaderFeatures = [
     "sprite:2d",
     "sprite:billboard",
 ] as const;

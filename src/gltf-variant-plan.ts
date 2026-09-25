@@ -22,7 +22,7 @@ import {
     createJavaScriptFunction,
 } from "./typescript-transpile.js";
 
-export interface GltfVariantPlan {
+interface GltfVariantPlan {
     baseCount: number;
     /** Source material indices in the variant phase's construction order. */
     materials: number[];

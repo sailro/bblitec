@@ -176,12 +176,12 @@ export interface CallAdapter {
 }
 
 /** A pinned module variable the platform owns, read as a native value. */
-export interface ModuleValue {
+interface ModuleValue {
     readonly shape: RecordShape;
     readonly cpp: string;
 }
 
-export interface RecordSchema {
+interface RecordSchema {
     readonly records: readonly RecordSpec[];
     /** Pinned type names represented by a native value. */
     readonly values: ReadonlyMap<string, RecordShape>;

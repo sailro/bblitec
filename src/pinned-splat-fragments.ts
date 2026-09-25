@@ -34,7 +34,7 @@ import {
 } from "./pinned-shader-composer.js";
 
 /** The pinned module that ships both the WGSL and the splicer. */
-export const splatPipelineModule =
+const splatPipelineModule =
     "mesh/GaussianSplatting/gaussian-splatting-pipeline.js";
 
 /**
@@ -48,11 +48,11 @@ export const splatPipelineModule =
  * reached through the pin's own text with the symbol re-exported rather
  * than transcribed.
  */
-export const splatShPipelineModule =
+const splatShPipelineModule =
     "mesh/GaussianSplatting/gaussian-splatting-pipeline-sh.js";
 
 /** One plugin, in the shape `applyGsFragments` reads. */
-export interface SplatShaderFragment {
+interface SplatShaderFragment {
     readonly id: string;
     readonly helperFunctions?: string;
     readonly fragmentSlots: Readonly<Record<string, string>>;
@@ -74,7 +74,7 @@ export function isSplatFragmentExport(importedName: string): boolean {
 }
 
 /** The record one named export carries. */
-export async function pinnedSplatFragment(
+async function pinnedSplatFragment(
     importedName: string,
 ): Promise<SplatShaderFragment> {
     const modulePath = gsFragmentModules[importedName];

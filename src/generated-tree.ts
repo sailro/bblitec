@@ -188,7 +188,7 @@ export class GeneratedTree {
 // Digesting is all this does — the caller compiles first.
 // ---------------------------------------------------------------------------
 
-export interface GeneratedTreeDigest {
+interface GeneratedTreeDigest {
     /** `generated/<path>\t<sha1>`, sorted by path. */
     lines: string[];
     /** Top-level entries under the root that no registry scene owns,
@@ -262,7 +262,7 @@ export function parseDigestBaseline(text: string): Map<string, string> {
     return map;
 }
 
-export interface GeneratedDigestComparison {
+interface GeneratedDigestComparison {
     added: string[];
     removed: string[];
     changed: string[];

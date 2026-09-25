@@ -32,7 +32,7 @@ import type { ObserveAction, ObserveSpec } from "./check-spec.js";
 import { writeReport } from "./reports.js";
 import { observationsPath } from "./check-run.js";
 
-export interface ObserveRunOptions {
+interface ObserveRunOptions {
     checkId: string;
     scene: SceneDefinition;
     spec: ObserveSpec;

@@ -28,7 +28,7 @@ import { isMainModule, parseFlags } from "./tooling/flags.js";
 const reviewDirectory = "docs/reviews";
 
 /** One finding, and what happened to it. */
-export interface SimplifyFinding {
+interface SimplifyFinding {
     summary: string;
     /** Whether the fix landed on this branch. */
     applied: boolean;
@@ -42,14 +42,14 @@ export interface SimplifyFinding {
     filedIn?: string;
 }
 
-export interface SimplifyRecord {
+interface SimplifyRecord {
     /** The review angles actually run. */
     angles: string[];
     findings: SimplifyFinding[];
 }
 
 /** What the reviewed body of work is, and its content hash. */
-export interface SimplifyWork {
+interface SimplifyWork {
     base: string;
     /** True when there is nothing to review. */
     empty: boolean;

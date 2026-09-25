@@ -418,7 +418,7 @@ export function pinnedDefaultVec2Cpp(name: PinnedMaterialDefaultName): string {
  * reads `mrc ? mrc[i] : <lane>` rather than a `??`, so the three lanes are
  * the conditionals' own false arms.
  */
-export function pinnedMetallicReflectanceColorAbsent(): readonly [
+function pinnedMetallicReflectanceColorAbsent(): readonly [
     number,
     number,
     number,
@@ -468,7 +468,7 @@ export function pinnedMetallicReflectanceColorAbsent(): readonly [
  * `material.usePhysicalLightFalloff === false ? 0 : 1`, so an absent option
  * writes what the record's `true` writes.
  */
-export function pinnedPhysicalLightFalloffAbsent(): boolean {
+function pinnedPhysicalLightFalloffAbsent(): boolean {
     const reader = sharedPinnedContext();
     const { declaration } = reader.functionDeclaration(
         baseWriterModule,

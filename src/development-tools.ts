@@ -14,7 +14,7 @@ type DevelopmentCompiler = ReturnType<typeof canonicalDevelopmentCompiler>;
 
 export const clangToolsMajor = 22;
 
-export interface ToolDiscoveryOptions {
+interface ToolDiscoveryOptions {
     cwd?: string;
     environment?: NodeJS.ProcessEnv;
     platform?: NodeJS.Platform;

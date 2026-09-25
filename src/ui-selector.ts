@@ -3,7 +3,7 @@ export { splitUiCssList as splitUiSelectorList } from "./ui-css-syntax.js";
 
 /** Compound selector chains admitted by the retained CSS projection. The same
  * parsed terms drive native matching, serialization and conservative proofs. */
-export const UI_SELECTOR_STATES = {
+const UI_SELECTOR_STATES = {
     hover: "Hover",
     active: "Active",
     focus: "Focus",
@@ -12,7 +12,7 @@ export const UI_SELECTOR_STATES = {
     disabled: "Disabled",
     checked: "Checked",
 } as const;
-export const UI_SELECTOR_TESTS = {
+const UI_SELECTOR_TESTS = {
     tag: "Tag",
     id: "Id",
     class: "Class",
@@ -31,8 +31,8 @@ export const UI_SELECTOR_TESTS = {
     where: "Where",
     has: "Has",
 } as const;
-export type UiSelectorTestKind = keyof typeof UI_SELECTOR_TESTS;
-export interface UiSelectorTest {
+type UiSelectorTestKind = keyof typeof UI_SELECTOR_TESTS;
+interface UiSelectorTest {
     kind: UiSelectorTestKind;
     name: string;
     value: string;
@@ -40,7 +40,7 @@ export interface UiSelectorTest {
     a?: number;
     b?: number;
 }
-export const UI_SELECTOR_RELATIONS = {
+const UI_SELECTOR_RELATIONS = {
     self: "Self",
     descendant: "Descendant",
     child: "Child",

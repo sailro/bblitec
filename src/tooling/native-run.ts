@@ -152,7 +152,7 @@ export function verifyBuildIdentity(
     }
 }
 
-export interface NativeSpawnOptions {
+interface NativeSpawnOptions {
     /**
      * Ambient variables scrubbed from the child's environment: a caller
      * setting one explicitly (the capture drops `BBLITE_GPU_BACKEND` so an
@@ -289,7 +289,7 @@ export interface MeasuredRunOptions {
     timeoutMs?: number;
 }
 
-export interface MeasuredRun {
+interface MeasuredRun {
     /** The run's stderr when `captureLog` was set; empty otherwise. */
     log: string;
     /** The build stamp the run reported, when it was asked to. */

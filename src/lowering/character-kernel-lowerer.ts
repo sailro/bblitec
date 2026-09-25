@@ -98,7 +98,7 @@ const isScalar = (type: string): boolean =>
     type === "number" || type === "boolean";
 
 /** The storage of a kernel representation. */
-export function kernelStorage(
+function kernelStorage(
     type: string,
     records: ReadonlyMap<string, unknown>,
 ): string {

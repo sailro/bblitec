@@ -16,20 +16,20 @@ export interface RegionResult extends CompareResult {
     regionPixels: number;
 }
 
-export interface DiffRegionSummary {
+interface DiffRegionSummary {
     pixels: number;
     mad: number;
     maxDiff: number;
 }
 
-export interface DiffHotspot extends DiffRegionSummary {
+interface DiffHotspot extends DiffRegionSummary {
     x: number;
     y: number;
     width: number;
     height: number;
 }
 
-export interface DiffBreakdown {
+interface DiffBreakdown {
     channelMad: { red: number; green: number; blue: number };
     foregroundBias: { red: number; green: number; blue: number };
     regions: {
@@ -40,12 +40,12 @@ export interface DiffBreakdown {
     hotspots: DiffHotspot[];
 }
 
-export interface DrawDiffSummary extends DiffRegionSummary {
+interface DrawDiffSummary extends DiffRegionSummary {
     drawId: number;
     bounds: { x: number; y: number; width: number; height: number };
 }
 
-export interface HotspotDrawAttribution {
+interface HotspotDrawAttribution {
     x: number;
     y: number;
     width: number;
@@ -53,7 +53,7 @@ export interface HotspotDrawAttribution {
     drawIds: Array<{ drawId: number; pixels: number }>;
 }
 
-export interface IdDiffBreakdown {
+interface IdDiffBreakdown {
     draws: DrawDiffSummary[];
     hotspots: HotspotDrawAttribution[];
 }

@@ -12,14 +12,14 @@ import {
 } from "./shader-ir.js";
 
 /** A resource binding Tint reflects, by WGSL group, binding and name. */
-export interface ReflectedBinding {
+interface ReflectedBinding {
     group: number;
     binding: number;
     name: string;
 }
 
 /** What bblite-tint's `--layout-json` records of one compiled stage. */
-export interface StageLayoutRecord {
+interface StageLayoutRecord {
     /** The uniform blocks the stage binds, by WGSL name, in SDL slot order. */
     uniformBuffers: string[];
     /** Every binding any entry point of the module reaches. */
@@ -81,7 +81,7 @@ export function parseStageLayoutRecord(
 }
 
 /** SDL_GPU binds at most four uniform buffers per stage. */
-export const sdlUniformBufferCap = 4;
+const sdlUniformBufferCap = 4;
 
 export function assertUniformBufferCap(
     uniformBuffers: readonly string[],

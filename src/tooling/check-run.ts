@@ -38,13 +38,13 @@ import { computeBuildStamp } from "../build-stamp.js";
 
 /** The generated tree and build a check runs against: the scene's own,
  *  or its twin (`generated/<id>-live`). */
-export interface CheckTarget {
+interface CheckTarget {
     output: string;
     buildDirectory: string;
     executable: string;
 }
 
-export interface CheckRunOptions {
+interface CheckRunOptions {
     checkId: string;
     scene: SceneDefinition;
     spec: CheckSpec;
@@ -58,7 +58,7 @@ export interface CheckRunOptions {
 }
 
 /** What one phase's native run left: the image, the capture, the log. */
-export interface PhaseResult {
+interface PhaseResult {
     id: string;
     backend: string;
     frame: number;
@@ -71,7 +71,7 @@ export interface PhaseResult {
     kept: boolean;
 }
 
-export interface ExpectationResult {
+interface ExpectationResult {
     index: number;
     kind: string;
     phase?: string;
@@ -80,7 +80,7 @@ export interface ExpectationResult {
     detail: string;
 }
 
-export interface CheckVerdict {
+interface CheckVerdict {
     ok: boolean;
     reportPath: string;
     results: ExpectationResult[];

@@ -28,7 +28,7 @@ import { resolveScene, type SceneDefinition } from "./scene-registry.js";
  * because a capture from a stale executable describes a frame nobody is
  * looking at — and that failure is silent.
  */
-export interface NativeCaptureOptions {
+interface NativeCaptureOptions {
     /** `sdl_gpu` (default) or `dawn`; `gpu` is accepted for `sdl_gpu`. */
     backend?: string;
     seekSeconds?: number;

@@ -21,16 +21,14 @@ import { sharedUpstreamStore } from "../upstream-source.js";
  * One record in a list a builder loops over -- an extra texture's `name`, an
  * option record's flags.
  */
-export type ShaderTextRecord = Readonly<
-    Record<string, string | boolean | number>
->;
+type ShaderTextRecord = Readonly<Record<string, string | boolean | number>>;
 
 /** A value a builder parameter is bound to by name. */
 export type ShaderTextBinding =
     string | boolean | number | ShaderTextRecord | readonly ShaderTextRecord[];
 
 /** What the executor reads off the pinned declarations it runs. */
-export interface PinnedBuilderContext {
+interface PinnedBuilderContext {
     functionDeclaration(
         modulePath: string,
         symbolName: string,
@@ -208,11 +206,7 @@ export class PinnedShaderBuilders {
  * is what keeps a stage whose body opens a block of its own -- a cutout
  * fragment's `discard` guard, say -- from being silently truncated.
  */
-export function bracedShaderText(
-    source: string,
-    open: string,
-    label: string,
-): string {
+function bracedShaderText(source: string, open: string, label: string): string {
     const start = source.indexOf(open);
     if (start < 0) {
         throw new Error(

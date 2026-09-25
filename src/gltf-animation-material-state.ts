@@ -1,5 +1,5 @@
 /** Data mutations performed by the source pointer parser before its writers are bound. */
-export type GltfAnimationMaterialValue =
+type GltfAnimationMaterialValue =
     | { kind: "undefined" }
     | {
           kind: "number";
@@ -8,7 +8,7 @@ export type GltfAnimationMaterialValue =
     | { kind: "literal"; value: null | boolean | string }
     | { kind: "array"; values: GltfAnimationMaterialValue[] }
     | { kind: "object"; fields: Record<string, GltfAnimationMaterialValue> };
-export type GltfAnimationMaterialPatch =
+type GltfAnimationMaterialPatch =
     | { path: string[]; operation: "clone" | "erase" }
     | { path: string[]; operation: "set"; value: GltfAnimationMaterialValue };
 export interface GltfAnimationMaterialState {

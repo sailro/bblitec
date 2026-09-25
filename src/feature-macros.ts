@@ -22,7 +22,7 @@ export interface FeatureMacroReach {
     readonly imageCodecs: readonly string[];
 }
 
-export interface FeatureMacro {
+interface FeatureMacro {
     readonly macro: string;
     /** 1 when any of these features is reached. */
     readonly anyOf?: readonly Feature[];

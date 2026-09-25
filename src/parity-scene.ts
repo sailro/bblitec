@@ -129,7 +129,7 @@ interface GltfSpecialization {
 }
 
 /** The two elements `--without` can suppress natively. */
-export type SuppressibleElement = "ground" | "background";
+type SuppressibleElement = "ground" | "background";
 
 /**
  * The parity invocation, parsed and validated once, up front, before any
@@ -333,7 +333,7 @@ export const MEMORY_FLAGS: FlagSpec = {
     ],
 };
 
-export interface MemoryArguments {
+interface MemoryArguments {
     /** `--frames`: the run length, over the tape's own (`MemoryTape.frames`). */
     frames?: number;
     /** Working-set trend after warm-up that fails the run, in MB per
@@ -393,7 +393,7 @@ export function memoryArgumentsFrom(parsed: ParsedFlags): MemoryArguments {
 }
 
 /** One `[mem][frame]` sample used by the memory report. */
-export interface MemorySample {
+interface MemorySample {
     /** The frame loop that printed it, numbered in start order: a process
      *  running several engines (a Window host's canvases) prints one
      *  ordered stream per engine. */
@@ -485,7 +485,7 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
 }
 
 /** One engine's samples, in the order it printed them. */
-export interface MemoryStream {
+interface MemoryStream {
     engine: number;
     samples: MemorySample[];
 }
@@ -511,13 +511,13 @@ export function memoryStreams(
  * window. A leak raises every floor; a sawtooth (garbage waiting for its
  * collection, a mesh built then retired) leaves the floors where they were.
  */
-export interface MemoryCounterTrend {
+interface MemoryCounterTrend {
     settled: number;
     last: number;
     floors: [number, number, number];
 }
 
-export interface MemorySummary {
+interface MemorySummary {
     /** The sample that ends warm-up: a third of the way through the run. */
     settled: MemorySample;
     last: MemorySample;
@@ -914,7 +914,7 @@ export function parityOutputDirectory(
 }
 
 /** One backend's run of the parity gate. */
-export interface SceneParityRun {
+interface SceneParityRun {
     backend: NativeBackend;
     seekSeconds?: number;
     without?: SuppressibleElement;
@@ -1598,7 +1598,7 @@ export async function runParityBackends(
 // columns always print.
 // ---------------------------------------------------------------------------
 
-export interface StabilityRun {
+interface StabilityRun {
     backend: NativeBackend;
     runs: number;
     singleSample: boolean;

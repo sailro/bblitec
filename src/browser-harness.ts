@@ -91,7 +91,7 @@ export const screenshotCaptureBrowserArgs = [
 export const canvasBakeBrowserArgs: readonly string[] =
     process.platform === "linux" ? screenshotCaptureBrowserArgs : [];
 
-export interface BrowserPageOptions {
+interface BrowserPageOptions {
     /** A separate visible test window can measure the display's real cadence. */
     headless?: boolean;
     /** Preserve scrollbar layout and painting in headless UI captures. */

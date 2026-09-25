@@ -12,7 +12,7 @@ import {
  * the pin's source maps. Stated as the members the program reads so the
  * store can own its program without the two modules importing each other.
  */
-export interface PinnedProgramSources {
+interface PinnedProgramSources {
     readonly packageRoot: string;
     listSources(): string[];
     hasSource(modulePath: string): boolean;
@@ -24,7 +24,7 @@ export interface PinnedProgramSources {
  * Where an identifier in pinned source resolves, through the declarations
  * a TypeScript checker binds rather than through its spelling.
  */
-export interface PinnedNames {
+interface PinnedNames {
     /**
      * The declaration an identifier names, followed through every import
      * and re-export alias; undefined for a name that resolves to nothing
@@ -53,7 +53,7 @@ function refuse(node: ts.Node, message: string): never {
 }
 
 /** The declaration of the symbol a name resolves to, through its aliases. */
-export function declarationThrough(
+function declarationThrough(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): ts.Declaration | undefined {

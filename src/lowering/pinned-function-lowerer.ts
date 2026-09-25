@@ -36,7 +36,7 @@ export function vec3MemberBindings(
 }
 
 /** Native storage replacing one validated top-level pinned initializer. */
-export interface PinnedLocalStorage {
+interface PinnedLocalStorage {
     pinned: string;
     initializer: string;
     binding: PinnedBinding;
@@ -44,7 +44,7 @@ export interface PinnedLocalStorage {
 }
 
 /** Select one top-level source guard while retaining the surrounding statements. */
-export interface PinnedFunctionArm {
+interface PinnedFunctionArm {
     condition: string;
     arm: "then" | "else";
 }

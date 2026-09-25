@@ -39,7 +39,7 @@ import { pinnedNumericMathCalls } from "./pinned-operators.js";
  * to prevent. A consumer supplies only its own signature and whatever it
  * does with `local` afterwards.
  */
-export interface PinnedTrsComposition {
+interface PinnedTrsComposition {
     composeLocalBody: string;
     /**
      * The same composition, narrowed to the `std::array<float, 16>` every

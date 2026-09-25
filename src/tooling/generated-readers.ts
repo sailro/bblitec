@@ -94,7 +94,7 @@ const text = (value: unknown): string =>
           ? ""
           : JSON.stringify(value);
 
-export interface FeatureActivationRow {
+interface FeatureActivationRow {
     name: string;
     mechanism: string;
     active: boolean;
@@ -161,7 +161,7 @@ export function formatFeatureActivation(
     return lines.join("\n");
 }
 
-export interface AdaptationRow {
+interface AdaptationRow {
     id: string;
     category: string;
     risk: string;
@@ -217,7 +217,7 @@ export function formatAdaptations(rows: readonly AdaptationRow[]): string {
     ].join("\n");
 }
 
-export interface ProvenanceReport {
+interface ProvenanceReport {
     package: { package: string; version: string; sourceVersion: string };
     generated: Array<{ modulePath: string; symbolName: string }>;
 }
@@ -269,7 +269,7 @@ export function formatProvenance(report: ProvenanceReport): string {
     ].join("\n");
 }
 
-export interface SceneStatus {
+interface SceneStatus {
     generatedTreeExists: boolean;
     generationCurrent: boolean;
     expectedStamp?: string;

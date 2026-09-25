@@ -161,7 +161,7 @@ export function buildStampHeader(stamp: string): string {
 `;
 }
 
-export interface PayloadMismatch {
+interface PayloadMismatch {
     path: string;
     reason: "missing" | "changed" | "unexpected";
 }
@@ -200,7 +200,7 @@ export function executableDeployedShaderSuffixes(
 }
 
 /** One directory a build deploys beside its executable. */
-export interface DeployedPayload {
+interface DeployedPayload {
     label: "shaders" | "assets";
     source: string;
     deployed: string;
@@ -339,7 +339,7 @@ export function readCacheConfiguration(
     return values;
 }
 
-export interface IncompatibleCacheEntry {
+interface IncompatibleCacheEntry {
     cached?: string;
     name: string;
     requested?: string;

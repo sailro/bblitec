@@ -14,14 +14,14 @@ import { asIndex, asObject } from "./gltf-document.js";
 import type { GltfGeometryPacker } from "./gltf-mesh-geometry.js";
 
 /** A node's TRS lanes, as the pin's observable vectors hold them. */
-export interface GltfNodeTransform {
+interface GltfNodeTransform {
     translation: [number, number, number];
     rotation: [number, number, number, number];
     scaling: [number, number, number];
 }
 
 /** One glTF node the pin built. */
-export interface GltfHierarchyNode extends GltfNodeTransform {
+interface GltfHierarchyNode extends GltfNodeTransform {
     /** The pin's node name: `node.name ?? node_<index>`. */
     name: string;
     /** The parent's glTF node index, or -1 under the synthetic root. */

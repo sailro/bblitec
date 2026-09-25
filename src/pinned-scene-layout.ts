@@ -24,7 +24,7 @@ interface SceneLayoutShapes extends DescriptorShapes {
 }
 
 /** One entry of the pin's scene layout: a uniform block and its stages. */
-export interface PinnedSceneLayoutEntry {
+interface PinnedSceneLayoutEntry {
     binding: number;
     vertex: boolean;
     fragment: boolean;

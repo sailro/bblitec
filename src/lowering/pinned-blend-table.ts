@@ -122,7 +122,7 @@ function blendState(
 }
 
 /** One arm of a pinned `switch (mode)` that returns each mode's blend. */
-export interface PinnedBlendArm {
+interface PinnedBlendArm {
     /** The case label's number; `undefined` for the `default` arm. */
     mode: number | undefined;
     clause: ts.CaseOrDefaultClause;
