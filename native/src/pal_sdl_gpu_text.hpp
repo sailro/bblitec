@@ -114,16 +114,10 @@ struct SdlTextGpuDevice final : SdlTextGpuResources {
         auto created = std::make_shared<SdlTextGpuPipeline>();
         created->vertex_slots = read_pinned_stage_slots(info.vertex_shader);
         created->fragment_slots = read_pinned_stage_slots(info.fragment_shader);
-        const auto load = [&](const char* name, SDL_GPUShaderStage stage,
-                              const PinnedStageSlots& slots) {
-            return load_shader(owner->device, name, stage,
-                               static_cast<std::uint32_t>(slots.textures.size()),
-                               static_cast<std::uint32_t>(slots.uniforms.size()), nullptr,
-                               static_cast<std::uint32_t>(slots.storage.size()));
-        };
-        auto vertex = load(info.vertex_shader, SDL_GPU_SHADERSTAGE_VERTEX, created->vertex_slots);
-        auto fragment =
-            load(info.fragment_shader, SDL_GPU_SHADERSTAGE_FRAGMENT, created->fragment_slots);
+        auto vertex = load_shader(owner->device, info.vertex_shader, SDL_GPU_SHADERSTAGE_VERTEX,
+                                  created->vertex_slots);
+        auto fragment = load_shader(owner->device, info.fragment_shader,
+                                    SDL_GPU_SHADERSTAGE_FRAGMENT, created->fragment_slots);
         std::vector<SDL_GPUVertexBufferDescription> buffers;
         std::vector<SDL_GPUVertexAttribute> attributes;
         for (const auto& source : upstream::text_vertex_buffers) {

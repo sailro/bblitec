@@ -590,29 +590,35 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
     return owned;
 }
 
+/**
+ * A stage created entirely from its sidecar: the entry point the module
+ * declared, and the uniform, texture and storage counts the compiled stage
+ * kept. Nothing about the stage is restated here, so a module the pin
+ * reshapes reaches the device as the pin wrote it.
+ */
+inline OwnedSdlShader load_shader(SDL_GPUDevice* device, const std::string& stem,
+                                  SDL_GPUShaderStage stage, const PinnedStageSlots& slots) {
+    if (slots.entry_point.empty()) {
+        throw std::runtime_error("Shader stage " + stem + ".slots names no entry point.");
+    }
+    return load_shader(device, stem.c_str(), stage,
+                       static_cast<std::uint32_t>(slots.textures.size()),
+                       static_cast<std::uint32_t>(slots.uniforms.size()), slots.entry_point.c_str(),
+                       static_cast<std::uint32_t>(slots.storage.size()),
+                       static_cast<std::uint32_t>(slots.storage_textures.size()));
+}
+
 /** A compiled stage and the sidecar it was created from. */
 struct PinnedStage {
     OwnedSdlShader shader;
     PinnedStageSlots slots;
 };
 
-/**
- * A stage created entirely from its sidecar: the entry point the module
- * declared, and the uniform, texture and storage counts the compaction left.
- * Nothing about the stage is restated here, so a module the pin reshapes
- * reaches the device as the pin wrote it.
- */
+/** Read a stage's sidecar and create the stage from it. */
 inline PinnedStage load_pinned_stage(SDL_GPUDevice* device, const std::string& stem,
                                      SDL_GPUShaderStage stage) {
     PinnedStageSlots slots = read_pinned_stage_slots(stem);
-    if (slots.entry_point.empty()) {
-        throw std::runtime_error("Shader stage " + stem + ".slots names no entry point.");
-    }
-    OwnedSdlShader shader =
-        load_shader(device, stem.c_str(), stage, static_cast<std::uint32_t>(slots.textures.size()),
-                    static_cast<std::uint32_t>(slots.uniforms.size()), slots.entry_point.c_str(),
-                    static_cast<std::uint32_t>(slots.storage.size()),
-                    static_cast<std::uint32_t>(slots.storage_textures.size()));
+    OwnedSdlShader shader = load_shader(device, stem, stage, slots);
     return {std::move(shader), std::move(slots)};
 }
 
