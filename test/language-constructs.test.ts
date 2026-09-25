@@ -3122,6 +3122,59 @@ check(
 `,
 );
 
+check(
+    "array reads past the end spell undefined in text",
+    `
+    function main(): void {
+        const plain: number[] = [1, 2];
+        let index = 3;
+        if ("x" + plain[index] !== "xundefined") throw new Error("past the end in text " + plain[index]);
+        index = 1;
+        if (\`v\${plain[index]}\` !== "v2") throw new Error("in range in a template");
+        const words: string[] = ["a"];
+        let at = 4;
+        if ("w" + words[at] !== "wundefined") throw new Error("string element past the end");
+        const flags: boolean[] = [true];
+        if ("f" + flags[at] + flags[0] !== "fundefinedtrue") throw new Error("boolean element");
+        let text = "";
+        for (let i = 0; i < plain.length; i++) text += plain[i];
+        if (text !== "12") throw new Error("canonical loop " + text);
+        if (String(plain[index + 5]) !== "undefined") throw new Error("String() past the end");
+        const held = plain[index + 9];
+        plain.push(3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+        if ("h" + held !== "hundefined") throw new Error("a local keeps its missed slot " + held);
+        const heldWord = words[at];
+        words.push("b", "c", "d", "e");
+        if ("h" + heldWord !== "hundefined") throw new Error("a string local keeps its missed slot");
+        if ("h" + words[at] !== "he") throw new Error("the slot filled later");
+    }
+    main();
+`,
+);
+
+check(
+    "enum array reads past the end spell undefined in text",
+    `
+    enum Tone {
+        Soft = 1,
+        Loud = 2,
+    }
+    enum Name {
+        A = "a",
+    }
+    function main(): void {
+        const tones: Tone[] = [Tone.Soft, Tone.Loud];
+        const names: Name[] = [Name.A];
+        let at = 5;
+        if ("t" + tones[at] + tones[1] !== "tundefined2") throw new Error("numeric enum element past the end");
+        if (\`n\${names[at]}\${names[0]}\` !== "nundefineda") throw new Error("string enum element past the end");
+        at = 0;
+        if ("t" + tones[at] !== "t1") throw new Error("numeric enum element in range");
+    }
+    main();
+`,
+);
+
 test("engine calls that write their arguments keep operand order and object storage", async (t) => {
     // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
     // expected values follow their bodies (`v.x * (1 / len)`).

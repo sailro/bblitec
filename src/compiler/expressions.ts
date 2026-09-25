@@ -315,6 +315,15 @@ export function stringConcatPart(
 ): string {
     const constant = staticStringCoercion(value);
     if (constant !== undefined) return context.cppString(constant);
+    // A read that may have missed its slot spells `undefined` when it did.
+    if (value.slotFoundCpp && value.dataType?.kind !== "optional") {
+        const { slotFoundCpp, ...read } = value;
+        const present = stringConcatPart(context, read, node);
+        const text = isStringValue(read)
+            ? present
+            : `bbl::js::concat(${present})`;
+        return `(${slotFoundCpp} ? ${text} : std::string("undefined"))`;
+    }
     if (isJsonValue(value)) return `${value.cpp}.to_string()`;
     if (
         value.nativeError &&

@@ -957,26 +957,11 @@ export class DeclarationLowerer {
                 this.context.reachJsData();
                 initializerCpp = `bbl::js::snapshot_value(${selectedCpp})`;
             }
-            // A local keeps whether its value's slot existed as of its own
-            // initialization (`Value.slotFoundCpp`).
-            const slotFoundCpp =
-                narrowed.slotFoundCpp === undefined ||
-                cppIdentifierPattern.test(narrowed.slotFoundCpp)
-                    ? narrowed.slotFoundCpp
-                    : (() => {
-                          const name =
-                              this.context.allocateTemporaryCppName(
-                                  "slot_found",
-                              );
-                          this.context.emit({
-                              kind: "declaration",
-                              type: "const bool",
-                              name,
-                              initializer: narrowed.slotFoundCpp,
-                              attributes: "[[maybe_unused]] ",
-                          });
-                          return name;
-                      })();
+            const slotFoundCpp = this.pinSlotFound(
+                narrowed.slotFoundCpp,
+                narrowedFound,
+                referenceStruct ? undefined : optionalFoundCpp,
+            );
             this.context.emit({
                 kind: "declaration",
                 name: cppName,
@@ -1184,6 +1169,11 @@ export class DeclarationLowerer {
                 attributes: "[[maybe_unused]] ",
             });
         }
+        const slotFoundCpp = this.pinSlotFound(
+            value.slotFoundCpp,
+            valueFound,
+            optionalFoundCpp,
+        );
         // Either spelling reads through the emitted variable, so a static
         // value the initializer carried must not fold past it.
         const stored: Value = {
@@ -1191,6 +1181,7 @@ export class DeclarationLowerer {
             cpp: boundCpp,
             ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
             ...(optionalFoundCpp ? { optionalFoundCpp } : {}),
+            ...(slotFoundCpp ? { slotFoundCpp } : {}),
             nativeBinding: true,
         };
         if (!sharedClosureStorage) delete writable(stored).sharedStorageCpp;
@@ -1217,6 +1208,37 @@ export class DeclarationLowerer {
             delete writable(stored).staticBoolean;
         }
         this.context.bindings.defineVariable(declaration.name, stored);
+    }
+
+    /**
+     * A local keeps whether its initializer's slot existed as of its own
+     * initialization (`Value.slotFoundCpp`), not as of a later read of an
+     * owner that may have grown. When that test is the presence test the
+     * declaration already snapshotted, the snapshot serves both.
+     */
+    private pinSlotFound(
+        slotFoundCpp: string | undefined,
+        presenceTest: string | undefined,
+        presenceSnapshot: string | undefined,
+    ): string | undefined {
+        if (
+            slotFoundCpp === undefined ||
+            cppIdentifierPattern.test(slotFoundCpp)
+        ) {
+            return slotFoundCpp;
+        }
+        if (presenceSnapshot && slotFoundCpp === presenceTest) {
+            return presenceSnapshot;
+        }
+        const name = this.context.allocateTemporaryCppName("slot_found");
+        this.context.emit({
+            kind: "declaration",
+            type: "const bool",
+            name,
+            initializer: slotFoundCpp,
+            attributes: "[[maybe_unused]] ",
+        });
+        return name;
     }
 
     private borrowsConstBinding(

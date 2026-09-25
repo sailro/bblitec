@@ -4761,6 +4761,25 @@ test("reads an operand early only when a later one writes what it touches", () =
     );
 });
 
+test("spells a missed array slot in text only where the index may miss", () => {
+    const result = compileSource(`
+        const plain: number[] = [1, 2];
+        let text = "";
+        for (let i = 0; i < plain.length; i++) text += plain[i];
+        let index = 3;
+        text += plain[index];
+    `);
+
+    const missable = result.cpp.match(
+        /\(bbl::js::array_has_index\(v_plain, (v_bblite_element_index_\d+)\) \? bbl::js::concat\(bbl::js::NumberPart\(bbl::js::array_at_or_default\(v_plain, \1\)\)\) : std::string\("undefined"\)\)/g,
+    );
+    assert.equal(missable?.length, 1);
+    assert.match(
+        result.cpp,
+        /concat_append\(v_text, bbl::js::NumberPart\(bbl::js::array_at_or_default\(v_plain, v_bblite_element_index_\d+\)\)\);/,
+    );
+});
+
 test("shares callbacks assigned after UI handlers are retained", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";

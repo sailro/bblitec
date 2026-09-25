@@ -3806,15 +3806,27 @@ export class DataLowerer {
                   : element.kind === "string"
                     ? `!${indexed}.empty()`
                     : present;
+        // A scalar read past the end is `undefined`, which text spells;
+        // the defaulting accessor's value is not. An index the lowering
+        // proves in range (a static index under a known length, a canonical
+        // loop's counter) cannot miss and carries no slot test.
+        const mayMiss =
+            (element.kind === "number" ||
+                element.kind === "boolean" ||
+                element.kind === "string" ||
+                element.kind === "enum") &&
+            !this.indexProvenInBounds(owner, access, owner.dataType);
         return {
             ...leaf,
             nativeCaptures: captures,
             nativeCompanionCaptures: {
                 optionalFoundCpp: captures,
                 truthinessCpp: captures,
+                ...(mayMiss ? { slotFoundCpp: captures } : {}),
             },
             optionalFoundCpp: present,
             truthinessCpp: truthiness,
+            ...(mayMiss ? { slotFoundCpp: found } : {}),
         };
     }
 
