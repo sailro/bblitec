@@ -645,8 +645,10 @@ export class PlatformCalls {
                     : fileChange
                       ? "ui_on_file_change"
                       : "ui_on_event";
-            this.context.emit(
-                `bbl::${registration}(` +
+            this.context.emit({
+                kind: "expression",
+                code:
+                    `bbl::${registration}(` +
                     `${engine}, ${uiElement.cpp}, ` +
                     `${
                         event === "click" || fileChange
@@ -654,7 +656,7 @@ export class PlatformCalls {
                             : `${this.context.cppString(mappedEvent)}, `
                     }` +
                     `${lambda.cpp});`,
-            );
+            });
             return true;
         }
         if (!ts.isIdentifier(callee.expression)) return false;
@@ -715,9 +717,10 @@ export class PlatformCalls {
                     this.context.compileValue(callback),
                     callback,
                 );
-                this.context.emit(
-                    `bbl::pal::window_off_application_error(${rejection}, ${identity});`,
-                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::pal::window_off_application_error(${rejection}, ${identity});`,
+                });
             } else {
                 const name =
                     this.context.allocateTemporaryCppName("application_error");
@@ -726,9 +729,10 @@ export class PlatformCalls {
                     { cppType: "bbl::pal::ApplicationErrorEvent&", name },
                     [windowErrorEventValue(this.context, name, rejection)],
                 );
-                this.context.emit(
-                    `bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ${listener.cpp}, ${once});`,
-                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::pal::window_on_application_error(${rejection}, ${listener.identity}, ${listener.cpp}, ${once});`,
+                });
             }
             return true;
         }
@@ -741,9 +745,10 @@ export class PlatformCalls {
                 callbackValue,
                 callback,
             );
-            this.context.emit(
-                `bbl::off_${descriptor.channel}(${engine}, ${identity});`,
-            );
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::off_${descriptor.channel}(${engine}, ${identity});`,
+            });
             return true;
         }
         let parameter: { cppType: string; name: string } | undefined;
@@ -787,11 +792,13 @@ export class PlatformCalls {
             values,
             documentHiddenCpp,
         );
-        this.context.emit(
-            `bbl::on_${descriptor.channel}(` +
+        this.context.emit({
+            kind: "expression",
+            code:
+                `bbl::on_${descriptor.channel}(` +
                 `${engine}, ${listener.identity}, ${listener.cpp}` +
                 `${once ? ", true" : ""});`,
-        );
+        });
         return true;
     }
 
@@ -1690,9 +1697,12 @@ export class PlatformCalls {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
             const rect = this.context.allocateTemporaryCppName("ui_rect");
-            this.context.emit(
-                `const auto ${rect} = bbl::ui_get_client_rect(${engine}, ${element.cpp});`,
-            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: rect,
+                initializer: `bbl::ui_get_client_rect(${engine}, ${element.cpp})`,
+            });
             const binding = this.context.registerNativeBinding(
                 rect,
                 false,

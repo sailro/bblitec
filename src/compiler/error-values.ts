@@ -47,8 +47,13 @@ export function caughtErrorValue(
 ): Value {
     const pinned = context.allocateTemporaryCppName("caught_error");
     context.reachJsData();
-    context.emit(`(void)${exceptionCpp};`);
-    context.emit(`const bbl::js::Error ${pinned} = std::current_exception();`);
+    context.emit({ kind: "expression", code: `(void)${exceptionCpp};` });
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::js::Error",
+        name: pinned,
+        initializer: "std::current_exception()",
+    });
     context.registerNativeConstBinding(pinned);
     const message: Extract<Value, { kind: "data" }> = {
         kind: "data",
@@ -157,7 +162,12 @@ export function compileErrorConstruction(
             if (consumer === "held" || options !== undefined) {
                 const temporary =
                     context.allocateTemporaryCppName("error_message");
-                context.emit(`const std::string ${temporary} = ${cpp};`);
+                context.emit({
+                    kind: "declaration",
+                    type: "const std::string",
+                    name: temporary,
+                    initializer: cpp,
+                });
                 cpp = temporary;
             }
             message = { kind: "data", cpp, dataType: { kind: "string" } };
@@ -168,7 +178,12 @@ export function compileErrorConstruction(
     let cpp = `bbl::js::make_error(${context.cppString(name)}, ${message.cpp}, ${cause})`;
     if (consumer === "held") {
         const temporary = context.allocateTemporaryCppName("error_value");
-        context.emit(`const bbl::js::Error ${temporary} = ${cpp};`);
+        context.emit({
+            kind: "declaration",
+            type: "const bbl::js::Error",
+            name: temporary,
+            initializer: cpp,
+        });
         cpp = temporary;
     }
     return errorValue(message, name, context.cppString, {
@@ -204,12 +219,20 @@ function compileAggregateError(
         ? context.dataLowerer.compileForSink(args[1], { kind: "string" })
         : context.cppString("");
     const text = context.allocateTemporaryCppName("aggregate_message");
-    context.emit(`const std::string ${text} = ${message};`);
+    context.emit({
+        kind: "declaration",
+        type: "const std::string",
+        name: text,
+        initializer: message,
+    });
     const cause = compileErrorCause(context, args[2]);
     const cpp = context.allocateTemporaryCppName("aggregate_error");
-    context.emit(
-        `const bbl::js::Error ${cpp} = bbl::js::make_aggregate_error(${list}, ${text}, ${cause});`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::js::Error",
+        name: cpp,
+        initializer: `bbl::js::make_aggregate_error(${list}, ${text}, ${cause})`,
+    });
     return errorValue(
         { kind: "string", cpp: text },
         "AggregateError",
@@ -253,7 +276,12 @@ function compileErrorCause(
                 kind: "error",
             });
             cause = context.allocateTemporaryCppName("error_cause");
-            context.emit(`const std::exception_ptr ${cause} = ${compiled};`);
+            context.emit({
+                kind: "declaration",
+                type: "const std::exception_ptr",
+                name: cause,
+                initializer: compiled,
+            });
         }
     }
     return cause;

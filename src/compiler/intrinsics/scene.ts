@@ -330,28 +330,34 @@ export function compileSceneIntrinsic(
             // that update advances by. Install the native control
             // immediately and preserve the pin's returned disposer, which
             // disables controls and releases its callbacks.
-            context.emit(
-                configurable
+            context.emit({
+                kind: "expression",
+                code: configurable
                     ? `bbl::attach_configurable_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp}, ${configuration});`
                     : importedName === "attachFreeControl"
                       ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp});`
                       : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp});`,
-            );
+            });
             const engine = context.requireEngine(camera, call);
             for (const { member, cpp } of deferrals) {
-                context.emit(
-                    `${recordAt(`${engine}.cameras`, camera.cpp)}.${member} = ${cpp};`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${recordAt(`${engine}.cameras`, camera.cpp)}.${member} = ${cpp};`,
+                });
             }
             const cleanup = context.captureManagedClosureLines(() => {
                 context.useNativeValue(camera);
                 const owner = context.requireEngine(camera, call);
-                context.emit(
-                    `auto& record = ${recordAt(`${owner}.cameras`, camera.cpp)};`,
-                );
-                context.emit(
-                    "record.controls_enabled = false; record.should_handle_pointer_down = {}; record.external_drag_active = {}; record.external_pick_pending = {}; record.configurable_free_pointer = {}; record.configurable_free_update = {};",
-                );
+                context.emit({
+                    kind: "declaration",
+                    type: "auto&",
+                    name: "record",
+                    initializer: recordAt(`${owner}.cameras`, camera.cpp),
+                });
+                context.emit({
+                    kind: "expression",
+                    code: "record.controls_enabled = false; record.should_handle_pointer_down = {}; record.external_drag_active = {}; record.external_pick_pending = {}; record.configurable_free_pointer = {}; record.configurable_free_update = {};",
+                });
             });
             return {
                 kind: "data",

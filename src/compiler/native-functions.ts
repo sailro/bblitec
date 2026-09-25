@@ -242,7 +242,10 @@ export function captureDataFunctionBody(
                             ),
                             declaration: parameter.name.parent.parent,
                         })),
-                    () => context.captureEmittedLines(emitBody),
+                    () =>
+                        context.captureEmittedLines(emitBody, {
+                            functionBody: true,
+                        }),
                 ),
             );
             if (
@@ -652,7 +655,7 @@ export class NativeFunctionLowerer {
             ...argumentsCpp,
         ].join(", ")})`;
         if (!signature.returnType) {
-            this.context.emit(`${callCpp};`);
+            this.context.emit({ kind: "expression", code: `${callCpp};` });
             return { kind: "void", cpp: "" };
         }
         const result = `bbl_method_${this.context.allocateUserFunctionPrefix()}result`;
@@ -2367,9 +2370,11 @@ export class NativeFunctionLowerer {
         if (returnsValue && !terminated) {
             // An exhaustive source switch may lower to a native if/else chain.
             // Keep the impossible fallthrough defined on all native compilers.
-            this.context.emit(
-                'throw std::runtime_error("Native value function fell through without returning.");',
-            );
+            this.context.emit({
+                kind: "control",
+                code: 'throw std::runtime_error("Native value function fell through without returning.");',
+                transfer: "throw",
+            });
         }
     }
 

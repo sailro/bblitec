@@ -3611,9 +3611,10 @@ export class UiProjection {
             false,
         );
         this.context.reachFeature("browser:file", assignment);
-        this.context.emit(
-            `bbl::ui_on_file_change(${engine}, ${element.cpp}, ${handler.cpp});`,
-        );
+        this.context.emit({
+            kind: "expression",
+            code: `bbl::ui_on_file_change(${engine}, ${element.cpp}, ${handler.cpp});`,
+        });
     }
 
     public compileUiBrowserFileAttribute(
@@ -3721,9 +3722,10 @@ export class UiProjection {
             (ts.isArrowFunction(expression.right) ||
                 ts.isFunctionExpression(expression.right))
         ) {
-            this.context.emit(
-                `bbl::set_global_callback(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(globalLeft.name.text)}, ${this.context.callbacks.compileVoidCallback(expression.right)});`,
-            );
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::set_global_callback(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(globalLeft.name.text)}, ${this.context.callbacks.compileVoidCallback(expression.right)});`,
+            });
             return true;
         }
         const canvasDataset = this.primaryCanvasDataset(expression.left);
@@ -3732,9 +3734,10 @@ export class UiProjection {
             expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
         ) {
             if (canvasDataset === "ready") this.primaryCanvasReadyGate = true;
-            this.context.emit(
-                `bbl::set_canvas_dataset(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(canvasDataset)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`,
-            );
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::set_canvas_dataset(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(canvasDataset)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`,
+            });
             return true;
         }
         if (
@@ -3753,9 +3756,10 @@ export class UiProjection {
             const element = this.uiElementValue(dataset.expression);
             if (element) {
                 const name = `data-${property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
-                this.context.emit(
-                    `bbl::ui_set_attribute(${this.context.requireEngine(element, dataset)}, ${element.cpp}, ${this.context.cppString(name)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`,
-                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::ui_set_attribute(${this.context.requireEngine(element, dataset)}, ${element.cpp}, ${this.context.cppString(name)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`,
+                });
                 return true;
             }
         }
@@ -3771,9 +3775,10 @@ export class UiProjection {
                         expression.left,
                         `UI ${property} requires an input element.`,
                     );
-                this.context.emit(
-                    `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(property)}, ${this.uiStringCpp(expression.right, `Input ${property}`)});`,
-                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(property)}, ${this.uiStringCpp(expression.right, `Input ${property}`)});`,
+                });
                 return true;
             }
             if (property === "checked") {
@@ -3782,9 +3787,10 @@ export class UiProjection {
                         expression.left,
                         "UI checked requires an input element.",
                     );
-                this.context.emit(
-                    `bbl::ui_set_checked(${engine}, ${directElement.cpp}, ${this.uiBooleanCpp(expression.right, "UI checked")});`,
-                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::ui_set_checked(${engine}, ${directElement.cpp}, ${this.uiBooleanCpp(expression.right, "UI checked")});`,
+                });
                 return true;
             }
             if (property === "selected") {
@@ -3793,9 +3799,10 @@ export class UiProjection {
                         expression.left,
                         "UI selected requires an option element.",
                     );
-                this.context.emit(
-                    `bbl::ui_set_selected(${engine}, ${directElement.cpp}, ${this.uiBooleanCpp(expression.right, "UI selected")});`,
-                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::ui_set_selected(${engine}, ${directElement.cpp}, ${this.uiBooleanCpp(expression.right, "UI selected")});`,
+                });
                 return true;
             }
             const booleanAttribute = this.booleanAttribute(
@@ -3804,9 +3811,10 @@ export class UiProjection {
                 expression.left,
             );
             if (booleanAttribute) {
-                this.context.emit(
-                    `bbl::ui_set_boolean_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.uiBooleanCpp(expression.right, `UI ${booleanAttribute}`)});`,
-                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::ui_set_boolean_attribute(${engine}, ${directElement.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.uiBooleanCpp(expression.right, `UI ${booleanAttribute}`)});`,
+                });
                 return true;
             }
             if (
@@ -3816,9 +3824,10 @@ export class UiProjection {
                 ) &&
                 !directElement.uiFileInput
             ) {
-                this.context.emit(
-                    `bbl::ui_set_form_value(${engine}, ${directElement.cpp}, ${this.uiStringCpp(expression.right, "Form value")});`,
-                );
+                this.context.emit({
+                    kind: "expression",
+                    code: `bbl::ui_set_form_value(${engine}, ${directElement.cpp}, ${this.uiStringCpp(expression.right, "Form value")});`,
+                });
                 return true;
             }
             const browserFile = this.compileUiBrowserFileAttribute(
@@ -3830,7 +3839,10 @@ export class UiProjection {
                 "property",
             );
             if (browserFile) {
-                this.context.emit(`${browserFile};`);
+                this.context.emit({
+                    kind: "expression",
+                    code: `${browserFile};`,
+                });
                 return true;
             }
             if (/^on[a-z]+$/.test(property)) {
@@ -3876,41 +3888,51 @@ export class UiProjection {
                         sizes,
                     );
                 }
-                this.context.emit(
-                    `bbl::ui_canvas_set_${property}(${engine}, ${directElement.cpp}, ` +
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_canvas_set_${property}(${engine}, ${directElement.cpp}, ` +
                         `${this.context.compileNumber(expression.right, "double")});`,
-                );
+                });
                 return true;
             }
             if (directElement.uiCanvasContext) {
                 if (property === "fillStyle" || property === "strokeStyle") {
-                    this.context.emit(
-                        `bbl::ui_canvas_set_${property === "fillStyle" ? "fill_style" : "stroke_style"}(` +
+                    this.context.emit({
+                        kind: "expression",
+                        code:
+                            `bbl::ui_canvas_set_${property === "fillStyle" ? "fill_style" : "stroke_style"}(` +
                             `${engine}, ${directElement.cpp}, ` +
                             `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
-                    );
+                    });
                     return true;
                 }
                 if (property === "lineWidth") {
-                    this.context.emit(
-                        `bbl::ui_canvas_set_line_width(${engine}, ${directElement.cpp}, ` +
+                    this.context.emit({
+                        kind: "expression",
+                        code:
+                            `bbl::ui_canvas_set_line_width(${engine}, ${directElement.cpp}, ` +
                             `${this.context.compileNumber(expression.right, "double")});`,
-                    );
+                    });
                     return true;
                 }
                 if (property === "lineJoin" || property === "lineCap") {
-                    this.context.emit(
-                        `bbl::ui_canvas_set_${property === "lineJoin" ? "line_join" : "line_cap"}(` +
+                    this.context.emit({
+                        kind: "expression",
+                        code:
+                            `bbl::ui_canvas_set_${property === "lineJoin" ? "line_join" : "line_cap"}(` +
                             `${engine}, ${directElement.cpp}, ` +
                             `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
-                    );
+                    });
                     return true;
                 }
                 if (property === "imageSmoothingEnabled") {
-                    this.context.emit(
-                        `bbl::ui_canvas_set_image_smoothing(${engine}, ${directElement.cpp}, ` +
+                    this.context.emit({
+                        kind: "expression",
+                        code:
+                            `bbl::ui_canvas_set_image_smoothing(${engine}, ${directElement.cpp}, ` +
                             `${this.context.compileBoolean(expression.right)});`,
-                    );
+                    });
                     return true;
                 }
                 if (
@@ -3924,17 +3946,21 @@ export class UiProjection {
                             : property === "shadowColor"
                               ? "shadow_color"
                               : "font";
-                    this.context.emit(
-                        `bbl::ui_canvas_set_${runtimeProperty}(${engine}, ${directElement.cpp}, ` +
+                    this.context.emit({
+                        kind: "expression",
+                        code:
+                            `bbl::ui_canvas_set_${runtimeProperty}(${engine}, ${directElement.cpp}, ` +
                             `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
-                    );
+                    });
                     return true;
                 }
                 if (property === "shadowBlur") {
-                    this.context.emit(
-                        `bbl::ui_canvas_set_shadow_blur(${engine}, ${directElement.cpp}, ` +
+                    this.context.emit({
+                        kind: "expression",
+                        code:
+                            `bbl::ui_canvas_set_shadow_blur(${engine}, ${directElement.cpp}, ` +
                             `${this.context.compileNumber(expression.right, "double")});`,
-                    );
+                    });
                     return true;
                 }
             }
@@ -3949,9 +3975,10 @@ export class UiProjection {
                         expression.right,
                     );
                     textCpp = this.context.cppString(sheet);
-                    this.context.emit(
-                        `bbl::ui_clear_style_rules(${engine}, ${directElement.cpp});`,
-                    );
+                    this.context.emit({
+                        kind: "expression",
+                        code: `bbl::ui_clear_style_rules(${engine}, ${directElement.cpp});`,
+                    });
                     for (const rule of this.lowerUiStyleSheetLiteral(
                         sheet,
                         expression.right,
@@ -3965,15 +3992,19 @@ export class UiProjection {
                             !rule.pseudo &&
                             !uiStyleRuleHasConditions(rule)
                         ) {
-                            this.context.emit(
-                                `bbl::ui_add_${rule.kind}_style(${engine}, ` +
+                            this.context.emit({
+                                kind: "expression",
+                                code:
+                                    `bbl::ui_add_${rule.kind}_style(${engine}, ` +
                                     `${directElement.cpp}, ` +
                                     `${this.context.cppString(rule.primary)}, ` +
                                     `${this.context.cppString(rule.style)});`,
-                            );
+                            });
                         } else {
-                            this.context.emit(
-                                `bbl::ui_add_style_rule(${engine}, ${directElement.cpp}, ` +
+                            this.context.emit({
+                                kind: "expression",
+                                code:
+                                    `bbl::ui_add_style_rule(${engine}, ${directElement.cpp}, ` +
                                     `bbl::UiStyleSelectorKind::${uiStyleSelectorCppKind(rule.kind)}, ` +
                                     `${this.context.cppString(rule.primary)}, ` +
                                     `${this.context.cppString(rule.secondary ?? "")}, ` +
@@ -3986,7 +4017,7 @@ export class UiProjection {
                                     `bbl::UiMotionPreference::${uiMotionPreferenceCpp(rule.reducedMotion)}` +
                                     `${rule.sequence || rule.pseudo || rule.range || rule.containerMaxWidth !== undefined ? `, ${uiSelectorSequenceCpp(rule.sequence ?? [], (value) => this.context.cppString(value))}` : ""}` +
                                     `${rule.pseudo || rule.range || rule.containerMaxWidth !== undefined ? `, bbl::UiGeneratedPart::${uiGeneratedPartCpp(rule.pseudo)}, ${uiGeneratedContentCpp(rule.content, (value) => this.context.cppString(value))}` : ""}${rule.range || rule.containerMaxWidth !== undefined ? `, bbl::UiRangePart::${uiRangePartCpp(rule.range)}` : ""}${rule.containerMaxWidth !== undefined ? `, ${doubleLiteral(rule.containerMaxWidth)}` : ""});`,
-                            );
+                            });
                         }
                     }
                 } else {
@@ -3995,21 +4026,25 @@ export class UiProjection {
                         `UI ${property}`,
                     );
                 }
-                this.context.emit(
-                    `bbl::ui_set_text(${engine}, ${directElement.cpp}, ` +
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_set_text(${engine}, ${directElement.cpp}, ` +
                         `${textCpp});`,
-                );
+                });
                 return true;
             }
             if (property === "innerHTML") {
                 this.recordUiStaticReplaceChildren(directElement);
-                this.context.emit(
-                    `bbl::ui_set_inner_rml(${engine}, ${directElement.cpp}, ` +
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_set_inner_rml(${engine}, ${directElement.cpp}, ` +
                         `${this.compileUiMarkupString(
                             expression.right,
                             directElement.uiStaticId,
                         )});`,
-                );
+                });
                 return true;
             }
             const attribute =
@@ -4028,11 +4063,13 @@ export class UiProjection {
                         expression.right,
                     );
                 }
-                this.context.emit(
-                    `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ` +
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ` +
                         `${this.context.cppString(attribute)}, ` +
                         `${this.uiStringCpp(expression.right, `UI ${property}`)});`,
-                );
+                });
                 return true;
             }
         }
@@ -4047,10 +4084,12 @@ export class UiProjection {
             property === "cursor" &&
             this.context.isCanvasElement(style.expression)
         ) {
-            this.context.emit(
-                `bbl::set_canvas_cursor(${this.context.requireDefaultEngine(expression)}, ` +
+            this.context.emit({
+                kind: "expression",
+                code:
+                    `bbl::set_canvas_cursor(${this.context.requireDefaultEngine(expression)}, ` +
                     `${this.uiStringCpp(expression.right, "canvas style.cursor")});`,
-            );
+            });
             return true;
         }
         const styleElement = this.uiElementValue(style.expression);
@@ -4060,13 +4099,15 @@ export class UiProjection {
             expression.left,
         );
         if (property === "cssText") {
-            this.context.emit(
-                `bbl::ui_set_attribute(${engine}, ${styleElement.cpp}, ` +
+            this.context.emit({
+                kind: "expression",
+                code:
+                    `bbl::ui_set_attribute(${engine}, ${styleElement.cpp}, ` +
                     `${this.context.cppString("style")}, ${this.compileUiStyleString(
                         expression.right,
                         styleElement.uiStaticId,
                     )});`,
-            );
+            });
             return true;
         }
         this.emitUiStyleProperty(
@@ -4119,17 +4160,20 @@ export class UiProjection {
                       ),
                   )
                 : this.uiStringCpp(valueExpression, `UI style.${property}`);
-        this.context.emit(
-            `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
+        this.context.emit({
+            kind: "expression",
+            code:
+                `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
                 `${this.context.cppString(nativeProperty)}, ` +
                 `${styleValue});`,
-        );
+        });
         for (const [name, value] of UiProjection.UI_SHORTHAND_RESETS.get(
             property,
         ) ?? []) {
-            this.context.emit(
-                `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ${this.context.cppString(name)}, ${this.context.cppString(value)});`,
-            );
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ${this.context.cppString(name)}, ${this.context.cppString(value)});`,
+            });
         }
     }
 

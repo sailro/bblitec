@@ -136,9 +136,10 @@ export function compilePointerDragRegistration(
                     context.emitDiscardedValue(result);
                 }
             });
-            context.emit(
-                `bbl::set_pointer_drag_cleanup(${dispatcher}, ${renderClosure(cleanup, "")});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `bbl::set_pointer_drag_cleanup(${dispatcher}, ${renderClosure(cleanup, "")});`,
+            });
         }
     } else if (canvas.kind === "browser") {
         dispatcher = `bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, true)`;

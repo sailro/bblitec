@@ -86,11 +86,12 @@ export function compileVatIntrinsic(
             // driven a clip itself.
             context.reachFeature("animation:gltf-groups", call);
             const baked = context.allocateTemporaryCppName("vat_bake");
-            context.emit(
-                `const bbl::VatBake ${baked} = bbl::bake_vat(` +
-                    `${engine.cpp}, ${mesh.cpp}, ` +
-                    `${groups.handleCollection.containerCpp});`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: "const bbl::VatBake",
+                name: baked,
+                initializer: `bbl::bake_vat(${engine.cpp}, ${mesh.cpp}, ${groups.handleCollection.containerCpp})`,
+            });
             return {
                 kind: "vat-bake",
                 cpp: baked,
@@ -118,10 +119,12 @@ export function compileVatIntrinsic(
                 : "std::string{}";
             context.reachFeature("mesh:vat", call);
             const handle = context.allocateTemporaryCppName("vat_handle");
-            context.emit(
-                `const bbl::VatHandle ${handle} = bbl::attach_vat(` +
-                    `${engine.cpp}, ${mesh.cpp}, ${baked.cpp}, ${clip});`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: "const bbl::VatHandle",
+                name: handle,
+                initializer: `bbl::attach_vat(${engine.cpp}, ${mesh.cpp}, ${baked.cpp}, ${clip})`,
+            });
             return {
                 kind: "vat-handle",
                 cpp: handle,
@@ -170,7 +173,7 @@ export function compileVatMethodCall(
     const found = presenceFlagCpp(receiver);
     const guarded = found !== undefined;
     if (guarded) {
-        context.emit(`if (${found}) {`);
+        context.emit({ kind: "open", code: `if (${found}) {` });
         context.increaseIndent();
     }
     try {
@@ -182,17 +185,20 @@ export function compileVatMethodCall(
             const options = call.arguments[1]
                 ? vatPlayOptions(context, call.arguments[1])
                 : { offset: undefined, fps: undefined };
-            context.emit(
-                `bbl::vat_play(${engine}, ${receiver.cpp}, ${clip}, ` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::vat_play(${engine}, ${receiver.cpp}, ${clip}, ` +
                     `${optionalDouble(options.offset)}, ` +
                     `${optionalDouble(options.fps)});`,
-            );
+            });
         } else if (method === "update") {
             context.expectArgumentCount(call, 1, 1);
             const delta = context.compileNumber(argumentAt(call, 0), "double");
-            context.emit(
-                `bbl::vat_update(${engine}, ${receiver.cpp}, ${delta});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `bbl::vat_update(${engine}, ${receiver.cpp}, ${delta});`,
+            });
         } else {
             context.expectArgumentCount(call, 1, 1);
             const params = context.compileValue(argumentAt(call, 0));
@@ -206,15 +212,17 @@ export function compileVatMethodCall(
                 );
             }
             context.reachFeature("mesh:vat-instances", call);
-            context.emit(
-                `bbl::vat_set_instances(${engine}, ${receiver.cpp}, ` +
+            context.emit({
+                kind: "expression",
+                code:
+                    `bbl::vat_set_instances(${engine}, ${receiver.cpp}, ` +
                     `${params.cpp});`,
-            );
+            });
         }
     } finally {
         if (guarded) {
             context.decreaseIndent();
-            context.emit("}");
+            context.emit({ kind: "close", code: "}" });
         }
     }
     return { kind: "void", cpp: "" };

@@ -108,8 +108,14 @@ export function compileArrayValueMethod(
                 argument.array ? `${argument.name}.size()` : "1",
             ),
         ];
-        lowerer.context.emit(`${result}.reserve(${lengths.join(" + ")});`);
-        lowerer.context.emit(`bbl::js::array_append(${result}, ${source});`);
+        lowerer.context.emit({
+            kind: "expression",
+            code: `${result}.reserve(${lengths.join(" + ")});`,
+        });
+        lowerer.context.emit({
+            kind: "expression",
+            code: `bbl::js::array_append(${result}, ${source});`,
+        });
         for (const argument of arguments_)
             lowerer.context.emit(
                 argument.array

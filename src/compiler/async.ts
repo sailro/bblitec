@@ -118,7 +118,11 @@ export class AsyncLowerer {
                           expression,
                       )
                     : "bbl::js::PromiseVoid{}";
-                context.emit(`return ${result};`);
+                context.emit({
+                    kind: "control",
+                    code: `return ${result};`,
+                    transfer: "return",
+                });
             });
             return `bbl::js::adopt_promise(${value.cpp}, ${renderClosure(conversion, `[[maybe_unused]] const ${value.promiseType}& ${name}`, expected)})`;
         }
@@ -550,14 +554,19 @@ export class AsyncLowerer {
                                     result.value.kind === "void" &&
                                     result.value.cpp
                                 )
-                                    context.emit(`${result.value.cpp};`);
+                                    context.emit({
+                                        kind: "expression",
+                                        code: `${result.value.cpp};`,
+                                    });
                                 if (
                                     !rejectsOnly &&
                                     !result.value.abruptCompletion
                                 )
-                                    context.emit(
-                                        `co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : this.resultCpp(result.value, node)};`,
-                                    );
+                                    context.emit({
+                                        kind: "control",
+                                        code: `co_return ${result.value.kind === "void" ? "bbl::js::PromiseVoid{}" : this.resultCpp(result.value, node)};`,
+                                        transfer: "suspend",
+                                    });
                             }),
                         ),
                     ),
@@ -1215,11 +1224,17 @@ export class AsyncLowerer {
                     );
                 }
                 if (result.value.kind === "void") {
-                    if (result.value.cpp) context.emit(`${result.value.cpp};`);
+                    if (result.value.cpp)
+                        context.emit({
+                            kind: "expression",
+                            code: `${result.value.cpp};`,
+                        });
                 } else
-                    context.emit(
-                        `return ${this.resultCpp(result.value, node)};`,
-                    );
+                    context.emit({
+                        kind: "control",
+                        code: `return ${this.resultCpp(result.value, node)};`,
+                        transfer: "return",
+                    });
             }),
         );
         const output = neverReturns

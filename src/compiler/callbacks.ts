@@ -25,6 +25,7 @@ import {
     physicsEventInfoValue,
 } from "./intrinsics/physics.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { verbatimEmission, type NativeEmission } from "./native-statements.js";
 
 /** What callback lowering reads of the compiler. */
 interface CallbackContext extends Pick<
@@ -63,7 +64,7 @@ interface CallbackContext extends Pick<
     | "withRecordScopes"
 > {
     /** The emitted entry-body lines. */
-    readonly body: string[];
+    readonly body: NativeEmission[];
     /** How many frame callbacks enclose the current emission. */
     frameCallbackDepth: number;
     readonly managedCaptures: ClosureCaptures[];
@@ -179,7 +180,10 @@ export class CallbackLowerer {
                         this.context.managedCaptures.length > 0;
                     const emitBody = () => {
                         this.context.useNativeValue(bound);
-                        this.context.emit(`${bound.cpp}();`);
+                        this.context.emit({
+                            kind: "expression",
+                            code: `${bound.cpp}();`,
+                        });
                     };
                     const compiled = this.context.captureManagedClosureLines(
                         emitBody,
@@ -495,9 +499,10 @@ export class CallbackLowerer {
                     (parameters.length === 0 || parameter)
                 ) {
                     this.context.useNativeValue(stored);
-                    this.context.emit(
-                        `${stored.cpp}(${parameters.length === 0 ? "" : parameter});`,
-                    );
+                    this.context.emit({
+                        kind: "expression",
+                        code: `${stored.cpp}(${parameters.length === 0 ? "" : parameter});`,
+                    });
                     return;
                 }
                 const value = this.context.compileCallbackWithValues(
@@ -508,7 +513,10 @@ export class CallbackLowerer {
                     { frameDriven: true },
                 );
                 if (value.cpp.length > 0) {
-                    this.context.emit(`${value.cpp};`);
+                    this.context.emit({
+                        kind: "expression",
+                        code: `${value.cpp};`,
+                    });
                 }
             };
             compiled = this.context.captureManagedClosureLines(
@@ -783,9 +791,10 @@ export class CallbackLowerer {
                                       )
                                     : value.cpp;
                             });
-                        this.context.emit(
-                            `${bound.cpp}(${argumentsCpp.join(", ")});`,
-                        );
+                        this.context.emit({
+                            kind: "expression",
+                            code: `${bound.cpp}(${argumentsCpp.join(", ")});`,
+                        });
                         return;
                     }
                     const declaration =
@@ -953,7 +962,11 @@ export class CallbackLowerer {
         const insertion =
             this.context.engineLifecycle.engineStartMark?.index ??
             this.context.body.length;
-        this.context.body.splice(insertion, 0, ...emitted);
+        this.context.body.splice(
+            insertion,
+            0,
+            ...emitted.map(verbatimEmission),
+        );
         this.deferredPhysicsCallbacks.length = 0;
     }
 }

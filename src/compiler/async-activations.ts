@@ -19,11 +19,13 @@ interface AsyncActivationContext extends Pick<
     | "assetRegistry"
     | "browserErasure"
     | "captureEmittedLines"
+    | "captureEmittedStatements"
     | "checker"
     | "callbacks"
     | "compileValue"
     | "decreaseIndent"
     | "emit"
+    | "emitCapturedStatements"
     | "fail"
     | "increaseIndent"
     | "isRuntimeResourceConstruction"
@@ -127,16 +129,23 @@ export class AsyncActivations {
             !this.pendingActivations().discards(statement)
         )
             return emit();
-        const lines = this.context.captureEmittedLines(() => {
+        const body = this.context.captureEmittedStatements(() => {
             emit();
         });
-        this.context.emit("try {");
+        this.context.emit({ kind: "open", code: "try {" });
         this.context.increaseIndent();
-        for (const line of lines) this.context.emit(line);
+        this.context.emitCapturedStatements(body);
         this.context.decreaseIndent();
-        this.context.emit("} catch (const bbl::js::PendingActivation&) {");
-        this.context.emit("    bbl::js::end_abandoned_activation();");
-        this.context.emit("}");
+        this.context.emit({
+            kind: "branch",
+            code: "} catch (const bbl::js::PendingActivation&) {",
+            outlineInterior: false,
+        });
+        this.context.emit({
+            kind: "expression",
+            code: "    bbl::js::end_abandoned_activation();",
+        });
+        this.context.emit({ kind: "close", code: "}" });
         return false;
     }
 

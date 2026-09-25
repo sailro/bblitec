@@ -106,13 +106,16 @@ export function compileUniformBufferLabel(
                     "uniform_options",
                     optionsExpression,
                 );
-                context.emit(`if (${optionalPresentCpp(retained.cpp)}) {`);
+                context.emit({
+                    kind: "open",
+                    code: `if (${optionalPresentCpp(retained.cpp)}) {`,
+                });
                 write({
                     kind: "data",
                     dataType: options.dataType.inner,
                     cpp: `${retained.cpp}.value()`,
                 });
-                context.emit("}");
+                context.emit({ kind: "close", code: "}" });
                 return;
             }
             for (const member of retainedOptions(

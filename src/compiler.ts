@@ -1,4 +1,5 @@
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
+import { outlineEmittedBody } from "./compiler/body-outlining.js";
 import { cppTokens } from "./compiler/cpp-identifiers.js";
 import {
     isStringValue,
@@ -28,9 +29,16 @@ import type {
 } from "./compiler/lowering-services.js";
 import type { ApplicationCpp } from "./compiler/source-units.js";
 import {
-    renderNativeDeclaration,
+    nativeDeclarationFacts,
     type NativeDeclaration,
 } from "./compiler/native-declarations.js";
+import {
+    nativeStatementCode,
+    renderNativeEmission,
+    verbatimEmission,
+    type NativeEmission,
+    type NativeStatement,
+} from "./compiler/native-statements.js";
 import ts from "typescript";
 import { CallbackLowerer } from "./compiler/callbacks.js";
 import { AsyncActivations } from "./compiler/async-activations.js";
@@ -721,7 +729,9 @@ class Compiler implements LoweringServices {
         readonly NativeCaptureBinding[]
     >();
     public readonly managedCaptures: ClosureCaptures[] = emissionArray([]);
-    public readonly body: string[] = emissionArray([]);
+    public readonly body: NativeEmission[] = emissionArray([]);
+    @journaled private accessor emissionSource: string | undefined;
+    @journaled private accessor nextOutlinedIndex = 0;
     public readonly nativeDeclarations = new EmissionMap<
         string,
         NativeDeclaration
@@ -948,7 +958,7 @@ class Compiler implements LoweringServices {
         const insertion = this.options.workers
             ? 0
             : (this.engineCreationInsertion ?? this.body.length);
-        this.body.splice(insertion, 0, ...emitted);
+        this.body.splice(insertion, 0, ...emitted.map(verbatimEmission));
     }
 
     /**
@@ -1246,7 +1256,11 @@ class Compiler implements LoweringServices {
                     });
                     try {
                         if (!emitBody())
-                            this.emit("co_return bbl::js::PromiseVoid{};");
+                            this.emit({
+                                kind: "control",
+                                code: "co_return bbl::js::PromiseVoid{};",
+                                transfer: "suspend",
+                            });
                     } finally {
                         this.endNativeFunctionBody();
                     }
@@ -1255,9 +1269,10 @@ class Compiler implements LoweringServices {
         } finally {
             this.bindings.popScope();
         }
-        this.emit(
-            `static_cast<void>(${renderCoroutineInvocation(closure, "bbl::js::Promise<bbl::js::PromiseVoid>")});`,
-        );
+        this.emit({
+            kind: "expression",
+            code: `static_cast<void>(${renderCoroutineInvocation(closure, "bbl::js::Promise<bbl::js::PromiseVoid>")});`,
+        });
     }
 
     private entryStatements(): readonly ts.Statement[] {
@@ -1350,11 +1365,15 @@ class Compiler implements LoweringServices {
     }
 
     public emitStatement(statement: ts.Statement): void {
+        const previousSource = this.emissionSource;
+        this.emissionSource =
+            statement.getSourceFile()?.fileName ?? previousSource;
         this.statementDependencies.push(new EmissionSet());
         try {
             this.statements.emit(this, statement);
         } finally {
             this.popDependencies(this.statementDependencies);
+            this.emissionSource = previousSource;
         }
     }
 
@@ -1570,11 +1589,13 @@ class Compiler implements LoweringServices {
             }
             return;
         }
-        this.emit(
-            value.kind !== "void" || value.requiresExplicitDiscard
-                ? `static_cast<void>(${value.cpp});`
-                : `${value.cpp};`,
-        );
+        this.emit({
+            kind: "expression",
+            code:
+                value.kind !== "void" || value.requiresExplicitDiscard
+                    ? `static_cast<void>(${value.cpp});`
+                    : `${value.cpp};`,
+        });
     }
 
     public hasStableNativeBinding(value: Value): boolean {
@@ -2573,9 +2594,10 @@ class Compiler implements LoweringServices {
 
     public guardStaticConstructionRead(operation: string): void {
         if (this.features.has("physics:viewer"))
-            this.emit(
-                `bbl::pal::require_runtime_execution(${this.cppString(operation)});`,
-            );
+            this.emit({
+                kind: "expression",
+                code: `bbl::pal::require_runtime_execution(${this.cppString(operation)});`,
+            });
     }
 
     public expectStaticArrayLiteral(
@@ -3331,10 +3353,14 @@ class Compiler implements LoweringServices {
                         argumentAt(call, 0),
                         "An engine surface requires a retained canvas element.",
                     );
-                this.emit(`${engineCpp}.surface_canvas = ${canvas.cpp};`);
-                this.emit(
-                    `${recordAt(`${engineCpp}.ui_elements`, canvas.cpp)}.client_rect_requested = true;`,
-                );
+                this.emit({
+                    kind: "expression",
+                    code: `${engineCpp}.surface_canvas = ${canvas.cpp};`,
+                });
+                this.emit({
+                    kind: "expression",
+                    code: `${recordAt(`${engineCpp}.ui_elements`, canvas.cpp)}.client_rect_requested = true;`,
+                });
                 surfaceCanvas = true;
                 this.reachFeature("renderer:surface", call);
             }
@@ -3754,15 +3780,24 @@ class Compiler implements LoweringServices {
         const cppName = this.allocateTemporaryCppName("data_vector");
         this.reachJsData();
         this.emit(`${this.dataTypes.cppType(dataType)} ${cppName};`);
-        this.emit(`${cppName}.reserve(${sourceCpp}.size());`);
-        this.emit(`for (const auto& ${elementName} : ${sourceCpp}) {`);
+        this.emit({
+            kind: "expression",
+            code: `${cppName}.reserve(${sourceCpp}.size());`,
+        });
+        this.emit({
+            kind: "open",
+            code: `for (const auto& ${elementName} : ${sourceCpp}) {`,
+            iteration: true,
+        });
         this.increaseIndent();
-        this.emit(
-            `${cppName}.push_back(` +
+        this.emit({
+            kind: "expression",
+            code:
+                `${cppName}.push_back(` +
                 `${this.dataLowerer.structAggregate(dataType.element, parts)});`,
-        );
+        });
         this.decreaseIndent();
-        this.emit(`}`);
+        this.emit({ kind: "close", code: `}` });
         this.dataLowerer.registerLocal(cppName, "owned");
         return { kind: "data", cpp: cppName, dataType };
     }
@@ -4620,7 +4655,30 @@ class Compiler implements LoweringServices {
      * returns the produced lines, removing them from the main body stream.
      * Native function definitions and for-headers use this.
      */
-    public captureEmittedLines(emitBody: () => void): string[] {
+    public captureEmittedLines(
+        emitBody: () => void,
+        options?: { functionBody?: true },
+    ): string[] {
+        if (!options?.functionBody || this.options.workers)
+            return this.captureEmittedStatements(emitBody).map(
+                renderNativeEmission,
+            );
+        const boundary = this.nativeBindingCheckpoint();
+        const captured = this.captureNativeDependencies(() =>
+            this.captureEmittedStatements(emitBody),
+        );
+        const parameters = captured.nativeCaptures
+            .filter((binding) => binding.sequence <= boundary)
+            .map((binding) => ({
+                name: binding.name,
+                type: this.nativeBindingCaptureType(binding.name),
+            }));
+        return this.outlineNativeBody(captured.value, parameters).map(
+            renderNativeEmission,
+        );
+    }
+
+    public captureEmittedStatements(emitBody: () => void): NativeEmission[] {
         const start = this.body.length;
         const previousIndent = this.indentLevel;
         const previousScope = this.activeEmissionScope;
@@ -4633,6 +4691,41 @@ class Compiler implements LoweringServices {
             this.activeEmissionScope = previousScope;
         }
         return this.body.splice(start);
+    }
+
+    public emitCapturedStatements(body: readonly NativeEmission[]): void {
+        const indent = "    ".repeat(this.indentLevel);
+        for (const event of body) {
+            const emitted = { ...event, indent: indent + event.indent };
+            this.staticExpansionBudget.emit(renderNativeEmission(emitted));
+            this.body.push(emitted);
+        }
+    }
+
+    private outlineNativeBody(
+        body: readonly NativeEmission[],
+        parameters: readonly { name: string; type: string | undefined }[],
+    ): readonly NativeEmission[] {
+        if (this.options.workers) return body;
+        const outlined = outlineEmittedBody({
+            body,
+            parameters,
+            bindingType: (name) => this.nativeBindingCaptureType(name),
+            allocateName: () => `bbl_outlined_${this.nextOutlinedIndex++}`,
+            source: this.emissionSource ?? this.sourceFile.fileName,
+        });
+        for (const segment of outlined.segments)
+            this.nativeEmission.registerNativeFunction(
+                segment.prototype,
+                [...segment.lines],
+                segment.source,
+            );
+        for (const declaration of outlined.rewrittenDeclarations)
+            this.nativeDeclarations.set(
+                nativeStatementCode(declaration),
+                declaration,
+            );
+        return outlined.body;
     }
 
     /**
@@ -4986,7 +5079,7 @@ class Compiler implements LoweringServices {
             this.deferredResourceCaptureDepths.add(deferred.callbackDepth);
         let lines: string[];
         try {
-            lines = this.captureEmittedLines(emitBody);
+            lines = this.captureEmittedLines(emitBody, { functionBody: true });
         } finally {
             if (deferred) {
                 this.deferredResourceCaptureDepths.delete(
@@ -5139,7 +5232,11 @@ class Compiler implements LoweringServices {
                           statement.expression,
                           returnType === "void" ? undefined : returnType,
                       );
-            this.emit(`co_return ${result};`);
+            this.emit({
+                kind: "control",
+                code: `co_return ${result};`,
+                transfer: "suspend",
+            });
             return;
         }
         if (returnType === "void") {
@@ -5219,7 +5316,11 @@ class Compiler implements LoweringServices {
             ? `std::rethrow_exception(${errorCpp});`
             : `throw ${errorCpp};`;
         if (type) {
-            this.emit(`co_return [&]() -> ${type} { ${statement} }();`);
+            this.emit({
+                kind: "control",
+                code: `co_return [&]() -> ${type} { ${statement} }();`,
+                transfer: "suspend",
+            });
         } else this.emit(statement);
     }
 
@@ -5397,13 +5498,14 @@ class Compiler implements LoweringServices {
               ))
             : "bbl::pal::AudioNodeHandle{}";
         const present = value && presenceCpp(value);
-        this.emit(
-            `${destination} = ${
+        this.emit({
+            kind: "expression",
+            code: `${destination} = ${
                 present
                     ? `(${present}) ? ${source} : bbl::pal::AudioNodeHandle{}`
                     : source
             };`,
-        );
+        });
     }
 
     /**
@@ -5440,11 +5542,17 @@ class Compiler implements LoweringServices {
             value.dataType.inner.kind === "handle" &&
             value.dataType.inner.handle === target.kind
         ) {
-            this.emit(`if (${optionalPresentCpp(value.cpp)}) {`);
-            this.emit(`    ${storage} = *${value.cpp};`);
-            this.emit("} else {");
-            this.emit(`    ${storage}.reset();`);
-            this.emit("}");
+            this.emit({
+                kind: "open",
+                code: `if (${optionalPresentCpp(value.cpp)}) {`,
+            });
+            this.emit({
+                kind: "expression",
+                code: `    ${storage} = *${value.cpp};`,
+            });
+            this.emit({ kind: "branch", code: "} else {" });
+            this.emit({ kind: "expression", code: `    ${storage}.reset();` });
+            this.emit({ kind: "close", code: "}" });
             this.assignAudioMainBus(target, value, node);
             return;
         }
@@ -5454,7 +5562,10 @@ class Compiler implements LoweringServices {
                 `Nullable ${target.kind} assignment received ${value.kind}.`,
             );
         }
-        this.emit(`${storage} = ${this.optionalResourceCpp(value)};`);
+        this.emit({
+            kind: "expression",
+            code: `${storage} = ${this.optionalResourceCpp(value)};`,
+        });
         this.assignAudioMainBus(target, value, node);
         if (value.engineCpp !== undefined && target.kind !== "engine") {
             writable(target).engineCpp = value.engineCpp;
@@ -5566,14 +5677,14 @@ class Compiler implements LoweringServices {
         if (!storage) return false;
         const right = this.unwrap(expression.right);
         if (right.kind === ts.SyntaxKind.NullKeyword) {
-            this.emit(`${storage}.reset();`);
+            this.emit({ kind: "expression", code: `${storage}.reset();` });
             this.assignAudioMainBus(target, undefined, right);
             delete writable(target).spriteDepthMode;
             return true;
         }
         const value = this.compileValue(right);
         if (value.kind === "json-null") {
-            this.emit(`${storage}.reset();`);
+            this.emit({ kind: "expression", code: `${storage}.reset();` });
             this.assignAudioMainBus(target, undefined, right);
             delete writable(target).spriteDepthMode;
             return true;
@@ -6888,37 +6999,39 @@ class Compiler implements LoweringServices {
         return this.admissions.temporalSceneRegistration !== undefined;
     }
 
-    public emit(line: string | NativeDeclaration): void {
+    public emit(line: string | NativeStatement): void {
         const code =
-            typeof line === "string" ? line : renderNativeDeclaration(line);
-        if (typeof line !== "string") {
+            typeof line === "string" ? line : nativeStatementCode(line);
+        if (typeof line !== "string" && line.kind === "declaration") {
+            const facts = nativeDeclarationFacts(line);
             const aliased =
-                line.type === "auto&" || line.type === "auto&&"
+                facts.type === undefined && facts.reference
                     ? this.nativeBindingTypes.get(line.initializer)
                     : undefined;
             // A declaration starts this local's storage facts. An earlier
             // speculative shared-cell description cannot type its new local.
             this.nativeBindingTypes.set(line.name, {
-                type: /\bauto\b|\bdecltype\b/.test(line.type)
-                    ? aliased?.type
-                    : line.type
-                          .replace(/^const /, "")
-                          .replace(/&+$/, "")
-                          .trim(),
-                constant:
-                    line.type.startsWith("const ") ||
-                    aliased?.constant === true,
+                type: facts.type?.replace(/^const /, "") ?? aliased?.type,
+                constant: facts.constant || aliased?.constant === true,
             });
-            this.nativeDeclarations.set(code, {
+            line = {
                 ...line,
                 dependencies: [
                     ...(this.statementDependencies.at(-1) ?? []),
                 ].map((binding) => binding.name),
-            });
+            };
+            this.nativeDeclarations.set(code, line);
         }
         const emitted = `${"    ".repeat(this.indentLevel)}${code}`;
         this.staticExpansionBudget.emit(emitted);
-        this.body.push(emitted);
+        this.body.push({
+            statement:
+                typeof line === "string"
+                    ? { kind: "verbatim", code: line }
+                    : line,
+            indent: "    ".repeat(this.indentLevel),
+            ...(this.emissionSource ? { source: this.emissionSource } : {}),
+        });
     }
 
     /**
@@ -6976,16 +7089,16 @@ class Compiler implements LoweringServices {
                     "Physics debug geometry extraction requires one top-level startEngine after the admitted construction graph.",
                 );
             }
-            physicsDebugConstructionBody = this.body.slice(
-                0,
-                this.engineLifecycle.engineStartMark.index,
-            );
+            physicsDebugConstructionBody = this.body
+                .slice(0, this.engineLifecycle.engineStartMark.index)
+                .map(renderNativeEmission);
         }
         this.engineLifecycle.hoistEngineContinuation();
         if (
             this.body.some(
                 (line) =>
-                    line.trim() === EngineLifecycle.frameYieldRequeueMarker,
+                    renderNativeEmission(line).trim() ===
+                    EngineLifecycle.frameYieldRequeueMarker,
             )
         ) {
             this.failAtFile(
@@ -6997,7 +7110,7 @@ class Compiler implements LoweringServices {
         }
         if (
             this.body.some((line) =>
-                line
+                renderNativeEmission(line)
                     .trim()
                     .startsWith(EngineLifecycle.startContinuationGatePrefix),
             )
@@ -7008,6 +7121,19 @@ class Compiler implements LoweringServices {
                     "of the continuation behind was never emitted.",
             );
         }
+        const body = this.outlineNativeBody(this.body, [
+            ...(this.audioSessionReached
+                ? [
+                      {
+                          name: "bbl_audio_session",
+                          type: "std::shared_ptr<bbl::pal::AudioSession>",
+                      },
+                  ]
+                : []),
+            ...(this.presentationHostCpp
+                ? [{ name: this.presentationHostCpp, type: "bbl::Engine" }]
+                : []),
+        ]).map(renderNativeEmission);
         return renderMainCpp({
             source: this.options.fileName,
             ...(this.options.workers
@@ -7043,17 +7169,16 @@ class Compiler implements LoweringServices {
             nativeDeclarations: this.nativeDeclarations,
             staticNativeDeclarations:
                 this.nativeEmission.staticNativeDeclarations,
-            bindingType: (name) => this.nativeBindingCaptureType(name),
             ...(physicsDebugConstructionBody
                 ? { physicsDebugConstructionBody }
                 : {}),
             body: this.presentationHostCpp
                 ? [
                       `        auto ${this.presentationHostCpp} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,
-                      ...this.body,
+                      ...body,
                       `        bbl::start_engine(${this.presentationHostCpp});`,
                   ]
-                : this.body,
+                : body,
         });
     }
 

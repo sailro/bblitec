@@ -109,7 +109,10 @@ export function compileComputeShaderIntrinsic(
             if (member.value?.kind === "tuple" && member.value.tupleElements) {
                 for (const item of member.value.tupleElements) {
                     context.expectKind(item, "compute-binding-decl", site);
-                    context.emit(`${target}.bindings.push_back(${item.cpp});`);
+                    context.emit({
+                        kind: "expression",
+                        code: `${target}.bindings.push_back(${item.cpp});`,
+                    });
                 }
                 return;
             }
@@ -122,17 +125,22 @@ export function compileComputeShaderIntrinsic(
                     site,
                     "Compute shader bindings require retained declarations.",
                 );
-            context.emit(
-                `${target}.bindings.assign(${member.cpp}.begin(), ${member.cpp}.end());`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${target}.bindings.assign(${member.cpp}.begin(), ${member.cpp}.end());`,
+            });
         });
     const shader = context.allocateTemporaryCppName("compute_shader");
-    context.emit(
-        `const auto ${shader} = bbl::create_compute_shader(${engine.ownedEngineCpp}, ${target});`,
-    );
-    context.emit(
-        `${shader}->artifact = ${stringLiteral(program.name + ".comp")};`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: shader,
+        initializer: `bbl::create_compute_shader(${engine.ownedEngineCpp}, ${target})`,
+    });
+    context.emit({
+        kind: "expression",
+        code: `${shader}->artifact = ${stringLiteral(program.name + ".comp")};`,
+    });
     return {
         kind: "compute-shader",
         dataType: { kind: "handle", handle: "compute-shader" },

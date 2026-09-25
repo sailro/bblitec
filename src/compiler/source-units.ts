@@ -7,7 +7,7 @@ import {
     sep,
 } from "node:path";
 import { cppTokens } from "./cpp-identifiers.js";
-import { cppDeclaredNames, splitCppDeclarations } from "./cpp-statements.js";
+import { cppDeclaredNames, splitCppDeclarations } from "./cpp-declarations.js";
 
 export type NativeFunctionDefinition = {
     lines: readonly string[];

@@ -1819,13 +1819,14 @@ function compileSetSprite2DShaderParams(
     );
     const params = context.evaluator.compileVec4(argumentAt(call, 1));
     const engineCpp = context.engineFor(target, call);
-    context.emit(
-        `bbl::${
+    context.emit({
+        kind: "expression",
+        code: `bbl::${
             sprite
                 ? "set_sprite_2d_shader_params"
                 : "set_billboard_shader_params"
         }(${engineCpp}, ${target.cpp}, ${params});`,
-    );
+    });
     return { kind: "void", cpp: "" };
 }
 
@@ -1847,13 +1848,14 @@ function compileSetAlphaToCoverage(
         target.kind === "sprite-layer" ? "sprite:2d" : "sprite:billboard",
         call,
     );
-    context.emit(
-        `bbl::${
+    context.emit({
+        kind: "expression",
+        code: `bbl::${
             target.kind === "sprite-layer"
                 ? "set_sprite_2d_alpha_to_coverage"
                 : "set_billboard_alpha_to_coverage"
         }(${engineCpp}, ${target.cpp}, ${enabled});`,
-    );
+    });
     return { kind: "void", cpp: "" };
 }
 
@@ -1877,9 +1879,10 @@ function compileAddDepthHostedSpriteLayer(
     context.reachFeature("sprite:2d-depth-host", call);
     context.reachFeature("renderer:sprite", call);
     context.reachFeature("renderer:scene", call);
-    context.emit(
-        `bbl::add_depth_hosted_sprite_layer(${scene.cpp}, ${layer.cpp});`,
-    );
+    context.emit({
+        kind: "expression",
+        code: `bbl::add_depth_hosted_sprite_layer(${scene.cpp}, ${layer.cpp});`,
+    });
     return { kind: "void", cpp: "" };
 }
 
@@ -1898,7 +1901,10 @@ function compileAddFacingBillboardSystem(
     // scene of nothing but billboards still needs that pass, the way
     // a render target does.
     context.reachFeature("renderer:scene", call);
-    context.emit(`bbl::add_billboard_system(${scene.cpp}, ${system.cpp});`);
+    context.emit({
+        kind: "expression",
+        code: `bbl::add_billboard_system(${scene.cpp}, ${system.cpp});`,
+    });
     return { kind: "void", cpp: "" };
 }
 
@@ -1917,9 +1923,10 @@ function compileSetSprite2DUvOffset(
     // widened layout, so reaching it here is what selects the
     // widened attribute row and the shader that reads it.
     context.reachFeature("sprite:uv-scroll", call);
-    context.emit(
-        `bbl::set_sprite_2d_uv_offset(${engineCpp}, ${layer.cpp}, ${index}, ${offset});`,
-    );
+    context.emit({
+        kind: "expression",
+        code: `bbl::set_sprite_2d_uv_offset(${engineCpp}, ${layer.cpp}, ${index}, ${offset});`,
+    });
     return { kind: "void", cpp: "" };
 }
 

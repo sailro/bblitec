@@ -1,85 +1,298 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { compileSource } from "../src/compiler.js";
 import {
-    outlineFunctionBody,
-    outlineFunctionDefinition,
+    optionalNativeFixtureTools,
+    runNativeFixtureCompiler,
+} from "./native-fixture.js";
+import {
+    outlineEmittedBody,
     outlinedBodyMinimumBytes,
 } from "../src/compiler/body-outlining.js";
 import {
-    cppDeclaredNames,
-    cppStatementShape,
-    parseCppLocalDeclaration,
-    splitCppDeclarations,
-    splitCppStatements,
-    transfersControlOut,
-} from "../src/compiler/cpp-statements.js";
-import { cppTokens } from "../src/compiler/cpp-identifiers.js";
-import { renderSourceUnits } from "../src/compiler/source-units.js";
+    renderNativeEmission,
+    type NativeEmission,
+    type NativeStatement,
+} from "../src/compiler/native-statements.js";
 
-const tokens = (text: string) => [...cppTokens(text)];
+const emit = (statement: NativeStatement): NativeEmission => ({
+    statement,
+    indent: "    ",
+    source: "test.ts",
+});
+const effect = (code: string): NativeEmission =>
+    emit({ kind: "expression", code });
+const declaration = (
+    name: string,
+    type: string,
+    initializer: string,
+): NativeEmission => emit({ kind: "declaration", name, type, initializer });
+const largeBody = (
+    prefix: readonly NativeEmission[],
+    code = "use(v_scene, v_count);",
+): NativeEmission[] => [
+    ...prefix,
+    ...Array.from(
+        { length: Math.ceil(outlinedBodyMinimumBytes / code.length) },
+        () => effect(code),
+    ),
+];
+const outline = (
+    body: readonly NativeEmission[],
+    parameters: readonly { name: string; type: string | undefined }[] = [],
+    types: Readonly<Record<string, string>> = {},
+) => {
+    let next = 0;
+    return outlineEmittedBody({
+        body,
+        parameters,
+        source: "test.ts",
+        bindingType: (name) => types[name],
+        allocateName: () => `outlined_${next++}`,
+    });
+};
+const render = (body: readonly NativeEmission[]) =>
+    body.map(renderNativeEmission).join("\n");
 
-test("statements split at their own end, keeping else, catch and do-while", () => {
-    const statements = splitCppStatements(String.raw`
-        auto v_a = T{1, 2};
-        if (v_a) { f("}"); } else if (v_b) { g(); } else { h(); }
-        try { f(); } catch (...) { g(); }
-        do { f(); } while (false);
-        auto v_c = [&]() -> int { return 1; }();
-        { auto v_d = 1; }
-        (*v_e) = 2;
+test("emitted declarations retain their lifetime and large initializers return the declared type", () => {
+    const result = outline(
+        largeBody([
+            declaration("v_scene", "auto", "create_scene(v_engine)"),
+            declaration("v_count", "double", "0.0"),
+            declaration("v_lambda", "auto", "[&]() { return 1; }"),
+            effect("v_lambda();"),
+            emit({ kind: "open", code: "if (v_count > 1.0) {" }),
+            emit({ kind: "control", code: "return 1;", transfer: "return" }),
+            emit({ kind: "close", code: "}" }),
+            declaration(
+                "v_values",
+                "const bbl::js::Array<double>",
+                `bbl::js::Array<double>{${"1.0, ".repeat(300)}2.0}`,
+            ),
+        ]),
+        [],
+        { v_scene: "bbl::Scene" },
+    );
+    const text = render(result.body);
+    assert.match(text, /auto v_scene = create_scene\(v_engine\);/);
+    assert.match(text, /v_lambda\(\);/);
+    assert.match(text, /return 1;/);
+    assert.match(
+        text,
+        /const bbl::js::Array<double> v_values = bblscene::outlined_0\(\);/,
+    );
+    assert.match(
+        result.segments[0]!.prototype,
+        /^bbl::js::Array<double> outlined_0\(\);$/,
+    );
+    assert.match(
+        result.segments[1]!.prototype,
+        /bbl::Scene& v_scene, \[\[maybe_unused\]\] double& v_count/,
+    );
+    assert.ok(result.segments.every((segment) => segment.source === "test.ts"));
+});
+
+test("untyped reads stay in their scope", () => {
+    const body = largeBody(
+        [declaration("v_opaque", "auto", "make()")],
+        "use(v_opaque);",
+    );
+    const result = outline(body);
+    assert.equal(result.segments.length, 0);
+    assert.equal(render(result.body), render(body));
+});
+
+test("static storage specifiers stay on declarations and constexpr aliases remain const", () => {
+    const result = outline(
+        largeBody(
+            [
+                declaration("v_count", "static constexpr double", "3.0"),
+                declaration("v_alias", "auto&", "v_count"),
+            ],
+            "use(v_alias);",
+        ),
+    );
+    assert.match(render(result.body), /static constexpr double v_count/);
+    assert.ok(result.segments.length > 0);
+    for (const segment of result.segments)
+        assert.match(segment.prototype, /const double& v_alias/);
+});
+
+test("constant initializers remain in place and rewritten declarations retain metadata", () => {
+    const initializer = `std::array<double, 400>{${"1.0, ".repeat(399)}2.0}`;
+    const result = outline(
+        largeBody(
+            [
+                declaration(
+                    "v_constants",
+                    "static constexpr std::array<double, 400>",
+                    initializer,
+                ),
+                emit({
+                    kind: "declaration",
+                    name: "v_values",
+                    type: "std::array<double, 400>",
+                    initializer,
+                    discardIfUnused: true,
+                    dependencies: ["v_source"],
+                }),
+            ],
+            "use(v_values, v_constants);",
+        ),
+    );
+    assert.match(render(result.body), /static constexpr.* = std::array/);
+    assert.equal(result.rewrittenDeclarations.length, 1);
+    assert.equal(result.rewrittenDeclarations[0]!.discardIfUnused, true);
+    assert.deepEqual(result.rewrittenDeclarations[0]!.dependencies, [
+        "v_source",
+    ]);
+});
+
+const tools = optionalNativeFixtureTools();
+test(
+    "large emitted native functions retain parameter storage, mutations and early returns",
+    { skip: !tools },
+    () => {
+        const count = 650;
+        const result = compileSource(`
+        function update(values: number[], delta: number): number {
+            if (delta < 0) return values[0];
+            ${"values[0] += delta;\n".repeat(count)}
+            return values[0];
+        }
+        const values = [0];
+        const first = update(values, 1);
+        const skipped = update(values, -1);
+        const second = update(values, 2);
+        if (first !== ${count} || skipped !== ${count} || second !== ${count * 3}) throw new Error("outlined mutations");
     `);
-    assert.deepEqual(
-        statements.map(({ tokens }) => cppStatementShape(tokens)),
+        assert.match(result.cpp, /bbl_outlined_\d+/);
+        const output = resolve("artifacts/structured-outlining-check");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp"),
+            executable = join(output, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(tools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/EHsc",
+            "/MD",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            source,
+        ]);
+        execFileSync(executable, { encoding: "utf8" });
+    },
+);
+
+test("single-run scopes outline their bodies without moving an outward break", () => {
+    const result = outline(
         [
-            "declaration",
-            "compound",
-            "compound",
-            "compound",
-            "declaration",
-            "compound",
-            "expression",
+            emit({ kind: "open", code: "do {", breaks: true }),
+            emit({ kind: "open", code: "if (v_delta > 1.0) {" }),
+            emit({ kind: "control", code: "break;", transfer: "break" }),
+            emit({ kind: "close", code: "}" }),
+            ...largeBody([], "step(v_engine, v_delta);"),
+            emit({ kind: "close", code: "} while (false);" }),
+        ],
+        [
+            { name: "v_engine", type: "Engine" },
+            { name: "v_delta", type: "double" },
         ],
     );
-    assert.match(statements[1]!.text, /^if .* else \{ h\(\); \}$/);
+    assert.match(render(result.body), /break;/);
+    assert.match(render(result.body), /while \(false\)/);
+    assert.ok(result.segments.length > 0);
+    for (const segment of result.segments)
+        assert.doesNotMatch(segment.lines.join("\n"), /break;/);
 });
 
-test("declarations read their name, spelled type and constness", () => {
-    const read = (text: string) =>
-        parseCppLocalDeclaration(splitCppStatements(text)[0]!.tokens);
-    assert.deepEqual(
-        read(
-            "[[maybe_unused]] const bbl::js::Array<std::pair<int, double>> v_a = {};",
+test("a loop and its breaks move whole without per-iteration outline calls", () => {
+    const result = outline(
+        [
+            emit({
+                kind: "open",
+                code: "while (v_count > 0.0) {",
+                iteration: true,
+            }),
+            ...largeBody([], "step(v_count);"),
+            emit({ kind: "control", code: "break;", transfer: "break" }),
+            emit({ kind: "close", code: "}" }),
+        ],
+        [{ name: "v_count", type: "double" }],
+    );
+    assert.equal(result.segments.length, 1);
+    assert.match(
+        result.segments[0]!.lines.join("\n"),
+        /while.*\{[\s\S]*break;/,
+    );
+    assert.doesNotMatch(
+        result.segments[0]!.lines.join("\n"),
+        /bblscene::outlined_/,
+    );
+    assert.doesNotMatch(render(result.body), /while/);
+});
+
+test("branches use their own declared locals and preserve const aliases", () => {
+    const result = outline([
+        declaration("v_count", "const double", "3.0"),
+        declaration("v_alias", "auto&", "v_count"),
+        emit({ kind: "open", code: "if (condition()) {" }),
+        declaration("v_inner", "double", "2.0"),
+        ...largeBody([], "use(v_inner, v_alias);"),
+        emit({ kind: "branch", code: "} else {" }),
+        ...largeBody([], "use(v_alias);"),
+        emit({ kind: "close", code: "}" }),
+    ]);
+    assert.ok(result.segments.length > 1);
+    assert.ok(
+        result.segments.some((segment) =>
+            /const double& v_alias/.test(segment.prototype),
         ),
-        {
-            name: "v_a",
-            spelledType: "bbl::js::Array<std::pair<int, double>>",
-            constant: true,
-            reference: false,
-            initializerIndex: 22,
-        },
     );
-    assert.equal(read("auto& v_b = v_a;")?.spelledType, undefined);
-    assert.equal(read("auto& v_b = v_a;")?.reference, true);
-    assert.equal(read("int v_c, v_d;"), undefined);
-    assert.equal(read("auto [v_e, v_f] = pair;"), undefined);
+    assert.ok(
+        result.segments.some((segment) =>
+            /double& v_inner/.test(segment.prototype),
+        ),
+    );
+    assert.match(render(result.body), /else/);
 });
 
-test("control leaving a statement is found outside lambdas, classes and its own loops", () => {
-    const leaves = (text: string) => transfersControlOut(tokens(text));
-    assert.equal(leaves("if (x) { return; }"), true);
-    assert.equal(leaves("f([&]() { return 1; });"), false);
-    assert.equal(
-        leaves("auto v = [&] { if (x) return 2; return 3; }();"),
-        false,
+test("text inside expressions cannot create statement boundaries or outward returns", () => {
+    const code = 'consume(R"tag(}; return; else {)tag", [] { return 1; }());';
+    const result = outline(largeBody([], code));
+    assert.ok(result.segments.length > 0);
+    assert.ok(
+        result.segments.every((segment) =>
+            segment.lines.includes(`    ${code}`),
+        ),
     );
-    assert.equal(leaves("struct S { int f() { return 1; } };"), false);
-    assert.equal(leaves("if (x) { break; }"), true);
-    assert.equal(leaves("for (;;) { if (x) break; continue; }"), false);
-    assert.equal(leaves("switch (x) { case 1: break; }"), false);
-    assert.equal(leaves("switch (x) { case 1: continue; }"), true);
-    assert.equal(leaves("do { break; } while (false);"), false);
-    assert.equal(leaves("v[0] = 1;"), false);
 });
+
+test("an opaque declaration or incomplete emission fragment cannot export a hidden local", () => {
+    for (const prefix of [
+        emit({ kind: "verbatim", code: "auto [left, right] = pair();" }),
+        emit({ kind: "close", code: "}" }),
+    ]) {
+        const body = largeBody([prefix], "use(left, right);");
+        const result = outline(body);
+        assert.equal(result.segments.length, 0);
+        assert.equal(render(result.body), render(body));
+    }
+});
+
+import {
+    cppDeclaredNames,
+    splitCppDeclarations,
+} from "../src/compiler/cpp-declarations.js";
+import { renderSourceUnits } from "../src/compiler/source-units.js";
 
 test("namespace declarations split and name what they declare", () => {
     const declarations = splitCppDeclarations(String.raw`
@@ -104,93 +317,6 @@ test("namespace declarations split and name what they declare", () => {
             { names: ["ORDER"], function: false },
             { names: ["v_cached"], function: true },
         ],
-    );
-});
-
-/** The given statements, then `filler` until the body is over the outlining threshold. */
-const largeBody = (statements: readonly string[], filler: string): string[] => {
-    const lines = [...statements];
-    while (lines.join("\n").length < outlinedBodyMinimumBytes)
-        lines.push(`        ${filler}`);
-    return lines;
-};
-
-test("large bodies outline typed statements and keep declarations, returns and untyped reads", () => {
-    const types: Record<string, string> = {
-        v_scene: "bbl::Scene",
-        v_count: "double",
-    };
-    let next = 0;
-    const outlined = outlineFunctionBody({
-        lines: largeBody(
-            [
-                "        auto v_scene = bbl::create_scene_context(v_engine);",
-                "        double v_count = 0.0;",
-                "        auto v_lambda = [&]() { return 1; };",
-                "        v_lambda();",
-                "        if (v_count > 1.0) { return 1; }",
-                "        const bbl::js::Array<double> v_values = bbl::js::Array<double>{" +
-                    "1.0, ".repeat(300) +
-                    "2.0};",
-            ],
-            "bbl::use_scene(v_scene, v_count);",
-        ),
-        parameters: [],
-        bindingType: (name) => types[name],
-        allocateName: () => `bbl_outlined_${next++}`,
-    });
-    const text = outlined.lines.join("\n");
-    assert.match(text, /auto v_scene = bbl::create_scene_context\(v_engine\);/);
-    assert.match(text, /v_lambda\(\);/);
-    assert.match(text, /if \(v_count > 1\.0\) \{ return 1; \}/);
-    assert.match(
-        text,
-        /const bbl::js::Array<double> v_values = bblscene::bbl_outlined_0\(\);/,
-    );
-    assert.match(text, /bblscene::bbl_outlined_1\(v_scene, v_count\);/);
-    assert.equal(
-        outlined.segments[1]!.prototype,
-        "void bbl_outlined_1([[maybe_unused]] bbl::Scene& v_scene, [[maybe_unused]] double& v_count);",
-    );
-    assert.match(
-        outlined.segments[0]!.lines.join("\n"),
-        /^bbl::js::Array<double> bbl_outlined_0\(\) \{\n {4}return bbl::js::Array<double>\{1\.0, /,
-    );
-});
-
-test("a statement reading a local without a native type stays", () => {
-    const outlined = outlineFunctionBody({
-        lines: largeBody(["        auto v_opaque = make();"], "use(v_opaque);"),
-        parameters: [],
-        bindingType: () => undefined,
-        allocateName: () => "never",
-    });
-    assert.equal(outlined.segments.length, 0);
-});
-
-test("large compound statements outline inside their blocks, not past a break", () => {
-    const outlined = outlineFunctionDefinition({
-        lines: [
-            "void frame([[maybe_unused]] bbl::Engine& v_engine, [[maybe_unused]] double v_delta) {",
-            "    do {",
-            "        if (v_delta > 1.0) { break; }",
-            ...largeBody([], "bbl::step(v_engine, v_delta);"),
-            "    } while (false);",
-            "}",
-        ],
-        bindingType: () => undefined,
-        allocateName: () => "bbl_outlined_frame",
-    });
-    const text = outlined.lines.join("\n");
-    assert.match(text, /^void frame\(/);
-    assert.match(text, /if \(v_delta > 1\.0\) \{ break; \}/);
-    assert.match(text, /bblscene::bbl_outlined_frame\(v_engine, v_delta\);/);
-    assert.match(text, /\} while \(false\);/);
-    for (const segment of outlined.segments)
-        assert.doesNotMatch(segment.lines.join("\n"), /break/);
-    assert.match(
-        outlined.segments[0]!.prototype,
-        /^void bbl_outlined_frame\(\[\[maybe_unused\]\] bbl::Engine& v_engine, \[\[maybe_unused\]\] double& v_delta\);$/,
     );
 });
 
@@ -246,24 +372,4 @@ test("units hold only the declarations their code reaches, with argument-depende
     assert.doesNotMatch(unit("entry.ts"), /OtherData/);
     assert.match(unit("other.ts"), /struct OtherData/);
     assert.doesNotMatch(unit("other.ts"), /UsedData/);
-});
-
-test("a large loop moves whole rather than calling out once per iteration", () => {
-    const outlined = outlineFunctionDefinition({
-        lines: [
-            "void frame([[maybe_unused]] bbl::Engine& v_engine, [[maybe_unused]] double v_delta) {",
-            "    while (v_delta > 0.0) {",
-            ...largeBody([], "bbl::step(v_engine, v_delta);"),
-            "    }",
-            "}",
-        ],
-        bindingType: () => undefined,
-        allocateName: () => "bbl_outlined_loop",
-    });
-    assert.equal(outlined.segments.length, 1);
-    assert.match(
-        outlined.segments[0]!.lines.join("\n"),
-        /^void bbl_outlined_loop\([^\n]*\{\n {4}while \(v_delta > 0\.0\) \{/,
-    );
-    assert.doesNotMatch(outlined.lines.join("\n"), /while/);
 });

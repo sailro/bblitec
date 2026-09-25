@@ -407,7 +407,7 @@ export class ClassLowerer {
                     this.context.bindings.pushScope(
                         this.context.allocateUserFunctionPrefix(),
                     );
-                    this.context.emit("{");
+                    this.context.emit({ kind: "open", code: "{" });
                     this.context.increaseIndent();
                     try {
                         for (const statement of element.body.statements) {
@@ -417,7 +417,7 @@ export class ClassLowerer {
                         this.context.decreaseIndent();
                         this.context.bindings.popScope();
                     }
-                    this.context.emit("}");
+                    this.context.emit({ kind: "close", code: "}" });
                     continue;
                 }
                 statics[element.name.text] = this.bindStaticField(element);
@@ -650,7 +650,7 @@ export class ClassLowerer {
                     "A nullable-resource fallback factory requires optional storage for every constructor field.",
                 );
             }
-            this.context.emit("try {");
+            this.context.emit({ kind: "open", code: "try {" });
             this.context.increaseIndent();
             this.context.bindings.pushScope(
                 this.context.allocateUserFunctionPrefix(),
@@ -721,11 +721,16 @@ export class ClassLowerer {
                 this.context.bindings.popScope();
                 this.context.decreaseIndent();
             }
-            this.context.emit("} catch (...) {");
-            this.context.emit(
-                "    // The prebuilt all-null instance is the source fallback.",
-            );
-            this.context.emit("}");
+            this.context.emit({
+                kind: "branch",
+                code: "} catch (...) {",
+                outlineInterior: false,
+            });
+            this.context.emit({
+                kind: "comment",
+                code: "    // The prebuilt all-null instance is the source fallback.",
+            });
+            this.context.emit({ kind: "close", code: "}" });
             return instance;
         } finally {
             this.context.bindings.popScope();
@@ -797,17 +802,21 @@ export class ClassLowerer {
             this.context.reachJsData();
             const structType: DataType = { kind: "struct", name: structName };
             const cppType = this.context.dataTypes.cppType(structType);
-            this.context.emit(
-                `${cppType} ${cpp} = ` +
-                    `bbl::js::make_ref<bblscene::${structName}Data>();`,
-            );
+            this.context.emit({
+                kind: "declaration",
+                type: cppType,
+                name: cpp,
+                initializer: `bbl::js::make_ref<bblscene::${structName}Data>()`,
+            });
             // One struct holds every class of a hierarchy; the tag records
             // which one this object is, for dispatch and `instanceof`.
             if (this.context.dataTypes.classStructTagged(structName)) {
-                this.context.emit(
-                    `${cpp}->${classTagMember} = ` +
+                this.context.emit({
+                    kind: "expression",
+                    code:
+                        `${cpp}->${classTagMember} = ` +
                         `${this.context.dataTypes.classHierarchy.tag(declaration)};`,
-                );
+                });
             }
             this.context.registerNativeBindingType(cpp, cppType);
             writable(instance).cpp = cpp;
@@ -1030,13 +1039,15 @@ export class ClassLowerer {
             // store into that slot rather than a second binding.
             if (stored?.classStoredField) {
                 if (member.initializer) {
-                    this.context.emit(
-                        `${stored.cpp} = ` +
+                    this.context.emit({
+                        kind: "expression",
+                        code:
+                            `${stored.cpp} = ` +
                             `${this.context.compileForDataSink(
                                 member.initializer,
                                 stored.dataType!,
                             )};`,
-                    );
+                    });
                 }
                 continue;
             }
@@ -1337,14 +1348,25 @@ export class ClassLowerer {
             const lifetime = this.context.allocateTemporaryCppName(
                 `${structName.toLowerCase()}_receiver_lifetime`,
             );
-            this.context.emit(`const auto& ${source} = ${instanceCpp};`);
-            this.context.emit(
-                `[[maybe_unused]] auto ${lifetime} = ${source}.lifetime_owner();`,
-            );
-            this.context.emit(
-                `${this.context.dataTypes.cppType(value.dataType)} ` +
-                    `${bound} = ${source};`,
-            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto&",
+                name: source,
+                initializer: instanceCpp,
+            });
+            this.context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: lifetime,
+                initializer: `${source}.lifetime_owner()`,
+                attributes: "[[maybe_unused]] ",
+            });
+            this.context.emit({
+                kind: "declaration",
+                type: this.context.dataTypes.cppType(value.dataType),
+                name: bound,
+                initializer: source,
+            });
             this.context.registerNativeBindingType(
                 bound,
                 this.context.dataTypes.cppType(value.dataType),
@@ -1690,9 +1712,13 @@ export class ClassLowerer {
             ? this.context.allocateTemporaryCppName("dispatch_result")
             : undefined;
         if (result) {
-            this.context.emit(
-                `${this.context.dataTypes.cppType(resultType!)} ${result}{};`,
-            );
+            this.context.emit({
+                kind: "declaration",
+                type: this.context.dataTypes.cppType(resultType!),
+                name: result,
+                initializer: "",
+                initialization: "default",
+            });
         }
         const hierarchy = this.context.dataTypes.classHierarchy;
         const tag = `${instance.cpp}->${classTagMember}`;
@@ -1715,13 +1741,14 @@ export class ClassLowerer {
                     this.narrowedReceiver(instance, group, node),
                 );
                 if (result) {
-                    this.context.emit(
-                        `${result} = ${this.context.dataLowerer.compileKnownValueForSink(
+                    this.context.emit({
+                        kind: "expression",
+                        code: `${result} = ${this.context.dataLowerer.compileKnownValueForSink(
                             value,
                             resultType!,
                             node,
                         )};`,
-                    );
+                    });
                 } else if (value.cpp) {
                     this.context.emit(
                         value.kind === "void"
@@ -1734,7 +1761,7 @@ export class ClassLowerer {
                 this.context.decreaseIndent();
             }
         });
-        this.context.emit("}");
+        this.context.emit({ kind: "close", code: "}" });
         if (!result) return { kind: "void", cpp: "" };
         this.context.registerNativeTemporary(result, resultType);
         return {
@@ -2652,7 +2679,10 @@ export class ClassLowerer {
                     "A guarded record return requires a boolean null guard.",
                 );
             }
-            this.context.emit(`if (!(${condition.cpp})) {`);
+            this.context.emit({
+                kind: "open",
+                code: `if (!(${condition.cpp})) {`,
+            });
             this.context.increaseIndent();
             this.context.bindings.pushScope(
                 this.context.allocateUserFunctionPrefix(),
@@ -2690,7 +2720,7 @@ export class ClassLowerer {
                 this.context.bindings.popScope();
                 this.context.decreaseIndent();
             }
-            this.context.emit("}");
+            this.context.emit({ kind: "close", code: "}" });
             return {
                 kind: "record",
                 cpp: "",
@@ -2865,9 +2895,10 @@ export class ClassLowerer {
     ): void {
         const stored = properties[name.text];
         if (stored?.classStoredField) {
-            this.context.emit(
-                `${stored.cpp} = ${this.context.compileForDataSink(name, stored.dataType!)};`,
-            );
+            this.context.emit({
+                kind: "expression",
+                code: `${stored.cpp} = ${this.context.compileForDataSink(name, stored.dataType!)};`,
+            });
         } else {
             writable(properties)[name.text] = this.context.compileValue(name);
         }

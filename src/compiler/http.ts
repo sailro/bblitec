@@ -35,9 +35,16 @@ export function compileHttpCall(
     context.reachJsData();
     const snapshot = (value: Value, site: ts.Node, name: string): string => {
         const cpp = context.allocateTemporaryCppName(name);
-        context.emit(
-            `std::string ${cpp} = ${lowerer.compileKnownValueForSink(value, { kind: "string" }, site)};`,
-        );
+        context.emit({
+            kind: "declaration",
+            type: "std::string",
+            name: cpp,
+            initializer: lowerer.compileKnownValueForSink(
+                value,
+                { kind: "string" },
+                site,
+            ),
+        });
         return `std::move(${cpp})`;
     };
     const url = snapshot(

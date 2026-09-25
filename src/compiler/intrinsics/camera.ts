@@ -315,9 +315,10 @@ export function compileCameraIntrinsic(
             context.expectSameEngine(camera, scene, call);
             context.reachFeature("camera:geospatial", call);
             const engine = context.requireEngine(camera, call);
-            context.emit(
-                `bbl::attach_control(${engine}, ${camera.cpp}, ${scene.cpp});`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `bbl::attach_control(${engine}, ${camera.cpp}, ${scene.cpp});`,
+            });
             return {
                 kind: "data",
                 cpp:
@@ -470,15 +471,13 @@ export function compileCameraIntrinsic(
             // no positive/finite aspect guard, so preserve that behavior while
             // binding the argument once.
             const result = context.allocateTemporaryCppName("view_projection");
-            context.emit(
-                `[[maybe_unused]] bbl::js::F32Array ${result} = ` +
-                    `([&]() { const double aspect = ${aspect}; ` +
-                    `const auto matrix = ` +
-                    `bbl::upstream::build_view_projection(` +
-                    `${recordAt(`${engine}.cameras`, camera.cpp)}, aspect); ` +
-                    `return bbl::js::F32Array(` +
-                    `matrix.begin(), matrix.end()); }());`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: "bbl::js::F32Array",
+                name: result,
+                initializer: `([&]() { const double aspect = ${aspect}; const auto matrix = bbl::upstream::build_view_projection(${recordAt(`${engine}.cameras`, camera.cpp)}, aspect); return bbl::js::F32Array(matrix.begin(), matrix.end()); }())`,
+                attributes: "[[maybe_unused]] ",
+            });
             return {
                 kind: "data",
                 cpp: result,

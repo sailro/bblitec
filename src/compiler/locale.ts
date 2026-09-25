@@ -35,9 +35,12 @@ export function compileLocaleStringMethod(
         name: string,
     ): string => {
         const cpp = context.allocateTemporaryCppName(name);
-        context.emit(
-            `const ${context.dataTypes.cppType(type)} ${cpp} = ${lowerer.compileKnownValueForSink(value, type, site)};`,
-        );
+        context.emit({
+            kind: "declaration",
+            type: `const ${context.dataTypes.cppType(type)}`,
+            name: cpp,
+            initializer: lowerer.compileKnownValueForSink(value, type, site),
+        });
         return cpp;
     };
     const source = snapshot(
@@ -109,9 +112,12 @@ export function compileLocaleStringMethod(
     const locales = context.allocateTemporaryCppName("collation_locales");
     const optionsNode = call.arguments[2];
     const options = optionsNode ? context.compileValue(optionsNode) : undefined;
-    context.emit(
-        `const auto ${locales} = bbl::pal::collation_locales(${locale});`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: locales,
+        initializer: `bbl::pal::collation_locales(${locale})`,
+    });
     let fields: Readonly<Record<string, Value>> = {};
     if (
         options &&

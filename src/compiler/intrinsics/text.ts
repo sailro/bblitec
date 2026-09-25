@@ -87,9 +87,15 @@ export function compileTextIntrinsic(
             argumentAt(call, 0),
         );
         const run = context.allocateTemporaryCppName("text_run_ref");
-        context.emit(
-            `const auto ${run}=${context.compileForDataSink(argumentAt(call, 1), { kind: "handle", handle: "text-run-ref" })};`,
-        );
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: run,
+            initializer: context.compileForDataSink(argumentAt(call, 1), {
+                kind: "handle",
+                handle: "text-run-ref",
+            }),
+        });
         const offset = context.compileNumber(argumentAt(call, 2), "double");
         promoteLiveTextData(context);
         context.reachFeature("text:layout", call);
@@ -119,22 +125,26 @@ export function compileTextIntrinsic(
         )) {
             const field = `${update}.${snakeCase(member)}`;
             if (member === "update")
-                context.emit(
-                    `${field} = ${cppStringLiteral(context.compileStaticString(expression))};`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${field} = ${cppStringLiteral(context.compileStaticString(expression))};`,
+                });
             else if (member === "run" || member === "previous") {
                 const value = context.unwrap(expression);
-                context.emit(
-                    `${field} = ${ts.isObjectLiteralExpression(value) ? `bbl::TextRunRef{${textRunValue(context, value)}}` : context.compileForDataSink(expression, { kind: "handle", handle: "text-run-ref" })};`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${field} = ${ts.isObjectLiteralExpression(value) ? `bbl::TextRunRef{${textRunValue(context, value)}}` : context.compileForDataSink(expression, { kind: "handle", handle: "text-run-ref" })};`,
+                });
             } else if (member === "insertBefore")
-                context.emit(
-                    `${field} = ${context.compileNumber(expression, "double")};`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${field} = ${context.compileNumber(expression, "double")};`,
+                });
             else if (member === "runs") {
                 const list = context.unwrap(expression);
-                context.emit(
-                    `${field} = ${
+                context.emit({
+                    kind: "expression",
+                    code: `${field} = ${
                         ts.isArrayLiteralExpression(list)
                             ? `bbl::js::Array<bbl::TextRun>{${list.elements.map((element) => textRunValue(context, element)).join(", ")}}`
                             : context.compileForDataSink(expression, {
@@ -145,7 +155,7 @@ export function compileTextIntrinsic(
                                   },
                               })
                     };`,
-                );
+                });
             } else
                 context.fail(
                     expression,
@@ -192,12 +202,22 @@ export function compileTextIntrinsic(
                 const position = context.allocateTemporaryCppName(
                     "text_layer_position",
                 );
-                context.emit(`bbl::Vec2d ${position}{};`);
+                context.emit({
+                    kind: "declaration",
+                    type: "bbl::Vec2d",
+                    name: position,
+                    initializer: "",
+                    initialization: "default",
+                });
                 for (const [axis, component] of components)
-                    context.emit(
-                        `${position}.${axis} = ${context.compileNumber(component, "double")};`,
-                    );
-                context.emit(`${options}.${native} = ${position};`);
+                    context.emit({
+                        kind: "expression",
+                        code: `${position}.${axis} = ${context.compileNumber(component, "double")};`,
+                    });
+                context.emit({
+                    kind: "expression",
+                    code: `${options}.${native} = ${position};`,
+                });
             } else if (
                 [
                     "rotationRad",
@@ -208,9 +228,10 @@ export function compileTextIntrinsic(
                     "visible",
                 ].includes(field)
             ) {
-                context.emit(
-                    `${options}.${native} = ${field === "visible" ? context.compileBoolean(value) : context.compileNumber(value, "double")};`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${options}.${native} = ${field === "visible" ? context.compileBoolean(value) : context.compileNumber(value, "double")};`,
+                });
             } else
                 context.fail(
                     value,
@@ -239,18 +260,21 @@ export function compileTextIntrinsic(
             call.arguments[1],
         )) {
             if (field === "layers") {
-                context.emit(
-                    `${options}.layers = ${context.compileForDataSink(value, { kind: "vector", element: { kind: "handle", handle: "text-layer" } })};`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${options}.layers = ${context.compileForDataSink(value, { kind: "vector", element: { kind: "handle", handle: "text-layer" } })};`,
+                });
                 hasLayers = true;
             } else if (field === "clear")
-                context.emit(
-                    `${options}.clear = ${context.compileBoolean(value)};`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${options}.clear = ${context.compileBoolean(value)};`,
+                });
             else if (field === "clearValue")
-                context.emit(
-                    `${options}.clear_value = bbl::text_color(${context.compileColor4(value)});`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${options}.clear_value = bbl::text_color(${context.compileColor4(value)});`,
+                });
             else
                 context.fail(
                     value,
@@ -618,9 +642,12 @@ function textRunValue(
     const source = context.compileValue(spread.expression);
     context.expectKind(source, "text-run", spread);
     const run = context.allocateTemporaryCppName("text_run");
-    context.emit(
-        `auto ${run} = std::make_shared<bbl::GlyphRun>(*${context.bindings.pinValueToTemporary(source, "text_owner", spread.expression).cpp});`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "auto",
+        name: run,
+        initializer: `std::make_shared<bbl::GlyphRun>(*${context.bindings.pinValueToTemporary(source, "text_owner", spread.expression).cpp})`,
+    });
     for (const member of members) {
         if (
             !ts.isPropertyAssignment(member) ||
@@ -630,13 +657,15 @@ function textRunValue(
         const name = member.name.text;
         const field = `${run}->${snakeCase(name)}`;
         if (name === "defaultColor")
-            context.emit(
-                `${field} = ${context.compileForDataSink(member.initializer, { kind: "tuple", arity: 4 })};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${field} = ${context.compileForDataSink(member.initializer, { kind: "tuple", arity: 4 })};`,
+            });
         else if (name === "pixelsPerFontUnit")
-            context.emit(
-                `${field} = ${context.compileNumber(member.initializer, "double")};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${field} = ${context.compileNumber(member.initializer, "double")};`,
+            });
         else
             context.fail(
                 member,
@@ -828,17 +857,19 @@ function compileRenderableOptions(
                     vector,
                     "Text transform options require every component.",
                 );
-            context.emit(
-                `${options}.${field} = bbl::${name === "rotationQuaternion" ? "TextQuaternion" : "Vec3d"}{${lanes.map((lane) => values.get(lane)!).join(", ")}};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${options}.${field} = bbl::${name === "rotationQuaternion" ? "TextQuaternion" : "Vec3d"}{${lanes.map((lane) => values.get(lane)!).join(", ")}};`,
+            });
         } else if (
             name === "opacity" ||
             name === "order" ||
             name === "ignoreDepth"
         ) {
-            context.emit(
-                `${options}.${field} = ${name === "ignoreDepth" ? context.compileBoolean(property.initializer) : context.compileNumber(property.initializer, "double")};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${options}.${field} = ${name === "ignoreDepth" ? context.compileBoolean(property.initializer) : context.compileNumber(property.initializer, "double")};`,
+            });
         } else
             context.fail(
                 property,

@@ -48,9 +48,10 @@ export function compileComputeBindingsIntrinsic(
                 ? member.type.handle
                 : member.value?.kind;
         if (kind === "uniform-buffer" || kind === "storage-buffer") {
-            context.emit(
-                `${destination} = bbl::ComputeBufferRange{bbl::compute_buffer_reference(${member.cpp}), {}, {}};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${destination} = bbl::ComputeBufferRange{bbl::compute_buffer_reference(${member.cpp}), {}, {}};`,
+            });
             return;
         }
         if (
@@ -58,7 +59,10 @@ export function compileComputeBindingsIntrinsic(
             kind === "compute-sampler" ||
             kind === "compute-storage-texture"
         ) {
-            context.emit(`${destination} = ${member.cpp};`);
+            context.emit({
+                kind: "expression",
+                code: `${destination} = ${member.cpp};`,
+            });
             return;
         }
         if (member.type?.kind === "struct" || member.value?.kind === "record") {
@@ -80,9 +84,10 @@ export function compileComputeBindingsIntrinsic(
                             type === "uniform-buffer" ||
                             type === "storage-buffer"
                         )
-                            context.emit(
-                                `${range}.buffer = bbl::compute_buffer_reference(${part.cpp});`,
-                            );
+                            context.emit({
+                                kind: "expression",
+                                code: `${range}.buffer = bbl::compute_buffer_reference(${part.cpp});`,
+                            });
                         else if (
                             part.type?.kind === "struct" ||
                             part.value?.kind === "record"
@@ -105,7 +110,10 @@ export function compileComputeBindingsIntrinsic(
                             `Unrepresented compute buffer range field ${part.name}.`,
                         );
                 });
-            context.emit(`${destination} = ${range};`);
+            context.emit({
+                kind: "expression",
+                code: `${destination} = ${range};`,
+            });
             return;
         }
         if (
@@ -127,7 +135,10 @@ export function compileComputeBindingsIntrinsic(
             );
         const destination = `${resources}[${stringLiteral(field.name)}]`;
         // Own-property presence is independent of the source value being undefined.
-        context.emit(`${destination} = std::monostate{};`);
+        context.emit({
+            kind: "expression",
+            code: `${destination} = std::monostate{};`,
+        });
         emitPresentOption(context, field, (member) =>
             assign(member, destination),
         );

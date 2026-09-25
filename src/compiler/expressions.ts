@@ -295,9 +295,10 @@ export function emitStringAppend(
 ): void {
     const value = context.compileValue(right);
     context.reachJsData();
-    context.emit(
-        `bbl::js::concat_append(${targetCpp}, ${stringConcatPart(context, value, right)});`,
-    );
+    context.emit({
+        kind: "expression",
+        code: `bbl::js::concat_append(${targetCpp}, ${stringConcatPart(context, value, right)});`,
+    });
 }
 
 export function stringConcatPart(
@@ -3049,11 +3050,12 @@ export class ExpressionLowerer {
         );
         const engine = this.context.requireEngine(map, access);
         const row = this.context.allocateTemporaryCppName("vat_clip");
-        this.context.emit(
-            `const bbl::VatClipRow ${row} = bbl::vat_clip_row(` +
-                `${engine}, ${map.cpp}, ` +
-                `${this.context.cppString(clip)});`,
-        );
+        this.context.emit({
+            kind: "declaration",
+            type: "const bbl::VatClipRow",
+            name: row,
+            initializer: `bbl::vat_clip_row(${engine}, ${map.cpp}, ${this.context.cppString(clip)})`,
+        });
         return {
             kind: "vat-clip",
             cpp: row,
@@ -5191,7 +5193,10 @@ export class ExpressionLowerer {
                             "Optional class method calls returning a value are not lowered.",
                         );
                     }
-                    this.context.emit(`if (${optionalFound}) {`);
+                    this.context.emit({
+                        kind: "open",
+                        code: `if (${optionalFound}) {`,
+                    });
                     this.context.increaseIndent();
                     const result = this.context.classLowerer.compileMethodCall(
                         instance,
@@ -5206,10 +5211,13 @@ export class ExpressionLowerer {
                         );
                     }
                     if (result.cpp) {
-                        this.context.emit(`${result.cpp};`);
+                        this.context.emit({
+                            kind: "expression",
+                            code: `${result.cpp};`,
+                        });
                     }
                     this.context.decreaseIndent();
-                    this.context.emit("}");
+                    this.context.emit({ kind: "close", code: "}" });
                     return { kind: "void", cpp: "" };
                 }
                 return this.context.classLowerer.compileMethodCall(

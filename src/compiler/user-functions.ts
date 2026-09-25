@@ -2628,7 +2628,10 @@ export class UserFunctionLowerer {
                         entry.declaration,
                         entry.type,
                     );
-                    context.emit(`${entry.value.cpp} = ${cpp};`);
+                    context.emit({
+                        kind: "expression",
+                        code: `${entry.value.cpp} = ${cpp};`,
+                    });
                 }
                 const entry = entries.find(
                     (entry) => entry.declaration === root.declaration,
@@ -3556,16 +3559,20 @@ export class UserFunctionLowerer {
                                 // native if/else chain; keep its impossible
                                 // fallthrough defined.
                                 if (!terminated && entry.returnType)
-                                    context.emit(
-                                        'throw std::runtime_error("Native value function fell through without returning.");',
-                                    );
+                                    context.emit({
+                                        kind: "control",
+                                        code: 'throw std::runtime_error("Native value function fell through without returning.");',
+                                        transfer: "throw",
+                                    });
                             } else {
                                 if (!entry.returnType) {
                                     context.emitExpressionAsStatement(body);
                                 } else {
-                                    context.emit(
-                                        `return ${compileReturn ? compileReturn(body, entry.returnType) : context.compileForDataSink(body, entry.returnType)};`,
-                                    );
+                                    context.emit({
+                                        kind: "control",
+                                        code: `return ${compileReturn ? compileReturn(body, entry.returnType) : context.compileForDataSink(body, entry.returnType)};`,
+                                        transfer: "return",
+                                    });
                                 }
                             }
                         }, !escapes),
@@ -3675,7 +3682,11 @@ export class UserFunctionLowerer {
                     returnCpp,
                 );
             if (localGroup) localGroup.accept(closure);
-            else context.emit(`${entry.cppName} = ${closure};`);
+            else
+                context.emit({
+                    kind: "expression",
+                    code: `${entry.cppName} = ${closure};`,
+                });
         } finally {
             context.bindings.popScope();
         }
@@ -4160,17 +4171,21 @@ export class UserFunctionLowerer {
                     );
                     if (!terminated && ir.returnExpression) {
                         if (asynchronous) {
-                            context.emit(
-                                `co_return ${context.asyncActivations.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
-                            );
+                            context.emit({
+                                kind: "control",
+                                code: `co_return ${context.asyncActivations.compileAsyncReturn(ir.returnExpression, bodyResult)};`,
+                                transfer: "suspend",
+                            });
                         } else if (!bodyResult) {
                             context.emitExpressionAsStatement(
                                 ir.returnExpression,
                             );
                         } else {
-                            context.emit(
-                                `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
-                            );
+                            context.emit({
+                                kind: "control",
+                                code: `return ${context.compileForDataSink(ir.returnExpression, bodyResult)};`,
+                                transfer: "return",
+                            });
                         }
                     }
                     if (
@@ -4179,7 +4194,11 @@ export class UserFunctionLowerer {
                         !ir.returnExpression &&
                         !bodyResult
                     )
-                        context.emit("co_return bbl::js::PromiseVoid{};");
+                        context.emit({
+                            kind: "control",
+                            code: "co_return bbl::js::PromiseVoid{};",
+                            transfer: "suspend",
+                        });
                     if (
                         !terminated &&
                         !ir.returnExpression &&
@@ -4503,7 +4522,7 @@ export class UserFunctionLowerer {
                 );
             }
             if (ir.needsWrapper) {
-                context.emit("do {");
+                context.emit({ kind: "open", code: "do {", breaks: true });
                 context.increaseIndent();
             }
             context.beginInlineFrame(ir.needsWrapper);
@@ -4515,7 +4534,7 @@ export class UserFunctionLowerer {
             }
             if (ir.needsWrapper) {
                 context.decreaseIndent();
-                context.emit("} while (false);");
+                context.emit({ kind: "close", code: "} while (false);" });
             }
             if (terminated || !ir.returnExpression)
                 return {
@@ -4568,9 +4587,11 @@ export class UserFunctionLowerer {
         try {
             const terminated = emitReachableStatements(context, ir.statements);
             if (!terminated && returnType) {
-                context.emit(
-                    'throw std::runtime_error("Native value function fell through without returning.");',
-                );
+                context.emit({
+                    kind: "control",
+                    code: 'throw std::runtime_error("Native value function fell through without returning.");',
+                    transfer: "throw",
+                });
             }
         } finally {
             context.endNativeFunctionBody();
@@ -4641,9 +4662,17 @@ export class UserFunctionLowerer {
             const terminated = emitReachableStatements(context, ir.statements);
             if (!terminated) {
                 if (!type.result)
-                    context.emit("co_return bbl::js::PromiseVoid{};");
+                    context.emit({
+                        kind: "control",
+                        code: "co_return bbl::js::PromiseVoid{};",
+                        transfer: "suspend",
+                    });
                 else if (type.result.kind === "optional")
-                    context.emit("co_return std::nullopt;");
+                    context.emit({
+                        kind: "control",
+                        code: "co_return std::nullopt;",
+                        transfer: "suspend",
+                    });
                 else
                     context.fail(
                         callNode,
@@ -5348,7 +5377,12 @@ export class UserFunctionLowerer {
                 value.cpp
             ) {
                 const name = context.allocateTemporaryCppName("call_argument");
-                context.emit(`const auto ${name} = ${value.cpp};`);
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: name,
+                    initializer: value.cpp,
+                });
                 sink.push(
                     withNativeMetadata(
                         context.dataValue(name, value.dataType),
@@ -5429,7 +5463,12 @@ export class UserFunctionLowerer {
         }
         const type = storage.kind === "optional" ? storage.inner : storage;
         const input = context.allocateTemporaryCppName("default_argument");
-        context.emit(`const auto& ${input} = ${argument.cpp};`);
+        context.emit({
+            kind: "declaration",
+            type: "const auto&",
+            name: input,
+            initializer: argument.cpp,
+        });
         let fallback = "";
         const lines = context.captureEmittedLines(() => {
             context.enterRuntimeControlFlow();
@@ -5446,12 +5485,15 @@ export class UserFunctionLowerer {
                 ? optionalPresentCpp(input)
                 : `static_cast<bool>(${input})`;
         const selected = storage.kind === "optional" ? `*${input}` : input;
-        context.emit(
-            `const ${cppType} ${result} = [&]() -> ${cppType} {\n` +
-                `    if (${present}) return ${selected};\n` +
-                lines.map((line) => `    ${line}\n`).join("") +
-                `    return ${fallback};\n}();`,
-        );
+        context.emit({
+            kind: "declaration",
+            type: `const ${cppType}`,
+            name: result,
+            initializer: `[&]() -> ${cppType} {
+    if (${present}) return ${selected};
+${lines.map((line) => `    ${line}\n`).join("")}    return ${fallback};
+}()`,
+        });
         return context.dataValue(result, type);
     }
 

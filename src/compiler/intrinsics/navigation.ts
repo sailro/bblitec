@@ -95,10 +95,12 @@ function emitOffMeshConnections(
         // being spelled three times.
         const endpoint = (name: string): string => {
             const temporary = context.allocateTemporaryCppName("nav_offmesh");
-            context.emit(
-                `const bbl::Vec3 ${temporary} = ` +
-                    `${context.compileVec3(required(name))};`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: "const bbl::Vec3",
+                name: temporary,
+                initializer: context.compileVec3(required(name)),
+            });
             return (
                 `bbl::pal::NavVec3{${temporary}.x, ` +
                 `${temporary}.y, ${temporary}.z}`
@@ -118,10 +120,12 @@ function emitOffMeshConnections(
                     : "std::nullopt",
             );
         }
-        context.emit(
-            `${parameters}.off_mesh_connections.push_back(` +
+        context.emit({
+            kind: "expression",
+            code:
+                `${parameters}.off_mesh_connections.push_back(` +
                 `bbl::pal::NavOffMeshConnection{${fields.join(", ")}});`,
-        );
+        });
     }
 }
 
@@ -176,13 +180,20 @@ export function compileNavigationIntrinsic(
                 context.reachFeature("navigation:tile-cache", call);
             }
             const parameters = context.allocateTemporaryCppName("nav_params");
-            context.emit(`bbl::pal::NavMeshBuildParams ${parameters}{};`);
+            context.emit({
+                kind: "declaration",
+                type: "bbl::pal::NavMeshBuildParams",
+                name: parameters,
+                initializer: "",
+                initialization: "default",
+            });
             for (const [name, field] of NAV_MESH_BUILD_PARAM_FIELDS) {
                 const value = context.objectProperty(options, name);
                 if (value) {
-                    context.emit(
-                        `${parameters}.${field} = ${context.compileNumber(value, "double")};`,
-                    );
+                    context.emit({
+                        kind: "expression",
+                        code: `${parameters}.${field} = ${context.compileNumber(value, "double")};`,
+                    });
                 }
             }
             emitOffMeshConnections(context, options, parameters);
@@ -264,11 +275,12 @@ export function compileNavigationIntrinsic(
             const start = context.compileVec3(argumentAt(call, 1), "double");
             const end = context.compileVec3(argumentAt(call, 2), "double");
             const path = context.allocateTemporaryCppName("nav_path");
-            context.emit(
-                `const std::vector<bbl::Vec3d> ${path} = ` +
-                    `bbl::upstream::nav_compute_path(` +
-                    `${plugin.cpp}, ${start}, ${end});`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: "const std::vector<bbl::Vec3d>",
+                name: path,
+                initializer: `bbl::upstream::nav_compute_path(${plugin.cpp}, ${start}, ${end})`,
+            });
             // The element struct is the scene's own `Vec3`, so its fields
             // are filled by name rather than by position -- the pinned
             // interface declares x, y, z, but the generated order is the
@@ -315,11 +327,12 @@ export function compileNavigationIntrinsic(
             const plugin = context.compileValue(argumentAt(call, 0));
             context.expectKind(plugin, "navigation", argumentAt(call, 0));
             const temporary = context.allocateTemporaryCppName("nav_debug");
-            context.emit(
-                `const bbl::pal::NavDebugGeometry ${temporary} = ` +
-                    `bbl::upstream::create_debug_nav_mesh_geometry(` +
-                    `${plugin.cpp});`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: "const bbl::pal::NavDebugGeometry",
+                name: temporary,
+                initializer: `bbl::upstream::create_debug_nav_mesh_geometry(${plugin.cpp})`,
+            });
             return {
                 kind: "record",
                 cpp: "",
@@ -410,11 +423,12 @@ export function compileNavigationIntrinsic(
                 "double",
             );
             const crowd = context.allocateTemporaryCppName("nav_crowd");
-            context.emit(
-                `bbl::pal::NavCrowdHandle ${crowd} = ` +
-                    `bbl::upstream::create_nav_crowd(${plugin.cpp}, ` +
-                    `${maxAgents}, ${maxAgentRadius});`,
-            );
+            context.emit({
+                kind: "declaration",
+                type: "bbl::pal::NavCrowdHandle",
+                name: crowd,
+                initializer: `bbl::upstream::create_nav_crowd(${plugin.cpp}, ${maxAgents}, ${maxAgentRadius})`,
+            });
             context.registerNativeTemporary(crowd);
             return { kind: "navigation-crowd", cpp: crowd };
         }
@@ -443,7 +457,13 @@ export function compileNavigationIntrinsic(
                 );
             }
             const parameters = context.allocateTemporaryCppName("agent_params");
-            context.emit(`bbl::pal::NavAgentParams ${parameters}{};`);
+            context.emit({
+                kind: "declaration",
+                type: "bbl::pal::NavAgentParams",
+                name: parameters,
+                initializer: "",
+                initialization: "default",
+            });
             for (const [name, field] of AGENT_FLOAT_PARAMS) {
                 const value = context.objectProperty(options, name);
                 if (!value) {
@@ -453,10 +473,12 @@ export function compileNavigationIntrinsic(
                             "parameters carry no default for it.",
                     );
                 }
-                context.emit(
-                    `${parameters}.${field} = static_cast<float>(` +
+                context.emit({
+                    kind: "expression",
+                    code:
+                        `${parameters}.${field} = static_cast<float>(` +
                         `${context.compileNumber(value, "double")});`,
-                );
+                });
             }
             // The pin's own `?? N` defaults, resolved here so the
             // wrapper's spread never decides them, read off the pinned
@@ -466,10 +488,12 @@ export function compileNavigationIntrinsic(
                 const resolved = value
                     ? context.compileNumber(value, "double")
                     : String(fallback);
-                context.emit(
-                    `${parameters}.${field} = ` +
+                context.emit({
+                    kind: "expression",
+                    code:
+                        `${parameters}.${field} = ` +
                         `static_cast<unsigned char>(${resolved});`,
-                );
+                });
             }
             return {
                 kind: "number",

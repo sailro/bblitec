@@ -384,9 +384,10 @@ export function compileDataMethodCall(
                 typed.dataType.kind,
                 number,
             );
-            lowerer.context.emit(
-                `bbl::js::array_fill(${temporary}, ${value});`,
-            );
+            lowerer.context.emit({
+                kind: "expression",
+                code: `bbl::js::array_fill(${temporary}, ${value});`,
+            });
             lowerer.registerLocal(temporary, "owned");
             return {
                 kind: "data",
@@ -903,7 +904,12 @@ function compileKnownDataMethod(
             );
         const result =
             lowerer.context.allocateTemporaryCppName("iterator_result");
-        lowerer.context.emit(`auto ${result} = ${narrowed.cpp}.next();`);
+        lowerer.context.emit({
+            kind: "declaration",
+            type: "auto",
+            name: result,
+            initializer: `${narrowed.cpp}.next()`,
+        });
         const nativeCaptures = [lowerer.context.registerNativeBinding(result)];
         return {
             kind: "record",
@@ -1216,9 +1222,10 @@ function compileArrayFlat({
             type.kind === "json" &&
             resultType.element.kind === "json"
         ) {
-            lowerer.context.emit(
-                `bbl::js::json_flatten_into(${output}, ${cpp}, ${numberConstantValue(levels).cpp});`,
-            );
+            lowerer.context.emit({
+                kind: "expression",
+                code: `bbl::js::json_flatten_into(${output}, ${cpp}, ${numberConstantValue(levels).cpp});`,
+            });
         } else if (
             levels > 0 &&
             (type.kind === "vector" ||
@@ -1226,7 +1233,11 @@ function compileArrayFlat({
                 type.kind === "tuple")
         ) {
             const item = lowerer.context.allocateTemporaryCppName("flat_item");
-            lowerer.context.emit(`for (const auto& ${item} : ${cpp}) {`);
+            lowerer.context.emit({
+                kind: "open",
+                code: `for (const auto& ${item} : ${cpp}) {`,
+                iteration: true,
+            });
             lowerer.context.increaseIndent();
             append(
                 item,
@@ -1234,14 +1245,17 @@ function compileArrayFlat({
                 levels - 1,
             );
             lowerer.context.decreaseIndent();
-            lowerer.context.emit("}");
+            lowerer.context.emit({ kind: "close", code: "}" });
         } else {
             const value = lowerer.compileKnownValueForSink(
                 lowerer.leafValue(cpp, type),
                 resultType.element,
                 call,
             );
-            lowerer.context.emit(`${output}.push_back(${value});`);
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${output}.push_back(${value});`,
+            });
         }
     };
     append(narrowed.cpp, dataType, depth + 1);
@@ -1365,9 +1379,11 @@ function compileArraySort(state: ArrayMethodState): Value {
                         );
                     return `bbl::js::concat(${stringConcatPart(lowerer.context, lowerer.leafValue(name, dataType.element), call)})`;
                 };
-                lowerer.context.emit(
-                    `return bbl::js::string_code_units(${text(left)}) < bbl::js::string_code_units(${text(right)});`,
-                );
+                lowerer.context.emit({
+                    kind: "control",
+                    code: `return bbl::js::string_code_units(${text(left)}) < bbl::js::string_code_units(${text(right)});`,
+                    transfer: "return",
+                });
             } else {
                 // The comparator's operands are const references. A class
                 // instance operand is the receiver a method's shared body
@@ -1406,7 +1422,11 @@ function compileArraySort(state: ArrayMethodState): Value {
                         "Array.sort comparator must return a number.",
                     );
                 }
-                lowerer.context.emit(`return ${compared.cpp} < 0.0;`);
+                lowerer.context.emit({
+                    kind: "control",
+                    code: `return ${compared.cpp} < 0.0;`,
+                    transfer: "return",
+                });
             }
         } finally {
             lowerer.context.leaveRuntimeIteration();
@@ -1436,9 +1456,13 @@ function compileArrayFind(state: ArrayMethodState): Value {
         dataType,
         false,
         () =>
-            lowerer.context.emit(
-                `${lowerer.context.dataTypes.cppType(resultType)} ${result}{};`,
-            ),
+            lowerer.context.emit({
+                kind: "declaration",
+                type: lowerer.context.dataTypes.cppType(resultType),
+                name: result,
+                initializer: "",
+                initialization: "default",
+            }),
         (matched, callback, source, index) => {
             if (matched.kind !== "boolean") {
                 lowerer.context.fail(
@@ -1446,7 +1470,10 @@ function compileArrayFind(state: ArrayMethodState): Value {
                     "Array.find callback must return a boolean value.",
                 );
             }
-            lowerer.context.emit(`if (${matched.cpp}) {`);
+            lowerer.context.emit({
+                kind: "open",
+                code: `if (${matched.cpp}) {`,
+            });
             lowerer.context.increaseIndent();
             const selected = lowerer.leafValue(
                 `${source}[${index}]`,
@@ -1457,10 +1484,17 @@ function compileArrayFind(state: ArrayMethodState): Value {
                 resultType,
                 call,
             );
-            lowerer.context.emit(`${result} = ${stored};`);
-            lowerer.context.emit("break;");
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${result} = ${stored};`,
+            });
+            lowerer.context.emit({
+                kind: "control",
+                code: "break;",
+                transfer: "break",
+            });
             lowerer.context.decreaseIndent();
-            lowerer.context.emit("}");
+            lowerer.context.emit({ kind: "close", code: "}" });
         },
     );
     lowerer.registerLocal(result, "owned");
@@ -1493,12 +1527,22 @@ function compileArrayFindIndex(state: ArrayMethodState): Value {
                     "Array.findIndex callback must return a boolean value.",
                 );
             }
-            lowerer.context.emit(`if (${matched.cpp}) {`);
+            lowerer.context.emit({
+                kind: "open",
+                code: `if (${matched.cpp}) {`,
+            });
             lowerer.context.increaseIndent();
-            lowerer.context.emit(`${result} = static_cast<double>(${index});`);
-            lowerer.context.emit("break;");
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${result} = static_cast<double>(${index});`,
+            });
+            lowerer.context.emit({
+                kind: "control",
+                code: "break;",
+                transfer: "break",
+            });
             lowerer.context.decreaseIndent();
-            lowerer.context.emit("}");
+            lowerer.context.emit({ kind: "close", code: "}" });
         },
     );
     return {
@@ -1554,7 +1598,10 @@ function compileArrayFilter(state: ArrayMethodState): Value {
             lowerer.context.emit(
                 `${lowerer.context.dataTypes.cppType(filteredType)} ${output};`,
             );
-            lowerer.context.emit(`${output}.reserve(${source}.size());`);
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${output}.reserve(${source}.size());`,
+            });
         },
         (matched, callback, source, index) => {
             if (matched.kind !== "boolean") {
@@ -1563,7 +1610,10 @@ function compileArrayFilter(state: ArrayMethodState): Value {
                     "Array.filter callback must return a boolean value.",
                 );
             }
-            lowerer.context.emit(`if (${matched.cpp}) {`);
+            lowerer.context.emit({
+                kind: "open",
+                code: `if (${matched.cpp}) {`,
+            });
             lowerer.context.increaseIndent();
             const cpp = `${source}[${index}]`;
             const selected =
@@ -1571,11 +1621,12 @@ function compileArrayFilter(state: ArrayMethodState): Value {
                 filteredType.element.kind !== "optional"
                     ? lowerer.leafValue(`(*${cpp})`, dataType.element.inner)
                     : lowerer.leafValue(cpp, dataType.element);
-            lowerer.context.emit(
-                `${output}.push_back(${lowerer.compileKnownValueForSink(selected, filteredType.element, call)});`,
-            );
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${output}.push_back(${lowerer.compileKnownValueForSink(selected, filteredType.element, call)});`,
+            });
             lowerer.context.decreaseIndent();
-            lowerer.context.emit("}");
+            lowerer.context.emit({ kind: "close", code: "}" });
         },
     );
     lowerer.registerLocal(output, "owned");
@@ -1637,9 +1688,11 @@ function compileArrayReduce(state: ArrayMethodState): Value {
         name: accumulator,
         initializer: lowerer.compileForSink(argumentAt(call, 1), resultType),
     });
-    lowerer.context.emit(
-        `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
-    );
+    lowerer.context.emit({
+        kind: "open",
+        code: `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
+        iteration: true,
+    });
     lowerer.context.increaseIndent();
     lowerer.context.bindings.pushScope(lowerer.context.allocateBlockPrefix());
     try {
@@ -1691,9 +1744,10 @@ function compileArrayReduce(state: ArrayMethodState): Value {
                       arguments_,
                       call,
                   );
-            lowerer.context.emit(
-                `${accumulator} = ${lowerer.compileKnownValueForSink(reduced, resultType, callback)};`,
-            );
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${accumulator} = ${lowerer.compileKnownValueForSink(reduced, resultType, callback)};`,
+            });
         } finally {
             lowerer.context.leaveRuntimeIteration();
         }
@@ -1701,7 +1755,7 @@ function compileArrayReduce(state: ArrayMethodState): Value {
         lowerer.context.bindings.popScope();
         lowerer.context.decreaseIndent();
     }
-    lowerer.context.emit("}");
+    lowerer.context.emit({ kind: "close", code: "}" });
     lowerer.registerLocal(accumulator, "owned");
     return lowerer.leafValue(accumulator, resultType);
 }
@@ -1730,12 +1784,22 @@ function compileArraySome(state: ArrayMethodState): Value {
                     "Array.some callback must return a boolean value.",
                 );
             }
-            lowerer.context.emit(`if (${matched.cpp}) {`);
+            lowerer.context.emit({
+                kind: "open",
+                code: `if (${matched.cpp}) {`,
+            });
             lowerer.context.increaseIndent();
-            lowerer.context.emit(`${result} = true;`);
-            lowerer.context.emit("break;");
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${result} = true;`,
+            });
+            lowerer.context.emit({
+                kind: "control",
+                code: "break;",
+                transfer: "break",
+            });
             lowerer.context.decreaseIndent();
-            lowerer.context.emit("}");
+            lowerer.context.emit({ kind: "close", code: "}" });
         },
     );
     return {
@@ -1769,12 +1833,22 @@ function compileArrayEvery(state: ArrayMethodState): Value {
                     "Array.every callback must return a boolean value.",
                 );
             }
-            lowerer.context.emit(`if (!(${matched.cpp})) {`);
+            lowerer.context.emit({
+                kind: "open",
+                code: `if (!(${matched.cpp})) {`,
+            });
             lowerer.context.increaseIndent();
-            lowerer.context.emit(`${result} = false;`);
-            lowerer.context.emit("break;");
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${result} = false;`,
+            });
+            lowerer.context.emit({
+                kind: "control",
+                code: "break;",
+                transfer: "break",
+            });
             lowerer.context.decreaseIndent();
-            lowerer.context.emit("}");
+            lowerer.context.emit({ kind: "close", code: "}" });
         },
     );
     return {
@@ -1819,18 +1893,26 @@ function compileArrayMap(
             initializer: narrowed.cpp,
         });
         lowerer.context.emit(`bbl::js::Array<double> ${output};`);
-        lowerer.context.emit(`${output}.reserve(${source}.size());`);
-        lowerer.context.emit(
-            `for (std::size_t ${index} = 0; ${index} < ${source}.size(); ++${index}) {`,
-        );
+        lowerer.context.emit({
+            kind: "expression",
+            code: `${output}.reserve(${source}.size());`,
+        });
+        lowerer.context.emit({
+            kind: "open",
+            code: `for (std::size_t ${index} = 0; ${index} < ${source}.size(); ++${index}) {`,
+            iteration: true,
+        });
         lowerer.context.increaseIndent();
         const converted =
             dataType.element.kind === "string"
                 ? `bbl::js::number_from_string(${source}[${index}])`
                 : `static_cast<double>(${source}[${index}])`;
-        lowerer.context.emit(`${output}.push_back(${converted});`);
+        lowerer.context.emit({
+            kind: "expression",
+            code: `${output}.push_back(${converted});`,
+        });
         lowerer.context.decreaseIndent();
-        lowerer.context.emit("}");
+        lowerer.context.emit({ kind: "close", code: "}" });
         lowerer.registerLocal(output, "owned");
         return {
             kind: "data",
@@ -1849,7 +1931,10 @@ function compileArrayMap(
             lowerer.context.emit(
                 `bbl::js::Array<${lowerer.context.dataTypes.cppType(mappedType.element)}> ${output};`,
             );
-            lowerer.context.emit(`${output}.reserve(${source}.size());`);
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${output}.reserve(${source}.size());`,
+            });
         },
         (result, callback) => {
             if (
@@ -1874,9 +1959,10 @@ function compileArrayMap(
                     mappedType,
                     callback,
                 );
-                lowerer.context.emit(
-                    `bbl::js::array_append(${output}, ${values});`,
-                );
+                lowerer.context.emit({
+                    kind: "expression",
+                    code: `bbl::js::array_append(${output}, ${values});`,
+                });
                 return;
             }
             let value: string;
@@ -1889,7 +1975,10 @@ function compileArrayMap(
                 // run; preserve a concise call expression too, then
                 // store the fulfilled token consumed by Promise.all.
                 if (result.cpp.length > 0) {
-                    lowerer.context.emit(`${result.cpp};`);
+                    lowerer.context.emit({
+                        kind: "expression",
+                        code: `${result.cpp};`,
+                    });
                 }
                 value = "true";
             } else {
@@ -1910,7 +1999,10 @@ function compileArrayMap(
                     callback,
                 );
             }
-            lowerer.context.emit(`${output}.push_back(${value});`);
+            lowerer.context.emit({
+                kind: "expression",
+                code: `${output}.push_back(${value});`,
+            });
         },
     );
     lowerer.registerLocal(output, "owned");
@@ -2149,9 +2241,13 @@ function compileArrayPush(state: ArrayMethodState): Value {
                 );
                 const source =
                     lowerer.context.allocateTemporaryCppName("push_spread");
-                lowerer.context.emit(
-                    `${lowerer.context.dataTypes.cppType(dataType)} ${source}{${values.join(", ")}};`,
-                );
+                lowerer.context.emit({
+                    kind: "declaration",
+                    type: lowerer.context.dataTypes.cppType(dataType),
+                    name: source,
+                    initializer: values.join(", "),
+                    initialization: "direct",
+                });
                 return `${receiver}.insert(${receiver}.end(), ${source}.begin(), ${source}.end())`;
             }
             let source: string;
@@ -2184,9 +2280,12 @@ function compileArrayPush(state: ArrayMethodState): Value {
             }
             const copy =
                 lowerer.context.allocateTemporaryCppName("push_spread");
-            lowerer.context.emit(
-                `auto ${copy} = bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${source});`,
-            );
+            lowerer.context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: copy,
+                initializer: `bbl::js::array_from_iterable<${lowerer.context.dataTypes.cppType(dataType.element)}>(${source})`,
+            });
             return `${receiver}.insert(${receiver}.end(), ${copy}.begin(), ${copy}.end())`;
         }
         if (
@@ -2980,9 +3079,13 @@ function compileStringDataMethod(
         }
         const regex =
             lowerer.context.allocateTemporaryCppName("replace_pattern");
-        lowerer.context.emit(
-            `[[maybe_unused]] const auto ${regex} = ${pattern.cpp};`,
-        );
+        lowerer.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: regex,
+            initializer: pattern.cpp,
+            attributes: "[[maybe_unused]] ",
+        });
         const replacementValue = lowerer.context.compileValue(
             argumentAt(call, 1),
         );

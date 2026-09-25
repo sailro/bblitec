@@ -153,7 +153,10 @@ function writeVec3Lanes(
 ): void {
     const lanes = writableVec3Lanes(context, output, outputNode);
     for (let index = 0; index < 3; index += 1) {
-        context.emit(`${lanes[index]} = ${components[index]};`);
+        context.emit({
+            kind: "expression",
+            code: `${lanes[index]} = ${components[index]};`,
+        });
     }
 }
 
@@ -164,10 +167,12 @@ function compileVec3Temporary(
 ): string {
     const value = context.compileValue(expression);
     const temporary = context.allocateTemporaryCppName(label);
-    context.emit(
-        `const bbl::Vec3d ${temporary} = ` +
-            `${context.vec3FromRecord(value, expression, "double")};`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::Vec3d",
+        name: temporary,
+        initializer: context.vec3FromRecord(value, expression, "double"),
+    });
     return temporary;
 }
 
@@ -718,9 +723,10 @@ function compileCreateMeshFromCsg2(
                 "The pinned CSG2 output named an absent material slot.",
             );
         if (material) {
-            context.emit(
-                `${recordAt(`${engine.cpp}.meshes`, cpp)}.material = ${material.cpp};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${recordAt(`${engine.cpp}.meshes`, cpp)}.material = ${material.cpp};`,
+            });
             context.sceneManifest.recordSceneMeshMaterial(sceneMeshIndex, {
                 pbrMaterial: null,
                 nodeMaterial: null,
@@ -765,11 +771,12 @@ function compileQuatFromLookDirectionRH(
     );
     const up = compileVec3Temporary(context, argumentAt(call, 1), "look_up");
     const temporary = context.allocateTemporaryCppName("look_quaternion");
-    context.emit(
-        `const auto ${temporary} = ` +
-            `bbl::upstream::quat_from_look_direction_rh(` +
-            `${forward}, ${up});`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: temporary,
+        initializer: `bbl::upstream::quat_from_look_direction_rh(${forward}, ${up})`,
+    });
     return quatRecord(temporary);
 }
 
@@ -791,7 +798,13 @@ function compileAddVec3(
     );
     const temporary = context.allocateTemporaryCppName("vec3_result");
     const components = binaryVec3Components(importedName, left, right);
-    context.emit(`const bbl::Vec3d ${temporary}{${components.join(", ")}};`);
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::Vec3d",
+        name: temporary,
+        initializer: components.join(", "),
+        initialization: "direct",
+    });
     return vec3Record(temporary);
 }
 
@@ -829,11 +842,13 @@ function compileScaleVec3(
     );
     const scalar = context.compileNumber(argumentAt(call, 1), "double");
     const temporary = context.allocateTemporaryCppName("vec3_result");
-    context.emit(
-        `const bbl::Vec3d ${temporary}{` +
-            `${vector}.x * ${scalar}, ${vector}.y * ${scalar}, ` +
-            `${vector}.z * ${scalar}};`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::Vec3d",
+        name: temporary,
+        initializer: `${vector}.x * ${scalar}, ${vector}.y * ${scalar}, ${vector}.z * ${scalar}`,
+        initialization: "direct",
+    });
     return vec3Record(temporary);
 }
 
@@ -999,7 +1014,12 @@ function compileQuaternionTuple(
         const temporary = context.allocateTemporaryCppName(
             "quaternion_argument",
         );
-        context.emit(`const double ${temporary} = ${value};`);
+        context.emit({
+            kind: "declaration",
+            type: "const double",
+            name: temporary,
+            initializer: value,
+        });
         return temporary;
     });
     return {
@@ -1045,11 +1065,12 @@ function compileNormalizeVec3Object(
         "normalize_input",
     );
     const temporary = context.allocateTemporaryCppName("normalized_vec3");
-    context.emit(
-        `const bbl::Vec3d ${temporary} = ` +
-            `bbl::upstream::normalize_vec3_object(` +
-            `${input});`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: "const bbl::Vec3d",
+        name: temporary,
+        initializer: `bbl::upstream::normalize_vec3_object(${input})`,
+    });
     return vec3Record(temporary);
 }
 
@@ -1076,13 +1097,15 @@ function compileNormalizeVec3ToRef(
         name: epsilon,
         initializer: epsilonCpp,
     });
-    context.emit(
-        `const double ${length} = std::hypot(` +
-            `${input}.x, ${input}.y, ${input}.z);`,
-    );
-    context.emit(`if (${length} <= ${epsilon}) {`);
+    context.emit({
+        kind: "declaration",
+        type: "const double",
+        name: length,
+        initializer: `std::hypot(${input}.x, ${input}.y, ${input}.z)`,
+    });
+    context.emit({ kind: "open", code: `if (${length} <= ${epsilon}) {` });
     writeVec3Lanes(context, output, argumentAt(call, 1), ["0.0", "0.0", "0.0"]);
-    context.emit("} else {");
+    context.emit({ kind: "branch", code: "} else {" });
     const inverse = context.allocateTemporaryCppName("normalize_inverse");
     context.emit({
         kind: "declaration",
@@ -1092,9 +1115,12 @@ function compileNormalizeVec3ToRef(
     });
     for (let index = 0; index < 3; index += 1) {
         const component = ["x", "y", "z"][index]!;
-        context.emit(`${lanes[index]} = ${input}.${component} * ${inverse};`);
+        context.emit({
+            kind: "expression",
+            code: `${lanes[index]} = ${input}.${component} * ${inverse};`,
+        });
     }
-    context.emit("}");
+    context.emit({ kind: "close", code: "}" });
     return output;
 }
 
@@ -1505,11 +1531,12 @@ function compileCreateHierarchyInstancePool(
     // those links, and the scene core owns the same matrix helpers.
     context.reachFeature("mesh:parenting", call);
     context.sceneManifest.recordThinInstanceMesh(undefined);
-    context.emit(
-        `const ${handleCppType("hierarchy-instance-pool")} ${pool} = ` +
-            `bbl::create_hierarchy_instance_pool(` +
-            `${engine}, ${root.cpp}, ${capacity});`,
-    );
+    context.emit({
+        kind: "declaration",
+        type: `const ${handleCppType("hierarchy-instance-pool")}`,
+        name: pool,
+        initializer: `bbl::create_hierarchy_instance_pool(${engine}, ${root.cpp}, ${capacity})`,
+    });
     return {
         kind: "hierarchy-instance-pool",
         cpp: pool,
@@ -1619,10 +1646,12 @@ function compileSetThinInstances(
             );
         }
         matrices = context.allocateTemporaryCppName("thin_instances");
-        context.emit(
-            `${constantPool ? "static " : ""}bbl::js::F32Array ` +
-                `${matrices} = ${matricesExpression};`,
-        );
+        context.emit({
+            kind: "declaration",
+            type: `${constantPool ? "static " : ""}bbl::js::F32Array`,
+            name: matrices,
+            initializer: matricesExpression,
+        });
     }
     const count = context.compileNumber(argumentAt(call, 2));
     context.reachFeature("mesh:thin-instances", call);

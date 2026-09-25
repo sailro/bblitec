@@ -619,9 +619,10 @@ export function compileParticleIntrinsic(
             });
             if (provider) {
                 context.reachJsRandom();
-                context.emit(
-                    `bbl::upstream::initialize_native_node_particle_set(${context.sceneManifest.reachedNodeParticles.sets.length - 1}, ${provider.callbackCpp}, ${provider.initialMatrixCpp});`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `bbl::upstream::initialize_native_node_particle_set(${context.sceneManifest.reachedNodeParticles.sets.length - 1}, ${provider.callbackCpp}, ${provider.initialMatrixCpp});`,
+                });
             }
             return {
                 kind: "node-particle-set",
@@ -745,10 +746,12 @@ export function compileParticleIntrinsic(
             writable(frozen).synced = true;
             const engineCpp =
                 billboard.engineCpp ?? context.requireDefaultEngine(call);
-            context.emit(
-                "bbl::upstream::sync_node_particle_billboard(" +
+            context.emit({
+                kind: "expression",
+                code:
+                    "bbl::upstream::sync_node_particle_billboard(" +
                     `${engineCpp}, ${set}, ${system}, ${billboard.cpp});`,
-            );
+            });
             return { kind: "void", cpp: "" };
         }
 
@@ -847,11 +850,13 @@ export function compileParticleIntrinsic(
             context.reachFeature("renderer:scene", call);
             // The call is named by its own request index, not by the
             // set's: which systems it walks is what the bake observed.
-            context.emit(
-                "bbl::upstream::register_node_particle_set(" +
+            context.emit({
+                kind: "expression",
+                code:
+                    "bbl::upstream::register_node_particle_set(" +
                     `${engineCpp}, ${scene.cpp}, ` +
                     `${context.sceneManifest.reachedNodeParticles.registrations.length - 1});`,
-            );
+            });
             return { kind: "void", cpp: "" };
         }
 
@@ -933,11 +938,13 @@ export function compileParticleIntrinsic(
             context.reachFeature("particle:node", call);
             const request =
                 context.sceneManifest.reachedNodeParticles.sprite2d.length - 1;
-            context.emit(
-                "bbl::upstream::register_node_particle_set_2d(" +
+            context.emit({
+                kind: "expression",
+                code:
+                    "bbl::upstream::register_node_particle_set_2d(" +
                     `${renderer.engineCpp ?? context.requireDefaultEngine(call)}, ` +
                     `${renderer.cpp}, ${request});`,
-            );
+            });
             // The binding upstream owns the hook and the layers it attached,
             // and every operation on it -- disposal above all -- refuses at
             // its own intrinsic. What the corpus does with a FROZEN one is

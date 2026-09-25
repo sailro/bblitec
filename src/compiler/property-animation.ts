@@ -87,9 +87,10 @@ export class PropertyAnimationTargetLowerer {
                         );
                     }
                     context.useNativeValue(target);
-                    context.emit(
-                        `if (!${owner.cpp}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`,
-                    );
+                    context.emit({
+                        kind: "expression",
+                        code: `if (!${owner.cpp}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`,
+                    });
                     owner = {
                         kind: "data",
                         cpp: `${owner.cpp}->${field.name}`,
@@ -143,9 +144,10 @@ export class PropertyAnimationTargetLowerer {
                     name: captured,
                     initializer: owner.cpp,
                 });
-                context.emit(
-                    `if (!${captured}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `if (!${captured}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`,
+                });
                 const binding = context.registerNativeBinding(captured);
                 return this.scalarTarget(
                     context,
@@ -245,7 +247,10 @@ export class PropertyAnimationTargetLowerer {
         const closure = context.captureManagedClosureLines(() => {
             context.registerNativeBinding(argument, false, true, "float");
             context.useNativeValue(retained);
-            context.emit(`${fieldCpp} = static_cast<double>(${argument});`);
+            context.emit({
+                kind: "expression",
+                code: `${fieldCpp} = static_cast<double>(${argument});`,
+            });
         });
         return (
             `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, {}, 0u, ` +

@@ -215,9 +215,10 @@ function compileLiteralComputeTextureOptions(
                         );
                     cpp = stringLiteral(literal);
                 }
-                context.emit(
-                    `${target}.descriptor.sampler.${fields[field]} = ${cpp};`,
-                );
+                context.emit({
+                    kind: "expression",
+                    code: `${target}.descriptor.sampler.${fields[field]} = ${cpp};`,
+                });
             }
             continue;
         }
@@ -226,9 +227,10 @@ function compileLiteralComputeTextureOptions(
             key === "height" ||
             key === "depthOrArrayLayers"
         ) {
-            context.emit(
-                `${target}.${key === "depthOrArrayLayers" ? "depth" : key} = ${context.compileNumber(value)};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${target}.${key === "depthOrArrayLayers" ? "depth" : key} = ${context.compileNumber(value)};`,
+            });
         } else if (
             key === "mipMaps" ||
             key === "sampled" ||
@@ -240,13 +242,17 @@ function compileLiteralComputeTextureOptions(
                     : key === "invertY"
                       ? "invert_y"
                       : "sampled";
-            context.emit(
-                `${target}.${member} = ${context.compileBoolean(value)};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${target}.${member} = ${context.compileBoolean(value)};`,
+            });
         } else if (key === "label") {
             const label = context.compileValue(value);
             context.expectKind(label, "string", value);
-            context.emit(`${target}.descriptor.label = ${label.cpp};`);
+            context.emit({
+                kind: "expression",
+                code: `${target}.descriptor.label = ${label.cpp};`,
+            });
         } else {
             const literal = context.compileStringLiteral(value);
             const accepted =
@@ -273,11 +279,15 @@ function compileLiteralComputeTextureOptions(
                     : key === "access"
                       ? "accesses"
                       : "format";
-            context.emit(
-                `${target}.descriptor.${member} = ${key === "access" ? `{${stringLiteral(literal)}}` : stringLiteral(literal)};`,
-            );
+            context.emit({
+                kind: "expression",
+                code: `${target}.descriptor.${member} = ${key === "access" ? `{${stringLiteral(literal)}}` : stringLiteral(literal)};`,
+            });
             if (key === "access")
-                context.emit(`${target}.access_supplied = true;`);
+                context.emit({
+                    kind: "expression",
+                    code: `${target}.access_supplied = true;`,
+                });
         }
     }
     return target;

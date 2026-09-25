@@ -96,9 +96,13 @@ export class NativeEmissionRegistry {
                     this.context.allocateTemporaryCppName("record_table");
                 table.runtimeRecordCpp = cppName;
                 table.runtimeRecordScope = this.context.activeEmissionScope;
-                this.context.emit(
-                    `${mapType} ${cppName}{${entries.join(", ")}};`,
-                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: mapType,
+                    name: cppName,
+                    initializer: entries.join(", "),
+                    initialization: "direct",
+                });
                 return cppName;
             }
             return owner.runtimeRecordCpp;
@@ -120,11 +124,14 @@ export class NativeEmissionRegistry {
     public registerNativeFunction(
         prototype: string,
         definitionLines: string[],
-        source: ts.Node = this.context.sourceFile,
+        source: ts.Node | string = this.context.sourceFile,
     ): void {
         this.nativeDefinitions.push({
             kind: "function",
-            source: source.getSourceFile().fileName,
+            source:
+                typeof source === "string"
+                    ? source
+                    : source.getSourceFile().fileName,
             prototype,
             lines: definitionLines,
         });

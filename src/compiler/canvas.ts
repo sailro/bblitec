@@ -320,6 +320,9 @@ export function emitCanvasAssignment(
         target.expression,
     );
     const value = context.compileNumber(expression.right, "double");
-    context.emit(`${receiver.cpp}->set_${target.name.text}(${value});`);
+    context.emit({
+        kind: "expression",
+        code: `${receiver.cpp}->set_${target.name.text}(${value});`,
+    });
     return true;
 }

@@ -151,13 +151,17 @@ export class ConditionLowerer {
                         initializer: left,
                     });
                     this.context.registerNativeBinding(result);
-                    this.context.emit(
-                        `if (${isAnd ? result : `!${result}`}) {`,
-                    );
+                    this.context.emit({
+                        kind: "open",
+                        code: `if (${isAnd ? result : `!${result}`}) {`,
+                    });
                     for (const line of rightLines)
                         this.context.emit(`    ${line}`);
-                    this.context.emit(`    ${result} = ${right};`);
-                    this.context.emit("}");
+                    this.context.emit({
+                        kind: "expression",
+                        code: `    ${result} = ${right};`,
+                    });
+                    this.context.emit({ kind: "close", code: "}" });
                     return result;
                 }
                 const guardedLines = rightLines

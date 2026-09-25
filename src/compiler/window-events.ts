@@ -39,7 +39,10 @@ export function emitWindowLocationAssignment(
     if (!context.options.runtimeLocationSearch)
         throw new RuntimeSearchParamsRequired(true);
     const value = lowerer.compileForSink(expression.right, { kind: "string" });
-    context.emit(`bbl::pal::window_location_set_search(${value});`);
+    context.emit({
+        kind: "expression",
+        code: `bbl::pal::window_location_set_search(${value});`,
+    });
     return true;
 }
 

@@ -21,6 +21,11 @@ import type { NativeCaptureBinding } from "./closure-captures.js";
 import type { NativeDeclaration } from "./native-declarations.js";
 import type { UiProjection } from "./ui-projection.js";
 import type { LoweringServices } from "./lowering-services.js";
+import {
+    renderNativeEmission,
+    verbatimEmission,
+    type NativeEmission,
+} from "./native-statements.js";
 
 /** What the engine lifecycle reads of the compiler. */
 interface EngineLifecycleContext extends Pick<
@@ -52,7 +57,7 @@ interface EngineLifecycleContext extends Pick<
     | "unwrap"
     | "asyncActivations"
 > {
-    readonly body: string[];
+    readonly body: NativeEmission[];
     readonly indentLevel: number;
     readonly nativeDeclarations: EmissionMap<string, NativeDeclaration>;
     readonly program: ts.Program;
@@ -387,9 +392,10 @@ export class EngineLifecycle {
             name: cppName,
             initializer: "false",
         });
-        this.context.emit(
-            `${bound.cpp} = [&${cppName}]() { ${cppName} = true; };`,
-        );
+        this.context.emit({
+            kind: "expression",
+            code: `${bound.cpp} = [&${cppName}]() { ${cppName} = true; };`,
+        });
         this.promiseLatches.set(symbol, cppName);
         return true;
     }
@@ -640,9 +646,10 @@ export class EngineLifecycle {
     public markEngineStart(engineCpp: string, node: ts.Node): void {
         this.emitDeviceRecoveryCallbacks();
         if (this.context.ui.primaryCanvasReadyGate)
-            this.context.emit(
-                `bbl::defer_capture_until(${engineCpp}, [&]() { return bbl::canvas_dataset(${engineCpp}, "ready") == "true"; });`,
-            );
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::defer_capture_until(${engineCpp}, [&]() { return bbl::canvas_dataset(${engineCpp}, "ready") == "true"; });`,
+            });
         if (this.engineStartMark) {
             this.context.fail(
                 node,
@@ -774,7 +781,7 @@ export class EngineLifecycle {
             initializer: `bbl::js::finally([&]() { ${guard}.run(); })`,
         });
         for (const line of body.slice(start + 1)) this.context.emit(line);
-        this.context.emit(`${completion}.run();`);
+        this.context.emit({ kind: "expression", code: `${completion}.run();` });
         return true;
     }
 
@@ -787,14 +794,18 @@ export class EngineLifecycle {
         let index = mark.index;
         while (
             index < this.context.body.length &&
-            !this.context.body[index]!.includes("bbl::start_engine(")
+            !renderNativeEmission(this.context.body[index]!).includes(
+                "bbl::start_engine(",
+            )
         ) {
             index += 1;
         }
         if (index >= this.context.body.length) {
             return;
         }
-        const tail = this.context.body.splice(index + 1);
+        const tail = this.context.body
+            .splice(index + 1)
+            .map(renderNativeEmission);
         if (tail.length === 0) {
             return;
         }
@@ -806,7 +817,9 @@ export class EngineLifecycle {
         // than guessed from the lowering scope.
         const depth = (line: string): number =>
             line.length - line.trimStart().length;
-        const startDepth = depth(this.context.body[index]!);
+        const startDepth = depth(
+            renderNativeEmission(this.context.body[index]!),
+        );
         const escapes = tail.find(
             (line) => line.trim().length > 0 && depth(line) < startDepth,
         );
@@ -904,6 +917,6 @@ export class EngineLifecycle {
             nested.unshift(
                 `${indent}auto ${storage} = std::make_shared<bbl::ContinuationStorage>();`,
             );
-        this.context.body.splice(index, 0, ...nested);
+        this.context.body.splice(index, 0, ...nested.map(verbatimEmission));
     }
 }

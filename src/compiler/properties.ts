@@ -2178,9 +2178,11 @@ export class PropertyAccessLowerer {
                 const engine = this.context.requireEngine(owner, expression);
                 const compiled = this.context.captureManagedClosureLines(() => {
                     this.context.useNativeValue(owner);
-                    this.context.emit(
-                        `return bbl::ui_decode_image(${engine}, ${owner.cpp});`,
-                    );
+                    this.context.emit({
+                        kind: "control",
+                        code: `return bbl::ui_decode_image(${engine}, ${owner.cpp});`,
+                        transfer: "return",
+                    });
                 });
                 const type: DataType = {
                     kind: "function",

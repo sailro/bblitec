@@ -346,7 +346,10 @@ export class DeclarationLowerer {
                     type,
                     declaration.initializer,
                 );
-            this.context.emit(`${cppName}->initialize(${initializer});`);
+            this.context.emit({
+                kind: "expression",
+                code: `${cppName}->initialize(${initializer});`,
+            });
             return;
         }
         const sharedClosureStorage =
@@ -1356,9 +1359,10 @@ export class DeclarationLowerer {
             };
             if (owner.recordMethods) delete writable(owner.recordMethods)[key];
             initializers.push(() =>
-                this.context.emit(
-                    `(*${slot}) = ${this.context.dataLowerer.compileKnownValueForSink(callback, type, site)};`,
-                ),
+                this.context.emit({
+                    kind: "expression",
+                    code: `(*${slot}) = ${this.context.dataLowerer.compileKnownValueForSink(callback, type, site)};`,
+                }),
             );
         }
         for (const initialize of initializers) initialize();
@@ -1487,7 +1491,10 @@ export class DeclarationLowerer {
             // observer method returning its unsubscribe closure) is already
             // a native std::function. Fill the forward slot from that value;
             // there is no source declaration left to specialize again.
-            this.context.emit(`${forward.storageCpp} = ${value.cpp};`);
+            this.context.emit({
+                kind: "expression",
+                code: `${forward.storageCpp} = ${value.cpp};`,
+            });
             this.context.bindings.rebindVariable(name, {
                 kind: "callback",
                 cpp: forward.storageCpp,
@@ -1528,9 +1535,10 @@ export class DeclarationLowerer {
             (type, index) =>
                 `${this.context.dataTypes.cppType(type)} ${forward.parameterNames[index]}`,
         );
-        this.context.emit(
-            `${forward.storageCpp} = ${this.context.nativeEmission.renderSharedClosure(compiled, "void", value.callbackDeclaration, parameters.join(", "), forward.parameterNames)};`,
-        );
+        this.context.emit({
+            kind: "expression",
+            code: `${forward.storageCpp} = ${this.context.nativeEmission.renderSharedClosure(compiled, "void", value.callbackDeclaration, parameters.join(", "), forward.parameterNames)};`,
+        });
         this.context.bindings.rebindVariable(name, {
             kind: "callback",
             cpp: forward.storageCpp,
@@ -1617,9 +1625,13 @@ export class DeclarationLowerer {
                 this.context.reachJsData();
                 const identity =
                     this.context.allocateTemporaryCppName("callback_identity");
-                this.context.emit(
-                    `[[maybe_unused]] const auto ${identity} = bbl::js::next_callback_identity();`,
-                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: identity,
+                    initializer: "bbl::js::next_callback_identity()",
+                    attributes: "[[maybe_unused]] ",
+                });
                 this.context.registerNativeBinding(
                     identity,
                     false,
@@ -1671,7 +1683,10 @@ export class DeclarationLowerer {
                 callback,
                 type,
             );
-            this.context.emit(`${value.cpp} = ${compiled};`);
+            this.context.emit({
+                kind: "expression",
+                code: `${value.cpp} = ${compiled};`,
+            });
             return;
         }
         if (!ts.isBlock(callback.body)) {
@@ -1813,9 +1828,10 @@ export class DeclarationLowerer {
                     !escapes,
                 ),
         );
-        this.context.emit(
-            `${storage.cpp} = ${this.context.nativeEmission.renderSharedClosure(compiled, returnCpp, callback, parameterDeclarations.join(", "), [])};`,
-        );
+        this.context.emit({
+            kind: "expression",
+            code: `${storage.cpp} = ${this.context.nativeEmission.renderSharedClosure(compiled, returnCpp, callback, parameterDeclarations.join(", "), [])};`,
+        });
     }
 
     /**
@@ -2350,7 +2366,10 @@ export class DeclarationLowerer {
                     initializer: `bbl::js::make_gc_shared<${this.context.dataTypes.cppType(annotated)}>(std::move(${targetCpp}))`,
                 });
             } else if (selfReferentialBinding) {
-                this.context.emit(`(*${cppName}) = std::move(${targetCpp});`);
+                this.context.emit({
+                    kind: "expression",
+                    code: `(*${cppName}) = std::move(${targetCpp});`,
+                });
             }
         } else {
             const initializerCpp = this.context.takeNativeTemporary(
@@ -3009,7 +3028,12 @@ export class DeclarationLowerer {
         if (value.dataType?.kind === "product") {
             const temporary =
                 this.context.allocateTemporaryCppName("destructure_tuple");
-            this.context.emit(`const auto ${temporary} = ${value.cpp};`);
+            this.context.emit({
+                kind: "declaration",
+                type: "const auto",
+                name: temporary,
+                initializer: value.cpp,
+            });
             bindings.forEach((element, index) => {
                 if (index === restIndex && restName) {
                     this.context.bindings.bindLocalValue(
@@ -3154,9 +3178,12 @@ export class DeclarationLowerer {
         }
         const cppName = this.context.bindings.cppIdentifier(name.text);
         this.context.reachJsData();
-        this.context.emit(
-            `${this.context.dataTypes.cppType(type)} ${cppName} = ${initializer};`,
-        );
+        this.context.emit({
+            kind: "declaration",
+            type: this.context.dataTypes.cppType(type),
+            name: cppName,
+            initializer: initializer,
+        });
         this.context.bindings.defineVariable(
             name,
             this.context.dataLowerer.leafValue(cppName, type),
@@ -3257,9 +3284,12 @@ export class DeclarationLowerer {
                     field.type.kind !== "string" &&
                     field.type.kind !== "enum" &&
                     field.type.kind !== "handle";
-                this.context.emit(
-                    `${this.context.dataTypes.cppType(field.type)}${aliases ? "&" : ""} ${cppName} = ${fieldCpp};`,
-                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: `${this.context.dataTypes.cppType(field.type)}${aliases ? "&" : ""}`,
+                    name: cppName,
+                    initializer: fieldCpp,
+                });
                 const fieldValue = this.context.dataLowerer.leafValue(
                     cppName,
                     field.type,

@@ -143,9 +143,13 @@ function* identifierTokens(
             };
 }
 
-export function cppIdentifiers(source: string): ReadonlySet<string> {
+export function cppIdentifiers(
+    source: string,
+    options?: { unqualified?: true },
+): ReadonlySet<string> {
     const names = new Set<string>();
-    for (const token of identifierTokens(source)) names.add(token.name);
+    for (const token of identifierTokens(source))
+        if (!options?.unqualified || !token.qualified) names.add(token.name);
     return names;
 }
 

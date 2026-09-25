@@ -369,7 +369,10 @@ export function emitBrowserFileAssignment(
         true,
         false,
     );
-    context.emit(`${reader.cpp}.set_${property}(${handler.cpp});`);
+    context.emit({
+        kind: "expression",
+        code: `${reader.cpp}.set_${property}(${handler.cpp});`,
+    });
     return true;
 }
 

@@ -283,7 +283,10 @@ export function emitDeterministicRandomInstall(
                       parameters: [],
                       result: { kind: "number" },
                   });
-        context.emit(`bbl::js::set_random_override(${callback});`);
+        context.emit({
+            kind: "expression",
+            code: `bbl::js::set_random_override(${callback});`,
+        });
         return true;
     }
     // `Math.random = original`: the scene closing the seeded window it
