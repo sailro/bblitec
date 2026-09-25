@@ -74,7 +74,7 @@ export interface MaterialOptionContext
             | "checker"
             | "compileValue"
             | "compileForDataSink"
-            | "noteMaterialColorRead"
+            | "admissions"
             | "expectKind"
             | "expectObjectLiteral"
             | "objectProperty"
@@ -718,7 +718,7 @@ function compilePbrBaseColorFactor(
     const resolved = context.resolveStaticExpression(expression);
     const retainedStorage = (): string => {
         if (!ts.isArrayLiteralExpression(expression))
-            context.noteMaterialColorRead("baseColorFactor");
+            context.admissions.noteMaterialColorRead("baseColorFactor");
         return `(${context.compileForDataSink(expression, { kind: "vector", element: { kind: "number" } })}).retained_storage()`;
     };
     if (

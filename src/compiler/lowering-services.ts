@@ -46,6 +46,7 @@ import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
 import type { PropertyAccessLowerer } from "./properties.js";
+import type { AdmissionRecorder } from "./admissions.js";
 import type { IntrinsicOptions } from "./intrinsic-options.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
@@ -117,6 +118,7 @@ export interface LoweringServices {
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
     readonly propertyAccess: PropertyAccessLowerer;
+    readonly admissions: AdmissionRecorder;
     readonly intrinsicOptions: IntrinsicOptions;
     readonly userFunctions: UserFunctionLowerer;
     readonly dataTypes: DataTypeRegistry;
@@ -152,20 +154,7 @@ export interface LoweringServices {
     compileTextMutation(expression: ts.Expression): Value | undefined;
     compileNodeInputMutation(expression: ts.Expression): Value | undefined;
     checkNodeGeometryMutation(expression: ts.Expression): void;
-    noteNodeGeometryMutation(node: ts.Node): void;
-    assertNodeInputMutable(node: ts.Node): void;
-    noteNodeInputAdmissionFailure(node: ts.Node, message: string): void;
-    noteTextCameraControl(
-        node: ts.Node,
-        camera: Value,
-        arcRotate: boolean,
-    ): void;
-    noteTextSceneLifecycle(node: ts.Node, message?: string): void;
-    noteTextSceneCameraAssignment(node: ts.Node): void;
-    assertTextPipelineMutable(node: ts.Node): void;
     promoteTextData(node: ts.Node): void;
-    recordTextAttachment(node: ts.Node): void;
-    assertTextDisposal(node: ts.Node): void;
     emitDiscardedValue(value: Value): void;
     emitAssignment(expression: ts.BinaryExpression): void;
     /** `??=`, `||=`, `&&=` over a data-model target; any other target refuses. */
@@ -480,30 +469,6 @@ export interface LoweringServices {
     emitNativeReturn(statement: ts.ReturnStatement): void;
     emitDataAssignment(expression: ts.BinaryExpression): boolean;
     emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean;
-    noteCameraVectorSet(
-        vector: NonNullable<Value["cameraVector"]>,
-        site: ts.Node,
-    ): void;
-    noteCameraVectorCopy(value: Value, site: ts.Node): void;
-    noteTemporalAdmissionFailure(node: ts.Node, message: string): void;
-    noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
-    /** A legacy tuple written into `diffuseColor`, which a numeric read of it refuses. */
-    noteLegacyDiffuseColorWrite(node: ts.Node): void;
-    noteMaterialColorRenderBoundary(
-        node: ts.Node,
-        reason: string,
-        always?: boolean,
-    ): void;
-    noteTemporalRecordBoundary(
-        node: ts.Node,
-        reason: string,
-        mode?: "runtime" | "registration" | "always",
-        scene?: Value,
-    ): void;
-    noteTemporalCameraControl(
-        node: ts.Node,
-        tracksWorldMatrixVersion?: boolean,
-    ): void;
     assignOptionalResourceValue(
         target: Value,
         value: Value,

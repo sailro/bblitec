@@ -192,7 +192,7 @@ export interface DataLoweringContext
             | "options"
             | "expectArgumentCount"
             | "sourceFile"
-            | "noteCameraVectorCopy"
+            | "admissions"
             | "libraryGlobal"
             | "useNativeValue"
             | "registerNativeBinding"
@@ -6280,7 +6280,8 @@ export class DataLowerer {
             this.context.useNativeValue(value);
             return `&(${value.cpp})`;
         }
-        if (value.cameraVector) this.context.noteCameraVectorCopy(value, node);
+        if (value.cameraVector)
+            this.context.admissions.noteCameraVectorCopy(value, node);
         this.context.useNativeValue(value);
         // A stored tuple aliases its source. Once that alias leaves the local
         // binding graph, generation cannot retain a snapshot of its contents.

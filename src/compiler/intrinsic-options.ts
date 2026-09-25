@@ -86,7 +86,11 @@ export type IntrinsicOptionsContext = AssetOptionContext &
     PropertyAnimationTargetContext &
     ShaderMaterialContext;
 
-/** The option objects of mesh, material, task, environment and animation intrinsics, and the shader programs (grid, line, linear-depth, physics-viewer, node, shader material) they reach. Each adapter delegates to its family's lowerer. */
+/**
+ * The option objects of mesh, material, task, environment and animation intrinsics, and the shader
+ * programs (grid, line, linear-depth, physics-viewer, node, shader material) they reach. Each
+ * adapter delegates to its family's lowerer.
+ */
 export class IntrinsicOptions {
     constructor(private readonly context: IntrinsicOptionsContext) {}
 

@@ -490,9 +490,7 @@ export interface AssignmentContext
         Pick<
             LoweringServices,
             | "libraryGlobal"
-            | "noteNodeInputAdmissionFailure"
-            | "noteTextSceneCameraAssignment"
-            | "noteTemporalRecordBoundary"
+            | "admissions"
             | "isRuntimeResourceConstruction"
             | "checker"
             | "classLowerer"
@@ -534,9 +532,6 @@ export interface AssignmentContext
             | "allocateTemporaryCppName"
             | "reachFeature"
             | "reachJsData"
-            | "noteLegacyDiffuseColorWrite"
-            | "noteMaterialColorRead"
-            | "noteMaterialColorRenderBoundary"
             | "propertyName"
             | "probeStaticArrayLiteral"
             | "staticStringElements"
@@ -1502,7 +1497,7 @@ export function emitPropertyAssignment(
             );
             return;
         }
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             expression,
             `authored imageProcessing.${property} writes require double-precision TAA cache-key transport`,
             "always",
@@ -2460,7 +2455,7 @@ function emitTargetPropertyAssignment(
         return true;
 
     if (target.kind === "texture" && property in textureRecordFields) {
-        context.noteNodeInputAdmissionFailure(
+        context.admissions.noteNodeInputAdmissionFailure(
             expression,
             "Node input bindings do not represent texture producer metadata mutation; configure the texture at construction.",
         );
@@ -2620,7 +2615,7 @@ function emitTargetPropertyAssignment(
             recordField.kind === "material" &&
             recordField.property === "diffuseColor"
         ) {
-            context.noteMaterialColorRenderBoundary(
+            context.admissions.noteMaterialColorRenderBoundary(
                 expression,
                 "whole color replacement after registration",
             );
@@ -2638,7 +2633,9 @@ function emitTargetPropertyAssignment(
             // A `{ r, g, b }` object falls through to `compileColor3`,
             // which refuses it: the pin's `diffuseColor` is a number tuple.
             if (legacyTuple) {
-                context.noteLegacyDiffuseColorWrite(expression.right);
+                context.admissions.noteLegacyDiffuseColorWrite(
+                    expression.right,
+                );
             } else if (!ts.isObjectLiteralExpression(shape)) {
                 // A named or returned array can also be mutated through its other
                 // owner. A fresh literal has no external alias until a getter is read.
@@ -2647,7 +2644,7 @@ function emitTargetPropertyAssignment(
                         context.unwrap(expression.right),
                     )
                 ) {
-                    context.noteMaterialColorRead("diffuseColor");
+                    context.admissions.noteMaterialColorRead("diffuseColor");
                 }
                 if (
                     ts.isArrayLiteralExpression(shape) &&
@@ -2919,7 +2916,7 @@ function emitCameraAssignment(
         requireSimpleAssignment(context, expression, "scene camera");
         const camera = context.compileValue(expression.right);
         context.expectKind(camera, "camera", expression.right);
-        context.noteTextSceneCameraAssignment(left);
+        context.admissions.noteTextSceneCameraAssignment(left);
         // The scene keeps the camera VALUE, not a copy: a property
         // written after the assignment still reaches it, and one
         // executed port -- the node-particle flow-map build -- reads
@@ -3180,11 +3177,11 @@ function emitMaterialAssignment(
 ): boolean {
     const { expression, target, property } = state;
     if (target.kind === "mesh" && property === "material") {
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             expression,
             "mesh material replacement after scene registration",
         );
-        context.noteMaterialColorRenderBoundary(
+        context.admissions.noteMaterialColorRenderBoundary(
             expression,
             "mesh material replacement after registration",
         );

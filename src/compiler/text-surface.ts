@@ -70,7 +70,7 @@ export interface TextSurfaceContext extends Pick<
     | "emit"
     | "expectKind"
     | "fail"
-    | "assertTextPipelineMutable"
+    | "admissions"
     | "libraryGlobal"
     | "reachFeature"
     | "promoteTextData"
@@ -421,7 +421,7 @@ export function compileTextMutation(
         owner.kind === "text-renderable" &&
         (name === "ignoreDepth" || name === "order")
     )
-        context.assertTextPipelineMutable(left);
+        context.admissions.assertTextPipelineMutable(left);
     const boolean = name === "ignoreDepth" || name === "visible";
     const operator =
         assignment?.operatorToken.getText() ??

@@ -28,8 +28,7 @@ export interface EngineIntrinsicContext
         EngineOptionContext,
         Pick<
             LoweringServices,
-            | "noteTextSceneLifecycle"
-            | "noteTemporalRecordBoundary"
+            | "admissions"
             | "emit"
             | "emitDiscardedValue"
             | "fail"
@@ -152,12 +151,12 @@ export function compileEngineIntrinsic(
                     call.arguments[1],
                 );
             if (!defaultRenderTask)
-                context.noteTextSceneLifecycle(
+                context.admissions.noteTextSceneLifecycle(
                     call,
                     "Text requires the default scene render task; empty and custom text task execution is not represented.",
                 );
             if (defaultRenderTask)
-                context.noteTemporalRecordBoundary(
+                context.admissions.noteTemporalRecordBoundary(
                     call,
                     "implicit default scene passes",
                     "always",
@@ -370,7 +369,7 @@ export function compileEngineIntrinsic(
         }
 
         case "createGeometryRendererTask": {
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 "geometry-output task preparation",
                 "always",
@@ -399,7 +398,7 @@ export function compileEngineIntrinsic(
         }
 
         case "createCopyToTextureTask": {
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 "copy task preparation",
                 "always",

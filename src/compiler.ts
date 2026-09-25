@@ -38,6 +38,7 @@ import {
 } from "./compiler/native-declarations.js";
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
+import { AdmissionRecorder } from "./compiler/admissions.js";
 import { IntrinsicOptions } from "./compiler/intrinsic-options.js";
 import {
     traceSourceApplication,
@@ -627,6 +628,8 @@ class Compiler implements LoweringServices {
     public readonly intrinsicOptions: IntrinsicOptions = new IntrinsicOptions(
         this,
     );
+    /** The admission failures a capability defers until the program is known to reach it. */
+    public readonly admissions: AdmissionRecorder = new AdmissionRecorder(this);
     private readonly statements = new StatementLowerer();
     public readonly userFunctions: UserFunctionLowerer;
     public readonly ui: UiProjection = new UiProjection(this);
@@ -706,7 +709,7 @@ class Compiler implements LoweringServices {
         ts.Expression
     >();
     private readonly sourceCppNames = new EmissionSet<string>();
-    private readonly features = new EmissionSet<Feature>(["core"]);
+    public readonly features = new EmissionSet<Feature>(["core"]);
     private readonly featureSites = new EmissionMap<Feature, string>();
     public readonly assets = new EmissionMap<string, CompileAsset>();
     public readonly assetPayloads = new EmissionMap<string, string>();
@@ -790,30 +793,6 @@ class Compiler implements LoweringServices {
     public readonly erasedBrowserExpressions = new EmissionSet<number>();
     public readonly erasedBrowserInstrumentation = new EmissionSet<number>();
     public readonly unwrappedAwaitExpressions = new EmissionSet<number>();
-    private readonly untrackedTaaCameraWrites: Array<{
-        node: ts.Node;
-        reason: string;
-        cameraVersionSafe?: true;
-    }> = emissionArray([]);
-    private readonly deferredAdmissionFailures: Array<{
-        capability:
-            | "taa"
-            | "text"
-            | "node-input"
-            | "node-geometry"
-            | "material-colors"
-            | "diffuseColor";
-        node: ts.Node;
-        message: string;
-    }> = emissionArray([]);
-    private readonly materialColorReads: Array<
-        "baseColorFactor" | "diffuseColor"
-    > = emissionArray([]);
-    @journaled private accessor temporalSceneRegistration: ts.Node | undefined;
-    private readonly temporalRegisteredScenes: Array<
-        Value["sceneTopologyState"]
-    > = emissionArray([]);
-    @journaled private accessor temporalControlAttachment: ts.Node | undefined;
     public readonly localCubemapState: { maxCandidates?: number } =
         emissionRecord({});
     /** `constArrayIsWritten` answers, by binding: the scan walks a file. */
@@ -934,105 +913,13 @@ class Compiler implements LoweringServices {
                     this.sourceFile,
                     "Device recovery does not represent shared worker/offscreen device ownership.",
                 );
-            if (this.temporalRegisteredScenes.length > 1)
+            if (this.admissions.temporalRegisteredScenes.length > 1)
                 this.fail(
                     this.sourceFile,
                     "Device recovery resource observations currently require one registered scene.",
                 );
         }
-        if (
-            this.sceneManifest.reachedNodeMaterials.length > 0 &&
-            this.sceneManifest.geometryOutputTasks.length > 0 &&
-            this.features.has("loader:gltf")
-        ) {
-            const boundary = this.deferredAdmissionFailures.find(
-                (failure) => failure.capability === "node-geometry",
-            );
-            if (boundary) this.fail(boundary.node, boundary.message);
-            if (this.features.has("animation:property"))
-                this.fail(
-                    this.sourceFile,
-                    "Node geometry views with glTF do not represent property-animation transform producers.",
-                );
-        }
-        if (this.features.has("material:node")) {
-            const admission = this.deferredAdmissionFailures.find(
-                (failure) => failure.capability === "node-input",
-            );
-            if (admission) this.fail(admission.node, admission.message);
-            if (
-                this.features.has("material:node-inputs") &&
-                this.temporalRegisteredScenes.length > 1
-            )
-                this.fail(
-                    this.sourceFile,
-                    "Node input bindings support one registered scene until per-scene binding snapshots are represented.",
-                );
-        }
-        const colorAdmission = this.materialColorReads.includes("diffuseColor")
-            ? this.deferredAdmissionFailures.find(
-                  (failure) => failure.capability === "diffuseColor",
-              )
-            : undefined;
-        if (colorAdmission)
-            this.fail(colorAdmission.node, colorAdmission.message);
-        if (this.materialColorReads.length) {
-            const boundary = this.deferredAdmissionFailures.find(
-                (failure) => failure.capability === "material-colors",
-            );
-            if (boundary) this.fail(boundary.node, boundary.message);
-            if (this.temporalRegisteredScenes.length > 1)
-                this.fail(
-                    this.sourceFile,
-                    "Numeric material-color reads currently support one registered scene; independent material-group UBO snapshots are not represented.",
-                );
-        }
-        if (this.features.has("text:renderable")) {
-            const camera =
-                this.textCameraMutation ??
-                this.untrackedTaaCameraWrites[0]?.node;
-            if (camera)
-                this.fail(
-                    camera,
-                    "Text currently requires a static camera; live camera writers and controls are not represented.",
-                );
-            if (this.temporalRegisteredScenes.length > 1)
-                this.fail(
-                    this.sourceFile,
-                    "Text currently supports one registered scene; layered text update/draw ordering is not represented.",
-                );
-            const admission = this.deferredAdmissionFailures.find(
-                (failure) => failure.capability === "text",
-            );
-            if (admission) this.fail(admission.node, admission.message);
-        }
-        if (this.features.has("camera:world-matrix-version")) {
-            const unsupported = this.untrackedTaaCameraWrites.find(
-                (write) => !write.cameraVersionSafe,
-            );
-            if (unsupported)
-                this.fail(
-                    unsupported.node,
-                    `Camera worldMatrixVersion requires tracked mutations: ${unsupported.reason}.`,
-                );
-        }
-        if (
-            this.sceneManifest.postProcessComposites.some(
-                (composite) =>
-                    composite.intrinsic === "createTaaPostProcessTask",
-            )
-        ) {
-            const unsupported = this.untrackedTaaCameraWrites[0];
-            if (unsupported)
-                this.fail(
-                    unsupported.node,
-                    `TAA requires tracked camera mutations: ${unsupported.reason}.`,
-                );
-            const admission = this.deferredAdmissionFailures.find(
-                (failure) => failure.capability === "taa",
-            );
-            if (admission) this.fail(admission.node, admission.message);
-        }
+        this.admissions.enforceDeferredAdmissions();
         const particles = this.sceneManifest.reachedNodeParticles;
         if (
             particles.nativeProvider &&
@@ -1726,116 +1613,12 @@ class Compiler implements LoweringServices {
     public checkNodeGeometryMutation(expression: ts.Expression): void {
         checkNodeGeometryMutation(this, expression);
     }
-
-    public noteNodeGeometryMutation(node: ts.Node): void {
-        this.deferredAdmissionFailures.push({
-            capability: "node-geometry",
-            node,
-            message:
-                "Node geometry views require static imported mesh transforms; mutation, cloning and unproven transform aliases are not represented.",
-        });
-    }
-
-    public assertNodeInputMutable(node: ts.Node): void {
-        if (
-            this.frameCallbackDepth > 0 ||
-            this.engineStartMark !== undefined ||
-            this.temporalSceneRegistration
-        ) {
-            this.fail(
-                node,
-                "Node input texture changes require setup before scene registration; captured bind-group replacement is not represented.",
-            );
-        }
-    }
-
-    public noteNodeInputAdmissionFailure(node: ts.Node, message: string): void {
-        if (this.features.has("material:node")) this.fail(node, message);
-        this.deferredAdmissionFailures.push({
-            capability: "node-input",
-            node,
-            message,
-        });
-    }
-
-    @journaled private accessor textAttachmentReached = false;
     private readonly reachedRenderContextRegistrations =
         new EmissionSet<string>();
-    @journaled private accessor textCameraMutation: ts.Node | undefined;
-
-    public noteTextCameraControl(
-        node: ts.Node,
-        camera: Value,
-        arcRotate: boolean,
-    ): void {
-        if (
-            !arcRotate ||
-            (camera.cameraKind !== undefined &&
-                camera.cameraKind !== "arc-rotate")
-        )
-            this.textCameraMutation ??= node;
-    }
-
-    public noteTextSceneLifecycle(
-        node: ts.Node,
-        message = "Text scene disposal, removal and explicit rebuilding require retained binding topology that is not represented.",
-    ): void {
-        this.deferredAdmissionFailures.push({
-            capability: "text",
-            node,
-            message,
-        });
-    }
-
-    public noteTextSceneCameraAssignment(node: ts.Node): void {
-        if (
-            this.isRuntimeResourceConstruction() ||
-            this.engineStartMark !== undefined
-        )
-            this.textCameraMutation ??= node;
-    }
-
-    public assertTextPipelineMutable(node: ts.Node): void {
-        if (
-            this.isRuntimeResourceConstruction() ||
-            this.textAttachmentReached ||
-            this.engineStartMark !== undefined
-        ) {
-            this.fail(
-                node,
-                "Text pipeline/order changes require definite initialization before text attachment; live pipeline rebinding and list rebuilding are not represented.",
-            );
-        }
-    }
 
     public promoteTextData(node: ts.Node): void {
         promoteLiveTextData(this);
         this.reachFeature("text:layout", node);
-    }
-
-    public recordTextAttachment(node: ts.Node): void {
-        if (
-            this.isRuntimeResourceConstruction() ||
-            this.engineStartMark !== undefined
-        )
-            this.fail(
-                node,
-                "Text attachment requires definite initialization; live text list rebuilding is not represented.",
-            );
-        this.textAttachmentReached = true;
-    }
-
-    public assertTextDisposal(node: ts.Node): void {
-        if (
-            this.textAttachmentReached ||
-            this.isRuntimeResourceConstruction() ||
-            this.engineStartMark !== undefined
-        ) {
-            this.fail(
-                node,
-                "Text disposal requires setup before text attachment; destroying retained draw bindings is not represented.",
-            );
-        }
     }
 
     public emitDiscardedValue(value: Value): void {
@@ -3267,7 +3050,7 @@ class Compiler implements LoweringServices {
             importedName === "parseNodeMaterialFromSnippet" &&
             (this.frameCallbackDepth > 0 ||
                 this.engineStartMark !== undefined ||
-                this.temporalSceneRegistration)
+                this.admissions.temporalSceneRegistration)
         ) {
             this.fail(
                 call,
@@ -3489,7 +3272,7 @@ class Compiler implements LoweringServices {
             );
         }
         this.reachFeature("texture:pixels", call);
-        this.noteNodeInputAdmissionFailure(
+        this.admissions.noteNodeInputAdmissionFailure(
             call,
             "Node input bindings do not represent later GPU writes to a texture producer.",
         );
@@ -3689,7 +3472,7 @@ class Compiler implements LoweringServices {
     }
 
     /** Nonzero while a frame callback's statements are being lowered. */
-    @journaled private accessor frameCallbackDepth = 0;
+    @journaled public accessor frameCallbackDepth = 0;
     /** Native path-dependent bodies currently being lowered. */
     @journaled private accessor runtimeControlFlowDepth = 0;
     /** Native loop expressions/bodies currently being lowered. */
@@ -6901,7 +6684,7 @@ class Compiler implements LoweringServices {
                     ) &&
                     isCameraExpression(this, owner.expression))
             ) {
-                this.untrackedTaaCameraWrites.push({
+                this.admissions.untrackedTaaCameraWrites.push({
                     node: left,
                     reason: "this camera mutation syntax does not invoke its pinned setter",
                 });
@@ -6916,14 +6699,14 @@ class Compiler implements LoweringServices {
             ) &&
             isCameraExpression(this, left.expression)
         ) {
-            this.untrackedTaaCameraWrites.push({
+            this.admissions.untrackedTaaCameraWrites.push({
                 node: left,
                 reason: `replacing camera.${left.name.text} changes its observable owner`,
             });
         }
         const target = cameraNumberWrite(this, left);
         if (!target) return undefined;
-        this.textCameraMutation ??= left;
+        this.admissions.textCameraMutation ??= left;
         noteCameraRecordWrite(
             this,
             target.camera,
@@ -6933,7 +6716,7 @@ class Compiler implements LoweringServices {
                 !["target", "position", "up_vector"].includes(target.property),
         );
         if (target.property === "position" || target.property === "up_vector") {
-            this.untrackedTaaCameraWrites.push({
+            this.admissions.untrackedTaaCameraWrites.push({
                 node: left,
                 reason: `camera.${target.property} is not the arc camera's observable target`,
                 ...(target.camera.cameraKind === "free"
@@ -6966,144 +6749,6 @@ class Compiler implements LoweringServices {
             cpp: unary && ts.isPostfixUnaryExpression(node) ? previous! : value,
             dataType: { kind: "number" },
         };
-    }
-
-    public noteCameraVectorSet(
-        vector: NonNullable<Value["cameraVector"]>,
-        site: ts.Node,
-    ): void {
-        this.textCameraMutation ??= site;
-        noteCameraRecordWrite(
-            this,
-            vector.owner,
-            vector.field,
-            undefined,
-            false,
-        );
-        if (vector.field !== "target")
-            this.untrackedTaaCameraWrites.push({
-                node: site,
-                reason: `camera.${vector.field} is not the arc camera's observable target`,
-                ...(vector.owner.cameraKind === "free"
-                    ? { cameraVersionSafe: true as const }
-                    : {}),
-            });
-    }
-
-    public noteCameraVectorCopy(value: Value, site: ts.Node): void {
-        if (value.cameraVector)
-            this.untrackedTaaCameraWrites.push({
-                node: site,
-                reason: "an observable camera vector cannot be copied into a plain data aggregate",
-            });
-    }
-
-    public noteTemporalAdmissionFailure(node: ts.Node, message: string): void {
-        this.deferredAdmissionFailures.push({
-            capability: "taa",
-            node,
-            message,
-        });
-    }
-
-    public noteMaterialColorRead(
-        property: "baseColorFactor" | "diffuseColor",
-    ): void {
-        this.materialColorReads.push(property);
-    }
-
-    public noteLegacyDiffuseColorWrite(node: ts.Node): void {
-        this.deferredAdmissionFailures.push({
-            capability: "diffuseColor",
-            node,
-            message:
-                "Reading material.diffuseColor requires retained numeric-array producers; the legacy color producer cannot preserve its source shape.",
-        });
-    }
-
-    public noteMaterialColorRenderBoundary(
-        node: ts.Node,
-        reason: string,
-        always = false,
-    ): void {
-        if (
-            always ||
-            this.frameCallbackDepth > 0 ||
-            this.engineStartMark !== undefined ||
-            this.temporalSceneRegistration
-        ) {
-            this.deferredAdmissionFailures.push({
-                capability: "material-colors",
-                node,
-                message: `Numeric material-color reads do not yet represent per-group UBO snapshots for ${reason}.`,
-            });
-        }
-    }
-
-    public noteTemporalRecordBoundary(
-        node: ts.Node,
-        reason: string,
-        mode: "runtime" | "registration" | "always" = "runtime",
-        scene?: Value,
-    ): void {
-        const runtime =
-            this.frameCallbackDepth > 0 || this.engineStartMark !== undefined;
-        if (
-            mode === "always" ||
-            runtime ||
-            (mode !== "registration" && this.temporalSceneRegistration)
-        ) {
-            this.noteTemporalAdmissionFailure(
-                node,
-                `TAA task record epochs are not represented for ${runtime ? `runtime ${reason}` : reason}.`,
-            );
-        }
-        if (
-            runtime ||
-            (mode !== "registration" && this.temporalSceneRegistration) ||
-            reason === "rebuildSceneRenderables"
-        ) {
-            this.deferredAdmissionFailures.push({
-                capability: "node-input",
-                node,
-                message: `Node material binding snapshots do not cover ${runtime ? `runtime ${reason}` : reason}.`,
-            });
-        }
-        if (mode === "registration") {
-            this.temporalSceneRegistration ??= node;
-            const identity = scene?.sceneTopologyState;
-            if (
-                !identity ||
-                !this.temporalRegisteredScenes.includes(identity)
-            ) {
-                if (!identity || this.temporalRegisteredScenes.length > 0)
-                    this.noteTemporalAdmissionFailure(
-                        node,
-                        "TAA task record epochs are not represented for TAA supports one proven registered scene until per-scene update/record ordering is represented.",
-                    );
-                this.temporalRegisteredScenes.push(identity);
-            }
-        }
-    }
-
-    public noteTemporalCameraControl(
-        node: ts.Node,
-        tracksWorldMatrixVersion = false,
-    ): void {
-        if (
-            this.temporalControlAttachment ||
-            this.frameCallbackDepth > 0 ||
-            this.engineStartMark !== undefined
-        ) {
-            this.untrackedTaaCameraWrites.push({
-                node,
-                reason: "TAA supports one startup control attachment until per-attachment inertia callbacks are represented",
-                ...(tracksWorldMatrixVersion && !this.temporalControlAttachment
-                    ? { cameraVersionSafe: true as const }
-                    : {}),
-            });
-        }
-        this.temporalControlAttachment ??= node;
     }
 
     public bindAudioMainBusStorage(value: Value): void {
@@ -7990,7 +7635,7 @@ class Compiler implements LoweringServices {
         ) {
             // This erased browser helper cannot invoke observable setters,
             // including through a helper-returned camera/vector argument.
-            this.untrackedTaaCameraWrites.push({
+            this.admissions.untrackedTaaCameraWrites.push({
                 node: call,
                 reason: "Object.assign does not lower observable camera setters",
             });
@@ -9759,7 +9404,7 @@ class Compiler implements LoweringServices {
     }
 
     public hasRegisteredScene(): boolean {
-        return this.temporalSceneRegistration !== undefined;
+        return this.admissions.temporalSceneRegistration !== undefined;
     }
 
     public emit(line: string | NativeDeclaration): void {
@@ -9808,7 +9453,7 @@ class Compiler implements LoweringServices {
      * queue `finish_frame` drains at the end of each frame, after that
      * frame's uploads and render.
      */
-    @journaled private accessor engineStartMark:
+    @journaled public accessor engineStartMark:
         | {
               readonly index: number;
               readonly engine: string;

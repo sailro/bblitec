@@ -17,7 +17,7 @@ export interface ShadowIntrinsicContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
-            | "noteTemporalRecordBoundary"
+            | "admissions"
             | "compileNumber"
             | "compileBoolean"
             | "compileF32ArrayCallback"
@@ -622,7 +622,7 @@ export function compileShadowIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const scene = context.compileValue(argumentAt(call, 0));
             context.expectKind(scene, "scene", argumentAt(call, 0));
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 importedName,
                 "registration",

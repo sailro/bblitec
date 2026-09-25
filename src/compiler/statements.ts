@@ -66,7 +66,7 @@ export interface StatementLoweringContext extends Pick<
     LoweringServices,
     | "classLowerer"
     | "resolveRecordValue"
-    | "noteCameraVectorSet"
+    | "admissions"
     | "workerCheckpointCpp"
     | "workerAbortCpp"
     | "options"
@@ -3457,7 +3457,7 @@ export class StatementLowerer {
                 call,
                 "Camera vector.set expects exactly three numeric arguments.",
             );
-        context.noteCameraVectorSet(vector, call);
+        context.admissions.noteCameraVectorSet(vector, call);
         const handle = context.allocateTemporaryCppName("camera_set_owner");
         context.emit({
             kind: "declaration",

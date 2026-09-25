@@ -51,10 +51,7 @@ export interface TextIntrinsicContext
             | "compileForDataSink"
             | "compileColor4"
             | "checker"
-            | "assertTextPipelineMutable"
-            | "recordTextAttachment"
-            | "assertTextDisposal"
-            | "noteTextSceneLifecycle"
+            | "admissions"
         > {}
 
 export function compileTextIntrinsic(
@@ -324,7 +321,7 @@ export function compileTextIntrinsic(
             name,
         )
     )
-        context.noteTextSceneLifecycle(call);
+        context.admissions.noteTextSceneLifecycle(call);
     if (
         (name === "setAlphaToCoverage" || name === "getAlphaToCoverage") &&
         call.arguments[0] &&
@@ -351,7 +348,7 @@ export function compileTextIntrinsic(
                 cpp: `bbl::get_alpha_to_coverage(${owner.cpp})`,
                 dataType: { kind: "boolean" },
             };
-        context.assertTextPipelineMutable(call);
+        context.admissions.assertTextPipelineMutable(call);
         return {
             kind: "void",
             cpp: `bbl::set_alpha_to_coverage(${owner.cpp}, ${context.compileBoolean(argumentAt(call, 1))})`,
@@ -392,7 +389,7 @@ export function compileTextIntrinsic(
         });
         const renderable = context.compileValue(argumentAt(call, 1));
         context.expectKind(renderable, "text-renderable", argumentAt(call, 1));
-        context.recordTextAttachment(call);
+        context.admissions.recordTextAttachment(call);
         context.reachFeature("text:data", call);
         context.reachFeature("text:renderable", call);
         context.reachFeature("renderer:scene", call);
@@ -411,7 +408,7 @@ export function compileTextIntrinsic(
         context.expectArgumentCount(call, 1, 1);
         const value = context.compileValue(argumentAt(call, 0));
         context.expectKind(value, kind, argumentAt(call, 0));
-        context.assertTextDisposal(call);
+        context.admissions.assertTextDisposal(call);
         context.reachFeature("text:data", call);
         return { kind: "void", cpp: `bbl::${helper}(${value.cpp})` };
     }

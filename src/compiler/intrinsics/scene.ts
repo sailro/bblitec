@@ -19,15 +19,11 @@ export interface SceneIntrinsicContext
         Pick<
             LoweringServices,
             | "compileDeviceRecoveryIntrinsic"
-            | "noteTemporalRecordBoundary"
-            | "noteTemporalCameraControl"
-            | "noteTextCameraControl"
-            | "noteMaterialColorRenderBoundary"
+            | "admissions"
             | "compileNumber"
             | "compileColor3"
             | "compileVec4"
             | "unwrap"
-            | "noteTemporalAdmissionFailure"
             | "expectObjectLiteral"
             | "objectProperty"
             | "expectSameEngine"
@@ -63,14 +59,22 @@ export function compileSceneIntrinsic(
             "addTaskAtStart",
         ].includes(importedName)
     ) {
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             call,
             `${importedName} after scene registration`,
         );
     }
     if (importedName === "rebuildSceneRenderables") {
-        context.noteTemporalRecordBoundary(call, importedName, "always");
-        context.noteMaterialColorRenderBoundary(call, importedName, true);
+        context.admissions.noteTemporalRecordBoundary(
+            call,
+            importedName,
+            "always",
+        );
+        context.admissions.noteMaterialColorRenderBoundary(
+            call,
+            importedName,
+            true,
+        );
     }
     switch (importedName) {
         case "addToScene": {
@@ -95,7 +99,7 @@ export function compileSceneIntrinsic(
             }
             context.expectSameEngine(scene, resource, call);
             if (resource.kind !== "camera" && resource.kind !== "light") {
-                context.noteMaterialColorRenderBoundary(
+                context.admissions.noteMaterialColorRenderBoundary(
                     call,
                     "adding material groups after registration",
                 );
@@ -233,7 +237,7 @@ export function compileSceneIntrinsic(
                 "frame-graph-context",
                 argumentAt(call, 0),
             );
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 importedName,
                 "registration",
@@ -268,8 +272,8 @@ export function compileSceneIntrinsic(
             context.expectKind(camera, "camera", argumentAt(call, 0));
             context.expectKind(scene, "scene", sceneArgument);
             context.expectSameEngine(camera, scene, call);
-            context.noteTemporalCameraControl(call, configurable);
-            context.noteTextCameraControl(
+            context.admissions.noteTemporalCameraControl(call, configurable);
+            context.admissions.noteTextCameraControl(
                 call,
                 camera,
                 importedName === "attachControl",
@@ -356,7 +360,7 @@ export function compileSceneIntrinsic(
         }
 
         case "setEnvironmentRotation": {
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 "setEnvironmentRotation invalidates source-task caches beyond the retained key fields",
                 "always",
@@ -442,7 +446,7 @@ export function compileSceneIntrinsic(
                 ) ||
                 !ts.isArrayLiteralExpression(context.unwrap(property("color")))
             ) {
-                context.noteTemporalAdmissionFailure(
+                context.admissions.noteTemporalAdmissionFailure(
                     argumentAt(call, 1),
                     "TAA requires setFog to receive a fresh inline config with an inline color array; " +
                         "named or aliased fog objects do not yet retain their identity and live fields.",
@@ -496,7 +500,7 @@ export function compileSceneIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const scene = context.compileValue(argumentAt(call, 0));
             context.expectKind(scene, "scene", argumentAt(call, 0));
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 importedName,
                 "registration",

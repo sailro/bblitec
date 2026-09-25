@@ -252,7 +252,7 @@ export interface ExpressionContext
             | "resolveRecordMember"
             | "reachJsData"
             | "reachJsRandom"
-            | "noteMaterialColorRead"
+            | "admissions"
             | "enterRuntimeControlFlow"
             | "leaveRuntimeControlFlow"
             | "isInRuntimeIteration"
