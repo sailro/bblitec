@@ -1131,8 +1131,9 @@ if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQ
     # Built once and used by every unit of the object library and the
     # executable: both consume the same interface requirements, and the PCH
     # closure reaches no generated header beyond activation macros. Each
-    # backend's scene renderer library precompiles the same set and its
-    # scene header, which reaches lowered module headers.
+    # backend's scene renderer library precompiles its scene header alone,
+    # which reaches lowered module headers; its units include what they use
+    # beyond it, as the shipping build without a PCH checks.
     if(BBLITE_NATIVE_CACHE_ACTIVE AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
         set(BBLITE_SHARED_PCH ON)
     else()
@@ -1141,8 +1142,7 @@ if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQ
         foreach(bblite_target IN LISTS BBLITE_SCENE_RENDERER_TARGETS)
             string(REGEX REPLACE "^bblite_(.+)_scene$" "\\1" bblite_backend "${bblite_target}")
             target_precompile_headers(
-                ${bblite_target} PRIVATE ${BBLITE_PCH_HEADERS}
-                "${BBLITE_NATIVE_ROOT}/src/pal_${bblite_backend}_scene.hpp"
+                ${bblite_target} PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_${bblite_backend}_scene.hpp"
             )
         endforeach()
     endif()
@@ -1192,13 +1192,13 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
         foreach(bblite_target IN LISTS BBLITE_SCENE_RENDERER_TARGETS)
             string(REGEX REPLACE "^bblite_(.+)_scene$" "\\1" bblite_backend "${bblite_target}")
             set(bblite_scene_header "${BBLITE_NATIVE_ROOT}/src/pal_${bblite_backend}_scene.hpp")
-            bblite_generated_inputs(bblite_scene_generated ${BBLITE_PCH_ROOTS} "${bblite_scene_header}")
+            bblite_generated_inputs(bblite_scene_generated "${bblite_scene_header}")
             bblite_cached_headers(bblite_scene_generated_dir ${bblite_scene_generated})
             if(BBLITE_SHARED_PCH)
                 bblite_shared_pch(
                     NAME ${bblite_target}_pch
                     TARGETS ${bblite_target}
-                    HEADERS ${BBLITE_PCH_HEADERS} "${bblite_scene_header}"
+                    HEADERS "${bblite_scene_header}"
                     INCLUDE_DIRECTORY "${bblite_scene_generated_dir}"
                 )
             else()

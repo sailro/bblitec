@@ -584,15 +584,15 @@ test("the scene-invariant PAL units compile in their own object library", () => 
         readFileSync("native/native-header-cache.cmake", "utf8"),
         /"SHELL:-Xclang -emit-pch" "SHELL:-Xclang -fpch-instantiate-templates"/,
     );
-    // A scene renderer library precompiles the shared set and its scene
-    // header, under the cache and without it.
+    // A scene renderer library precompiles its scene header alone, under the
+    // cache and without it.
     assert.match(
         cmake,
-        /bblite_shared_pch\(\s*NAME \$\{bblite_target\}_pch\s+TARGETS \$\{bblite_target\}\s+HEADERS \$\{BBLITE_PCH_HEADERS\} "\$\{bblite_scene_header\}"/,
+        /bblite_shared_pch\(\s*NAME \$\{bblite_target\}_pch\s+TARGETS \$\{bblite_target\}\s+HEADERS "\$\{bblite_scene_header\}"\s+INCLUDE/,
     );
     assert.match(
         cmake,
-        /target_precompile_headers\(\s*\$\{bblite_target\} PRIVATE \$\{BBLITE_PCH_HEADERS\}\s+"\$\{BBLITE_NATIVE_ROOT\}\/src\/pal_\$\{bblite_backend\}_scene\.hpp"/,
+        /target_precompile_headers\(\s*\$\{bblite_target\} PRIVATE "\$\{BBLITE_NATIVE_ROOT\}\/src\/pal_\$\{bblite_backend\}_scene\.hpp"\s*\)/,
     );
     assert.match(
         cmake,
