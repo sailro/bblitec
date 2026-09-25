@@ -2,6 +2,19 @@
 // release and the frame run. The feature families it draws through are
 // their own files (pal_sdl_gpu_scene_<family>.cpp), compiled with it as one
 // translation unit (pal_sdl_gpu_scene_all.cpp).
+#include <bblite/upstream/pinned_surface.hpp>
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_shadows.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_picking.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_gpu_pipeline.hpp"
+#include "pal_gpu_shader_passes.hpp"
 #include <bblite/features/compute_frame_graph.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/gpu_task_timing.hpp>
@@ -1005,7 +1018,7 @@ public:
                 if (!state.shader_pipelines[variant]) {
                     gpu_error("SDL_CreateGPUGraphicsPipeline shader material");
                 }
-                // The one a2c rule (pal_gpu_shared.hpp): coverage needs
+                // The one a2c rule (shared GPU helpers): coverage needs
                 // samples to spread across, so a single-sample run draws
                 // the same un-cut pixels Dawn does instead of a2c's
                 // implicit 0.5 cutoff.

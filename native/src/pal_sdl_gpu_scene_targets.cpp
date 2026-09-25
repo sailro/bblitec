@@ -1,6 +1,10 @@
 // SDL_GPU scene targets: depth, color, transmission and frame-graph
 // textures and the geometry id readback. Dawn's twin is
 // pal_dawn_scene_targets.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
@@ -121,7 +125,7 @@ void create_processed_color(GpuState& state, SDL_GPUTextureFormat format, std::u
 
 void create_transmission_color(GpuState& state) {
     // The pin's refraction grab: the shared fixed-extent, shortened-chain
-    // contract (pal_gpu_shared.hpp), whatever the surface size
+    // contract (shared GPU helpers), whatever the surface size
     // (frame-graph/transmission.ts).
     const std::uint32_t width = transmission_grab_size;
     const std::uint32_t height = transmission_grab_size;

@@ -1,4 +1,5 @@
 #pragma once
+#include "pal_gpu_frame.hpp"
 #include "pal_ui_filter.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 

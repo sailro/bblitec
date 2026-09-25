@@ -30,7 +30,8 @@
 #include <vector>
 
 #include "pal_platform_events.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_sprites.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
 #if BBLITE_HAS_TEXT_RENDERER

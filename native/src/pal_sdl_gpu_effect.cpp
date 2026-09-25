@@ -8,6 +8,7 @@
 // translation unit exists because a scene registering no `SceneContext`
 // generates no camera math and no render plan, so `pal_sdl_gpu.cpp` cannot be
 // compiled for it at all.
+#include <bblite/upstream/pinned_surface.hpp>
 #include <bblite/features/has_effect_renderer.hpp>
 
 #include <bblite/pal.hpp>
@@ -20,7 +21,7 @@
 #include <vector>
 
 #include "pal_platform_events.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_frame.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
 

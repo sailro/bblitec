@@ -1,5 +1,5 @@
 // The bodies of the scene-shaped helpers both GPU backends share, one
-// section per concern header in pal_gpu_shared.hpp's order. They read the
+// section per concern header. They read the
 // scene's generated headers, so this unit compiles once per scene -- once,
 // rather than in every backend unit that includes the headers.
 #include <bblite/features/has_billboards.hpp>
@@ -15,7 +15,35 @@
 #include <bblite/features/shadow_morph_bounds.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_images.hpp"
+#include "pal_gpu_textures.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_shadows.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_picking.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_gpu_pipeline.hpp"
+#include "pal_gpu_shader_passes.hpp"
+
+#if BBLITE_HAS_PBR_RENDERER
+#include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/pinned_rgbd.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+#include <bblite/upstream/morph_targets.hpp>
+#endif
+#if BBLITE_HAS_SPRITE_RENDERER
+#include <bblite/upstream/sprite_layer.hpp>
+#endif
+
+#include <cstring>
+#include <sstream>
 
 namespace bbl::pal {
 

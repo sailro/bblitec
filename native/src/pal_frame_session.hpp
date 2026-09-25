@@ -1,7 +1,7 @@
 #pragma once
 
 #include "pal_frame_conductor.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_frame.hpp"
 #include "pal_platform_events.hpp"
 
 namespace bbl::pal {

@@ -34,7 +34,8 @@
 #include <vector>
 
 #include "pal_dawn_shared.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_textures.hpp"
+#include "pal_gpu_sprites.hpp"
 
 namespace bbl::pal {
 /** One atlas upload/sampler owned once by a sprite pass. */

@@ -1,6 +1,9 @@
 // Dawn scene textures: material, compressed, cube and environment uploads
 // and the pinned backgrounds. SDL_GPU's twin is
 // pal_sdl_gpu_scene_textures.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_images.hpp"
+#include "pal_gpu_textures.hpp"
 #include <bblite/features/compute_textures.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 

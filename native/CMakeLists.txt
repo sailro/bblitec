@@ -311,7 +311,7 @@ endforeach()
 if(NOT BBLITE_BACKEND_SDL_GPU)
     list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "/src/pal_sdl_gpu[^/]*\\.cpp$")
 endif()
-# The bodies the GPU backends share (pal_gpu_shared.hpp's concerns) follow
+# The bodies the GPU backends share (the concern headers) follow
 # the units that include them: every renderer unit and the window realm.
 if(BBLITE_SDL_GPU_SOURCES OR "platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
     list(

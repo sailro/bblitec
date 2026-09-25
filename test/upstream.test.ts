@@ -2261,7 +2261,7 @@ test("gates pure and depth-hosted sprite permutations independently", () => {
         uvScroll: true,
     });
     // The stock program and the custom ones share the permutation suffix,
-    // the names `sprite_program_stem` (pal_gpu_shared.hpp) loads.
+    // the names `sprite_program_stem` (pal_gpu_sprites.hpp) loads.
     assert.deepEqual(
         pure.map((permutation) => spriteProgramStem(0, permutation)),
         ["sprite", "sprite_uvscroll"],

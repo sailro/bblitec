@@ -1,13 +1,36 @@
 // GPU picking's backend-independent half: the pick blocks, the candidate
 // walks, the readback layout and the request and result tails.
 #pragma once
+#include "pal_gpu_vertex.hpp"
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_picking.hpp>
 #include <bblite/features/has_splats.hpp>
 #include <bblite/features/has_sprites.hpp>
-#include "pal_gpu_scene_blocks.hpp"
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <vector>
+#if BBLITE_HAS_PICKING
+#include <bblite/upstream/picking_math.hpp>
+#if BBLITE_DEFORM_PICKING
+#include <bblite/upstream/picking_projection.hpp>
+#endif
+#if BBLITE_HAS_PBR_RENDERER
+#include <bblite/upstream/renderer_plan.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
+#endif
+#if BBLITE_HAS_BILLBOARDS
+#include <bblite/upstream/billboard_system.hpp>
+#endif
+#endif
 
 namespace bbl::pal {
 

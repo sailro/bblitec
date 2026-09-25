@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pal_gpu_frame.hpp"
 #include "pal_gpu_capture.hpp"
 
 namespace bbl::pal {

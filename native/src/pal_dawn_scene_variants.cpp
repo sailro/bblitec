@@ -1,6 +1,11 @@
 // Dawn material variants: the pinned PBR, node and Standard families'
 // layouts, resources, pipelines and draws. SDL_GPU's twin is
 // pal_sdl_gpu_scene_variants.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>

@@ -1,4 +1,5 @@
 #pragma once
+#include "pal_gpu_images.hpp"
 #include <bblite/features/has_gamepad.hpp>
 
 #include "pal_sdl_gpu_device.hpp"
@@ -122,7 +123,7 @@ inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
         write_readback_raw_rows(raw, mapped, height, aligned_row_bytes, source_row_bytes);
     }
     const std::uint32_t output_row_bytes = width * 4;
-    // The shared row conversion (pal_gpu_shared.hpp); only the SDL_GPU
+    // The shared row conversion (shared GPU helpers); only the SDL_GPU
     // format enum is translated here.
     const ReadbackFormatClass format_class =
         format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT ? ReadbackFormatClass::rgba16_float

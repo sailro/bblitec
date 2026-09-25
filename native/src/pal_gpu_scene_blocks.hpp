@@ -3,7 +3,17 @@
 // and the geometry task's parameters and velocity history.
 #pragma once
 #include <bblite/features/has_billboards.hpp>
-#include "pal_gpu_shadows.hpp"
+#include <bblite/features/has_pbr_renderer.hpp>
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <array>
+#include <cstdint>
+#include <vector>
+#include "pal_gpu_variants.hpp"
+#if BBLITE_HAS_PBR_RENDERER
+#include <bblite/upstream/renderer_plan.hpp>
+#endif
 
 namespace bbl::pal {
 

@@ -21,7 +21,9 @@
 #include <vector>
 
 #include "pal_camera_controls.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include "pal_pass_camera.hpp"
 #include "pal_runtime_trace.hpp"
 #if BBLITE_HAS_TEXT

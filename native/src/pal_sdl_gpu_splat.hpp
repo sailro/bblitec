@@ -34,7 +34,7 @@
 #include <utility>
 #include <vector>
 
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 
 namespace bbl::pal {
@@ -59,7 +59,7 @@ namespace bbl::pal {
  * array rather than a four typed here, so it is the pin's own bind-group
  * order that decides -- the same declaration both backends upload from.
  *
- * Stated once per backend rather than once in `pal_gpu_shared.hpp`,
+ * Stated once per backend rather than once in the shared GPU helpers,
  * because the generated declaration it measures has to be included
  * outside a namespace and the shared header has no such include: hoisting
  * it there put `upstream::` inside `bbl::pal` and broke every name in the

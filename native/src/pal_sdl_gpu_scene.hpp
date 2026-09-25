@@ -64,7 +64,13 @@
 #include <vector>
 
 #include "pal_camera_controls.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include "pal_sdl_gpu_post_process.hpp"
 #include "pal_pass_camera.hpp"
 #include "pal_scene_synchronize.hpp"
@@ -124,7 +130,7 @@ namespace bbl::pal {
 inline namespace sdl_scene {
 
 /** The shared cull enum in this API's; the pipeline-kind facts come from
- *  `pipeline_kind_traits` (pal_gpu_shared.hpp). */
+ *  `pipeline_kind_traits` (shared GPU helpers). */
 /**
  * `buildPrimitiveState`'s own table, in SDL_GPU's names. A triangle strip
  * never reaches here: the loader expands one into the list it describes.

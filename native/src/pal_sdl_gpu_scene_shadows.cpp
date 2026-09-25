@@ -1,5 +1,7 @@
 // SDL_GPU shadows: the ESM blur and the shadow generators' passes. Dawn's
 // twin is pal_dawn_scene_shadows.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_shadows.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"

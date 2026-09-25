@@ -719,7 +719,7 @@ export function spritePermutations(options: {
 /**
  * A sprite program's stem: the stock program (0) or a custom one (its
  * 1-based index), under a permutation. `sprite_program_stem`
- * (pal_gpu_shared.hpp) names the same file from a layer's record.
+ * (pal_gpu_sprites.hpp) names the same file from a layer's record.
  */
 export function spriteProgramStem(
     program: number,
@@ -2678,7 +2678,7 @@ ${wgsl}`,
             );
             // Each program is the module the pin composes for a system,
             // deployed whole: the pin's scene group at 0, the system's own
-            // at 1. `billboard_draw_plan` (pal_gpu_shared.hpp) names the
+            // at 1. `billboard_draw_plan` (pal_gpu_sprites.hpp) names the
             // same stems from a system's record.
             const sceneWgsl = new RendererLowerer(
                 context,

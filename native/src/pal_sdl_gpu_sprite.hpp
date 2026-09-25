@@ -34,7 +34,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_textures.hpp"
+#include "pal_gpu_sprites.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 
 namespace bbl::pal {

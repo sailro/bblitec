@@ -1,5 +1,8 @@
 // SDL_GPU scene picking: the pick pipelines and the scene pick. Dawn's
 // twin is pal_dawn_scene_picking.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_picking.hpp"
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -308,7 +311,7 @@ PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
     const auto& render_plan = *layer == 0 ? root_plan : overlay_plans[*layer - 1];
     auto& pick_meshes = *layer == 0 ? state.meshes : state.overlay_meshes[*layer - 1];
     // The pin's preamble -- camera, pointer mapping, scene block -- is
-    // shared with the Dawn pick (pal_gpu_shared.hpp).
+    // shared with the Dawn pick (shared GPU helpers).
     const std::optional<PickRequest> request = prepare_gpu_pick(engine, picker, scene, x, y);
     if (!request)
         return PickingInfo{};

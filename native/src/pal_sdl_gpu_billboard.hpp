@@ -30,7 +30,10 @@
 
 // billboard_draw_plan / billboard_needs_upload: the program ladder and
 // the upload gate, decided once for both backends.
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_textures.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 // sprite_blend_factor: one translation of the pinned blend enum, shared
 // with the 2D layer's pass.
@@ -170,7 +173,7 @@ inline BillboardPass create_billboard_pass(SDL_GPUDevice* device, Engine& engine
     info.depth_stencil_state.compare_op = gpu_depth_compare(upstream::pinned_depth_compare);
     info.depth_stencil_state.enable_depth_test = true;
     info.depth_stencil_state.enable_depth_write = plan.cutout_writes_depth;
-    // The one a2c rule (pal_gpu_shared.hpp): at one sample the Dawn twin's
+    // The one a2c rule (shared GPU helpers): at one sample the Dawn twin's
     // pipeline validation would reject it, and this API would quantize
     // coverage to a ~0.5 cutoff — different pixels per backend.
     info.multisample_state.enable_alpha_to_coverage =

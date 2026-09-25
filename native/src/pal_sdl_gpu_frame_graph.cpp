@@ -1,6 +1,7 @@
 // SDL_GPU driver for a standalone FrameGraphContext. The context owns only
 // ordered render-target tasks, so this translation unit deliberately has no
 // scene renderer, camera, mesh, material, or image-loader dependency.
+#include <bblite/upstream/pinned_surface.hpp>
 #include <bblite/features/gpu_task_timing.hpp>
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_frame_graph_renderer.hpp>
@@ -23,7 +24,9 @@
 #include <vector>
 
 #include "pal_platform_events.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_targets.hpp"
 #include "pal_sdl_gpu_post_process.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"

@@ -29,7 +29,10 @@
 
 // billboard_draw_plan / billboard_needs_upload: the program ladder and
 // the upload gate, decided once for both backends.
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_textures.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include "pal_dawn_shared.hpp"
 // dawn_sprite_blend_factor: one translation of the pinned blend enum,
 // shared with the 2D layer's pass.
@@ -277,7 +280,7 @@ create_dawn_billboard_pass(WGPUDevice device, WGPUQueue queue, Engine& engine,
     descriptor.depthStencil = &depth_state;
     descriptor.multisample.count = sample_count;
     descriptor.multisample.mask = 0xFFFFFFFFu;
-    // The one a2c rule (pal_gpu_shared.hpp): at one sample WebGPU rejects
+    // The one a2c rule (shared GPU helpers): at one sample WebGPU rejects
     // an a2c pipeline outright.
     descriptor.multisample.alphaToCoverageEnabled =
         alpha_to_coverage_enabled(system.alpha_to_coverage, sample_count);

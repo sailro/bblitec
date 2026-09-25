@@ -19,7 +19,9 @@
 #include <unordered_map>
 
 // The backend-neutral scissor clamp all RmlUi consumers share.
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_ui.hpp"
 #include "pal_dawn_shared.hpp"
 #include "pal_dawn_ui_backdrop.hpp"
 #include "pal_dawn_ui_filter.hpp"

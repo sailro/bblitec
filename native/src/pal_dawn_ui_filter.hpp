@@ -1,4 +1,5 @@
 #pragma once
+#include "pal_gpu_frame.hpp"
 #include "pal_ui_filter.hpp"
 #include "pal_dawn_ui_backdrop.hpp"
 #include "pal_dawn_shared.hpp"

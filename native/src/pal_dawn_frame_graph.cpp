@@ -1,5 +1,6 @@
 // Dawn driver for a standalone FrameGraphContext. It records only the tasks
 // the context owns and therefore carries no scene/camera/mesh renderer.
+#include <bblite/upstream/pinned_surface.hpp>
 #include <bblite/features/gpu_task_timing.hpp>
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_frame_graph_renderer.hpp>
@@ -28,7 +29,9 @@
 #if BBLITE_GPU_TASK_TIMING
 #include <bblite/pal_gpu_task_timing.hpp>
 #endif
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_targets.hpp"
 #include "pal_dawn_post_process.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"

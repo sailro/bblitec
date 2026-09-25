@@ -2,8 +2,22 @@
 // kind traits, the plan checks, the skybox stage order, the background
 // arms, the cluster numbering and the diagnostic blocks.
 #pragma once
+#include "pal_gpu_frame.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
-#include "pal_gpu_targets.hpp"
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <vector>
+#if BBLITE_HAS_PBR_RENDERER
+#include <bblite/upstream/renderer_plan.hpp>
+#endif
+#if BBLITE_PINNED_BACKGROUNDS
+#include <bblite/upstream/pinned_backgrounds.hpp>
+#endif
 
 namespace bbl::pal {
 

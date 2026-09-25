@@ -7,7 +7,7 @@
 #include <bblite/pal_location.hpp>
 #include "pal_window_presenter.hpp"
 #include "pal_window_frame_clock.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_frame.hpp"
 #include "pal_platform_events.hpp"
 #include "pal_system_preferences.hpp"
 #include "pal_window.hpp"

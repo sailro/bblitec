@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pal_gpu_frame.hpp"
 #include <bblite/text.hpp>
 #include "pal_sdl_gpu_shared.hpp"
 #include "pal_text_resources.hpp"

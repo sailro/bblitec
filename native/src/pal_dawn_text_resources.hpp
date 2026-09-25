@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pal_gpu_frame.hpp"
 #include <bblite/text.hpp>
 
 #include <webgpu/webgpu.h>

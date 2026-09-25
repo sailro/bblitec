@@ -1,6 +1,11 @@
 // Dawn scene targets: frame-graph and render-target textures, the
 // transmission grab, depth copies and the diagnostic readbacks. SDL_GPU's
 // twin is pal_sdl_gpu_scene_targets.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_images.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
@@ -565,7 +570,7 @@ void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFo
         write_readback_raw_rows(raw, mapped, height, aligned_row_bytes, source_row_bytes);
     }
     const std::uint32_t output_row_bytes = width * 4;
-    // The shared row conversion (pal_gpu_shared.hpp); only the WebGPU
+    // The shared row conversion (shared GPU helpers); only the WebGPU
     // format enum is translated here.
     const ReadbackFormatClass format_class =
         format == WGPUTextureFormat_RGBA16Float ? ReadbackFormatClass::rgba16_float

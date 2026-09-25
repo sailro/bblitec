@@ -21,7 +21,7 @@
 
 #include <bblite/runtime.hpp>
 
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_picking.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 #if BBLITE_HAS_BILLBOARDS
 #include <bblite/upstream/billboard_system.hpp>

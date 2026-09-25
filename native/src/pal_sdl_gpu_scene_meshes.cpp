@@ -1,6 +1,11 @@
 // SDL_GPU scene meshes: vertex and material bindings, shader storage,
 // the scene mesh upload and its release. Dawn's twin is
 // pal_dawn_scene_meshes.cpp.
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include <bblite/features/compute_buffers.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
@@ -10,6 +15,9 @@
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
+#if BBLITE_GPU_MORPH_STORAGE
+#include <bblite/upstream/morph_targets.hpp>
+#endif
 
 namespace bbl::pal {
 inline namespace sdl_scene {

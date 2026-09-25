@@ -254,14 +254,14 @@ test("Dawn completes canvas readback before post-copy UI", () => {
     const dawn = sceneBackendSource("dawn");
     const capture = dawn.indexOf("const bool capture_frame");
     const copy = dawn.indexOf(
-        "wgpuCommandEncoderCopyTextureToBuffer(",
+        "begin_dawn_surface_capture(",
         capture,
     );
     const firstSubmit = dawn.indexOf(
         "submit_dawn_command(state.queue, command);",
         copy,
     );
-    const map = dawn.indexOf("wgpuBufferMapAsync(", firstSubmit);
+    const map = dawn.indexOf("finish_dawn_surface_capture(", firstSubmit);
     const deferredUi = dawn.indexOf("if (ui_after_capture_copy)", map);
     assert.ok(capture >= 0 && copy > capture);
     assert.ok(firstSubmit > copy && map > firstSubmit);

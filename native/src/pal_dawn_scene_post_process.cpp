@@ -1,5 +1,7 @@
 // Dawn post-process and screen-space passes. SDL_GPU's twin is
 // pal_sdl_gpu_scene_post_process.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_targets.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>

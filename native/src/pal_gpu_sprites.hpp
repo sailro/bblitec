@@ -4,7 +4,15 @@
 #pragma once
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_sprites.hpp>
-#include "pal_gpu_surface.hpp"
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include "pal_record_sync.hpp"
 
 namespace bbl::pal {
 

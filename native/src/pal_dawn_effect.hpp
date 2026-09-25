@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "pal_dawn_shared.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_targets.hpp"
 
 namespace bbl::pal {
 
@@ -200,7 +200,7 @@ inline void upload_dawn_effect_pass(WGPUQueue queue, Engine& engine, const DawnE
     EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     if (!wrapper.uniforms_dirty || wrapper.uniform_values.empty())
         return;
-    // The symmetric size validation (pal_gpu_shared.hpp): a short write
+    // The symmetric size validation (shared GPU helpers): a short write
     // leaves a stale tail behind the declared size.
     require_effect_uniform_size(wrapper, pass.uniform_bytes);
     wgpuQueueWriteBuffer(queue, pass.uniforms, 0, wrapper.uniform_values.data(),

@@ -82,7 +82,12 @@
 #if BBLITE_HAS_EFFECT_TASK
 #include "pal_dawn_effect.hpp"
 #endif
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_targets.hpp"
 #include "pal_dawn_post_process.hpp"
 #include "pal_pass_camera.hpp"
 #include "pal_scene_synchronize.hpp"
@@ -155,7 +160,7 @@ struct DawnShaderBindingKey {
 void release_dawn_shader_bindings(DawnShaderBindings& bindings);
 
 /** The shared cull enum in this API's; the pipeline-kind facts come from
- *  `pipeline_kind_traits` (pal_gpu_shared.hpp). */
+ *  `pipeline_kind_traits` (shared GPU helpers). */
 inline WGPUCullMode dawn_cull_mode(upstream::RenderCullMode cull) {
     return cull == upstream::RenderCullMode::none ? WGPUCullMode_None : WGPUCullMode_Back;
 }
@@ -2062,7 +2067,7 @@ struct PipelineKindTraits {
 };
 
 // The API-enum residue of the shared `pipeline_kind_traits` decode
-// (pal_gpu_shared.hpp): the facts exist once for both backends; what
+// (shared GPU helpers): the facts exist once for both backends; what
 // stays here is the WGPU translation and this mesh path's node refusal
 // -- node draws bind their own compiled graphs and never take the mesh
 // pipeline paths that ask for these traits.

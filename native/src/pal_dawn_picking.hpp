@@ -23,7 +23,7 @@
 #include <bblite/runtime.hpp>
 
 #include "pal_dawn_shared.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_picking.hpp"
 #if BBLITE_HAS_BILLBOARDS
 // dawn_billboard_format: one translation of the pinned float count,
 // shared with the visible billboard pass.
@@ -44,7 +44,7 @@ namespace bbl::pal {
  * so one buffer can carry every candidate's block.
  *
  * The scene block needs no twin: `PickSceneUniforms` in
- * `pal_gpu_shared.hpp` is the pin's own layout and both backends upload it
+ * the shared GPU helpers is the pin's own layout and both backends upload it
  * unchanged. Only this one differs, and only in its stride: the tail is
  * computed from the shared block, so a field added there cannot move it.
  */

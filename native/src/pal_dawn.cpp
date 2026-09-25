@@ -2,6 +2,20 @@
 // frame run builds and the frame run itself. The feature families it draws
 // through are their own files (pal_dawn_scene_<family>.cpp), compiled with it
 // as one translation unit (pal_dawn_scene_all.cpp).
+#include <bblite/upstream/pinned_surface.hpp>
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_textures.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_shadows.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_picking.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_gpu_pipeline.hpp"
+#include "pal_gpu_shader_passes.hpp"
 #include <bblite/features/compute_frame_graph.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/gpu_task_timing.hpp>
@@ -350,7 +364,7 @@ DawnPipeline& pipeline_for(DawnState& state, upstream::RenderPipelineKind kind,
 
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
-    // The one a2c rule (pal_gpu_shared.hpp): coverage needs samples to
+    // The one a2c rule (shared GPU helpers): coverage needs samples to
     // spread across; at one sample WebGPU rejects the pipeline outright.
     descriptor.multisample.alphaToCoverageEnabled =
         alpha_to_coverage_enabled(traits.shader_a2c, samples);
@@ -944,7 +958,7 @@ public:
         recreate_dawn_scene_targets(state, scene, width, height);
         if (scene.transmission_enabled) {
             // The pinned refraction target: the shared fixed-extent,
-            // shortened-chain contract (pal_gpu_shared.hpp), rgba16float.
+            // shortened-chain contract (shared GPU helpers), rgba16float.
             state.transmission_mip_count = transmission_grab_mip_count();
             WGPUTextureDescriptor transmission_descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
             transmission_descriptor.usage =
