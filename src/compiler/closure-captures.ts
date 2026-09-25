@@ -23,6 +23,7 @@ export const nativeCompanionKeys = [
     "ownedEngineCpp",
     "optionalStorageCpp",
     "optionalFoundCpp",
+    "slotFoundCpp",
     "truthinessCpp",
     "audioMainBusCpp",
     "spriteLayerCpp",
