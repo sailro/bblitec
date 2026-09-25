@@ -6,6 +6,22 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Compiler
 
+- [ ] Build one checked pinned program: text builds a second one (`pinned-typed-program.ts`) with its own library and `noUncheckedIndexedAccess`.
+- [ ] Converge the pinned record lowerers (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`) on one record and absence model, and emit the per-family structs of `sprite-y-sort-lowerer.ts`, `physics-floating-origin-lowerer.ts` and `clustered-light-runtime.ts` through `PinnedRecordModel`.
+- [ ] Share the base numeric lowerer's for/for-of/switch/try arms with its subclasses instead of their copies (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`).
+- [ ] Key pinned-lowerer bindings by declaration symbol, not comparison source text (`pinned-numeric-lowerer.ts` binding map).
+- [ ] Decide `||`/`&&` value semantics from operand types and drop the `booleanOr`/`booleanAnd` caller flags (`pinned-numeric-lowerer.ts`).
+- [ ] Resolve `Math.*` from `MATH_MEMBERS` by default in the pinned numeric lowerer instead of per-call math maps.
+- [ ] Outline large bodies from structured statements at emission instead of re-parsing emitted C++ (`body-outlining.ts`, `cpp-statements.ts`).
+- [ ] Decide handle-field traceability in C++ (`gc_traceable`) instead of restating it in `untracedHandleKinds` (`data-types/handles.ts`).
+- [ ] Lower `_createNavMeshFromMerged`'s guards through the numeric lowerer instead of reading them by name (`navigation-build-plan.ts`).
+- [ ] Lower the grid atlas whole through `PinnedRecordModel` instead of hooking `pivot`/`frames` by name (`pinned-grid-atlas.ts`).
+- [ ] Emit a local's slot-found flag only when a presence consumer reads it (`declarations.ts`, `data-lowering.ts` guarded element reads).
+- [ ] Register platform locals as capture bindings so closure capture needs no name scan (`compiler.ts` uncaptured-name check).
+- [ ] One pinned module loader for export augmentation (`pinned-shader-builders.ts` `pinnedModuleValue`, `pinned-shader-composer.ts` `importPinnedModuleWithExports`).
+- [ ] Spell pinned rounding through `pinnedRoundCall` in `pinned-csm.ts` and `splat-lowerer.ts`.
+- [ ] One `soleReturnedExpression` matcher in `engine-lifecycle.ts` and one `bindOptionalResource` in `declarations.ts`.
+- [ ] One JSON field-reader module for `patch-inventory.ts`, `api-surface.ts`, `tooling/generated-readers.ts`, `tooling/check-spec.ts` and `gltf-document.ts`.
 - [ ] Record camera-mutation lowering's TAA and text camera writes through `AdmissionRecorder` methods instead of writing its `untrackedTaaCameraWrites` and `textCameraMutation` fields from `compileCameraMutation` (`compiler.ts`, `admissions.ts`).
 - [ ] Canvas sizes folded at generation fix render-target sizes and particle initialization to `--width`/`--height` (`staticCanvasSize` in `compiler.ts`; `option-helpers.ts`); read the running canvas or refuse where it can differ.
 - [ ] Resolve a dictionary's map owner once for reads and writes (`equalityComparison` and `dictionaryEntryTarget` in `data-lowering.ts`).
@@ -21,6 +37,14 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Platform and runtime
 
+- [ ] Include only the concern header a unit reads instead of the `pal_gpu_shared.hpp` umbrella chain.
+- [ ] Share one post-process program builder per backend between the scene and frame-graph drivers (`pal_*_scene_post_process.cpp`, `pal_*_frame_graph.cpp`).
+- [ ] Use `begin_dawn_surface_capture`/`finish_dawn_surface_capture` and one readback-map helper in the Dawn scene driver (`pal_dawn.cpp`, `pal_dawn_scene_targets.cpp`, `pal_dawn_scene_picking.cpp`).
+- [ ] Compact SPIR-V vertex inputs at build time in `tools/tint-sdl` and delete the runtime registry (`pal_spirv_vertex.hpp`, `pal_sdl_gpu_resources.hpp`).
+- [ ] Keep one engine rendering-context list whose entries carry their `_kind`, as the pin does (device recovery's per-registry counts).
+- [ ] Serve every pinned GPU writer through one WebGPU-shaped device, not a text-only one (`text_gpu.hpp`).
+- [ ] One `RecordLease<Table>` for the mesh-name and transform-node leases (`runtime.hpp`).
+- [ ] Write Dawn material and UV blocks once per frame or version change, not in every pass (`pal_dawn_scene_variants.cpp`).
 - [ ] Name SDL_GPU backend functions by their backend as the files are: `render_sprite_ui_sdl_frame`, `render_ui_backdrop_sdl` and siblings say `sdl` where they mean SDL_GPU (`native/src/pal_sdl_gpu_*`).
 - [ ] Adopt SDL's main-callback loop for interactive builds so the Win32 move/resize modal loop no longer stalls iteration (`pal_platform_events.hpp`).
 - [ ] One file-type descriptor table for `<input accept>` validation and native dialog filters (`browser-file.ts`, `js_file.hpp`, `js_voxel_file.hpp`).
@@ -30,6 +54,8 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Qualification
 
+- [ ] Give sliced PAL code standalone concern headers that harness fixtures include (`pinned-velocity-history` and the other `cppFunction` slices).
+- [ ] Prune `artifacts/native-cache` `headers/`, `sources/` and `pch/` by age in `clean`.
 - [ ] Compile each backend family file on its own in native lint (`src/code-quality.ts`): they build only inside `pal_{sdl_gpu,dawn}_scene_all.cpp`, so a missing include is hidden by the files before it.
 - [ ] Replace ts-prune in `lint:exports` with a checker-based scan: it misses exports reached through inferred types and `typeof import()`, and misnames `as const satisfies` exports.
 - [ ] Android: full registry through `android:sweep` on an emulator and a physical device; fix the emulator rendering corruption of `offscreen`.
@@ -39,6 +65,13 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Performance
 
+- [ ] Cache which engine parameters a call mutates per pin instead of building a program per compile (`engineCallMutatesArgument`).
+- [ ] Decline method-call and element-read probes by type before speculating (tetris rolls back 77% of 3,895 transactions; `expressions.ts`).
+- [ ] Memoize reached-loop walks per root and flags (`resource-loops.ts` `walkReachedLoopNodes`, 13% of doom's generation).
+- [ ] Cache each value's captured bindings in `useNativeValue` and use a plain `Set` for its guard (17% of tetris's generation).
+- [ ] Send lowered modules through unit packing and outlining (scene1's `gltf_loader.cpp` is 283 KB, 7.8 s alone).
+- [ ] Make record layouts feature-independent so one shared PCH serves every scene (`runtime.hpp` includes 15 feature headers).
+- [ ] Run cold `bblite-tint` stage compiles in parallel (`compile-shaders.ts`).
 - [ ] `minecraft`: worst frame of a chunk-crossing sprint replay at most 16.7 ms (`BBLITE_FPS_PROFILE` maximum interval), with meshing, lighting, water settling and allocation attributed separately (`BBLITE_CPU_PROFILE`).
 - [ ] `scene290`: at least 100 FPS uncapped through impact and settling (`BBLITE_BENCHMARK_FRAMES=0`, `BBLITE_FPS_PROFILE`); Bullet stepping is the bottleneck (`pal_physics_bullet.cpp`).
 
