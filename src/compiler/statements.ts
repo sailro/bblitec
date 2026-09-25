@@ -62,7 +62,7 @@ import {
 import { recordAt } from "./record-access.js";
 import { JS_BITWISE_FUNCTIONS } from "../lowering/pinned-operators.js";
 
-export interface StatementLoweringContext extends Pick<
+interface StatementLoweringContext extends Pick<
     LoweringServices,
     | "classLowerer"
     | "resolveRecordValue"

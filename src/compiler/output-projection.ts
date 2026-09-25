@@ -427,7 +427,7 @@ export function projectFeatures(
  * assets' own KHR_lights_punctual kinds there) re-renders the same authority
  * instead of patching the string.
  */
-export function renderFeaturesCmake(
+function renderFeaturesCmake(
     features: readonly Feature[],
     runtimeSources: readonly string[],
     generatedSources: readonly string[],

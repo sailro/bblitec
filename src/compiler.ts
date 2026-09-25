@@ -266,7 +266,6 @@ import { recordAt } from "./compiler/record-access.js";
 
 export type {
     CompileAsset,
-    CompileOptions,
     CompileResult,
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
@@ -432,7 +431,7 @@ export function compileSource(
     );
 }
 
-export interface SurveyOutcome {
+interface SurveyOutcome {
     report: SurveyReport;
     /** Present when every realm lowered to the end; its output has holes where statements refused. */
     result?: CompileResult;

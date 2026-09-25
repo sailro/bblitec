@@ -108,7 +108,7 @@ import {
     type ComputeTextureIntrinsicContext,
 } from "./compute-texture.js";
 
-export interface IntrinsicContext
+interface IntrinsicContext
     extends
         ProceduralSkyIntrinsicContext,
         AnimationIntrinsicContext,

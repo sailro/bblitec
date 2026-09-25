@@ -39,7 +39,7 @@ export function expressionMayRunCode(expression: ts.Expression): boolean {
     );
 }
 
-export interface UnwrapOptions {
+interface UnwrapOptions {
     /**
      * Strip `await` as well. Only a reader that already knows the awaited
      * value lands where the expression sits asks for this — the static
@@ -55,7 +55,7 @@ export interface UnwrapOptions {
  * operation under it: grouping parentheses, `as`, angle-bracket assertions,
  * `!` and `satisfies` — plus `await` when the caller asks.
  */
-export function isExpressionWrapper(
+function isExpressionWrapper(
     node: ts.Node,
     options: UnwrapOptions = {},
 ): node is
@@ -308,7 +308,7 @@ export function assignmentTargets(
 }
 
 /** A prefix or postfix `++`/`--`. */
-export type UpdateExpression = (
+type UpdateExpression = (
     ts.PrefixUnaryExpression | ts.PostfixUnaryExpression
 ) & {
     readonly operator:

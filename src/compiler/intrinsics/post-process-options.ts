@@ -41,7 +41,7 @@ import {
     type EngineOptionContext,
 } from "./engine-options.js";
 
-export interface CompiledPostProcessTask {
+interface CompiledPostProcessTask {
     cpp: string;
     manifest: PostProcessTaskManifest;
 }
@@ -158,7 +158,7 @@ export function compilePostProcessTaskOptions(
     };
 }
 
-export interface CompiledPostProcessComposite {
+interface CompiledPostProcessComposite {
     cpp: string;
     manifest: PostProcessCompositeManifest;
     sourceTasks: readonly Value[];

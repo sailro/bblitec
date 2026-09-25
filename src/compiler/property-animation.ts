@@ -246,7 +246,7 @@ export class PropertyAnimationTargetLowerer {
     }
 }
 
-export type PropertyAnimationTargetKind = "mesh" | "camera" | "record";
+type PropertyAnimationTargetKind = "mesh" | "camera" | "record";
 
 interface PropertyAnimationLane {
     /** The native `PropertyAnimationPath` enumerator this lane lowers to. */

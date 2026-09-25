@@ -16,7 +16,7 @@ import type { CompileAsset, Feature, Value } from "./types.js";
 import type { LoweringServices } from "./lowering-services.js";
 
 /** What the asset registry reads of the compiler. */
-export interface AssetRegistryOwnerContext
+interface AssetRegistryOwnerContext
     extends
         AssetRegistryContext,
         Pick<

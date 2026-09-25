@@ -12,7 +12,7 @@ import type { Value } from "./types.js";
 import type { LoweringServices } from "./lowering-services.js";
 
 /** What the native emission registry reads of the compiler. */
-export interface NativeEmissionContext extends Pick<
+interface NativeEmissionContext extends Pick<
     LoweringServices,
     | "allocateTemporaryCppName"
     | "bindings"

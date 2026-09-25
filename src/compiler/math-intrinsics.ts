@@ -32,7 +32,7 @@ import {
     pinnedRoundCall,
 } from "../lowering/pinned-operators.js";
 
-export interface MathMember {
+interface MathMember {
     /** How many arguments the member takes, or the minimum for a variadic one. */
     readonly arity: number;
     readonly variadic?: true;
@@ -176,7 +176,7 @@ export function describeMathArity(member: MathMember): string {
     return member.variadic ? `at least ${count}` : count;
 }
 
-export interface MathConstant {
+interface MathConstant {
     readonly value: number;
     /**
      * The single-precision spelling a float sink takes, where the runtime

@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { EmissionWeakSet, emissionArray } from "./emission-transaction.js";
 
-export interface SourceTrace {
+interface SourceTrace {
     program: ts.Program;
     nodes: ReadonlySet<ts.Node>;
 }

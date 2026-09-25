@@ -27,7 +27,7 @@ import {
 import type { LoweringServices } from "./lowering-services.js";
 
 /** What callback lowering reads of the compiler. */
-export interface CallbackContext extends Pick<
+interface CallbackContext extends Pick<
     LoweringServices,
     | "allocateBlockPrefix"
     | "allocateTemporaryCppName"

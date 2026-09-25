@@ -185,7 +185,7 @@ export function isNeverResized(
     );
 }
 
-export interface DataLoweringContext
+interface DataLoweringContext
     extends
         Pick<
             LoweringServices,

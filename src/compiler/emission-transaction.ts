@@ -18,7 +18,7 @@
  */
 
 /** Transactions opened and declined, originals saved, containers restored. */
-export interface EmissionTransactionStatistics {
+interface EmissionTransactionStatistics {
     transactions: number;
     rollbacks: number;
     journaledSlots: number;

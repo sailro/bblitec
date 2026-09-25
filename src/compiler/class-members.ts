@@ -20,14 +20,12 @@ export function classInstanceProperties(
 }
 
 /** A class body's own instance property declarations, named plainly. */
-export type InstanceProperty = (
-    ts.PropertyDeclaration | ts.ParameterDeclaration
-) & {
+type InstanceProperty = (ts.PropertyDeclaration | ts.ParameterDeclaration) & {
     name: ts.MemberName;
 };
 
 /** One `static` field or `static { ... }` block, in class evaluation order. */
-export type StaticElement =
+type StaticElement =
     | (ts.PropertyDeclaration & { name: ts.MemberName })
     | ts.ClassStaticBlockDeclaration;
 
@@ -78,7 +76,7 @@ export function isStaticMember(member: ts.ClassElement): boolean {
     );
 }
 
-export function isAbstractClass(declaration: ts.ClassDeclaration): boolean {
+function isAbstractClass(declaration: ts.ClassDeclaration): boolean {
     return (
         (ts.getCombinedModifierFlags(declaration) &
             ts.ModifierFlags.Abstract) !==

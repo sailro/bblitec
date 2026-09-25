@@ -10,7 +10,7 @@ export class RuntimeSearchParamsRequired extends Error {
 }
 
 /** The runtime query bag over `input`: the one spelling every URLSearchParams value shares. */
-export function searchParamsValue(lowerer: DataLowerer, input: string): Value {
+function searchParamsValue(lowerer: DataLowerer, input: string): Value {
     const type = { kind: "search-params" } as const;
     lowerer.context.reachJsData();
     return {

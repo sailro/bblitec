@@ -24,7 +24,7 @@ interface SharedClosureBindings {
 }
 
 /** What the shared-closure analysis reads of the compiler. */
-export interface SharedClosureContext extends Pick<
+interface SharedClosureContext extends Pick<
     LoweringServices,
     | "bindings"
     | "checker"

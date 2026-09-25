@@ -20,13 +20,13 @@ import { CompileError } from "./compile-error.js";
 import { declaredSymbol } from "./symbols.js";
 import { sourceLocation, syntaxKindName } from "../source-location.js";
 
-export interface SurveySite {
+interface SurveySite {
     file: string;
     line: number;
     column: number;
 }
 
-export interface SurveyRefusal {
+interface SurveyRefusal {
     /** Where the refusal was raised, as `fail` reported it. */
     site: SurveySite;
     /** The refusal text without its location prefix. */
@@ -43,7 +43,7 @@ export interface SurveyRefusal {
     statements: number;
 }
 
-export interface SurveyClass {
+interface SurveyClass {
     class: string;
     sites: number;
     /** Sites among them that only name a binding another refusal took away. */
