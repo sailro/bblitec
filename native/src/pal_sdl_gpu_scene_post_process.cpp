@@ -112,7 +112,8 @@ GpuScreenSpaceProgram build_screen_space_program(GpuState& state, std::uint32_t 
     pipeline_info.target_info.color_target_descriptions = &target;
     pipeline_info.target_info.num_color_targets = 1;
     program.pipeline = OwnedSdlPipeline{
-        create_sdl_gpu_graphics_pipeline(state.device, &pipeline_info), {state.device}};
+        create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &pipeline_info),
+        {state.device}};
     if (!program.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline screen-space");
     }

@@ -3,8 +3,7 @@
 #include "pal_sdl_gpu_commands.hpp"
 #include <SDL3/SDL_gpu.h>
 #include <memory>
-#include <map>
-#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -15,52 +14,36 @@ template <typename Resource, auto Release> struct SdlGpuDeleter {
     void operator()(Resource* resource) const noexcept { Release(device, resource); }
 };
 
-/** The SPIR-V vertex-input remap of each compacted vertex shader. */
-struct SdlShaderInputs {
-    std::mutex mutex;
-    std::map<SDL_GPUShader*, std::map<Uint32, Uint32>> layouts;
+/** Shader-local vertex locations, in the dense order tools/tint-sdl emitted. */
+struct SdlShaderDeleter {
+    SDL_GPUDevice* device = nullptr;
+    std::optional<std::vector<Uint32>> spirv_inputs{};
+    void operator()(SDL_GPUShader* shader) const noexcept { SDL_ReleaseGPUShader(device, shader); }
 };
-/** Built on first use: a container may allocate, which a namespace-scope
- *  instance would do during static initialization, where nothing can catch. */
-inline SdlShaderInputs& sdl_shader_inputs() {
-    static SdlShaderInputs inputs;
-    return inputs;
-}
-inline void release_sdl_gpu_shader(SDL_GPUDevice* device, SDL_GPUShader* shader) {
-    {
-        auto& inputs = sdl_shader_inputs();
-        const std::lock_guard lock(inputs.mutex);
-        inputs.layouts.erase(shader);
-    }
-    SDL_ReleaseGPUShader(device, shader);
-}
-using OwnedSdlShader =
-    std::unique_ptr<SDL_GPUShader, SdlGpuDeleter<SDL_GPUShader, release_sdl_gpu_shader>>;
+using OwnedSdlShader = std::unique_ptr<SDL_GPUShader, SdlShaderDeleter>;
 
 inline SDL_GPUGraphicsPipeline*
-create_sdl_gpu_graphics_pipeline(SDL_GPUDevice* device,
+create_sdl_gpu_graphics_pipeline(SDL_GPUDevice* device, const OwnedSdlShader& vertex,
                                  const SDL_GPUGraphicsPipelineCreateInfo* source) {
     auto info = *source;
+    info.vertex_shader = vertex.get();
     std::vector<SDL_GPUVertexAttribute> attributes;
-    {
-        auto& inputs = sdl_shader_inputs();
-        const std::lock_guard lock(inputs.mutex);
-        if (const auto layout = inputs.layouts.find(info.vertex_shader);
-            layout != inputs.layouts.end()) {
-            attributes.reserve(layout->second.size());
-            for (Uint32 i = 0; i < info.vertex_input_state.num_vertex_attributes; ++i) {
-                auto attribute = info.vertex_input_state.vertex_attributes[i];
-                if (const auto location = layout->second.find(attribute.location);
-                    location != layout->second.end()) {
-                    attribute.location = location->second;
-                    attributes.push_back(attribute);
-                }
-            }
-            if (attributes.size() != layout->second.size())
+    if (const auto& inputs = vertex.get_deleter().spirv_inputs) {
+        attributes.reserve(inputs->size());
+        for (const Uint32 location : *inputs) {
+            const auto* input = info.vertex_input_state.vertex_attributes;
+            const auto count = info.vertex_input_state.num_vertex_attributes;
+            Uint32 index = 0;
+            while (index < count && input[index].location != location)
+                ++index;
+            if (index == count)
                 throw std::runtime_error("SPIR-V vertex input has no pipeline attribute.");
-            info.vertex_input_state.vertex_attributes = attributes.data();
-            info.vertex_input_state.num_vertex_attributes = static_cast<Uint32>(attributes.size());
+            auto attribute = input[index];
+            attribute.location = static_cast<Uint32>(attributes.size());
+            attributes.push_back(attribute);
         }
+        info.vertex_input_state.vertex_attributes = attributes.data();
+        info.vertex_input_state.num_vertex_attributes = static_cast<Uint32>(attributes.size());
     }
     return SDL_CreateGPUGraphicsPipeline(device, &info);
 }

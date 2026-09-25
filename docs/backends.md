@@ -76,6 +76,7 @@ on a worker thread; SDL waits for submission fences. Promise reactions stay on t
   its separately compiled D3D12 stages link when a fragment reads a prefix of the vertex outputs;
   pinned stages keep Tint's order, whose fragments that omit the position read a prefix of it.
 - SPIR-V is version 1.3 and preserves varying locations; SDL_GPU devices request Vulkan 1.1.
+  Tint compacts vertex inputs at build time; shader-owned sidecar metadata maps pipeline attributes to those locations.
   Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
 - Tint's SPIR-V keeps floating-point-dependent branches; the Vulkan driver optimizes the arithmetic.
 - Metal uses `main0`, flattened sidecar bindings and buffer lengths at reserved index 30 for robust access.

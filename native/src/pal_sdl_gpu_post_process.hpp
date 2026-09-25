@@ -54,7 +54,8 @@ inline GpuPostProcessProgram build_sdl_gpu_post_process_program(SDL_GPUDevice* d
     info.multisample_state.sample_count = samples;
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
-    program.pipeline = OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, &info), {device}};
+    program.pipeline =
+        OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, vertex_shader, &info), {device}};
     if (!program.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline post-process");
     }

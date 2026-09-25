@@ -177,7 +177,8 @@ struct SdlTextGpuDevice final : SdlTextGpuResources {
         descriptor.target_info.depth_stencil_format = depth;
         descriptor.target_info.has_depth_stencil_target = info.has_depth;
         created->pipeline = retain_sdl_gpu_text_resource<SdlTextPipelineLease>(
-            owner, create_sdl_gpu_graphics_pipeline(owner->device, &descriptor), "pipeline");
+            owner, create_sdl_gpu_graphics_pipeline(owner->device, vertex, &descriptor),
+            "pipeline");
         if (owner->capture.enabled())
             created->capture =
                 text_pipeline_capture(info, sdl_text_format_name(color_format),

@@ -183,7 +183,8 @@ inline BillboardPass create_billboard_pass(SDL_GPUDevice* device, Engine& engine
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = depth_format;
     info.target_info.has_depth_stencil_target = true;
-    pass.pipeline = OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, &info), {device}};
+    pass.pipeline =
+        OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, vertex_shader, &info), {device}};
     if (!pass.pipeline)
         gpu_error("SDL_CreateGPUGraphicsPipeline");
     vertex_shader.reset();
@@ -211,8 +212,8 @@ inline BillboardPass create_billboard_pass(SDL_GPUDevice* device, Engine& engine
         add_info.vertex_shader = add_vertex.shader.get();
         add_info.fragment_shader = add_fragment.shader.get();
         add_info.target_info.color_target_descriptions = &add_target;
-        pass.add_pipeline =
-            OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, &add_info), {device}};
+        pass.add_pipeline = OwnedSdlPipeline{
+            create_sdl_gpu_graphics_pipeline(device, add_vertex.shader, &add_info), {device}};
         if (!pass.add_pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline");
         }

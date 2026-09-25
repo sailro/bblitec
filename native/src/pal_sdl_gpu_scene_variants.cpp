@@ -510,7 +510,7 @@ pinned_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPi
                                      entry.color_target_count, "pinned",
                                      transparent ? &color_target.blend_state : nullptr);
     }
-    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, &info),
+    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &info),
                               {state.device}};
     if (!pipeline)
         gpu_error("SDL_CreateGPUGraphicsPipeline pinned variant");
@@ -1020,7 +1020,7 @@ node_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPipe
             upstream::node_geometry_variants[geometry_variant].color_target_count, "node", nullptr);
     }
 #endif
-    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, &info),
+    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &info),
                               {state.device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline node variant");
@@ -1534,7 +1534,7 @@ standard_variant_pipeline(GpuState& state, std::size_t variant, upstream::Render
                                      entry.color_target_count, "standard",
                                      transparent ? &color_target.blend_state : nullptr);
     }
-    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, &info),
+    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &info),
                               {state.device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline standard variant");

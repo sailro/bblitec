@@ -1,19 +1,17 @@
 #pragma once
 #include <cstdint>
-#include <cstring>
+#include <span>
 #include <map>
 #include <stdexcept>
 #include <vector>
 
-namespace bbl::pal {
+namespace bbl::shader_tools {
 // Compact only vertex-buffer inputs. Stage outputs retain the locations used
 // by the independently compiled fragment shader.
 inline std::map<std::uint32_t, std::uint32_t>
-compact_spirv_vertex_inputs(std::vector<std::uint8_t>& bytes) {
-    if (bytes.size() < 20 || bytes.size() % 4)
+compact_spirv_vertex_inputs(std::span<std::uint32_t> words) {
+    if (words.size() < 5)
         throw std::runtime_error("Invalid SPIR-V module.");
-    std::vector<std::uint32_t> words(bytes.size() / 4);
-    std::memcpy(words.data(), bytes.data(), bytes.size());
     if (words[0] != 0x07230203)
         throw std::runtime_error("Invalid SPIR-V magic.");
     std::map<std::uint32_t, std::uint32_t> locations;
@@ -57,8 +55,8 @@ compact_spirv_vertex_inputs(std::vector<std::uint8_t>& bytes) {
     for (const auto& [id, location] : locations)
         if (input_types.contains(id)) {
             const auto compact = mapping.at(location);
-            std::memcpy(bytes.data() + location_offsets.at(id) * 4, &compact, sizeof(compact));
+            words[location_offsets.at(id)] = compact;
         }
     return mapping;
 }
-} // namespace bbl::pal
+} // namespace bbl::shader_tools

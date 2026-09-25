@@ -1072,7 +1072,7 @@ fn sampleColor(tex: texture_2d<f32>, smp: sampler) -> vec4f {
 );
 
 test(
-    "Vulkan binaries preserve sparse vertex and interstage locations",
+    "Vulkan binaries compact vertex inputs and preserve interstage locations",
     { skip: !tools.bbliteTint },
     async (t) => {
         const root = fixtureRoot(t);
@@ -1130,7 +1130,11 @@ struct Output {
             readFileSync(join(directory, "sparse.frag.spv")),
         );
         // Storage classes: Input 1, Output 3.
-        assert.deepEqual(vertex.locations(1), [0, 3, 6, 16]);
+        assert.deepEqual(vertex.locations(1), [0, 1, 2, 3]);
+        assert.match(
+            readFileSync(join(directory, "sparse.vert.slots"), "utf8"),
+            /^@spirv-inputs 0 3 6 16$/m,
+        );
         assert.deepEqual(vertex.locations(3), [2, 7]);
         assert.deepEqual(fragment.locations(1), [2, 7]);
         assert.deepEqual(fragment.locations(3), [0]);

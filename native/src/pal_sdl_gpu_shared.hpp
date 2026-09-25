@@ -4,7 +4,6 @@
 
 #include "pal_sdl_gpu_device.hpp"
 #include "pal_sdl_gpu_resources.hpp"
-#include "pal_spirv_vertex.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
 #include "pal_gpu_common.hpp"
@@ -170,6 +169,8 @@ inline void save_texture_png(SDL_GPUDevice*, SdlGpuCommand& command, SDL_GPUText
  * own WGSL to decide.
  */
 struct PinnedStageSlots {
+    /** Original locations ordered by the SPIR-V module's compacted locations. */
+    std::optional<std::vector<Uint32>> spirv_inputs;
     /** The entry point the stage's module declared, as the sidecar names it. */
     std::string entry_point;
     /** Uniform blocks in slot order: `scene`, `lights`, `mesh`, `material`. */
@@ -191,6 +192,23 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
         read_binary_file(join_path(shader_root, base_name + ".slots"));
     PinnedStageSlots slots;
     const auto take = [&](std::string_view line) {
+        constexpr std::string_view input_tag = "@spirv-inputs";
+        if (line == input_tag || line.starts_with("@spirv-inputs ")) {
+            if (slots.spirv_inputs)
+                throw std::runtime_error("Duplicate SPIR-V input layout in " + base_name);
+            auto& inputs = slots.spirv_inputs.emplace();
+            line.remove_prefix(input_tag.size());
+            while (!line.empty()) {
+                line.remove_prefix(1);
+                const auto end = std::min(line.find(' '), line.size());
+                const auto location = parse_sidecar_index(line.substr(0, end));
+                if (!location || (!inputs.empty() && inputs.back() >= *location))
+                    throw std::runtime_error("Malformed SPIR-V input layout in " + base_name);
+                inputs.push_back(*location);
+                line.remove_prefix(end);
+            }
+            return;
+        }
         const std::size_t space = line.find(' ');
         if (line.empty() || space == std::string_view::npos)
             return;
@@ -504,7 +522,7 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
             // A texture read without a sampler. SDL packs these after the
             // sampler pairs in the same register space, which is why the count
             // belongs to the shader rather than to the bind call.
-            std::uint32_t storage_textures = 0) {
+            std::uint32_t storage_textures = 0, const PinnedStageSlots* reflected = nullptr) {
     const SDL_GPUShaderFormat supported = SDL_GetGPUShaderFormats(device);
     SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
     const char* extension = nullptr;
@@ -537,11 +555,16 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
                                         : shader_override;
     std::vector<std::uint8_t> code =
         read_binary_file(join_path(shader_root, std::string(base_name) + extension));
-    std::map<Uint32, Uint32> inputs;
+    std::optional<std::vector<Uint32>> inputs;
     const bool compact_inputs =
         format == SDL_GPU_SHADERFORMAT_SPIRV && stage == SDL_GPU_SHADERSTAGE_VERTEX;
-    if (compact_inputs)
-        inputs = compact_spirv_vertex_inputs(code);
+    if (compact_inputs) {
+        inputs =
+            reflected ? reflected->spirv_inputs : read_pinned_stage_slots(base_name).spirv_inputs;
+        if (!inputs)
+            throw std::runtime_error("SPIR-V shader has no compiled vertex layout: " +
+                                     std::string(base_name));
+    }
     SDL_GPUShaderCreateInfo info{};
     info.code_size = code.size();
     info.code = code.data();
@@ -557,13 +580,7 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
         throw std::runtime_error(std::string("SDL_CreateGPUShader ") + base_name + extension +
                                  " (" + entrypoint + "): " + SDL_GetError());
     }
-    OwnedSdlShader owned{shader, {device}};
-    if (compact_inputs) {
-        auto& registry = sdl_shader_inputs();
-        const std::lock_guard lock(registry.mutex);
-        registry.layouts.emplace(shader, std::move(inputs));
-    }
-    return owned;
+    return OwnedSdlShader{shader, {device, std::move(inputs)}};
 }
 
 /**
@@ -581,7 +598,7 @@ inline OwnedSdlShader load_shader(SDL_GPUDevice* device, const std::string& stem
                        static_cast<std::uint32_t>(slots.textures.size()),
                        static_cast<std::uint32_t>(slots.uniforms.size()), slots.entry_point.c_str(),
                        static_cast<std::uint32_t>(slots.storage.size()),
-                       static_cast<std::uint32_t>(slots.storage_textures.size()));
+                       static_cast<std::uint32_t>(slots.storage_textures.size()), &slots);
 }
 
 /** A compiled stage and the sidecar it was created from. */

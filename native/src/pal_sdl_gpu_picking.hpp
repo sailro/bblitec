@@ -351,7 +351,7 @@ private:
         info.target_info.num_color_targets = 2;
         info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM;
         info.target_info.has_depth_stencil_target = true;
-        pipeline.pipeline = create_sdl_gpu_graphics_pipeline(device_, &info);
+        pipeline.pipeline = create_sdl_gpu_graphics_pipeline(device_, vertex, &info);
         if (!pipeline.pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline picking-billboard");
         }

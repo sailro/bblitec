@@ -879,8 +879,8 @@ public:
             image_processing_info.target_info.color_target_descriptions = &image_processing_target;
             image_processing_info.target_info.num_color_targets = 1;
             state.per_sample_image_processing = per_sample_image_processing;
-            state.image_processing_pipeline =
-                create_sdl_gpu_graphics_pipeline(state.device, &image_processing_info);
+            state.image_processing_pipeline = create_sdl_gpu_graphics_pipeline(
+                state.device, image_processing_vertex_shader, &image_processing_info);
             if (!state.image_processing_pipeline) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline image processing");
             }
@@ -898,13 +898,13 @@ public:
             depth_pipeline_info.target_info.depth_stencil_format = state.depth_format;
             depth_pipeline_info.target_info.has_depth_stencil_target = true;
             state.depth_only_pipelines[index] =
-                create_sdl_gpu_graphics_pipeline(state.device, &depth_pipeline_info);
+                create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &depth_pipeline_info);
             if (!state.depth_only_pipelines[index]) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline depth-only");
             }
             depth_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
             state.depth_only_double_sided_pipelines[index] =
-                create_sdl_gpu_graphics_pipeline(state.device, &depth_pipeline_info);
+                create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &depth_pipeline_info);
             if (!state.depth_only_double_sided_pipelines[index]) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline depth-only double-sided");
             }
@@ -916,7 +916,7 @@ public:
             state.shader_shadow_pipelines.resize(shader_variant_total, nullptr);
             state.shader_task_pipelines.resize(shader_variant_total);
             for (std::uint32_t variant = 0; variant < shader_variant_total; ++variant) {
-                SDL_GPUShader* variant_vertex_shader = shader_vertex_shaders[variant].get();
+                const auto& variant_vertex_shader = shader_vertex_shaders[variant];
                 SDL_GPUShader* variant_fragment_shader = shader_fragment_shaders[variant].get();
                 if (!variant_vertex_shader) {
                     continue;
@@ -932,7 +932,7 @@ public:
                         info.additive_blending ? shader_additive_blend : transparent_blend);
                 }
                 SDL_GPUGraphicsPipelineCreateInfo shader_pipeline_info = pipeline_info;
-                shader_pipeline_info.vertex_shader = variant_vertex_shader;
+                shader_pipeline_info.vertex_shader = variant_vertex_shader.get();
                 shader_pipeline_info.fragment_shader = variant_fragment_shader;
                 shader_pipeline_info.rasterizer_state.cull_mode =
                     info.back_face_culling ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_NONE;
@@ -1000,8 +1000,8 @@ public:
                     shadow_pipeline_info.target_info.depth_stencil_format =
                         SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
                     shadow_pipeline_info.target_info.has_depth_stencil_target = true;
-                    state.shader_shadow_pipelines[variant] =
-                        create_sdl_gpu_graphics_pipeline(state.device, &shadow_pipeline_info);
+                    state.shader_shadow_pipelines[variant] = create_sdl_gpu_graphics_pipeline(
+                        state.device, variant_vertex_shader, &shadow_pipeline_info);
                     if (!state.shader_shadow_pipelines[variant]) {
                         gpu_error("SDL_CreateGPUGraphicsPipeline shader shadow caster");
                     }
@@ -1013,8 +1013,8 @@ public:
                 // additional depth-only view, never a replacement for it.
                 if (!variant_fragment_shader)
                     continue;
-                state.shader_pipelines[variant] =
-                    create_sdl_gpu_graphics_pipeline(state.device, &shader_pipeline_info);
+                state.shader_pipelines[variant] = create_sdl_gpu_graphics_pipeline(
+                    state.device, variant_vertex_shader, &shader_pipeline_info);
                 if (!state.shader_pipelines[variant]) {
                     gpu_error("SDL_CreateGPUGraphicsPipeline shader material");
                 }
@@ -1024,8 +1024,8 @@ public:
                 // implicit 0.5 cutoff.
                 shader_pipeline_info.multisample_state.enable_alpha_to_coverage =
                     alpha_to_coverage_enabled(true, gpu_sample_count_value(state.sample_count));
-                state.shader_a2c_pipelines[variant] =
-                    create_sdl_gpu_graphics_pipeline(state.device, &shader_pipeline_info);
+                state.shader_a2c_pipelines[variant] = create_sdl_gpu_graphics_pipeline(
+                    state.device, variant_vertex_shader, &shader_pipeline_info);
                 if (!state.shader_a2c_pipelines[variant]) {
                     gpu_error("SDL_CreateGPUGraphicsPipeline alpha to coverage");
                 }
@@ -1053,14 +1053,14 @@ public:
             blit_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             blit_pipeline_info.target_info.color_target_descriptions = &blit_target;
             blit_pipeline_info.target_info.num_color_targets = 1;
-            state.blit_pipeline =
-                create_sdl_gpu_graphics_pipeline(state.device, &blit_pipeline_info);
+            state.blit_pipeline = create_sdl_gpu_graphics_pipeline(state.device, blit_vertex_shader,
+                                                                   &blit_pipeline_info);
             if (!state.blit_pipeline) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline blit");
             }
             blit_pipeline_info.multisample_state.sample_count = state.sample_count;
-            state.blit_msaa_pipeline =
-                create_sdl_gpu_graphics_pipeline(state.device, &blit_pipeline_info);
+            state.blit_msaa_pipeline = create_sdl_gpu_graphics_pipeline(
+                state.device, blit_vertex_shader, &blit_pipeline_info);
             if (!state.blit_msaa_pipeline) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline blit MSAA");
             }
@@ -1073,10 +1073,11 @@ public:
             id_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             id_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             id_pipeline_info.target_info.color_target_descriptions = &id_target;
-            state.id_pipeline = create_sdl_gpu_graphics_pipeline(state.device, &id_pipeline_info);
+            state.id_pipeline =
+                create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &id_pipeline_info);
             id_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
             state.id_double_sided_pipeline =
-                create_sdl_gpu_graphics_pipeline(state.device, &id_pipeline_info);
+                create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &id_pipeline_info);
         }
         if (cluster_fragment_shader) {
             SDL_GPUColorTargetDescription cluster_target{};
@@ -1086,11 +1087,11 @@ public:
             cluster_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             cluster_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             cluster_pipeline_info.target_info.color_target_descriptions = &cluster_target;
-            state.cluster_pipeline =
-                create_sdl_gpu_graphics_pipeline(state.device, &cluster_pipeline_info);
+            state.cluster_pipeline = create_sdl_gpu_graphics_pipeline(state.device, vertex_shader,
+                                                                      &cluster_pipeline_info);
             cluster_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-            state.cluster_double_sided_pipeline =
-                create_sdl_gpu_graphics_pipeline(state.device, &cluster_pipeline_info);
+            state.cluster_double_sided_pipeline = create_sdl_gpu_graphics_pipeline(
+                state.device, vertex_shader, &cluster_pipeline_info);
         }
         color_target.blend_state = blend_state_from(transparent_blend);
         pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;

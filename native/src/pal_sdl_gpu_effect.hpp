@@ -131,7 +131,8 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
     info.target_info.num_color_targets = 1;
     info.target_info.color_target_descriptions = &color;
     info.target_info.has_depth_stencil_target = false;
-    pass.pipeline = OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, &info), {device}};
+    pass.pipeline =
+        OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, vertex.shader, &info), {device}};
     vertex.shader.reset();
     fragment.shader.reset();
     if (!pass.pipeline)

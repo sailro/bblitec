@@ -168,7 +168,7 @@ inline OwnedSdlShader create_sprite_ui_sdl_gpu_shader(SDL_GPUDevice* device,
 }
 
 inline SDL_GPUGraphicsPipeline*
-create_sprite_ui_sdl_gpu_pipeline(SDL_GPUDevice* device, SDL_GPUShader* vertex,
+create_sprite_ui_sdl_gpu_pipeline(SDL_GPUDevice* device, const OwnedSdlShader& vertex,
                                   SDL_GPUShader* fragment, SDL_GPUTextureFormat format,
                                   SDL_GPUSampleCount samples, bool additive = false) {
     SDL_GPUColorTargetDescription target{};
@@ -194,7 +194,7 @@ create_sprite_ui_sdl_gpu_pipeline(SDL_GPUDevice* device, SDL_GPUShader* vertex,
     const SDL_GPUVertexBufferDescription vertex_buffer{0, sizeof(UiRenderVertex),
                                                        SDL_GPU_VERTEXINPUTRATE_VERTEX, 0};
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex;
+    info.vertex_shader = vertex.get();
     info.fragment_shader = fragment;
     info.vertex_input_state = SDL_GPUVertexInputState{&vertex_buffer, 1, attributes.data(),
                                                       static_cast<Uint32>(attributes.size())};
@@ -204,7 +204,7 @@ create_sprite_ui_sdl_gpu_pipeline(SDL_GPUDevice* device, SDL_GPUShader* vertex,
     info.multisample_state.sample_count = samples;
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
-    SDL_GPUGraphicsPipeline* pipeline = create_sdl_gpu_graphics_pipeline(device, &info);
+    SDL_GPUGraphicsPipeline* pipeline = create_sdl_gpu_graphics_pipeline(device, vertex, &info);
     if (!pipeline)
         gpu_error("SDL_CreateGPUGraphicsPipeline UI");
     return pipeline;
@@ -224,13 +224,13 @@ inline void create_sprite_ui_sdl_gpu_resources(SDL_GPUDevice* device, SDL_GPUTex
     const SDL_GPUTextureFormat draw_format =
         layer_samples ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM : format;
     const SDL_GPUSampleCount draw_samples = layer_samples.value_or(SDL_GPU_SAMPLECOUNT_1);
-    ui.color_pipeline = create_sprite_ui_sdl_gpu_pipeline(device, vertex.get(), color.get(),
-                                                          draw_format, draw_samples);
-    ui.texture_pipeline = create_sprite_ui_sdl_gpu_pipeline(device, vertex.get(), texture.get(),
-                                                            draw_format, draw_samples);
+    ui.color_pipeline =
+        create_sprite_ui_sdl_gpu_pipeline(device, vertex, color.get(), draw_format, draw_samples);
+    ui.texture_pipeline =
+        create_sprite_ui_sdl_gpu_pipeline(device, vertex, texture.get(), draw_format, draw_samples);
     if (layer_samples) {
-        ui.composite_pipeline = create_sprite_ui_sdl_gpu_pipeline(
-            device, vertex.get(), texture.get(), format, SDL_GPU_SAMPLECOUNT_1);
+        ui.composite_pipeline = create_sprite_ui_sdl_gpu_pipeline(device, vertex, texture.get(),
+                                                                  format, SDL_GPU_SAMPLECOUNT_1);
     }
 
     SDL_GPUSamplerCreateInfo sampler{};
@@ -259,7 +259,7 @@ inline void ensure_sprite_ui_sdl_gpu_backdrop_pipeline(SDL_GPUDevice* device,
     const OwnedSdlShader texture =
         create_sprite_ui_sdl_gpu_shader(device, SpriteUiSdlShader::texture_fragment);
     ui.backdrop.pipeline = create_sprite_ui_sdl_gpu_pipeline(
-        device, vertex.get(), texture.get(), SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+        device, vertex, texture.get(), SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
         SDL_GPU_SAMPLECOUNT_1, true);
 }
 

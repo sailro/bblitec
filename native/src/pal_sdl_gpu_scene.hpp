@@ -558,7 +558,8 @@ struct ShaderTaskPipeline {
         info.depth_stencil_state.enable_depth_write &= info.target_info.has_depth_stencil_target;
         info.multisample_state.sample_count = target.samples;
         info.multisample_state.enable_alpha_to_coverage = coverage;
-        OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(device, &info), {device}};
+        OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(device, vertex, &info),
+                                  {device}};
         if (!pipeline)
             gpu_error("SDL_CreateGPUGraphicsPipeline shader render task");
         return pipelines.emplace(key, std::move(pipeline)).first->second.get();

@@ -191,7 +191,7 @@ fragment float copy_fs(float4 p [[position]], depth2d<float> t [[texture(0)]]) {
         pipeline.target_info.num_color_targets = 1;
         pipeline.target_info.color_target_descriptions = &color;
         state.depth_copy_pipeline = OwnedSdlPipeline{
-            create_sdl_gpu_graphics_pipeline(state.device, &pipeline), {state.device}};
+            create_sdl_gpu_graphics_pipeline(state.device, vertex, &pipeline), {state.device}};
         if (!state.depth_copy_pipeline)
             gpu_error("SDL_CreateGPUGraphicsPipeline depth copy");
     }

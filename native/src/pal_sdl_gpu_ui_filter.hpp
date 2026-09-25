@@ -106,7 +106,7 @@ struct UiFilterSdlResources {
         info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
         info.target_info.color_target_descriptions = &target;
         info.target_info.num_color_targets = 1;
-        pipeline = create_sdl_gpu_graphics_pipeline(device, &info);
+        pipeline = create_sdl_gpu_graphics_pipeline(device, vertex, &info);
         if (!pipeline)
             gpu_error("SDL_CreateGPUGraphicsPipeline UI filter");
     }
