@@ -80,16 +80,16 @@ export function sourceUnitStem(root: string, source: string): string {
  * further unit repeats the instantiations its code shares with the others,
  * so the budget keeps parts few. A definition larger than it is a unit alone.
  */
-export const unitMaximumWeight = 24_000;
+export const unitMaximumWeight = 12_000;
 
 /** What one pass over a piece of code finds: the names it uses and its weight. */
-interface CodeScan {
+export interface CodeScan {
     readonly identifiers: ReadonlySet<string>;
     /** Identifier tokens, repeats included ({@link unitMaximumWeight}). */
     readonly weight: number;
 }
 
-function scanCode(code: string): CodeScan {
+export function scanCode(code: string): CodeScan {
     const identifiers = new Set<string>();
     let weight = 0;
     for (const token of cppTokens(code)) {
@@ -98,6 +98,25 @@ function scanCode(code: string): CodeScan {
         weight++;
     }
     return { identifiers, weight };
+}
+
+/** Transitive template dependencies, including recursive definitions only once. */
+export function templateReach(
+    templates: ReadonlyMap<string, CodeScan>,
+): (identifiers: Iterable<string>) => ReadonlySet<string> {
+    return (identifiers) => {
+        const reached = new Set<string>();
+        const visit = (names: Iterable<string>): void => {
+            for (const name of names) {
+                const definition = templates.get(name);
+                if (!definition || reached.has(name)) continue;
+                reached.add(name);
+                visit(definition.identifiers);
+            }
+        };
+        if (templates.size) visit(identifiers);
+        return reached;
+    };
 }
 
 /** The names the wrapper around a unit's pieces adds to its body. */
@@ -147,7 +166,7 @@ function pieceCost(
  * own code. Pieces keep their order within a part, and parts are ordered by
  * their first piece.
  */
-function packUnitParts<Piece extends { readonly scan: CodeScan }>(
+export function packUnitParts<Piece extends { readonly scan: CodeScan }>(
     pieces: readonly Piece[],
     reachedTemplates: (identifiers: Iterable<string>) => ReadonlySet<string>,
     templateWeight: (name: string) => number,
@@ -384,21 +403,7 @@ export function renderSourceUnits(options: {
             scanCode(definition.definition),
         ]),
     );
-    const reachedTemplates = (
-        identifiers: Iterable<string>,
-    ): ReadonlySet<string> => {
-        const reached = new Set<string>();
-        const visit = (names: Iterable<string>): void => {
-            for (const identifier of names) {
-                const definition = templates.get(identifier);
-                if (!definition || reached.has(identifier)) continue;
-                reached.add(identifier);
-                visit(definition.identifiers);
-            }
-        };
-        if (templates.size > 0) visit(identifiers);
-        return reached;
-    };
+    const reachedTemplates = templateReach(templates);
     // Each piece is scanned once: its names and weight both pack the parts
     // and select what each part's body needs.
     const parts = [...groups].map(([key, group]) => ({

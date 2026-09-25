@@ -85,6 +85,10 @@ to move compound and expression statements, and large runtime initializers, into
 (`body-outlining.ts`) that take the locals they read by reference. Declarations, outward transfers and
 untyped reads stay in place; opaque emission blocks further outlining in its scope. Loops move whole.
 
+Lowered library modules use the same packing budget and outliner. Generator-owned regions carry explicit
+captures; other bodies remain opaque. Packed modules share declarations, records and variable storage in
+`upstream/include/bblite/upstream/units/`; their implementation parts are listed in `generatedSources`.
+
 Ordinary loops remain native loops, including small constant ranges. Static expansion is reserved for
 composition that needs distinct generation-time values or frame-yield continuations. Shared functions,
 callbacks and coroutines retain separate invocation state. A body is emitted once per distinct

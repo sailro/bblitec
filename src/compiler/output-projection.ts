@@ -401,11 +401,11 @@ export function impliedFeatures(feature: Feature): readonly Feature[] {
 export function projectFeatures(
     features: readonly Feature[],
     applicationSources: readonly string[],
+    generatedSources = reachedGeneratedSources(features),
 ): { runtimeSources: string[]; generatedSources: string[]; cmake: string } {
     const runtimeSources = [
         ...new Set(features.flatMap((feature) => featureSources[feature])),
     ];
-    const generatedSources = reachedGeneratedSources(features);
     return {
         runtimeSources,
         generatedSources,

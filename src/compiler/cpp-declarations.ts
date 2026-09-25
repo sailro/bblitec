@@ -75,6 +75,7 @@ export function splitCppDeclarations(text: string): CppDeclaration[] {
     // Whether the declaration's first top-level brace opens a class body,
     // an enumeration or an initializer rather than a function body.
     let bracesNeedSemicolon = false;
+    let templateDepth = 0;
     const finish = (last: number): void => {
         declarations.push({
             text: text.slice(tokens[first]!.start, tokens[last]!.end),
@@ -82,9 +83,22 @@ export function splitCppDeclarations(text: string): CppDeclaration[] {
         });
         first = last + 1;
         bracesNeedSemicolon = false;
+        templateDepth = 0;
     };
     for (let index = 0; index < tokens.length; index++) {
         const token = tokens[index]!;
+        if (
+            depth === 0 &&
+            token.text === "<" &&
+            (templateDepth > 0 || tokens[index - 1]?.text === "template")
+        ) {
+            templateDepth++;
+            continue;
+        }
+        if (depth === 0 && templateDepth > 0) {
+            if (token.text === ">") templateDepth--;
+            continue;
+        }
         if (
             depth === 0 &&
             token.kind === "identifier" &&
@@ -92,7 +106,12 @@ export function splitCppDeclarations(text: string): CppDeclaration[] {
         )
             bracesNeedSemicolon = true;
         if (token.kind !== "punctuation") continue;
-        if (depth === 0 && token.text === "=") bracesNeedSemicolon = true;
+        if (
+            depth === 0 &&
+            token.text === "=" &&
+            tokens[index - 1]?.text !== "operator"
+        )
+            bracesNeedSemicolon = true;
         if (openers.has(token.text)) {
             depth++;
         } else if (closers.has(token.text)) {
@@ -100,6 +119,9 @@ export function splitCppDeclarations(text: string): CppDeclaration[] {
             if (depth < 0)
                 throw new Error("Unbalanced emitted C++ declarations.");
             if (depth === 0 && token.text === "}" && !bracesNeedSemicolon) {
+                // A braced member initializer is followed by another initializer or the body.
+                if ([",", "{"].includes(tokens[index + 1]?.text ?? ""))
+                    continue;
                 // A `;` after a function body is an empty declaration.
                 if (tokens[index + 1]?.text === ";") index++;
                 finish(index);
@@ -175,6 +197,11 @@ export function cppDeclaredNames(
                 : undefined;
         }
         if (token.kind !== "punctuation") continue;
+        if (token.text === "[" && tokens[cursor + 1]?.text !== "[") {
+            const name = tokens[cursor - 1];
+            if (name?.kind === "identifier")
+                return { names: [name.text], function: false };
+        }
         if (token.text === "<") {
             // Template arguments of a return or variable type.
             const end = qualifiedNameEnd(tokens, cursor - 1);

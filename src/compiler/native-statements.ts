@@ -7,6 +7,12 @@ import {
 export type NativeStatement =
     | NativeDeclaration
     | { readonly kind: "expression"; readonly code: string }
+    /** A generator-owned complete scope with no transfer to its enclosing scope. */
+    | {
+          readonly kind: "region";
+          readonly code: string;
+          readonly captures: readonly NativeLocal[];
+      }
     | {
           readonly kind: "control";
           readonly code: string;

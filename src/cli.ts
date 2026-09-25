@@ -73,6 +73,7 @@ import {
     repositoryRelativePath,
 } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
+import { asFeatures, projectFeatures } from "./compiler/output-projection.js";
 import { downloadCached } from "./asset-download-cache.js";
 import {
     emitAssetSpecializations,
@@ -1524,12 +1525,18 @@ async function main(): Promise<void> {
         dispersion: composedArms.dispersion,
         occlusionUv2: composedArms.occlusionUv2,
     };
-    emitUpstreamGenerated(
+    const generatedSources = emitUpstreamGenerated(
         outputPath,
         result.manifest.features,
         emitOptions,
         tree,
     );
+    result.manifest.generatedSources = generatedSources;
+    result.cmake = projectFeatures(
+        asFeatures(result.manifest.features),
+        result.manifest.sourceUnits.map(({ path }) => path),
+        generatedSources,
+    ).cmake;
     for (const [path, cpp] of result.cppFiles) tree.write(path, cpp);
     tree.prune("sources");
     const imageCodecs = reachedImageCodecs(outputPath, result.manifest.assets);

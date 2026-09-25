@@ -134,6 +134,7 @@ export function outlineEmittedBody(options: {
     readonly bindingType: (name: string) => string | undefined;
     readonly allocateName: () => string;
     readonly source: string;
+    readonly callNamespace?: string;
 }): {
     readonly body: readonly NativeEmission[];
     readonly segments: readonly OutlinedSegment[];
@@ -181,10 +182,11 @@ export function outlineEmittedBody(options: {
             lines: readonly string[],
             source: string,
             type = "void",
+            types: ReadonlyMap<string, string | undefined> = frame,
         ): string => {
             const name = options.allocateName();
             const parameters = names
-                .map((name) => `[[maybe_unused]] ${frame.get(name)!}& ${name}`)
+                .map((name) => `[[maybe_unused]] ${types.get(name)!}& ${name}`)
                 .join(", ");
             const signature = `${type} ${name}(${parameters})`;
             segments.push({
@@ -193,7 +195,8 @@ export function outlineEmittedBody(options: {
                 prototype: `${signature};`,
                 lines: [`${signature} {`, ...lines, "}"],
             });
-            return `bblscene::${name}(${names.join(", ")})`;
+            const scope = options.callNamespace ?? "bblscene";
+            return `${scope ? `${scope}::` : ""}${name}(${names.join(", ")})`;
         };
         const flush = (): void => {
             if (!run.length) return;
@@ -216,6 +219,38 @@ export function outlineEmittedBody(options: {
         };
         for (const statement of body) {
             let events = emissions(statement);
+            if (
+                !("kind" in statement) &&
+                statement.statement.kind === "region"
+            ) {
+                flush();
+                const region = statement.statement;
+                const types = new Map(
+                    region.captures.map(({ name, type }) => [name, type]),
+                );
+                const names = [
+                    ...cppIdentifiers(region.code, { unqualified: true }),
+                ].filter((name) => types.has(name));
+                if (
+                    region.code.length < segmentMinimumBytes ||
+                    names.some((name) => types.get(name) === undefined)
+                ) {
+                    result.push(statement);
+                } else {
+                    const call = createSegment(
+                        names,
+                        [renderNativeEmission(statement)],
+                        statement.source ?? options.source,
+                        "void",
+                        types,
+                    );
+                    result.push({
+                        indent: statement.indent,
+                        statement: { kind: "expression", code: `${call};` },
+                    });
+                }
+                continue;
+            }
             if (
                 !("kind" in statement) &&
                 statement.statement.kind === "declaration"
