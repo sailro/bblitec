@@ -271,7 +271,7 @@ struct Context {
 #include "frame-session.hpp"
     Context() {
         engine.effect_renderers.emplace_back();
-        engine.registered_effect_renderers.push_back(EffectRendererHandle{0});
+        engine.rendering_contexts.push_back("effect-renderer", EffectRendererHandle{0});
         engine.sprite_renderers.emplace_back();
     }
 };
@@ -449,16 +449,28 @@ template <typename Renderer> void check_registration() {
     Renderer renderer;
     auto& engine = renderer.engine;
     engine.sprite_renderers.emplace_back();
-    engine.registered_sprite_renderers = {SpriteRendererHandle{1}, SpriteRendererHandle{0}};
+    {
+        const std::initializer_list<SpriteRendererHandle> contexts = {SpriteRendererHandle{1},
+                                                                      SpriteRendererHandle{0}};
+        engine.rendering_contexts.clear();
+        for (const auto& context : contexts)
+            engine.rendering_contexts.push_back("sprite-renderer", context);
+    }
     pass_creations = pass_releases = 0;
     renderer.sync_renderer_passes();
     assert(pass_creations == 2 && pass_releases == 0 && renderer.passes[0].renderer.value == 1);
     renderer.sync_renderer_passes();
     assert(pass_creations == 2 && pass_releases == 0);
-    engine.registered_sprite_renderers = {SpriteRendererHandle{0}, SpriteRendererHandle{1}};
+    {
+        const std::initializer_list<SpriteRendererHandle> contexts = {SpriteRendererHandle{0},
+                                                                      SpriteRendererHandle{1}};
+        engine.rendering_contexts.clear();
+        for (const auto& context : contexts)
+            engine.rendering_contexts.push_back("sprite-renderer", context);
+    }
     renderer.sync_renderer_passes();
     assert(pass_creations == 4 && pass_releases == 2 && renderer.passes[0].renderer.value == 0);
-    engine.registered_sprite_renderers.clear();
+    engine.rendering_contexts.clear();
     renderer.sync_renderer_passes();
     assert(renderer.passes.empty() && pass_releases == 4);
 
@@ -495,8 +507,13 @@ void check_batched_uploads() {
     {
         SdlSprite renderer;
         renderer.engine.sprite_renderers.emplace_back();
-        renderer.engine.registered_sprite_renderers = {SpriteRendererHandle{0},
-                                                       SpriteRendererHandle{1}};
+        {
+            const std::initializer_list<SpriteRendererHandle> contexts = {SpriteRendererHandle{0},
+                                                                          SpriteRendererHandle{1}};
+            renderer.engine.rendering_contexts.clear();
+            for (const auto& context : contexts)
+                renderer.engine.rendering_contexts.push_back("sprite-renderer", context);
+        }
         for (unsigned frame = 0; frame < 3; ++frame) {
             reset_observations();
             updated_renderers.clear();
@@ -507,7 +524,7 @@ void check_batched_uploads() {
             assert(sprite_buffer.bytes == std::vector<std::uint8_t>({1, 2, 0, 0}));
             assert(transfers.size() == first_transfer + 1 && !transfers.back().released);
         }
-        renderer.engine.registered_sprite_renderers.clear();
+        renderer.engine.rendering_contexts.clear();
         reset_observations();
         renderer.synchronize();
         assert(submissions == 0);

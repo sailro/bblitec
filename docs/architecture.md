@@ -111,6 +111,7 @@ Executables start with authored live defaults; parity and checks apply the regis
 executable.
 Scene, sprite, effect and frame-graph drivers run registered contexts in order. Default task graphs
 belong to scene identity. Property and glTF animation retain separate playback contracts.
+Each engine owns one rendering-context list with pinned kind tags; backend views share snapshots of its membership.
 
 ## Runtime and memory
 

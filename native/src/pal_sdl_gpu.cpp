@@ -377,8 +377,7 @@ class SdlSceneRun {
         const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";
         const MemoryProfile mem_profile;
         CpuStartupMark cpu_startup_mark{cpu_profile, "sdl"};
-        const std::vector<std::shared_ptr<Scene>> active_registered_scenes =
-            engine.registered_scenes;
+        const std::vector<std::shared_ptr<Scene>> active_registered_scenes = engine.scenes();
         const std::shared_ptr<Scene> active_scene = active_registered_scenes.front();
         Scene& scene = *active_scene;
         Resources resources;
@@ -463,8 +462,8 @@ class SdlSceneRun {
         for (upstream::RenderDrawLists& lists : task_draw_lists) {
             lists = {};
         }
-        for (std::size_t layer = 0; layer < engine.registered_scenes.size(); ++layer) {
-            const Scene& task_scene = *engine.registered_scenes[layer];
+        for (std::size_t layer = 0; layer < engine.scenes().size(); ++layer) {
+            const Scene& task_scene = *engine.scenes()[layer];
             const upstream::RenderPlan& task_plan =
                 layer == 0 ? render_plan : overlay_plans[layer - 1];
             for (const TaskHandle handle : task_scene.tasks) {
@@ -1267,8 +1266,8 @@ public:
         // an uploaded mesh array because a draw command indexes its plan.
         // Each layer rematches changed rows before encoding the next frame.
 
-        for (std::size_t layer = 1; layer < engine.registered_scenes.size(); ++layer) {
-            Scene* overlay_scene = engine.registered_scenes[layer].get();
+        for (std::size_t layer = 1; layer < engine.scenes().size(); ++layer) {
+            Scene* overlay_scene = engine.scenes()[layer].get();
             if (!overlay_scene)
                 continue;
             upstream::RenderPlan overlay_plan = upstream::build_render_plan(*overlay_scene, engine);
@@ -1740,7 +1739,7 @@ public:
             for (std::size_t layer = 0;
                  layer < data.overlay_plans.size() && layer < state.overlay_meshes.size();
                  ++layer) {
-                const Scene* overlay_scene = engine.registered_scenes[layer + 1u].get();
+                const Scene* overlay_scene = engine.scenes()[layer + 1u].get();
                 if (!overlay_scene)
                     continue;
                 auto& meshes = state.overlay_meshes[layer];
@@ -1932,9 +1931,9 @@ public:
 #endif
                 // Each registered context owns its tasks, camera and draw indices.
                 // Finish its graph before composing the next context's surface.
-                for (std::size_t graph_layer = 0; graph_layer < engine.registered_scenes.size();
+                for (std::size_t graph_layer = 0; graph_layer < engine.scenes().size();
                      ++graph_layer) {
-                    const Scene& graph_scene = *engine.registered_scenes[graph_layer];
+                    const Scene& graph_scene = *engine.scenes()[graph_layer];
                     const auto& graph_meshes =
                         graph_layer == 0 ? state.meshes : state.overlay_meshes[graph_layer - 1];
                     const auto& graph_plan =
@@ -2481,7 +2480,7 @@ public:
 
 #if BBLITE_HAS_TAA
                     if (graph_layer == 0) {
-                        for (const auto& registered : engine.registered_scenes) {
+                        for (const auto& registered : engine.scenes()) {
                             for (const TaskHandle recorded_handle : registered->tasks) {
                                 auto& recorded = handle_at(engine.frame_tasks, recorded_handle);
                                 if (!recorded.post_process.taa)
@@ -2915,7 +2914,7 @@ public:
                                 // Utility layers share the primary surface's MSAA
                                 // attachment, before its resolve/present tasks run.
                                 for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
-                                    const Scene& utility = *engine.registered_scenes[layer + 1];
+                                    const Scene& utility = *engine.scenes()[layer + 1];
                                     if (utility.surface_canvas || !utility.tasks.empty())
                                         continue;
                                     // The layer's own scene pass: its camera,
@@ -3823,7 +3822,7 @@ public:
             // back faces while sitting in front of everything below it.
             for (std::size_t layer = 0;
                  layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
-                Scene* overlay_scene = engine.registered_scenes[layer + 1u].get();
+                Scene* overlay_scene = engine.scenes()[layer + 1u].get();
                 if (!overlay_scene)
                     continue;
                 if (layer < overlay_topology_versions.size() &&
@@ -3918,8 +3917,8 @@ public:
             // contexts then load and blend over its final single-sample
             // colour, in registration order. Rendering before the blit keeps
             // screenshots and presentation on the same composed image.
-            if (!engine.registered_sprite_renderers.empty()) {
-                for (const SpriteRendererHandle handle : engine.registered_sprite_renderers) {
+            if (!engine.sprite_renderer_contexts().empty()) {
+                for (const SpriteRendererHandle handle : engine.sprite_renderer_contexts()) {
                     if (handle.value >= sprite_passes.size()) {
                         throw std::runtime_error("A SpriteRenderer created after the scene frame "
                                                  "started has no GPU pass yet.");
@@ -4170,7 +4169,7 @@ public:
 
 SceneRun run_gpu_engine(Engine& engine) {
 #if BBLITE_HAS_PBR_RENDERER
-    if (engine.registered_scenes.empty() || !engine.registered_scenes.front())
+    if (engine.scenes().empty() || !engine.scenes().front())
         throw std::runtime_error("GPU renderer requires a registered scene.");
     SdlSceneRun renderer(engine);
     renderer.setup();

@@ -6,6 +6,7 @@
 
 #include <bblite/js_callback.hpp>
 #include <bblite/snapshot_list.hpp>
+#include <bblite/rendering_contexts.hpp>
 #include <bblite/dom_event_state.hpp>
 
 #include <algorithm>
@@ -745,6 +746,8 @@ struct SceneState;
 struct TextRenderableState;
 struct TextLayerState;
 struct TextSurface;
+struct TextRendererState;
+using TextRenderer = std::shared_ptr<TextRendererState>;
 struct TextDataState;
 struct NodeInputState;
 using NodeInputHandle = std::shared_ptr<NodeInputState>;
@@ -3743,6 +3746,10 @@ struct DeviceRecoveryRegistration {
 
 using MeshMaterialSceneOwners = std::vector<std::weak_ptr<SceneState>>;
 
+using RenderingContextList =
+    RenderingContexts<std::shared_ptr<Scene>, FrameGraphContext*, SpriteRendererHandle,
+                      EffectRendererHandle, TextRenderer>;
+
 struct Engine {
     /**
      * Queued by `TransformNodeLease`, released by `reclaim_transform_nodes`.
@@ -4001,7 +4008,16 @@ struct Engine {
      * Scene copies share their state, so retaining a wrapper here remains
      * valid after the generated local that registered it leaves scope.
      */
-    SnapshotList<std::shared_ptr<Scene>> registered_scenes;
+    RenderingContextList rendering_contexts;
+    auto scenes() const { return rendering_contexts.select<std::shared_ptr<Scene>>(); }
+    auto frame_graph_contexts() const { return rendering_contexts.select<FrameGraphContext*>(); }
+    auto sprite_renderer_contexts() const {
+        return rendering_contexts.select<SpriteRendererHandle>();
+    }
+    auto effect_renderer_contexts() const {
+        return rendering_contexts.select<EffectRendererHandle>();
+    }
+    auto text_renderer_contexts() const { return rendering_contexts.select<TextRenderer>(); }
     /**
      * A scene renderer sets this when an application callback replaces its
      * root SceneContext. The PAL dispatcher then rebuilds the backend around
@@ -4014,7 +4030,6 @@ struct Engine {
     unsigned int input_replay_mouse_buttons = 0u;
     double input_replay_pointer_x = 0.0;
     double input_replay_pointer_y = 0.0;
-    std::vector<FrameGraphContext*> registered_frame_graph_contexts;
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
     std::vector<SpriteAnimationManagerRecord> sprite_animation_managers;
@@ -4063,15 +4078,7 @@ struct Engine {
      */
     using PickFilter = std::function<bool(MeshHandle)>;
     std::function<PickingInfo(GpuPickerHandle, double, double, const PickFilter*)> pick_hook;
-    // `engine._renderingContexts`, for the sprite half: registration
-    // order is draw order across renderers.
-    std::vector<SpriteRendererHandle> registered_sprite_renderers;
-    // The text half keeps the pin's own list on the text surface the
-    // generated code registers into (`bbl::text_surface`).
     std::shared_ptr<TextSurface> text_surface;
-    // The same list for the effect half; an effect renderer is its own
-    // rendering context on the engine exactly as a sprite renderer is.
-    std::vector<EffectRendererHandle> registered_effect_renderers;
     std::uint64_t next_pixels_texture_identity = 1;
     /**
      * The optional Sprite2D Y-sort extension's hook, empty until a scene
@@ -4110,7 +4117,7 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
 }
 
 inline bool has_sprite_renderers(const Engine& engine) {
-    return !engine.registered_sprite_renderers.empty();
+    return !engine.sprite_renderer_contexts().empty();
 }
 
 struct Engine::DeviceRecoveryState {
@@ -5137,8 +5144,7 @@ static_assert(std::is_nothrow_move_constructible_v<Scene>);
 [[nodiscard]] inline bool material_color_has_bound_group(const Engine& engine,
                                                          MaterialHandle material) {
     return std::any_of(
-        engine.registered_scenes.begin(), engine.registered_scenes.end(),
-        [&](const std::shared_ptr<Scene>& scene) {
+        engine.scenes().begin(), engine.scenes().end(), [&](const std::shared_ptr<Scene>& scene) {
             return scene &&
                    std::any_of(scene->meshes.begin(), scene->meshes.end(), [&](MeshHandle mesh) {
                        const MeshRecord* record = handle_find(engine.meshes, mesh);

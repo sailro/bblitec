@@ -276,10 +276,10 @@ std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) {
         Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
         void mark_mesh_dirty(Engine&, MeshHandle) {}
         void mark_transform_node_dirty(Engine&, TransformNodeHandle) {}
-        void register_scene(Scene& scene) { scene.engine->registered_scenes.push_back(std::make_shared<Scene>(scene)); }
+        void register_scene(Scene& scene) { scene.engine->rendering_contexts.push_back("scene", std::make_shared<Scene>(scene)); }
         void start_engine(Engine& engine) {
-            assert(engine.registered_scenes.size() == 1);
-            for (const auto& callback : engine.registered_scenes[0]->before_render) callback(1000.0f / 60.0f);
+            assert(engine.scenes().size() == 1);
+            for (const auto& callback : engine.scenes()[0]->before_render) callback(1000.0f / 60.0f);
         }
         }
         int main() {

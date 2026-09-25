@@ -652,7 +652,7 @@ int main(){
     scene.deferred_builders.push_back([&]{order+="a";scene.deferred_builders.push_back([&]{order+="c";});});
     scene.deferred_builders.push_back([&]{order+="b";});
     register_scene(scene);
-    if(order!="abc" || engine.registered_scenes.size()!=1) return 1;
+    if(order!="abc" || engine.scenes().size()!=1) return 1;
     auto alias=scene;
     alias.deferred_builders.push_back([&]{order+="d";});
     register_scene(alias);
@@ -663,7 +663,7 @@ int main(){
     scene.deferred_builders.push_back([&]{order+="e";scene.deferred_builders.push_back([&]{order+="g";});throw std::runtime_error("builder");});
     scene.deferred_builders.push_back([&]{order+="f";});
     try { register_scene(scene); return 4; } catch(const std::runtime_error&) {}
-    if(order!="abcde" || !engine.registered_scenes.empty() || scene.deferred_builders.size()!=1) return 5;
+    if(order!="abcde" || !engine.scenes().empty() || scene.deferred_builders.size()!=1) return 5;
     register_scene(scene); if(order!="abcdeg") return 6;
     Scene rejected;rejected.engine=&engine;
     std::string rejected_order;
@@ -676,7 +676,7 @@ int main(){
     try {register_scene(rejected);return 12;} catch(const std::runtime_error& error) {
         if(std::string(error.what())!="first rejection")return 13;
     }
-    if(rejected_order!="ab" || rejected.deferred_builders.size()!=1 || engine.registered_scenes.size()!=1)return 14;
+    if(rejected_order!="ab" || rejected.deferred_builders.size()!=1 || engine.scenes().size()!=1)return 14;
     register_scene(rejected);if(rejected_order!="abc")return 15;
     unregister_scene(rejected);
     rejected.deferred_builders.emplace_back([&]{rejected_order+="d";},SceneDeferredFailure::promise_rejection);
@@ -700,7 +700,7 @@ int main(){
     r->gpu->instance_buf=marked(destroyed,'i');
     r->gpu->style_buf=marked(destroyed,'s');
     dispose_scene(scene);dispose_scene(alias);
-    if(destroyed!="uis" || !scene.state->text_renderables.empty() || !engine.registered_scenes.empty()) return 9;
+    if(destroyed!="uis" || !scene.state->text_renderables.empty() || !engine.scenes().empty()) return 9;
     try { add_text_renderable(scene,r); return 11; } catch(const std::runtime_error&) {}
     std::weak_ptr<SceneState> weak;
     { Scene abandoned;weak=abandoned.state;add_text_renderable(abandoned,r); }

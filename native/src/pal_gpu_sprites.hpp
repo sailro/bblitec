@@ -132,18 +132,18 @@ void begin_sprite_renderer_update(Engine& engine, SpriteRendererHandle renderer,
 
 /**
  * Whether a standalone driver's pass list still mirrors
- * `engine.registered_sprite_renderers` one-to-one, in order. Both
+ * `engine.sprite_renderer_contexts()` one-to-one, in order. Both
  * backends' pass records carry the renderer handle, so one comparison
  * serves either list; a mismatch means a callback registered or disposed
  * a renderer and the passes must be rebuilt.
  */
 template <typename SpritePassList>
 inline bool sprite_passes_match_registered(const Engine& engine, const SpritePassList& passes) {
-    if (passes.size() != engine.registered_sprite_renderers.size()) {
+    if (passes.size() != engine.sprite_renderer_contexts().size()) {
         return false;
     }
     for (std::size_t index = 0; index < passes.size(); ++index) {
-        if (passes[index].renderer.value != engine.registered_sprite_renderers[index].value) {
+        if (passes[index].renderer.value != engine.sprite_renderer_contexts()[index].value) {
             return false;
         }
     }

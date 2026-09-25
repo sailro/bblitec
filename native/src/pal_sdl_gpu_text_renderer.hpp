@@ -12,7 +12,7 @@ inline void update_sdl_gpu_text_renderers(Engine& engine, SdlTextRenderer& text,
     surface->device = text.device;
     surface->canvas = {width, height};
     surface->format = sdl_text_format_name(text.device->color_format);
-    const auto renderers = surface->rendering_contexts;
+    const auto renderers = engine.text_renderer_contexts();
     for (std::size_t index = 0; index < renderers.size(); ++index)
         renderers[index]->update();
 }
@@ -29,7 +29,7 @@ inline void record_sdl_gpu_text_renderers(Engine& engine, SdlTextRenderer& text,
         surface->current_encoder.reset();
         surface->sc_rt.color_view.reset();
     });
-    const auto renderers = surface->rendering_contexts;
+    const auto renderers = engine.text_renderer_contexts();
     for (std::size_t index = 0; index < renderers.size(); ++index)
         static_cast<void>(renderers[index]->record());
 }

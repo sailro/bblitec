@@ -227,12 +227,12 @@ enum class RendererKind { scene, sprites, canvas, effects, frame_graph, text };
 RendererKind renderer_kind(const Engine& engine) {
     if (bbl::has_text_renderers(engine))
         return RendererKind::text;
-    if (!engine.registered_scenes.empty())
+    if (!engine.scenes().empty())
         return RendererKind::scene;
-    if (!engine.registered_frame_graph_contexts.empty()) {
+    if (!engine.frame_graph_contexts().empty()) {
         return RendererKind::frame_graph;
     }
-    if (!engine.registered_effect_renderers.empty()) {
+    if (!engine.effect_renderer_contexts().empty()) {
         return RendererKind::effects;
     }
     if (bbl::has_sprite_renderers(engine)) {

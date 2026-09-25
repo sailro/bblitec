@@ -1,3 +1,4 @@
+import { renderingContextKind } from "./rendering-context-kind.js";
 import ts from "typescript";
 import { assetRootTransformSource } from "./asset-root-transform.js";
 import { LoweredSource, LoweringContext } from "./context.js";
@@ -2644,12 +2645,12 @@ void off_visibility_change(Engine& engine, std::size_t identity) {
 void register_scene(Scene& scene) {
     require_scene_engine(scene);
     const auto found = std::find_if(
-        scene.engine->registered_scenes.begin(),
-        scene.engine->registered_scenes.end(),
+        scene.engine->scenes().begin(),
+        scene.engine->scenes().end(),
         [&scene](const std::shared_ptr<Scene>& registered) {
             return registered && registered->shares_identity(scene);
         });
-    if (found != scene.engine->registered_scenes.end()) return;${managerSeek}${vatSeek}
+    if (found != scene.engine->scenes().end()) return;${managerSeek}${vatSeek}
 ${options.pbrSceneHooks ? "    prepare_pbr_scene_build(scene);\n" : ""}\
     drain_scene_deferred_builders(scene);
 ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
@@ -2673,20 +2674,16 @@ ${
         [](const auto& a, const auto& b) { return a->order < b->order; });\n`
         : ""
 }\
-    scene.engine->registered_scenes.push_back(
+    scene.engine->rendering_contexts.push_back(${renderingContextKind(this.context, "src/scene/scene-core.ts")},
         std::make_shared<Scene>(scene));
 }
 
 void unregister_scene(Scene& scene) {
     require_scene_engine(scene);
-    scene.engine->registered_scenes.erase(
-        std::remove_if(
-            scene.engine->registered_scenes.begin(),
-            scene.engine->registered_scenes.end(),
-            [&scene](const std::shared_ptr<Scene>& registered) {
-                return registered && registered->shares_identity(scene);
-            }),
-        scene.engine->registered_scenes.end());
+    scene.engine->rendering_contexts.erase_if<std::shared_ptr<Scene>>(
+        [&scene](const std::shared_ptr<Scene>& registered) {
+            return registered && registered->shares_identity(scene);
+        });
 }
 
 #if BBLITE_HAS_SHADOWS

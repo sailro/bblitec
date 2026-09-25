@@ -529,8 +529,7 @@ class DawnSceneRun {
         const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";
         const MemoryProfile mem_profile;
         CpuStartupMark cpu_startup_mark{cpu_profile, "dawn"};
-        const std::vector<std::shared_ptr<Scene>> active_registered_scenes =
-            engine.registered_scenes;
+        const std::vector<std::shared_ptr<Scene>> active_registered_scenes = engine.scenes();
         const std::shared_ptr<Scene> active_scene = active_registered_scenes.front();
         Scene& scene = *active_scene;
         DawnState state;
@@ -612,8 +611,8 @@ class DawnSceneRun {
         if (state.render_tasks.size() < engine.frame_tasks.size()) {
             state.render_tasks.resize(engine.frame_tasks.size());
         }
-        for (std::size_t layer = 0; layer < engine.registered_scenes.size(); ++layer) {
-            const Scene& task_scene = *engine.registered_scenes[layer];
+        for (std::size_t layer = 0; layer < engine.scenes().size(); ++layer) {
+            const Scene& task_scene = *engine.scenes()[layer];
             const auto& task_plan = layer == 0 ? render_plan : overlay_plans[layer - 1];
             for (const TaskHandle handle : task_scene.tasks) {
                 if (handle.value >= engine.frame_tasks.size()) {
@@ -1117,8 +1116,8 @@ public:
             for (const upstream::RenderItem& item : render_plan.items) {
                 state.meshes.push_back(upload_dawn_scene_mesh(state, engine, item));
             }
-            for (std::size_t layer = 1; layer < engine.registered_scenes.size(); ++layer) {
-                Scene* overlay_scene = engine.registered_scenes[layer].get();
+            for (std::size_t layer = 1; layer < engine.scenes().size(); ++layer) {
+                Scene* overlay_scene = engine.scenes()[layer].get();
                 if (!overlay_scene)
                     continue;
                 upstream::RenderPlan overlay_plan =
@@ -1681,7 +1680,7 @@ public:
         // rewritten between the two passes.
         for (std::size_t layer = 0;
              layer < overlay_plans.size() && layer < state.overlay_frames.size(); ++layer) {
-            Scene* overlay_scene = engine.registered_scenes[layer + 1u].get();
+            Scene* overlay_scene = engine.scenes()[layer + 1u].get();
             if (!overlay_scene)
                 continue;
             DawnState::OverlayFrame& overlay = state.overlay_frames[layer];
@@ -1708,7 +1707,7 @@ public:
         // The shadow generators' matrices and their receiver blocks, before
         // the caster pass reads the first and the receiving draws read the
         // second.
-        for (const auto& registered_scene : engine.registered_scenes) {
+        for (const auto& registered_scene : engine.scenes()) {
             write_shadow_generators(state, *registered_scene, engine);
         }
 #endif
@@ -1757,7 +1756,7 @@ public:
         // layer's own draw lists and its own uploaded meshes.
         for (std::size_t layer = 0;
              layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
-            Scene* overlay_scene = engine.registered_scenes[layer + 1u].get();
+            Scene* overlay_scene = engine.scenes()[layer + 1u].get();
             if (!overlay_scene)
                 continue;
             // The layer's own effective aspect: a viewport is the camera's,
@@ -1789,9 +1788,8 @@ public:
             // writes the blocks and the rest name only their own matrices.
             std::vector<bool> wrote_caster_blocks(engine.shadow_generators.size(), false);
 #endif
-            for (std::size_t graph_layer = 0; graph_layer < engine.registered_scenes.size();
-                 ++graph_layer) {
-                const Scene& graph_scene = *engine.registered_scenes[graph_layer];
+            for (std::size_t graph_layer = 0; graph_layer < engine.scenes().size(); ++graph_layer) {
+                const Scene& graph_scene = *engine.scenes()[graph_layer];
                 const auto graph_extent = scene_surface_extent(engine, graph_scene, width, height);
                 // A geometry task renders through its scene's camera.
                 const PassCamera geometry_pass = build_pass_camera(
@@ -2502,7 +2500,7 @@ public:
             // in front of everything below it.
             for (std::size_t layer = 0;
                  layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
-                Scene* overlay_scene = engine.registered_scenes[layer + 1u].get();
+                Scene* overlay_scene = engine.scenes()[layer + 1u].get();
                 if (!overlay_scene)
                     continue;
                 if (layer < overlay_topology_versions.size() &&
@@ -2623,7 +2621,7 @@ public:
             };
 #if BBLITE_HAS_TAA
             if (!engine.stopped) {
-                for (const auto& registered : engine.registered_scenes) {
+                for (const auto& registered : engine.scenes()) {
                     for (const TaskHandle handle : registered->tasks) {
                         auto& task = handle_at(engine.frame_tasks, handle);
                         if (!task.post_process.taa)
@@ -2643,9 +2641,9 @@ public:
                     }
                 }
 #endif
-                for (std::size_t graph_layer = 0; graph_layer < engine.registered_scenes.size();
+                for (std::size_t graph_layer = 0; graph_layer < engine.scenes().size();
                      ++graph_layer) {
-                    const Scene& graph_scene = *engine.registered_scenes[graph_layer];
+                    const Scene& graph_scene = *engine.scenes()[graph_layer];
                     const auto& graph_plan =
                         graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1];
                     auto& graph_meshes =
@@ -3166,7 +3164,7 @@ public:
                             task_pass.reset();
                             if (graph_layer == 0 && task.render.scene_stages) {
                                 for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
-                                    const Scene& utility = *engine.registered_scenes[layer + 1];
+                                    const Scene& utility = *engine.scenes()[layer + 1];
                                     if (utility.surface_canvas || !utility.tasks.empty())
                                         continue;
                                     color_attachment.loadOp = WGPULoadOp_Load;
@@ -3694,8 +3692,8 @@ public:
         // load and blend over the final surface in registration order, after
         // any transmission image processing or frame-graph copy. Capture and
         // presentation therefore observe the same composed frame.
-        if (!engine.registered_sprite_renderers.empty()) {
-            for (const SpriteRendererHandle handle : engine.registered_sprite_renderers) {
+        if (!engine.sprite_renderer_contexts().empty()) {
+            for (const SpriteRendererHandle handle : engine.sprite_renderer_contexts()) {
                 if (handle.value >= state.sprite_passes.size()) {
                     throw std::runtime_error("A SpriteRenderer created after the scene frame "
                                              "started has no Dawn pass yet.");
@@ -3954,7 +3952,7 @@ public:
 };
 
 SceneRun run_dawn_engine(Engine& engine) {
-    if (engine.registered_scenes.empty() || !engine.registered_scenes.front())
+    if (engine.scenes().empty() || !engine.scenes().front())
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     DawnSceneRun renderer(engine);
     renderer.setup();

@@ -168,7 +168,7 @@ int main() {
     assert(task->passes.empty() && task->dispatches.empty() && !task->pass && !shader->destroyed);
     auto scene = std::make_shared<bbl::Scene>();
     scene->engine = engine.get();
-    engine->registered_scenes.push_back(scene);
+    engine->rendering_contexts.push_back("scene", scene);
     bbl::FrameTaskRecord render;
     engine->frame_tasks.push_back(render);
     scene->tasks.push_back({0});
@@ -213,5 +213,5 @@ int main() {
     graph_task->dispose();
     engine->compute_one_shot_frame_submitted = {};
     engine->frame_tasks.clear();
-    engine->registered_scenes.clear();
+    engine->rendering_contexts.clear();
 }

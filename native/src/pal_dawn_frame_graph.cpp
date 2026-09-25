@@ -362,10 +362,9 @@ public:
     }
     void setup() {
         reject_unsupported_frame_options(frame_options, "Dawn frame graph", true, false);
-        if (engine.registered_frame_graph_contexts.empty() ||
-            !engine.registered_frame_graph_contexts.front())
+        if (engine.frame_graph_contexts().empty() || !engine.frame_graph_contexts().front())
             throw std::runtime_error("Frame-graph renderer requires a registered context.");
-        context = engine.registered_frame_graph_contexts.front();
+        context = engine.frame_graph_contexts().front();
         state.samples = frame_options.single_sample
                             ? 1u
                             : upstream::preferred_sample_count(engine.options.msaa_samples);

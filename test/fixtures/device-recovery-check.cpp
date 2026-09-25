@@ -16,7 +16,57 @@ template <typename F> void must_throw(F function) {
     assert(threw);
 }
 
+void mixed_contexts() {
+    using namespace bbl;
+    Engine engine;
+    auto scene = std::make_shared<Scene>();
+    std::weak_ptr<Scene> lifetime = scene;
+    FrameGraphContext graph;
+    engine.rendering_contexts.push_back("effect-renderer", EffectRendererHandle{7});
+    engine.rendering_contexts.push_back("scene", scene);
+    engine.rendering_contexts.push_back("text-renderer", TextRenderer{});
+    engine.rendering_contexts.push_back("sprite-renderer", SpriteRendererHandle{7});
+    engine.rendering_contexts.push_back("frame-graph-context", &graph);
+    assert(engine.rendering_contexts.size() == 5);
+    assert(engine.rendering_contexts[0].kind == "effect-renderer");
+    assert(engine.rendering_contexts[2].kind == "text-renderer");
+    assert(engine.rendering_contexts.index_of(SpriteRendererHandle{7}) == 3);
+    assert(engine.rendering_contexts.index_of(EffectRendererHandle{7}) == 0);
+    assert(engine.rendering_contexts.index_of(EffectRendererHandle{8}) == -1);
+    assert(engine.scenes().front() == scene);
+    assert(engine.text_renderer_contexts().size() == 1);
+    assert(engine.frame_graph_contexts().front() == &graph);
+    std::vector<std::shared_ptr<DeviceRecoveryRegistration>> handlers;
+    for (const auto& entry : engine.rendering_contexts) {
+        auto registration = std::make_shared<DeviceRecoveryRegistration>();
+        registration->kind = entry.kind;
+        handlers.push_back(registration);
+    }
+    assert_every_active_context_kind_is_recoverable(engine, handlers);
+    handlers.erase(handlers.begin() + 2);
+    must_throw([&] { assert_every_active_context_kind_is_recoverable(engine, handlers); });
+    engine.rendering_contexts.erase_at(2);
+    assert_every_active_context_kind_is_recoverable(engine, handlers);
+    {
+        const auto scenes = engine.scenes();
+        const auto contexts = engine.rendering_contexts;
+        engine.rendering_contexts.erase_if<std::shared_ptr<Scene>>(
+            [&](const auto& candidate) { return candidate == scene; });
+        assert(engine.scenes().empty());
+        assert(scenes.size() == 1 && scenes.front() == scene);
+        assert(contexts.size() == 4 && contexts[1].kind == "scene");
+        scene.reset();
+        assert(!lifetime.expired());
+    }
+    assert(lifetime.expired());
+    engine.rendering_contexts.push_back("custom-scene-kind", std::make_shared<Scene>());
+    must_throw([&] { assert_every_active_context_kind_is_recoverable(engine, handlers); });
+    pal::unconfigure_engine_surfaces(engine);
+    assert(engine.rendering_contexts.empty());
+}
+
 int main() {
+    mixed_contexts();
     bbl::Engine engine;
     must_throw([&] { bbl::force_device_loss(engine); });
     must_throw([&] { bbl::fallback_texture_identity(engine); });

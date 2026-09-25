@@ -124,7 +124,7 @@ class SdlSpriteRun : public RendererRun<SdlSpriteRun> {
             release_sprite_pass(device, pass);
         }
         passes.clear();
-        for (const SpriteRendererHandle& handle : engine.registered_sprite_renderers) {
+        for (const SpriteRendererHandle& handle : engine.sprite_renderer_contexts()) {
             passes.push_back(
                 create_sprite_pass(device, engine, handle, render_textures, swapchain_format));
         }

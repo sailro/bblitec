@@ -227,7 +227,7 @@ test("generates scene defaults, routing, and idempotent registration", () => {
         lowered.source,
         /void on_scene_dispose\([\s\S]*scene\.disposables\.push_back\(std::move\(callback\)\);/,
     );
-    assert.match(lowered.source, /registered_scenes\.end\(\)/);
+    assert.match(lowered.source, /scenes\(\)\.end\(\)/);
     // Runtime removal lowers the pin's removeMeshFromScene order: the
     // scene's task lists, the scene list and its renderables, the material
     // groups and swap queue, the parent link, the disposal, then the
@@ -251,7 +251,7 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     );
     assert.match(
         lowered.source,
-        /void unregister_scene\(Scene& scene\)[\s\S]{0,400}registered_scenes\.erase/,
+        /void unregister_scene\(Scene& scene\)[\s\S]{0,400}rendering_contexts\.erase_if/,
     );
     assert.match(
         lowered.source,

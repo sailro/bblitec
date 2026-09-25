@@ -124,7 +124,7 @@ class DawnSpriteRun : public RendererRun<DawnSpriteRun> {
             release_dawn_sprite_pass(pass);
         }
         passes.clear();
-        for (const SpriteRendererHandle& handle : engine.registered_sprite_renderers) {
+        for (const SpriteRendererHandle& handle : engine.sprite_renderer_contexts()) {
             passes.push_back(create_dawn_sprite_pass(state.device, state.queue, mips, engine,
                                                      handle, render_textures, render_texture_views,
                                                      state.surface_format));

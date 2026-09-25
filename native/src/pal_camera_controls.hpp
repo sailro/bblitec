@@ -184,7 +184,7 @@ inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, con
             y = event.tfinger.y * engine.canvas_client_height;
         } else
             return;
-        for (const auto& scene : engine.registered_scenes) {
+        for (const auto& scene : engine.scenes()) {
             if (!scene || !scene->surface_canvas || scene->camera.value >= engine.cameras.size())
                 continue;
             const auto rect = ui_get_client_rect(engine, *scene->surface_canvas);
@@ -268,7 +268,7 @@ inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord
     if (engine.surface_canvas) {
         for (std::size_t i = 0; i < engine.cameras.size(); ++i) {
             const bool attached =
-                std::any_of(engine.registered_scenes.begin(), engine.registered_scenes.end(),
+                std::any_of(engine.scenes().begin(), engine.scenes().end(),
                             [i](const auto& scene) { return scene && scene->camera.value == i; });
             if (attached)
                 update_attached_camera(engine, engine.cameras[i]);

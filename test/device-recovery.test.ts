@@ -277,14 +277,11 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
     // The run's context-kind assertion is lowered too (RDN-28): every
     // registered context's pinned kind, checked against the in-flight
     // registrations' kinds, refused with the pin's own sorted message.
-    assert.match(
-        pinned,
-        /kinds\.insert\(kinds\.end\(\), bbl::text_renderer_count\(engine\), std::string\("text-renderer"\)\);/,
-    );
+    assert.match(pinned, /surface->rendering_contexts/);
     assert.match(pinned, /registration->kind = "scene";/);
     assert.match(
         pinned,
-        /if \(!\(std::ranges::any_of\(handlers, \[&\]\(const auto& registration\) \{ return registration->kind == context; \}\)\)\) \{\n\s*unrecoverable\.add\(context\);/,
+        /if \(!\(std::ranges::any_of\(handlers, \[&\]\(const auto& registration\) \{ return registration->kind == context\.kind; \}\)\)\) \{\n\s*unrecoverable\.add\(context\.kind\);/,
     );
     assert.match(
         pinned,

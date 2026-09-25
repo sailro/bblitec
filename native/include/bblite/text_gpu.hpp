@@ -185,9 +185,6 @@ struct TextGpuDevice {
 };
 using TextGpuDeviceHandle = std::shared_ptr<TextGpuDevice>;
 
-struct TextRendererState;
-using TextRenderer = std::shared_ptr<TextRendererState>;
-
 struct TextSurfaceCanvas {
     double width = 0;
     double height = 0;
@@ -203,12 +200,12 @@ struct TextSurfaceTarget {
  * command encoder before it runs the lowered text work.
  */
 struct TextSurface {
+    Engine* engine = nullptr;
     TextGpuDeviceHandle device;
     TextGpuCommandEncoderHandle current_encoder;
     TextSurfaceCanvas canvas;
     std::string format;
     TextSurfaceTarget sc_rt;
-    js::Array<TextRenderer> rendering_contexts;
 };
 using TextSurfaceHandle = std::shared_ptr<TextSurface>;
 
@@ -219,7 +216,7 @@ using TextSurfaceHandle = std::shared_ptr<TextSurface>;
 
 /** The standalone text renderers registered on the engine. */
 [[nodiscard]] inline std::size_t text_renderer_count(const Engine& engine) {
-    return engine.text_surface ? engine.text_surface->rendering_contexts.size() : 0;
+    return engine.text_renderer_contexts().size();
 }
 
 /** Whether a standalone text renderer is registered on the engine. */
@@ -229,8 +226,10 @@ using TextSurfaceHandle = std::shared_ptr<TextSurface>;
 
 /** The engine's text surface, created on first use. */
 inline const TextSurfaceHandle& text_surface(Engine& engine) {
-    if (!engine.text_surface)
+    if (!engine.text_surface) {
         engine.text_surface = std::make_shared<TextSurface>();
+        engine.text_surface->engine = &engine;
+    }
     return engine.text_surface;
 }
 

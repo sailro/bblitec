@@ -27,8 +27,8 @@ inline void validate_temporal_source(const Engine& engine, const FrameTaskRecord
         throw std::runtime_error(
             "Temporal source requires preparation for its clustered-light or transmission state.");
     }
-    if (bbl::has_sprite_renderers(engine) || !engine.registered_effect_renderers.empty() ||
-        !engine.registered_frame_graph_contexts.empty() || bbl::has_text_renderers(engine)) {
+    if (bbl::has_sprite_renderers(engine) || !engine.effect_renderer_contexts().empty() ||
+        !engine.frame_graph_contexts().empty() || bbl::has_text_renderers(engine)) {
         throw std::runtime_error(
             "Temporal submission requires preparation for the engine's registered renderer or UI contexts.");
     }

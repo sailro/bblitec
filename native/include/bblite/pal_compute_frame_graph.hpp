@@ -84,7 +84,7 @@ struct ComputeFramePrefix {
 inline ComputeFramePrefix collect_compute_frame_prefix(const Engine& engine) {
     ComputeFramePrefix prefix;
     bool render_started = false;
-    for (const auto& scene : engine.registered_scenes) {
+    for (const auto& scene : engine.scenes()) {
         if (!scene)
             continue;
 #if BBLITE_GPU_TASK_TIMING
@@ -114,7 +114,7 @@ inline ComputeFramePrefix collect_compute_frame_prefix(const Engine& engine) {
             prefix.tasks.push_back(record.compute);
         }
     }
-    for (const auto& graph : engine.registered_frame_graph_contexts)
+    for (const auto& graph : engine.frame_graph_contexts())
         for (const auto handle : graph->tasks)
             if (handle_at(engine.frame_tasks, handle).kind == FrameTaskKind::compute)
                 throw std::runtime_error(

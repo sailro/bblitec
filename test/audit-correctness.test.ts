@@ -680,8 +680,8 @@ test(
             camera.kind = bbl::CameraKind::arc_rotate;
             scene.transmission_enabled = true; refuses("transmission"); scene.transmission_enabled = false;
             task.render.scene_stages = true; refuses("explicit color pass"); task.render.scene_stages = false;
-            engine.registered_sprite_renderers.push_back({0}); refuses("registered renderer");
-            engine.registered_sprite_renderers.clear();
+            engine.rendering_contexts.push_back("sprite-renderer", SpriteRendererHandle{0}); refuses("registered renderer");
+            engine.rendering_contexts.clear();
             bbl::pal::validate_temporal_source(engine, task, &camera, draws);
         }
     `,

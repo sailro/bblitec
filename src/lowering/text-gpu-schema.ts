@@ -320,7 +320,41 @@ export const textGpuRecords: readonly RecordSpec[] = [
             ["scRT", field(record("TextSurfaceTarget"), "sc_rt")],
             [
                 "_renderingContexts",
-                field(array(record("TextRenderer")), "rendering_contexts"),
+                {
+                    shape: record("RenderingContextList"),
+                    access: (owner) => `${owner}->engine->rendering_contexts`,
+                },
+            ],
+        ]),
+    },
+    {
+        pinned: ["RenderingContextList"],
+        cpp: "RenderingContextList&",
+        reference: false,
+        native: true,
+        members: members([
+            [
+                "indexOf",
+                {
+                    shape: fn([record("TextRenderer")], number),
+                    access: (owner) => `${owner}.index_of`,
+                },
+            ],
+            [
+                "push",
+                {
+                    shape: fn([record("TextRenderer")], none),
+                    access: (owner) =>
+                        `([&](const bbl::TextRenderer& context) { ${owner}.push_back(context->kind, context); })`,
+                },
+            ],
+            [
+                "splice",
+                {
+                    shape: fn([number, number], none),
+                    access: (owner) =>
+                        `([&](double index, double count) { if (count != 1.0) throw std::runtime_error("Rendering context removal count."); ${owner}.erase_at(static_cast<std::size_t>(index)); })`,
+                },
             ],
         ]),
     },
@@ -405,11 +439,11 @@ export const textGpuRecords: readonly RecordSpec[] = [
         handle: "TextRenderer",
         reference: true,
         omit: new Map([
-            ["_kind", "the renderer's type is its kind"],
             ["_resize", "a text renderer has no size-dependent resources"],
             ["_drawCallsPre", "the backend counts a frame's draw calls"],
         ]),
         members: members([
+            ["_kind", field(string, "kind")],
             // GPUColor: the renderer stores the dictionary it was given.
             ["clearColor", field(record("GPUColorDict"))],
         ]),

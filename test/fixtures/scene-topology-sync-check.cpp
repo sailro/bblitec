@@ -150,7 +150,7 @@ struct Run {
     RetainedSceneBlocks pass_blocks;
     long frame = 0;
 
-    Run() { engine.registered_scenes.push_back(std::make_shared<Scene>(scene)); }
+    Run() { engine.rendering_contexts.push_back("scene", std::make_shared<Scene>(scene)); }
 
     SceneSyncOutcome synchronize(Hooks& hooks) {
         SceneSyncState<Row> sync{engine,

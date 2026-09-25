@@ -1359,7 +1359,7 @@ inline void write_sprite_renderer_list(JsonWriter& json, const Engine& engine, i
     for (std::size_t index = 0; index < engine.sprite_renderers.size(); ++index) {
         const SpriteRendererRecord& renderer = engine.sprite_renderers[index];
         bool registered = false;
-        for (const SpriteRendererHandle candidate : engine.registered_sprite_renderers) {
+        for (const SpriteRendererHandle candidate : engine.sprite_renderer_contexts()) {
             if (candidate.value == static_cast<std::uint32_t>(index)) {
                 registered = true;
                 break;
@@ -1498,7 +1498,7 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
     for (std::size_t index = 0; index < engine.effect_renderers.size(); ++index) {
         const EffectRendererRecord& renderer = engine.effect_renderers[index];
         bool registered = false;
-        for (const EffectRendererHandle candidate : engine.registered_effect_renderers) {
+        for (const EffectRendererHandle candidate : engine.effect_renderer_contexts()) {
             if (candidate.value == static_cast<std::uint32_t>(index)) {
                 registered = true;
                 break;

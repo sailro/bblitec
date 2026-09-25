@@ -135,15 +135,15 @@ std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scen
                                                 std::uint32_t target_width,
                                                 std::uint32_t target_height) {
 #if BBLITE_HAS_UI
-    if (engine.registered_scenes.empty())
+    if (engine.scenes().empty())
         return std::nullopt;
     std::size_t pane_count = 1;
     std::size_t pane_index = npos;
-    const std::shared_ptr<Scene>& primary = engine.registered_scenes.front();
+    const std::shared_ptr<Scene>& primary = engine.scenes().front();
     if (primary && primary->shares_identity(scene))
         pane_index = 0;
-    for (std::size_t i = 1; i < engine.registered_scenes.size(); ++i) {
-        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
+    for (std::size_t i = 1; i < engine.scenes().size(); ++i) {
+        const std::shared_ptr<Scene>& registered = engine.scenes()[i];
         if (!registered || !unplaced_surface_scene(engine, *registered))
             continue;
         if (registered->shares_identity(scene))
@@ -190,8 +190,8 @@ std::optional<PixelViewport> surface_canvas_pane(const Engine& engine,
     if (surface_canvas_laid_out(engine, *surface_canvas)) {
         return laid_out_canvas_pane(engine, *surface_canvas, target_width, target_height);
     }
-    for (std::size_t i = 0; i < engine.registered_scenes.size(); ++i) {
-        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
+    for (std::size_t i = 0; i < engine.scenes().size(); ++i) {
+        const std::shared_ptr<Scene>& registered = engine.scenes()[i];
         if (!registered || !registered->surface_canvas)
             continue;
         if (registered->surface_canvas->value != surface_canvas->value)
@@ -350,7 +350,7 @@ bool sprite_scene_pipeline_compatible(const Sprite2DLayerRecord& left,
 }
 
 void refuse_disposed_sprite_render_texture_in_use(const Engine& engine) {
-    for (const SpriteRendererHandle& renderer_handle : engine.registered_sprite_renderers) {
+    for (const SpriteRendererHandle& renderer_handle : engine.sprite_renderer_contexts()) {
         const SpriteRendererRecord& renderer = handle_at(engine.sprite_renderers, renderer_handle);
         for (const Sprite2DLayerHandle& layer_handle : renderer.layers) {
             const SpriteAtlasRecord& atlas = handle_at(

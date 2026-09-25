@@ -63,7 +63,7 @@ public:
     }
     void setup() {
         reject_unsupported_frame_options(frame_options, "SDL_GPU effects", true, false);
-        if (engine.registered_effect_renderers.empty())
+        if (engine.effect_renderer_contexts().empty())
             throw std::runtime_error("Effect renderer requires a registered EffectRenderer.");
         const DeviceOptions device_options = frame_device_options(frame_options);
         create_sdl_gpu_device(engine.options, device_options, gpu);
@@ -81,7 +81,7 @@ public:
 
         // Registration order is draw order across renderers, as it is in the
         // pinned `engine._renderingContexts`.
-        for (const EffectRendererHandle& handle : engine.registered_effect_renderers) {
+        for (const EffectRendererHandle& handle : engine.effect_renderer_contexts()) {
             const EffectRendererRecord& record = handle_at(engine.effect_renderers, handle);
             passes.push_back(
                 create_effect_pass(device, engine, record.effect, swapchain_format, samples));
@@ -153,7 +153,7 @@ public:
     }
     void encode() {
         const auto& first =
-            handle_at(engine.effect_renderers, engine.registered_effect_renderers.front());
+            handle_at(engine.effect_renderers, engine.effect_renderer_contexts().front());
         // Where this frame's single-sample pixels land: the readback
         // texture on a capture run, the swapchain itself otherwise.
         SDL_GPUTexture* const destination = capture_run ? resolve : swapchain;
@@ -171,7 +171,7 @@ public:
         SdlRenderPass render_pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
         for (std::size_t index = 0; index < passes.size(); ++index) {
             const EffectRendererRecord& record =
-                engine.effect_renderers[engine.registered_effect_renderers[index].value];
+                engine.effect_renderers[engine.effect_renderer_contexts()[index].value];
             record_effect_pass(command, render_pass, engine, passes[index], record.effect);
         }
         render_pass.end();

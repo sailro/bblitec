@@ -657,76 +657,8 @@ std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(En
 }`;
 }
 
-/**
- * How many contexts of each kind the engine holds, and where the pin gives
- * those contexts their `_kind`: a `_kind` property of the context the module
- * creates, or the module's own `KIND` constant.
- */
-const contextRegistries: readonly {
-    count: string;
-    module: string;
-    kind: "property" | "KIND";
-    macro?: string;
-}[] = [
-    {
-        count: "engine.registered_scenes.size()",
-        module: "src/scene/scene-core.ts",
-        kind: "property",
-    },
-    {
-        count: "engine.registered_sprite_renderers.size()",
-        module: "src/sprite/sprite-renderer.ts",
-        kind: "KIND",
-        macro: "BBLITE_HAS_SPRITES",
-    },
-    {
-        count: "bbl::text_renderer_count(engine)",
-        module: "src/text/text-renderer.ts",
-        kind: "KIND",
-    },
-    {
-        count: "engine.registered_effect_renderers.size()",
-        module: "src/effect/effect-renderer.ts",
-        kind: "property",
-    },
-    {
-        count: "engine.registered_frame_graph_contexts.size()",
-        module: "src/frame-graph/frame-graph-context.ts",
-        kind: "property",
-    },
-];
-
-/**
- * `assertEveryActiveContextKindIsRecoverable`, lowered: the kinds of the
- * active rendering contexts no in-flight registration recovers, refused by
- * the pin's own message.
- *
- * Native keeps one registry per context kind on the engine rather than a
- * list per surface, so the pin's loop over `engine.surfaces` is one pass
- * over that registry, and `surface._renderingContexts` is every registered
- * context, carrying the `_kind` the pin gives it. `handlers` is the
- * in-flight snapshot, keyed by each registration's kind as the pin's map
- * is.
- */
+/** The pin's recoverability check reads the registered contexts' own kinds. */
 function contextKindAssertionCpp(context: LoweringContext): string {
-    const kinds = contextRegistries.map((entry) => {
-        if (entry.kind === "KIND")
-            return context.pinnedString(entry.module, "KIND");
-        const file = context.sourceFile(entry.module);
-        const initializer = context.namedPropertyInitializer(file, "_kind");
-        return initializer
-            ? context.stringValue(initializer, file)
-            : context.contractError(
-                  file,
-                  `Expected ${entry.module} to give its rendering context a _kind.`,
-              );
-    });
-    const registries = contextRegistries
-        .map((entry, index) => {
-            const line = `    kinds.insert(kinds.end(), ${entry.count}, std::string(${stringLiteral(kinds[index]!)}));`;
-            return entry.macro ? `#if ${entry.macro}\n${line}\n#endif` : line;
-        })
-        .join("\n");
     const assertion = lowerPinnedFunctionParts(
         context,
         runModule,
@@ -765,11 +697,11 @@ function contextKindAssertionCpp(context: LoweringContext): string {
                 }
                 if (iterated.endsWith("._renderingContexts")) {
                     return {
-                        range: `rendering_context_kinds(*${iterated.slice(0, -"._renderingContexts".length)})`,
+                        range: `${iterated.slice(0, -"._renderingContexts".length)}->rendering_contexts`,
                         bindings: new Map([
                             [
                                 `${element}._kind`,
-                                { cpp: element, type: "string" },
+                                { cpp: `${element}.kind`, type: "string" },
                             ],
                         ]),
                     };
@@ -785,14 +717,7 @@ function contextKindAssertionCpp(context: LoweringContext): string {
             ]),
         },
     );
-    return `// Every surface's \`_renderingContexts\`, by kind: one registry per kind.
-static std::vector<std::string> rendering_context_kinds(const Engine& engine) {
-    std::vector<std::string> kinds;
-${registries}
-    return kinds;
-}
-
-// ${assertion.provenance}
+    return `// ${assertion.provenance}
 static ${assertion.declaration} {
 ${assertion.body}
 }`;
@@ -912,10 +837,8 @@ export function lowerDeviceRecovery(context: LoweringContext): LoweredSource {
 // ${context.provenance(recoveryModule, "_enableDeviceLostRecovery, arm")}
 // Native device recreation replays generated upload/composition products over retained CPU owners.
 #include <bblite/runtime.hpp>
-#include <bblite/features/has_sprites.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/js_data.hpp>
-#include <bblite/text_gpu.hpp>
 #include <algorithm>
 #include <iostream>
 #include <ranges>

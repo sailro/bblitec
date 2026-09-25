@@ -431,9 +431,9 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
                                       event.wheel.mouse_y);
     }
 #if BBLITE_HAS_PBR_RENDERER
-    if (engine->registered_scenes.empty() || !engine->registered_scenes.front())
+    if (engine->scenes().empty() || !engine->scenes().front())
         return;
-    const auto camera = engine->registered_scenes.front()->camera;
+    const auto camera = engine->scenes().front()->camera;
     if (camera.value < engine->cameras.size())
         handle_camera_pointer_event(event, handle_at(engine->cameras, camera),
                                     target->second.camera, engine->canvas_client_width,

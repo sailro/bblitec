@@ -1,3 +1,4 @@
+import { renderingContextKind } from "./rendering-context-kind.js";
 /**
  * The fullscreen-effect family, lowered from `src/effect/effect-renderer.ts`.
  *
@@ -285,10 +286,10 @@ void register_effect_renderer(
     Engine& engine,
     EffectRendererHandle renderer) {
     for (const EffectRendererHandle& registered :
-         engine.registered_effect_renderers) {
+         engine.effect_renderer_contexts()) {
         if (registered.value == renderer.value) return;
     }
-    engine.registered_effect_renderers.push_back(renderer);
+    engine.rendering_contexts.push_back(${renderingContextKind(this.context, "src/effect/effect-renderer.ts")}, renderer);
 }
 
 TaskHandle create_effect_render_task(

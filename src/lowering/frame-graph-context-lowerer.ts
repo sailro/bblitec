@@ -1,3 +1,4 @@
+import { renderingContextKind } from "./rendering-context-kind.js";
 import type { LoweredSource, LoweringContext } from "./context.js";
 
 const modulePath = "src/frame-graph/frame-graph-context.ts";
@@ -75,11 +76,11 @@ void on_frame_graph_update(
 void register_frame_graph_context(FrameGraphContext& context) {
     require_context_engine(context);
     const auto found = std::find(
-        context.engine->registered_frame_graph_contexts.begin(),
-        context.engine->registered_frame_graph_contexts.end(),
+        context.engine->frame_graph_contexts().begin(),
+        context.engine->frame_graph_contexts().end(),
         &context);
-    if (found == context.engine->registered_frame_graph_contexts.end()) {
-        context.engine->registered_frame_graph_contexts.push_back(&context);
+    if (found == context.engine->frame_graph_contexts().end()) {
+        context.engine->rendering_contexts.push_back(${renderingContextKind(this.context, "src/frame-graph/frame-graph-context.ts")}, &context);
     }
 }
 
