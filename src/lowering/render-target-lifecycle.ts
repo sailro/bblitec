@@ -302,7 +302,10 @@ export function lowerRenderTargetLifecycle(context: LoweringContext): string {
                             statements.push(
                                 `${prefix}const auto ${name} = ${numeric.expression(local.initializer)};`,
                             );
-                            bindings.set(name, { cpp: name, type: "opaque" });
+                            numeric.bindLocal(local.name, {
+                                cpp: name,
+                                type: "opaque",
+                            });
                         }
                     }
                     return statements;

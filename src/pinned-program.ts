@@ -55,6 +55,7 @@ const PINNED_PROGRAM_OPTIONS: ts.CompilerOptions = {
 
 /** A file bound alone: no libraries, no imports resolved. */
 const OWN_SYMBOL_OPTIONS: ts.CompilerOptions = {
+    allowJs: true,
     noLib: true,
     noResolve: true,
     types: [],

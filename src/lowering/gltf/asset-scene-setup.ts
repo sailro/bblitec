@@ -112,11 +112,19 @@ export function lowerGltfAssetSceneSetup(context: LoweringContext): string {
                     const initializer = lowerer.expression(
                         variable.initializer,
                     );
-                    bindings.set("prev", {
-                        cpp: "prev",
-                        type: "opaque",
-                        absentCpp: "!prev",
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                "prev",
+                                {
+                                    cpp: "prev",
+                                    type: "opaque",
+                                    absentCpp: "!prev",
+                                },
+                            ],
+                        ],
+                        statement,
+                    );
                     return [`${indent}const auto prev = ${initializer};`];
                 }
             }

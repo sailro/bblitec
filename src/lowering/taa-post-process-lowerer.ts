@@ -208,7 +208,7 @@ ${body}
                 );
             // The callback can represent an absent execute method. Its
             // fallback is lowered from the source, not supplied by native.
-            bindings.set(sites[0]!.getText(file), {
+            lowerer.bindLocal(sites[0]!, {
                 cpp: `([&]() { const auto draws = execute_pass(${child.index}u); return draws ? *draws : ${lowerer.expression(sites[0]!.right)}; }())`,
                 type: "scalar",
             });

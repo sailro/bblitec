@@ -201,11 +201,19 @@ export function lowerGltfMaterialAssembly(context: LoweringContext): string {
                                 element,
                                 "Expected a named image result.",
                             );
-                        bindings.set(element.name.text, {
-                            cpp: element.name.text,
-                            type: "opaque",
-                            absentCpp: `${element.name.text} == nullptr`,
-                        });
+                        lowerer.bindPorts(
+                            [
+                                [
+                                    element.name.text,
+                                    {
+                                        cpp: element.name.text,
+                                        type: "opaque",
+                                        absentCpp: `${element.name.text} == nullptr`,
+                                    },
+                                ],
+                            ],
+                            statement,
+                        );
                         return `${indent}const auto ${element.name.text} = ${collected}[${index}].get();`;
                     }),
                 ];
@@ -220,11 +228,19 @@ export function lowerGltfMaterialAssembly(context: LoweringContext): string {
                     `${parameters[0]}.materials`,
                 )
             ) {
-                bindings.set(name, {
-                    cpp: name,
-                    type: "opaque",
-                    absentCpp: `${name} == nullptr`,
-                });
+                lowerer.bindPorts(
+                    [
+                        [
+                            name,
+                            {
+                                cpp: name,
+                                type: "opaque",
+                                absentCpp: `${name} == nullptr`,
+                            },
+                        ],
+                    ],
+                    statement,
+                );
                 return [
                     `${indent}const ts::JsonValue* ${name} = gltf_material_at(json, ${lowerer.expression(initializer.argumentExpression)});`,
                 ];
@@ -240,7 +256,10 @@ export function lowerGltfMaterialAssembly(context: LoweringContext): string {
                     jsonPath(initializer.left) ??
                     lowerer.expression(initializer.left);
                 objects.set(name, name);
-                bindings.set(name, { cpp: name, type: "opaque" });
+                lowerer.bindPorts(
+                    [[name, { cpp: name, type: "opaque" }]],
+                    statement,
+                );
                 return [
                     `${indent}const JsonObject& ${name} = gltf_material_object(${left});`,
                 ];
@@ -390,10 +409,18 @@ export function lowerGltfMaterialAssembly(context: LoweringContext): string {
             const variable = statement.declarationList.declarations[0]!;
             if (!ts.isIdentifier(variable.name) || !variable.initializer)
                 return undefined;
-            fetchBindings.set(variable.name.text, {
-                cpp: variable.name.text,
-                type: "index",
-            });
+            lowerer.bindPorts(
+                [
+                    [
+                        variable.name.text,
+                        {
+                            cpp: variable.name.text,
+                            type: "index",
+                        },
+                    ],
+                ],
+                statement,
+            );
             return [
                 `${indent}const std::size_t ${variable.name.text} = ${lowerer.expression(variable.initializer)};`,
             ];

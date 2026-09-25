@@ -282,14 +282,12 @@ function stateLocal(
         return undefined;
     }
     const name = entry.name.text;
-    lowerer.bindLocal(name, {
+    lowerer.bindLocal(entry.name, {
         cpp: `(*${name})`,
         type: "opaque",
         absentCpp: `${name} == nullptr`,
     });
-    for (const [key, binding] of stateBindings(members, name, `${name}->`)) {
-        lowerer.bindLocal(key, binding);
-    }
+    lowerer.bindPorts(stateBindings(members, name, `${name}->`), entry);
     return [`${indent}YSortState* const ${name} = y_sort_state(layer);`];
 }
 
@@ -706,17 +704,22 @@ function enableCpp(
                     `${indent}${created}->${name} = ${lowerer.expression(value)};`,
                 );
             }
-            lowerer.bindLocal(created, {
-                cpp: `(*${created})`,
-                type: "opaque",
-            });
-            for (const [key, binding] of stateBindings(
-                members,
-                created,
-                `${created}->`,
-            )) {
-                lowerer.bindLocal(key, binding);
-            }
+            lowerer.bindPorts(
+                [
+                    [
+                        created,
+                        {
+                            cpp: `(*${created})`,
+                            type: "opaque",
+                        },
+                    ],
+                ],
+                node,
+            );
+            lowerer.bindPorts(
+                stateBindings(members, created, `${created}->`),
+                node,
+            );
             return [
                 `${indent}const auto ${created}_owner = std::make_shared<YSortState>();`,
                 `${indent}YSortState* const ${created} = ${created}_owner.get();`,

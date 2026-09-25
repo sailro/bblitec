@@ -1061,11 +1061,19 @@ inline void sort_sprite_renderer_layers(
                         "_getSprite2DYSortHook()?.drawOrder(layer)",
                         "pickSprite2D draw order",
                     );
-                    bindings.set("drawOrder", {
-                        cpp: "draw_order",
-                        type: "u32",
-                        absentCpp: "draw_order == nullptr",
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                "drawOrder",
+                                {
+                                    cpp: "draw_order",
+                                    type: "u32",
+                                    absentCpp: "draw_order == nullptr",
+                                },
+                            ],
+                        ],
+                        statement,
+                    );
                     return [
                         `${indent}const std::uint32_t* draw_order = ` +
                             "engine.sprite_y_sort_hook.draw_order ? " +

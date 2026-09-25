@@ -135,12 +135,11 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
                         arrow,
                         "Expected a scalar factor conversion.",
                     );
-                bindings.set(parameter.text, {
+                lowerer.bindLocal(parameter, {
                     cpp: parameter.text,
                     type: "scalar",
                 });
                 const expression = lowerer.expression(arrow.body);
-                bindings.delete(parameter.text);
                 const name = variable.name.text;
                 calls.set(name, (args) => `${name}(${args.join(", ")})`);
                 return [
@@ -387,7 +386,10 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
                             "Expected a raw material JSON object.",
                         );
                     objects.add(name);
-                    bindings.set(name, { cpp: name, type: "opaque" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "opaque" }]],
+                        statement,
+                    );
                     return [
                         `${indent}const JsonObject& ${name} = gltf_material_object(${pointer});`,
                     ];
@@ -396,11 +398,21 @@ export function lowerGltfMaterialTextures(context: LoweringContext): string {
                 types.set(name, type);
                 if (type === "const ts::JsonValue*") pointers.add(name);
                 const rendered = init ? lowerer.expression(init) : "{}";
-                bindings.set(name, {
-                    cpp: name,
-                    type: type === "bool" ? "bool" : "opaque",
-                    ...(type !== "bool" ? { absentCpp: `!${name}` } : {}),
-                });
+                lowerer.bindPorts(
+                    [
+                        [
+                            name,
+                            {
+                                cpp: name,
+                                type: type === "bool" ? "bool" : "opaque",
+                                ...(type !== "bool"
+                                    ? { absentCpp: `!${name}` }
+                                    : {}),
+                            },
+                        ],
+                    ],
+                    statement,
+                );
                 return [`${indent}${type} ${name} = ${rendered};`];
             },
             returnValue(node, lowerer) {

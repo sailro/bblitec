@@ -125,9 +125,7 @@ export function lowerGltfOrmComposition(context: LoweringContext): string {
                     ts.isElementAccessExpression(expression.left) &&
                     expression.left.argumentExpression
                 ) {
-                    const target = bindings.get(
-                        expression.left.expression.getText(file),
-                    );
+                    const target = lowerer.binding(expression.left.expression);
                     if (target?.type === "u8") {
                         if (
                             expression.operatorToken.kind !==
@@ -171,6 +169,13 @@ export function lowerGltfOrmComposition(context: LoweringContext): string {
             if (!shape) return undefined;
             const value = lowerer.expression(initializer);
             bind(variable.name.text, shape);
+            const name = variable.name.text;
+            lowerer.bindPorts(
+                [...bindings].filter(
+                    ([port]) => port === name || port.startsWith(`${name}.`),
+                ),
+                variable,
+            );
             return [
                 `${indent}auto${shape === "context" ? "&" : ""} ${variable.name.text} = ${value};`,
             ];

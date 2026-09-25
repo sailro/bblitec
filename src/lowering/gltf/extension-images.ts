@@ -90,11 +90,19 @@ export function lowerGltfExtensionImages(
                     "Expected a nullable extension image initializer.",
                 );
             const condition = lowerer.expression(initializer.condition);
-            bindings.set(name, {
-                cpp: name,
-                type: "opaque",
-                absentCpp: `!${name}`,
-            });
+            lowerer.bindPorts(
+                [
+                    [
+                        name,
+                        {
+                            cpp: name,
+                            type: "opaque",
+                            absentCpp: `!${name}`,
+                        },
+                    ],
+                ],
+                statement,
+            );
             if (name === "extImageCache") {
                 if (
                     !ts.isArrayLiteralExpression(initializer.whenTrue) ||
@@ -229,11 +237,19 @@ ${indent}return [&json, cache = std::move(extImageCache), resolve_image](const t
                     );
                 const name = variable.name.text,
                     initial = lowerer.expression(variable.initializer);
-                textureBindings.set(name, {
-                    cpp: name,
-                    type: "opaque",
-                    absentCpp: `!${name}`,
-                });
+                lowerer.bindPorts(
+                    [
+                        [
+                            name,
+                            {
+                                cpp: name,
+                                type: "opaque",
+                                absentCpp: `!${name}`,
+                            },
+                        ],
+                    ],
+                    statement,
+                );
                 return `${indent}const auto ${name} = ${initial};`;
             });
         },

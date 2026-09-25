@@ -126,6 +126,9 @@ export function lowerComputeTaskExecution(
                 return {
                     range,
                     bindings: new Map([
+                        ...[...bindings].filter(([name]) =>
+                            name.startsWith(`${element}.`),
+                        ),
                         [element, { cpp: element, type: "opaque" }],
                     ]),
                 };
@@ -242,13 +245,19 @@ export function lowerComputeTaskExecution(
                             "[]",
                             "Pending compute pipeline preparations",
                         );
-                        bindings.set(name, { cpp: name, type: "opaque" });
+                        lowerer.bindPorts(
+                            [[name, { cpp: name, type: "opaque" }]],
+                            node,
+                        );
                         return [
                             `${indent}js::Array<js::Promise<js::PromiseVoid>> pending;`,
                         ];
                     }
                     if (["pass", "encoder", "engine"].includes(name)) {
-                        bindings.set(name, { cpp: name, type: "opaque" });
+                        lowerer.bindPorts(
+                            [[name, { cpp: name, type: "opaque" }]],
+                            node,
+                        );
                         return [
                             `${indent}auto ${name} = ${lowerer.expression(declaration.initializer)};`,
                         ];

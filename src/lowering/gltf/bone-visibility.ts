@@ -57,6 +57,13 @@ export function lowerGltfBoneVisibility(context: LoweringContext): string {
                     variable.name.text !== "o"
                 )
                     return undefined;
+                numeric.bindPorts(
+                    [
+                        ["o", { cpp: "o", type: "opaque", absentCpp: "!o" }],
+                        ["o.mask", { cpp: "o->mask", type: "scalar" }],
+                    ],
+                    variable,
+                );
                 if (
                     context.expressionMatchesShape(
                         variable.initializer,

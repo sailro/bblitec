@@ -417,10 +417,18 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
                         );
                     }
                     for (const member of ["x", "y", "width", "height"]) {
-                        bindings.set(`viewport.${member}`, {
-                            cpp: `static_cast<double>(viewport.${member})`,
-                            type: "scalar",
-                        });
+                        lowerer.bindPorts(
+                            [
+                                [
+                                    `viewport.${member}`,
+                                    {
+                                        cpp: `static_cast<double>(viewport.${member})`,
+                                        type: "scalar",
+                                    },
+                                ],
+                            ],
+                            statement,
+                        );
                     }
                     return [
                         `${indent}const auto viewport = resolve_viewport(` +
@@ -436,17 +444,28 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* color_data) {
                         "getViewProjectionMatrix(camera, aspect)",
                         "pick view projection",
                     );
-                    bindings.set("vp", {
-                        cpp: "pick.view_projection",
-                        type: "f32",
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                "vp",
+                                {
+                                    cpp: "pick.view_projection",
+                                    type: "f32",
+                                },
+                            ],
+                        ],
+                        statement,
+                    );
                     return [
                         `${indent}pick.view_projection = view_projection(aspect);`,
                     ];
                 }
                 const output = outputs.get(name);
                 if (output) {
-                    bindings.set(name, { cpp: output, type: "scalar" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: output, type: "scalar" }]],
+                        statement,
+                    );
                     return [
                         `${indent}${output} = ${lowerer.expression(initializer)};`,
                     ];

@@ -156,7 +156,10 @@ export function lowerAssetSceneAttachment(context: LoweringContext): string {
                             "result.animationGroups",
                             "Container animation groups",
                         );
-                        bindings.set(name, { cpp: "groups", type: "opaque" });
+                        lowerer.bindPorts(
+                            [[name, { cpp: "groups", type: "opaque" }]],
+                            statement,
+                        );
                         return [
                             `${indent}const auto& groups = record.animation_groups;`,
                         ];

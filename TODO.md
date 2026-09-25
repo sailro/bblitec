@@ -7,7 +7,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 ## Compiler
 
 - [ ] Converge the pinned record lowerers (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`) on one record and absence model.
-- [ ] Key pinned-lowerer bindings by declaration symbol, not comparison source text (`pinned-numeric-lowerer.ts` binding map).
 - [ ] Outline large bodies from structured statements at emission instead of re-parsing emitted C++ (`body-outlining.ts`, `cpp-statements.ts`).
 
 ## UI

@@ -125,19 +125,19 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
     public constructor(
         private readonly context: LoweringContext,
         private readonly source: ts.SourceFile,
-        private readonly numeric: PinnedNumericScope,
+        numeric: PinnedNumericScope,
         private readonly aggregateCalls: ReadonlyMap<
             string,
             { shape: Shape; cpp: (args: readonly string[]) => string }
         > = new Map(),
     ) {
-        super(source, numeric);
         for (const name of ["near", "far"]) {
             numeric.bindings.set(`@native-macro:${name}`, {
                 cpp: name,
                 type: "scalar",
             });
         }
+        super(source, numeric);
     }
 
     private declaration(node: ts.Identifier): ts.Declaration {
@@ -163,30 +163,27 @@ class CsmNumericAdapter extends PinnedNumericLowerer {
                     ? `${value.cpp}.value_or(0.0)`
                     : `(*${value.cpp})`
                 : value.cpp;
-        this.numeric.bindings.set(
-            this.context.unwrapExpression(node).getText(this.source),
-            {
-                cpp,
-                type:
-                    shape.kind === "buffer"
-                        ? shape.width
-                        : shape.kind === "boolean"
-                          ? "bool"
-                          : "scalar",
-                ...(shape.kind === "optional"
-                    ? {
-                          absentCpp:
-                              shape.value.kind === "number"
-                                  ? `!${value.cpp}.has_value() || !bbl::js::number_truthy(*${value.cpp})`
-                                  : `!${value.cpp}.has_value()`,
-                      }
-                    : shape.kind === "buffer" ||
-                        shape.kind === "array" ||
-                        shape.kind === "record"
-                      ? { absentCpp: "false" }
-                      : {}),
-            },
-        );
+        this.bindLocal(this.context.unwrapExpression(node), {
+            cpp,
+            type:
+                shape.kind === "buffer"
+                    ? shape.width
+                    : shape.kind === "boolean"
+                      ? "bool"
+                      : "scalar",
+            ...(shape.kind === "optional"
+                ? {
+                      absentCpp:
+                          shape.value.kind === "number"
+                              ? `!${value.cpp}.has_value() || !bbl::js::number_truthy(*${value.cpp})`
+                              : `!${value.cpp}.has_value()`,
+                  }
+                : shape.kind === "buffer" ||
+                    shape.kind === "array" ||
+                    shape.kind === "record"
+                  ? { absentCpp: "false" }
+                  : {}),
+        });
     }
 
     private value(expression: ts.Expression): Value | undefined {

@@ -488,7 +488,10 @@ function registrationCpp(context: LoweringContext): string {
                         entry.initializer.kind === ts.SyntaxKind.NullKeyword
                             ? "false"
                             : lowerer.expression(entry.initializer);
-                    bindings.set(name, { cpp: name, type: "bool" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "bool" }]],
+                        node,
+                    );
                     return [`${indent}[[maybe_unused]] bool ${name} = ${rhs};`];
                 },
             );
@@ -606,7 +609,10 @@ function disposalCpp(context: LoweringContext): string {
                     node,
                     "Compute registry lookup changed.",
                 );
-            bindings.set("resources", { cpp: "resources", type: "opaque" });
+            _lowerer.bindPorts(
+                [["resources", { cpp: "resources", type: "opaque" }]],
+                node,
+            );
             return [
                 `${indent}const auto resources = resource->registry.lock();`,
                 `${indent}const auto engine = resources ? resources->engine.lock() : nullptr;`,

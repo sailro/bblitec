@@ -145,11 +145,19 @@ export function lowerPbrTransmissionSelection(
                     mesh,
                     "Expected an indexed transmission mesh.",
                 );
-            bindings.set("mat", {
-                cpp: "mat",
-                type: "opaque",
-                absentCpp: "!mat",
-            });
+            lowerer.bindPorts(
+                [
+                    [
+                        "mat",
+                        {
+                            cpp: "mat",
+                            type: "opaque",
+                            absentCpp: "!mat",
+                        },
+                    ],
+                ],
+                statement,
+            );
             return [
                 `${indent}const auto material = ${recordAt("engine.meshes", `meshes.at(static_cast<std::size_t>(${lowerer.expression(mesh.argumentExpression)}))`)}.material;`,
                 `${indent}const MaterialRecord* mat = material.value < engine.materials.size() ? &${recordAt("engine.materials", "material")} : nullptr;`,

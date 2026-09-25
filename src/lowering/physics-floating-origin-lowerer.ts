@@ -487,7 +487,7 @@ function declaration(
         : undefined;
     if (!initializer) return undefined;
     const bind = (bindings: readonly [string, PinnedBinding][]): void => {
-        for (const [key, binding] of bindings) lowerer.bindLocal(key, binding);
+        lowerer.bindPorts(bindings, entry);
     };
     // A region the module looks up or creates.
     if (

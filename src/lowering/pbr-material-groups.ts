@@ -944,6 +944,15 @@ function lowerPbrGroupReconciliation(context: LoweringContext): string {
                         ]);
                         const value = declarations.get(variable.name.text);
                         if (!value) return undefined;
+                        const name = variable.name.text;
+                        _numeric.bindPorts(
+                            [...bindings].filter(
+                                ([port]) =>
+                                    port === name ||
+                                    port.startsWith(`${name}.`),
+                            ),
+                            variable,
+                        );
                         context.assertExpressionShape(
                             variable.initializer,
                             value[0]!,
@@ -1202,6 +1211,21 @@ function lowerPbrGroupRebuildBody(context: LoweringContext): string {
                         initializer,
                         "Expected the live PBR group filter.",
                     );
+                numeric.bindPorts(
+                    [...bindings].filter(
+                        ([port]) => port === "mesh" || port.startsWith("mesh."),
+                    ),
+                    call.arguments[0].body,
+                );
+                numeric.bindPorts(
+                    [
+                        [
+                            "groupMeshes.length",
+                            bindings.get("groupMeshes.length")!,
+                        ],
+                    ],
+                    variable,
+                );
                 return [
                     `${indent}std::vector<MeshHandle> group_meshes;`,
                     `${indent}for (const auto mesh : group->meshes) {`,

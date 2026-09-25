@@ -358,7 +358,7 @@ function continuationsCpp(context: LoweringContext): string {
                     "continuations settle.",
             );
         }
-        lowerer.bindLocal("registrations", inFlight[1]);
+        lowerer.bindPorts([["registrations", inFlight[1]]], entry);
         return [`${indent}state.in_flight = state.registrations;`];
     };
     const forOf: NonNullable<PinnedNumericScope["forOf"]> = (
@@ -444,9 +444,7 @@ function registrationCpp(context: LoweringContext): string {
             node.declarationList.declarations[0]?.getText(file) ===
                 "state = getState(engine)"
         ) {
-            for (const [key, binding] of stateMembers("state", "state")) {
-                lowerer.bindLocal(key, binding);
-            }
+            lowerer.bindPorts(stateMembers("state", "state"), node);
             return [
                 `${indent}Engine::DeviceRecoveryState& state = recovery_state(engine);`,
             ];
@@ -474,10 +472,18 @@ function registrationCpp(context: LoweringContext): string {
                     "Expected a recovery handle to start enabled.",
                 );
             }
-            lowerer.bindLocal("disabled", {
-                cpp: "registration->disabled",
-                type: "bool",
-            });
+            lowerer.bindPorts(
+                [
+                    [
+                        "disabled",
+                        {
+                            cpp: "registration->disabled",
+                            type: "bool",
+                        },
+                    ],
+                ],
+                local,
+            );
             return [
                 `${indent}registration->engine = &engine;`,
                 `${indent}registration->disabled = false;`,

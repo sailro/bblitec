@@ -26,12 +26,21 @@ export function lowerPinnedBody(
             ? { returnValue: (expression) => returnValue(expression, lowerer) }
             : {}),
     });
+    return lowerPinnedStatements(lowerer, statements, indent);
+}
+
+/** Emit a selected body while retaining its lowerer's source bindings and provenance. */
+export function lowerPinnedStatements(
+    lowerer: PinnedNumericLowerer,
+    statements: readonly ts.Statement[],
+    indent = "    ",
+): string {
     const result = lowerer.statements(statements, indent).join("\n");
     for (const owner of lowerer.translationActivity?.owners ?? []) {
         const symbolName = owner.name?.text;
         if (symbolName)
             tracePinnedTranslation(() => ({
-                file,
+                file: owner.getSourceFile(),
                 symbolName,
                 extent: "selected-body",
                 adapters: ["body-scope"],

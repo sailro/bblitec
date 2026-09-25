@@ -136,10 +136,12 @@ export function lowerBabylonHierarchy(context: LoweringContext): string {
                 if (!ts.isIdentifier(variable.name) || !variable.initializer)
                     return undefined;
                 const name = variable.name.text;
-                if (name === "parent" || name === "childNode")
+                if (name === "parent" || name === "childNode") {
+                    lowerer.bindLocal(variable.name, bindings.get(name)!);
                     return [
                         `${indent}const auto ${name === "parent" ? "parent" : "child_node"} = ${lowerer.expression(variable.initializer)};`,
                     ];
+                }
                 if (name === "childMeshes") {
                     context.assertExpressionShape(
                         variable.initializer,
@@ -226,10 +228,18 @@ export function lowerBabylonHierarchy(context: LoweringContext): string {
                             element,
                             "Expected a node map binding.",
                         );
-                    bindings.set(element.name.text, {
-                        cpp: element.name.text,
-                        type: "opaque",
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                element.name.text,
+                                {
+                                    cpp: element.name.text,
+                                    type: "opaque",
+                                },
+                            ],
+                        ],
+                        statement,
+                    );
                     return element.name.text;
                 });
                 return [

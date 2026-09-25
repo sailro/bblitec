@@ -199,7 +199,10 @@ export function computeTextureDescriptorCpp(context: LoweringContext): string {
     });
     const mipExtent = context.variableInitializer(declaration, "mipExtent");
     const mipExtentCpp = mip.expression(mipExtent);
-    mipBindings.set("mipExtent", { cpp: "mip_extent", type: "scalar" });
+    mip.bindPorts(
+        [["mipExtent", { cpp: "mip_extent", type: "scalar" }]],
+        mipExtent,
+    );
     const mipCountCpp = mip.expression(
         context.variableInitializer(declaration, "mipLevelCount"),
     );
@@ -340,10 +343,18 @@ export function computeTextureSamplingCpp(context: LoweringContext): string {
                                 "Expected a sampling predicate result.",
                             );
                         const rhs = lowerer.expression(entry.initializer);
-                        bindings.set(entry.name.text, {
-                            cpp: entry.name.text,
-                            type: "opaque",
-                        });
+                        lowerer.bindPorts(
+                            [
+                                [
+                                    entry.name.text,
+                                    {
+                                        cpp: entry.name.text,
+                                        type: "opaque",
+                                    },
+                                ],
+                            ],
+                            node,
+                        );
                         return `${indent}const std::string_view ${entry.name.text} = ${rhs};`;
                     });
                 },

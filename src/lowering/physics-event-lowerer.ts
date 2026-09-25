@@ -126,7 +126,25 @@ export function lowerPhysicsEvents(
                 return range
                     ? {
                           range,
-                          bindings: new Map([[element, binding(element)]]),
+                          bindings: new Map([
+                              [element, binding(element)],
+                              ...(iterated === "world._bodies" ||
+                              iterated === "removed"
+                                  ? ([
+                                        [
+                                            `${element}._hkBody`,
+                                            binding(`${element}.handle`),
+                                        ],
+                                        [
+                                            `${element}._hkBody[0]`,
+                                            binding(
+                                                `${element}.handle.value`,
+                                                "scalar",
+                                            ),
+                                        ],
+                                    ] as const)
+                                  : []),
+                          ]),
                       }
                     : undefined;
             },

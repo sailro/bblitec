@@ -297,13 +297,19 @@ function factoryScope(
                     return undefined;
                 const name = declaration.name.text;
                 if (["access", "sampleType", "type"].includes(name)) {
-                    bindings.set(name, { cpp: name, type: "opaque" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "opaque" }]],
+                        node,
+                    );
                     return [
                         `${indent}const auto ${name} = ${lowerer.expression(declaration.initializer)};`,
                     ];
                 }
                 if (name === "multisampled") {
-                    bindings.set(name, { cpp: name, type: "bool" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "bool" }]],
+                        node,
+                    );
                     return [
                         `${indent}const bool ${name} = ${lowerer.expression(declaration.initializer)};`,
                     ];

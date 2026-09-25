@@ -145,6 +145,9 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
                           range,
                           bindings: new Map([
                               [element, { cpp: element, type: "opaque" }],
+                              ...[...bindings].filter(([port]) =>
+                                  port.startsWith(`${element}.`),
+                              ),
                           ]),
                       }
                     : undefined;
@@ -158,8 +161,8 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
                 )
                     return lowerer.expression(node.right);
                 if (ts.isConditionalExpression(node)) {
-                    const condition = bindings.get(
-                        context.unwrapExpression(node.condition).getText(file),
+                    const condition = lowerer.binding(
+                        context.unwrapExpression(node.condition),
                     );
                     if (condition?.absentCpp)
                         return `(!(${condition.absentCpp}) ? ${lowerer.expression(node.whenTrue)} : ${lowerer.expression(node.whenFalse)})`;
@@ -310,7 +313,10 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
                             "data.meshes.some((m) => m.localMatrix)",
                             "Local matrix import demand",
                         );
-                        bindings.set(name, { cpp: name, type: "bool" });
+                        lowerer.bindPorts(
+                            [[name, { cpp: name, type: "bool" }]],
+                            statement,
+                        );
                         return [
                             `${indent}const bool ${name} = std::any_of(mesh_sources.begin(), mesh_sources.end(), [](const Json& m) { return babylon_json_truthy(m, "localMatrix"); });`,
                         ];
@@ -321,10 +327,18 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
                             'hasAnyLocalMatrix ? (await import("./bake-local-matrix.js")).bakeLocalMatrix : null',
                             "Local matrix module boundary",
                         );
-                        bindings.set(name, {
-                            cpp: "hasAnyLocalMatrix",
-                            type: "bool",
-                        });
+                        lowerer.bindPorts(
+                            [
+                                [
+                                    name,
+                                    {
+                                        cpp: "hasAnyLocalMatrix",
+                                        type: "bool",
+                                    },
+                                ],
+                            ],
+                            statement,
+                        );
                         return [];
                     }
                     if (name === "firstMesh") {
@@ -341,7 +355,10 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
                         ];
                     }
                     if (name === "subMeshes") {
-                        bindings.set(name, { cpp: name, type: "opaque" });
+                        lowerer.bindPorts(
+                            [[name, { cpp: name, type: "opaque" }]],
+                            statement,
+                        );
                         return [
                             `${indent}const auto subMeshes = babylon_submeshes(md, positions.size(), allIndices.size());`,
                         ];
@@ -360,20 +377,29 @@ export function lowerBabylonMeshConstruction(context: LoweringContext): string {
                         ].includes(name)
                     ) {
                         const value = lowerer.expression(variable.initializer);
-                        bindings.set(name, {
-                            cpp: name,
-                            type:
-                                name === "allIndices" || name === "subIndices"
-                                    ? "u32"
-                                    : [
-                                            "positions",
-                                            "normals",
-                                            "uvs",
-                                            "uvs2",
-                                        ].includes(name)
-                                      ? "f32"
-                                      : "opaque",
-                        });
+                        lowerer.bindPorts(
+                            [
+                                [
+                                    name,
+                                    {
+                                        cpp: name,
+                                        type:
+                                            name === "allIndices" ||
+                                            name === "subIndices"
+                                                ? "u32"
+                                                : [
+                                                        "positions",
+                                                        "normals",
+                                                        "uvs",
+                                                        "uvs2",
+                                                    ].includes(name)
+                                                  ? "f32"
+                                                  : "opaque",
+                                    },
+                                ],
+                            ],
+                            statement,
+                        );
                         return [`${indent}auto ${name} = ${value};`];
                     }
                 }

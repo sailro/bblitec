@@ -172,8 +172,9 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
             "skel",
             "boneData",
         ]);
+        const bindings = bindingScope();
         return lowerPinnedBody(file, declaration.body!.statements, {
-            bindings: bindingScope(),
+            bindings,
 
             methods: new Map([
                 [
@@ -362,10 +363,19 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
                         variable.initializer
                     ) {
                         const name = variable.name.text;
-                        if (aliases.has(name))
+                        if (aliases.has(name)) {
+                            lowerer.bindPorts(
+                                [...bindings].filter(
+                                    ([port]) =>
+                                        port === name ||
+                                        port.startsWith(`${name}.`),
+                                ),
+                                variable,
+                            );
                             return [
                                 `${indent}auto& ${name} = ${lowerer.expression(variable.initializer)};`,
                             ];
+                        }
                         if (
                             [
                                 "baseRot",

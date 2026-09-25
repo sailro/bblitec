@@ -15,6 +15,20 @@ export function lowerPhysicsThinInstances(
     context: LoweringContext,
     floatingOrigin: boolean,
 ) {
+    const indexRead = (node: ts.Node): ts.Identifier => {
+        const index = context.findNodes(
+            node,
+            (child): child is ts.Identifier =>
+                ts.isIdentifier(child) && child.text === "i",
+        )[0];
+        return (
+            index ??
+            context.contractError(
+                node,
+                "Expected the pinned thin-instance index.",
+            )
+        );
+    };
     const calls = new Map<string, PinnedCallSpelling>();
     calls.set(
         "_quatFromRotationBasis",
@@ -269,7 +283,7 @@ export function lowerPhysicsThinInstances(
                         "Native transform read",
                     );
                     return [
-                        `${indent}const auto nativeTransform = pal::physics_body_get_transform(state->handles.at(static_cast<std::size_t>(${lowerer.expression(ts.factory.createIdentifier("i"))})));`,
+                        `${indent}const auto nativeTransform = pal::physics_body_get_transform(state->handles.at(static_cast<std::size_t>(${lowerer.expression(indexRead(local.initializer))})));`,
                     ];
                 }
                 return undefined;
@@ -606,7 +620,7 @@ export function lowerPhysicsThinInstances(
                         "Thin native handle identity",
                     );
                     return [
-                        `${indent}const auto handle = state.handles.at(static_cast<std::size_t>(${lowerer.expression(ts.factory.createIdentifier("i"))}));`,
+                        `${indent}const auto handle = state.handles.at(static_cast<std::size_t>(${lowerer.expression(indexRead(local.initializer!))}));`,
                     ];
                 }
             }
@@ -625,7 +639,7 @@ export function lowerPhysicsThinInstances(
                 "[state[0], (state[2][i] ??= [handle[0]]), i]",
                 "Thin resolution identity and index",
             );
-            return `PhysicsBodyInstance{state.body, handle, static_cast<double>(${lowerer.expression(ts.factory.createIdentifier("i"))})}`;
+            return `PhysicsBodyInstance{state.body, handle, static_cast<double>(${lowerer.expression(indexRead(expression))})}`;
         },
     });
     const kinematics = (name: "com" | "matrix") => {

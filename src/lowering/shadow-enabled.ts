@@ -191,6 +191,11 @@ export function lowerShadowEnabled(context: LoweringContext): string {
                         node.declarationList.declarations[0]!.name.getText(
                             sync.file,
                         );
+                    if (name === "csmData" || name === "callbacks")
+                        lowerer.bindPorts(
+                            [[name, syncBindings.get(name)!]],
+                            node,
+                        );
                     if (name === "csmData")
                         return [
                             `${indent}auto receiver_data = read_receiver_data();`,

@@ -1720,14 +1720,25 @@ class FrameWalker {
             `${indent}const ScreenSpaceResetDecision reset_decision = ` +
                 "decide_screen_space_reset(reset_event);",
         );
-        this.bindings.set("decision.invalidateHistory", {
-            cpp: "reset_decision.invalidate_history",
-            type: "bool",
-        });
-        this.bindings.set("decision.restartPhase", {
-            cpp: "reset_decision.restart_phase",
-            type: "bool",
-        });
+        this.numeric.bindPorts(
+            [
+                [
+                    "decision.invalidateHistory",
+                    {
+                        cpp: "reset_decision.invalidate_history",
+                        type: "bool",
+                    },
+                ],
+                [
+                    "decision.restartPhase",
+                    {
+                        cpp: "reset_decision.restart_phase",
+                        type: "bool",
+                    },
+                ],
+            ],
+            initializer,
+        );
         return lines;
     }
 

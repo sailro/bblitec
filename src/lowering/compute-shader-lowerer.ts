@@ -294,7 +294,12 @@ function scope(
             if (iterated !== "decls" || element !== "decl") return undefined;
             return {
                 range: "decls",
-                bindings: new Map([["decl", { cpp: "decl", type: "opaque" }]]),
+                bindings: new Map([
+                    ...[...bindings].filter(([name]) =>
+                        name.startsWith(`${element}.`),
+                    ),
+                    [element, { cpp: element, type: "opaque" }],
+                ]),
             };
         },
         statement(node, lowerer, indent) {
@@ -311,7 +316,10 @@ function scope(
                 const name = declaration.name.text,
                     initializer = unwrapExpression(declaration.initializer);
                 if (name === "entryPoint" || name === "pair") {
-                    bindings.set(name, { cpp: name, type: "opaque" });
+                    lowerer.bindPorts(
+                        [[name, { cpp: name, type: "opaque" }]],
+                        node,
+                    );
                     return [
                         `${indent}const auto ${name} = ${lowerer.expression(initializer)};`,
                     ];

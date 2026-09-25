@@ -1176,7 +1176,6 @@ ${body}
 function platformCalls(
     context: LoweringContext,
     file: ts.SourceFile,
-    bindings: ReadonlyMap<string, PinnedBinding>,
     paramsBuffer: () => ts.VariableDeclaration,
 ): NonNullable<PinnedNumericScope["expression"]> {
     const writer = context.functionDeclaration(
@@ -1224,7 +1223,7 @@ function platformCalls(
                 !ts.isIdentifier(texture) ||
                 !ts.isIdentifier(data) ||
                 data.text !== storage.payload ||
-                bindings.get(data.text)?.cpp !==
+                lowerer.binding(data)?.cpp !==
                     `container.${RECORD_STORAGE.get(storage.payload)!.field}`
             ) {
                 return context.contractError(
@@ -1252,7 +1251,7 @@ function platformCalls(
                 context.numericValue(offset, file) !== 0 ||
                 !payload ||
                 !ts.isIdentifier(payload) ||
-                bindings.get(payload.text)?.cpp !== "container.params"
+                lowerer.binding(payload)?.cpp !== "container.params"
             ) {
                 return context.contractError(
                     node,
@@ -1330,7 +1329,10 @@ function lowerBuild(
             const target = `container.${storage.field}`;
             if (storage.kind === "count") {
                 const value = lowerer.expression(initializer);
-                bindings.set(name, scalar(`static_cast<double>(${target})`));
+                lowerer.bindPorts(
+                    [[name, scalar(`static_cast<double>(${target})`)]],
+                    node,
+                );
                 return [
                     `${indent}${target} = static_cast<std::uint32_t>(${value});`,
                 ];
@@ -1371,11 +1373,19 @@ function lowerBuild(
                 );
             }
             const size = lowerer.expression(count);
-            bindings.set(name, {
-                cpp: target,
-                type: storage.kind,
-                mutable: true,
-            });
+            lowerer.bindPorts(
+                [
+                    [
+                        name,
+                        {
+                            cpp: target,
+                            type: storage.kind,
+                            mutable: true,
+                        },
+                    ],
+                ],
+                node,
+            );
             return [
                 `${indent}${target}.assign(static_cast<std::size_t>(${size}), ` +
                     `${storage.kind === "f32" ? "0.0f" : "0u"});`,
@@ -1421,7 +1431,7 @@ function lowerBuild(
             if (
                 !payload ||
                 !ts.isIdentifier(payload) ||
-                bindings.get(payload.text)?.cpp !== "container.params"
+                lowerer.binding(payload)?.cpp !== "container.params"
             ) {
                 return context.contractError(
                     initializer,
@@ -1455,8 +1465,7 @@ function lowerBuild(
             // its handle) and canvas extent.
             const [camera, ...extent] = call.arguments;
             const identity = camera
-                ? bindings.get(context.unwrapExpression(camera).getText(file))
-                      ?.identity
+                ? lowerer.binding(context.unwrapExpression(camera))?.identity
                 : undefined;
             if (!identity || extent.length !== 2) {
                 return context.contractError(
@@ -1488,7 +1497,6 @@ function lowerBuild(
         expression: platformCalls(
             context,
             file,
-            bindings,
             () =>
                 paramsBuffer ??
                 context.contractError(
@@ -1637,11 +1645,19 @@ function spotSupportCreation(
                     );
                 }
                 const target = `captured.${SPOT_SNAPSHOT}`;
-                bindings.set("snapshot", {
-                    cpp: target,
-                    type: "f32",
-                    mutable: true,
-                });
+                nested.bindPorts(
+                    [
+                        [
+                            "snapshot",
+                            {
+                                cpp: target,
+                                type: "f32",
+                                mutable: true,
+                            },
+                        ],
+                    ],
+                    snapshot,
+                );
                 return [
                     `${innerIndent}${target}.assign(static_cast<std::size_t>(${nested.expression(size)}), 0.0f);`,
                 ];
@@ -1721,7 +1737,6 @@ function lowerRefresh(
         expression: platformCalls(
             context,
             file,
-            bindings,
             () =>
                 paramsBuffer ??
                 context.contractError(

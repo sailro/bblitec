@@ -246,6 +246,7 @@ class LibraryViews {
                     : sourceCpp(owner, access.source, args);
             this.bind(name, access.className);
         }
+        lowerer.bindLocal(declared.name, this.bindings.get(name)!);
         return [`${indent}const auto* ${name} = ${pointer};`];
     }
 }
@@ -253,7 +254,7 @@ class LibraryViews {
 /** `const name = []` in a wrapper module: a JavaScript array of numbers. */
 function emptyNumberList(
     statement: ts.Statement,
-    bindings: Map<string, PinnedBinding>,
+    lowerer: PinnedNumericLowerer,
     indent: string,
 ): string[] | undefined {
     const declared =
@@ -273,7 +274,7 @@ function emptyNumberList(
     ) {
         return undefined;
     }
-    bindings.set(declared.name.text, {
+    lowerer.bindLocal(declared.name, {
         cpp: declared.name.text,
         type: "f64-list",
     });
@@ -333,7 +334,7 @@ function navMeshWalkTemplate(): LibraryTemplate {
         bindings: views.bindings,
         calls: views.calls,
         statement: (statement, active, indent) =>
-            emptyNumberList(statement, views.bindings, indent) ??
+            emptyNumberList(statement, active, indent) ??
             views.declaration(statement, active, indent),
         returnValue: (expression) => {
             const returned = expression
@@ -341,13 +342,13 @@ function navMeshWalkTemplate(): LibraryTemplate {
                 : undefined;
             const lists =
                 returned && ts.isArrayLiteralExpression(returned)
-                    ? returned.elements.map((element) => element.getText())
+                    ? returned.elements.map((element) =>
+                          lowerer.binding(element),
+                      )
                     : [];
             if (
                 lists.length !== 2 ||
-                lists.some(
-                    (list) => views.bindings.get(list)?.type !== "f64-list",
-                )
+                lists.some((list) => list?.type !== "f64-list")
             ) {
                 return contractError(
                     walk,
@@ -356,7 +357,7 @@ function navMeshWalkTemplate(): LibraryTemplate {
                 );
             }
             return `bbl::pal::NavMeshPositionsAndIndices{${lists
-                .map((list) => `std::move(${list})`)
+                .map((list) => `std::move(${list!.cpp})`)
                 .join(", ")}}`;
         },
     });
@@ -712,7 +713,7 @@ export function navigationDebugGeometryDefinition(
                 "createDebugNavMeshGeometry's result",
             );
             const local = (name: string): string => {
-                const binding = bindings.get(name);
+                const binding = lowerer.portBinding(name, expression);
                 if (!binding) {
                     return context.contractError(
                         expression,

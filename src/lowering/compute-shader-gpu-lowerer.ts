@@ -426,6 +426,10 @@ function gpuScope(
                     callback,
                     "Expected compute group filter callback.",
                 );
+            lowerer.bindPorts(
+                [...bindings].filter(([name]) => name.startsWith("decl.")),
+                callback.body,
+            );
             return [
                 `${indent}std::vector<pal::ComputeLayoutEntry> entries;`,
                 `${indent}for (const auto& decl : shader->decls) if (${lowerer.expression(callback.body)}) entries.push_back(${lowerer.expression(initializer.arguments[0]!)}(decl));`,

@@ -568,7 +568,10 @@ export function lowerProceduralSkyLoader(
                             "scene._disposables.indexOf(dispose)",
                             "Sky disposer identity",
                         );
-                        bind(id, id, "scalar");
+                        lowerer.bindLocal(entry.name, {
+                            cpp: id,
+                            type: "scalar",
+                        });
                         return [
                             `${indent}const auto found=std::find(state->scene.disposables.begin(),state->scene.disposables.end(),state->dispose);`,
                             `${indent}const double index=found==state->scene.disposables.end() ? -1.0 : static_cast<double>(found-state->scene.disposables.begin());`,

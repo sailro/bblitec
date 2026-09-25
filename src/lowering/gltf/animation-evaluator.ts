@@ -107,12 +107,26 @@ export function lowerGltfAnimationEvaluator(
                         "const { input, output, interpolation } = sampler;",
                         "Animation sampler storage",
                     );
-                    bindings.set("input", { cpp: "input", type: "f32" });
-                    bindings.set("output", { cpp: "output", type: "f32" });
-                    bindings.set("interpolation", {
-                        cpp: "interpolation",
-                        type: "scalar",
-                    });
+                    _lowerer.bindPorts(
+                        [["input", { cpp: "input", type: "f32" }]],
+                        statement,
+                    );
+                    _lowerer.bindPorts(
+                        [["output", { cpp: "output", type: "f32" }]],
+                        statement,
+                    );
+                    _lowerer.bindPorts(
+                        [
+                            [
+                                "interpolation",
+                                {
+                                    cpp: "interpolation",
+                                    type: "scalar",
+                                },
+                            ],
+                        ],
+                        statement,
+                    );
                     return [
                         `${indent}const auto& input = sampler.input;`,
                         `${indent}const auto& output = sampler.output;`,

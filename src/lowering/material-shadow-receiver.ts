@@ -98,9 +98,14 @@ export function materialShadowReceiverCpp(context: LoweringContext): string {
         calls: new Map(),
     });
     const hasSomeCpp = lowerer.expression(hasSome);
-    bindings.set("shadowOutput", { cpp: "shadow_output", type: "bool" });
-    bindings.set("mesh.receiveShadows", { cpp: "mesh_receives", type: "bool" });
-    bindings.set("hasSomeShadows", { cpp: "has_shadows", type: "bool" });
+    lowerer.bindPorts(
+        new Map<string, PinnedBinding>([
+            ["shadowOutput", { cpp: "shadow_output", type: "bool" }],
+            ["mesh.receiveShadows", { cpp: "mesh_receives", type: "bool" }],
+            ["hasSomeShadows", { cpp: "has_shadows", type: "bool" }],
+        ]),
+        receive,
+    );
     return `// ${context.provenance("src/material/pbr/pbr-renderable.ts", "buildPbrRenderables")}
 inline bool pinned_scene_has_shadows(const Engine& engine, const Scene& scene) {
     [[maybe_unused]] double shadow_count = 0.0;

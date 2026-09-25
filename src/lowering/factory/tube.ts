@@ -347,7 +347,7 @@ export class TubeLowerer {
             recordLiteral: this.vec3Literal,
             vec3Literal: (x, y, z) => recordLiteralCpp("vec3", [x, y, z]),
 
-            returnValue: (expression) => {
+            returnValue: (expression, lowerer) => {
                 const returned = expression
                     ? this.context.unwrapExpression(expression)
                     : undefined;
@@ -367,8 +367,15 @@ export class TubeLowerer {
                         "Expected computePath3D to return its four frame lists.",
                     );
                 }
-                return `TubePath3D{${[...frameLists.keys()]
-                    .map((name) => bindings.get(name)!.cpp)
+                return `TubePath3D{${returned.properties
+                    .map((property) => {
+                        if (!ts.isShorthandPropertyAssignment(property))
+                            return this.context.contractError(
+                                property,
+                                "Expected a named frame list.",
+                            );
+                        return lowerer.expression(property.name);
+                    })
                     .join(", ")}}`;
             },
             statement: (statement, lowerer, indent) => {
@@ -394,7 +401,10 @@ export class TubeLowerer {
                         "Expected one of computePath3D's sized frame lists.",
                     );
                 }
-                bindings.set(name, { cpp: name, type: shape });
+                lowerer.bindPorts(
+                    [[name, { cpp: name, type: shape }]],
+                    statement,
+                );
                 return [
                     `${indent}std::vector<${shape === "vec3-list" ? "Vec3d" : "double"}> ${name}(` +
                         `static_cast<std::size_t>(${lowerer.expression(initializer.arguments[0]!)}));`,
@@ -527,10 +537,18 @@ ${body}
                             local.type?.getText(file) === "Vec3[][]"
                         ) {
                             const name = local.name.getText(file);
-                            bindings.set(name, {
-                                cpp: name,
-                                type: "vec3-list-2d",
-                            });
+                            lowerer.bindPorts(
+                                [
+                                    [
+                                        name,
+                                        {
+                                            cpp: name,
+                                            type: "vec3-list-2d",
+                                        },
+                                    ],
+                                ],
+                                statement,
+                            );
                             return [
                                 `${indent}std::vector<std::vector<Vec3d>> ${name};`,
                             ];
@@ -549,7 +567,10 @@ ${body}
                                     "Expected the sweep to compute its frames from the path alone.",
                                 );
                             }
-                            bindings.set(name, { cpp: name, type: "opaque" });
+                            lowerer.bindPorts(
+                                [[name, { cpp: name, type: "opaque" }]],
+                                statement,
+                            );
                             return [
                                 `${indent}const TubePath3D ${name} = tube_compute_path(${lowerer.expression(initializer.arguments[0]!)});`,
                             ];
@@ -557,9 +578,7 @@ ${body}
                         // `const { tangents, ... } = path3D`: each list read
                         // in place off that record.
                         if (ts.isObjectBindingPattern(local.name)) {
-                            const frames = bindings.get(
-                                initializer.getText(file),
-                            );
+                            const frames = lowerer.binding(initializer);
                             if (frames?.type !== "opaque") {
                                 return this.context.contractError(
                                     local,
@@ -583,13 +602,21 @@ ${body}
                                         "Expected a frame list by its own name.",
                                     );
                                 }
-                                bindings.set(name, {
-                                    cpp: `${frames.cpp}.${name}`,
-                                    type:
-                                        name === "distances"
-                                            ? "f64-list"
-                                            : "vec3-list",
-                                });
+                                lowerer.bindPorts(
+                                    [
+                                        [
+                                            name,
+                                            {
+                                                cpp: `${frames.cpp}.${name}`,
+                                                type:
+                                                    name === "distances"
+                                                        ? "f64-list"
+                                                        : "vec3-list",
+                                            },
+                                        ],
+                                    ],
+                                    statement,
+                                );
                             }
                             return [];
                         }
@@ -608,9 +635,7 @@ ${body}
                         const call = statement.expression;
                         const receiver =
                             call.expression as ts.PropertyAccessExpression;
-                        const list = bindings.get(
-                            receiver.expression.getText(file),
-                        );
+                        const list = lowerer.binding(receiver.expression);
                         const [point] = call.arguments;
                         const literal = point
                             ? this.context.unwrapExpression(point)

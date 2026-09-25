@@ -77,16 +77,27 @@ export function lowerBabylonCamera(context: LoweringContext): string {
                     "A camera handle requires an identifier binding.",
                 );
             const name = local.name.text;
-            bindings.set(name, { cpp: name, type: "opaque" });
+            lowerer.bindPorts(
+                [[name, { cpp: name, type: "opaque" }]],
+                statement,
+            );
             for (const [source, target] of [
                 ["fov", "fov"],
                 ["nearPlane", "near_plane"],
                 ["farPlane", "far_plane"],
             ]) {
-                bindings.set(`${name}.${source}`, {
-                    cpp: `${recordAt("engine.cameras", name)}.${target}`,
-                    type: "scalar",
-                });
+                lowerer.bindPorts(
+                    [
+                        [
+                            `${name}.${source}`,
+                            {
+                                cpp: `${recordAt("engine.cameras", name)}.${target}`,
+                                type: "scalar",
+                            },
+                        ],
+                    ],
+                    statement,
+                );
             }
             return [
                 `${indent}CameraHandle ${name} = ${lowerer.expression(initializer)};`,

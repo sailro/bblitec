@@ -628,14 +628,17 @@ ${PRIMITIVE_SHAPE_ARMS.map((arm) =>
                         ? `params.${field} ? *params.${field} : ${value}`
                         : value;
                 if (components === undefined) {
-                    bindings.set(name, { cpp: name, type: "scalar" });
+                    lowerer.bindLocal(local.name, {
+                        cpp: name,
+                        type: "scalar",
+                    });
                     return (
                         `            const double ${name} = ` +
                         `${defaulted(lowerer.expression(fallback))};\n`
                     );
                 }
                 if (components.join(",") === "x,y,z") {
-                    bindings.set(name, { cpp: name, type: "vec3" });
+                    lowerer.bindLocal(local.name, { cpp: name, type: "vec3" });
                     const literal = `Vec3d{${lowerObjectComponents(
                         this.context,
                         lowerer,
@@ -657,10 +660,18 @@ ${PRIMITIVE_SHAPE_ARMS.map((arm) =>
                 // nothing can override it. It stays the pin's expression rather
                 // than a typed identity.
                 for (const [index, axis] of ["x", "y", "z", "w"].entries()) {
-                    bindings.set(`${name}.${axis}`, {
-                        cpp: `${name}[${index}]`,
-                        type: "scalar",
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                `${name}.${axis}`,
+                                {
+                                    cpp: `${name}[${index}]`,
+                                    type: "scalar",
+                                },
+                            ],
+                        ],
+                        local,
+                    );
                 }
                 const literal = `{${lowerObjectComponents(
                     this.context,

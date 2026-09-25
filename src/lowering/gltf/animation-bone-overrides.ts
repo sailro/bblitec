@@ -84,6 +84,7 @@ export function lowerGltfAnimationBoneOverrides(
                     statement,
                     "Expected bone override node and field identity.",
                 );
+            lowerer.bindPorts(bindings, statement.statement);
             return [
                 `${indent}for (const auto& [ni, o] : overrides) {`,
                 ...lowerer.statements(

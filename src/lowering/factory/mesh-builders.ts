@@ -1012,12 +1012,14 @@ void enable_thin_instance_gpu_culling(
                             : value;
                     },
                 );
+                const localCount = (name: string): string | undefined =>
+                    lowerer.portBinding(name, expression)?.cpp;
                 const vertexCount = members.has("vertexCount")
                     ? lowerer.expression(required("vertexCount"))
-                    : bindings.get("vertexCount")?.cpp;
+                    : localCount("vertexCount");
                 const indexCount = members.has("indexCount")
                     ? lowerer.expression(required("indexCount"))
-                    : bindings.get("indexCount")?.cpp;
+                    : localCount("indexCount");
                 if (!vertexCount || !indexCount) {
                     return this.context.contractError(
                         expression,

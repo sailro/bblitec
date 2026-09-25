@@ -272,17 +272,27 @@ export function lowerProceduralSkyUpdate(
                         }
                         if (id === "encoder" || id === "pass") {
                             const value = lowerer.expression(entry.initializer);
-                            bind(id, id);
+                            lowerer.bindLocal(entry.name, {
+                                cpp: id,
+                                type: "opaque",
+                            });
                             return [`${indent}auto ${id}=${value};`];
                         }
                         if (id === "irradiance") {
                             const value = lowerer.expression(entry.initializer);
-                            bind(id, "*irradiance", "f32", "!irradiance");
+                            lowerer.bindLocal(entry.name, {
+                                cpp: "*irradiance",
+                                type: "f32",
+                                absentCpp: "!irradiance",
+                            });
                             return [`${indent}const auto irradiance=${value};`];
                         }
                         if (id === "harmonics") {
                             const value = lowerer.expression(entry.initializer);
-                            bind(id, id, "f32");
+                            lowerer.bindLocal(entry.name, {
+                                cpp: id,
+                                type: "f32",
+                            });
                             return [`${indent}const auto ${id}=${value};`];
                         }
                         if (id === "textures") {

@@ -188,10 +188,9 @@ test("the lowerer translates the temporal state machine and both uniform blocks 
         source,
         /if \(state\.last_enabled\) \{\s*decision\.clear_identity = true;/,
     );
-    assert.ok(
-        source.includes(
-            "bbl::js::or_number(bbl::js::hypot_js({light_direction.x, light_direction.y, light_direction.z}), 1.0)",
-        ),
+    assert.match(
+        source,
+        /const auto (pinned_\w+) = bbl::js::hypot_js\(\{light_direction.x, light_direction.y, light_direction.z\}\); return bbl::js::number_truthy\(static_cast<double>\(\1\)\) \? static_cast<double>\(\1\) : static_cast<double>\(1.0\);/,
     );
     assert.ok(
         source.includes(

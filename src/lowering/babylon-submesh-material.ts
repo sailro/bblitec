@@ -79,8 +79,13 @@ export function babylonSubmeshMaterialScope(
                         `${indent}std::optional<std::vector<std::string>> mat_ids;`,
                     ];
                 }
-                if (variable.name.text === "mat" && !variable.initializer)
+                if (variable.name.text === "mat" && !variable.initializer) {
+                    lowerer.bindLocal(variable.name, {
+                        cpp: "material",
+                        type: "opaque",
+                    });
                     return [`${indent}MaterialHandle material;`];
+                }
                 if (variable.name.text === "multi" && variable.initializer) {
                     const call = context.unwrapExpression(variable.initializer);
                     if (

@@ -136,7 +136,6 @@ function kernelStorage(
 export class CharacterKernelLowerer extends PinnedNumericLowerer {
     private temporary = 0;
     private readonly checker: ts.TypeChecker;
-    private readonly numeric: PinnedNumericScope;
 
     public constructor(
         private readonly context: LoweringContext,
@@ -150,7 +149,6 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
             localPrefix: "local_",
         };
         super(file, numeric);
-        this.numeric = numeric;
         this.checker = context.program.checkerFor(file);
         if (schema.returnType !== "void")
             numeric.returnValue = (expression) =>
@@ -328,7 +326,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
     /** A representation the checker gives a scalar expression, where it does. */
     private scalarType(node: ts.Expression): string | undefined {
         if (ts.isIdentifier(node)) {
-            const binding = this.numeric.bindings.get(node.text);
+            const binding = this.binding(node);
             if (binding) return binding.type === "bool" ? "boolean" : "number";
         }
         const type = this.checker.getTypeAtLocation(node);
@@ -605,9 +603,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
                 node,
                 "Pinned kernel expression has no native representation.",
             );
-        const binding = ts.isIdentifier(node)
-            ? this.numeric.bindings.get(node.text)
-            : undefined;
+        const binding = ts.isIdentifier(node) ? this.binding(node) : undefined;
         const cpp = this.expression(node);
         // A counted loop's index is an integer; everywhere else a JS number is.
         return {

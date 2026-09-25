@@ -91,6 +91,64 @@ test("a number declared from a counted loop index converts explicitly", () => {
     assert.match(cpp, /double left = static_cast<double>\(start\);/);
 });
 
+test("caller ports and helper captures keep declaration identity under shadowing", () => {
+    const cpp = lower(
+        `let x = 1; let total = 0;
+        const add = (amount: number) => { total += x + amount; };
+        { let x = 9; add(2); total += x; }
+        add(3); total += x;`,
+        [["x", { cpp: "outer_value", type: "scalar" }]],
+    );
+    assert.doesNotMatch(cpp, /double x = 1/);
+    assert.match(cpp, /double x = 9\.0/);
+    assert.equal(cpp.match(/outer_value \+/g)?.length, 2);
+    assert.match(cpp, /total \+= x;/);
+    assert.match(cpp, /total \+= outer_value;/);
+});
+
+test("member bindings use declaration paths across equivalent source spellings", () => {
+    const cpp = lower(
+        `let record: {value: number}; let total = 0;
+        total += (record /* same owner */)["value"];
+        total += values[0.0];
+        { const record = {x: 1, y: 2, z: 3}; total += record.x; }
+        total += record.value;`,
+        [
+            ["record", { cpp: "native_record", type: "opaque" }],
+            ["record.value", { cpp: "native_value", type: "scalar" }],
+            ["values[0]", { cpp: "native_first", type: "scalar" }],
+        ],
+        { vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}` },
+    );
+    assert.equal(cpp.match(/total \+= native_value;/g)?.length, 2);
+    assert.match(cpp, /total \+= native_first;/);
+    assert.match(cpp, /total \+= record.x;/);
+});
+
+test("JavaScript class methods resolve parameter ports and shadowed locals", () => {
+    const file = ts.createSourceFile(
+        "wrapper.mjs",
+        `export class Wrapper {
+        update(value) { let total = value; { let value = 2; total += value; } return total + value; }
+    }`,
+        ts.ScriptTarget.Latest,
+        true,
+    );
+    const declaration = file.statements[0];
+    assert.ok(declaration && ts.isClassDeclaration(declaration));
+    const method = declaration.members[0];
+    assert.ok(method && ts.isMethodDeclaration(method) && method.body);
+    const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
+        bindings: new Map([["value", { cpp: "argument", type: "scalar" }]]),
+        calls: new Map(),
+        returnValue: (node) => lowerer.expression(node!),
+    });
+    const cpp = lowerer.statements(method.body.statements, "").join("\n");
+    assert.match(cpp, /double total = argument;/);
+    assert.match(cpp, /double value = 2.0;/);
+    assert.match(cpp, /return \(total \+ argument\);/);
+});
+
 test("shared statement lowering handles continue and ordered scalar assignment chains", () => {
     const cpp = lower(
         "let a = 0; let b = 0; let c = 0; a = b = c = next(); for (let i = 0; i < 2; i++) { if (i === 1) continue; a += i; }",
@@ -187,7 +245,7 @@ test("a string set and a composed throw message lower as JavaScript's", (t) => {
     assert.match(body, /names\.add\(first\);/);
     assert.match(
         body,
-        /if \(bbl::js::number_truthy\(static_cast<double>\(names\.size\(\)\)\)\) \{/,
+        /if \(bbl::js::number_truthy\(static_cast<double>\(static_cast<double>\(names\.size\(\)\)\)\)\) \{/,
     );
     // A number inside a template would need JavaScript's own formatting.
     assert.throws(
@@ -587,7 +645,7 @@ test("lowers a JavaScript numeric or-else to lazy value selection", () => {
     // would collapse to 1.
     assert.match(
         emitted,
-        /number_truthy\(pinned_0_\d+\) \? static_cast<double>/,
+        /number_truthy\(static_cast<double>\(pinned_0_\d+\)\) \? static_cast<double>/,
     );
     assert.doesNotMatch(emitted, /value \|\| /);
 });
@@ -749,10 +807,15 @@ test("logical values and switch selectors preserve lazy, single evaluation nativ
         const d = left && next();
         const text = "" || "ok";
         const mixedCondition = (left && (left <= 0 || left > 1)) ? 1 : 2;
+        const gated = gate && (choice ? false : true);
+        let branch = 0;
+        if (gate && (choice ? false : true)) branch = 1;
         let selected = 0;
         switch (next()) { case 0: selected = 10; break; case 3: selected = 20; break; default: selected = 30; }
     `,
         [
+            ["gate", { cpp: "gate", type: "bool" }],
+            ["choice", { cpp: "choice", type: "bool" }],
             [
                 "NaN",
                 {
@@ -774,10 +837,12 @@ test("logical values and switch selectors preserve lazy, single evaluation nativ
         #include <cmath>
         int main() {
             int calls = 0;
+            bool gate = false, choice = true;
             auto next = [&]() { return static_cast<double>(++calls); };
             ${body}
             assert(a == 1 && b == 0 && c == 2 && d == 0 && std::signbit(d));
             assert(text == "ok" && selected == 20 && calls == 3 && mixedCondition == 2);
+            assert(!gated && branch == 0);
         }`,
     );
     runNativeFixtureCompiler(tools, [

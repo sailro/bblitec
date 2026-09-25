@@ -849,13 +849,13 @@ function storeCpp(
 /** Whether an expression is a boolean the scope already knows. */
 function booleanValue(
     expression: ts.Expression,
-    bindings: ReadonlyMap<string, PinnedBinding>,
+    lowerer: PinnedNumericLowerer,
 ): boolean {
     const unwrapped = unwrapExpression(expression);
     return (
         unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
         unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
-        bindings.get(unwrapped.getText())?.type === "bool"
+        lowerer.binding(unwrapped)?.type === "bool"
     );
 }
 
@@ -973,7 +973,6 @@ function lowerCreate(
     className: string,
     target: string,
     lowerer: PinnedNumericLowerer,
-    bindings: ReadonlyMap<string, PinnedBinding>,
     indent: string,
 ): string[] {
     const literal = call.arguments[0]
@@ -1019,7 +1018,7 @@ function lowerCreate(
         if (field.component === undefined) {
             cpp = lowerer.expression(value);
         } else {
-            const binding = bindings.get(unwrapExpression(value).getText());
+            const binding = lowerer.binding(value);
             if (
                 typeof field.component === "number" &&
                 binding?.type === "f64-buffer"
@@ -1044,7 +1043,7 @@ function lowerCreate(
         return `${indent}${storeCpp(
             member,
             cpp,
-            booleanValue(value, bindings) ? "bool" : "scalar",
+            booleanValue(value, lowerer) ? "bool" : "scalar",
         )}`;
     });
 }
@@ -1100,7 +1099,7 @@ function boundingBoxFunction(): PlanFunction {
         ["indices", { cpp: "indices", type: "u32" }],
     ]);
     const lanes = (name: string, at: ts.Node): string => {
-        const binding = bindings.get(name);
+        const binding = lowerer.portBinding(name, at);
         if (binding?.type !== "vec3") {
             return contractError(
                 at,
@@ -1214,7 +1213,7 @@ function rcConfigFunction(
                 `${indent}${storeCpp(
                     `rcConfig.${store.field}`,
                     active.expression(store.value),
-                    booleanValue(store.value, bindings) ? "bool" : "scalar",
+                    booleanValue(store.value, active) ? "bool" : "scalar",
                 )}`,
             ];
         },
@@ -1360,7 +1359,7 @@ function configStepFunction(
     if (arm === "tileCache") {
         const [width, height] = [TILE_GRID.width, TILE_GRID.height].map(
             (local) => {
-                const binding = bindings.get(local);
+                const binding = lowerer.portBinding(local, body.at(-1)!);
                 if (!binding) {
                     return contractError(
                         generator.body,
@@ -1469,10 +1468,18 @@ function offMeshPackingFunction(): PlanFunction {
                 ts.isArrayLiteralExpression(initializer) &&
                 initializer.elements.length === 0
             ) {
-                bindings.set(declared.name.text, {
-                    cpp: declared.name.text,
-                    type: "f64-list",
-                });
+                active.bindPorts(
+                    [
+                        [
+                            declared.name.text,
+                            {
+                                cpp: declared.name.text,
+                                type: "f64-list",
+                            },
+                        ],
+                    ],
+                    statement,
+                );
                 return [`${indent}std::vector<double> ${declared.name.text};`];
             }
             // The glue's copy into the create params, which the PAL makes.
@@ -1496,7 +1503,7 @@ function offMeshPackingFunction(): PlanFunction {
                 lists.some(
                     (list) =>
                         !ts.isIdentifier(list) ||
-                        bindings.get(list.text)?.type !== "f64-list",
+                        active.binding(list)?.type !== "f64-list",
                 )
             ) {
                 return context.contractError(
@@ -1605,7 +1612,7 @@ function soloCreateParamsFunction(generator: GeneratorConfig): PlanFunction {
                     `    ${storeCpp(
                         `navMeshCreateParams.${field}`,
                         lowerer.expression(value),
-                        booleanValue(value, bindings) ? "bool" : "scalar",
+                        booleanValue(value, lowerer) ? "bool" : "scalar",
                     )}`,
                 );
                 continue;
@@ -1743,7 +1750,6 @@ function tileCacheParamsFunction(generator: GeneratorConfig): PlanFunction {
                 "DetourTileCacheParams",
                 "tileCacheParams",
                 lowerer,
-                bindings,
                 "    ",
             ),
             "    return tileCacheParams;",
@@ -1839,7 +1845,10 @@ function tileNavMeshParamsFunction(generator: GeneratorConfig): PlanFunction {
         calls,
         statement: (statement, active, indent) => {
             if (statement === slice[0]) {
-                bindings.set("orig", { cpp: "orig", type: "vec3" });
+                active.bindPorts(
+                    [["orig", { cpp: "orig", type: "vec3" }]],
+                    statement,
+                );
                 return [
                     `${indent}const bbl::Vec3d orig{bounds.min[0], bounds.min[1], bounds.min[2]};`,
                 ];
@@ -1859,7 +1868,6 @@ function tileNavMeshParamsFunction(generator: GeneratorConfig): PlanFunction {
                         "NavMeshParams",
                         "navMeshParams",
                         active,
-                        bindings,
                         indent,
                     ),
                 ];
@@ -1995,7 +2003,7 @@ function tileConfigFunction(generator: GeneratorConfig): PlanFunction {
                     "tileConfig",
                     "tileConfig",
                 )) {
-                    bindings.set(text, binding);
+                    active.bindPorts([[text, binding]], statement);
                 }
                 return [
                     `${indent}bbl::pal::NavRcConfig tileConfig = clone_rc_config(${config});`,

@@ -227,6 +227,10 @@ export function lowerGpuTaskTiming(context: LoweringContext): LoweredSource {
                             return fail(local);
                         const value = lowerer.expression(local.initializer);
                         bind(local.name.text);
+                        lowerer.bindLocal(
+                            local.name,
+                            bindings.get(local.name.text)!,
+                        );
                         return `${indent}const auto ${local.name.text} = ${value};`;
                     });
                 return undefined;

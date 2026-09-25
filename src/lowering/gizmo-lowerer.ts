@@ -2316,7 +2316,15 @@ ${body}
             );
         const colliderLowerer = this.widgetLowerer(
             AXIS_DRAG_MODULE,
-            new Map([["thickness", arrow.expression(colliderThickness)]]),
+            new Map([
+                [
+                    "thickness",
+                    this.widgetLowerer(
+                        AXIS_DRAG_MODULE,
+                        new Map([["thickness", "thickness"]]),
+                    ).expression(colliderThickness),
+                ],
+            ]),
         );
         const colliderCone = this.widgetMesh(
             AXIS_DRAG_MODULE,
@@ -4720,6 +4728,20 @@ void attach_bounding_box_gizmo_to_node(
             ["canvas.width", { cpp: "canvas_width", type: "scalar" }],
             ["canvas.height", { cpp: "canvas_height", type: "scalar" }],
         ]);
+        cameraMath.bindPorts(
+            [
+                ["rotX", { cpp: "rot_x", type: "f64-buffer" }],
+                ["rotZ", { cpp: "rot_z", type: "f64-buffer" }],
+            ],
+            cameraDeclaration.body!.statements[0]!,
+        );
+        cameraMath.bindPorts(
+            [
+                ["canvas.width", { cpp: "canvas_width", type: "scalar" }],
+                ["canvas.height", { cpp: "canvas_height", type: "scalar" }],
+            ],
+            this.context.variableInitializer(cameraFactory, "aspect"),
+        );
         return `CameraGizmoHandle create_camera_gizmo(
     Engine& engine,
     UtilityLayerHandle layer) {
@@ -4951,6 +4973,21 @@ void attach_camera_gizmo_to_camera(
             ["y", { cpp: "entry[1]", type: "scalar" }],
             ["sy", { cpp: "entry[1]", type: "scalar" }],
         ]);
+        const rotations = new Map([
+            ["mq", "mq"],
+            ["sq", "sphere_rotation"],
+            ["hq", "hemi_rotation"],
+        ]);
+        for (const variable of this.context.findNodes(
+            lightDeclaration,
+            ts.isVariableDeclaration,
+        )) {
+            const cpp = ts.isIdentifier(variable.name)
+                ? rotations.get(variable.name.text)
+                : undefined;
+            if (cpp && ts.isIdentifier(variable.name))
+                lightMath.bindLocal(variable.name, { cpp, type: "f64-buffer" });
+        }
         const directionalArm = this.lightGeometryArm(
             lightDeclaration,
             "directional",
@@ -4963,6 +5000,18 @@ void attach_camera_gizmo_to_camera(
         const spotArm = this.lightGeometryArm(lightDeclaration, "spot");
         const shaftBuilder = this.arrowLocal(directionalArm, "makeShaft");
         const headBuilder = this.arrowLocal(directionalArm, "makeHead");
+        for (const helper of [shaftBuilder, headBuilder])
+            for (const [index, parameter] of helper.parameters.entries()) {
+                if (!ts.isIdentifier(parameter.name))
+                    this.context.contractError(
+                        parameter,
+                        "Expected a named placement parameter.",
+                    );
+                lightMath.bindLocal(parameter.name, {
+                    cpp: `entry[${index}]`,
+                    type: "scalar",
+                });
+            }
         const argumentRows = (
             scope: ts.Node,
             callee: string,

@@ -1667,7 +1667,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
         let bareReturn = false;
         const shapeOf = (expression: ts.Expression): PinnedBinding["type"] => {
             const node = this.context.unwrapExpression(expression);
-            const named = scope.bindings.get(node.getText(file));
+            const named = lowerer.binding(node);
             if (named && named.type !== "opaque") return named.type;
             return (
                 (ts.isCallExpression(node)

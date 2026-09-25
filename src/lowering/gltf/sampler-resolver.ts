@@ -288,11 +288,19 @@ function lowerSamplerFor(context: LoweringContext): string {
                     )
                 )
                     descriptors.add(name);
-                bindings.set(name, {
-                    cpp: name,
-                    type: "opaque",
-                    absentCpp: `!${name}`,
-                });
+                lowerer.bindPorts(
+                    [
+                        [
+                            name,
+                            {
+                                cpp: name,
+                                type: "opaque",
+                                absentCpp: `!${name}`,
+                            },
+                        ],
+                    ],
+                    statement,
+                );
                 return `${indent}const auto ${name} = ${rendered};`;
             });
         },

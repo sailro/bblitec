@@ -98,6 +98,10 @@ export function lowerGltfGaussianSplatSetup(context: LoweringContext): string {
                     callback,
                     "Expected the Gaussian-splat rotation continuation.",
                 );
+            lowerer.bindPorts(
+                [["mesh", { cpp: "mesh", type: "opaque" }]],
+                callback.body,
+            );
             return [
                 `${indent}container.gaussian_splats.push_back([&] {`,
                 `${indent}    const auto mesh = attach(scene, item);`,

@@ -125,8 +125,8 @@ export function lowerBabylonSceneData(
                         .join(", ")}}`;
                 }
                 if (ts.isConditionalExpression(node)) {
-                    const condition = bindings.get(
-                        context.unwrapExpression(node.condition).getText(file),
+                    const condition = lowerer.binding(
+                        context.unwrapExpression(node.condition),
                     );
                     if (condition?.absentCpp)
                         return `(!(${condition.absentCpp}) ? ${lowerer.expression(node.whenTrue)} : ${lowerer.expression(node.whenFalse)})`;
@@ -139,15 +139,15 @@ export function lowerBabylonSceneData(
                         )
                     )
                         return `&document.at("cameras").at(static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)}))`;
-                    const binding = bindings.get(
-                        context.unwrapExpression(node.expression).getText(file),
+                    const binding = lowerer.binding(
+                        context.unwrapExpression(node.expression),
                     );
                     if (binding)
                         return `${binding.cpp}.at(static_cast<std::size_t>(${lowerer.expression(node.argumentExpression)})).get<double>()`;
                 }
                 if (ts.isBinaryExpression(node)) {
                     const left = context.unwrapExpression(node.left),
-                        binding = bindings.get(left.getText(file));
+                        binding = lowerer.binding(left);
                     if (
                         ts.isPropertyAccessExpression(left) &&
                         ts.isIdentifier(left.expression) &&
@@ -203,10 +203,18 @@ export function lowerBabylonSceneData(
                                 node,
                                 "Expected a camera selection predicate.",
                             );
-                        bindings.set(`${parameter.text}.id`, {
-                            cpp: `string_or(${parameter.text}, "id")`,
-                            type: "opaque",
-                        });
+                        lowerer.bindPorts(
+                            [
+                                [
+                                    `${parameter.text}.id`,
+                                    {
+                                        cpp: `string_or(${parameter.text}, "id")`,
+                                        type: "opaque",
+                                    },
+                                ],
+                            ],
+                            parameter,
+                        );
                         const condition = lowerer.expression(callback.body);
                         return `([&]() -> const Json* { for (const auto& ${parameter.text} : document.at("cameras")) if (${condition}) return &${parameter.text}; return nullptr; }())`;
                     }
@@ -288,14 +296,30 @@ export function lowerBabylonSceneData(
                                         element,
                                         "Unrepresented light mesh-ID binding.",
                                     );
-                                bindings.set(element.name.text, {
-                                    cpp: `babylon_json_field(ld, ${JSON.stringify(key)})`,
-                                    type: "opaque",
-                                });
-                                bindings.set(`${element.name.text}?.length`, {
-                                    cpp: `babylon_json_length(ld, ${JSON.stringify(key)})`,
-                                    type: "scalar",
-                                });
+                                lowerer.bindPorts(
+                                    [
+                                        [
+                                            element.name.text,
+                                            {
+                                                cpp: `babylon_json_field(ld, ${JSON.stringify(key)})`,
+                                                type: "opaque",
+                                            },
+                                        ],
+                                    ],
+                                    statement,
+                                );
+                                lowerer.bindPorts(
+                                    [
+                                        [
+                                            `${element.name.text}?.length`,
+                                            {
+                                                cpp: `babylon_json_length(ld, ${JSON.stringify(key)})`,
+                                                type: "scalar",
+                                            },
+                                        ],
+                                    ],
+                                    statement,
+                                );
                                 return "";
                             })
                             .filter(Boolean);
@@ -303,7 +327,10 @@ export function lowerBabylonSceneData(
                     if (!ts.isIdentifier(variable.name)) return undefined;
                     const name = variable.name.text;
                     if (name === "clearColor" && !variable.initializer) {
-                        bindings.set(name, { cpp: name, type: "opaque" });
+                        lowerer.bindPorts(
+                            [[name, { cpp: name, type: "opaque" }]],
+                            statement,
+                        );
                         return [`${indent}std::optional<Color4> clearColor;`];
                     }
                     if (

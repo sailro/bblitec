@@ -466,6 +466,10 @@ function lowerTopoOrder(context: LoweringContext): string {
                     "idx",
                     "Weighted topological visit parameter",
                 );
+                lowerer.bindPorts(
+                    [["idx", { cpp: "idx", type: "scalar" }]],
+                    statement.body,
+                );
                 return [
                     `${indent}std::function<void(double)> visit = [&](double idx) {`,
                     ...lowerer.statements(

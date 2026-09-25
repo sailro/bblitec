@@ -329,11 +329,19 @@ export function computeTaskDispatchRecordingCpp(
                         "null",
                         "Empty compute recording cache",
                     );
-                    bindings.set(name, {
-                        cpp: name,
-                        type: "opaque",
-                        absentCpp: `!${name}`,
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                name,
+                                {
+                                    cpp: name,
+                                    type: "opaque",
+                                    absentCpp: `!${name}`,
+                                },
+                            ],
+                        ],
+                        node,
+                    );
                     return [`${indent}${pointerTypes[name]} ${name}{};`];
                 }
                 if (
@@ -346,13 +354,21 @@ export function computeTaskDispatchRecordingCpp(
                     ].includes(name)
                 ) {
                     const expression = lowerer.expression(entry.initializer);
-                    bindings.set(name, {
-                        cpp: name,
-                        type: "opaque",
-                        ...(name === "offsets"
-                            ? { absentCpp: "!offsets.has_value()" }
-                            : {}),
-                    });
+                    lowerer.bindPorts(
+                        [
+                            [
+                                name,
+                                {
+                                    cpp: name,
+                                    type: "opaque",
+                                    ...(name === "offsets"
+                                        ? { absentCpp: "!offsets.has_value()" }
+                                        : {}),
+                                },
+                            ],
+                        ],
+                        node,
+                    );
                     const reference = name === "groups" || name === "bindGroup";
                     return [
                         `${indent}const auto${reference ? "&" : ""} ${name} = ${expression};`,
