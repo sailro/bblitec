@@ -151,7 +151,7 @@ struct ReceiptPresenter final : WindowPresenter {
         return true;
     }
 };
-std::shared_ptr<WindowPresenter> create_window_sdl_presenter(SDL_Window*) {
+std::shared_ptr<WindowPresenter> create_window_sdl_gpu_presenter(SDL_Window*) {
     return std::make_shared<ReceiptPresenter>();
 }
 } // namespace bbl::pal

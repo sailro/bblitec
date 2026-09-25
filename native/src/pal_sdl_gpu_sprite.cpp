@@ -145,7 +145,7 @@ public:
 #endif
 #if BBLITE_HAS_UI
         if (device) {
-            release_sprite_ui_sdl_resources(device, ui_resources);
+            release_sprite_ui_sdl_gpu_resources(device, ui_resources);
             readable_surface.release(device);
         }
         destroy_ui_rml_runtime(ui_runtime);
@@ -282,8 +282,8 @@ public:
         // Text contexts update right after layout and before the sprite
         // contexts, the one slot both hosts give them.
         text_renderer->device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-        update_sdl_text_renderers(engine, *text_renderer, static_cast<double>(surface_width),
-                                  static_cast<double>(surface_height));
+        update_sdl_gpu_text_renderers(engine, *text_renderer, static_cast<double>(surface_width),
+                                      static_cast<double>(surface_height));
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -325,7 +325,8 @@ public:
             pass.end();
         }
 #if BBLITE_HAS_TEXT_RENDERER
-        record_sdl_text_renderers(engine, *text_renderer, command, capture_run ? color : swapchain);
+        record_sdl_gpu_text_renderers(engine, *text_renderer, command,
+                                      capture_run ? color : swapchain);
 #endif
 #if BBLITE_HAS_SPRITE_RENDERER
         for (std::size_t first_index = 0; first_index < passes.size();) {
@@ -357,8 +358,8 @@ public:
 #if BBLITE_HAS_UI
         const bool ui_in_capture = capture_frame && capture_ui;
         if (ui_in_capture) {
-            render_sprite_ui_sdl_frame(device, command, color, swapchain_format, ui_resources,
-                                       ui_frame);
+            render_sprite_ui_sdl_gpu_frame(device, command, color, swapchain_format, ui_resources,
+                                           ui_frame);
         }
 #endif
 
@@ -380,8 +381,8 @@ public:
         }
 #if BBLITE_HAS_UI
         if (!ui_in_capture) {
-            render_sprite_ui_sdl_frame(device, command, swapchain, swapchain_format, ui_resources,
-                                       ui_frame);
+            render_sprite_ui_sdl_gpu_frame(device, command, swapchain, swapchain_format,
+                                           ui_resources, ui_frame);
         }
         UiSdlReadableSurface::present(command, swapchain, present_swapchain, width, height);
 #endif

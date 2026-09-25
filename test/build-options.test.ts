@@ -139,7 +139,7 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
     // directly.
     assert.match(
         sdl,
-        /render_sprite_ui_sdl_frame\([\s\S]{0,200}state\.sample_count\)/,
+        /render_sprite_ui_sdl_gpu_frame\([\s\S]{0,200}state\.sample_count\)/,
     );
     assert.match(
         dawn,
@@ -147,7 +147,7 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
     );
     assert.match(spriteSdlUi, /layer\.multisample/);
     assert.match(spriteDawnUi, /multisample_view/);
-    assert.match(spriteSdl, /render_sprite_ui_sdl_frame/);
+    assert.match(spriteSdl, /render_sprite_ui_sdl_gpu_frame/);
     assert.match(spriteDawn, /render_sprite_ui_dawn_frame/);
     assert.match(spriteSdl, /handle_ui_rml_event/);
     assert.match(spriteDawn, /handle_ui_rml_event/);

@@ -43,7 +43,7 @@ public:
           waiter_([this, complete = std::move(complete)] {
               std::exception_ptr error;
               try {
-                  if (!wait_sdl_fence(device_, fence_.get()))
+                  if (!wait_sdl_gpu_fence(device_, fence_.get()))
                       gpu_error("SDL_WaitForGPUFences submitted work");
               } catch (...) {
                   error = std::current_exception();
@@ -87,7 +87,7 @@ struct SdlOffscreenDevice final : OffscreenDevice {
 #endif
 #if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS || BBLITE_GPU_TASK_TIMING
     void submit_compute_commands(std::span<const ComputeCommand> commands) override {
-        submit_sdl_compute_commands(device, commands);
+        submit_sdl_gpu_compute_commands(device, commands);
     }
 #endif
 #if BBLITE_COMPUTE_MIPMAPS
@@ -101,8 +101,8 @@ struct SdlOffscreenDevice final : OffscreenDevice {
                                  const ComputeTextureDescriptor& descriptor,
                                  std::uint32_t source_mip, std::uint32_t target_mip,
                                  std::uint32_t base_array_layer) override {
-        return create_sdl_compute_mipmap_level(device, pipeline, allocation, descriptor, source_mip,
-                                               target_mip, base_array_layer);
+        return create_sdl_gpu_compute_mipmap_level(device, pipeline, allocation, descriptor,
+                                                   source_mip, target_mip, base_array_layer);
     }
 #endif
     explicit SdlOffscreenDevice(SDL_GPUDevice* value) : device(value) {}
@@ -128,14 +128,14 @@ struct SdlOffscreenDevice final : OffscreenDevice {
     }
     std::shared_ptr<ComputePipeline>
     create_compute_pipeline(const ComputePipelineDescriptor& descriptor) override {
-        return create_sdl_compute_pipeline(device, descriptor);
+        return create_sdl_gpu_compute_pipeline(device, descriptor);
     }
     std::shared_ptr<ComputeBindGroup>
     create_compute_bind_group(const ComputeBindGroupDescriptor& descriptor) override {
-        return create_sdl_compute_bind_group(descriptor);
+        return create_sdl_gpu_compute_bind_group(descriptor);
     }
     void dispatch_compute(const ComputeDispatch& dispatch) override {
-        dispatch_sdl_compute(device, dispatch);
+        dispatch_sdl_gpu_compute(device, dispatch);
     }
 #endif
     ComputeShaderLimits compute_shader_limits() const override {
@@ -154,7 +154,7 @@ struct SdlOffscreenDevice final : OffscreenDevice {
     std::shared_ptr<StorageBufferAllocation>
     create_storage_buffer(const StorageBufferDescriptor& options,
                           std::optional<std::span<const std::uint8_t>> initial) override {
-        return create_sdl_storage_buffer(device, options, initial);
+        return create_sdl_gpu_storage_buffer(device, options, initial);
     }
 #endif
 #if BBLITE_COMPUTE_TEXTURES
@@ -165,7 +165,7 @@ struct SdlOffscreenDevice final : OffscreenDevice {
     }
     void create_compute_texture(const ComputeTextureDescriptor& options,
                                 ComputeTextureCreated complete) override {
-        create_sdl_compute_texture(device, options, std::move(complete));
+        create_sdl_gpu_compute_texture(device, options, std::move(complete));
     }
 #endif
     std::unique_ptr<OffscreenCompletion>

@@ -58,7 +58,7 @@ const Native& sdl_compute_resource(const std::shared_ptr<Base>& value) {
     return *native;
 }
 inline std::shared_ptr<ComputePipeline>
-create_sdl_compute_pipeline(SDL_GPUDevice* device, const ComputePipelineDescriptor& source) {
+create_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const ComputePipelineDescriptor& source) {
     const auto& module = sdl_compute_resource<SdlComputeShaderModule>(source.compute.module);
     const std::string override = environment_variable("BBLITE_GPU_SHADER_DIR");
     const std::string root =
@@ -136,7 +136,7 @@ create_sdl_compute_pipeline(SDL_GPUDevice* device, const ComputePipelineDescript
     return result;
 }
 inline std::shared_ptr<ComputeBindGroup>
-create_sdl_compute_bind_group(const ComputeBindGroupDescriptor& source) {
+create_sdl_gpu_compute_bind_group(const ComputeBindGroupDescriptor& source) {
     const auto& layout = sdl_compute_resource<SdlComputeGroupLayout>(source.layout);
     for (const auto& entry : source.entries) {
         const auto found =
@@ -180,8 +180,8 @@ struct SdlComputeBindingScratch {
     std::vector<SDL_GPUStorageTextureReadWriteBinding> writable_textures;
     std::vector<SDL_GPUStorageBufferReadWriteBinding> writable_buffers;
 };
-inline void encode_sdl_compute(SDL_GPUCommandBuffer* command, const ComputeDispatch& source,
-                               SdlComputeBindingScratch& scratch) {
+inline void encode_sdl_gpu_compute(SDL_GPUCommandBuffer* command, const ComputeDispatch& source,
+                                   SdlComputeBindingScratch& scratch) {
     const auto& pipeline = sdl_compute_resource<SdlComputePipeline>(source.pipeline);
     const auto resource = [&](std::uint32_t group,
                               std::uint32_t binding) -> ComputeBindingResource {
@@ -277,12 +277,12 @@ inline void encode_sdl_compute(SDL_GPUCommandBuffer* command, const ComputeDispa
                                source.workgroups[2]);
     pass.end();
 }
-inline void dispatch_sdl_compute(SDL_GPUDevice* device, const ComputeDispatch& source) {
+inline void dispatch_sdl_gpu_compute(SDL_GPUDevice* device, const ComputeDispatch& source) {
     SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
     if (!command)
         gpu_error("SDL_AcquireGPUCommandBuffer compute");
     SdlComputeBindingScratch scratch;
-    encode_sdl_compute(command, source, scratch);
+    encode_sdl_gpu_compute(command, source, scratch);
     if (!command.submit())
         gpu_error("SDL_SubmitGPUCommandBuffer compute");
 }

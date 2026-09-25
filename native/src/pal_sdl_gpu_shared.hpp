@@ -101,7 +101,7 @@ inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
     if (!fence) {
         gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence");
     }
-    if (!wait_sdl_fence(device, fence.get())) {
+    if (!wait_sdl_gpu_fence(device, fence.get())) {
         gpu_error("SDL_WaitForGPUFences");
     }
 

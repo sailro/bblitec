@@ -47,10 +47,10 @@ using SdlTextSamplerLease = SdlTextLease<SDL_GPUSampler, SDL_ReleaseGPUSampler>;
 using SdlTextPipelineLease = SdlTextLease<SDL_GPUGraphicsPipeline, SDL_ReleaseGPUGraphicsPipeline>;
 
 template <class Lease, class Resource>
-std::shared_ptr<Lease> retain_sdl_text_resource(const std::shared_ptr<SdlTextDevice>& owner,
-                                                Resource* handle, std::string_view role = {},
-                                                std::size_t bytes = 0, std::size_t width = 0,
-                                                std::size_t rows = 0) {
+std::shared_ptr<Lease> retain_sdl_gpu_text_resource(const std::shared_ptr<SdlTextDevice>& owner,
+                                                    Resource* handle, std::string_view role = {},
+                                                    std::size_t bytes = 0, std::size_t width = 0,
+                                                    std::size_t rows = 0) {
     if (!handle)
         gpu_error("Text GPU resource creation failed");
     auto lease = std::make_shared<Lease>();
@@ -316,7 +316,7 @@ struct SdlTextGpuResources : TextGpuDevice {
             info.usage |= SDL_GPU_BUFFERUSAGE_VERTEX;
         if (text_usage_has(descriptor.usage, text_buffer_usage_storage))
             info.usage |= SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
-        buffer->lease = retain_sdl_text_resource<SdlTextBufferLease>(
+        buffer->lease = retain_sdl_gpu_text_resource<SdlTextBufferLease>(
             owner, SDL_CreateGPUBuffer(owner->device, &info), text_resource_role(descriptor.label),
             bytes);
         return buffer;
@@ -330,7 +330,7 @@ struct SdlTextGpuResources : TextGpuDevice {
         const auto width = text_gpu_size(descriptor.size.width),
                    rows = text_gpu_size(descriptor.size.height);
         auto texture = std::make_shared<SdlTextGpuTexture>();
-        texture->lease = retain_sdl_text_resource<SdlTextTextureLease>(
+        texture->lease = retain_sdl_gpu_text_resource<SdlTextTextureLease>(
             owner,
             create_frame_texture(owner->device, SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT,
                                  SDL_GPU_SAMPLECOUNT_1, text_gpu_u32(width), text_gpu_u32(rows),

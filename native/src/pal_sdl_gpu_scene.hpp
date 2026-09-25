@@ -551,7 +551,7 @@ struct ShaderTaskPipeline {
         info.depth_stencil_state.enable_depth_write &= info.target_info.has_depth_stencil_target;
         info.multisample_state.sample_count = target.samples;
         info.multisample_state.enable_alpha_to_coverage = coverage;
-        OwnedSdlPipeline pipeline{create_sdl_graphics_pipeline(device, &info), {device}};
+        OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(device, &info), {device}};
         if (!pipeline)
             gpu_error("SDL_CreateGPUGraphicsPipeline shader render task");
         return pipelines.emplace(key, std::move(pipeline)).first->second.get();
@@ -1821,8 +1821,9 @@ struct PreparedSdlPostProcessPass {
     Uint32 texture_count = 0;
 };
 
-void write_sdl_post_process_uniforms(GpuState& state, Engine& engine, TaskHandle handle,
-                                     std::size_t index, std::uint32_t width, std::uint32_t height);
+void write_sdl_gpu_post_process_uniforms(GpuState& state, Engine& engine, TaskHandle handle,
+                                         std::size_t index, std::uint32_t width,
+                                         std::uint32_t height);
 
 /** Resource and CPU work completes here; encoding only consumes this packet. */
 template <typename SourceTexture, typename TargetTexture>
@@ -1883,7 +1884,7 @@ prepare_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle,
     }
     const GpuPostProcessProgram& program = state.post_process_programs[gpu.program];
     if (write_uniforms)
-        write_sdl_post_process_uniforms(state, engine, handle, index, width, height);
+        write_sdl_gpu_post_process_uniforms(state, engine, handle, index, width, height);
     prepared.vertex_uniforms = !program.vertex_slots.uniforms.empty();
     prepared.fragment_uniforms = !program.fragment_slots.uniforms.empty();
     prepared.pipeline = program.pipeline.get();
@@ -2068,25 +2069,27 @@ void record_cloud_pick_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pa
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER
-GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::RenderItem& item,
-                              GpuBufferUploadBatch* buffer_uploads = nullptr);
+GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstream::RenderItem& item,
+                                  GpuBufferUploadBatch* buffer_uploads = nullptr);
 
 #if BBLITE_HAS_SPRITE_RENDERER
-void sync_sdl_scene_sprites(GpuState& state, Engine& engine, std::vector<SpritePass>& sprite_passes,
-                            std::vector<SDL_GPUTexture*>& sprite_render_textures,
-                            SDL_GPUTextureFormat swapchain_format);
+void sync_sdl_gpu_scene_sprites(GpuState& state, Engine& engine,
+                                std::vector<SpritePass>& sprite_passes,
+                                std::vector<SDL_GPUTexture*>& sprite_render_textures,
+                                SDL_GPUTextureFormat swapchain_format);
 #endif
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
-PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::RenderPlan& root_plan,
-                           const std::vector<upstream::RenderPlan>& overlay_plans,
-                           const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
-                           [[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                           const Engine::PickFilter* filter
+PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
+                               const upstream::RenderPlan& root_plan,
+                               const std::vector<upstream::RenderPlan>& overlay_plans,
+                               const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
+                               [[maybe_unused]] GpuPickerHandle picker, double x, double y,
+                               const Engine::PickFilter* filter
 #if BBLITE_HAS_BILLBOARDS
-                           ,
-                           BillboardPickContributor& billboard_pick
+                               ,
+                               BillboardPickContributor& billboard_pick
 #endif
 );
 #endif

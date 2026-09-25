@@ -470,7 +470,7 @@ void create_background_arms(GpuState& state, const Scene& scene,
             arm.depth_write && info.target_info.has_depth_stencil_target;
         info.target_info.color_target_descriptions = &target;
         info.target_info.num_color_targets = 1;
-        resources.pipeline = create_sdl_graphics_pipeline(state.device, &info);
+        resources.pipeline = create_sdl_gpu_graphics_pipeline(state.device, &info);
         if (!resources.pipeline) {
             gpu_error(("SDL_CreateGPUGraphicsPipeline background " + std::string(arm.fragment_stem))
                           .c_str());

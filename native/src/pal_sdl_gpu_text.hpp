@@ -58,7 +58,7 @@ struct SdlTextGpuDevice final : SdlTextGpuResources {
             layout->bindings.emplace_back(row.binding, text_binding_role(row.name));
         auto quad = std::make_shared<SdlTextGpuBuffer>();
         quad->size = sizeof(upstream::text_quad_corners);
-        quad->lease = retain_sdl_text_resource<SdlTextBufferLease>(
+        quad->lease = retain_sdl_gpu_text_resource<SdlTextBufferLease>(
             owner,
             upload_buffer(owner->device, SDL_GPU_BUFFERUSAGE_VERTEX,
                           upstream::text_quad_corners.data(), sizeof(upstream::text_quad_corners)),
@@ -74,7 +74,7 @@ struct SdlTextGpuDevice final : SdlTextGpuResources {
         descriptor.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
         descriptor.address_mode_u = descriptor.address_mode_v = descriptor.address_mode_w =
             SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        sampler = retain_sdl_text_resource<SdlTextSamplerLease>(
+        sampler = retain_sdl_gpu_text_resource<SdlTextSamplerLease>(
             owner, SDL_CreateGPUSampler(owner->device, &descriptor));
         cache = std::make_shared<TextPipelineDeviceCache>();
         cache->bind_group_layout = std::move(layout);
@@ -176,8 +176,8 @@ struct SdlTextGpuDevice final : SdlTextGpuResources {
         descriptor.target_info.num_color_targets = 1;
         descriptor.target_info.depth_stencil_format = depth;
         descriptor.target_info.has_depth_stencil_target = info.has_depth;
-        created->pipeline = retain_sdl_text_resource<SdlTextPipelineLease>(
-            owner, create_sdl_graphics_pipeline(owner->device, &descriptor), "pipeline");
+        created->pipeline = retain_sdl_gpu_text_resource<SdlTextPipelineLease>(
+            owner, create_sdl_gpu_graphics_pipeline(owner->device, &descriptor), "pipeline");
         if (owner->capture.enabled())
             created->capture =
                 text_pipeline_capture(info, sdl_text_format_name(color_format),

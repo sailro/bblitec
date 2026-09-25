@@ -69,7 +69,7 @@ void ensure_pick_pipelines(GpuState& state) {
     info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM;
     info.target_info.has_depth_stencil_target = true;
 
-    state.pick_mesh_pipeline = create_sdl_graphics_pipeline(state.device, &info);
+    state.pick_mesh_pipeline = create_sdl_gpu_graphics_pipeline(state.device, &info);
     vertex_shader.reset();
     fragment_shader.reset();
     if (!state.pick_mesh_pipeline) {
@@ -98,7 +98,7 @@ void ensure_pick_pipelines(GpuState& state) {
     SDL_GPUGraphicsPipelineCreateInfo thin_info = info;
     thin_info.vertex_shader = thin_vertex.get();
     thin_info.fragment_shader = thin_fragment.get();
-    state.pick_thin_pipeline = create_sdl_graphics_pipeline(state.device, &thin_info);
+    state.pick_thin_pipeline = create_sdl_gpu_graphics_pipeline(state.device, &thin_info);
     thin_vertex.reset();
     thin_fragment.reset();
     if (!state.pick_thin_pipeline) {
@@ -140,7 +140,7 @@ void ensure_pick_pipelines(GpuState& state) {
     detailed_info.target_info.color_target_descriptions = detailed_targets;
     detailed_info.target_info.num_color_targets = 3;
 
-    state.pick_detailed_pipeline = create_sdl_graphics_pipeline(state.device, &detailed_info);
+    state.pick_detailed_pipeline = create_sdl_gpu_graphics_pipeline(state.device, &detailed_info);
     detailed_vertex.reset();
     detailed_fragment.reset();
     if (!state.pick_detailed_pipeline) {
@@ -186,7 +186,7 @@ void ensure_pick_pipelines(GpuState& state) {
             deform_info.fragment_shader = deform_fragment.get();
             deform_info.vertex_input_state.vertex_attributes = deform_attributes.data();
             deform_info.vertex_input_state.num_vertex_attributes = variant.skeleton ? 3u : 1u;
-            program.pipeline = create_sdl_graphics_pipeline(state.device, &deform_info);
+            program.pipeline = create_sdl_gpu_graphics_pipeline(state.device, &deform_info);
             if (!program.pipeline)
                 gpu_error("SDL_CreateGPUGraphicsPipeline deformation pick");
         }
@@ -236,7 +236,7 @@ void ensure_pick_pipelines(GpuState& state) {
     cloud_info.vertex_input_state.num_vertex_attributes = 2;
     cloud_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
 
-    state.pick_cloud_pipeline = create_sdl_graphics_pipeline(state.device, &cloud_info);
+    state.pick_cloud_pipeline = create_sdl_gpu_graphics_pipeline(state.device, &cloud_info);
     if (!state.pick_cloud_pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline picking-splat");
     }
@@ -290,14 +290,15 @@ void record_cloud_pick_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pa
 #endif
 
 #if (BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING)
-PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::RenderPlan& root_plan,
-                           const std::vector<upstream::RenderPlan>& overlay_plans,
-                           const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
-                           [[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                           const Engine::PickFilter* filter
+PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
+                               const upstream::RenderPlan& root_plan,
+                               const std::vector<upstream::RenderPlan>& overlay_plans,
+                               const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
+                               [[maybe_unused]] GpuPickerHandle picker, double x, double y,
+                               const Engine::PickFilter* filter
 #if BBLITE_HAS_BILLBOARDS
-                           ,
-                           BillboardPickContributor& billboard_pick
+                               ,
+                               BillboardPickContributor& billboard_pick
 #endif
 ) {
     const auto layer = picker_scene_index(engine, picker, active_registered_scenes);

@@ -26,7 +26,7 @@ inline SdlShaderInputs& sdl_shader_inputs() {
     static SdlShaderInputs inputs;
     return inputs;
 }
-inline void release_sdl_shader(SDL_GPUDevice* device, SDL_GPUShader* shader) {
+inline void release_sdl_gpu_shader(SDL_GPUDevice* device, SDL_GPUShader* shader) {
     {
         auto& inputs = sdl_shader_inputs();
         const std::lock_guard lock(inputs.mutex);
@@ -35,11 +35,11 @@ inline void release_sdl_shader(SDL_GPUDevice* device, SDL_GPUShader* shader) {
     SDL_ReleaseGPUShader(device, shader);
 }
 using OwnedSdlShader =
-    std::unique_ptr<SDL_GPUShader, SdlGpuDeleter<SDL_GPUShader, release_sdl_shader>>;
+    std::unique_ptr<SDL_GPUShader, SdlGpuDeleter<SDL_GPUShader, release_sdl_gpu_shader>>;
 
 inline SDL_GPUGraphicsPipeline*
-create_sdl_graphics_pipeline(SDL_GPUDevice* device,
-                             const SDL_GPUGraphicsPipelineCreateInfo* source) {
+create_sdl_gpu_graphics_pipeline(SDL_GPUDevice* device,
+                                 const SDL_GPUGraphicsPipelineCreateInfo* source) {
     auto info = *source;
     std::vector<SDL_GPUVertexAttribute> attributes;
     {
@@ -77,7 +77,7 @@ using OwnedSdlTransfer =
 using OwnedSdlFence =
     std::unique_ptr<SDL_GPUFence, SdlGpuDeleter<SDL_GPUFence, SDL_ReleaseGPUFence>>;
 
-inline bool wait_sdl_fence(SDL_GPUDevice* device, SDL_GPUFence* fence) {
+inline bool wait_sdl_gpu_fence(SDL_GPUDevice* device, SDL_GPUFence* fence) {
     return SDL_WaitForGPUFences(device, true, &fence, 1);
 }
 

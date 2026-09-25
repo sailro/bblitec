@@ -105,19 +105,19 @@ struct UiFilterSdlResources {
         info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
         info.target_info.color_target_descriptions = &target;
         info.target_info.num_color_targets = 1;
-        pipeline = create_sdl_graphics_pipeline(device, &info);
+        pipeline = create_sdl_gpu_graphics_pipeline(device, &info);
         if (!pipeline)
             gpu_error("SDL_CreateGPUGraphicsPipeline UI filter");
     }
 };
 
-inline void render_ui_composite_sdl(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
-                                    SDL_GPUTexture* root, SDL_GPUTextureFormat format,
-                                    SDL_GPUBuffer* vertices, SDL_GPUBuffer* indices,
-                                    SDL_GPUSampler* sampler,
-                                    SDL_GPUGraphicsPipeline* composite_pipeline,
-                                    UiFilterSdlResources& resources, const UiRenderFrame& frame,
-                                    std::size_t index) {
+inline void render_ui_composite_sdl_gpu(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
+                                        SDL_GPUTexture* root, SDL_GPUTextureFormat format,
+                                        SDL_GPUBuffer* vertices, SDL_GPUBuffer* indices,
+                                        SDL_GPUSampler* sampler,
+                                        SDL_GPUGraphicsPipeline* composite_pipeline,
+                                        UiFilterSdlResources& resources, const UiRenderFrame& frame,
+                                        std::size_t index) {
     const auto& composite = frame.composites[index];
     if (!composite.index_count)
         return;

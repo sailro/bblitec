@@ -504,7 +504,8 @@ pinned_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPi
                                      entry.color_target_count, "pinned",
                                      transparent ? &color_target.blend_state : nullptr);
     }
-    OwnedSdlPipeline pipeline{create_sdl_graphics_pipeline(state.device, &info), {state.device}};
+    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, &info),
+                              {state.device}};
     if (!pipeline)
         gpu_error("SDL_CreateGPUGraphicsPipeline pinned variant");
     return state.pinned_pipelines.emplace(key, std::move(pipeline)).first->second.get();
@@ -1013,7 +1014,8 @@ node_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPipe
             upstream::node_geometry_variants[geometry_variant].color_target_count, "node", nullptr);
     }
 #endif
-    OwnedSdlPipeline pipeline{create_sdl_graphics_pipeline(state.device, &info), {state.device}};
+    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, &info),
+                              {state.device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline node variant");
     }
@@ -1526,7 +1528,8 @@ standard_variant_pipeline(GpuState& state, std::size_t variant, upstream::Render
                                      entry.color_target_count, "standard",
                                      transparent ? &color_target.blend_state : nullptr);
     }
-    OwnedSdlPipeline pipeline{create_sdl_graphics_pipeline(state.device, &info), {state.device}};
+    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, &info),
+                              {state.device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline standard variant");
     }
@@ -1674,9 +1677,9 @@ void draw_standard_variant(
         PreparedSdlDraw prepared;
         prepared.pipeline = variant_pipeline;
         prepared.vertex_uniforms =
-            prepare_sdl_uniforms(vertex_slots.uniforms, vertex_uniforms, deferred_scene);
+            prepare_sdl_gpu_uniforms(vertex_slots.uniforms, vertex_uniforms, deferred_scene);
         prepared.fragment_uniforms =
-            prepare_sdl_uniforms(fragment_slots.uniforms, fragment_uniforms, deferred_scene);
+            prepare_sdl_gpu_uniforms(fragment_slots.uniforms, fragment_uniforms, deferred_scene);
         prepared.vertex_textures = resolve_stage_textures(
             vertex_slots, "standard variant",
             [&](const std::string& name, std::size_t slot) { return textures(false, name, slot); });

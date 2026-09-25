@@ -254,8 +254,8 @@ PostProcessProgram build_post_process_program(State& state, std::uint32_t module
     info.multisample_state.sample_count = samples;
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
-    program.pipeline =
-        OwnedSdlPipeline{create_sdl_graphics_pipeline(state.gpu.device, &info), {state.gpu.device}};
+    program.pipeline = OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(state.gpu.device, &info),
+                                        {state.gpu.device}};
     if (!program.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline post-process");
     }

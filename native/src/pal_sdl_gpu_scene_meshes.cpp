@@ -404,8 +404,8 @@ void prune_shared_composed_material_textures(GpuState& state) {
 namespace bbl::pal {
 
 #if BBLITE_HAS_PBR_RENDERER
-GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::RenderItem& item,
-                              GpuBufferUploadBatch* buffer_uploads) {
+GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstream::RenderItem& item,
+                                  GpuBufferUploadBatch* buffer_uploads) {
     const ModelGeometry& geometry = engine.geometries[item.geometry];
     const MeshRecord& mesh_record = handle_at(engine.meshes, item.mesh);
     const bool use_source_indices = mesh_record.detached_imported_mesh
@@ -732,9 +732,10 @@ GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::R
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_SPRITE_RENDERER
-void sync_sdl_scene_sprites(GpuState& state, Engine& engine, std::vector<SpritePass>& sprite_passes,
-                            std::vector<SDL_GPUTexture*>& sprite_render_textures,
-                            SDL_GPUTextureFormat swapchain_format) {
+void sync_sdl_gpu_scene_sprites(GpuState& state, Engine& engine,
+                                std::vector<SpritePass>& sprite_passes,
+                                std::vector<SDL_GPUTexture*>& sprite_render_textures,
+                                SDL_GPUTextureFormat swapchain_format) {
     sprite_render_textures.resize(engine.sprite_render_textures.size(), nullptr);
     sync_retained_textures(
         engine.sprite_render_textures,

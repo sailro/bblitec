@@ -232,7 +232,7 @@ create_sprite_layer_pipeline(SDL_GPUDevice* device, const SpriteBlendDescriptor&
         pipeline_info.target_info.depth_stencil_format = depth_format;
         pipeline_info.target_info.has_depth_stencil_target = true;
     }
-    OwnedSdlPipeline pipeline{create_sdl_graphics_pipeline(device, &pipeline_info), {device}};
+    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(device, &pipeline_info), {device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline sprite");
     }

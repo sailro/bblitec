@@ -68,7 +68,7 @@ test("SDL D3D12 timestamps retain readbacks and command reuse with validation en
         namespace bbl::pal {
         [[noreturn]] void gpu_error(const char* message) { throw std::runtime_error(std::string(message)+": "+SDL_GetError()); }
         ${cppRecord(resources, "template <typename Resource, auto Release> struct SdlGpuDeleter")}
-        ${cppSection(resources, "using OwnedSdlBuffer =", "inline bool wait_sdl_fence")}
+        ${cppSection(resources, "using OwnedSdlBuffer =", "inline bool wait_sdl_gpu_fence")}
         }
         ${cppSection(timestamps, "namespace bbl::pal {", "} // namespace bbl::pal")}
         }
@@ -77,7 +77,7 @@ test("SDL D3D12 timestamps retain readbacks and command reuse with validation en
             try {
                 ${conversionChecks}
                 std::vector<std::uint64_t> backward{100,90,120,140};
-                normalize_sdl_timestamps(backward,1000000);
+                normalize_sdl_gpu_timestamps(backward,1000000);
                 assert((backward==std::vector<std::uint64_t>{10000,0,30000,50000}));
                 bool rejected=false;
                 try { (void)sdl_timestamp_nanoseconds(1,0); } catch(const std::runtime_error&) { rejected=true; }

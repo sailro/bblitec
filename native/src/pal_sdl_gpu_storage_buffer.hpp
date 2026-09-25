@@ -36,8 +36,8 @@ struct SdlStorageBuffer final : StorageBufferAllocation {
 };
 
 inline std::shared_ptr<StorageBufferAllocation>
-create_sdl_storage_buffer(SDL_GPUDevice* device, const StorageBufferDescriptor& options,
-                          std::optional<std::span<const std::uint8_t>> initial) {
+create_sdl_gpu_storage_buffer(SDL_GPUDevice* device, const StorageBufferDescriptor& options,
+                              std::optional<std::span<const std::uint8_t>> initial) {
     if (options.byte_length > std::numeric_limits<Uint32>::max())
         throw std::runtime_error("Storage buffer exceeds SDL's API size range.");
     const auto role = [&](StorageBufferRole value) {

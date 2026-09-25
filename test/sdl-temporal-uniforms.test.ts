@@ -32,9 +32,9 @@ int main() {
         ++resolved;
         return name == "scene" ? Block{owner->clean.data(), 92 * sizeof(float)} : Block{ordinary.data(), sizeof(ordinary)};
     };
-    auto first = bbl::pal::prepare_sdl_uniforms({"scene", "mesh"}, resolve, owner);
+    auto first = bbl::pal::prepare_sdl_gpu_uniforms({"scene", "mesh"}, resolve, owner);
     owner->drawn[0] = 102; ordinary[0] = 9;
-    auto second = bbl::pal::prepare_sdl_uniforms({"scene", "mesh"}, resolve, owner);
+    auto second = bbl::pal::prepare_sdl_gpu_uniforms({"scene", "mesh"}, resolve, owner);
     // All encoded occurrences in one submit observe the final queue write.
     owner->drawn[0] = 204; ordinary[0] = 17;
     assert(resolved == 4 && owner->clean[0] == 51);
@@ -50,14 +50,14 @@ int main() {
     assert(static_cast<const float*>(first[0].data())[0] == 204);
     bool failed = false;
     try {
-        (void)bbl::pal::prepare_sdl_uniforms({"scene"}, [](const std::string&, std::size_t) {
+        (void)bbl::pal::prepare_sdl_gpu_uniforms({"scene"}, [](const std::string&, std::size_t) {
             return Block{nullptr, 0};
         }, first[0].source);
     } catch (const std::runtime_error&) { failed = true; }
     assert(failed);
     failed = false;
     try {
-        (void)bbl::pal::prepare_sdl_uniforms({"scene"}, [&](const std::string&, std::size_t) {
+        (void)bbl::pal::prepare_sdl_gpu_uniforms({"scene"}, [&](const std::string&, std::size_t) {
             return Block{ordinary.data(), sizeof(ordinary)};
         }, first[0].source);
     } catch (const std::runtime_error&) { failed = true; }

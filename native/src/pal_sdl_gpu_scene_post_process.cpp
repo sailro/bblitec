@@ -46,7 +46,7 @@ GpuPostProcessProgram build_post_process_program(GpuState& state, std::uint32_t 
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
     program.pipeline =
-        OwnedSdlPipeline{create_sdl_graphics_pipeline(state.device, &info), {state.device}};
+        OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(state.device, &info), {state.device}};
     if (!program.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline post-process");
     }
@@ -67,8 +67,9 @@ std::size_t post_process_program(GpuState& state, std::uint32_t module_index,
         });
 }
 
-void write_sdl_post_process_uniforms(GpuState& state, Engine& engine, TaskHandle handle,
-                                     std::size_t index, std::uint32_t width, std::uint32_t height) {
+void write_sdl_gpu_post_process_uniforms(GpuState& state, Engine& engine, TaskHandle handle,
+                                         std::size_t index, std::uint32_t width,
+                                         std::uint32_t height) {
     PostProcessPassOptions& pass = handle_at(engine.frame_tasks, handle).post_process.passes[index];
     auto& uniforms = handle_at(state.post_process_tasks, handle)[index].uniform_data;
     if (uniforms.empty())
@@ -149,8 +150,8 @@ GpuScreenSpaceProgram build_screen_space_program(GpuState& state, std::uint32_t 
     pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
     pipeline_info.target_info.color_target_descriptions = &target;
     pipeline_info.target_info.num_color_targets = 1;
-    program.pipeline = OwnedSdlPipeline{create_sdl_graphics_pipeline(state.device, &pipeline_info),
-                                        {state.device}};
+    program.pipeline = OwnedSdlPipeline{
+        create_sdl_gpu_graphics_pipeline(state.device, &pipeline_info), {state.device}};
     if (!program.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline screen-space");
     }

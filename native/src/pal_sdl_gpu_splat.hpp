@@ -190,7 +190,7 @@ create_splat_pass(SDL_GPUDevice* device,
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = depth_format;
     info.target_info.has_depth_stencil_target = true;
-    pass.pipeline = OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &info), {device}};
+    pass.pipeline = OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, &info), {device}};
     if (!pass.pipeline)
         gpu_error("SDL_CreateGPUGraphicsPipeline splat");
     vertex_shader.reset();

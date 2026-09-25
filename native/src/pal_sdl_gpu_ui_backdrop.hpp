@@ -76,13 +76,13 @@ struct UiBackdropSdlResources {
     }
 };
 
-inline void render_ui_backdrop_sdl(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
-                                   SDL_GPUTexture* target, SDL_GPUTextureFormat target_format,
-                                   SDL_GPUBuffer* vertices, SDL_GPUBuffer* indices,
-                                   SDL_GPUSampler* sampler,
-                                   SDL_GPUGraphicsPipeline* composite_pipeline,
-                                   UiBackdropSdlResources& resources, const UiRenderFrame& frame,
-                                   std::size_t backdrop_index) {
+inline void render_ui_backdrop_sdl_gpu(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
+                                       SDL_GPUTexture* target, SDL_GPUTextureFormat target_format,
+                                       SDL_GPUBuffer* vertices, SDL_GPUBuffer* indices,
+                                       SDL_GPUSampler* sampler,
+                                       SDL_GPUGraphicsPipeline* composite_pipeline,
+                                       UiBackdropSdlResources& resources,
+                                       const UiRenderFrame& frame, std::size_t backdrop_index) {
     const auto& backdrop = frame.backdrops[backdrop_index];
     if (resources.pairs.size() <= backdrop_index)
         resources.pairs.resize(backdrop_index + 1);

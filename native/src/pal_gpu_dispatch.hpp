@@ -72,7 +72,7 @@ inline constexpr GpuBackend sdl_gpu_backend{
     BBLITE_GPU_2D_ENTRY(run_sprite_gpu_engine),
     BBLITE_GPU_EFFECT_ENTRY(run_effect_gpu_engine),
     BBLITE_GPU_FRAME_GRAPH_ENTRY(run_frame_graph_gpu_engine),
-    BBLITE_GPU_WINDOW_ENTRY(create_window_sdl_presenter),
+    BBLITE_GPU_WINDOW_ENTRY(create_window_sdl_gpu_presenter),
     0,
 };
 #endif

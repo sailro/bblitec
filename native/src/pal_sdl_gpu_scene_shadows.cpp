@@ -53,7 +53,7 @@ GpuState::EsmBlur& ensure_esm_blur(GpuState& state, const ShadowGeneratorRecord&
     info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
     info.target_info.color_target_descriptions = &color_target;
     info.target_info.num_color_targets = 1;
-    blur.pipeline = create_sdl_graphics_pipeline(state.device, &info);
+    blur.pipeline = create_sdl_gpu_graphics_pipeline(state.device, &info);
     if (!blur.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline ESM blur");
     }

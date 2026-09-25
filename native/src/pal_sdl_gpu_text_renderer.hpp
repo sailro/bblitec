@@ -6,8 +6,8 @@ namespace bbl::pal {
 
 /** Point the engine surface at this frame's SDL device, size and format, then
  *  run every registered text renderer's `_update`, the pin's closure. */
-inline void update_sdl_text_renderers(Engine& engine, SdlTextRenderer& text, double width,
-                                      double height) {
+inline void update_sdl_gpu_text_renderers(Engine& engine, SdlTextRenderer& text, double width,
+                                          double height) {
     const auto& surface = bbl::text_surface(engine);
     surface->device = text.device;
     surface->canvas = {width, height};
@@ -18,8 +18,8 @@ inline void update_sdl_text_renderers(Engine& engine, SdlTextRenderer& text, dou
 }
 
 /** Record every registered text renderer's pass into `target` through its `_record`. */
-inline void record_sdl_text_renderers(Engine& engine, SdlTextRenderer& text,
-                                      SDL_GPUCommandBuffer* command, SDL_GPUTexture* target) {
+inline void record_sdl_gpu_text_renderers(Engine& engine, SdlTextRenderer& text,
+                                          SDL_GPUCommandBuffer* command, SDL_GPUTexture* target) {
     const auto& surface = bbl::text_surface(engine);
     auto view = std::make_shared<SdlTextGpuView>();
     view->target = target;

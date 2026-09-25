@@ -23,6 +23,6 @@ public:
     virtual bool present(std::span<const WindowCanvasFrame> frames, const UiRenderFrame& ui,
                          const std::string& capture) = 0;
 };
-std::shared_ptr<WindowPresenter> create_window_sdl_presenter(SDL_Window* window);
+std::shared_ptr<WindowPresenter> create_window_sdl_gpu_presenter(SDL_Window* window);
 std::shared_ptr<WindowPresenter> create_window_dawn_presenter(SDL_Window* window);
 } // namespace bbl::pal

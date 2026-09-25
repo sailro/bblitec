@@ -78,7 +78,7 @@ void release(GpuState& state) {
     state.text.reset();
 #endif
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
-    release_sprite_ui_sdl_resources(state.device, state.ui);
+    release_sprite_ui_sdl_gpu_resources(state.device, state.ui);
     state.ui_readable_surface.release(state.device);
 #endif
     release_frame_graph_textures(state);
@@ -806,8 +806,8 @@ public:
         // Sprite rendering contexts and their render targets may be created
         // by a before-render callback. Mirror all newly appended CPU records
         // in handle order both here and immediately after each callback run.
-        sync_sdl_scene_sprites(state, engine, sprite_passes, sprite_render_textures,
-                               swapchain_format);
+        sync_sdl_gpu_scene_sprites(state, engine, sprite_passes, sprite_render_textures,
+                                   swapchain_format);
         if (!scene.depth_hosted_sprite_layers.empty()) {
             scene_sprite_pass = create_scene_sprite_pass(
                 state.device, engine, scene.depth_hosted_sprite_layers, sprite_render_textures,
@@ -877,7 +877,7 @@ public:
             image_processing_info.target_info.num_color_targets = 1;
             state.per_sample_image_processing = per_sample_image_processing;
             state.image_processing_pipeline =
-                create_sdl_graphics_pipeline(state.device, &image_processing_info);
+                create_sdl_gpu_graphics_pipeline(state.device, &image_processing_info);
             if (!state.image_processing_pipeline) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline image processing");
             }
@@ -895,13 +895,13 @@ public:
             depth_pipeline_info.target_info.depth_stencil_format = state.depth_format;
             depth_pipeline_info.target_info.has_depth_stencil_target = true;
             state.depth_only_pipelines[index] =
-                create_sdl_graphics_pipeline(state.device, &depth_pipeline_info);
+                create_sdl_gpu_graphics_pipeline(state.device, &depth_pipeline_info);
             if (!state.depth_only_pipelines[index]) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline depth-only");
             }
             depth_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
             state.depth_only_double_sided_pipelines[index] =
-                create_sdl_graphics_pipeline(state.device, &depth_pipeline_info);
+                create_sdl_gpu_graphics_pipeline(state.device, &depth_pipeline_info);
             if (!state.depth_only_double_sided_pipelines[index]) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline depth-only double-sided");
             }
@@ -998,7 +998,7 @@ public:
                         SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
                     shadow_pipeline_info.target_info.has_depth_stencil_target = true;
                     state.shader_shadow_pipelines[variant] =
-                        create_sdl_graphics_pipeline(state.device, &shadow_pipeline_info);
+                        create_sdl_gpu_graphics_pipeline(state.device, &shadow_pipeline_info);
                     if (!state.shader_shadow_pipelines[variant]) {
                         gpu_error("SDL_CreateGPUGraphicsPipeline shader shadow caster");
                     }
@@ -1011,7 +1011,7 @@ public:
                 if (!variant_fragment_shader)
                     continue;
                 state.shader_pipelines[variant] =
-                    create_sdl_graphics_pipeline(state.device, &shader_pipeline_info);
+                    create_sdl_gpu_graphics_pipeline(state.device, &shader_pipeline_info);
                 if (!state.shader_pipelines[variant]) {
                     gpu_error("SDL_CreateGPUGraphicsPipeline shader material");
                 }
@@ -1022,7 +1022,7 @@ public:
                 shader_pipeline_info.multisample_state.enable_alpha_to_coverage =
                     alpha_to_coverage_enabled(true, gpu_sample_count_value(state.sample_count));
                 state.shader_a2c_pipelines[variant] =
-                    create_sdl_graphics_pipeline(state.device, &shader_pipeline_info);
+                    create_sdl_gpu_graphics_pipeline(state.device, &shader_pipeline_info);
                 if (!state.shader_a2c_pipelines[variant]) {
                     gpu_error("SDL_CreateGPUGraphicsPipeline alpha to coverage");
                 }
@@ -1050,13 +1050,14 @@ public:
             blit_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             blit_pipeline_info.target_info.color_target_descriptions = &blit_target;
             blit_pipeline_info.target_info.num_color_targets = 1;
-            state.blit_pipeline = create_sdl_graphics_pipeline(state.device, &blit_pipeline_info);
+            state.blit_pipeline =
+                create_sdl_gpu_graphics_pipeline(state.device, &blit_pipeline_info);
             if (!state.blit_pipeline) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline blit");
             }
             blit_pipeline_info.multisample_state.sample_count = state.sample_count;
             state.blit_msaa_pipeline =
-                create_sdl_graphics_pipeline(state.device, &blit_pipeline_info);
+                create_sdl_gpu_graphics_pipeline(state.device, &blit_pipeline_info);
             if (!state.blit_msaa_pipeline) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline blit MSAA");
             }
@@ -1069,10 +1070,10 @@ public:
             id_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             id_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             id_pipeline_info.target_info.color_target_descriptions = &id_target;
-            state.id_pipeline = create_sdl_graphics_pipeline(state.device, &id_pipeline_info);
+            state.id_pipeline = create_sdl_gpu_graphics_pipeline(state.device, &id_pipeline_info);
             id_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
             state.id_double_sided_pipeline =
-                create_sdl_graphics_pipeline(state.device, &id_pipeline_info);
+                create_sdl_gpu_graphics_pipeline(state.device, &id_pipeline_info);
         }
         if (cluster_fragment_shader) {
             SDL_GPUColorTargetDescription cluster_target{};
@@ -1083,10 +1084,10 @@ public:
             cluster_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             cluster_pipeline_info.target_info.color_target_descriptions = &cluster_target;
             state.cluster_pipeline =
-                create_sdl_graphics_pipeline(state.device, &cluster_pipeline_info);
+                create_sdl_gpu_graphics_pipeline(state.device, &cluster_pipeline_info);
             cluster_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
             state.cluster_double_sided_pipeline =
-                create_sdl_graphics_pipeline(state.device, &cluster_pipeline_info);
+                create_sdl_gpu_graphics_pipeline(state.device, &cluster_pipeline_info);
         }
         color_target.blend_state = blend_state_from(transparent_blend);
         pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
@@ -1242,17 +1243,17 @@ public:
 #endif
         ]([[maybe_unused]] GpuPickerHandle picker, double x, double y,
                            const Engine::PickFilter* filter) -> PickingInfo {
-            return pick_sdl_scene(state, engine, root_plan, overlay_plans, active_registered_scenes,
-                                  picker, x, y, filter
+            return pick_sdl_gpu_scene(state, engine, root_plan, overlay_plans,
+                                      active_registered_scenes, picker, x, y, filter
 #if BBLITE_HAS_BILLBOARDS
-                                  ,
-                                  billboard_pick
+                                      ,
+                                      billboard_pick
 #endif
             );
         };
 #endif
         for (const upstream::RenderItem& item : render_plan.items) {
-            state.meshes.push_back(upload_sdl_scene_mesh(state, engine, item));
+            state.meshes.push_back(upload_sdl_gpu_scene_mesh(state, engine, item));
         }
         // Swapchain overlay layers: every scene registered after the first.
         // `configureSwapchainOverlayScene` is the pin's own trigger -- a
@@ -1271,7 +1272,7 @@ public:
             std::vector<GpuMesh> overlay_layer_meshes;
             overlay_layer_meshes.reserve(overlay_plan.items.size());
             for (const upstream::RenderItem& item : overlay_plan.items) {
-                overlay_layer_meshes.push_back(upload_sdl_scene_mesh(state, engine, item));
+                overlay_layer_meshes.push_back(upload_sdl_gpu_scene_mesh(state, engine, item));
             }
             overlay_plans.push_back(std::move(overlay_plan));
             state.overlay_meshes.push_back(std::move(overlay_layer_meshes));
@@ -1589,8 +1590,8 @@ public:
             // sharing the scene's one batched upload submission.
             // Registration controls drawing, not whether its layer data
             // stays current.
-            sync_sdl_scene_sprites(rows.state, data.engine, resources.sprite_passes,
-                                   resources.sprite_render_textures, data.swapchain_format);
+            sync_sdl_gpu_scene_sprites(rows.state, data.engine, resources.sprite_passes,
+                                       resources.sprite_render_textures, data.swapchain_format);
             for (SpritePass& sprite_pass : resources.sprite_passes) {
                 // `spriteRendererUpdate` runs the renderer's own hooks
                 // before it reads its layers, so an overlay HUD's hook is
@@ -1611,7 +1612,7 @@ public:
         void release_mesh(GpuMesh& mesh) { release_gpu_mesh(rows.state, mesh); }
 
         GpuMesh upload_mesh(const upstream::RenderItem& item) {
-            return upload_sdl_scene_mesh(rows.state, run.data_.engine, item, &rows.uploads);
+            return upload_sdl_gpu_scene_mesh(rows.state, run.data_.engine, item, &rows.uploads);
         }
 
         // SDL releases GPU resources only once pending command buffers are
@@ -3139,8 +3140,8 @@ public:
                                             return upstream::scene_camera_change_key(*value);
                                         },
                                         [&](std::size_t child) {
-                                            write_sdl_post_process_uniforms(state, engine, handle,
-                                                                            child, width, height);
+                                            write_sdl_gpu_post_process_uniforms(
+                                                state, engine, handle, child, width, height);
                                         },
                                         [&](std::size_t child) -> std::optional<double> {
                                             temporal_passes.emplace_back(prepare_post_process_pass(
@@ -3371,7 +3372,7 @@ public:
 #if BBLITE_HAS_TAA
                 for (const auto& prepared : temporal_passes) {
                     if (const auto* source = std::get_if<PreparedSdlScenePass>(&prepared)) {
-                        encode_sdl_prepared_scene(command, *source);
+                        encode_sdl_gpu_prepared_scene(command, *source);
                     } else {
                         encode_post_process_pass(state, command,
                                                  std::get<PreparedSdlPostProcessPass>(prepared),
@@ -3998,9 +3999,9 @@ public:
             if (!ui_target) {
                 throw std::runtime_error("Frame graph did not present a native UI target.");
             }
-            render_sprite_ui_sdl_frame(state.device, command, ui_target, swapchain_format, state.ui,
-                                       *current_frame().ui_frame, nullptr, nullptr,
-                                       state.sample_count);
+            render_sprite_ui_sdl_gpu_frame(state.device, command, ui_target, swapchain_format,
+                                           state.ui, *current_frame().ui_frame, nullptr, nullptr,
+                                           state.sample_count);
             if (ui_target != swapchain) {
                 // The graph presented before the overlay was recorded.
                 // Present the same composite that the explicit UI
@@ -4036,9 +4037,9 @@ public:
             if (capture_frame && capture_ui) {
                 // Render the UI into the readback texture, then present that
                 // exact result below.
-                render_sprite_ui_sdl_frame(state.device, command, visible_color, swapchain_format,
-                                           state.ui, *current_frame().ui_frame, nullptr, nullptr,
-                                           state.sample_count);
+                render_sprite_ui_sdl_gpu_frame(
+                    state.device, command, visible_color, swapchain_format, state.ui,
+                    *current_frame().ui_frame, nullptr, nullptr, state.sample_count);
             }
 #endif
             if (capture_frame || transmission_enabled) {
@@ -4055,9 +4056,9 @@ public:
                 // A canvas-only attribution capture omits the UI from
                 // `visible_color` but still draws it over the presented
                 // swapchain.
-                render_sprite_ui_sdl_frame(state.device, command, swapchain, swapchain_format,
-                                           state.ui, *current_frame().ui_frame, nullptr, nullptr,
-                                           state.sample_count);
+                render_sprite_ui_sdl_gpu_frame(state.device, command, swapchain, swapchain_format,
+                                               state.ui, *current_frame().ui_frame, nullptr,
+                                               nullptr, state.sample_count);
             }
 #endif
             present_readable_surface();
