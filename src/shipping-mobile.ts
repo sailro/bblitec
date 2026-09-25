@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { discoverDevelopmentTools } from "./development-tools.js";
 import { holdDistLock } from "./dist-lock.js";
 import type { SceneDefinition } from "./scene-registry.js";
-import { writeJsonRecord } from "./validation-resume.js";
+import { writeJsonRecord } from "./tooling/records.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
 import { NATIVE_BACKENDS } from "./tooling/artifacts.js";
 
@@ -27,7 +27,7 @@ export function mobilePackageArguments(
         target.push(
             "-Abi",
             abi,
-            "-ExpectBackend",
+            "-Backend",
             backend.toUpperCase(),
             ...(values.get("--sdk") ? ["-Sdk", values.get("--sdk")!] : []),
             ...(values.get("--device")
@@ -51,9 +51,7 @@ export function mobilePackageArguments(
     return [
         "-NoProfile",
         "-File",
-        resolve("tools/package-demo.ps1"),
-        "-Platform",
-        platform,
+        resolve(`tools/package-${platform}.ps1`),
         "-Scene",
         scene,
         "-Jobs",

@@ -1,5 +1,4 @@
 import ts from "typescript";
-import { browserGlobalNamed } from "./browser-erasure.js";
 import { declaredInDefaultLibrary } from "./symbols.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
@@ -11,8 +10,7 @@ type Context = Pick<
     | "defaultEngine"
     | "checker"
     | "unwrap"
-    | "lookupOptional"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "isCanvasElement"
     | "reachFeature"
     | "fail"
@@ -20,13 +18,12 @@ type Context = Pick<
     | "requireEngine"
     | "allocateTemporaryCppName"
     | "compileValue"
-    | "compileCondition"
+    | "conditions"
     | "compileStringLiteral"
     | "dataLowerer"
     | "dataTypes"
-    | "hoistForwardCallbackBindings"
-    | "compilePlatformCallback"
-    | "pinValueToTemporary"
+    | "callbacks"
+    | "bindings"
     | "cppString"
     | "emit"
     | "emitDiscardedValue"
@@ -64,7 +61,7 @@ export function listenerOptions(
         Context,
         | "unwrap"
         | "checker"
-        | "compileCondition"
+        | "conditions"
         | "compileValue"
         | "allocateTemporaryCppName"
         | "emit"
@@ -81,7 +78,7 @@ export function listenerOptions(
     const source = context.unwrap(expression);
     const type = context.checker.getTypeAtLocation(expression);
     if ((type.flags & ts.TypeFlags.BooleanLike) !== 0) {
-        result.capture = context.compileCondition(expression);
+        result.capture = context.conditions.compileCondition(expression);
         return result;
     }
     if ((type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0)
@@ -123,7 +120,7 @@ export function listenerOptions(
         ] as const) {
             const property = properties[name];
             if (!property) continue;
-            const value = context.dataLowerer.conditionFromValue(property);
+            const value = context.dataLowerer.truthinessCondition(property);
             if (value === undefined)
                 context.fail(
                     expression,
@@ -154,7 +151,7 @@ export function listenerOptions(
             name === "capture" ||
             (!removing && (name === "once" || name === "passive"))
         ) {
-            const cpp = context.compileCondition(initializer);
+            const cpp = context.conditions.compileCondition(initializer);
             const value = context.allocateTemporaryCppName("event_option");
             context.emit(`const bool ${value} = ${cpp};`);
             result[name] = value;
@@ -172,14 +169,14 @@ export function listenerOptions(
 }
 
 function pinDetached(
-    context: Pick<Context, "pinValueToTemporary">,
+    context: Pick<Context, "bindings">,
     value: Value,
     label: string,
     node: ts.Expression,
 ): Value {
     const snapshot = { ...value };
     delete snapshot.nativeBinding;
-    return context.pinValueToTemporary(snapshot, label, node);
+    return context.bindings.pinValueToTemporary(snapshot, label, node);
 }
 
 /** One listener path for native DOM identities; error/visibility/file services
@@ -217,7 +214,7 @@ export function emitDomEventListener(
         );
         target = `bbl::DomEventTarget::node(${owner.cpp}.value)`;
     } else {
-        let global = browserGlobalNamed(context, callee.expression)?.text;
+        let global = context.libraryGlobal(callee.expression);
         if (!global) {
             const type = context.checker.getNonNullableType(
                 context.checker.getTypeAtLocation(callee.expression),
@@ -277,7 +274,7 @@ export function emitDomEventListener(
     if (!keyboard && !pagehide && !pointerNames.has(type)) return false;
     context.reachFeature("input:dom", call);
     const callback = call.arguments[1]!;
-    context.hoistForwardCallbackBindings(callback, call.pos);
+    context.callbacks.hoistForwardCallbackBindings(callback, call.pos);
     const removing = callee.name.text === "removeEventListener";
     const family = keyboard ? "keyboard" : "pointer";
     let identity: string;
@@ -291,7 +288,7 @@ export function emitDomEventListener(
         identity = callbackIdentity(pinned, callback);
     } else {
         const name = context.allocateTemporaryCppName("dom_event");
-        const compiled = context.compilePlatformCallback(
+        const compiled = context.callbacks.compilePlatformCallback(
             callback,
             {
                 cppType: keyboard

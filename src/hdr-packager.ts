@@ -1,4 +1,4 @@
-import { prefilterCubemapGgx } from "./hdr-prefilter-gpu.js";
+import { prefilterEquirectGgx } from "./hdr-prefilter-gpu.js";
 import {
     importPinnedModule,
     importPinnedModuleWithExports,
@@ -8,9 +8,10 @@ import {
  * The HDR package is the pin executed, not transcribed. RGBE parsing and the
  * irradiance chain call the pinned package's own exported functions
  * (`parseRGBE`, `computeSHFromEquirect` — which runs the pin's
- * `shToPolynomial` internally), and mip zero comes back from the pinned
- * `equirectToCubeWGSL` compute the Chromium harness runs for prefiltering,
- * so every byte in the package is produced by the pin's own code. A pin
+ * `shToPolynomial` internally), and every cube level comes back from the
+ * pinned `equirectToCubemapGPU` and `prefilterCubemapGPU` the Chromium
+ * harness runs, so every byte in the package is produced by the pin's own
+ * code. A pin
  * bump that changes any of it changes the package and the test goldens go
  * red — the drift-detection direction, where the former transcriptions kept
  * agreeing with themselves.
@@ -84,10 +85,6 @@ export function preScalePolynomial(polynomial: Float32Array): Float32Array {
     return result;
 }
 
-function mipLevelCount(size: number): number {
-    return Math.floor(Math.log2(size)) + 1;
-}
-
 export async function packageHdrEnvironment(
     bytes: Uint8Array,
     faceSize: number,
@@ -110,10 +107,8 @@ export async function packageHdrEnvironment(
             image.height,
         ),
     );
-    const mipCount = mipLevelCount(faceSize);
-    const levels = await prefilterCubemapGgx(faceSize, mipCount, {
-        equirect: image,
-    });
+    const levels = await prefilterEquirectGgx(faceSize, image);
+    const mipCount = levels.length;
 
     const headerSize = hdrMagic.length + 8 + sphericalHarmonics.byteLength;
     const payloadSize = levels.reduce(

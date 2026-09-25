@@ -5,6 +5,7 @@ import type {
     PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const modulePath = "src/texture/rtt-surface.ts";
 
@@ -412,7 +413,7 @@ std::shared_ptr<RenderTargetLifecycle> make_render_target_lifecycle(Engine& engi
 }
 } // namespace
 js::Callback<void()> on_render_target_texture_resize(Engine& engine, RenderTargetTexture result, std::function<void()> callback) {
-    auto& target = engine.render_targets.at(result.rt.value);
+    auto& target = ${recordAt("engine.render_targets", "result.rt")};
     if (!target.lifecycle) target.lifecycle = make_render_target_lifecycle(engine, false);
     return target.lifecycle->subscribe(std::move(callback));
 }

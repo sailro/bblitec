@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/teardown.hpp>
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -89,6 +91,10 @@ public:
     void destroy(std::uint64_t id) {
         if (enabled_)
             find(id).destroyed = true;
+    }
+    /** `destroy` from noexcept lease teardown, where an unknown id is a broken registration. */
+    void release(std::uint64_t id) noexcept {
+        run_teardown("GPU capture release", [&] { destroy(id); });
     }
     void begin_frame(std::uint64_t frame) {
         if (enabled_)

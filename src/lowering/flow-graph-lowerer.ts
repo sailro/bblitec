@@ -72,6 +72,7 @@ import {
     type RecordEntry,
     type ValueModel,
 } from "./pinned-partial-evaluator.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** A graph-authored name as one C++ identifier fragment. */
 function identifier(name: string): string {
@@ -2605,10 +2606,14 @@ struct FlowGraphAssetGraphs {
     std::vector<FlowGraphFactory> factories;
 };
 
-// The graphs generation parsed, by the packaged asset the loader reads.
-const FlowGraphAssetGraphs flow_graph_assets[] = {
+// The graphs generation parsed, by the packaged asset the loader reads,
+// built on first use: the factory lists allocate.
+const auto& flow_graph_assets() {
+    static const FlowGraphAssetGraphs graphs[] = {
 ${table.join("\n")}
-};
+    };
+    return graphs;
+}
 
 struct FlowGraphPress {
     double x;
@@ -2625,7 +2630,7 @@ struct FlowGraphMeshNode {
 
 std::optional<FlowGraphMeshNode> flow_graph_mesh_node(const Scene& scene, MeshHandle mesh) {
     for (const auto& runtime : scene.state->flow_graphs) {
-        const AssetRecord& asset = scene.engine->assets.at(runtime->asset_scope.value);
+        const AssetRecord& asset = ${recordAt("scene.engine->assets", "runtime->asset_scope")};
         for (std::size_t index = 0; index < asset.meshes.size() && index < asset.mesh_nodes.size(); ++index) {
             if (asset.meshes[index] == mesh && asset.mesh_nodes[index] != std::numeric_limits<std::size_t>::max()) {
                 return FlowGraphMeshNode{runtime->asset_scope, asset.mesh_nodes[index]};
@@ -2776,7 +2781,7 @@ void attach_flow_graphs(Scene& scene, AssetHandle asset, const std::string& asse
     if (!scene.engine) {
         throw std::runtime_error("KHR_interactivity graphs attach to a scene bound to an engine.");
     }
-    for (const FlowGraphAssetGraphs& entry : flow_graph_assets) {
+    for (const FlowGraphAssetGraphs& entry : flow_graph_assets()) {
         if (asset_name != entry.asset) continue;
         setup_flow_graphs(scene, asset, entry.factories);
         if (flow_graph_trace_enabled()) {
@@ -2784,7 +2789,7 @@ void attach_flow_graphs(Scene& scene, AssetHandle asset, const std::string& asse
                 stderr,
                 "[bblite trace] flow-graph attach asset=%s runtimes=%zu\\n",
                 entry.asset,
-                scene.engine->assets.at(asset.value).flow_graph_runtimes.size());
+                ${recordAt("scene.engine->assets", "asset")}.flow_graph_runtimes.size());
         }
         return;
     }

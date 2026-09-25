@@ -14,7 +14,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "text-renderable": "std::shared_ptr<bbl::TextRenderableState>",
     "text-layer": "std::shared_ptr<bbl::TextLayerState>",
     "text-renderer": "std::shared_ptr<bbl::TextRendererState>",
-    "text-run": "std::shared_ptr<bbl::TextRunState>",
+    "text-run": "bbl::TextRun",
     "text-run-ref": "bbl::TextRunRef",
     "picking-info": "bbl::PickingInfo",
     "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
@@ -76,10 +76,84 @@ const handleCppTypes: Record<HandleKind, string> = {
     "navigation-obstacle": "bbl::pal::NavObstacleHandle",
 };
 
+/**
+ * Handles whose native value is an engine identity -- a record index, an
+ * engine pointer, stored texture pixels -- and so owns no traced edge. Every
+ * other handle owns shared state and counts as traced. A native fixture
+ * checks each against `bbl::js::gc_traceable`.
+ */
+export const untracedHandleKinds: ReadonlySet<HandleKind> = new Set<HandleKind>(
+    [
+        "engine",
+        "asset",
+        "gpu-device",
+        "gpu-texture",
+        "gpu-environment",
+        "mesh",
+        "animation-group",
+        "flow-graph",
+        "camera",
+        "ui-element",
+        "utility-layer",
+        "pointer-drag",
+        "gamepad",
+        "gamepad-button",
+        "light",
+        "shadow-generator",
+        "hierarchy-instance-pool",
+        "storage-buffer",
+        "material",
+        "billboard-sprite",
+        "billboard-system",
+        "sprite-layer",
+        "sprite-atlas",
+        "splat-mesh",
+        "texture",
+        "skeleton",
+        "scene-skeleton",
+        "bone",
+    ],
+);
+
+export function handleOwnsTracedEdge(kind: HandleKind): boolean {
+    return !untracedHandleKinds.has(kind);
+}
+
 export function isHandleKind(kind: string): kind is HandleKind {
     return Object.prototype.hasOwnProperty.call(handleCppTypes, kind);
 }
 
 export function handleCppType(kind: HandleKind): string {
     return handleCppTypes[kind];
+}
+
+/**
+ * Resource values outside the data model whose native value has exactly one
+ * type: every intrinsic that produces the kind returns it
+ * (`bbl::create_sprite_renderer`, `bbl::create_animation_manager`,
+ * `bbl::create_surface`, `bbl::create_gpu_picker`, each gizmo factory and a
+ * composite gizmo's parts), and an asset's root is its `bbl::AssetHandle`.
+ * A local holding one declares that type, so a closure capturing it has a
+ * concrete environment.
+ */
+const resourceValueCppTypes: ReadonlyMap<string, string> = new Map([
+    ["sprite-renderer", "bbl::SpriteRendererHandle"],
+    ["animation-manager", "bbl::PropertyAnimationManager"],
+    ["surface", "bbl::Surface"],
+    ["gpu-picker", "bbl::GpuPickerHandle"],
+    ["axis-drag-gizmo", "bbl::EditGizmoHandle"],
+    ["axis-scale-gizmo", "bbl::EditGizmoHandle"],
+    ["plane-drag-gizmo", "bbl::EditGizmoHandle"],
+    ["plane-rotation-gizmo", "bbl::EditGizmoHandle"],
+    ["position-gizmo", "bbl::CompositeGizmoHandle"],
+    ["rotation-gizmo", "bbl::CompositeGizmoHandle"],
+    ["scale-gizmo", "bbl::CompositeGizmoHandle"],
+    ["bounding-box-gizmo", "bbl::BoundingBoxGizmoHandle"],
+    ["camera-gizmo", "bbl::CameraGizmoHandle"],
+    ["light-gizmo", "bbl::LightGizmoHandle"],
+    ["asset-root", "bbl::AssetHandle"],
+]);
+
+export function resourceValueCppType(kind: string): string | undefined {
+    return resourceValueCppTypes.get(kind);
 }

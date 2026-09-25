@@ -1,6 +1,6 @@
 import ts from "typescript";
 
-export interface AnalysisWalkPolicy {
+interface AnalysisWalkPolicy {
     includeRoot?: boolean;
     functions?: "skip";
     loops?: "skip";

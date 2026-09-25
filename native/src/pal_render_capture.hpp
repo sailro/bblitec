@@ -20,6 +20,18 @@
 // receipts supplied by the PALs; their bytes are not rebuilt here.
 #pragma once
 
+#include <bblite/features/has_billboards.hpp>
+#include <bblite/features/has_canvas_renderer.hpp>
+#include <bblite/features/has_effect_renderer.hpp>
+#include <bblite/features/has_effect_task.hpp>
+#include <bblite/features/has_effect_wrapper.hpp>
+#include <bblite/features/has_frame_graph_renderer.hpp>
+#include <bblite/features/has_pbr_renderer.hpp>
+#include <bblite/features/has_splats.hpp>
+#include <bblite/features/has_sprite_renderer.hpp>
+#include <bblite/features/has_text.hpp>
+#include <bblite/features/has_text_renderer.hpp>
+
 #include <type_traits>
 
 #include <bblite/pal.hpp>
@@ -30,7 +42,7 @@
 // `shader_stage_block_floats` packing both backends push, so a capture
 // diff can never disagree with an upload about the block's bytes.
 #include "pal_gpu_shared.hpp"
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
 #include "pal_text_capture.hpp"
 #else
 namespace bbl::pal {
@@ -65,7 +77,7 @@ class NodeGpuCapture;
 // than the generated header: including the digest here would put it in
 // the including TUs' preprocessed text and force them to recompile per
 // scene.
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #if BBLITE_HAS_SPLATS
 #include <bblite/js_data.hpp>
@@ -77,12 +89,12 @@ class NodeGpuCapture;
 #include <bblite/upstream/billboard_system.hpp>
 #endif
 #endif // BBLITE_HAS_PBR_RENDERER
-#if BBLITE_HAS_BILLBOARDS || (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER)
+#if BBLITE_HAS_BILLBOARDS || BBLITE_HAS_SPRITE_RENDERER
 // The layer UBO builder, shared by the 2D layer and — for the fx block
 // sizes — the billboard family; generated whenever either is reached.
 #include <bblite/upstream/sprite_layer.hpp>
 #endif
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
 // The variant table an effect wrapper draws through: stems, declared
 // bindings and the uniform block's size.
 #include <bblite/upstream/effect_variants.hpp>
@@ -225,6 +237,13 @@ public:
         value(text);
     }
     void field(const char* name, const Vec2& vector) {
+        key(name);
+        begin_array();
+        value(vector.x);
+        value(vector.y);
+        end_array();
+    }
+    void field(const char* name, const Vec2d& vector) {
         key(name);
         begin_array();
         value(vector.x);
@@ -405,25 +424,7 @@ inline void write_float_block(JsonWriter& json, const char* stage, std::uint32_t
 // records the draw lists read from, compiled only where the scene loops
 // are (camera math and the render plan are generated only for a scene
 // that registers one).
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
-
-inline const char* primitive_name(PrimitiveKind kind) {
-    switch (kind) {
-    case PrimitiveKind::babylon:
-        return "babylon";
-    case PrimitiveKind::box:
-        return "box";
-    case PrimitiveKind::gltf:
-        return "gltf";
-    case PrimitiveKind::ground:
-        return "ground";
-    case PrimitiveKind::sphere:
-        return "sphere";
-    case PrimitiveKind::torus:
-        return "torus";
-    }
-    return "unknown";
-}
+#if BBLITE_HAS_PBR_RENDERER
 
 inline const char* camera_kind_name(CameraKind kind) {
     switch (kind) {
@@ -469,8 +470,6 @@ inline const char* material_kind_name(upstream::RenderMaterialKind kind) {
         return "pbr";
     case upstream::RenderMaterialKind::standard:
         return "standard";
-    case upstream::RenderMaterialKind::grid:
-        return "grid";
     case upstream::RenderMaterialKind::shader:
         return "shader";
     case upstream::RenderMaterialKind::node:
@@ -538,14 +537,6 @@ inline const char* pipeline_name(upstream::RenderPipelineKind kind) {
     case upstream::RenderPipelineKind::standard_transparent_none_clockwise:
         return "standard_transparent_none_clockwise";
 
-    case upstream::RenderPipelineKind::grid_opaque_back:
-        return "grid_opaque_back";
-    case upstream::RenderPipelineKind::grid_opaque_none:
-        return "grid_opaque_none";
-    case upstream::RenderPipelineKind::grid_transparent_back:
-        return "grid_transparent_back";
-    case upstream::RenderPipelineKind::grid_transparent_none:
-        return "grid_transparent_none";
     case upstream::RenderPipelineKind::shader:
         return "shader";
     case upstream::RenderPipelineKind::shader_a2c:
@@ -670,7 +661,6 @@ inline void write_material(JsonWriter& json, std::size_t index, const MaterialRe
     json.field("doubleSided", material.double_sided);
     json.field("standardMaterial", material.standard_material);
     json.field("shaderMaterial", material.shader_material);
-    json.field("gridMaterial", material.grid_material);
     json.field("shaderVariant", material.shader_variant);
     json.field("alphaToCoverage", material.alpha_to_coverage);
     json.field("shaderAlphaTesting", material.shader_alpha_testing);
@@ -739,14 +729,6 @@ inline void write_material(JsonWriter& json, std::size_t index, const MaterialRe
     json.field("bumpScale", material.bump_scale);
     json.field("reflectionLevel", material.reflection_level);
 
-    json.field("gridMainColor", material.grid_main_color);
-    json.field("gridLineColor", material.grid_line_color);
-    json.field("gridControl", material.grid_control);
-    json.field("gridOffset", material.grid_offset);
-    json.field("gridVisibility", material.grid_visibility);
-    json.field("gridAntialias", material.grid_antialias);
-    json.field("gridPreMultiplyAlpha", material.grid_pre_multiply_alpha);
-    json.field("gridUseMaxLine", material.grid_use_max_line);
     json.handle("reflectionCubeIndex", material.reflection_cube);
 
     json.key("baseColorFallback");
@@ -814,18 +796,16 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
                        const Engine& engine) {
     json.begin_object();
     json.field("index", index);
-    json.field("primitive", primitive_name(mesh.primitive));
+    json.field("hasBounds", mesh.has_bounds);
     json.field("position", mesh.position);
     json.field("rotation", mesh.rotation);
     json.field("rotationQuaternion", mesh.rotation_quaternion);
     json.field("hasRotationQuaternion", mesh.has_rotation_quaternion);
     json.field("scaling", mesh.scaling);
-    json.field("dimensions", mesh.dimensions);
     json.handle("material", mesh.material.value);
     json.handle("geometry", mesh.geometry);
     json.field("visible", mesh.visible);
     json.field("receivesShadows", mesh.receives_shadows);
-    json.field("bakedWorldScale", mesh.baked_world_scale);
     json.field("clockwiseFrontFace", mesh.clockwise_front_face);
     json.field("gpuDeformation", mesh.gpu_deformation);
     json.field("boneMatrixCount", mesh.bone_matrices.size());
@@ -849,13 +829,10 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
         json.field("vertexCount", geometry.vertices.size());
         json.field("indexCount", geometry.indices.size());
         json.field("hasTangents", geometry.has_tangents);
-        json.field("flatNormals", geometry.flat_normals);
         json.field("topology", topology_name(geometry.topology));
         json.field("morphTargets", geometry.morph_positions.size());
         json.field("boundsMin", geometry.bounds_min);
         json.field("boundsMax", geometry.bounds_max);
-        json.field("worldBoundsMin", geometry.world_bounds_min);
-        json.field("worldBoundsMax", geometry.world_bounds_max);
         json.end_object();
     }
     json.end_object();
@@ -941,9 +918,7 @@ inline void write_draw_uniforms(JsonWriter& json, const Scene& scene, const Engi
         // The transcribed StandardUniforms block is retired: the
         // draw path fills the pin's own 96-byte material mirror, so
         // the capture dumps the same bytes the same writer builds.
-        const MaterialRecord* material = draw.item.material.value < engine.materials.size()
-                                             ? &handle_at(engine.materials, draw.item.material)
-                                             : nullptr;
+        const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
         std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
         if (material && material->no_color) {
             features |= upstream::standard_no_color_output_flag;
@@ -952,11 +927,6 @@ inline void write_draw_uniforms(JsonWriter& json, const Scene& scene, const Engi
             standard_material_block(material, features);
         write_uniform_block(json, "fragment", 0, "StandardMaterialUniforms", fragment);
 #endif
-        break;
-    }
-    case upstream::RenderMaterialKind::grid: {
-        const upstream::GridUniforms fragment = upstream::build_grid_uniforms(engine, draw.item);
-        write_uniform_block(json, "fragment", 0, "GridUniforms", fragment);
         break;
     }
     case upstream::RenderMaterialKind::shader: {
@@ -970,7 +940,7 @@ inline void write_draw_uniforms(JsonWriter& json, const Scene& scene, const Engi
             draw.item.mesh.value < engine.meshes.size()) {
             const MaterialRecord& material = handle_at(engine.materials, draw.item.material);
             const ShaderDrawMatrices shader_matrices(
-                engine, handle_at(engine.meshes, draw.item.mesh), pass_matrices);
+                scene, engine, handle_at(engine.meshes, draw.item.mesh), pass_matrices);
             const ShaderPassMatrices shader_pass_matrices = shader_matrices.apply(pass_matrices);
             const upstream::ShaderVariantInfo& info =
                 upstream::shader_variant_info(draw.item.shader_variant);
@@ -1200,7 +1170,7 @@ write_splat_draw_list(JsonWriter& json, const Scene& scene, const Engine& engine
 #endif
 #endif // BBLITE_HAS_PBR_RENDERER (scene-frame writers)
 
-#if BBLITE_HAS_BILLBOARDS || (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER)
+#if BBLITE_HAS_BILLBOARDS || BBLITE_HAS_SPRITE_RENDERER
 // The sprite-family enums as names, and the two records both families
 // share — spelled once so the billboard and layer writers cannot label the
 // same descriptor differently.
@@ -1269,7 +1239,7 @@ inline void write_sprite_atlas_reference(JsonWriter& json, const Engine& engine,
 // Billboards draw only inside a scene's frame (there is no standalone
 // billboard loop), so their writer needs the scene envelope's camera math
 // and rides both gates.
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_BILLBOARDS
+#if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_BILLBOARDS
 /**
  * The billboard renderables live beside the render plan rather than in
  * either mesh draw list, exactly as the splat cloud does. Capture them at
@@ -1317,8 +1287,7 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
         json.handle("material", invalid_handle);
         json.handle("geometry", invalid_handle);
         json.field("billboardSystem", handle.value);
-        json.field("vertexStem", plan.vertex_stem);
-        json.field("fragmentStem", plan.fragment_stem);
+        json.field("programStem", plan.program_stem);
         json.field("orientation", plan.axis_locked ? "axisLocked" : "facing");
         json.field("depthMode", billboard_depth_mode_name(system.depth_mode));
         json.field("depthWrites", plan.cutout_writes_depth);
@@ -1346,14 +1315,11 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
         json.key("uniforms");
         json.begin_array();
         {
-            // The reconstructed vertex stage's own block: view-projection
-            // then view, pushed as one block by both backends
-            // (`BillboardSceneUniforms`).
-            std::array<float, 32> scene_block{};
-            std::copy(view_projection.begin(), view_projection.end(), scene_block.begin());
-            std::copy(view.begin(), view.end(), scene_block.begin() + 16);
-            write_float_block(json, "vertex", 0, "BillboardSceneUniforms", scene_block.data(),
-                              scene_block.size());
+            // The pin's per-pass scene block the module binds at its group
+            // 0, from the builder both backends fill it with.
+            write_uniform_block(
+                json, "vertex", 0, "SceneUniforms",
+                billboard_scene_block(scene, engine, camera, view_projection, view));
             // The per-system block, from the same builder both backends
             // push — to the fragment stage always, and to the axis-locked
             // vertex stage too, which reads its lock axis from it.
@@ -1368,10 +1334,10 @@ inline void write_billboard_draw_list(JsonWriter& json, const Scene& scene, cons
 }
 #endif
 
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
 /**
  * The 2D sprite rendering contexts the engine records, layers in the
- * draw order `sprite_layer_draw_order` decides for both backends, each
+ * list order `sort_sprite_renderer_layers` leaves for both backends, each
  * with the exact sixteen-float layer block its pass pushes
  * (`build_sprite_layer_ubo`) and the six-index, count-instance draw shape.
  *
@@ -1399,8 +1365,7 @@ inline void write_sprite_renderer_list(JsonWriter& json, const Engine& engine, i
         json.field("clearValue", renderer.clear_value);
         json.key("layers");
         json.begin_array();
-        for (const std::size_t slot : sprite_layer_draw_order(engine, renderer)) {
-            const Sprite2DLayerHandle handle = renderer.layers[slot];
+        for (const Sprite2DLayerHandle handle : renderer.layers) {
             if (handle.value >= engine.sprite_layers.size())
                 continue;
             const Sprite2DLayerRecord& layer = handle_at(engine.sprite_layers, handle);
@@ -1450,7 +1415,7 @@ inline void write_sprite_renderer_list(JsonWriter& json, const Engine& engine, i
 }
 #endif
 
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
 /**
  * The fullscreen-effect state: every wrapper with the exact uniform floats
  * `setEffectUniforms` wrote (already padded to the declared block size by
@@ -1542,7 +1507,7 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
     }
     json.end_array();
 
-#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+#if BBLITE_HAS_EFFECT_TASK
     json.key("tasks");
     json.begin_array();
     for (std::size_t index = 0; index < engine.frame_tasks.size(); ++index) {
@@ -1571,7 +1536,7 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
 }
 #endif
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 /** Retained temporal bytes are observed directly; capture must never repack their cache. */
 inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Engine& engine) {
     const auto words = [&](const char* name, const auto& values) {
@@ -1692,7 +1657,7 @@ inline void write_gpu_capture_resources(JsonWriter& json, const GpuUploadCapture
 }
 #endif
 
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
 inline void write_text_gpu_capture(JsonWriter& json, const TextGpuCapture& capture) {
     const auto constants = [&](const char* name,
                                const std::vector<TextGpuConstantCapture>& values) {
@@ -1773,7 +1738,6 @@ inline void write_node_gpu_capture(JsonWriter& json, const NodeGpuCapture& captu
         json.field("geometryVariant", pipeline.geometry_variant);
         json.field("colorTargetCount", pipeline.color_target_count);
         json.field("samples", pipeline.samples);
-        json.field("usesLocalAttributes", pipeline.uses_local_attributes);
         json.field("topology", pipeline.topology);
         json.field("cullMode", pipeline.cull_mode);
         json.field("frontFace", pipeline.front_face);
@@ -1829,7 +1793,7 @@ inline void write_node_gpu_capture(JsonWriter& json, const NodeGpuCapture& captu
 }
 #endif
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline void write_render_capture(const std::string& path, const char* backend, const Scene& scene,
                                  const Engine& engine, const CameraRecord& camera,
                                  const upstream::RenderPlan& render_plan,
@@ -1869,17 +1833,17 @@ inline void write_render_capture(const std::string& path, const char* backend, c
 #if BBLITE_HAS_BILLBOARDS
     json.field("billboardSystemCount", scene.billboard_systems.size());
 #endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
     json.field("spriteRendererCount", engine.sprite_renderers.size());
 #endif
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
     json.field("effectWrapperCount", engine.effect_wrappers.size());
 #endif
     json.end_object();
 
     json.key("temporalTasks");
     write_temporal_tasks(json, scene, engine);
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
     if (text_capture) {
         json.key("textGpu");
         write_text_gpu_capture(json, *text_capture);
@@ -1984,35 +1948,33 @@ inline void write_render_capture(const std::string& path, const char* backend, c
 
     json.key("backgroundUniforms");
     json.begin_array();
-    if (scene.environment.has_skybox) {
-        const upstream::SkyboxUniforms skybox =
-            upstream::build_skybox_uniforms(scene.environment, scene.transmission_enabled);
-        write_uniform_block(json, "fragment", 0, "SkyboxUniforms", skybox);
-    }
-#if BBLITE_SOLID_SKYBOX
-    if (scene.environment.has_solid_skybox) {
-        // The pinned 96-byte mesh block, so a capture pairs against the
-        // browser's own skybox buffer by size.
-        const upstream::SolidSkyboxUniforms solid_skybox =
-            upstream::build_solid_skybox_uniforms(scene);
-        write_uniform_block(json, "fragment", 0, "SolidSkyboxUniforms", solid_skybox);
-    }
+#if BBLITE_PINNED_BACKGROUNDS
+    // Every arm the environment carries, whatever the run's background
+    // flag: each arm's own mesh block, the buffer its factory built, so a
+    // capture pairs against the browser's by size.
+    FrameOptions every_background;
+    every_background.background_flag = "1";
+    select_pinned_backgrounds(every_background, scene.environment)
+        .for_each([&](upstream::PinnedBackgroundArmKind kind) {
+            const upstream::PinnedBackgroundArm& arm = upstream::pinned_background_arm(kind);
+            const std::vector<std::uint8_t> block =
+                upstream::pinned_background_buffers(arm, scene).mesh_block;
+            std::vector<float> floats(block.size() / sizeof(float));
+            std::memcpy(floats.data(), block.data(), floats.size() * sizeof(float));
+            write_float_block(json, "fragment", 0, std::string(arm.fragment_stem).c_str(),
+                              floats.data(), floats.size());
+        });
 #endif
-    if (scene.environment.has_ground) {
-        const upstream::BackgroundUniforms background = upstream::build_background_uniforms(
-            scene.environment, camera, scene.transmission_enabled);
-        write_uniform_block(json, "fragment", 0, "BackgroundUniforms", background);
-    }
     json.end_array();
 
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
     json.key("spriteRenderers");
     json.begin_array();
     write_sprite_renderer_list(json, engine, width, height);
     json.end_array();
 #endif
 
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
     json.key("effects");
     write_effect_state(json, engine);
 #endif
@@ -2072,9 +2034,8 @@ inline void write_render_capture(const std::string& path, const char* backend, c
                 if (variant == npos)
                     continue;
                 const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
-                const PinnedDrawConventions conventions = pinned_draw_conventions(variant, record);
                 const upstream::MeshUniforms block =
-                    pinned_draw_mesh_block(scene, engine, draw, variant, conventions);
+                    pinned_mesh_block(scene, engine, draw.item.mesh);
                 json.begin_object();
                 json.field("meshIndex", draw.item.mesh.value);
                 json.field("stage", stage);
@@ -2102,7 +2063,7 @@ inline void write_render_capture(const std::string& path, const char* backend, c
 
     json.end_object();
     stream << '\n';
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
     if (text_capture)
         text_capture->stop();
 #endif
@@ -2115,11 +2076,8 @@ inline void write_render_capture(const std::string& path, const char* backend, c
 
 // Compiled exactly where a standalone loop exists to call it — a build
 // with neither standalone renderer would hold an unreachable definition.
-#if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) ||                         \
-    (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) ||                         \
-    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) ||                         \
-    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER) ||               \
-    BBLITE_HAS_TEXT_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_EFFECT_RENDERER ||      \
+    BBLITE_HAS_FRAME_GRAPH_RENDERER || BBLITE_HAS_TEXT_RENDERER
 /**
  * Write the frame of a scene with no scene renderer.
  *
@@ -2164,10 +2122,10 @@ inline void write_standalone_render_capture(const std::string& path, const char*
     // read from the engine because a standalone frame has no Scene.
     json.key("scene");
     json.begin_object();
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
     json.field("spriteRendererCount", engine.sprite_renderers.size());
 #endif
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
     json.field("effectWrapperCount", engine.effect_wrappers.size());
 #endif
     json.end_object();
@@ -2181,14 +2139,14 @@ inline void write_standalone_render_capture(const std::string& path, const char*
     json.begin_array();
     json.end_array();
 
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
     json.key("spriteRenderers");
     json.begin_array();
     write_sprite_renderer_list(json, engine, width, height);
     json.end_array();
 #endif
 
-#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+#if BBLITE_HAS_EFFECT_WRAPPER
     json.key("effects");
     write_effect_state(json, engine);
 #endif
@@ -2202,11 +2160,8 @@ inline void write_standalone_render_capture(const std::string& path, const char*
 // writer it calls — under the same standalone-renderer gate — so a TU
 // including only the shared header carries no undefined inline, and a
 // scene-only build compiles neither half.
-#if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) ||                         \
-    (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) ||                         \
-    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) ||                         \
-    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER) ||               \
-    BBLITE_HAS_TEXT_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_EFFECT_RENDERER ||      \
+    BBLITE_HAS_FRAME_GRAPH_RENDERER || BBLITE_HAS_TEXT_RENDERER
 inline void CaptureGate::maybe_write_standalone_render_capture(const char* backend,
                                                                const Engine& engine,
                                                                std::uint32_t width,
@@ -2227,7 +2182,7 @@ inline void CaptureGate::maybe_write_standalone_render_capture(const char* backe
 
 #else
 namespace bbl::pal {
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_PBR_RENDERER
 inline void write_render_capture(const std::string&, const char*, const Scene&, const Engine&,
                                  const CameraRecord&, const upstream::RenderPlan&,
                                  const std::array<float, 16>&, int, int, long,

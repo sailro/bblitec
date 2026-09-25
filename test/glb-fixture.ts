@@ -1,4 +1,6 @@
 import { writeFileSync } from "node:fs";
+import { resolveGlbGeometry } from "../src/compressed-geometry.js";
+import { readGlb, writeGlb } from "../src/glb-container.js";
 import {
     GLB_BINARY_CHUNK,
     GLB_JSON_CHUNK,
@@ -65,4 +67,19 @@ export function readGlbFixture(bytes: Uint8Array): {
         document,
         binary: glb.subarray(binaryHeader + 8, binaryHeader + 8 + binaryLength),
     };
+}
+
+/**
+ * The generation geometry pass over GLB bytes: the same bytes back when no
+ * extension it resolves is present, otherwise the rewritten container.
+ */
+export async function resolveGeometryExtensions(
+    bytes: Uint8Array,
+    label: string,
+): Promise<Uint8Array> {
+    const glb = readGlb(bytes);
+    if (!glb) return bytes;
+    return (await resolveGlbGeometry(glb, label))
+        ? writeGlb(glb.json, glb.binary)
+        : bytes;
 }

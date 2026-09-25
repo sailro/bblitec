@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import ts from "typescript";
 import { BinaryBuilder } from "../src/glb-binary-builder.js";
 import { asRecords, type JsonObject } from "../src/gltf-document.js";
 import {
-    gltfMeshPlan,
     packageGltfMeshPlan,
     packagedGltfMeshPlan,
 } from "../src/gltf-mesh-plan.js";
@@ -14,7 +12,7 @@ import {
 } from "../src/gltf-animation-pointers.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { doctoredContext } from "./doctored-store.js";
-import { readPackedGltfAttribute } from "./gltf-mesh-fixture.js";
+import { gltfMeshPlan, readPackedGltfAttribute } from "./gltf-mesh-fixture.js";
 
 const animationModule = "src/loader-gltf/gltf-animation.ts";
 const pointerModule = "src/loader-gltf/animation-pointer.ts";
@@ -155,8 +153,7 @@ test("source clip order, converted sampler bytes, controller bindings and group 
         clip = receipt.clips[0]!;
     const context = new LoweringContext(),
         types = context.sourceFile("src/animation/types.ts");
-    const path = (name: string) =>
-        context.numericValue(ts.factory.createIdentifier(name), types);
+    const path = (name: string) => context.pinnedNumber(types, name);
     assert.deepEqual(
         clip.channels.map((channel) => channel.path),
         [

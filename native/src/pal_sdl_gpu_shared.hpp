@@ -1,9 +1,13 @@
 #pragma once
+#include <bblite/features/has_gamepad.hpp>
+
 #include "pal_sdl_gpu_device.hpp"
 #include "pal_sdl_gpu_resources.hpp"
 #include "pal_spirv_vertex.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_sdl_gpu_formats.hpp"
 
 // SDL_GPU mechanics shared by the renderers that draw through it.
 //
@@ -25,8 +29,10 @@
 #include <cstring>
 #include <memory>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <SDL3/SDL.h>
@@ -36,10 +42,6 @@
 #endif
 #if BBLITE_VISUAL_CAPTURE
 #include <SDL3_image/SDL_image.h>
-#endif
-
-#ifndef BBLITE_GPU_SHADER_DIR
-#define BBLITE_GPU_SHADER_DIR "shaders"
 #endif
 
 namespace bbl::pal {
@@ -154,19 +156,21 @@ inline void save_texture_png(SDL_GPUDevice*, SdlGpuCommand& command, SDL_GPUText
 #endif
 
 /**
- * What the shader step's compaction pass assigned, read back at load.
+ * The slots bblite-tint assigned a compiled stage, read back at load.
  *
  * SDL_GPU addresses uniforms by a per-stage slot and textures by a per-stage
- * index, so this backend needs the order the compaction produced. It cannot be
+ * index, so this backend needs the order the compiled stage kept. It cannot be
  * derived from the WGSL: a stage may declare a block it never reads -- the pin's
  * unlit fragment declares its mesh block for the `mli()` helper and then takes
- * no light path -- and Tint strips it, so the source over-counts. The remap
+ * no light path -- and Tint strips it, so the source over-counts. bblite-tint
  * writes a `.slots` file beside each stage naming every register by the pin's
- * own identifier, and this reads it. Both compaction passes write one: a
- * custom sprite fragment declares the layer block and the `fx` block, and
- * which of them survives is the caller's own WGSL to decide.
+ * own identifier, and this reads it: a custom sprite fragment declares the
+ * layer block and the `fx` block, and which of them survives is the caller's
+ * own WGSL to decide.
  */
 struct PinnedStageSlots {
+    /** The entry point the stage's module declared, as the sidecar names it. */
+    std::string entry_point;
     /** Uniform blocks in slot order: `scene`, `lights`, `mesh`, `material`. */
     std::vector<std::string> uniforms;
     /** Texture names in binding order; each one's sampler is bound with it. */
@@ -185,15 +189,15 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
     const std::vector<std::uint8_t> bytes =
         read_binary_file(join_path(shader_root, base_name + ".slots"));
     PinnedStageSlots slots;
-    std::string line;
-    const auto take = [&]() {
+    const auto take = [&](std::string_view line) {
         const std::size_t space = line.find(' ');
-        if (line.empty() || space == std::string::npos)
+        if (line.empty() || space == std::string_view::npos)
             return;
-        const std::string reg = line.substr(0, space);
-        std::string name = line.substr(space + 1);
-        while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) {
-            name.pop_back();
+        const std::string_view reg = line.substr(0, space);
+        const std::string name(line.substr(space + 1));
+        if (reg == "@entry") {
+            slots.entry_point = name;
+            return;
         }
         // Placed at its own register index rather than appended: the sidecar
         // lists declarations in the order they appear in the HLSL, which is not
@@ -212,41 +216,17 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
                                                            : nullptr;
         if (!target)
             return;
-        // Sidecars are generated build artifacts, but a stale or malformed one
-        // must still fail in bounded space. In particular, `stoul("-4")`
-        // produces a huge unsigned value on Windows; resizing to that index
-        // would consume the machine before startup could report the error.
-        constexpr std::size_t max_slot_index = 4096;
-        if (reg.size() < 2) {
-            throw std::runtime_error("Malformed shader slot '" + reg + "' in " + base_name +
-                                     ".slots.");
+        const std::optional<std::uint32_t> index = parse_sidecar_index(reg.substr(1));
+        if (!index) {
+            throw std::runtime_error("Malformed shader slot '" + std::string(reg) + "' in " +
+                                     base_name + ".slots.");
         }
-        std::size_t index = 0;
-        for (std::size_t cursor = 1; cursor < reg.size(); ++cursor) {
-            const char digit = reg[cursor];
-            if (digit < '0' || digit > '9') {
-                throw std::runtime_error("Malformed shader slot '" + reg + "' in " + base_name +
-                                         ".slots.");
-            }
-            index = index * 10 + static_cast<std::size_t>(digit - '0');
-            if (index > max_slot_index) {
-                throw std::runtime_error("Shader slot '" + reg + "' is out of range in " +
-                                         base_name + ".slots.");
-            }
-        }
-        if (target->size() <= index)
-            target->resize(index + 1);
-        (*target)[index] = name;
+        if (target->size() <= *index)
+            target->resize(*index + 1);
+        (*target)[*index] = name;
     };
-    for (const std::uint8_t byte : bytes) {
-        if (byte == '\n') {
-            take();
-            line.clear();
-            continue;
-        }
-        line.push_back(static_cast<char>(byte));
-    }
-    take();
+    for_each_sidecar_line(
+        std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()), take);
     return slots;
 }
 
@@ -258,8 +238,8 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
  * the `fx` block; a body that owns its alpha reads neither, and a block a
  * stage does not read is dropped on the way to the compiled shader. So which
  * of them exists, and at which of this stage's dense slots, is a question
- * only the compaction pass can answer -- which is what it writes beside the
- * stage.
+ * only the compiled stage can answer -- which is what bblite-tint writes
+ * beside it.
  */
 inline int stage_uniform_slot(const PinnedStageSlots& slots, const char* block_name) {
     for (std::size_t index = 0; index < slots.uniforms.size(); ++index) {
@@ -373,50 +353,9 @@ inline void bind_stage_storage(SDL_GPURenderPass* pass, const PinnedStageSlots& 
     SDL_BindGPUVertexStorageBuffers(pass, 0, scratch.data(), static_cast<Uint32>(scratch.size()));
 }
 
-/**
- * The pin's depth compare in this API's enum.
- *
- * `upstream::pinned_depth_compare` carries the value the pin declares; only
- * the mapping onto SDL_GPU's enum belongs to this backend, the same split
- * `sprite_blend_factor` already uses for the pin's blend factors.
- */
-inline SDL_GPUCompareOp gpu_depth_compare(DepthCompare compare) {
-    switch (compare) {
-    case DepthCompare::never:
-        return SDL_GPU_COMPAREOP_NEVER;
-    case DepthCompare::less:
-        return SDL_GPU_COMPAREOP_LESS;
-    case DepthCompare::equal:
-        return SDL_GPU_COMPAREOP_EQUAL;
-    case DepthCompare::less_equal:
-        return SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
-    case DepthCompare::greater:
-        return SDL_GPU_COMPAREOP_GREATER;
-    case DepthCompare::not_equal:
-        return SDL_GPU_COMPAREOP_NOT_EQUAL;
-    case DepthCompare::greater_equal:
-        return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
-    case DepthCompare::always:
-        return SDL_GPU_COMPAREOP_ALWAYS;
-    }
-    return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
-}
-
-inline SDL_GPUBlendFactor gpu_blend_factor(BlendFactor factor) {
-    switch (factor) {
-    case BlendFactor::one:
-        return SDL_GPU_BLENDFACTOR_ONE;
-    case BlendFactor::src_alpha:
-        return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-    case BlendFactor::one_minus_src_alpha:
-        return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-    }
-    return SDL_GPU_BLENDFACTOR_ONE;
-}
-
 // A shared blend tuple in this API's state; the operation is always add
-// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp). Beside the
-// depth-compare translator so the family headers can call it too.
+// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp). Shared so the
+// family headers can call it too.
 inline SDL_GPUColorTargetBlendState blend_state_from(const BlendFactors& factors) {
     SDL_GPUColorTargetBlendState blend{};
     blend.enable_blend = true;
@@ -427,38 +366,6 @@ inline SDL_GPUColorTargetBlendState blend_state_from(const BlendFactors& factors
     blend.src_alpha_blendfactor = gpu_blend_factor(factors.src_alpha);
     blend.dst_alpha_blendfactor = gpu_blend_factor(factors.dst_alpha);
     return blend;
-}
-
-/** A numeric sample count in this API's enum; counts outside the API's
- *  set are refused rather than rounded. */
-inline SDL_GPUSampleCount gpu_sample_count_from(std::uint32_t samples) {
-    switch (samples) {
-    case 1u:
-        return SDL_GPU_SAMPLECOUNT_1;
-    case 2u:
-        return SDL_GPU_SAMPLECOUNT_2;
-    case 4u:
-        return SDL_GPU_SAMPLECOUNT_4;
-    case 8u:
-        return SDL_GPU_SAMPLECOUNT_8;
-    }
-    throw std::runtime_error("No SDL_GPU sample count for " + std::to_string(samples) + ".");
-}
-
-/** The enum back as a number, for the shared rules that reason about
- *  counts (`alpha_to_coverage_enabled`). */
-inline std::uint32_t gpu_sample_count_value(SDL_GPUSampleCount samples) {
-    switch (samples) {
-    case SDL_GPU_SAMPLECOUNT_1:
-        return 1u;
-    case SDL_GPU_SAMPLECOUNT_2:
-        return 2u;
-    case SDL_GPU_SAMPLECOUNT_4:
-        return 4u;
-    case SDL_GPU_SAMPLECOUNT_8:
-        return 8u;
-    }
-    return 1u;
 }
 
 /** One block a stage's resolver named: its bytes, or none. */
@@ -506,10 +413,36 @@ inline void push_stage_uniform(SDL_GPUCommandBuffer* command, int slot, const vo
                                    static_cast<Uint32>(bytes));
 }
 
+/** The vertex-stage twin of `push_stage_uniform`. */
+inline void push_vertex_stage_uniform(SDL_GPUCommandBuffer* command, int slot, const void* data,
+                                      std::size_t bytes) {
+    if (slot < 0)
+        return;
+    SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(slot), data,
+                                 static_cast<Uint32>(bytes));
+}
+
+/** A device for the offline compiler's DXIL, SPIR-V or MSL stages. Its SPIR-V
+ *  is version 1.3, Tint's minimum, which a Vulkan 1.1 instance consumes; SDL's
+ *  default instance requests 1.0. The other backends ignore the Vulkan options. */
+inline SDL_GPUDevice* create_compiled_shader_device(bool debug) {
+    SDL_GPUVulkanOptions vulkan{};
+    vulkan.vulkan_api_version = (1u << 22) | (1u << 12); // VK_MAKE_API_VERSION(0, 1, 1, 0)
+    const auto properties = SDL_CreateProperties();
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_DXIL_BOOLEAN, true);
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_MSL_BOOLEAN, true);
+    SDL_SetBooleanProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN, debug);
+    SDL_SetPointerProperty(properties, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER, &vulkan);
+    SDL_GPUDevice* device = SDL_CreateGPUDeviceWithProperties(properties);
+    SDL_DestroyProperties(properties);
+    return device;
+}
+
 inline void create_sdl_gpu_device(const EngineOptions& engine_options, const DeviceOptions& options,
                                   SdlGpuDevice& state) {
     SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
-#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
+#if BBLITE_HAS_GAMEPAD
     init_flags |= SDL_INIT_GAMEPAD;
 #endif
     if (!initialize_run_sdl(init_flags))
@@ -522,7 +455,7 @@ inline void create_sdl_gpu_device(const EngineOptions& engine_options, const Dev
         gpu_error("SDL_CreateWindow");
 #if defined(__ANDROID__)
     // Prefer helper invocations for discard, retaining derivatives at masked
-    // edges. SDL's default Vulkan 1.0 device does not enable this feature.
+    // edges. The Vulkan 1.1 fallback device does not enable this feature.
     VkPhysicalDeviceVulkan13Features features{};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     features.shaderDemoteToHelperInvocation = VK_TRUE;
@@ -541,9 +474,7 @@ inline void create_sdl_gpu_device(const EngineOptions& engine_options, const Dev
                                true);
 #endif
     if (!state.device)
-        state.device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_SPIRV |
-                                               SDL_GPU_SHADERFORMAT_MSL,
-                                           options.gpu_debug, nullptr);
+        state.device = create_compiled_shader_device(options.gpu_debug);
     if (!state.device)
         gpu_error("SDL_CreateGPUDevice");
     if (!SDL_ClaimWindowForGPUDevice(state.device, state.window)) {
@@ -627,10 +558,43 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
     }
     OwnedSdlShader owned{shader, {device}};
     if (compact_inputs) {
-        const std::lock_guard lock(sdl_shader_inputs_mutex);
-        sdl_shader_inputs.emplace(shader, std::move(inputs));
+        auto& registry = sdl_shader_inputs();
+        const std::lock_guard lock(registry.mutex);
+        registry.layouts.emplace(shader, std::move(inputs));
     }
     return owned;
+}
+
+/**
+ * A stage created entirely from its sidecar: the entry point the module
+ * declared, and the uniform, texture and storage counts the compiled stage
+ * kept. Nothing about the stage is restated here, so a module the pin
+ * reshapes reaches the device as the pin wrote it.
+ */
+inline OwnedSdlShader load_shader(SDL_GPUDevice* device, const std::string& stem,
+                                  SDL_GPUShaderStage stage, const PinnedStageSlots& slots) {
+    if (slots.entry_point.empty()) {
+        throw std::runtime_error("Shader stage " + stem + ".slots names no entry point.");
+    }
+    return load_shader(device, stem.c_str(), stage,
+                       static_cast<std::uint32_t>(slots.textures.size()),
+                       static_cast<std::uint32_t>(slots.uniforms.size()), slots.entry_point.c_str(),
+                       static_cast<std::uint32_t>(slots.storage.size()),
+                       static_cast<std::uint32_t>(slots.storage_textures.size()));
+}
+
+/** A compiled stage and the sidecar it was created from. */
+struct PinnedStage {
+    OwnedSdlShader shader;
+    PinnedStageSlots slots;
+};
+
+/** Read a stage's sidecar and create the stage from it. */
+inline PinnedStage load_pinned_stage(SDL_GPUDevice* device, const std::string& stem,
+                                     SDL_GPUShaderStage stage) {
+    PinnedStageSlots slots = read_pinned_stage_slots(stem);
+    OwnedSdlShader shader = load_shader(device, stem, stage, slots);
+    return {std::move(shader), std::move(slots)};
 }
 
 inline SDL_GPUBuffer* upload_buffer(SDL_GPUDevice* device, SDL_GPUBufferUsageFlags usage,
@@ -947,22 +911,12 @@ private:
 
 inline SDL_GPUSampler* create_texture_sampler(SDL_GPUDevice* device,
                                               const TextureSamplerState& sampler) {
-    const auto filter = [](TextureFilter value) {
-        return value == TextureFilter::nearest ? SDL_GPU_FILTER_NEAREST : SDL_GPU_FILTER_LINEAR;
-    };
-    const auto address = [](TextureAddressMode value) {
-        return value == TextureAddressMode::clamp    ? SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE
-               : value == TextureAddressMode::mirror ? SDL_GPU_SAMPLERADDRESSMODE_MIRRORED_REPEAT
-                                                     : SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
-    };
     SDL_GPUSamplerCreateInfo info{};
-    info.min_filter = filter(sampler.min_filter);
-    info.mag_filter = filter(sampler.mag_filter);
-    info.mipmap_mode = sampler.mipmap_mode == TextureMipmapMode::nearest
-                           ? SDL_GPU_SAMPLERMIPMAPMODE_NEAREST
-                           : SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
-    info.address_mode_u = address(sampler.address_u);
-    info.address_mode_v = address(sampler.address_v);
+    info.min_filter = gpu_filter(sampler.min_filter);
+    info.mag_filter = gpu_filter(sampler.mag_filter);
+    info.mipmap_mode = gpu_mipmap_mode(sampler.mipmap_mode);
+    info.address_mode_u = gpu_address_mode(sampler.address_u);
+    info.address_mode_v = gpu_address_mode(sampler.address_v);
     // Mirror the pinned descriptor exactly, as the Dawn twin does: the
     // pin never sets addressModeW, so W stays at the WebGPU clamp
     // default, and only the noMip path overrides the LOD clamp

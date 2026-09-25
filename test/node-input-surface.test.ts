@@ -275,6 +275,8 @@ test(
                 materialTextureSlotsHeader(
                     {
                         transmission: false,
+                        transmissionMap: false,
+                        thicknessMap: false,
                         clearcoat: false,
                         sheen: false,
                         iridescence: false,
@@ -398,7 +400,7 @@ test("node input state refuses numeric, reflective and late binding mutation at 
         ],
         [
             "material.inputs.albedo!.texture = texture; Object.assign(texture, {uOffset: .5});",
-            /reflective texture producer/,
+            /reflective texture producer|Object\.assign cannot write into a texture value/,
         ],
         [
             "const pixels = createTexture2DFromPixels(engine, new Uint8Array([1,2,3,4]), 1, 1); material.inputs.albedo!.texture = texture; pixels.uOffset = .5;",
@@ -447,12 +449,12 @@ test("options-only node materials enforce deferred binding boundaries without pu
         [
             "",
             "Object.assign(texture, {uOffset: .5});",
-            /reflective texture producer/,
+            /reflective texture producer|Object\.assign cannot write into a texture value/,
         ],
         [
             "Object.assign(texture, {uOffset: .5});",
             "",
-            /reflective texture producer/,
+            /reflective texture producer|Object\.assign cannot write into a texture value/,
         ],
         [
             "",

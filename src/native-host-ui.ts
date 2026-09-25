@@ -18,11 +18,10 @@ import {
     isUiStyleSelectorKind,
     isUiScrollbarPart,
     isUiRangePart,
-    nativeHostUiStyleRules,
     type NativeHostUiStyleRule,
 } from "./ui-style-rule.js";
 
-export function refuseUnknownKeys(
+function refuseUnknownKeys(
     record: Record<string, unknown>,
     known: readonly string[],
     location: string,
@@ -34,7 +33,7 @@ export function refuseUnknownKeys(
     }
 }
 
-export function nativeHostUiElement(
+function nativeHostUiElement(
     value: unknown,
     location: string,
 ): NativeHostUiElement {
@@ -115,42 +114,12 @@ export function readNativeHostUi(path: string): NativeHostUi {
     const record = value as Record<string, unknown>;
     refuseUnknownKeys(
         record,
-        ["elements", "classStyles", "styleRules"],
+        ["elements", "styleRules"],
         `Native host UI '${path}'`,
     );
     if (!Array.isArray(record.elements)) {
         throw new Error(`Native host UI '${path}' must contain elements[].`);
     }
-    if (
-        record.classStyles !== undefined &&
-        !Array.isArray(record.classStyles)
-    ) {
-        throw new Error(
-            `Native host UI '${path}' classStyles must be an array.`,
-        );
-    }
-    const classStyles = (record.classStyles ?? []).map((rule, index) => {
-        if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
-            throw new Error(
-                `Native host UI '${path}' classStyles[${index}] must be an object.`,
-            );
-        }
-        const item = rule as Record<string, unknown>;
-        refuseUnknownKeys(
-            item,
-            ["className", "style"],
-            `Native host UI '${path}' classStyles[${index}]`,
-        );
-        if (
-            typeof item.className !== "string" ||
-            typeof item.style !== "string"
-        ) {
-            throw new Error(
-                `Native host UI '${path}' classStyles[${index}] requires string className and style values.`,
-            );
-        }
-        return { className: item.className, style: item.style };
-    });
     if (record.styleRules !== undefined && !Array.isArray(record.styleRules)) {
         throw new Error(
             `Native host UI '${path}' styleRules must be an array.`,
@@ -284,14 +253,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
         // As given (registry-relative), so the recorded activation site is
         // machine-independent where an absolute resolution would not be.
         sourcePath: path,
-        ...(classStyles.length > 0 || styleRules.length > 0
-            ? {
-                  styleRules: nativeHostUiStyleRules({
-                      classStyles,
-                      styleRules,
-                  }),
-              }
-            : {}),
+        ...(styleRules.length > 0 ? { styleRules } : {}),
         elements: record.elements.map((element, index) =>
             nativeHostUiElement(
                 element,

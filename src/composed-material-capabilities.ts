@@ -12,14 +12,14 @@
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
 
 /** A composed stage pair, whichever family produced it. */
-export interface ComposedStages {
+interface ComposedStages {
     /** The pin's own composition key -- the fragment ids joined by `|`. */
     fragmentKey?: string;
     vertexWgsl: string;
     fragmentWgsl: string;
 }
 
-export interface ComposedMaterialCapabilities {
+interface ComposedMaterialCapabilities {
     /** Some PBR variant spliced the pin's clearcoat fragment. */
     clearcoat: boolean;
     /** Some PBR variant spliced the pin's sheen fragment. */
@@ -44,6 +44,17 @@ export interface ComposedMaterialCapabilities {
     standardLightmap: boolean;
     metallicReflectanceMap: boolean;
     reflectanceMap: boolean;
+    /**
+     * Some PBR variant binds the refraction fragment's transmission map
+     * (`refractionMapTexture`); the slot follows the composed binding, not
+     * the transmission renderer, which only the scene-colour grab needs.
+     */
+    transmissionMap: boolean;
+    /**
+     * Some PBR variant binds the thickness map (`thicknessTexture_`), which
+     * the refraction fragment and the translucency fragment both declare.
+     */
+    thicknessMap: boolean;
     anisotropyMap: boolean;
     translucencyColorMap: boolean;
     translucencyIntensityMap: boolean;
@@ -101,6 +112,8 @@ export function composedMaterialCapabilities(
         standardLightmap,
         metallicReflectanceMap: pbrBindingNames.has("metallicReflectanceMap"),
         reflectanceMap: pbrBindingNames.has("reflectanceMap"),
+        transmissionMap: pbrBindingNames.has("refractionMapTexture"),
+        thicknessMap: pbrBindingNames.has("thicknessTexture_"),
         anisotropyMap: pbrBindingNames.has("anisotropyTexture_"),
         translucencyColorMap: pbrBindingNames.has("translucencyColorTexture_"),
         translucencyIntensityMap: pbrBindingNames.has(

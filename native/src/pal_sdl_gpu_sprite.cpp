@@ -8,10 +8,16 @@
 // present. This translation unit exists because a scene registering no
 // `SceneContext` generates no camera math and no render plan, so
 // `pal_sdl_gpu.cpp` cannot be compiled for it at all.
+#include <bblite/features/has_canvas_renderer.hpp>
+#include <bblite/features/has_sprite_renderer.hpp>
+#include <bblite/features/has_text_renderer.hpp>
+#include <bblite/features/has_ui.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#include <bblite/text_gpu.hpp>
+#if BBLITE_HAS_UI
 #include <bblite/pal_ui.hpp>
 #endif
 
@@ -34,8 +40,8 @@
 #if BBLITE_HAS_SPRITE_RENDERER
 #include "pal_sdl_gpu_sprite.hpp"
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-#include "pal_sprite_ui_sdl.hpp"
+#if BBLITE_HAS_UI
+#include "pal_sdl_gpu_sprite_ui.hpp"
 #endif
 
 namespace bbl::pal {
@@ -43,7 +49,7 @@ namespace bbl::pal {
 #if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_TEXT_RENDERER
 
 namespace {
-class SdlSpriteRun : public FrameSession {
+class SdlSpriteRun : public RendererRun<SdlSpriteRun> {
     SdlGpuDevice gpu{};
     SDL_Window*& window = gpu.window;
     SDL_GPUDevice*& device = gpu.device;
@@ -57,7 +63,7 @@ class SdlSpriteRun : public FrameSession {
     std::vector<SpritePass> passes;
     std::vector<SDL_GPUTexture*> render_textures;
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     UiRmlRuntime* ui_runtime = nullptr;
     SpriteUiSdlResources ui_resources;
     UiSdlReadableSurface readable_surface;
@@ -72,10 +78,7 @@ class SdlSpriteRun : public FrameSession {
 #endif
     std::uint32_t width = 0, height = 0;
     double delta_ms = 0;
-    bool canvas_only = false, capture_ui = false, mem_profile = false;
-#if BBLITE_HAS_TEXT_RENDERER
-    std::optional<SdlStandaloneTextOps> text_operations;
-#endif
+    bool canvas_only = false, capture_ui = false;
 #if BBLITE_HAS_SPRITE_RENDERER
     void sync_render_textures() {
         render_textures.resize(engine.sprite_render_textures.size(), nullptr);
@@ -126,15 +129,11 @@ class SdlSpriteRun : public FrameSession {
         }
     }
 #endif
-    void discard_frame() {
-#if BBLITE_HAS_TEXT_RENDERER
-        text_operations.reset();
-#endif
-    }
 
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_encoding;
-    explicit SdlSpriteRun(Engine& target) : FrameSession(target) {}
+    static constexpr const char* backend_label = "SDL_GPU";
+    explicit SdlSpriteRun(Engine& target) : RendererRun(target) {}
     ~SdlSpriteRun() {
         discard_frame();
         command.reset();
@@ -144,7 +143,7 @@ public:
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer.reset();
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         if (device) {
             release_sprite_ui_sdl_resources(device, ui_resources);
             readable_surface.release(device);
@@ -167,10 +166,9 @@ public:
     }
     void setup() {
         reject_unsupported_frame_options(frame_options, "SDL_GPU sprites", true, false);
-        canvas_only =
-            !bbl::has_sprite_renderers(engine) && engine.registered_text_renderers.empty();
+        canvas_only = !bbl::has_sprite_renderers(engine) && !bbl::has_text_renderers(engine);
         if (canvas_only
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
             && engine.primary_canvas.value >= engine.ui_elements.size()
 #endif
         ) {
@@ -184,6 +182,7 @@ public:
 #if BBLITE_HAS_TEXT_RENDERER
         text_renderer =
             std::make_unique<SdlTextRenderer>(device, !frame_options.render_capture_path.empty());
+        text_renderer->device->color_format = swapchain_format;
 #endif
         // One batch for the run: its transfer buffer persists across
         // frames, so a per-frame sprite mutation stages its dirty span
@@ -192,7 +191,7 @@ public:
 #if BBLITE_HAS_SPRITE_RENDERER
         buffer_uploads = std::make_unique<GpuBufferUploadBatch>(device);
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         ui_runtime =
             create_ui_rml_runtime(engine, window, static_cast<std::uint32_t>(engine.options.width),
                                   static_cast<std::uint32_t>(engine.options.height));
@@ -203,21 +202,19 @@ public:
         sync_render_textures();
         sync_renderer_passes();
 #endif
-        mem_profile = environment_variable("BBLITE_MEM_PROFILE") == "1";
         capture_ui = frame_options.capture_ui || canvas_only;
         capture_run = captures.requested();
     }
-    FramePreparation prepare() {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    SDL_Window* sdl_window() const { return window; }
+    std::string driver() const { return SDL_GetGPUDeviceDriver(device); }
+    void poll_events() {
+#if BBLITE_HAS_UI
         poll_platform_events(engine, running, frame_options.test_pass, [&](SDL_Event& event) {
             return handle_ui_rml_event(*ui_runtime, event);
         });
 #else
-        poll_platform_events(engine, running, frame_options.test_pass);
+        RendererRun::poll_events();
 #endif
-        input_replay.dispatch(frame, window, engine);
-        sync_engine_canvas_size(window, engine);
-        return FramePreparation::ready;
     }
     FramePreparation update() {
         delta_ms = advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
@@ -227,7 +224,7 @@ public:
         surface_width = 0;
         surface_height = 0;
         SDL_GetWindowSizeInPixels(window, &surface_width, &surface_height);
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame -- the same slot the
         // scene loops and the Dawn host give it, ahead of every sprite
@@ -255,8 +252,7 @@ public:
             discard_frame();
             return false;
         }
-        capture_frame = frame >= frame_options.screenshot_frame && !captures.screenshot_saved &&
-                        !frame_options.screenshot_path.empty();
+        capture_frame = screenshot_due();
 
         // Rendered offscreen and blitted only on a capture run,
         // because a swapchain texture cannot be read back for the
@@ -285,10 +281,9 @@ public:
 #if BBLITE_HAS_TEXT_RENDERER
         // Text contexts update right after layout and before the sprite
         // contexts, the one slot both hosts give them.
-        text_renderer->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-        auto& text_ops = text_operations.emplace(*text_renderer, swapchain_format);
-        for (const auto& renderer : engine.registered_text_renderers)
-            update_text_renderer(*renderer, surface_width, surface_height, device, text_ops);
+        text_renderer->device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
+        update_sdl_text_renderers(engine, *text_renderer, static_cast<double>(surface_width),
+                                  static_cast<double>(surface_height));
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -303,7 +298,7 @@ public:
             // first, so one that moves a sprite or a layer is seen by
             // this frame's mirror rebuild and upload rather than the
             // next one's.
-            run_sprite_renderer_before_update(engine, pass.renderer, delta_ms);
+            begin_sprite_renderer_update(engine, pass.renderer, delta_ms);
             // A scene callback may have added, removed or disposed a
             // layer since the last frame; the GPU mirror is addressed
             // by position, so it is rebuilt before anything reads it.
@@ -314,15 +309,12 @@ public:
 #endif
     }
     void encode() {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         const UiRenderFrame& ui_frame = record_ui_rml_frame(*ui_runtime, width, height);
         auto* present_swapchain = swapchain;
         swapchain =
             readable_surface.target(device, swapchain, swapchain_format, width, height,
                                     !ui_frame.backdrops.empty() && !(capture_frame && capture_ui));
-#endif
-#if BBLITE_HAS_TEXT_RENDERER
-        auto& text_ops = *text_operations;
 #endif
         if (canvas_only) {
             SDL_GPUColorTargetInfo target{};
@@ -333,13 +325,7 @@ public:
             pass.end();
         }
 #if BBLITE_HAS_TEXT_RENDERER
-        text_ops.command = command;
-        text_ops.target = capture_run ? color : swapchain;
-        {
-            const auto end_text_pass = js::finally([&] { text_ops.owned_pass.end(); });
-            for (const auto& renderer : engine.registered_text_renderers)
-                record_text_renderer(*renderer, text_ops);
-        }
+        record_sdl_text_renderers(engine, *text_renderer, command, capture_run ? color : swapchain);
 #endif
 #if BBLITE_HAS_SPRITE_RENDERER
         for (std::size_t first_index = 0; first_index < passes.size();) {
@@ -368,7 +354,7 @@ public:
         }
 #endif
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         const bool ui_in_capture = capture_frame && capture_ui;
         if (ui_in_capture) {
             render_sprite_ui_sdl_frame(device, command, color, swapchain_format, ui_resources,
@@ -379,7 +365,7 @@ public:
         captures.maybe_write_standalone_render_capture("sdl_gpu", engine, width, height, frame
 #if BBLITE_HAS_TEXT_RENDERER
                                                        ,
-                                                       &text_renderer->owner->capture
+                                                       &text_renderer->device->owner->capture
 #endif
         );
 
@@ -392,7 +378,7 @@ public:
             blit.filter = SDL_GPU_FILTER_NEAREST;
             SDL_BlitGPUTexture(command, &blit);
         }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         if (!ui_in_capture) {
             render_sprite_ui_sdl_frame(device, command, swapchain, swapchain_format, ui_resources,
                                        ui_frame);
@@ -409,25 +395,10 @@ public:
             gpu_error("SDL_SubmitGPUCommandBuffer sprite");
         }
     }
-    void complete() {
-        FrameSession::complete([&] {
-            if (mem_profile && frame % memory_profile_frames == 0)
-                print_memory_frame_profile(frame, engine, 0, 0, 0, 0);
-        });
-        discard_frame();
-    }
-    void report() { FrameSession::report("SDL_GPU", SDL_GetGPUDeviceDriver(device)); }
 };
 } // namespace
 
-bool run_sprite_gpu_engine(Engine& engine) {
-    SdlSpriteRun renderer(engine);
-    renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {
-    }
-    renderer.report();
-    return true;
-}
+void run_sprite_gpu_engine(Engine& engine) { SdlSpriteRun::run(engine); }
 #endif
 
 } // namespace bbl::pal

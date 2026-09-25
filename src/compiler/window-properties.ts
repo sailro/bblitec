@@ -1,23 +1,22 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
-import type { Value } from "./types.js";
+import { optionalPresentCpp, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { EmissionMap } from "./emission-transaction.js";
-import { browserGlobalNamed } from "./browser-erasure.js";
-import { declaredInDefaultLibrary } from "./symbols.js";
+import { declaredInDefaultLibrary, resolvedSymbol } from "./symbols.js";
 
 type Context = Pick<
     LoweringServices,
     | "options"
     | "checker"
     | "unwrap"
-    | "lookupOptional"
-    | "isDefaultLibraryIdentifier"
+    | "bindings"
+    | "libraryGlobal"
     | "dataTypes"
     | "dataLowerer"
     | "compileValue"
     | "allocateTemporaryCppName"
-    | "registerNativeFunction"
+    | "nativeEmission"
     | "emit"
     | "fail"
 >;
@@ -39,16 +38,16 @@ export class WindowProperties {
         const node = context.unwrap(expression);
         if (!ts.isPropertyAccessExpression(node)) return undefined;
         const owner = context.unwrap(node.expression);
-        const global = browserGlobalNamed(context, owner)?.text;
+        const global = context.libraryGlobal(owner);
         const alias = ts.isIdentifier(owner)
-            ? context.lookupOptional(owner)
+            ? context.bindings.lookupOptional(owner)
             : undefined;
         if (
             !["window", "globalThis"].includes(global ?? "") &&
             alias?.domEventTargetCpp !== "bbl::DomEventTarget::window()"
         )
             return undefined;
-        const symbol = context.checker.getSymbolAtLocation(node.name);
+        const symbol = resolvedSymbol(context.checker, node);
         if (declaredInDefaultLibrary(symbol)) return undefined;
         return node;
     }
@@ -77,7 +76,7 @@ export class WindowProperties {
             );
         const cpp =
             field.type.kind === "optional"
-                ? `(${field.cpp}.has_value() ? *${field.cpp} : ${this.context.dataTypes.cppType(type)}{})`
+                ? `(${optionalPresentCpp(field.cpp)} ? *${field.cpp} : ${this.context.dataTypes.cppType(type)}{})`
                 : field.cpp;
         return this.context.dataLowerer.compileStoredCall(call, cpp, type);
     }
@@ -112,12 +111,15 @@ export class WindowProperties {
                       };
             const cppType = context.dataTypes.cppType(type);
             const name = context.allocateTemporaryCppName("window_property");
-            context.registerNativeFunction(`${cppType}& ${name}();`, [
-                `${cppType}& ${name}() {`,
-                `    struct Storage { ${cppType} value{}; };`,
-                "    return bbl::js::realm_scratch<Storage>().value;",
-                "}",
-            ]);
+            context.nativeEmission.registerNativeFunction(
+                `${cppType}& ${name}();`,
+                [
+                    `${cppType}& ${name}() {`,
+                    `    struct Storage { ${cppType} value{}; };`,
+                    "    return bbl::js::realm_scratch<Storage>().value;",
+                    "}",
+                ],
+            );
             field = { type, cpp: `bblscene::${name}()` };
             this.fields.set(target.name.text, field);
         }

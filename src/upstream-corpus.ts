@@ -18,11 +18,11 @@ export interface CorpusFile {
     sha256: string;
 }
 
-export interface CorpusScene extends CorpusFile {
+interface CorpusScene extends CorpusFile {
     id: string;
 }
 
-export interface CorpusApplication {
+interface CorpusApplication {
     id: string;
     entry: string;
     reference: {

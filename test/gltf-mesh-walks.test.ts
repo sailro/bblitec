@@ -221,7 +221,7 @@ test("compiler demand is per asset and keeps distinct source collector orders", 
     assert.equal(result.manifest.meshWalks?.length, 3);
     assert.match(result.cpp, /bbl::asset_mesh_walk\([^\n]+, 0\)/);
     assert.match(result.cpp, /bbl::asset_mesh_walk\([^\n]+, 1\)/);
-    assert.match(result.cpp, /\.assets\[[^\]]+\]\.meshes/);
+    assert.match(result.cpp, /\.assets, [^)]+\)\.meshes/);
     assert.deepEqual(
         await gltfMeshWalks(hierarchy, result.manifest.meshWalks),
         [stackOrder, preorderOrder, preorderOrder],

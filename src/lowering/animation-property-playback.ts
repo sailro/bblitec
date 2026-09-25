@@ -35,20 +35,11 @@ export function lowerPropertyAnimationPlayback(
     const bindings = new Map<string, PinnedBinding>([
         ["ctrl.time", { cpp: "time", type: "scalar" }],
         ["ctrl.playing", { cpp: "group.playing", type: "bool" }],
-        [
-            "ctrl.speedRatio",
-            { cpp: "static_cast<double>(group.speed_ratio)", type: "scalar" },
-        ],
+        ["ctrl.speedRatio", { cpp: "group.speed_ratio", type: "scalar" }],
         ["ctrl.loop", { cpp: "group.loop", type: "bool" }],
         ["deltaMs", { cpp: "delta_ms", type: "scalar" }],
-        [
-            "fromTime",
-            { cpp: "static_cast<double>(group.from_time)", type: "scalar" },
-        ],
-        [
-            "toTime",
-            { cpp: "static_cast<double>(group.to_time)", type: "scalar" },
-        ],
+        ["fromTime", { cpp: "group.from_time", type: "scalar" }],
+        ["toTime", { cpp: "group.to_time", type: "scalar" }],
     ]);
     const clock = lowerPinnedBody(file, tick.body.statements, {
         bindings,
@@ -100,10 +91,7 @@ ${lowerPinnedBody(source.file, source.declaration.body!.statements, {
                     "group.currentTime",
                     { cpp: "group.current_time", type: "scalar" },
                 ],
-                [
-                    "group._ctrl.time",
-                    { cpp: "static_cast<float>(time)", type: "scalar" },
-                ],
+                ["group._ctrl.time", { cpp: "time", type: "scalar" }],
                 ["deltaMs", { cpp: "delta_ms", type: "scalar" }],
                 ["engine", { cpp: "true", type: "bool" }],
             ]),
@@ -128,9 +116,7 @@ ${lowerPinnedBody(source.file, source.declaration.body!.statements, {
                         "syncControllerFromGroup(group, group._ctrl)",
                         "Property playback source state sync",
                     );
-                    return [
-                        `${indent}double time = static_cast<double>(group.current_time);`,
-                    ];
+                    return [`${indent}double time = group.current_time;`];
                 }
                 if (
                     context.expressionMatchesShape(

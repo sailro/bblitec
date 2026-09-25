@@ -1,0 +1,32 @@
+Name an unnamed keyboard or mouse by its vendor/product IDs without the gamepad
+table when the joystick subsystem is compiled out: SDL_CreateDeviceName asks the
+controller-type table (src/joystick/controller_type.c) which gamepad an unnamed
+device is, which links that table into every trimmed SDL that has no joystick
+support and never names a gamepad.
+
+diff --git a/src/SDL_utils.c b/src/SDL_utils.c
+index 146d816..792bb35 100644
+--- a/src/SDL_utils.c
++++ b/src/SDL_utils.c
+@@ -528,6 +528,13 @@ char *SDL_CreateDeviceName(Uint16 vendor, Uint16 product, const char *vendor_nam
+     } else if (*product_name) {
+         name = SDL_strdup(product_name);
+     } else if (vendor || product) {
++#ifdef SDL_JOYSTICK_DISABLED
++        len = (6 + 1 + 6 + 1);
++        name = (char *)SDL_malloc(len);
++        if (name) {
++            (void)SDL_snprintf(name, len, "0x%.4x/0x%.4x", vendor, product);
++        }
++#else
+         // Couldn't find a controller name, try to give it one based on device type
+         switch (SDL_GetGamepadTypeFromVIDPID(vendor, product, NULL, true)) {
+         case SDL_GAMEPAD_TYPE_XBOX360:
+@@ -556,6 +563,7 @@ char *SDL_CreateDeviceName(Uint16 vendor, Uint16 product, const char *vendor_nam
+             }
+             break;
+         }
++#endif
+     } else if (default_name) {
+         name = SDL_strdup(default_name);
+     }

@@ -13,14 +13,20 @@
  * member is read off a value, what a call target is. Every residual arm --
  * a C++ expression standing in for a run-time value, the flow graph's
  * emitted `if` -- and every opaque tag stays the family's, reached through
- * the model's optional hooks, the way `ReferenceSchema` hands
- * `PinnedReferenceLowerer` its `expression`/`statement` hooks.
+ * the model's optional hooks, the way a `PinnedNumericScope` hands the
+ * numeric translator its `expression`/`statement` hooks.
  *
  * A construct neither the walk nor the model evaluates refuses through the
  * model's `refuse`, by name, rather than approximating.
  */
 import ts from "typescript";
+import { moduleScopeVariable } from "../pinned-program.js";
 import type { LoweringContext } from "./context.js";
+import {
+    foldNumericBinary,
+    foldNumericComparison,
+    foldNumericUnary,
+} from "./pinned-operators.js";
 
 /** A lexical environment: bindings by name, resolved through the parents. */
 export class Env<B> {
@@ -44,8 +50,7 @@ export type Completion<V> =
 export const NORMAL: Completion<never> = { kind: "normal" };
 
 /** JavaScript truthiness: decided at generation, or a C++ `bool`. */
-export type Truth =
-    { k: "static"; value: boolean } | { k: "residual"; cpp: string };
+type Truth = { k: "static"; value: boolean } | { k: "residual"; cpp: string };
 
 /**
  * What the evaluator needs to know about a value to apply JavaScript's own
@@ -225,7 +230,7 @@ export interface ValueModel<V, B> {
 }
 
 /** JavaScript's `typeof` of a value generation holds. */
-export function jsTypeof(raw: unknown): string {
+function jsTypeof(raw: unknown): string {
     return raw === null ? "object" : typeof raw;
 }
 
@@ -538,7 +543,7 @@ export class PartialEvaluator<V, B> {
         if (ts.isIdentifier(node)) {
             const bound = frame.env.lookup(node.text);
             if (bound) return this.model.valueOf(bound);
-            return this.resolveFree(node.text, frame.file, frame.module, node);
+            return this.resolveFree(node, frame.module);
         }
         if (ts.isPropertyAccessExpression(node)) {
             const owner = this.expression(node.expression, frame);
@@ -569,14 +574,13 @@ export class PartialEvaluator<V, B> {
                     ? this.model.residual.not(known.cpp, node)
                     : this.fail(node, "negation of a run-time value");
             }
+            const classified = this.model.classify(operand);
+            const folded =
+                classified.k === "value" && typeof classified.raw === "number"
+                    ? foldNumericUnary(node.operator, classified.raw)
+                    : undefined;
+            if (folded !== undefined) return this.model.raw(folded);
             if (node.operator === ts.SyntaxKind.MinusToken) {
-                const classified = this.model.classify(operand);
-                if (
-                    classified.k === "value" &&
-                    typeof classified.raw === "number"
-                ) {
-                    return this.model.raw(-classified.raw);
-                }
                 return (
                     this.model.negate?.(operand, node) ??
                     this.fail(node, "prefix operator")
@@ -743,30 +747,12 @@ export class PartialEvaluator<V, B> {
             if (typeof a !== "number" || typeof b !== "number") {
                 this.fail(node, "operator over non-numbers");
             }
-            switch (kind) {
-                case ts.SyntaxKind.PlusToken:
-                    return this.model.raw(a + b);
-                case ts.SyntaxKind.MinusToken:
-                    return this.model.raw(a - b);
-                case ts.SyntaxKind.AsteriskToken:
-                    return this.model.raw(a * b);
-                case ts.SyntaxKind.SlashToken:
-                    return this.model.raw(a / b);
-                case ts.SyntaxKind.PercentToken:
-                    return this.model.raw(a % b);
-                case ts.SyntaxKind.LessThanToken:
-                    return this.model.raw(a < b);
-                case ts.SyntaxKind.LessThanEqualsToken:
-                    return this.model.raw(a <= b);
-                case ts.SyntaxKind.GreaterThanToken:
-                    return this.model.raw(a > b);
-                case ts.SyntaxKind.GreaterThanEqualsToken:
-                    return this.model.raw(a >= b);
-                case ts.SyntaxKind.BarToken:
-                    return this.model.raw(a | b);
-                default:
-                    return this.fail(node, "operator");
-            }
+            const folded =
+                foldNumericBinary(kind, a, b) ??
+                foldNumericComparison(kind, a, b);
+            return folded === undefined
+                ? this.fail(node, "operator")
+                : this.model.raw(folded);
         }
         return (
             this.model.binary?.(kind, left, right, node) ??
@@ -797,12 +783,7 @@ export class PartialEvaluator<V, B> {
             const bound = frame.env.lookup(callee.text);
             const target = bound
                 ? this.model.valueOf(bound)
-                : this.resolveFree(
-                      callee.text,
-                      frame.file,
-                      frame.module,
-                      callee,
-                  );
+                : this.resolveFree(callee, frame.module);
             return this.invoke(target, args(), node, frame, callee.text);
         }
         if (ts.isPropertyAccessExpression(callee)) {
@@ -933,66 +914,72 @@ export class PartialEvaluator<V, B> {
     // ── Free names ────────────────────────────────────────────────────────
 
     /**
-     * A name no local declared: a builtin, a module constant, a same-module
-     * function or a named import -- or undefined when the module declares
-     * none of these.
+     * A name no local declared: a builtin, or the module constant or
+     * function the typed program resolves it to, wherever the pin declares
+     * it -- or undefined when it names none of these.
      */
-    public findFree(
-        name: string,
-        file: ts.SourceFile,
-        module: string,
-    ): V | undefined {
+    public findFree(identifier: ts.Identifier, module: string): V | undefined {
+        const name = identifier.text;
         const env = this.moduleEnv(module);
         const cached = env.lookup(name);
         if (cached) return this.model.valueOf(cached);
         const builtin = this.model.builtin(name);
         if (builtin !== undefined) return builtin;
-        const constant = this.context.moduleScopeConstant(file, name);
-        if (constant) {
-            const value = this.expression(constant, frame(env, file, module));
+        const declared = this.context.declarationOf(identifier);
+        const value = declared && this.declaredValue(declared);
+        if (value !== undefined)
             env.declare(name, this.model.declared(name, value, false));
-            return value;
-        }
-        const declaration = file.statements.find(
-            (statement): statement is ts.FunctionDeclaration =>
-                ts.isFunctionDeclaration(statement) &&
-                statement.name?.text === name &&
-                statement.body !== undefined,
-        );
-        if (declaration) {
-            const value = this.model.functionValue({
-                declaration,
+        return value;
+    }
+
+    /**
+     * What a module-scope `const` or function declaration holds, evaluated
+     * once in the module declaring it.
+     */
+    private declaredValue(declaration: ts.Declaration): V | undefined {
+        const file = declaration.getSourceFile();
+        const module = file.fileName;
+        const env = this.moduleEnv(module);
+        const constant = moduleScopeVariable(declaration);
+        const fn =
+            ts.isFunctionDeclaration(declaration) &&
+            declaration.body !== undefined &&
+            declaration.name !== undefined &&
+            ts.isSourceFile(declaration.parent)
+                ? declaration
+                : undefined;
+        const name = constant?.name.text ?? fn?.name?.text;
+        if (name === undefined) return undefined;
+        const cached = env.lookup(name);
+        if (cached) return this.model.valueOf(cached);
+        let value: V;
+        if (constant) {
+            if (
+                !constant.initializer ||
+                (constant.parent.flags & ts.NodeFlags.Const) === 0
+            )
+                return undefined;
+            value = this.expression(
+                constant.initializer,
+                frame(env, file, module),
+            );
+        } else {
+            value = this.model.functionValue({
+                declaration: fn!,
                 file,
                 module,
             });
-            env.declare(name, this.model.declared(name, value, false));
-            return value;
         }
-        const imported = this.context.moduleOfImport(module, name);
-        if (imported) {
-            const value = this.findFree(
-                name,
-                this.context.sourceFile(imported),
-                imported,
-            );
-            if (value !== undefined)
-                env.declare(name, this.model.declared(name, value, false));
-            return value;
-        }
-        return undefined;
+        env.declare(name, this.model.declared(name, value, false));
+        return value;
     }
 
-    public resolveFree(
-        name: string,
-        file: ts.SourceFile,
-        module: string,
-        site: ts.Node,
-    ): V {
+    public resolveFree(identifier: ts.Identifier, module: string): V {
         return (
-            this.findFree(name, file, module) ??
+            this.findFree(identifier, module) ??
             this.context.contractError(
-                site,
-                `The pinned body reads '${name}', which resolves to nothing.`,
+                identifier,
+                `The pinned body reads '${identifier.text}', which resolves to nothing.`,
             )
         );
     }

@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { libraryGlobal } from "./symbols.js";
 
 interface NativeReturnTypeOptions {
     /** Leave promises opaque while still recognizing a declared Promise<void>. */
@@ -18,8 +18,7 @@ export function nativeReturnTsType(
         declaredReturn &&
         ts.isTypeReferenceNode(declaredReturn) &&
         ts.isIdentifier(declaredReturn.typeName) &&
-        declaredReturn.typeName.text === "Promise" &&
-        isDefaultLibraryIdentifier(checker, declaredReturn.typeName) &&
+        libraryGlobal(checker, declaredReturn.typeName) === "Promise" &&
         declaredReturn.typeArguments?.length === 1 &&
         declaredReturn.typeArguments[0]!.kind === ts.SyntaxKind.VoidKeyword
     ) {

@@ -34,9 +34,9 @@ interface PinCamera {
     inertialPanningY: number;
 }
 
-function cameraSources(output: string, tracking = true): string[] {
+function cameraSources(output: string): string[] {
     const context = new LoweringContext();
-    const lowerer = new CameraLowerer(context, tracking);
+    const lowerer = new CameraLowerer(context);
     const headers = join(output, "include/bblite/upstream");
     mkdirSync(headers, { recursive: true });
     const controls = lowerer.lowerControls();
@@ -457,7 +457,7 @@ test("native camera animation uses the pinned scalar setter and limit hook on ea
 #define main generated_main
 #include "program.hpp"
 #undef main
-namespace bbl { Engine create_engine(EngineOptions) { return {}; } void mark_mesh_runtime_transform(Engine&, MeshHandle) {} }
+namespace bbl { Engine create_engine(EngineOptions) { return {}; } void mark_mesh_dirty(Engine&, MeshHandle) {} }
 int main() { return generated_main(); }
 `,
     );
@@ -502,7 +502,6 @@ test("TAA refuses lost camera ownership and late construction while preserving o
         `const bag={cam:camera};bag.cam.target.x %= 2;`,
         `const target=camera.target;target["x"]=2;`,
         `const target=camera.target;const k="x";target[k]=2;`,
-        `Object.assign(camera,{alpha:2});`,
         `Object.assign(camera.target,{x:2});`,
         `const target=camera.target;Object.assign(target,{x:2});`,
         `attachControl(camera,engine.canvas,scene);const alias=camera;attachControl(alias,engine.canvas,scene);`,
@@ -515,6 +514,17 @@ test("TAA refuses lost camera ownership and late construction while preserving o
         assert.throws(
             () => compileSource(prefix + taa + body),
             /TAA requires tracked camera mutations:/,
+        );
+    }
+    // Object.assign has no plain properties to copy into on an engine handle,
+    // so it refuses whether or not TAA tracks the camera.
+    for (const source of [
+        prefix + `Object.assign(camera,{alpha:2});`,
+        prefix + taa + `Object.assign(camera,{alpha:2});`,
+    ]) {
+        assert.throws(
+            () => compileSource(source),
+            /Object\.assign cannot write into a camera value/,
         );
     }
     assert.doesNotThrow(() =>

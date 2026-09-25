@@ -1,16 +1,18 @@
 import { CPP_SCALAR } from "../../lowering/cpp-types.js";
-import { handleCppType } from "./handles.js";
+import { handleCppType, handleOwnsTracedEdge } from "./handles.js";
 import type { DataKindOperations } from "./contracts.js";
 import type { TypedArrayKind } from "./model.js";
 import { typedArrayCppType, typedArrayStem } from "./typed-arrays.js";
 
-function leaf(cpp: string, key: string, byReference = false) {
+/** A payload-free kind; `traced` is its native type's `gc_traceable`. */
+function leaf(cpp: string, key: string, byReference = false, traced = false) {
     return {
         cpp: () => cpp,
         key: () => key,
         equal: () => true,
         children: () => [],
         byReference,
+        tracedEdges: traced ? ("always" as const) : ("never" as const),
     };
 }
 
@@ -41,20 +43,23 @@ export const scalarKinds: DataKindOperations<
     error: leaf("bbl::js::Error", "error"),
     "event-target": leaf("bbl::DomEventTargetValue", "event-target"),
     "http-response": {
-        ...leaf("bbl::pal::HttpResponse", "http-response", true),
+        ...leaf("bbl::pal::HttpResponse", "http-response", true, true),
         opaqueReference: true,
     },
     "search-params": {
-        ...leaf("bbl::js::SearchParams", "search-params", true),
+        ...leaf("bbl::js::SearchParams", "search-params", true, true),
         opaqueReference: true,
     },
     storage: {
-        ...leaf("bbl::js::Storage", "storage", true),
+        ...leaf("bbl::js::Storage", "storage", true, true),
         opaqueReference: true,
     },
-    date: { ...leaf("bbl::js::Date", "date", true), opaqueReference: true },
+    date: {
+        ...leaf("bbl::js::Date", "date", true, true),
+        opaqueReference: true,
+    },
     "date-time-format": {
-        ...leaf("bbl::js::DateTimeFormat", "dateformat", true),
+        ...leaf("bbl::js::DateTimeFormat", "dateformat", true, true),
         opaqueReference: true,
     },
     number: leaf(CPP_SCALAR.number, "n"),
@@ -64,7 +69,7 @@ export const scalarKinds: DataKindOperations<
     dataview: leaf("bbl::js::DataView", "dv", true),
     bufferview: leaf("bbl::js::ArrayBufferView", "bv", true),
     numberindex: leaf("bbl::js::NumericArrayView", "ni", false),
-    json: leaf("bbl::js::JsonValue", "json"),
+    json: leaf("bbl::js::JsonValue", "json", false, true),
     "borrowed-platform-event": {
         cpp: (type) =>
             type.event === "event"
@@ -76,6 +81,7 @@ export const scalarKinds: DataKindOperations<
         equal: (left, right) => left.event === right.event,
         children: () => [],
         byReference: false,
+        tracedEdges: "never",
     },
     handle: {
         cpp: (type) => handleCppType(type.handle),
@@ -83,6 +89,7 @@ export const scalarKinds: DataKindOperations<
         equal: (left, right) => left.handle === right.handle,
         children: () => [],
         byReference: false,
+        tracedEdges: (type) => handleOwnsTracedEdge(type.handle),
     },
     u8array: typedArray("u8array"),
     i8array: typedArray("i8array"),

@@ -1,24 +1,51 @@
+# Every enabled check passes on maintained and generated code.
 Checks: >
   -*,
   clang-analyzer-core.*,
   clang-analyzer-cplusplus.*,
   clang-analyzer-deadcode.*,
+  clang-analyzer-optin.cplusplus.*,
+  clang-analyzer-unix.*,
   bugprone-assert-side-effect,
   bugprone-assignment-in-if-condition,
   bugprone-dangling-handle,
+  bugprone-empty-catch,
+  bugprone-exception-escape,
   bugprone-integer-division,
+  bugprone-invalid-enum-default-initialization,
   bugprone-macro-parentheses,
   bugprone-macro-repeated-side-effects,
   bugprone-misplaced-widening-cast,
   bugprone-move-forwarding-reference,
+  bugprone-return-const-ref-from-parameter,
   bugprone-sizeof-expression,
   bugprone-stringview-nullptr,
   bugprone-suspicious-missing-comma,
   bugprone-suspicious-semicolon,
   bugprone-swapped-arguments,
+  bugprone-throwing-static-initialization,
+  bugprone-unchecked-optional-access,
   bugprone-use-after-move,
+  cppcoreguidelines-pro-type-member-init,
+  performance-avoid-endl,
+  performance-for-range-copy,
+  performance-implicit-conversion-in-loop,
+  performance-inefficient-algorithm,
   performance-move-const-arg,
+  performance-move-constructor-init,
+  performance-noexcept-destructor,
+  performance-noexcept-move-constructor,
+  performance-noexcept-swap,
+  performance-trivially-destructible,
+  performance-type-promotion-in-math-fn,
   performance-unnecessary-copy-initialization
+CheckOptions:
+  # Realm termination is a control-flow abort, not an error: a handler that
+  # lets the realm end does nothing else.
+  bugprone-empty-catch.AllowEmptyCatchForExceptions: '::bbl::pal::WorkerTerminated'
+  # The check already ignores std::bad_alloc; MSVC's allocators throw its
+  # subclass when a container default-constructs its sentinel node.
+  bugprone-exception-escape.IgnoredExceptions: 'bad_array_new_length'
 WarningsAsErrors: '*'
 HeaderFilterRegex: '(^|[/\\])native[/\\](include|src)[/\\]'
 SystemHeaders: false

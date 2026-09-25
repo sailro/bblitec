@@ -9,9 +9,17 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { SCENE_NODE_TRANSFORMS } from "../scene-node-transform-descriptor.js";
+import { recordAt } from "../compiler/record-access.js";
 
-/** Public synthetic-root TRS over the loader's flattened, mirrored mesh worlds. */
-export function assetRootTransformSource(context: LoweringContext): string {
+/**
+ * Public synthetic-root TRS: the outer transform of the loader's flattened,
+ * mirrored mesh worlds, or, for an import carrying its node hierarchy
+ * (`nodeHierarchy`), the TRS of the root node itself.
+ */
+export function assetRootTransformSource(
+    context: LoweringContext,
+    nodeHierarchy = false,
+): string {
     const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
     let observables = "";
     for (const descriptor of SCENE_NODE_TRANSFORMS.filter(
@@ -19,15 +27,10 @@ export function assetRootTransformSource(context: LoweringContext): string {
     )) {
         const quaternion = descriptor.nativeField === "rotation_quaternion";
         const className = quaternion ? "ObservableQuat" : "ObservableVec3";
-        const file = context.sourceFile(
+        const { file, declaration: owner } = context.classDeclaration(
             `src/math/${quaternion ? "observable-quat" : "observable-vec3"}.ts`,
+            className,
         );
-        const owner = context.findNodes(
-            file,
-            (node): node is ts.ClassDeclaration =>
-                ts.isClassDeclaration(node) && node.name?.text === className,
-        )[0];
-        if (!owner) context.contractError(file, `Expected ${className}.`);
         const bindings = new Map<string, PinnedBinding>([
             ["v", scalar("value")],
             ["this._version", scalar("root.root_quaternion_version")],
@@ -89,9 +92,28 @@ namespace asset_root_detail {
 ${pinnedQuaternionMath(context)}
 }
 
-void publish_asset_root_transform(Engine& engine, const AssetRecord& root) {
+void publish_asset_root_transform(Engine& engine, const AssetRecord& root) {${
+        nodeHierarchy
+            ? `
+    if (root.root_node.value != invalid_handle) {
+        // The pin's __root__ is this node: the edit is its own TRS, and
+        // every primitive composes under it through the node chain.
+        set_transform_node_position(engine, root.root_node, root.root_position);
+        set_transform_node_rotation_quaternion(engine, root.root_node, Vec4{
+            static_cast<float>(root.root_rotation_quaternion.x),
+            static_cast<float>(root.root_rotation_quaternion.y),
+            static_cast<float>(root.root_rotation_quaternion.z),
+            static_cast<float>(root.root_rotation_quaternion.w)});
+        set_transform_node_scaling(engine, root.root_node, Vec3{
+            static_cast<float>(root.root_scaling.x),
+            static_cast<float>(root.root_scaling.y),
+            static_cast<float>(root.root_scaling.z)});
+        return;
+    }`
+            : ""
+    }
     for (const auto mesh : root.meshes) {
-        auto& record = engine.meshes.at(mesh.value);
+        auto& record = ${recordAt("engine.meshes", "mesh")};
         record.outer_position = root.root_position;
         record.outer_rotation = root.root_rotation;
         // Native imported worlds already contain the initial root (-1,1,1).
@@ -140,11 +162,11 @@ std::array<float, 16> asset_root_world_matrix(Engine& engine, AssetHandle asset)
         .rotation_quaternion = root.root_rotation_quaternion});
 }
 void set_light_asset_parent(Engine& engine, LightHandle light, AssetHandle parent) {
-    auto& record = engine.lights.at(light.value);
+    auto& record = ${recordAt("engine.lights", "light")};
     if (parent.value == invalid_handle) {
         record.parent_world_matrix = {};
     } else {
-        (void)engine.assets.at(parent.value);
+        (void)${recordAt("engine.assets", "parent")};
         record.parent_world_matrix = [&engine, parent] { return asset_root_world_matrix(engine, parent); };
     }
 }

@@ -1,3 +1,4 @@
+import { recordAt } from "../../compiler/record-access.js";
 /** Manager-wide source mixer storage. Node-array identity is the source target key. */
 export function gltfWeightedAnimationTransportCpp(rootFlip: string): {
     types: string;
@@ -41,7 +42,7 @@ bool update_weighted_gltf_animation_groups(Engine& native_engine,PropertyAnimati
         };
         Mixer mixer(const AnimationGroupReference& reference)const {
             if(reference.kind!=AnimationWeightFadeTargetKind::gltf)return {};
-            const auto& record=native_engine.animation_groups.at(reference.gltf_group.value);
+            const auto& record=${recordAt("native_engine.animation_groups", "reference.gltf_group")};
             const auto& source=native_engine.assets.at(record.asset).source_animation;
             return source?Mixer{source->value,record.clip}:Mixer{};
         }
@@ -55,7 +56,7 @@ bool update_weighted_gltf_animation_groups(Engine& native_engine,PropertyAnimati
         }
         double weight(const AnimationGroupReference& reference)const {
             return reference.kind==AnimationWeightFadeTargetKind::gltf
-                ?native_engine.animation_groups.at(reference.gltf_group.value).weight:reference.property_group->weight;
+                ?${recordAt("native_engine.animation_groups", "reference.gltf_group")}.weight:reference.property_group->weight;
         }
         const GltfWeightedNodes* nodes_key(const Mixer& mixer)const{return &mixer.runtime->source_nodes;}
         const GltfWeightedNodes& nodes(const Mixer& mixer)const{return mixer.runtime->source_nodes;}

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { EmissionSet } from "./emission-transaction.js";
 import { cppIdentifiers } from "./cpp-identifiers.js";
 import type { DataType } from "./data-types/model.js";
@@ -22,6 +23,7 @@ export const nativeCompanionKeys = [
     "ownedEngineCpp",
     "optionalStorageCpp",
     "optionalFoundCpp",
+    "slotFoundCpp",
     "truthinessCpp",
     "audioMainBusCpp",
     "spriteLayerCpp",
@@ -36,6 +38,19 @@ export interface CapturedClosure {
     nativeCaptures: readonly NativeCaptureBinding[];
     localBindings: readonly string[];
     environmentType?: string;
+    /** Enclosing native bindings the body names without capturing them. */
+    uncaptured?: readonly string[];
+}
+
+/**
+ * The named aggregate a closure environment is stored in. Its members are
+ * the captured bindings; a concrete one is declared ahead of the prototypes
+ * that name it, and one with an unresolved capture type is a template.
+ */
+interface EnvironmentStruct {
+    readonly name: string;
+    readonly lines: readonly string[];
+    readonly declaration?: string;
 }
 
 export function renderClosure(
@@ -146,7 +161,7 @@ export class ClosureCaptures {
     }
 
     get initializer(): string {
-        return `std::tuple{${[...this.bindings]
+        return `bblscene::${this.environmentStruct.name}{${[...this.bindings]
             .map((binding) =>
                 this.borrows(binding)
                     ? `std::ref(${binding.name})`
@@ -160,23 +175,64 @@ export class ClosureCaptures {
     }
 
     get environmentType(): string | undefined {
-        const types: string[] = [];
-        for (const binding of this.bindings) {
-            const type = this.bindingType?.(binding);
-            if (!type) return undefined;
-            types.push(
-                this.borrows(binding)
-                    ? `std::reference_wrapper<${type}>`
-                    : `std::decay_t<${type}>`,
-            );
-        }
-        return `std::tuple<${types.join(", ")}>`;
+        const struct = this.environmentStruct;
+        return struct.declaration ? `bblscene::${struct.name}` : undefined;
+    }
+
+    /**
+     * Members are numbered captures, so environments of one shape share a
+     * struct and bodies that differ only in capture names stay one body.
+     * Owned members are traced; borrowed ones are references.
+     */
+    get environmentStruct(): EnvironmentStruct {
+        const bindings = [...this.bindings];
+        const types = bindings.map((binding) => this.bindingType?.(binding));
+        const concrete = types.every((type) => type !== undefined);
+        const members = bindings.map((binding, index) => {
+            const type = types[index];
+            const borrowed = this.borrows(binding);
+            return {
+                name: `capture${index}`,
+                type:
+                    concrete && type !== undefined
+                        ? borrowed
+                            ? `std::reference_wrapper<${type}>`
+                            : `std::decay_t<${type}>`
+                        : `T${index}`,
+                borrowed,
+            };
+        });
+        const name = `bbl_environment_${createHash("sha256")
+            .update(JSON.stringify(members))
+            .digest("hex")
+            .slice(0, 16)}`;
+        return {
+            name,
+            lines: [
+                ...(concrete
+                    ? []
+                    : [
+                          `template <${members.map((member) => `typename ${member.type}`).join(", ")}>`,
+                      ]),
+                `struct ${name} {`,
+                ...members.map(
+                    (member) => `    ${member.type} ${member.name};`,
+                ),
+                `    void gc_trace([[maybe_unused]] const bbl::js::TraceVisitor& visitor) const {`,
+                ...members
+                    .filter((member) => !member.borrowed)
+                    .map((member) => `        visitor(${member.name});`),
+                "    }",
+                "};",
+            ],
+            ...(concrete ? { declaration: `struct ${name};` } : {}),
+        };
     }
 
     get declarations(): string[] {
         return [...this.bindings].map(
             (binding, index) =>
-                `auto& ${binding.name} = std::get<${index}>(${this.environment})${this.borrows(binding) ? ".get()" : ""};`,
+                `auto& ${binding.name} = ${this.environment}.capture${index}${this.borrows(binding) ? ".get()" : ""};`,
         );
     }
 

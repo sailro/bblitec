@@ -12,7 +12,7 @@ import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
 import { deploymentUrl } from "./deployment.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
-import type { CompileAsset, Value } from "./types.js";
+import { isStringValue, type CompileAsset, type Value } from "./types.js";
 
 export interface StaticFetchContext extends Pick<
     LoweringServices,
@@ -22,8 +22,9 @@ export interface StaticFetchContext extends Pick<
     | "compileStringLiteral"
     | "staticAssetUrlCandidates"
     | "cppString"
-    | "lookupOptional"
-    | "registerAsset"
+    | "bindings"
+    | "libraryGlobal"
+    | "assetRegistry"
     | "reachJsData"
     | "reachFeature"
     | "dataLowerer"
@@ -36,7 +37,7 @@ export function compileStaticFetch(
     call: ts.CallExpression,
     callee: ts.Identifier,
 ): Value | undefined {
-    if (callee.text !== "fetch" || context.lookupOptional(callee)) {
+    if (context.libraryGlobal(callee) !== "fetch") {
         return undefined;
     }
     if (call.arguments.length !== 1) {
@@ -68,7 +69,7 @@ export function compileStaticFetch(
         );
     if (dynamic) return dynamic;
     if (ts.isIdentifier(url)) {
-        const bound = context.lookupOptional(url);
+        const bound = context.bindings.lookupOptional(url);
         if (bound && bound.staticString === undefined) {
             context.fail(
                 url,
@@ -83,7 +84,7 @@ export function compileStaticFetch(
         context.options,
     );
     if (response) {
-        const asset = context.registerAsset(source, "binary");
+        const asset = context.assetRegistry.registerAsset(source, "binary");
         return ownedPackagedResponse(
             context,
             url,
@@ -135,13 +136,7 @@ function compileDynamicCandidateFetch(
     response = false,
 ): Value | undefined {
     const selected = context.compileValue(expression);
-    if (
-        selected.staticString !== undefined ||
-        !(
-            selected.kind === "string" ||
-            (selected.kind === "data" && selected.dataType?.kind === "string")
-        )
-    ) {
+    if (selected.staticString !== undefined || !isStringValue(selected)) {
         return undefined;
     }
     const discovered = context
@@ -198,15 +193,16 @@ function compileDynamicCandidateFetch(
             [...candidates.values()].map(({ logicalSource, source }) => ({
                 key: logicalSource,
                 logicalSource,
-                output: context.registerAsset(source, kind).output,
+                output: context.assetRegistry.registerAsset(source, kind)
+                    .output,
             })),
             selected,
         );
     const entries = [...candidates.values()].map(
-        ({ logicalSource, source }) => {
-            const asset = context.registerAsset(source, kind);
-            return `{${context.cppString(logicalSource)}, ${context.cppString(asset.output)}}`;
-        },
+        ({ logicalSource, source }) => ({
+            key: logicalSource,
+            output: context.assetRegistry.registerAsset(source, kind).output,
+        }),
     );
     context.reachJsData();
     return {
@@ -218,10 +214,12 @@ function compileDynamicCandidateFetch(
         packagedSources: [...candidates.values()].map(
             (candidate) => candidate.source,
         ),
-        dynamicAssetPathCpp:
-            `([&](const std::string& key) -> std::string { ` +
-            packagedAssetLookupBody(context, entries) +
-            `})(${selected.cpp})`,
+        dynamicAssetPathCpp: packagedAssetLookup(
+            context,
+            entries,
+            expression,
+            selected.cpp,
+        ),
     };
 }
 
@@ -266,7 +264,10 @@ export function compileStaticFetchMethod(
                 "Fetched response has no static source.",
             );
         }
-        const asset = context.registerAsset(owner.staticString, "binary");
+        const asset = context.assetRegistry.registerAsset(
+            owner.staticString,
+            "binary",
+        );
         context.reachJsData();
         return {
             kind: "data",
@@ -381,10 +382,7 @@ function compileDynamicDirectoryFetch(
         suffix.staticString !== undefined
     )
         return undefined;
-    if (
-        suffix.kind !== "string" &&
-        !(suffix.kind === "data" && suffix.dataType?.kind === "string")
-    ) {
+    if (!isStringValue(suffix)) {
         return undefined;
     }
     const logicalBase = logicalPrefix.endsWith("/")
@@ -421,7 +419,10 @@ function compileDynamicDirectoryFetch(
     }
     const assets = files.map((file) => {
         const key = relative(directory, file).split(sep).join("/");
-        const asset = context.registerAsset(`${logicalBase}${key}`, kind);
+        const asset = context.assetRegistry.registerAsset(
+            `${logicalBase}${key}`,
+            kind,
+        );
         return {
             key,
             logicalSource: `${logicalBase}${key}`,
@@ -430,10 +431,6 @@ function compileDynamicDirectoryFetch(
     });
     if (response)
         return ownedPackagedResponse(context, expression, assets, suffix);
-    const entries = assets.map(
-        ({ key, output }) =>
-            `{${context.cppString(key)}, ${context.cppString(output)}}`,
-    );
     context.reachJsData();
     return {
         kind: "static-fetch-response",
@@ -442,10 +439,12 @@ function compileDynamicDirectoryFetch(
             dynamicAssetPathCpp: suffix.nativeCaptures ?? [],
         },
         packagedSources: files,
-        dynamicAssetPathCpp:
-            `([&](const std::string& key) -> std::string { ` +
-            packagedAssetLookupBody(context, entries) +
-            `})(${suffix.cpp})`,
+        dynamicAssetPathCpp: packagedAssetLookup(
+            context,
+            assets,
+            expression,
+            suffix.cpp,
+        ),
     };
 }
 
@@ -471,24 +470,31 @@ function ownedPackagedResponse(
     };
 }
 
-function packagedAssetLookupBody(
+/**
+ * The packaged-asset path a dynamic fetch site selects by key.
+ *
+ * The key-to-output table is one namespace-scope constant per distinct
+ * asset set, shared by every site that fetches from it. Its entries are
+ * immutable literals, so every realm reads the same table without owning
+ * a JS object on another thread; each site keeps only the lookup loop.
+ */
+function packagedAssetLookup(
     context: StaticFetchContext,
-    entries: readonly string[],
+    entries: readonly { key: string; output: string }[],
+    node: ts.Node,
+    keyCpp: string,
 ): string {
-    if (context.options.workers) {
-        // Immutable native literals may be shared across realms; a static JS
-        // Map would retain non-atomic JS ownership on multiple worker threads.
-        return (
-            `static constexpr std::array<std::pair<std::string_view, std::string_view>, ${entries.length}> paths{{${entries.join(", ")}}}; ` +
-            `for (const auto& [source, output] : paths) if (source == key) return bbl::asset_path(std::string(output)); ` +
-            `throw std::runtime_error("Unknown packaged asset: " + key); `
-        );
-    }
+    const table = context.dataLowerer.stringPairTable(
+        "packaged_asset_paths",
+        entries.map(({ key, output }) => [key, output] as const),
+        node,
+    );
     return (
-        `static thread_local bbl::js::Map<std::string, std::string> paths{${entries.join(", ")}}; ` +
-        `auto found = paths.get(key); ` +
-        `if (!found.has_value()) throw std::runtime_error("Unknown packaged asset: " + key); ` +
-        `return bbl::asset_path(found.value()); `
+        `([&](const std::string& key) -> std::string { ` +
+        `for (const auto& [source, output] : ${table}) ` +
+        `if (source == key) return bbl::asset_path(std::string(output)); ` +
+        `throw std::runtime_error("Unknown packaged asset: " + key); ` +
+        `})(${keyCpp})`
     );
 }
 

@@ -1,8 +1,14 @@
 #pragma once
 
+#include <bblite/features/has_sprites.hpp>
+
 #include <bblite/upstream_text.hpp>
 #include <bblite/upstream_text_gpu.hpp>
 #include <bblite/upstream/camera_change_key.hpp>
+
+#include <array>
+#include <optional>
+
 #include "pal_text_pipeline.hpp"
 
 namespace bbl::pal {
@@ -15,7 +21,7 @@ inline void validate_text_scene(const Scene& scene) {
         throw std::runtime_error("Text scene bindings require the default render pass.");
     }
     if (!scene.meshes.empty() || !scene.splat_meshes.empty() ||
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
         !scene.billboard_systems.empty() || !scene.depth_hosted_sprite_layers.empty() ||
 #endif
         scene.environment.has_skybox || scene.environment.has_image_skybox ||
@@ -36,55 +42,49 @@ inline void validate_text_scene(const Scene& scene) {
 #endif
 }
 
-struct TextSceneBinding {
-    TextRenderable renderable;
-    TextData data;
-    std::shared_ptr<TextGpuState> gpu;
-    TextPipelineBinding pipelines;
-};
-
-/** The admitted default scene has only text in its transparent binding list. */
+/**
+ * The admitted default scene has only text in its transparent binding list:
+ * each renderable's `DrawBinding`, from the pin's own `bind`, whose
+ * `update` and `draw` the render pass task calls.
+ */
 struct TextScenePass {
-    std::vector<TextSceneBinding> bindings;
+    std::vector<TextDrawBindingHandle> bindings;
 
-    template <class Pipeline, class Ops>
-    void bind(const Scene& scene, const void* device, const TextTargetSignature& target,
-              Pipeline&& pipeline, Ops& ops) {
+    void bind(const Scene& scene, const TextSurfaceHandle& surface,
+              const TextTargetSignature& target) {
         validate_text_scene(scene);
-        for (const auto& renderable : scene.state->text_renderables) {
-            if (!target.color_format)
-                throw std::runtime_error("Text binding requires a color target.");
-            const bool depth_write = !renderable->ignore_depth;
-            const auto samples = target.sample_count.value_or(1u);
-            const auto& info =
-                text_pipeline_info(samples, target.depth_format.has_value(), depth_write,
-                                   depth_write && samples > 1u && renderable->alpha_to_coverage);
-            auto pipelines = pipeline(info);
-            auto gpu = ensure_text_gpu(*renderable, device, target, pipelines, ops);
-            bindings.push_back(
-                {renderable, renderable->data, std::move(gpu), std::move(pipelines)});
-        }
+        for (const auto& renderable : scene.state->text_renderables)
+            bindings.push_back(renderable->bind(surface, target));
     }
 
-    template <class Ops>
-    void update(const TextCameraInput* camera, double width, double height, Ops& ops) {
-        for (auto& binding : bindings) {
-            update_text_resources(*binding.renderable, *binding.gpu, binding.pipelines.layout, ops);
-            update_text_uniforms(*binding.renderable, *binding.gpu, camera, width, height,
-                                 [&](std::size_t offset, std::span<const std::uint8_t> bytes) {
-                                     ops.write_renderable_buffer(
-                                         *binding.gpu, TextBufferKind::uniform, offset, bytes);
-                                 });
-        }
+    void update(TextCameraInputPointer camera, double width, double height) const {
+        for (const auto& binding : bindings)
+            if (binding->update)
+                binding->update(TextDrawUpdateContext{camera, width, height});
     }
 
-    template <class Ops> double draw(Ops& ops) const {
+    /**
+     * The scene pass's update: the text renderables read the pass camera
+     * (`context._camera ?? null`) as its product, change key and aspect, and
+     * a camera-less pass hands them none.
+     */
+    void update_for_pass(CameraRecord* camera, const std::array<float, 16>& view_projection,
+                         double aspect, double width, double height) const {
+        const std::optional<TextCameraInput> input =
+            camera ? std::optional<TextCameraInput>{TextCameraInput{
+                         js::TypedArray<float>(view_projection.begin(), view_projection.end()),
+                         upstream::scene_camera_change_key(*camera), aspect}}
+                   : std::nullopt;
+        update(input ? &*input : nullptr, width, height);
+    }
+
+    double draw(const TextGpuEncoderHandle& pass, const TextSurfaceHandle& surface) const {
         double count = 0;
         for (const auto& binding : bindings) {
-            // The renderer binds the declared base pipeline before the pin's
-            // text draw callback conditionally switches per atlas group.
-            ops.set_pipeline(binding.gpu->pipeline);
-            count += draw_text_renderable(*binding.gpu, *binding.data, binding.pipelines.quad, ops);
+            // The render pass task binds the binding's declared pipeline before
+            // the pin's text draw switches per atlas group.
+            pass->set_pipeline(binding->pipeline);
+            count += binding->draw(pass, surface);
         }
         return count;
     }

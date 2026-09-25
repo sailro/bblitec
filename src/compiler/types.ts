@@ -6,6 +6,11 @@ import type { Value } from "./values/model.js";
 export type { Value } from "./values/model.js";
 export {
     nativeDataMetadata,
+    objectTruthinessCpp,
+    optionalPresentCpp,
+    presenceCpp,
+    presenceFlagCpp,
+    statedTruthinessCpp,
     valueForKind,
     withNativeMetadata,
 } from "./values/model.js";
@@ -98,10 +103,11 @@ export interface CompileManifest {
      * compiler's walk is a single deterministic pass (entry statements
      * in document order, sub-expressions depth-first), so first-reach
      * wins and regeneration is stable. Features that are reached
-     * without a source node (the seeded "core") and features the CLI
-     * asset-join adds after compilation carry no entry. One site is not
+     * without a source node (the seeded "core") and features the asset
+     * join (`asset-feature-join.ts`) adds carry no entry. One site is not
      * a call site: `ui:rml` reached only by a host-page companion names
      * the companion JSON file, since no scene line exists to name.
+     * manifest.json records the sites repository-relative.
      */
     featureSites: Record<string, string>;
     runtimeSources: string[];
@@ -140,6 +146,8 @@ export interface CompileManifest {
     plainSpriteLayer: boolean;
     plainBillboardSystem: boolean;
     geometryOutputTasks: GeometryOutputTaskManifest[];
+    /** Every copy task's name, in the order the scene creates them. */
+    copyTasks?: string[];
     postProcessTasks: PostProcessTaskManifest[];
     postProcessComposites: PostProcessCompositeManifest[];
     screenSpaceTasks: ScreenSpaceTaskManifest[];
@@ -241,7 +249,7 @@ export interface ShadowCasterMeshManifest {
     meshIndex: number;
 }
 
-export interface ShadowCasterManifest extends ShadowCasterMeshManifest {
+interface ShadowCasterManifest extends ShadowCasterMeshManifest {
     /**
      * Its `scenePbrMaterials` row, or `null` for a material of another
      * family -- which still takes a runtime handle.
@@ -584,26 +592,26 @@ export interface ScenePbrMetallicReflectanceManifest {
 }
 
 export interface ScenePbrMaterialManifest {
-    localCubemapCandidates?: number;
+    readonly localCubemapCandidates?: number;
     /**
      * How many scene-code materials of any family the program had created
      * when this one was, so the runtime handle is
      * glTF-materials + this. Standard, grid and shader materials share the
      * same handle sequence.
      */
-    materialsBefore: number;
+    readonly materialsBefore: number;
     /** The source material slot for a no-colour/ESM view. */
-    sourceMaterialsBefore?: number;
+    readonly sourceMaterialsBefore?: number;
     /** Stamped by the pin's `setPbrUnlit`: `mat._unlit = true`. */
-    unlit?: boolean;
+    readonly unlit?: boolean;
     /** Stamped by the pin's `setPbrSkybox`: `mat._skyboxMode = true`. */
-    skyboxMode?: boolean;
+    readonly skyboxMode?: boolean;
     /** A `createPbrNoColorMaterialView` of the scene material before it:
      *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
      *  the depth-only render tasks. */
-    noColorView?: boolean;
+    readonly noColorView?: boolean;
     /** The ESM caster's view: the no-colour view's sibling bit. */
-    esmShadowView?: boolean;
+    readonly esmShadowView?: boolean;
     /**
      * The attribute sets this material's variants compose over, when they
      * are fewer than the scene's.
@@ -614,35 +622,35 @@ export interface ScenePbrMaterialManifest {
      * own caster and nowhere else, so composing it against the scene's
      * whole product deploys stage pairs no draw can select.
      */
-    meshFeatureSets?: readonly number[];
+    readonly meshFeatureSets?: readonly number[];
     /** Exact scene-mesh creation rows this material can be assigned to.
      *  Composition converts them to the pin's attribute masks. */
-    sceneMeshIndices?: readonly number[];
+    readonly sceneMeshIndices?: readonly number[];
     /** At least one assignment targets a mesh whose identity is not static,
      *  so the exact rows above cannot close the material's mesh space. */
-    unknownSceneMesh?: true;
+    readonly unknownSceneMesh?: true;
     /** Stamped by the pin's own setter shape: `mat._sheen = sheen`. */
-    sheen?: ScenePbrSheenManifest;
+    readonly sheen?: ScenePbrSheenManifest;
     /** Stamped by the pin's own setter shape: `mat._clearCoat = clearCoat`. */
-    clearCoat?: ScenePbrClearCoatManifest;
+    readonly clearCoat?: ScenePbrClearCoatManifest;
     /** Stamped by the pin's own setter shape: `mat._iridescence = iridescence`. */
-    iridescence?: ScenePbrIridescenceManifest;
+    readonly iridescence?: ScenePbrIridescenceManifest;
     /** Stamped by `setPbrLightmap`: the texture, its blend and its UV set. */
-    lightmap?: ScenePbrLightmapManifest;
+    readonly lightmap?: ScenePbrLightmapManifest;
     /** Stamped by `setPbrSubsurface`: `mat._subsurface = subsurface`. */
-    subsurface?: ScenePbrSubsurfaceManifest;
+    readonly subsurface?: ScenePbrSubsurfaceManifest;
     /** Stamped by the pin's own setter shape: `mat._anisotropy = anisotropy`. */
-    anisotropy?: ScenePbrAnisotropyManifest;
+    readonly anisotropy?: ScenePbrAnisotropyManifest;
     /** Stamped by the pin's `setPbrMetallicReflectance` setter. */
-    metallicReflectance?: ScenePbrMetallicReflectanceManifest;
+    readonly metallicReflectance?: ScenePbrMetallicReflectanceManifest;
     /**
      * Whether `setPbrEmissive` stamped the pin's `_emissiveColor` field. Its
      * presence is the composition input; the channel values remain runtime
      * data and need not be statically known.
      */
-    hasEmissiveColor?: true;
+    readonly hasEmissiveColor?: true;
     /** The exact linear RGB channels when generation can also settle them. */
-    emissiveColor?: readonly number[];
+    readonly emissiveColor?: readonly number[];
     /**
      * How many glTF assets the program had loaded when this material was
      * created. The runtime keys the variant table by material handle, which
@@ -650,31 +658,31 @@ export interface ScenePbrMaterialManifest {
      * appends to the assets' materials; one created before a load would
      * interleave, which no reached scene does.
      */
-    gltfAssetsBefore: number;
-    hasBaseColorTexture: boolean;
+    readonly gltfAssetsBefore: number;
+    readonly hasBaseColorTexture: boolean;
     /**
      * Present only when scene code authored the option. The pin composes the
      * base-color-factor UBO field from property presence, including when the
      * value happens to be neutral white.
      */
-    baseColorFactor?: readonly [number, number, number, number];
+    readonly baseColorFactor?: readonly [number, number, number, number];
     /** Present array whose contents remain runtime UBO data. */
-    baseColorFactorRuntime?: true;
-    hasOrmTexture: boolean;
-    metallicFactor: number;
-    roughnessFactor: number;
-    directIntensity: number;
-    environmentIntensity: number;
-    alpha: number;
+    readonly baseColorFactorRuntime?: true;
+    readonly hasOrmTexture: boolean;
+    readonly metallicFactor: number;
+    readonly roughnessFactor: number;
+    readonly directIntensity: number;
+    readonly environmentIntensity: number;
+    readonly alpha: number;
     /** Explicit `alphaBlend: true`; alpha below one is derived separately. */
-    alphaBlend?: true;
-    reflectance: number;
+    readonly alphaBlend?: true;
+    readonly reflectance: number;
     /** A non-default value for the pin's `occlusionStrength ?? 1.0`. */
-    occlusionStrength?: number;
+    readonly occlusionStrength?: number;
     /** A non-default internal `_metallicF0Factor ?? 1.0` creation value. */
-    metallicF0Factor?: number;
+    readonly metallicF0Factor?: number;
     /** The pin's opt-in geometric-normal derivative roughness floor. */
-    enableSpecularAA?: boolean;
+    readonly enableSpecularAA?: boolean;
     /**
      * Present only when the scene turned the pin's default-true
      * `usePhysicalLightFalloff` off, which is the shape `_writeMaterialData`
@@ -682,61 +690,56 @@ export interface ScenePbrMaterialManifest {
      * composes nothing, so it rides the manifest for the record rather than
      * for the composer.
      */
-    usePhysicalLightFalloff?: false;
+    readonly usePhysicalLightFalloff?: false;
     /**
      * `material.plugins = [...]`, folded. The pin's PBR bridge reads the
      * list off the material in its own `detect`, so the composed input
      * carries the plugins themselves rather than an index.
      */
-    plugins?: readonly MaterialPluginManifest[];
+    readonly plugins?: readonly MaterialPluginManifest[];
     /**
      * Stamped by the pin's `setPbrGammaAlbedo`: `mat._gammaAlbedo = true`,
      * which the gamma extension's `detect` turns into
      * `PBR_HAS_GAMMA_ALBEDO` and the base template's decode slot turns into
      * `pow(baseColorSample.rgb, 2.2)`.
      */
-    gammaAlbedo?: boolean;
-    shadowOnly?: {
+    readonly gammaAlbedo?: boolean;
+    readonly shadowOnly?: {
         color: readonly [number, number, number];
         opacity: number;
         falloff: number;
     };
-    doubleSided: boolean;
-    transmission: number;
-    ior: number;
-    thickness: number;
+    readonly doubleSided: boolean;
 }
 
-/**
- * A scene-local shader-material program compiled from the entry file's
- * own WGSL sources through the typed shader IR. Predeclared variants
- * (the ShaderMaterialVariantName registry) keep their pinned records;
- * scene-local programs carry the equivalent fields plus the typed
- * uniform defaults the pinned createShaderMaterial applies at creation.
- */
 export interface CompiledComputeProgram {
     name: string;
     source: string;
     entryPoint: string;
 }
 
+/**
+ * A reached shader-material program, compiled from the scene's own WGSL
+ * through the typed shader IR, with the typed uniform defaults the pinned
+ * `createShaderMaterial` applies at creation.
+ */
 export interface CompiledShaderProgram {
-    name: string;
-    vertexSource: string;
-    fragmentSource: string;
-    attributes: string[];
-    uniforms: string[];
-    uniformDefaults: CompiledShaderUniformDefault[];
+    readonly name: string;
+    readonly vertexSource: string;
+    readonly fragmentSource: string;
+    readonly attributes: string[];
+    readonly uniforms: string[];
+    readonly uniformDefaults: CompiledShaderUniformDefault[];
     /**
      * The `samplers` list: each name reaches WGSL as the pin's own
      * `<name>` / `<name>Sampler` texture-and-sampler pair, and
      * `setShaderTexture` binds by the index it has here.
      */
-    samplers: string[];
+    readonly samplers: string[];
     /** The normalized sampler shapes parallel to `samplers`. */
-    samplerDeclarations: CompiledShaderSampler[];
+    readonly samplerDeclarations: CompiledShaderSampler[];
     /** Read-only storage bindings in declaration order. */
-    storageBuffers: CompiledShaderStorageBuffer[];
+    readonly storageBuffers: CompiledShaderStorageBuffer[];
     /**
      * The `defines` map, normalized into the pin's own sorted
      * `ShaderDefine[]`. Each becomes a module-scope WGSL `const` in both
@@ -744,35 +747,35 @@ export interface CompiledShaderProgram {
      * rather than per-draw state: the pin keys its pipeline cache on the
      * define set too, and nothing at run time can change one.
      */
-    defines: CompiledShaderDefine[];
-    needAlphaBlending: boolean;
+    readonly defines: CompiledShaderDefine[];
+    readonly needAlphaBlending: boolean;
     /** The pin's fixed-function blend equation when alpha blending is enabled. */
-    blendMode: "alpha" | "additive";
-    needAlphaTesting: boolean;
-    backFaceCulling: boolean;
-    depthWrite: boolean;
+    readonly blendMode: "alpha" | "additive";
+    readonly needAlphaTesting: boolean;
+    readonly backFaceCulling: boolean;
+    readonly depthWrite: boolean;
     /** Explicit material compare; absent uses the pinned pass convention. */
-    depthCompare?: string;
+    readonly depthCompare?: string;
     /**
      * The pin's own `_topology`, absent where it resolves
      * `material._topology ?? "triangle-list"`. A line material is the one
      * reached program that names one, and it names the primitive the
      * pipeline is built at rather than anything about the program's text.
      */
-    topology?: "line-list";
+    readonly topology?: "line-list";
     /**
      * `useThinInstances`: the material draws through the mesh's
      * thin-instance matrices, which the pin's own thin-instance module
      * appends to its `VertexInput` as four lanes the vertex stage reads.
      */
-    useThinInstances?: boolean;
+    readonly useThinInstances?: boolean;
     /**
      * `useThinInstanceColors`: the material binds the mesh's per-instance
      * RGBA stream and its vertex stage reads `input.instanceColor`. Part of
      * the program's identity, because the attribute is declared in the
      * prelude the stage compiles against.
      */
-    useThinInstanceColors?: boolean;
+    readonly useThinInstanceColors?: boolean;
 }
 
 export interface CompiledShaderSampler {
@@ -925,10 +928,10 @@ export interface CompiledNodeParticles extends Omit<
     nativeProvider?: true;
     sets: NodeParticleSetRequest[];
     billboards: Array<{
-        set: number;
-        system: number;
+        readonly set: number;
+        readonly system: number;
         /** Whether a `syncParticleBillboard` already wrote this one. */
-        synced?: boolean;
+        readonly synced?: boolean;
     }>;
     registrations: NodeParticleRegistration[];
     /** Every `system.texture = ...` the scene wrote, in reach order. */
@@ -966,16 +969,16 @@ export interface HandleCollectionInfo {
 
 export interface CompileAsset {
     /** Decoder setup from the realm that loads this asset. */
-    assetDecoders?: AssetDecoderConfiguration;
+    readonly assetDecoders?: AssetDecoderConfiguration;
     /** Indices into CompileManifest.meshWalks demanded for this asset. */
-    meshWalks?: number[];
+    readonly meshWalks?: readonly number[];
     /** Texture-loading modes reached by this Babylon asset's call sites. */
-    babylonTextureModes?: boolean[];
+    readonly babylonTextureModes?: readonly boolean[];
     /** At least one definite load follows enableGltfCameras. */
-    gltfCameras?: boolean;
-    source: string;
-    output: string;
-    kind:
+    readonly gltfCameras?: boolean;
+    readonly source: string;
+    readonly output: string;
+    readonly kind:
         | "babylon"
         | "dds-environment"
         | "environment"
@@ -1009,14 +1012,14 @@ export interface CompileAsset {
         // the local payload synchronously through the PAL.
         | "binary"
         | "texture";
-    faceSize?: number;
+    readonly faceSize?: number;
     /**
      * The `KHR_materials_variants` name a scene's `selectVariant` chose on
      * this asset. One static selection is the reached shape, so generation
      * resolves which material each mapped primitive draws with instead of
      * carrying the pin's run-time variant table.
      */
-    selectedVariant?: string;
+    readonly selectedVariant?: string;
     /**
      * The `setPbrUnlit` a scene applied to this container's own materials,
      * with the optional linear-RGB tint it passed.
@@ -1027,7 +1030,7 @@ export interface CompileAsset {
      * accepted only over the container's whole flattened mesh list, which is
      * what makes the fact the container's rather than one material's.
      */
-    sceneUnlit?: { tint?: readonly [number, number, number] };
+    readonly sceneUnlit?: { tint?: readonly [number, number, number] };
     /**
      * The `setPbrLightmap` a scene applied to this container's loaded
      * materials from inside a mesh walk.
@@ -1039,7 +1042,7 @@ export interface CompileAsset {
      * pinned mesh name and the material it draws with — so the selection is
      * folded from the loop rather than guessed from the names.
      */
-    sceneLightmap?: {
+    readonly sceneLightmap?: {
         /** The walk's mesh-name filter, evaluated against the document. */
         meshNamePredicate: SceneMeshNamePredicate;
         /** Everything the pinned extension's `detect` reads. */
@@ -1053,7 +1056,7 @@ export interface CompileAsset {
      * therefore reaches both, which a per-container fact must refuse rather
      * than silently widen.
      */
-    containerCount?: number;
+    readonly containerCount?: number;
 }
 
 export type GeometryTextureTypeName =
@@ -1068,8 +1071,6 @@ export type GeometryTextureTypeName =
     | "WORLD_NORMAL"
     | "ALBEDO"
     | "LINEAR_VELOCITY";
-
-export type ShaderMaterialVariantName = "alpha-card" | "circular-cutout";
 
 export type LightKind = "directional" | "hemispheric" | "point" | "spot";
 
@@ -1142,7 +1143,7 @@ export interface PostProcessCompositeManifest {
     /** Whether the scene named a target, which a composite branches on. */
     hasTarget: boolean;
     /** Scalar accessor pairs actually reached by scene code. */
-    scalarAccesses?: string[];
+    readonly scalarAccesses?: readonly string[];
 }
 
 export interface PostProcessTaskManifest {
@@ -1277,6 +1278,8 @@ export type ValueKind =
     | "file-list"
     /** A shared opaque handle to immutable bytes returned by the host picker. */
     | "file"
+    /** A FileReader: its handlers and the text of its last read. */
+    | "file-reader"
     /** A DOM element created by reached scene code and owned by the native UI IR. */
     | "ui-element"
     | "callback"
@@ -1601,14 +1604,14 @@ export type ValueKind =
  * reads it there too.
  */
 export interface ClusteredContainerState {
-    hasSpots: boolean;
+    readonly hasSpots: boolean;
     /**
      * Set once `addClusteredLightContainer` has built the GPU state. A light
      * created after that point refuses, because the pin bakes both the light
      * capacity and the point-versus-spot layout there and its own refresh
      * throws rather than growing either.
      */
-    frozen: boolean;
+    readonly frozen: boolean;
 }
 
 export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
@@ -1684,8 +1687,22 @@ export function sameCompiledValue(left: Value, right: Value): boolean {
     return left.cpp === right.cpp;
 }
 
+/**
+ * What a native callback entry passes its callback. `delta` is the frame
+ * delta as the native frame hooks pass it, a `float`; `double-delta` is a
+ * delta a native entry passes at the pin's own double precision (a
+ * SpriteRenderer's `_beforeUpdate` hooks); `timestamp` is a double time;
+ * `interval` and `void` pass nothing.
+ */
 export type FrameCallbackSignature =
-    "delta" | "timestamp" | "interval" | "void";
+    "delta" | "double-delta" | "timestamp" | "interval" | "void";
+
+/** The native type of a frame callback's number parameter. */
+export function frameCallbackParameterType(
+    signature: FrameCallbackSignature,
+): "float" | "double" {
+    return signature === "delta" ? "float" : "double";
+}
 
 /** One symbol binding in the compiler's lexical scope stack. */
 export interface VariableBinding {
@@ -1714,11 +1731,11 @@ export interface VariableBinding {
  */
 interface LightIdentity {
     /** Current `scene.lights` slot, absent while the light is not in the scene. */
-    sceneLightIndex?: number;
+    readonly sceneLightIndex?: number;
     /** Generator assigned through `light.shadowGenerator`, when present. */
-    shadowGeneratorIndex?: number;
+    readonly shadowGeneratorIndex?: number;
     /** Candidate slots observed when this light is stored in an ordered data array. */
-    dataCollectionIndices?: Set<number>;
+    readonly dataCollectionIndices?: Set<number>;
 }
 
 /**
@@ -1730,18 +1747,25 @@ interface LightIdentity {
  * into one process-global index.
  */
 interface SceneTopologyState {
-    lights: Array<{ identity: LightIdentity; kind: LightKind }>;
+    readonly lights: ReadonlyArray<{
+        readonly identity: LightIdentity;
+        readonly kind: LightKind;
+    }>;
 }
 
-/** Collection size is independent of whether generation can name its elements. */
+/**
+ * Collection size is independent of whether generation can name its
+ * elements. Compiler state: written in place only through `writable()`; its
+ * sets are journaled.
+ */
 export interface CollectionCardinality {
-    kind: "array" | "keyed";
-    count: number | undefined;
-    keys?: Set<string | number | boolean>;
-    createdIn: readonly object[];
-    varyingIn: Set<object>;
+    readonly kind: "array" | "keyed";
+    readonly count: number | undefined;
+    readonly keys?: Set<string | number | boolean>;
+    readonly createdIn: readonly object[];
+    readonly varyingIn: Set<object>;
     /** An untracked alias can mutate this collection without visiting its cell. */
-    untrackedAliases?: true;
+    readonly untrackedAliases?: true;
 }
 
 export interface DefaultRenderTaskEmission {
@@ -1765,9 +1789,9 @@ export function runtimeMeshValue(value: Value): Value {
     };
 }
 
-export interface AssetRootState {
-    reparented: boolean;
-    alternatives?: readonly AssetRootState[];
+interface AssetRootState {
+    readonly reparented: boolean;
+    readonly alternatives?: readonly AssetRootState[];
 }
 
 export function assetRootMutationStates(
@@ -1883,8 +1907,8 @@ export interface ValueFields {
     packagedSources?: readonly string[];
     /** A fresh response read; only that exact expression proves unchanged bytes. */
     fetchedBytes?: {
-        expression: ts.CallExpression;
-        sources: readonly string[];
+        readonly expression: ts.CallExpression;
+        readonly sources: readonly string[];
     };
     ownedEngineCpp?: string;
     cpp: string;
@@ -1909,7 +1933,10 @@ export interface ValueFields {
     /** This engine/surface/scene presents into a retained host canvas. */
     surfaceCanvas?: true;
     environmentAsset?: CompileAsset;
-    localCubemap?: { plan: LocalCubemapPlan; environments: Value[] };
+    localCubemap?: {
+        readonly plan: LocalCubemapPlan;
+        readonly environments: readonly Value[];
+    };
     /** The live DOMStringMap view returned by an element's `dataset`. */
     uiDataset?: true;
     /**
@@ -1935,19 +1962,23 @@ export interface ValueFields {
     uiCanvasContext?: true;
     /** A retained input whose source assigned the static type "file". */
     uiFileInput?: true;
+    /** The file input's `onchange` handler property has been assigned. */
+    uiFileChangeHandler?: true;
+    /** The FileReader bound here has started a read. */
+    fileReaderStarted?: true;
     /**
      * Exact members held by a native array at this point in the source walk.
      * Runtime storage preserves JavaScript array semantics while this complete
      * snapshot lets generation-only consumers iterate known handles or records.
      * Any mutation generation cannot enumerate clears it.
      */
-    staticElements?: Value[];
+    staticElements?: readonly Value[];
     /** The sampled provider options retain callback identity and their initial matrix. */
     nodeParticleProvider?: {
-        callbackCpp: string;
-        initialMatrixCpp: string;
-        emitter: readonly [number, number, number];
-        textureBaseUrl?: string;
+        readonly callbackCpp: string;
+        readonly initialMatrixCpp: string;
+        readonly emitter: readonly [number, number, number];
+        readonly textureBaseUrl?: string;
     };
     /** Root binding whose static element snapshot this parameter alias shares. */
     staticElementsOwner?: Value;
@@ -1990,6 +2021,16 @@ export interface ValueFields {
      * through either.
      */
     readOnly?: boolean;
+    /**
+     * A compile-time record or tuple member whose expression reads storage
+     * code can change (or repeats an effect): the expression it was built
+     * from and the `cpp` that expression compiled to. That `cpp` is the
+     * value only in the statement that built it; the member is read into a
+     * temporary once the aggregate outlives that statement
+     * (`BindingScopes.settleBuiltValue`). A member whose `cpp` is no longer
+     * the built one was already moved into storage of its own.
+     */
+    builtFrom?: { readonly node: ts.Expression; readonly cpp: string };
     /** A pinned function retained as a compile-time alias of its intrinsic. */
     intrinsicName?: string;
     hostFunction?: "fetch" | "clipboard-write";
@@ -2007,14 +2048,14 @@ export interface ValueFields {
      */
     nativeCallbackParameterTypes?: readonly (DataType | undefined)[];
     /** Captured values learned from calls within one recursive specialization. */
-    nativeCallbackStaticArguments?: (Value | undefined)[];
+    nativeCallbackStaticArguments?: readonly (Value | undefined)[];
     /** Undefined is also the native void return type. */
     nativeCallbackReturnType?: DataType;
     /** An owned promise's resolving function; cpp names its retained settlement state. */
     nativePromiseSettlement?: {
-        mode: "resolve" | "reject";
-        type: string;
-        result: Value;
+        readonly mode: "resolve" | "reject";
+        readonly type: string;
+        readonly result: Value;
     };
     /** Scope-carrying record a function-valued property was read from. */
     callbackRecordOwner?: Value;
@@ -2028,6 +2069,13 @@ export interface ValueFields {
     platformCallbackIdentity?: number;
     /** Constructed class identity, retained when an inlined return wraps Value. */
     classDeclaration?: ts.ClassDeclaration;
+    /**
+     * The concrete classes a stored instance read as `classDeclaration` can
+     * be at run time, when there are several; absent when its class is exact.
+     */
+    classCandidates?: readonly ts.ClassDeclaration[];
+    /** The class whose static fields this record holds: the value of a class name. */
+    classStatics?: ts.ClassDeclaration;
     /**
      * What the class's own type parameters stand for on this instance.
      *
@@ -2062,10 +2110,10 @@ export interface ValueFields {
     /** Borrowed 2D-array depth view returned by getCsmReceiverTexture. */
     csmReceiverGeneratorIndex?: number;
     textureFile?: {
-        srgb: boolean;
+        readonly srgb: boolean;
         /** Packaged source used only when source dimensions are reached. */
-        source?: string;
-        entryFileName?: string;
+        readonly source?: string;
+        readonly entryFileName?: string;
     };
     /** Statically decoded source dimensions for file-backed image textures. */
     textureWidth?: number;
@@ -2268,6 +2316,15 @@ export interface ValueFields {
      * not-found guard away.
      */
     optionalFoundCpp?: string;
+    /**
+     * Whether the value was read from a slot that exists: a key `Map.get`
+     * found, the owner an optional chain reached, the element `pop()` or
+     * `shift()` removed, an index within the array. The value's own absence
+     * is one native state for a stored `null` and a missing slot alike; this
+     * flag tells `=== undefined` (no slot) from `=== null` (a stored null),
+     * and spells them apart.
+     */
+    slotFoundCpp?: string;
     /** JavaScript truthiness when it differs from mere optional presence. */
     truthinessCpp?: string;
     /** An Error delivered by native device recovery, with the Error message contract. */
@@ -2306,15 +2363,15 @@ export interface ValueFields {
     pickingEngineKnown?: true;
     /** A node's observable transform object retains its owning handle. */
     sceneNodeVector?: {
-        owner: Value & { engineCpp: string };
-        transform: SceneNodeTransformDescriptor;
-        bound?: true;
+        readonly owner: Value & { engineCpp: string };
+        readonly transform: SceneNodeTransformDescriptor;
+        readonly bound?: true;
     };
     /** An observable camera vector retains its original camera handle. */
     cameraVector?: {
-        owner: Value & { engineCpp: string };
-        field: "position" | "target" | "up_vector";
-        bound?: true;
+        readonly owner: Value & { engineCpp: string };
+        readonly field: "position" | "target" | "up_vector";
+        readonly bound?: true;
     };
     geometryTask?: GeometryOutputTaskManifest;
     /**
@@ -2353,10 +2410,10 @@ export interface ValueFields {
     renderTask?: true;
     /** Proven target descriptor retained by aliases for pass-signature admission. */
     renderTargetSignature?: {
-        surfaceFormat: boolean;
-        hasColor: boolean;
-        depthFormat?: string;
-        samples: number;
+        readonly surfaceFormat: boolean;
+        readonly hasColor: boolean;
+        readonly depthFormat?: string;
+        readonly samples: number;
     };
     /**
      * Set instead when a `task` value names a screen-space effect. Its
@@ -2384,9 +2441,9 @@ export interface ValueFields {
      * expressions that build them, in binding order. They ride the
      * descriptor because that is what the layer or system is handed.
      */
-    spriteCustomTextures?: string[];
+    spriteCustomTextures?: readonly string[];
     /** The corresponding shader identifiers, in the same binding order. */
-    spriteCustomTextureNames?: string[];
+    spriteCustomTextureNames?: readonly string[];
     /** One-based program index; zero is the stock sprite/billboard shader. */
     spriteCustomShaderIndex?: number;
     /**
@@ -2429,6 +2486,11 @@ export interface ValueFields {
     parameterBinding?: boolean;
     /** A local the emitter materialized as a native variable; reads go through it. */
     nativeBinding?: true;
+    /**
+     * The native 64-bit counter a counted loop reads as this number. Only a
+     * read of the counter carries it: storing the value elsewhere drops it.
+     */
+    integerCounterCpp?: string;
     /** A value bound by a native runtime iteration, not a static unroll. */
     runtimeIteration?: true;
     staticString?: string;
@@ -2448,8 +2510,8 @@ export interface ValueFields {
     dynamicAssetPathCpp?: string;
     /** Parsed payload carried only by a generation-time fetch response. */
     staticJson?: unknown;
-    tupleElements?: Value[];
-    recordProperties?: Record<string, Value>;
+    tupleElements?: readonly Value[];
+    recordProperties?: Readonly<Record<string, Value>>;
     /** Complete own-key order proven for a native record whose key set cannot change. */
     recordOwnKeys?: readonly string[];
     /** Module namespace exports are live bindings and cannot be written through this record. */
@@ -2465,20 +2527,22 @@ export interface ValueFields {
      * the literal form is the callback path a function-literal argument
      * already takes.
      */
-    recordMethods?: Record<
-        string,
-        | ts.Identifier
-        | ts.ArrowFunction
-        | ts.FunctionExpression
-        | ts.MethodDeclaration
+    recordMethods?: Readonly<
+        Record<
+            string,
+            | ts.Identifier
+            | ts.ArrowFunction
+            | ts.FunctionExpression
+            | ts.MethodDeclaration
+        >
     >;
     /**
      * Record properties declared with `get`. The accessor is kept
      * rather than its value, so each read re-evaluates it.
      */
-    recordGetters?: Record<string, ts.GetAccessorDeclaration>;
+    recordGetters?: Readonly<Record<string, ts.GetAccessorDeclaration>>;
     /** Class or object properties declared with `set`; assignment evaluates the body. */
-    recordSetters?: Record<string, ts.SetAccessorDeclaration>;
+    recordSetters?: Readonly<Record<string, ts.SetAccessorDeclaration>>;
     /** Native map materialized for a runtime-valued record in one emitted scope. */
     runtimeRecordCpp?: string;
     /** Emission scope that owns `runtimeRecordCpp`; generated locals cannot cross it. */
@@ -2499,8 +2563,8 @@ export interface ValueFields {
     recordTypeArguments?: ReadonlyMap<ts.Symbol, ts.Type>;
     /** Shared across compiler aliases of one native scene. */
     sceneEnvironmentState?: {
-        rotationSet: boolean;
-        hasTexturedSkybox: boolean;
+        readonly rotationSet: boolean;
+        readonly hasTexturedSkybox: boolean;
     };
     /** Shared across aliases of one native scene. */
     sceneTopologyState?: SceneTopologyState;
@@ -2523,13 +2587,18 @@ export interface ValueFields {
     /** A known absent receiver stopped this optional chain before member evaluation. */
     optionalChainShortCircuited?: true;
     browserValue?:
-        | { kind: "boolean"; value: boolean }
-        | { kind: "number"; value: number }
-        | { kind: "null" }
-        | { kind: "dom-rect" }
-        | { kind: "object"; primaryCanvas?: true; moduleUrl?: true }
-        | { kind: "search-params"; search: string }
-        | { kind: "string"; value: string };
+        | { readonly kind: "boolean"; readonly value: boolean }
+        | { readonly kind: "number"; readonly value: number }
+        | { readonly kind: "null" }
+        | { readonly kind: "undefined" }
+        | { readonly kind: "dom-rect" }
+        | {
+              readonly kind: "object";
+              readonly primaryCanvas?: true;
+              readonly moduleUrl?: true;
+          }
+        | { readonly kind: "search-params"; readonly search: string }
+        | { readonly kind: "string"; readonly value: string };
     nodeBlockLoader?: Pick<
         CompiledNodeMaterial,
         "blockEmitters" | "pinnedBlockLoader"
@@ -2538,11 +2607,11 @@ export interface ValueFields {
     msaaSamples?: 1 | 4 | "runtime";
     directMorphCompatible?: boolean;
     morphTarget?: {
-        positionsCpp: string;
-        normalsCpp: string;
-        vertexCountCpp: string;
-        weightCpp: string;
-        meshCpp?: string;
+        readonly positionsCpp: string;
+        readonly normalsCpp: string;
+        readonly vertexCountCpp: string;
+        readonly weightCpp: string;
+        readonly meshCpp?: string;
     };
 }
 
@@ -2646,7 +2715,6 @@ export type Feature =
     | "material:tracking"
     | "material:emissive"
     | "material:no-color-view"
-    | "material:grid"
     | "material:node"
     | "material:node-inputs"
     | "material:shader"
@@ -2794,6 +2862,9 @@ export type Feature =
     | "shadow:pcf-directional"
     | "shadow:csm"
     | "shadow:task"
+    // `enableMorphTargetShadows`, the caster fit's morph-expanded bounds
+    // (upstream's own `shadow/enable-morph-target-shadows.ts` module).
+    | "shadow:morph-bounds"
     | "sprite:2d"
     | "sprite:2d-depth-host"
     | "sprite:2d-y-sort"
@@ -2885,6 +2956,8 @@ export interface ResolvedCompileOptions extends DeploymentOptions {
     runtimeSearchParams?: boolean;
     /** Reached navigation makes location.search observable across reloads. */
     runtimeLocationSearch?: boolean;
+    /** A reached constructed promise can end a synchronous activation at its await. */
+    pendingActivations?: boolean;
     fileName: string;
     title: string;
     width: number;

@@ -9,11 +9,7 @@ import type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
 } from "../compiler.js";
-import {
-    emitNativeWgslProgram,
-    emitWgslModule,
-} from "../shader-wgsl-emitter.js";
-import { specializeImageSkybox } from "../shader-skybox.js";
+import { emitNativeWgslProgram } from "../shader-wgsl-emitter.js";
 import {
     pinnedShaderDefineText,
     shaderPipelineModule,
@@ -27,39 +23,19 @@ import type {
     ShaderProgramReflection,
     ShaderSystemMatrix,
 } from "../shader-ir.js";
-import {
-    composeStandaloneWgsl,
-    predeclaredShaderProgram,
-    shaderMaterialPrograms,
-} from "../shader-material-programs.js";
-import { gridFragmentWgsl, gridVertexWgsl } from "../shader-builtins-grid.js";
+import { composeStandaloneWgsl } from "../shader-material-programs.js";
 import {
     blitFragmentWgsl,
     blitVertexWgsl,
     depthOnlyFragmentWgsl,
     diagnosticClusterFragmentWgsl,
     diagnosticIdFragmentWgsl,
-    fogFactorWgsl,
-    imageProcessingFragmentWgsl,
-    imageProcessingMultisampledFragmentWgsl,
 } from "../shader-builtins-utility.js";
-import {
-    backgroundDdsSkyboxVertexWgsl,
-    backgroundGroundFragmentWgsl,
-    backgroundSkyboxFragmentWgsl,
-    readPinnedBackgroundGroundSource,
-    readPinnedBackgroundSkyboxSource,
-    readPinnedDitherWgsl,
-    solidSkyboxFragmentWgsl,
-    solidSkyboxVertexWgsl,
-} from "../shader-builtins-background.js";
-import type { PinnedSolidSkyboxSource } from "../shader-builtins-background.js";
 import { materialVertexWgsl } from "../shader-builtins-standard.js";
 import {
     extractPackagedStringLiteral,
     extractPackagedTemplateLiteral,
     readPinnedLibraryModule,
-    readPinnedRawShader,
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { pinnedInstanceAttributesCpp } from "./thin-instance-attributes.js";
@@ -71,11 +47,19 @@ import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
 import {
-    meshProfileBindingCpp,
+    meshProfileBeginCpp,
     type MeshProfileTable,
 } from "./resource-profiles.js";
 import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
+import { lowerRenderBucket } from "./render-bucket.js";
+import {
+    geometryTaskCameraCpp,
+    renderTaskPassCpp,
+    passCameraViewportCpp,
+    transparentSortSkipCpp,
+} from "./render-task-pass.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -114,26 +98,9 @@ function assertPinnedFogInfosOrder(): void {
     }
 }
 
-/** The `fog_infos` initializer list, one pinned component read per store. */
-function pinnedFogInfosPacking(): string {
-    assertPinnedFogInfosOrder();
-    return pinnedFogInfoComponentReads
-        .map(([, , packedStore]) => `        ${packedStore},\n`)
-        .join("");
-}
-
-function liftedImageSkyboxWgsl() {
-    const module = "material/standard/skybox-cubemap.js";
-    return specializeImageSkybox(
-        readPinnedRawShader(module, "shaders/skybox-cubemap.vertex.wgsl"),
-        readPinnedRawShader(module, "shaders/skybox-cubemap.fragment.wgsl"),
-    );
-}
-
 const renderTaskModule = "src/frame-graph/render-task-base.ts";
 
-// Markers the formula table asserts AND a fidelity record names, spelled
-// once so the record cannot drift from the assertion.
+// Markers a fidelity record names, spelled once.
 const IBL_SPECULAR_OCCLUSION = packagedWgsl`let seo = clamp`;
 const BRDF_LUT_COORDINATES = packagedWgsl`vec2<f32>(NdotV, roughness)`;
 const ENVIRONMENT_CUBEMAP_ROTATION = packagedWgsl`let R = rotateY(R_raw`;
@@ -143,7 +110,6 @@ const CLEARCOAT_IBL_CONSERVATION = packagedWgsl`let ccConservation_ibl = 1.0 - c
 // so it keeps its source spacing in the package: a plain literal.
 const SHEEN_ALBEDO_SCALING = "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;";
 const pbrTemplateModule = "src/material/pbr/pbr-template.ts";
-const pbrTemplateExtModule = "src/material/pbr/pbr-template-ext.ts";
 const pbrHelperCoreModule = "src/material/node/blocks/pbr-mr-helper-core.ts";
 const iblFragmentModule = "src/material/pbr/fragments/ibl-fragment.ts";
 const iblSkyboxModule = "src/material/pbr/fragments/ibl-skybox-wgsl.ts";
@@ -156,14 +122,9 @@ const clearcoatFragmentModule =
 const sheenFragmentModule = "src/material/pbr/fragments/sheen-fragment.ts";
 const iridescenceFragmentModule =
     "src/material/pbr/fragments/iridescence-fragment.ts";
-const clearcoatLoaderModule = "src/loader-gltf/gltf-ext-clearcoat.ts";
-const sheenLoaderModule = "src/loader-gltf/gltf-ext-sheen.ts";
-const iridescenceLoaderModule = "src/loader-gltf/gltf-ext-iridescence.ts";
 const dielectricLoaderModule = "src/loader-gltf/gltf-ext-dielectric.ts";
 const transmissionFrameGraphModule = "src/frame-graph/transmission.ts";
 const sceneUniformsModule = "src/frame-graph/scene-uniforms-pack.ts";
-const fogWgslModule = "src/shader/wgsl-fog.ts";
-const skyboxCubemapModule = "src/material/standard/skybox-cubemap.ts";
 const orthoMatrixModule =
     "src/math/write-ortho-off-center-mat4-lh-into-buffer.ts";
 const perspectiveMatrixModule =
@@ -177,7 +138,6 @@ const backgroundSolidModule = "src/material/pbr/background-solid-skybox.ts";
 const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
 const surfaceModule = "src/engine/surface.ts";
 const sceneUniformsSourceModule = "src/shader/scene-uniforms.ts";
-const gridModule = "src/material/grid/grid-material.ts";
 
 interface LoweredShader {
     output: string;
@@ -379,8 +339,6 @@ export class RendererLowerer {
             standardVertexColors?: boolean;
             meshProfiles?: MeshProfileTable;
             fog?: boolean;
-            imageSkybox?: boolean;
-            solidSkybox?: boolean;
             environmentRotation?: boolean;
             gpuInstancing?: boolean;
             punctualLights?: boolean;
@@ -400,7 +358,6 @@ export class RendererLowerer {
              */
             nodeGeometryViews?: boolean;
             orthographicCamera?: boolean;
-            background?: boolean;
             shaderPrograms?: CompiledShaderProgram[];
             /**
              * The engine's floating-origin mode.
@@ -412,7 +369,7 @@ export class RendererLowerer {
             floatingOrigin?: boolean;
         } = {},
     ): LoweredSource {
-        this.assertRenderPlanPins(options);
+        this.assertRenderPlanPins();
         this.assertPinnedTransparentSort();
         const reachedShaderPrograms = options.shaderPrograms ?? [];
         const { shaderVariantTable, shaderVariantEntries } =
@@ -432,7 +389,7 @@ export class RendererLowerer {
         const systemMatrixEnumerators = shaderSystemMatrixTable
             .map(({ enumerator }) => "    " + enumerator + ",")
             .join("\n");
-        const backgroundGeometry = this.pinnedBackgroundGeometry();
+        const linearToneMapping = this.pinnedLinearToneMappingFlag();
         const viewMatrixBody = this.pinnedViewMatrixBody(
             options.floatingOrigin === true,
         );
@@ -501,14 +458,17 @@ export class RendererLowerer {
         return {
             modulePath: renderTaskModule,
             symbolName: "_buildBindings",
-            header: this.renderPlanHeaderCpp(options, systemMatrixEnumerators),
+            header: this.renderPlanHeaderCpp(
+                options,
+                systemMatrixEnumerators,
+                linearToneMapping,
+            ),
             source: this.renderPlanSourceCpp(options, {
                 viewMatrixBody,
                 opaqueOrderStamp,
                 shaderVariantTable,
                 shaderVariantEntries,
                 secondAnalyticLightFill,
-                backgroundGeometry,
                 perspectiveWriter,
                 orthoWriter,
                 cameraViewport,
@@ -697,13 +657,9 @@ export class RendererLowerer {
 
     /**
      * The render-plan preconditions: the adopted render-task symbols must
-     * still exist, GPU instancing requires its composed matrix pins, and
-     * an orthographic scene refuses environment backgrounds.
+     * still exist, and GPU instancing requires its composed matrix pins.
      */
-    private assertRenderPlanPins(options: {
-        orthographicCamera?: boolean;
-        background?: boolean;
-    }): void {
+    private assertRenderPlanPins(): void {
         for (const symbol of [
             "_buildBindings",
             "sortTransparentBindings",
@@ -711,10 +667,8 @@ export class RendererLowerer {
         ]) {
             this.context.functionDeclaration(renderTaskModule, symbol);
         }
-        // The mesh world is composed from these on EVERY plan now -- the
-        // CPU vertex bake reads it for any scene that draws a mesh -- so
-        // the assertion is unconditional too. It used to sit behind
-        // `gpuInstancing`, which was the only consumer at the time.
+        // The mesh world is composed from these on EVERY plan -- every
+        // draw's mesh block reads it -- so the assertion is unconditional.
         // (multiplyMat4IntoBuffer needs no entry: the multiply writer resolves
         // its declaration on every plan.)
         this.context.functionDeclaration(
@@ -729,15 +683,6 @@ export class RendererLowerer {
             "src/scene/world-matrix-state.ts",
             "composeTrsLocalMatrix",
         );
-        if (options.orthographicCamera && options.background) {
-            // Environment backgrounds build their own view-projection,
-            // which still writes the perspective form; an orthographic
-            // scene would draw its skybox or ground through a different
-            // projection than its meshes.
-            throw new Error(
-                "Orthographic cameras are lowered for the scene projection only; environment skyboxes and grounds still build a perspective view-projection.",
-            );
-        }
     }
 
     /**
@@ -804,10 +749,7 @@ export class RendererLowerer {
                 "Expected the pinned sort to name its comparator.",
             );
         }
-        const { declaration } = this.context.functionDeclaration(
-            renderTaskModule,
-            comparator.text,
-        );
+        const { declaration } = this.context.functionOf(comparator);
         const statement = declaration.body?.statements[0];
         if (
             declaration.body?.statements.length !== 1 ||
@@ -987,8 +929,6 @@ export class RendererLowerer {
             standardVertexAlpha?: boolean;
             standardVertexColors?: boolean;
             meshProfiles?: MeshProfileTable;
-            solidSkybox?: boolean;
-            imageSkybox?: boolean;
             gpuInstancing?: boolean;
             floatingOrigin?: boolean;
             picking?: boolean;
@@ -997,6 +937,7 @@ export class RendererLowerer {
             transformNodes?: boolean;
         },
         systemMatrixEnumerators: string,
+        linearToneMapping: number,
     ): string {
         return `#pragma once
 
@@ -1011,14 +952,27 @@ ${options.standardVertexAlpha ? "#include <bblite/js_data.hpp>\n" : ""}\
 #include <bblite/upstream/camera_math.hpp>
 
 #include <array>
+#include <optional>
 #include <vector>
 
 namespace bbl::upstream {${options.standardVertexAlpha ? lowerStandardMeshAlpha(this.context, options.standardVertexColors) : ""}
 
+${renderTaskPassCpp(this.context)}
+
+${geometryTaskCameraCpp(this.context)}
+
+${passCameraViewportCpp(this.context)}
+
+// ${this.context.provenance(transmissionFrameGraphModule, "executeRenderTaskLinear")}
+// The value the pin writes over toneMappingEnabled while a transmission
+// scene's retargeted linear pass runs. Every image-processing tail is gated
+// on the scene block's vImageInfos.w >= 0.0, and this is the one write that
+// closes it, leaving the processing to the trailing task.
+inline constexpr float pinned_linear_tone_mapping = ${this.context.floatLiteral(linearToneMapping)};
+
 enum class RenderMaterialKind {
     pbr,
     standard,
-    grid,
     shader,
     node,
 };
@@ -1071,10 +1025,6 @@ enum class RenderPipelineKind {
     standard_opaque_none_clockwise,
     standard_transparent_back_clockwise,
     standard_transparent_none_clockwise,
-    grid_opaque_back,
-    grid_opaque_none,
-    grid_transparent_back,
-    grid_transparent_none,
     shader,
     shader_a2c,
     node_opaque_back,
@@ -1155,7 +1105,6 @@ struct RenderPlan {
 
 struct RenderFeatures {
     bool standard_material = false;
-    bool grid_material = false;
     bool no_color_material = false;
     bool shader_material = false;
     bool node_material = false;
@@ -1269,98 +1218,7 @@ struct PbrUniforms {
     std::array<std::array<float, 4>, 9> spherical_harmonics{};
 };
 
-struct GridUniforms {
-    std::array<float, 4> grid_control{};
-    std::array<float, 4> main_color{};
-    std::array<float, 4> line_color{};
-    std::array<float, 4> grid_offset_visibility{};
-    std::array<float, 4> options{};
-};
-
-struct BackgroundPlan {
-    std::array<ModelVertex, 4> vertices{};
-    std::array<std::uint32_t, 6> indices{};
-};
-
-struct BackgroundUniforms {
-    std::array<float, 4> primary_color_alpha{};
-    std::array<float, 4> background_center{};
-    std::array<float, 4> camera_exposure{};
-    std::array<float, 4> image_parameters{};
-};
-
-struct SkyboxPlan {
-    std::array<ModelVertex, 8> vertices{};
-    std::array<std::uint32_t, 36> indices{};
-};
-
-// background-dds-skybox.ts keeps the cube local and applies rootPosition in
-// its vertex-stage mesh.world. Preserving that store boundary matters because
-// the fragment hashes the interpolated world position for dither.
-struct SkyboxVertexUniforms {
-    std::array<float, 16> view_projection{};
-    std::array<float, 16> world{};
-};
-
-struct SkyboxUniforms {
-    std::array<float, 4> primary_color_exposure{};
-    std::array<float, 4> background_center{};
-    std::array<float, 4> image_parameters{};
-};
-${
-    options.solidSkybox
-        ? `
-struct SolidSkyboxPlan {
-    std::array<std::array<float, 3>, 8> positions{};
-    std::array<std::uint32_t, 36> indices{};
-};
-
-// src/material/pbr/background-solid-skybox.ts createSkyMeshUBO: the pinned
-// 96-byte mesh block, field for field, so a native capture pairs against the
-// browser's own buffer.
-struct SolidSkyboxUniforms {
-    std::array<float, 16> world{};
-    std::array<float, 3> primary_color{};
-    float pad = 0.0f;
-    std::array<float, 3> sky_output_color{};
-    float pad2 = 0.0f;
-};
-
-// src/shader/scene-uniforms.ts SCENE_UBO_WGSL, truncated at the last member
-// the pinned skybox stages read. The vertex stage keeps the pin's own
-// scene.viewProjection and scene.vEyePosition references, so this block is the
-// pin's per-pass prefix rather than a native invention.
-struct SolidSkyboxSceneUniforms {
-    std::array<float, 16> view_projection{};
-    std::array<float, 16> view{};
-    std::array<float, 4> eye_position{};
-};
-`
-        : ""
-}\
-${
-    options.imageSkybox
-        ? `
-struct ImageSkyboxPlan {
-    std::array<std::array<float, 3>, 8> positions{};
-    std::array<std::uint32_t, 36> indices{};
-};
-
-// The lifted cubemap-skybox fragment block. The pinned fog distance is
-// (scene.view * worldPos).xyz, so the block carries the view matrix the
-// fragment evaluates that expression with, plus the two WGSL_FOG vec4s --
-// 96 bytes, the same size the retired camera-basis block occupied.
-struct ImageSkyboxUniforms {
-    std::array<float, 16> view{};
-    std::array<float, 4> fog_infos{};
-    std::array<float, 4> fog_color{};
-};
-`
-        : ""
-}\
-
-${options.meshProfiles ? "MeshHandle bind_scene_mesh_profile(Engine& engine, MeshHandle mesh, std::uint32_t profile);\n" : ""}\
-void initialize_composition_feature_rows(Engine& engine);
+${options.meshProfiles ? "void begin_scene_mesh_profile(Engine& engine, std::uint32_t profile);\n" : ""}\
 RenderPlan build_render_plan(const Scene& scene, const Engine& engine);
 RenderFeatures build_render_features(
     const Scene& scene,
@@ -1379,10 +1237,13 @@ struct CameraBasis {
     Vec3 up;
 };
 CameraBasis camera_basis(const CameraRecord& camera);
+/** The transparent list's per-frame refresh: its visible candidates, sorted
+ *  back to front under the pass camera (\`sortTransparentBindings\`), which
+ *  a camera-less pass skips as the pin's own early return does. */
 void sort_transparent_draws(
     RenderDrawList& transparent,
     const Engine& engine,
-    const CameraRecord& camera);
+    const CameraRecord* camera);
 RenderItem bind_render_item(
     RenderItem item,
     const Engine& engine,
@@ -1421,29 +1282,25 @@ std::array<float, 16> build_view_projection(
 // transcribed fragment never needed it.
 std::array<float, 16> build_view_matrix(
     const std::array<CameraMatrixScalar, 16>& camera_world);
-std::array<float, 16> build_skybox_view_projection(
-    const CameraRecord& camera,
-    double aspect);
 // One mesh's local matrix, from the pin's own composeTrsLocalMatrix: the
 // always-emitted pinned_world_transform.hpp composition (trs_matrix) over
 // the mesh record, kept as a plain function so a fixture can stand in for
 // it.
 std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh);
-// One mesh's world matrix: its own composition under its parent chain.
+// One mesh's \`worldMatrix\`: its own composition under its parent chain.
 //
 // world-matrix-state.ts resolves a node's world as parent.worldMatrix
-// times local, recursively, so a mesh under a transform
-// node reaches the vertex stage through that product. A mesh with no
-// parent is its own local matrix, which is every mesh the port drew before
-// the hierarchy existed.
+// times local, recursively. A mesh's parent is a mesh, a transform node or
+// the node world its loader recorded (\`parent_world\`, the imported root's
+// live edit on its left); a factory mesh with none is its own local matrix.
 std::array<float, 16> mesh_world_matrix(
     const Engine& engine,
     const MeshRecord& mesh);
-// Apply the imported clone root's outer rotation and translation without
-// narrowing the matrix. Shadow fitting and floating-origin packing share it.
-std::array<double, 16> apply_mesh_outer_transform(
-    const MeshRecord& mesh,
-    std::array<double, 16> world);
+// The same world at the composition's own double width, for a consumer
+// that subtracts an eye before narrowing.
+std::array<double, 16> mesh_world_matrix_f64(
+    const Engine& engine,
+    const MeshRecord& mesh);
 // The corresponding world matrix for the parent kind setParent accepts.
 std::array<float, 16> transform_node_world(
     const Engine& engine,
@@ -1464,29 +1321,16 @@ bool refresh_mirrored_meshes(Scene& scene, Engine& engine);`
 }\
 ${
     options.floatingOrigin
-        ? `// A mesh's own world matrix, eye-relative.
-//
-// This port bakes a mesh's TRS into its vertices, which at large-world
-// coordinates quantizes them before anything can recover the remainder --
-// so a floating-origin scene keeps LOCAL vertices, exactly as the pin
-// always does, and reaches the vertex stage through this matrix instead.
-// The camera's world translation is subtracted from the composed
-// translation in double, before the single float store, which is the
-// whole precision-recovery trick (pack-mat4-with-offset.ts).
+        ? `// A mesh's world matrix, eye-relative: the camera's world translation is
+// subtracted from the double composition before the single float store,
+// the precision-recovery trick of pack-mat4-with-offset.ts.
 std::array<float, 16> mesh_world_eye_relative(
+    const Engine& engine,
     const MeshRecord& mesh,
-    const std::array<float, 16>& base,
     Vec3d eye);`
         : ""
 }\
-${
-    options.gpuInstancing
-        ? `std::array<float, 16> build_instance_parent_world(
-    const MeshRecord& mesh);
-
-${pinnedInstanceAttributesCpp(this.context)}`
-        : ""
-}\
+${options.gpuInstancing ? pinnedInstanceAttributesCpp(this.context) : ""}\
 ${
     options.picking
         ? `// src/picking/gpu-picker.ts: the picker walks the scene's meshes and
@@ -1517,49 +1361,12 @@ bool render_item_draws_now(const RenderItem& item, const Engine& engine);
 // per-draw mesh block need the same per-mesh light set.
 bool light_affects_mesh(
     const LightRecord& light,
-    std::uint32_t mesh_index);
+    MeshHandle mesh);
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
     const Engine& engine,
     const CameraRecord& camera,
     const RenderItem& item);
-GridUniforms build_grid_uniforms(
-    const Engine& engine,
-    const RenderItem& item);
-BackgroundPlan build_background_plan(const EnvironmentState& environment);
-BackgroundUniforms build_background_uniforms(
-    const EnvironmentState& environment,
-    const CameraRecord& camera,
-    bool linear_image_processing);
-SkyboxPlan build_skybox_plan(const EnvironmentState& environment);
-SkyboxVertexUniforms build_skybox_vertex_uniforms(
-    const EnvironmentState& environment,
-    const std::array<float, 16>& view_projection);
-SkyboxUniforms build_skybox_uniforms(
-    const EnvironmentState& environment,
-    bool linear_image_processing);
-${
-    options.solidSkybox
-        ? `SolidSkyboxPlan build_solid_skybox_plan(
-    const EnvironmentState& environment);
-SolidSkyboxUniforms build_solid_skybox_uniforms(
-    const Scene& scene);
-SolidSkyboxSceneUniforms build_solid_skybox_scene_uniforms(
-    const CameraRecord& camera,
-    const std::array<float, 16>& view_projection);
-`
-        : ""
-}\
-${
-    options.imageSkybox
-        ? `ImageSkyboxPlan build_image_skybox_plan(
-    const EnvironmentState& environment);
-ImageSkyboxUniforms build_image_skybox_uniforms(
-    const Scene& scene,
-    const CameraRecord& camera);
-`
-        : ""
-}\
 
 } // namespace bbl::upstream
 `;
@@ -1575,8 +1382,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             orthographicCamera?: boolean;
             gpuInstancing?: boolean;
             environmentRotation?: boolean;
-            solidSkybox?: boolean;
-            imageSkybox?: boolean;
             floatingOrigin?: boolean;
             picking?: boolean;
             mirroredMeshes?: boolean;
@@ -1591,14 +1396,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             shaderVariantTable: { readonly length: number };
             shaderVariantEntries: string;
             secondAnalyticLightFill: string;
-            backgroundGeometry: {
-                groundVertexRows: string;
-                groundIndexRow: string;
-                groundAlpha: string;
-                skyboxVertexRows: string;
-                skyboxCornerRows: string;
-                skyboxIndexRows: string;
-            };
             perspectiveWriter: string;
             orthoWriter: string;
             cameraViewport: string;
@@ -1610,26 +1407,11 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             shaderVariantTable,
             shaderVariantEntries,
             secondAnalyticLightFill,
-            backgroundGeometry,
             perspectiveWriter,
             orthoWriter,
             cameraViewport,
         } = inputs;
-        // Both background fragments wrap their image processing in the pin's
-        // `scene.vImageInfos.w >= 0.0`, and that lane is
-        // `+scene.imageProcessing.toneMappingEnabled`
-        // (`scene-uniforms-pack.ts`). `transmission.ts`'s
-        // `executeRenderTaskLinear` sets that property to a NEGATIVE value for
-        // the duration of the retargeted linear pass, which is what closes the
-        // gate: a background drawn into the linear target leaves its exposure,
-        // tone map and contrast to the trailing image-processing task. So the
-        // lane carries the pin's own packed value rather than a constant, and
-        // the negative is read off the pin rather than typed here.
-        const linearToneMapping = this.pinnedLinearToneMappingFlag();
-        const imageProcessingGate =
-            `linear_image_processing\n            ? ` +
-            `${this.context.floatLiteral(linearToneMapping)}\n            ` +
-            `: (environment.tone_mapping_enabled ? 1.0f : 0.0f)`;
+        const transparentSortSkip = transparentSortSkipCpp(this.context);
         return `// ${this.context.provenance(
             renderTaskModule,
             "_buildBindings",
@@ -1640,9 +1422,19 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/camera_math.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+// The Standard bucket reads the lowered feature word; the PBR header goes
+// first because the Standard one hoists the shared mirrors only without it.
+#if BBLITE_PBR_VARIANTS > 0
+#include <bblite/upstream/pbr_variants.hpp>
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+#include <bblite/upstream/standard_variants.hpp>
+#endif
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <iterator>
 
@@ -1677,36 +1469,15 @@ RenderItem bind_render_item(
     if (material_handle.value >= engine.materials.size()) {
         return item;
     }
-    const MaterialRecord& material = engine.materials[material_handle.value];
-    item.material_kind = material.grid_material
-        ? RenderMaterialKind::grid
-        : material.shader_material
+    const MaterialRecord& material = ${recordAt("engine.materials", "material_handle")};
+    item.material_kind = material.shader_material
             ? RenderMaterialKind::shader
             : material.node_material
             ? RenderMaterialKind::node
             : material.standard_material
             ? RenderMaterialKind::standard
             : RenderMaterialKind::pbr;
-    item.bucket =
-        material.alpha_mode == MaterialAlphaMode::blend
-            ? RenderBucket::alpha_blend
-            : material.alpha_mode == MaterialAlphaMode::mask
-                ? RenderBucket::alpha_mask
-                : RenderBucket::opaque;${
-                    options.standardVertexAlpha
-                        ? `
-    if (material.standard_material && item.mesh.value < engine.meshes.size()) {
-        const MeshRecord& mesh = engine.meshes[item.mesh.value];
-        const bool has_vertex_color = ${options.standardVertexColors ? "mesh.geometry < engine.geometries.size() && engine.geometries[mesh.geometry].has_vertex_colors" : "false"};
-        if (standard_color_alpha_features(
-                material.no_color || material.esm_shadow,
-                mesh.has_vertex_alpha, has_vertex_color,
-                has_instance_colors(mesh)) != 0u) {
-            item.bucket = RenderBucket::alpha_blend;
-        }
-    }`
-                        : ""
-                }
+${lowerRenderBucket(this.context, options)}
     item.cull_mode = material.double_sided
         ? RenderCullMode::none
         : RenderCullMode::back;
@@ -1787,15 +1558,6 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
             return item.clockwise_front_face
                 ? RenderPipelineKind::standard_opaque_back_clockwise
                 : RenderPipelineKind::standard_opaque_back;
-        case RenderMaterialKind::grid:
-            if (transparent) {
-                return double_sided
-                    ? RenderPipelineKind::grid_transparent_none
-                    : RenderPipelineKind::grid_transparent_back;
-            }
-            return double_sided
-                ? RenderPipelineKind::grid_opaque_none
-                : RenderPipelineKind::grid_opaque_back;
         case RenderMaterialKind::shader:
             return item.alpha_to_coverage
                 ? RenderPipelineKind::shader_a2c
@@ -1843,10 +1605,10 @@ void append_draw(
         // render-task.ts drawList reads transparent visibility every frame.
         list.visibility_candidates.push_back(command);
     }
-    if (!mesh_draws(engine.meshes[item.mesh.value])) {
+    if (!mesh_draws(${recordAt("engine.meshes", "item.mesh")})) {
         return;
     }
-    if (!engine.meshes[item.mesh.value].thin_instance_gpu_culling && !render_item_material_draws(item, engine)) return;
+    if (!${recordAt("engine.meshes", "item.mesh")}.thin_instance_gpu_culling && !render_item_material_draws(item, engine)) return;
     list.commands.push_back(command);
 }
 
@@ -1884,9 +1646,8 @@ void include_material_features(
     MaterialHandle handle,
     bool shadow_pass = false) {
     if (handle.value >= engine.materials.size()) return;
-    const MaterialRecord& material = engine.materials[handle.value];
+    const MaterialRecord& material = ${recordAt("engine.materials", "handle")};
     features.standard_material |= material.standard_material;
-    features.grid_material |= material.grid_material;
     features.no_color_material |= material.no_color;
     features.shader_material |= material.shader_material;
     features.node_material |= material.node_material;
@@ -1905,7 +1666,7 @@ RenderFeatures build_render_features(
             include_material_features(
                 result,
                 engine,
-                engine.meshes[handle.value].material);
+                ${recordAt("engine.meshes", "handle")}.material);
         }
     }
     for (const FrameTaskRecord& task : engine.frame_tasks) {
@@ -1918,19 +1679,15 @@ RenderFeatures build_render_features(
     return result;
 }
 
-namespace {
-
-const std::array<ShaderVariantInfo, ${shaderVariantTable.length}> shader_variants{{
-${shaderVariantEntries}
-}};
-
-} // namespace
-
 std::uint32_t shader_variant_count() {
     return ${shaderVariantTable.length}u;
 }
 
 const ShaderVariantInfo& shader_variant_info(std::uint32_t variant) {
+    // Built on first use: its names and layouts allocate.
+    static const std::array<ShaderVariantInfo, ${shaderVariantTable.length}> shader_variants{{
+${shaderVariantEntries}
+}};
     if (variant >= shader_variants.size()) {
         throw std::runtime_error("Unknown shader variant id.");
     }
@@ -2011,7 +1768,7 @@ ${
             items.begin(),
             items.end(),
             [&](const RenderItem& item) {
-                return item.mesh.value == entry.mesh.value;
+                return item.mesh == entry.mesh;
             });
         if (found == items.end()) {
             continue;
@@ -2058,99 +1815,51 @@ CameraBasis camera_basis(const CameraRecord& camera) {
 void sort_transparent_draws(
     RenderDrawList& transparent,
     const Engine& engine,
-    const CameraRecord& camera) {
-    const CameraBasis basis = camera_basis(camera);
-    const Vec3& eye = basis.eye;
-    const Vec3& forward = basis.forward;
+    const CameraRecord* camera) {
     auto& commands = transparent.visibility_candidates;
-    for (RenderDrawCommand& command : commands) {
-        if (command.item.mesh.value >= engine.meshes.size()) {
-            command.sort_distance = 0.0f;
-            continue;
+    // sortTransparentBindings' own early return.
+    if (!(${transparentSortSkip})) {
+        const CameraBasis basis = camera_basis(*camera);
+        const Vec3& eye = basis.eye;
+        const Vec3& forward = basis.forward;
+        for (RenderDrawCommand& command : commands) {
+            if (command.item.mesh.value >= engine.meshes.size()) {
+                command.sort_distance = 0.0f;
+                continue;
+            }
+            const MeshRecord& mesh = ${recordAt("engine.meshes", "command.item.mesh")};
+            // pin-adopted(sort-center): both pinned families store sortCenter =
+            // worldMatrix[12..14] (pbr-renderable.ts / standard-renderable.ts),
+            // the draw world's translation -- never the bounds center.
+            const std::array<float, 16> world = mesh_world_matrix(engine, mesh);
+            const Vec3 center{world[12], world[13], world[14]};
+            const Vec3 delta{
+                center.x - eye.x,
+                center.y - eye.y,
+                center.z - eye.z,
+            };
+            command.sort_distance = dot(delta, forward);
         }
-        const MeshRecord& mesh = engine.meshes[command.item.mesh.value];
-        // pin-adopted(sort-center): both pinned families store sortCenter =
-        // worldMatrix[12..14] (pbr-renderable.ts / standard-renderable.ts),
-        // the draw world's translation -- never the bounds center. The
-        // record splits that world into the loader-baked node world
-        // (instance_parent_matrix, identity for scene-code meshes), the live
-        // TRS whose translation is mesh.position (identity for loader-baked
-        // meshes), and an imported clone root's post-deformation translation.
-        // The pinned center is their composed world translation.
-        const std::array<float, 16>& parent = mesh.instance_parent_matrix;
-        // The pin's own statement, at the record's width: mesh.position
-        // is a double, so each row accumulates in double and narrows once
-        // -- the same single store every other world composition makes.
-        const Vec3 local_center{
-            static_cast<float>(
-                parent[0] * mesh.position.x + parent[4] * mesh.position.y +
-                parent[8] * mesh.position.z + parent[12]),
-            static_cast<float>(
-                parent[1] * mesh.position.x + parent[5] * mesh.position.y +
-                parent[9] * mesh.position.z + parent[13]),
-            static_cast<float>(
-                parent[2] * mesh.position.x + parent[6] * mesh.position.y +
-                parent[10] * mesh.position.z + parent[14]),
-        };
-        const Vec3 center = transform_position(
-            outer_transform_matrix(mesh),
-            local_center);
-        const Vec3 delta{
-            center.x - eye.x,
-            center.y - eye.y,
-            center.z - eye.z,
-        };
-        command.sort_distance = dot(delta, forward);
+        std::stable_sort(
+            commands.begin(),
+            commands.end(),
+            [](const RenderDrawCommand& left, const RenderDrawCommand& right) {
+                return left.sort_distance > right.sort_distance ||
+                    (left.sort_distance == right.sort_distance &&
+                     left.item.order < right.item.order);
+            });
     }
-    std::stable_sort(
-        commands.begin(),
-        commands.end(),
-        [](const RenderDrawCommand& left, const RenderDrawCommand& right) {
-            return left.sort_distance > right.sort_distance ||
-                (left.sort_distance == right.sort_distance &&
-                 left.item.order < right.item.order);
-        });
+    // The pin's drawList skips a hidden mesh at the draw; this list is this
+    // port's per-frame answer to it, refreshed whether or not it sorted.
     transparent.commands.clear();
     for (const RenderDrawCommand& command : commands) {
-        if (mesh_draws(engine.meshes.at(command.item.mesh.value)) && render_item_material_draws(command.item, engine)) {
+        if (mesh_draws(${recordAt("engine.meshes", "command.item.mesh")}) && render_item_material_draws(command.item, engine)) {
             transparent.commands.push_back(command);
         }
     }
 }
 
-${options.meshProfiles ? meshProfileBindingCpp(options.meshProfiles) : ""}\
-void initialize_composition_feature_rows(Engine& engine) {
-    if (engine.composition_feature_rows_initialized) {
-        return;
-    }
-    std::uint32_t next_row = 0;
-    for (std::uint32_t index = 0; index < engine.meshes.size(); ++index) {
-        MeshRecord& mesh = engine.meshes[index];
-${options.meshProfiles ? `        if (mesh.composition_feature_row != invalid_handle) continue;\n` : ""}\
-        if (mesh.feature_source_mesh == invalid_handle) {
-${
-    options.meshProfiles
-        ? `            mesh.composition_feature_row = next_row < static_mesh_profile_rows.size()
-                ? static_mesh_profile_rows[next_row]
-                : ${options.meshProfiles.rowCount}u + next_row - static_cast<std::uint32_t>(static_mesh_profile_rows.size());
-            ++next_row;`
-        : "            mesh.composition_feature_row = next_row++;"
-}\
-            continue;
-        }
-        if (
-            mesh.feature_source_mesh >= index ||
-            engine.meshes[mesh.feature_source_mesh]
-                    .composition_feature_row == invalid_handle) {
-            throw std::runtime_error(
-                "A cloned mesh has no earlier composition source.");
-        }
-        mesh.composition_feature_row =
-            engine.meshes[mesh.feature_source_mesh]
-                .composition_feature_row;
-    }
-    engine.composition_feature_rows_initialized = true;
-}
+${options.meshProfiles ? meshProfileBeginCpp : ""}\
 
 RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
     RenderPlan result;
@@ -2159,7 +1868,7 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         if (handle.value >= engine.meshes.size()) {
             return;
         }
-        const MeshRecord& mesh = engine.meshes[handle.value];
+        const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
         if (mesh.geometry >= engine.geometries.size()) {
             return;
         }
@@ -2187,7 +1896,7 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         for (const auto& output : scene.state->material_outputs) append_item(output->mesh, output->material, output->guard);
     } else {
         for (const auto handle : scene.meshes) {
-            if (handle.value < engine.meshes.size()) append_item(handle, engine.meshes[handle.value].material, nullptr);
+            if (handle.value < engine.meshes.size()) append_item(handle, ${recordAt("engine.meshes", "handle")}.material, nullptr);
         }
     }
     result.draw_lists =
@@ -2256,27 +1965,14 @@ std::array<float, 16> build_view_projection(
     return matrix_product(build_scene_projection(camera, aspect), view);
 }
 
-std::array<float, 16> build_skybox_view_projection(
-    const CameraRecord& camera,
-    double aspect) {
-    // A skybox follows the camera, so this view keeps the rotation and
-    // drops the eye translation the other builders apply. The rotation
-    // is the same transpose getViewMatrix writes, so it is taken from
-    // the pinned world matrix rather than recomposed.
-    std::array<float, 16> view =
-        build_view_matrix(camera_world_matrix(camera));
-    view[12] = 0.0f;
-    view[13] = 0.0f;
-    view[14] = 0.0f;
-    return matrix_product(build_projection(camera, aspect), view);
-}
-
 // The same composition over a transform node, which upstream is the same
 // call: TransformNode is a pure alias for SceneNode, so its local matrix
 // is composeTrsLocalMatrix(position, rotationQuaternion, scaling) exactly
-// as a mesh's is.
+// as a mesh's is -- or, while the node holds one, its raw local matrix
+// (scene-node.ts initSceneNodeTransform's \`_localMatrix\` arm).
 std::array<float, 16> transform_node_local_matrix(
     const TransformNodeRecord& node) {
+    if (node.local_matrix) return *node.local_matrix;
     return trs_matrix(node);
 }
 
@@ -2295,7 +1991,7 @@ std::array<float, 16> transform_node_world(
             0.0f, 0.0f, 0.0f, 1.0f};
     }
     const TransformNodeRecord& record =
-        engine.transform_nodes[node.value];
+        ${recordAt("engine.transform_nodes", "node")};
     const std::array<float, 16> local =
         transform_node_local_matrix(record);
     if (record.parent.value >= engine.transform_nodes.size()) {
@@ -2306,20 +2002,22 @@ std::array<float, 16> transform_node_world(
         local);
 }
 
+// The root a record composes under when no mesh or transform node parents
+// it: the node world a loader recorded, with the imported root's live edit
+// on its left, or nothing at all for a factory mesh.
+std::optional<std::array<float, 16>> mesh_root_world(const MeshRecord& mesh) {
+    if (outer_transform_is_identity(mesh)) return mesh.parent_world;
+    const std::array<float, 16> outer = outer_transform_matrix(mesh);
+    return mesh.parent_world ? matrix_product(outer, *mesh.parent_world) : outer;
+}
+
 std::array<float, 16> mesh_world_matrix(
     const Engine& engine,
     const MeshRecord& mesh) {
     std::array<float, 16> local = mesh_local_matrix(mesh);
-    // The clone offset is deliberately NOT folded here. A cloned imported
-    // root's outer translation is applied by the draw world AFTER
-    // deformation -- the clone shares its source's skeleton and morph
-    // resources, so the bake that produces those vertices must not carry
-    // it. The CPU vertex bake and the navigation merge read this matrix
-    // and neither wants it; the shader draw world adds it, as it always
-    // did.
     if (mesh.parent.value < engine.meshes.size()) {
         return matrix_product(
-            mesh_world_matrix(engine, engine.meshes[mesh.parent.value]),
+            mesh_world_matrix(engine, ${recordAt("engine.meshes", "mesh.parent")}),
             local);
     }
     if (mesh.transform_parent.value < engine.transform_nodes.size()) {
@@ -2327,7 +2025,8 @@ std::array<float, 16> mesh_world_matrix(
             transform_node_world(engine, mesh.transform_parent),
             local);
     }
-    return local;
+    const std::optional<std::array<float, 16>> root = mesh_root_world(mesh);
+    return root ? matrix_product(*root, local) : local;
 }
 
 ${
@@ -2336,15 +2035,14 @@ ${
     bool flipped = false;
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) continue;
-        MeshRecord& mesh = engine.meshes[handle.value];
-        // The pin compares the live determinant to its authored sign. Native
-        // loading has already baked the glTF node world into the geometry
-        // and reconciled its indices/front-face state, so that stored state
-        // is the equivalent baseline. XORing the live parent transform with
-        // it preserves imported winding and still flips procedural geometry.
+        MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
+        // The pin compares the live determinant to its authored sign. A
+        // loader reconciled its indices and front face against the world it
+        // loaded, and recorded the baseline that world's handedness XORs
+        // back to that state, so an imported mesh keeps its winding and a
+        // procedural one still flips.
         const bool transform_mirrored =
-            pinned_mat4_determinant3(matrix_product(
-                outer_transform_matrix(mesh), mesh_world_matrix(engine, mesh))) < 0.0;
+            pinned_mat4_determinant3(mesh_world_matrix(engine, mesh)) < 0.0;
         const bool clockwise_front_face =
             mesh.authored_clockwise_front_face != transform_mirrored;
         if (
@@ -2370,77 +2068,49 @@ ${
     return trs_matrix(mesh);
 }
 
-// The imported clone root's outer transform on the left of a mesh's world,
-// at the composition's own double width: the same pinned Euler-to-quaternion
-// and composeMat4IntoBuffer walk the draw path narrows to f32
-// (outer_transform_matrix), multiplied through the pinned writer's F64 arm.
-// Shadow fitting and floating-origin packing share it, and both subtract an
-// eye from the result before narrowing.
-std::array<double, 16> apply_mesh_outer_transform(
-    const MeshRecord& mesh,
-    std::array<double, 16> world) {
-    return outer_transform_product(mesh, world);
+// The same world at the composition's own double width: the record's TRS in
+// double under its loaded parent world, the imported root's outer transform
+// on the left through the pinned writer's F64 arm. A mesh under a mesh or a
+// transform node reads the stored f32 chain. Shadow fitting and
+// floating-origin packing share it, and both subtract an eye from the result
+// before narrowing.
+std::array<double, 16> mesh_world_matrix_f64(
+    const Engine& engine,
+    const MeshRecord& mesh) {
+    std::array<double, 16> world{};
+    if (
+        mesh.parent.value < engine.meshes.size() ||
+        mesh.transform_parent.value < engine.transform_nodes.size()) {
+        const std::array<float, 16> parented = mesh_world_matrix(engine, mesh);
+        std::copy(parented.begin(), parented.end(), world.begin());
+        return world;
+    }
+    const std::array<double, 16> local = trs_local_matrix(mesh);
+    if (!mesh.parent_world) return outer_transform_product(mesh, local);
+    std::array<double, 16> root{};
+    std::copy(mesh.parent_world->begin(), mesh.parent_world->end(), root.begin());
+    root = outer_transform_product(mesh, root);
+    mat4_multiply_into_f64(world, 0, root, 0, local, 0);
+    return world;
 }
 
 ${
     options.floatingOrigin
         ? `// The eye-relative world of one mesh, declared above.
 //
-// The composition is the pin's own composeTrsLocalMatrix, in double, and
-// the subtraction is packMat4IntoF32WithOffset's: the offset is the
+// packMat4IntoF32WithOffset over the double composition: the offset is the
 // active camera's world translation, taken off the same matrix the view
 // transpose reads, and large - large = small runs at full double width
 // before the single float store rounds the small remainder.
 std::array<float, 16> mesh_world_eye_relative(
+    const Engine& engine,
     const MeshRecord& mesh,
-    const std::array<float, 16>& base,
     Vec3d eye) {
-    const std::array<double, 16> local = trs_local_matrix(mesh);
-    // The family's own base world, kept: the PBR convention's X mirror, a
-    // thin-instanced pool's parent, an animated mesh's palette entry. The
-    // eye-relative frame replaces where a mesh sits, never which convention
-    // its family draws it under -- inserting the subtraction BESIDE the arm
-    // chain instead of inside it is what dropped the mirror. The product
-    // is the pinned multiply's F64 arm, the composition's own width.
-    std::array<double, 16> world_local{};
-    mat4_multiply_into_f64(world_local, 0, base, 0, local, 0);
-    world_local = apply_mesh_outer_transform(mesh, world_local);
-    world_local[12] -= eye.x;
-    world_local[13] -= eye.y;
-    world_local[14] -= eye.z;
-    return narrow_mat4(world_local);
-}
-
-`
-        : ""
-}\
-${
-    options.gpuInstancing
-        ? `// src/scene/world-matrix-state.ts composeTrsLocalMatrix +
-// src/math/compose-mat4-into-buffer.ts composeMat4IntoBuffer: a thin-instanced mesh
-// reaches the vertex stage's mesh.world (the instance parent-world
-// uniform) from its record TRS, composed in JavaScript double precision
-// and stored to f32 exactly like the pinned Float32Array world matrix.
-// src/math/quat-euler.ts eulerXYZToQuatTuple converts Euler records the way the
-// pinned Euler proxy writes the quaternion source of truth (non-zero
-// Euler angles inherit the recorded std::sin/cos-versus-V8 ULP caveat).
-// The pinned-parent multiply keeps the src/math/multiply-mat4-into-buffer.ts
-// accumulation order, so a loader-built glTF pool (identity record TRS)
-// reproduces instance_parent_matrix byte for byte and a user pool
-// (identity parent) reproduces the composed TRS byte for byte.
-std::array<float, 16> build_instance_parent_world(
-    const MeshRecord& mesh) {
-    if (!mesh.thin_instanced) {
-        return mesh.instance_parent_matrix;
-    }
-    const std::array<double, 16> local = trs_local_matrix(mesh);
-    // The pinned multiply, translated whole: the parent is the f32 matrix
-    // the loader recorded and the composed TRS stays f64, which is the
-    // pinned accumulation's own width for both.
-    std::array<float, 16> result{};
-    mat4_multiply_into(
-        result, 0, mesh.instance_parent_matrix, 0, local, 0);
-    return result;
+    std::array<double, 16> world = mesh_world_matrix_f64(engine, mesh);
+    world[12] -= eye.x;
+    world[13] -= eye.y;
+    world[14] -= eye.z;
+    return narrow_mat4(world);
 }
 
 `
@@ -2467,7 +2137,7 @@ bool pick_candidate(const MeshRecord& mesh) {
     }
 
 bool render_item_material_draws(const RenderItem& item, const Engine& engine) {
-    return !item.material_guard || item.material_guard(engine.meshes.at(item.mesh.value).material, item.material, item.material_override);
+    return !item.material_guard || item.material_guard(${recordAt("engine.meshes", "item.mesh")}.material, item.material, item.material_override);
 }
 
 bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
@@ -2475,23 +2145,23 @@ bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
     // Ordinary opaque commands replay the source bundle. Direct and transparent
     // bindings evaluate their captured-material guard on every source draw.
     return (item.bucket != RenderBucket::alpha_blend && !item.transmissive &&
-        !engine.meshes.at(item.mesh.value).thin_instance_gpu_culling) || render_item_material_draws(item, engine);
+        !${recordAt("engine.meshes", "item.mesh")}.thin_instance_gpu_culling) || render_item_material_draws(item, engine);
 }
 
 // src/render/mesh-light-selection.ts affectsMesh.
 bool light_affects_mesh(
     const LightRecord& light,
-    std::uint32_t mesh_index) {
+    MeshHandle mesh) {
     if (light.included_meshes.empty()) {
         return std::find(
                    light.excluded_meshes.begin(),
                    light.excluded_meshes.end(),
-                   mesh_index) == light.excluded_meshes.end();
+                   mesh) == light.excluded_meshes.end();
     }
     return std::find(
                light.included_meshes.begin(),
                light.included_meshes.end(),
-               mesh_index) != light.included_meshes.end();
+               mesh) != light.included_meshes.end();
 }
 
 PbrUniforms build_pbr_uniforms(
@@ -2513,7 +2183,7 @@ PbrUniforms build_pbr_uniforms(
         if (handle.value >= engine.lights.size()) {
             return;
         }
-        const LightRecord& light = engine.lights[handle.value];
+        const LightRecord& light = ${recordAt("engine.lights", "handle")};
         const auto light_world = light_world_matrix(light);
         std::array<float, 3> world_direction{};
 ${new LightLowerer(this.context).lowerDirectionBody("world_direction", "0", "light_world", "light.direction")}
@@ -2606,7 +2276,7 @@ ${
         : ""
 }\
     if (item.material.value < engine.materials.size()) {
-        const MaterialRecord& material = engine.materials[item.material.value];
+        const MaterialRecord& material = ${recordAt("engine.materials", "item.material")};
         result.base_color_factor = {
             material.base_color_factor.r,
             material.base_color_factor.g,
@@ -2671,264 +2341,6 @@ ${
     return result;
 }
 
-GridUniforms build_grid_uniforms(
-    const Engine& engine,
-    const RenderItem& item) {
-    GridUniforms result;
-    if (item.material.value >= engine.materials.size()) {
-        return result;
-    }
-    const MaterialRecord& material =
-        engine.materials[item.material.value];
-    result.grid_control = {
-        material.grid_control.x,
-        material.grid_control.y,
-        material.grid_control.z,
-        material.grid_control.w,
-    };
-    result.main_color = {
-        material.grid_main_color.r,
-        material.grid_main_color.g,
-        material.grid_main_color.b,
-        0.0f,
-    };
-    result.line_color = {
-        material.grid_line_color.r,
-        material.grid_line_color.g,
-        material.grid_line_color.b,
-        0.0f,
-    };
-    result.grid_offset_visibility = {
-        material.grid_offset.x,
-        material.grid_offset.y,
-        material.grid_offset.z,
-        material.grid_visibility,
-    };
-    result.options = {
-        material.alpha_mode == MaterialAlphaMode::blend
-            ? 1.0f
-            : 0.0f,
-        material.grid_antialias ? 1.0f : 0.0f,
-        material.grid_use_max_line ? 1.0f : 0.0f,
-        material.grid_pre_multiply_alpha ? 1.0f : 0.0f,
-    };
-    return result;
-}
-
-BackgroundPlan build_background_plan(const EnvironmentState& environment) {
-    const float half = environment.ground_size * 0.5f;
-    const Vec3 center = environment.ground_position;
-    BackgroundPlan result;
-    result.vertices = {
-${backgroundGeometry.groundVertexRows}
-    };
-    result.indices = {${backgroundGeometry.groundIndexRow}};
-    return result;
-}
-
-BackgroundUniforms build_background_uniforms(
-    const EnvironmentState& environment,
-    const CameraRecord& camera,
-    bool linear_image_processing) {
-    const Vec3 eye = camera_basis(camera).eye;
-    BackgroundUniforms result;
-    result.primary_color_alpha = {
-        environment.primary_color.r,
-        environment.primary_color.g,
-        environment.primary_color.b,
-        ${backgroundGeometry.groundAlpha},
-    };
-    result.background_center = {
-        0.0f,
-        0.0f,
-        0.0f,
-        0.0f,
-    };
-    result.camera_exposure = {
-        eye.x,
-        eye.y,
-        eye.z,
-        environment.exposure,
-    };
-    result.image_parameters = {
-        environment.contrast,
-        ${imageProcessingGate},
-        0.0f,
-        0.0f,
-    };
-    return result;
-}
-
-SkyboxPlan build_skybox_plan(const EnvironmentState& environment) {
-    const float half = environment.skybox_size * 0.5f;
-    const auto vertex = [&](float x, float y, float z) {
-        return ModelVertex{
-            Vec3{x, y, z},
-            Vec3{0.0f, 1.0f, 0.0f},
-            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-            Vec2{},
-        };
-    };
-    SkyboxPlan result;
-    result.vertices = {
-${backgroundGeometry.skyboxVertexRows}
-    };
-    result.indices = {
-${backgroundGeometry.skyboxIndexRows}
-    };
-    return result;
-}
-
-SkyboxVertexUniforms build_skybox_vertex_uniforms(
-    const EnvironmentState& environment,
-    const std::array<float, 16>& view_projection) {
-    SkyboxVertexUniforms result;
-    result.view_projection = view_projection;
-    result.world[0] = 1.0f;
-    result.world[5] = 1.0f;
-    result.world[10] = 1.0f;
-    result.world[15] = 1.0f;
-    result.world[12] = environment.skybox_position.x;
-    result.world[13] = environment.skybox_position.y;
-    result.world[14] = environment.skybox_position.z;
-    return result;
-}
-
-SkyboxUniforms build_skybox_uniforms(
-    const EnvironmentState& environment,
-    bool linear_image_processing) {
-    const Vec3 center = environment.skybox_uses_environment
-        ? Vec3{}
-        : environment.skybox_position;
-    SkyboxUniforms result;
-    result.primary_color_exposure = {
-        environment.primary_color.r,
-        environment.primary_color.g,
-        environment.primary_color.b,
-        environment.exposure,
-    };
-    result.background_center = {
-        center.x,
-        center.y,
-        center.z,
-        0.0f,
-    };
-    result.image_parameters = {
-        environment.contrast,
-        environment.skybox_uses_environment ? 1.0f : 0.0f,
-        ${imageProcessingGate},
-        0.0f,
-    };
-    return result;
-}
-${
-    options.solidSkybox
-        ? `
-SolidSkyboxPlan build_solid_skybox_plan(
-    const EnvironmentState& environment) {
-    // createSkyboxBuffers(engine, skyHalfSize): the cube is authored around
-    // the model origin and reaches world space through mesh.world, which the
-    // vertex stage applies with w = 0 -- so the root translation drops out and
-    // only the half extent reaches the buffer.
-    const float half = environment.skybox_size * 0.5f;
-    SolidSkyboxPlan result;
-    result.positions = {{
-${backgroundGeometry.skyboxCornerRows}
-    }};
-    result.indices = {
-${backgroundGeometry.skyboxIndexRows}
-    };
-    return result;
-}
-
-SolidSkyboxUniforms build_solid_skybox_uniforms(const Scene& scene) {
-    const EnvironmentState& environment = scene.environment;
-    SolidSkyboxUniforms result;
-    result.world[0] = 1.0f;
-    result.world[5] = 1.0f;
-    result.world[10] = 1.0f;
-    result.world[15] = 1.0f;
-    result.world[12] = environment.skybox_position.x;
-    result.world[13] = environment.skybox_position.y;
-    result.world[14] = environment.skybox_position.z;
-    result.primary_color = {
-        environment.primary_color.r,
-        environment.primary_color.g,
-        environment.primary_color.b,
-    };
-    // skyOutputColor is the scene clear colour, which this fragment writes
-    // directly: the solid arm applies no image processing at all.
-    result.sky_output_color = {
-        scene.clear_color.r,
-        scene.clear_color.g,
-        scene.clear_color.b,
-    };
-    return result;
-}
-
-SolidSkyboxSceneUniforms build_solid_skybox_scene_uniforms(
-    const CameraRecord& camera,
-    const std::array<float, 16>& view_projection) {
-    // The pinned vertex stage reads its own scene block, so this builds the
-    // layout that stage wants -- the frame's matrix beside the view and the
-    // eye position it offsets the cube by. One camera world serves all
-    // three, which is also the order the pin's writers read it in.
-    const std::array<CameraMatrixScalar, 16> world =
-        camera_world_matrix(camera);
-    SolidSkyboxSceneUniforms result;
-    result.view_projection = view_projection;
-    result.view = build_view_matrix(world);
-    result.eye_position = {
-        static_cast<float>(world[12]),
-        static_cast<float>(world[13]),
-        static_cast<float>(world[14]),
-        0.0f,
-    };
-    return result;
-}
-`
-        : ""
-}\
-${
-    options.imageSkybox
-        ? `
-ImageSkyboxPlan build_image_skybox_plan(
-    const EnvironmentState& environment) {
-    // Pinned loadSkybox: createBoxData(size) spans plus/minus size/2
-    // around the world origin with an identity world matrix.
-    const float half = environment.image_skybox_size * 0.5f;
-    ImageSkyboxPlan result;
-    const std::array<std::array<float, 3>, 8> corners{{
-${backgroundGeometry.skyboxCornerRows}
-    }};
-    result.positions = corners;
-    result.indices = {
-${backgroundGeometry.skyboxIndexRows}
-    };
-    return result;
-}
-
-ImageSkyboxUniforms build_image_skybox_uniforms(
-    const Scene& scene,
-    const CameraRecord& camera) {
-    ImageSkyboxUniforms result;
-    // The pin's own scene.view, so the lifted fragment evaluates the
-    // pinned (scene.view * worldPos).xyz fog distance from the same
-    // float32 matrix every other pinned consumer reads.
-    result.view = build_view_matrix(camera_world_matrix(camera));
-    result.fog_infos = {
-${pinnedFogInfosPacking()}    };
-    result.fog_color = {
-        scene.fog_color.r,
-        scene.fog_color.g,
-        scene.fog_color.b,
-        0.0f,
-    };
-    return result;
-}
-`
-        : ""
-}\
 
 } // namespace bbl::upstream
 `;
@@ -2936,45 +2348,26 @@ ${pinnedFogInfosPacking()}    };
 
     public lowerShaders(
         options: {
-            ground: boolean;
-            skybox: boolean;
-            ddsEnvironment?: boolean;
-            imageSkybox?: boolean;
-            solidSkybox?: boolean;
             transmission?: boolean;
             fog?: boolean;
             shaderPrograms: CompiledShaderProgram[];
-            gridMaterial?: boolean;
             idDiagnostics: boolean;
             geometryOutputTasks: GeometryOutputTaskManifest[];
             frameGraph?: boolean;
             gpuDeformation?: boolean;
             morphStorage?: boolean;
             gpuInstancing?: boolean;
-            clearcoat?: boolean;
-            sheen?: boolean;
-            iridescence?: boolean;
-            dispersion?: boolean;
         } = {
-            ground: true,
-            skybox: true,
             transmission: true,
-            shaderPrograms: shaderMaterialPrograms.map(
-                predeclaredShaderProgram,
-            ),
-            gridMaterial: false,
+            shaderPrograms: [],
             idDiagnostics: true,
             geometryOutputTasks: [],
             gpuDeformation: false,
             morphStorage: false,
             gpuInstancing: false,
-            clearcoat: false,
-            sheen: false,
-            iridescence: false,
-            dispersion: false,
         },
     ): LoweredShader[] {
-        this.assertPinnedShaderFormulas(options);
+        this.assertPinnedRestatedContracts(options);
         const result: Array<{ output: string; data: string }> = [];
         result.push({
             output: "upstream/shaders/pbr.vert.native.wgsl",
@@ -2990,8 +2383,6 @@ ${pinnedFogInfosPacking()}    };
                 boolean | undefined,
                 string,
             ])[] = [
-                [options.gridMaterial, "GridMaterial"],
-                [options.ground, "environment grounds"],
                 [options.transmission, "transmission"],
                 [options.geometryOutputTasks.length > 0, "geometry outputs"],
             ];
@@ -3002,176 +2393,6 @@ ${pinnedFogInfosPacking()}    };
                     );
                 }
             }
-            // The falloff formula itself is not asserted here: every
-            // consumer emits it through `fogFactorWgsl()`, which lifts the
-            // pinned `WGSL_FOG` literal and throws if it changes shape.
-        }
-        if (options.ground) {
-            const pinnedGround = readPinnedBackgroundGroundSource(
-                this.context.store.packageRoot,
-            );
-            const groundProvenance = this.context.provenance(
-                backgroundGroundModule,
-                "buildBackgroundGroundRenderable",
-                "the module's own groundFragSrc + WGSL_IMAGE_PROCESSING with shader/wgsl-helpers.ts WGSL_DITHER/WGSL_NO_DITHER",
-            );
-            // Both variants carry the pin's fragment; the pin itself selects
-            // noise by composing WGSL_DITHER or WGSL_NO_DITHER in front of
-            // the same body, so the undithered file is the pin's zero-noise
-            // arm rather than an edited body. Which one a backend loads is
-            // the environment's own `enable_noise`, read through the shared
-            // `background_ground_fragment` selector.
-            result.push({
-                output: "upstream/shaders/background-ground.frag.native.wgsl",
-                data: backgroundGroundFragmentWgsl(
-                    groundProvenance,
-                    pinnedGround,
-                ),
-            });
-            result.push({
-                output: "upstream/shaders/background-ground-dither.frag.native.wgsl",
-                data: backgroundGroundFragmentWgsl(
-                    groundProvenance,
-                    pinnedGround,
-                    true,
-                ),
-            });
-        }
-        if (options.skybox) {
-            const pinnedSkybox = readPinnedBackgroundSkyboxSource(
-                this.context.store.packageRoot,
-            );
-            const skyboxProvenance = this.context.provenance(
-                backgroundDdsModule,
-                "buildDdsSkyboxRenderable",
-                `${backgroundHdrModule}#buildHdrSkyboxRenderable, the modules' own ddsSkyboxFragSrc/skyboxHdrFragSrc with shader/wgsl-helpers.ts WGSL_DITHER`,
-            );
-            // One file per pinned arm, under the names the shared
-            // `background_skybox_fragment` selector picks between on
-            // `skybox_uses_environment` and `enable_noise`: the
-            // environment-cubemap (HDR) fragment, which the pin composes no
-            // dither for, and the DDS fragment in both its dithered and
-            // undithered forms — scene 112 is the corpus scene that asks
-            // for the second.
-            result.push({
-                output: "upstream/shaders/background-skybox-dds.vert.native.wgsl",
-                data: backgroundDdsSkyboxVertexWgsl(
-                    skyboxProvenance,
-                    pinnedSkybox,
-                ),
-            });
-            result.push({
-                output: "upstream/shaders/background-skybox.frag.native.wgsl",
-                data: backgroundSkyboxFragmentWgsl(
-                    skyboxProvenance,
-                    pinnedSkybox,
-                ),
-            });
-            result.push({
-                output: "upstream/shaders/background-skybox-dither.frag.native.wgsl",
-                data: backgroundSkyboxFragmentWgsl(
-                    skyboxProvenance,
-                    pinnedSkybox,
-                    "dds",
-                ),
-            });
-            // The DDS fragment's own zero-noise arm: the same body with
-            // the pin's WGSL_NO_DITHER in front of it, exactly as the
-            // ground pair above. Only `addDdsEnvironmentBackground` can
-            // ask for it -- `loadEnvironment` never clears `enableNoise`,
-            // whose pinned default is true -- so a scene that does not
-            // reach that entry point can never select this variant and
-            // does not carry its four compiled outputs.
-            if (options.ddsEnvironment) {
-                result.push({
-                    output: "upstream/shaders/background-skybox-dds.frag.native.wgsl",
-                    data: backgroundSkyboxFragmentWgsl(
-                        skyboxProvenance,
-                        pinnedSkybox,
-                        "dds-no-dither",
-                    ),
-                });
-            }
-        }
-        if (options.solidSkybox) {
-            const pinned = this.pinnedSolidSkyboxSource();
-            this.context.functionDeclaration(
-                backgroundSolidModule,
-                "buildSolidSkyboxRenderable",
-            );
-            const provenance = this.context.provenance(
-                backgroundSolidModule,
-                "buildSolidSkyboxRenderable",
-                "shaders/skybox.vertex.wgsl and the module's own skyboxFragSrc",
-            );
-            result.push(
-                {
-                    output: "upstream/shaders/solid-skybox.vert.native.wgsl",
-                    data: solidSkyboxVertexWgsl(provenance, pinned),
-                },
-                {
-                    output: "upstream/shaders/solid-skybox.frag.native.wgsl",
-                    data: solidSkyboxFragmentWgsl(provenance, pinned),
-                },
-            );
-        }
-        if (options.imageSkybox) {
-            // Both stages are lifted from the packaged module's own
-            // literals and re-homed onto the native binding contract;
-            // the departures are documented on `liftedImageSkyboxWgsl`.
-            const lifted = liftedImageSkyboxWgsl();
-            const imageSkyboxProvenance = this.context.provenance(
-                skyboxCubemapModule,
-                "buildSkyboxCubeMapGPU",
-                `the module's own skyVertSrc/skyFragSrc with ${fogWgslModule}#WGSL_FOG`,
-            );
-            result.push(
-                {
-                    output: "upstream/shaders/skybox-cubemap.vert.native.wgsl",
-                    data:
-                        `// ${imageSkyboxProvenance}\n` +
-                        emitWgslModule(lifted.vertex),
-                },
-                {
-                    output: "upstream/shaders/skybox-cubemap.frag.native.wgsl",
-                    data:
-                        `// ${imageSkyboxProvenance}\n` +
-                        emitWgslModule(lifted.fragment, fogFactorWgsl()),
-                },
-            );
-        }
-        if (options.transmission) {
-            result.push(
-                {
-                    output: "upstream/shaders/image-processing.vert.native.wgsl",
-                    data: blitVertexWgsl(),
-                },
-                {
-                    output: "upstream/shaders/image-processing.frag.native.wgsl",
-                    data: imageProcessingFragmentWgsl(),
-                },
-                {
-                    output: "upstream/shaders/image-processing-ms.frag.native.wgsl",
-                    data: imageProcessingMultisampledFragmentWgsl(),
-                },
-            );
-        }
-        if (options.gridMaterial) {
-            const provenance = this.context.provenance(
-                gridModule,
-                "createGridMaterial",
-            );
-            const gridSource = this.context.sourceFile(gridModule);
-            result.push(
-                {
-                    output: "upstream/shaders/grid.vert.native.wgsl",
-                    data: gridVertexWgsl(provenance, gridSource),
-                },
-                {
-                    output: "upstream/shaders/grid.frag.native.wgsl",
-                    data: gridFragmentWgsl(provenance, gridSource),
-                },
-            );
         }
         if (options.idDiagnostics) {
             result.push(
@@ -3189,11 +2410,11 @@ ${pinnedFogInfosPacking()}    };
             result.push(
                 {
                     output: "upstream/shaders/blit.vert.native.wgsl",
-                    data: blitVertexWgsl(),
+                    data: blitVertexWgsl(this.context),
                 },
                 {
                     output: "upstream/shaders/blit.frag.native.wgsl",
-                    data: blitFragmentWgsl(),
+                    data: blitFragmentWgsl(this.context),
                 },
                 {
                     output: "upstream/shaders/depth-only.frag.native.wgsl",
@@ -3255,283 +2476,105 @@ ${pinnedFogInfosPacking()}    };
     }
 
     /**
-     * Every pinned WGSL formula the emitted shaders transcribe or lift,
-     * asserted before any file is rendered so a retuned pin fails
-     * generation with the formula's own name.
+     * The pinned facts this port restates rather than reads, asserted before
+     * any file is rendered so a pin that changes one refuses generation by
+     * name. The shader formulas need no rows: every stage that carries one is
+     * composed from the pin's own text.
+     *
+     * - Both PALs draw a fixed skybox/opaque/transparent/ground stage
+     *   sequence that mirrors the background renderables' order stamps.
+     * - The DDS packager reads the skybox cube as the rgba16float texels
+     *   `loadDdsCube` uploads.
+     * - Both PALs copy scene colour before the first transmissive draw, the
+     *   grab `executePassWithTransmission` performs.
+     * - The custom-shader composer re-addresses the pin's prelude bindings
+     *   and splices the scene-uniform block the pin imports.
      */
-    private assertPinnedShaderFormulas(options: {
-        gpuDeformation?: boolean;
-        morphStorage?: boolean;
-        gpuInstancing?: boolean;
-        clearcoat?: boolean;
-        sheen?: boolean;
-        iridescence?: boolean;
-        dispersion?: boolean;
+    private assertPinnedRestatedContracts(options: {
         shaderPrograms: CompiledShaderProgram[];
     }): void {
-        const pbr = this.context.store.getSource(pbrTemplateModule);
-        const pbrExt = this.context.store.getSource(pbrTemplateExtModule);
-        const pbrHelper = this.context.store.getSource(pbrHelperCoreModule);
-        const ibl = this.context.store.getSource(iblFragmentModule);
-        const iblSkybox = this.context.store.getSource(iblSkyboxModule);
-        const refraction = this.context.store.getSource(refractionModule);
-        const dielectric = this.context.store.getSource(dielectricLoaderModule);
-        const transmissionFrameGraph = this.context.store.getSource(
-            transmissionFrameGraphModule,
-        );
-        const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
-        const backgroundGround = this.context.store.getSource(
-            backgroundGroundModule,
-        );
-        const backgroundDds = this.context.store.getSource(backgroundDdsModule);
-        const backgroundHdr = this.context.store.getSource(backgroundHdrModule);
-        const pbrGeometryModule =
-            "src/material/pbr/pbr-geometry-output-shader.ts";
-        const pbrGeometry = this.context.store.getSource(pbrGeometryModule);
-        const clearcoatFragment = this.context.store.getSource(
-            clearcoatFragmentModule,
-        );
-        const sheenFragment = this.context.store.getSource(sheenFragmentModule);
-        const iridescenceFragment = this.context.store.getSource(
-            iridescenceFragmentModule,
-        );
-        const dispersionWgsl =
-            this.context.store.getSource(dispersionWgslModule);
-        const clearcoatLoader = this.context.store.getSource(
-            clearcoatLoaderModule,
-        );
-        const sheenLoader = this.context.store.getSource(sheenLoaderModule);
-        const iridescenceLoader = this.context.store.getSource(
-            iridescenceLoaderModule,
-        );
-        const shaderPipeline =
-            this.context.store.getSource(shaderPipelineModule);
-        const sceneUniformsSource = this.context.store.getSource(
-            sceneUniformsSourceModule,
-        );
-        const requiredUpstreamFormulas: Array<
-            readonly [string, string, string]
-        > = [
-            [pbr, packagedWgsl`roughness*roughness+0.0005`, "GGX roughness"],
-            [pbr, packagedWgsl`0.5/(gl+gv)`, "Smith geometry"],
-            [
-                pbr,
-                packagedWgsl`luminanceOverAlpha+=dot`,
-                "transparent alpha luminance",
-            ],
-            [pbr, packagedWgsl`finalAlpha=saturate`, "transparent alpha fold"],
-            [
-                pbrExt,
-                packagedWgsl`baseColor *= input.vColor.rgb`,
-                "vertex color base color",
-            ],
-            [
-                pbrExt,
-                packagedWgsl`alpha *= input.vColor.a`,
-                "vertex color alpha",
-            ],
-            [pbrHelper, "1.590579", "image-processing calibration"],
-            [
-                ibl,
-                packagedWgsl`log2(cubemapDim * alphaG) * scene.vImageInfos.z`,
-                "IBL mip selection",
-            ],
-            [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
-            [ibl, "finalRadianceScaled", "transparent IBL alpha contribution"],
-            [ibl, "environmentHorizonOcclusion", "IBL horizon occlusion"],
-            [ibl, IBL_SPECULAR_OCCLUSION, "IBL specular occlusion"],
-            [ibl, BRDF_LUT_COORDINATES, "BRDF LUT coordinates"],
-            [ibl, ENVIRONMENT_CUBEMAP_ROTATION, "environment cubemap rotation"],
-            [iblSkybox, PBR_SKYBOX_VIEW_RAY, "PBR skybox view ray"],
-            [
-                iblSkybox,
-                packagedWgsl`let skyboxAlphaG = max(roughness * roughness, 0.000001)`,
-                "PBR skybox LOD alphaG",
-            ],
-            [
-                refraction,
-                packagedWgsl`let rd=refract(-V,N,material.refractionParams.y)`,
-                "scene-color refraction ray",
-            ],
-            [
-                refraction,
-                packagedWgsl`let ab=exp(material.volumeParams.rgb*th)`,
-                "Beer-Lambert attenuation",
-            ],
-            [
-                refraction,
-                "colorSpecularEnvReflectance.rgb",
-                "transmission Fresnel complement",
-            ],
-            [
-                dielectric,
-                "((ior - 1) / (ior + 1)) ** 2 / 0.04",
-                "glTF IOR Fresnel",
-            ],
-            [
-                transmissionFrameGraph,
-                "updateTransmissionTexture(state, engine)",
-                "scene-color copy ordering",
-            ],
-            [
-                sceneUniforms,
-                "lodGenerationScale ?? 0.8",
-                "environment LOD scale",
-            ],
-            // The ground/skybox fragment *formulas* are no longer asserted
-            // here: they are lifted from the modules' own literals, and the
-            // lift throws naming the missing literal itself.
-            [backgroundGround, "ground renders last", "background ordering"],
-            [
-                backgroundDds,
-                'GPUTextureFormat = "rgba16float"',
-                "DDS cubemap format",
-            ],
-            [backgroundDds, "pass.drawIndexed(36)", "DDS skybox draw"],
-            [backgroundDds, "order: 0", "DDS skybox ordering"],
-            [backgroundHdr, "order: 0", "HDR skybox ordering"],
-            [
-                backgroundHdr,
-                "buildHdrSkyboxRenderable",
-                "HDR skybox renderable",
-            ],
-            [
-                pbrGeometry,
-                packagedWgsl`directDiffuse + finalIrradiance`,
-                "geometry irradiance",
-            ],
-            [
-                pbrGeometry,
-                packagedWgsl`colorF0, 1.0 - roughness`,
-                "geometry reflectivity",
-            ],
-            [pbrGeometry, "input.clipPos.z", "geometry screen depth"],
-        ];
-        if (options.morphStorage) {
-            const morphTargetsModule = "src/morph/create-morph-targets.ts";
-            const morphTargets =
-                this.context.store.getSource(morphTargetsModule);
-            requiredUpstreamFormulas.push([
-                morphTargets,
-                "MORPH_WEIGHTS_HEADER_BYTES = 16",
-                "morph weights header ABI",
-            ]);
-        }
-        // The GridMaterial WGSL needs no marker rows: both stages are built
-        // by evaluating the pinned template functions, which throws on any
-        // shape the evaluator cannot fold.
-        if (options.clearcoat) {
-            requiredUpstreamFormulas.push(
-                [
-                    clearcoatFragment,
-                    packagedWgsl`return 0.25 / (VdotH_kl * VdotH_kl + 0.0000001);`,
-                    "clearcoat Kelemen visibility",
-                ],
-                [
-                    clearcoatFragment,
-                    packagedWgsl`return f0 + (1.0 - f0) * (t2 * t2 * t);`,
-                    "clearcoat Schlick Fresnel",
-                ],
-                [
-                    clearcoatFragment,
-                    packagedWgsl`ccDirectAttenuation = 1.0 - ccFresnel_dl * ccInt_dl;`,
-                    "clearcoat direct conservation",
-                ],
-                [
-                    clearcoatFragment,
-                    CLEARCOAT_IBL_CONSERVATION,
-                    "clearcoat IBL conservation",
-                ],
-                [
-                    clearcoatLoader,
-                    "useF0Remap: false",
-                    "glTF clearcoat F0 remap opt-out",
-                ],
+        for (const [modulePath, builder, order] of [
+            [backgroundDdsModule, "buildDdsSkyboxRenderable", 0],
+            [backgroundHdrModule, "buildHdrSkyboxRenderable", 0],
+            [backgroundGroundModule, "buildGroundRenderable", 200],
+        ] as const) {
+            const { file, declaration } = this.context.functionDeclaration(
+                modulePath,
+                builder,
             );
-        }
-        if (options.sheen) {
-            requiredUpstreamFormulas.push(
-                [
-                    sheenFragment,
-                    packagedWgsl`return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * 3.141592653589793);`,
-                    "sheen Charlie distribution",
-                ],
-                [
-                    sheenFragment,
-                    packagedWgsl`return 1.0 / (4.0 * (NdotL_sh + NdotV_sh - NdotL_sh * NdotV_sh));`,
-                    "sheen Ashikhmin visibility",
-                ],
-                [sheenFragment, SHEEN_ALBEDO_SCALING, "sheen albedo scaling"],
-                [
-                    sheenLoader,
-                    "albedoScaling: true",
-                    "glTF sheen albedo scaling",
-                ],
+            const stamps = this.context.findNodes(
+                declaration,
+                (node): node is ts.PropertyAssignment =>
+                    ts.isPropertyAssignment(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === "order",
             );
-        }
-        if (options.iridescence) {
-            requiredUpstreamFormulas.push(
-                [
-                    iridescenceFragment,
-                    packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
-                    "iridescence optical path difference",
-                ],
-                [
-                    iridescenceFragment,
-                    packagedWgsl`colorF0=mix(colorF0,iriF0,iriIntensity);`,
-                    "iridescence base reflectance blend",
-                ],
-                [
-                    iridescenceLoader,
-                    "iridescenceThicknessMaximum ?? 400",
-                    "glTF iridescence thickness range",
-                ],
-            );
-        }
-        if (options.dispersion) {
-            requiredUpstreamFormulas.push(
-                [
-                    dispersionWgsl,
-                    packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
-                    "dispersion chromatic spread",
-                ],
-                [
-                    dielectric,
-                    "20.0 / dispersion",
-                    "glTF dispersion Abbe mapping",
-                ],
-            );
-        }
-        for (const [source, formula, label] of requiredUpstreamFormulas) {
-            if (!source.includes(formula)) {
-                throw new Error(
-                    `Pinned Babylon Lite source is missing ${label}: ${formula}.`,
+            if (
+                stamps.length !== 1 ||
+                this.context.numericValue(stamps[0]!.initializer, file) !==
+                    order
+            ) {
+                this.context.contractError(
+                    declaration,
+                    `Expected ${builder} to stamp order ${order}, which the native background stage sequence mirrors.`,
                 );
             }
-            if (options.shaderPrograms.length > 0) {
-                for (const marker of [
-                    "function buildShaderPrelude",
-                    packagedWgsl`@group(1) @binding(0) var<uniform> shaderSystem`,
-                    packagedWgsl`@group(1) @binding(1) var<uniform> shaderUniforms`,
-                    // The template's own placeholders, kept as above.
-                    packagedWgsl`@location(\${i}) \${attr}: \${vbSupport?._wgslType(material, attr) ?? _attributeInfo(attr)._type}`,
-                ]) {
-                    if (!shaderPipeline.includes(marker)) {
-                        throw new Error(
-                            `Pinned custom shader composition changed: ${marker}.`,
-                        );
-                    }
-                }
-                if (
-                    !sceneUniformsSource.includes(
-                        'import sceneUniformsWgsl from "../../shaders/scene-uniforms.wgsl?raw"',
-                    )
-                ) {
-                    throw new Error(
-                        "Pinned scene uniform WGSL import changed.",
-                    );
-                }
+        }
+        const ddsCube = this.context.functionDeclaration(
+            backgroundDdsModule,
+            "loadDdsCube",
+        );
+        const ddsFormat = this.context.variableInitializer(
+            ddsCube.declaration,
+            "fmt",
+        );
+        if (
+            this.context.stringValue(ddsFormat, ddsCube.file) !== "rgba16float"
+        ) {
+            this.context.contractError(
+                ddsFormat,
+                "Expected loadDdsCube to upload rgba16float texels, which the DDS packager reads.",
+            );
+        }
+        const transmissionPass = this.context.functionDeclaration(
+            transmissionFrameGraphModule,
+            "executePassWithTransmission",
+        );
+        if (
+            !this.context.hasCall(
+                transmissionPass.declaration,
+                "updateTransmissionTexture",
+            )
+        ) {
+            this.context.contractError(
+                transmissionPass.declaration,
+                "Expected executePassWithTransmission to grab scene colour before a transmissive draw.",
+            );
+        }
+        if (options.shaderPrograms.length === 0) return;
+        const shaderPipeline =
+            this.context.store.getSource(shaderPipelineModule);
+        for (const marker of [
+            "function buildShaderPrelude",
+            packagedWgsl`@group(1) @binding(0) var<uniform> shaderSystem`,
+            packagedWgsl`@group(1) @binding(1) var<uniform> shaderUniforms`,
+            // The template's own placeholders, kept as above.
+            packagedWgsl`@location(\${i}) \${attr}: \${vbSupport?._wgslType(material, attr) ?? _attributeInfo(attr)._type}`,
+        ]) {
+            if (!shaderPipeline.includes(marker)) {
+                throw new Error(
+                    `Pinned custom shader composition changed: ${marker}.`,
+                );
             }
+        }
+        if (
+            !this.context.store
+                .getSource(sceneUniformsSourceModule)
+                .includes(
+                    'import sceneUniformsWgsl from "../../shaders/scene-uniforms.wgsl?raw"',
+                )
+        ) {
+            throw new Error("Pinned scene uniform WGSL import changed.");
         }
     }
 
@@ -3561,69 +2604,6 @@ ${pinnedFogInfosPacking()}    };
     }
 
     public fidelityManifest(): RendererFidelityManifest {
-        const rgbd = this.context.store.getSource(rgbdDecodeModule);
-        const surface = this.context.store.getSource(surfaceModule);
-        const clearcoatFragment = this.context.store.getSource(
-            clearcoatFragmentModule,
-        );
-        const sheenFragment = this.context.store.getSource(sheenFragmentModule);
-        const iridescenceFragment = this.context.store.getSource(
-            iridescenceFragmentModule,
-        );
-        const dispersionWgsl =
-            this.context.store.getSource(dispersionWgslModule);
-        const clearcoatLoader = this.context.store.getSource(
-            clearcoatLoaderModule,
-        );
-        if (!rgbd.includes("select(g.y,d.y-1u-g.y,f)")) {
-            throw new Error(
-                "Pinned Babylon Lite RGBD vertical flip semantics changed.",
-            );
-        }
-        if (!surface.includes("Defaults to `4`.")) {
-            throw new Error("Pinned Babylon Lite MSAA default changed.");
-        }
-        // The markers the formula table above does not assert for every
-        // plan: the extension arms it pushes only when a scene reaches
-        // them, asserted here unconditionally so a pin drift is read at
-        // the first generation rather than the first reaching scene.
-        for (const [source, marker, label] of [
-            [
-                clearcoatFragment,
-                CLEARCOAT_IBL_CONSERVATION,
-                "clearcoat energy conservation",
-            ],
-            [
-                clearcoatFragment,
-                packagedWgsl`colorF0 = mix(colorF0, remappedF0, ccInt_r);`,
-                "clearcoat base F0 remap",
-            ],
-            [
-                clearcoatFragment,
-                packagedWgsl`return saturate((num / den) * (num / den));`,
-                "clearcoat F0 remap interface term",
-            ],
-            [
-                clearcoatLoader,
-                "useF0Remap: false",
-                "glTF clearcoat F0 remap opt-out",
-            ],
-            [sheenFragment, SHEEN_ALBEDO_SCALING, "sheen albedo scaling"],
-            [
-                iridescenceFragment,
-                packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
-                "iridescence optical path difference",
-            ],
-            [
-                dispersionWgsl,
-                packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
-                "dispersion chromatic spread",
-            ],
-        ] as const) {
-            if (!source.includes(marker)) {
-                throw new Error(`Pinned Babylon Lite ${label} changed.`);
-            }
-        }
         return {
             sourceLanguage: "WGSL",
             emittedSources: ["HLSL", "MSL"],
@@ -3648,10 +2628,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "Defaults to `4`.",
                     nativeBehavior:
                         "SDL_GPU requests 4x MSAA and resolves into the single-sample presentation or capture target.",
-                    validation: [
-                        "source marker assertion",
-                        "edge MAD attribution",
-                    ],
+                    validation: ["edge MAD attribution"],
                 },
                 {
                     id: "pbr-skybox-mode",
@@ -3659,10 +2636,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: PBR_SKYBOX_VIEW_RAY,
                     nativeBehavior:
                         "Skybox-mode PBR materials sample the environment along the camera-to-fragment ray with a dedicated unbiased skyboxAlphaG LOD and omit diffuse irradiance.",
-                    validation: [
-                        "source marker assertion",
-                        "skybox gate parity",
-                    ],
+                    validation: ["skybox gate parity"],
                 },
                 {
                     id: "scene-color-transmission",
@@ -3670,10 +2644,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "updateTransmissionTexture(state, engine)",
                     nativeBehavior:
                         "PAL renders linear RGBA16F scene color, copies completed opaque color and its pinned mip chain before the first transmissive draw, then applies image processing once to the final visible output.",
-                    validation: [
-                        "source marker assertion",
-                        "scene-color gate parity",
-                    ],
+                    validation: ["scene-color gate parity"],
                 },
                 {
                     id: "ior-fresnel",
@@ -3681,7 +2652,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "((ior - 1) / (ior + 1)) ** 2 / 0.04",
                     nativeBehavior:
                         "KHR_materials_ior maps to dielectric F0=((ior-1)/(ior+1))^2 and the transmitted lobe uses the Fresnel complement.",
-                    validation: ["source marker assertion", "IOR gate parity"],
+                    validation: ["IOR gate parity"],
                 },
                 {
                     id: "volume-beer-lambert",
@@ -3689,10 +2660,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: packagedWgsl`let ab=exp(material.volumeParams.rgb*th)`,
                     nativeBehavior:
                         "KHR_materials_volume attenuation uses exp(log(attenuationColor)/attenuationDistance * thickness).",
-                    validation: [
-                        "source marker assertion",
-                        "volume gate parity",
-                    ],
+                    validation: ["volume gate parity"],
                 },
                 {
                     id: "clearcoat-layer",
@@ -3700,10 +2668,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: CLEARCOAT_IBL_CONSERVATION,
                     nativeBehavior:
                         "KHR_materials_clearcoat adds a GGX/Kelemen direct lobe and a Jones analytical IBL lobe, attenuates the base layer by 1-F(ccF0)*intensity, and keeps the glTF loader's disabled F0 remap.",
-                    validation: [
-                        "source marker assertion",
-                        "scene 28 GPU parity",
-                    ],
+                    validation: ["scene 28 GPU parity"],
                 },
                 {
                     id: "sheen-layer",
@@ -3711,10 +2676,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: SHEEN_ALBEDO_SCALING,
                     nativeBehavior:
                         "KHR_materials_sheen uses the Charlie distribution with Ashikhmin visibility, samples the BRDF LUT blue channel at sheen roughness, and scales the base layer by 1-maxSheenColor*brdf.b.",
-                    validation: [
-                        "source marker assertion",
-                        "scene 29 GPU parity",
-                    ],
+                    validation: ["scene 29 GPU parity"],
                 },
                 {
                     id: "iridescence-thin-film",
@@ -3722,10 +2684,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
                     nativeBehavior:
                         "KHR_materials_iridescence evaluates Babylon's thin-film airy summation in XYZ and blends the result into base F0 by the iridescence intensity.",
-                    validation: [
-                        "source marker assertion",
-                        "scene 178 GPU parity",
-                    ],
+                    validation: ["scene 178 GPU parity"],
                 },
                 {
                     id: "dispersion-chromatic-refraction",
@@ -3733,10 +2692,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
                     nativeBehavior:
                         "KHR_materials_dispersion splits the refracted scene-color ray into per-RGB etas using Babylon's 20/dispersion Abbe strength.",
-                    validation: [
-                        "source marker assertion",
-                        "scene 212 GPU parity",
-                    ],
+                    validation: ["scene 212 GPU parity"],
                 },
                 {
                     id: "ggx-smith",
@@ -3744,7 +2700,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "roughness*roughness+0.0005; 0.5/(gl+gv)",
                     nativeBehavior:
                         "GGX distribution and Smith correlated geometry use Babylon alphaG conventions.",
-                    validation: ["source marker assertions", "GPU parity"],
+                    validation: ["GPU parity"],
                 },
                 {
                     id: "ibl-energy-conservation",
@@ -3752,7 +2708,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "getEnergyConservationFactor",
                     nativeBehavior:
                         "BRDF LUT reflectance is multiplied by Babylon's energy-conservation factor.",
-                    validation: ["source marker assertions", "GPU parity"],
+                    validation: ["GPU parity"],
                 },
                 {
                     id: "ibl-horizon-occlusion",
@@ -3760,10 +2716,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "environmentHorizonOcclusion",
                     nativeBehavior:
                         "Normal-mapped IBL squares Babylon's saturated reflection-to-geometric-normal horizon term.",
-                    validation: [
-                        "source marker assertions",
-                        "Scene 1 diagnostics",
-                    ],
+                    validation: ["Scene 1 diagnostics"],
                 },
                 {
                     id: "ibl-specular-occlusion",
@@ -3771,10 +2724,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: IBL_SPECULAR_OCCLUSION,
                     nativeBehavior:
                         "Specular environment reflectance uses Babylon's NdotV and ambient-occlusion polynomial.",
-                    validation: [
-                        "source marker assertions",
-                        "Scene 1 diagnostics",
-                    ],
+                    validation: ["Scene 1 diagnostics"],
                 },
                 {
                     id: "environment-lod",
@@ -3782,10 +2732,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "lodGenerationScale ?? 0.8",
                     nativeBehavior:
                         "Cubemap mip selection uses log2(cubemapDim * alphaG) with the environment's pinned lodGenerationScale.",
-                    validation: [
-                        "source marker assertions",
-                        "generated uniform tests",
-                    ],
+                    validation: ["generated uniform tests"],
                 },
                 {
                     id: "brdf-lut-coordinates",
@@ -3793,10 +2740,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: BRDF_LUT_COORDINATES,
                     nativeBehavior:
                         "The BRDF LUT is sampled with NdotV on X and perceptual roughness on Y.",
-                    validation: [
-                        "source marker assertions",
-                        "CPU/GPU visual parity",
-                    ],
+                    validation: ["CPU/GPU visual parity"],
                 },
                 {
                     id: "environment-cubemap-orientation",
@@ -3804,10 +2748,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: ENVIRONMENT_CUBEMAP_ROTATION,
                     nativeBehavior:
                         "Reflection and irradiance directions use Babylon's Y-axis environment rotation before cubemap sampling.",
-                    validation: [
-                        "source marker assertions",
-                        "Scenes 1 and 8 parity",
-                    ],
+                    validation: ["Scenes 1 and 8 parity"],
                 },
                 {
                     id: "rgbd-cubemap-y-flip",
@@ -3815,10 +2756,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "select(g.y,d.y-1u-g.y,f)",
                     nativeBehavior:
                         "RGBD cubemap rows are vertically reversed during SDL_GPU upload.",
-                    validation: [
-                        "source marker assertion",
-                        "Scene 1 foreground parity",
-                    ],
+                    validation: ["Scene 1 foreground parity"],
                 },
                 {
                     id: "image-processing",
@@ -3826,7 +2764,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "1.590579",
                     nativeBehavior:
                         "Exposure, exponential tone mapping, gamma, and contrast follow Babylon constants and order.",
-                    validation: ["source marker assertions", "GPU parity"],
+                    validation: ["GPU parity"],
                 },
                 {
                     id: "hdr-cubemap-skybox",
@@ -3834,10 +2772,7 @@ ${pinnedFogInfosPacking()}    };
                     upstreamMarker: "buildHdrSkyboxRenderable",
                     nativeBehavior:
                         "Compiled HDR RGBA16F cubemap mip zero is reused for the generated cubemap skybox with exposure, gamma, and contrast.",
-                    validation: [
-                        "source marker assertions",
-                        "scene 8 GPU parity",
-                    ],
+                    validation: ["scene 8 GPU parity"],
                 },
                 {
                     id: "solid-skybox",
@@ -4017,9 +2952,11 @@ ${pinnedFogInfosPacking()}    };
                 ts.isElementAccessExpression(rhs) ||
                 ts.isNonNullExpression(rhs)
             ) {
+                // The Float32Array store rounds; a double-precision camera
+                // world (floating origin) converts explicitly.
                 lines.set(
                     index,
-                    `    view[${index}] = world[${this.pinnedElementIndex(rhs, "w")}];\n`,
+                    `    view[${index}] = static_cast<float>(world[${this.pinnedElementIndex(rhs, "w")}]);\n`,
                 );
                 continue;
             }
@@ -4128,10 +3065,8 @@ ${pinnedFogInfosPacking()}    };
      * `sort_transparent_draws` adopts the pinned sort center: both pinned
      * mesh families store `sortCenter` = the world-matrix translation
      * (`pbr-renderable.ts` / `standard-renderable.ts`, anchored below),
-     * which the record carries as `instance_parent_matrix` composed with
-     * the live TRS position and an imported clone root's post-deformation
-     * translation — the retired scaled-rotated bounds center was an
-     * invention of this port.
+     * read off `mesh_world_matrix` — the retired scaled-rotated bounds
+     * center was an invention of this port.
      */
     private assertPinnedDrawListRules(): void {
         const { declaration: buildBindings } = this.context.functionDeclaration(
@@ -4590,85 +3525,6 @@ ${pinnedFogInfosPacking()}    };
     }
 
     /**
-     * The ±half / zero / numeric elements of one pinned typed-array buffer
-     * literal (`new F32([...])` or `new U16([...])`): ±`halfName` tokens map
-     * to ±1 and every other element must be a numeric constant. This is how
-     * the background geometry tables flow from the pinned builders instead
-     * of being restated by hand.
-     */
-    private pinnedBufferValues(
-        declaration: ts.Node,
-        file: ts.SourceFile,
-        name: string,
-        halfName: string,
-    ): number[] {
-        const initializer = this.context.unwrapExpression(
-            this.context.variableInitializer(declaration, name),
-        );
-        if (
-            !ts.isNewExpression(initializer) ||
-            initializer.arguments?.length !== 1
-        ) {
-            this.context.contractError(
-                initializer,
-                `Expected a pinned typed-array literal for '${name}'.`,
-            );
-        }
-        const array = this.context.unwrapExpression(initializer.arguments[0]!);
-        if (!ts.isArrayLiteralExpression(array)) {
-            this.context.contractError(
-                array,
-                `Expected a pinned array literal for '${name}'.`,
-            );
-        }
-        return array.elements.map((element) => {
-            const unwrapped = this.context.unwrapExpression(element);
-            if (ts.isIdentifier(unwrapped) && unwrapped.text === halfName) {
-                return 1;
-            }
-            if (
-                ts.isPrefixUnaryExpression(unwrapped) &&
-                unwrapped.operator === ts.SyntaxKind.MinusToken
-            ) {
-                const operand = this.context.unwrapExpression(
-                    unwrapped.operand,
-                );
-                if (ts.isIdentifier(operand) && operand.text === halfName) {
-                    return -1;
-                }
-            }
-            return this.context.numericValue(element, file);
-        });
-    }
-
-    /**
-     * The background geometry tables, derived from the pinned builders the
-     * way the factory lowerer derives box and plane: corner signs, UVs and
-     * index winding flow from the pinned buffer literals into the emitted
-     * C++, so a retuned table changes the emission and anything else fails
-     * generation.
-     *
-     * - The ground quad flows from `createGroundBuffers` (XY plane at z=0,
-     *   BACKSIDE winding) composed with the `createBgMeshUBO` world matrix
-     *   (rotate XY to XZ, translate to the scene root), which the emission
-     *   bakes into the vertices: world = (x + tx, ty + y*eps, tz - y). The
-     *   two epsilon lanes (2.220446049250313e-16, asserted below) are
-     *   dropped as 0 — for the reached ground sizes they perturb y by under
-     *   1e-13 of a unit, orders of magnitude below f32 vertex precision —
-     *   and the same drop turns the rotated normal (0, 1, eps) into the
-     *   emitted (0, 1, 0). The ModelVertex tangent lane is the record
-     *   filler; no background stage declares a tangent input.
-     * - The skybox cube flows from `createSkyboxBuffers`, which the pin
-     *   carries in three identical copies (DDS, HDR, solid); the flow
-     *   requires them equal and serves build_skybox_plan and
-     *   build_solid_skybox_plan from the shared table.
-     * - The image skybox borrows the same pinned corner/index table: its
-     *   pinned mesh is `createBoxData(size)` — 24 vertices spanning
-     *   ±size/2 (span asserted below) drawn cull-none — and the borrowed
-     *   8-corner triangulation covers the identical cube surface, over
-     *   which the sampled direction interpolates identically per face.
-     */
-    /**
      * What `executeRenderTaskLinear` writes over `toneMappingEnabled` while
      * the retargeted linear pass runs.
      *
@@ -4708,265 +3564,5 @@ ${pinnedFogInfosPacking()}    };
             (assignment.right as ts.PrefixUnaryExpression).operand,
             file,
         );
-    }
-
-    private pinnedBackgroundGeometry(): {
-        groundVertexRows: string;
-        groundIndexRow: string;
-        groundAlpha: string;
-        skyboxVertexRows: string;
-        skyboxCornerRows: string;
-        skyboxIndexRows: string;
-    } {
-        const ground = this.context.functionDeclaration(
-            backgroundGroundModule,
-            "createGroundBuffers",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(ground.declaration, "h"),
-            "groundSize / 2",
-            "Pinned ground half extent",
-        );
-        const groundPositions = this.pinnedBufferValues(
-            ground.declaration,
-            ground.file,
-            "positions",
-            "h",
-        );
-        const groundNormals = this.pinnedBufferValues(
-            ground.declaration,
-            ground.file,
-            "normals",
-            "h",
-        );
-        const groundUvs = this.pinnedBufferValues(
-            ground.declaration,
-            ground.file,
-            "uvs",
-            "h",
-        );
-        const groundIndices = this.pinnedBufferValues(
-            ground.declaration,
-            ground.file,
-            "indices",
-            "h",
-        );
-        if (
-            groundPositions.length !== 12 ||
-            groundNormals.length !== 12 ||
-            groundUvs.length !== 8 ||
-            groundIndices.length !== 6
-        ) {
-            this.context.contractError(
-                ground.declaration,
-                "Pinned ground quad changed shape; the emitted BackgroundPlan no longer covers it.",
-            );
-        }
-        const groundSource = this.context.store.getSource(
-            backgroundGroundModule,
-        );
-        for (const [marker, what] of [
-            ["const eps = 2.220446049250313e-16;", "ground world epsilon"],
-            ["data[0] = data[15] = 1;", "ground world unit lanes"],
-            ["data[5] = data[10] = eps;", "ground world epsilon lanes"],
-            ["data[6] = -1;", "ground world -y-to-z lane"],
-            ["data[9] = 1;", "ground world y-to-z lane"],
-            ["data[12] = rootPosition[0];", "ground world translation x"],
-            ["data[13] = rootPosition[1];", "ground world translation y"],
-            ["data[14] = rootPosition[2];", "ground world translation z"],
-            ["data[20] = 0;", "ground background-center x"],
-            ["data[21] = 0;", "ground background-center y"],
-            ["data[22] = 0;", "ground background-center z"],
-        ] as const) {
-            if (!groundSource.includes(marker)) {
-                throw new Error(
-                    `Pinned Babylon Lite ${what} changed ('${marker}' is gone).`,
-                );
-            }
-        }
-        const groundUbo = this.context.functionDeclaration(
-            backgroundGroundModule,
-            "createBgMeshUBO",
-        );
-        const alphaStore = this.context
-            .pinnedElementStores(groundUbo.declaration, "data")
-            .find(
-                (store) =>
-                    ts.isNumericLiteral(store.left.argumentExpression) &&
-                    Number(store.left.argumentExpression.text) === 19,
-            );
-        if (!alphaStore) {
-            this.context.contractError(
-                groundUbo.declaration,
-                "Pinned ground alpha store moved.",
-            );
-        }
-        const groundAlpha = this.context.floatLiteral(
-            this.context.numericValue(alphaStore.right, groundUbo.file),
-        );
-        const groundVertexRows: string[] = [];
-        for (let corner = 0; corner < 4; corner++) {
-            const x = groundPositions[corner * 3]!;
-            const y = groundPositions[corner * 3 + 1]!;
-            if (
-                (x !== 1 && x !== -1) ||
-                (y !== 1 && y !== -1) ||
-                groundPositions[corner * 3 + 2] !== 0 ||
-                groundNormals[corner * 3] !== 0 ||
-                groundNormals[corner * 3 + 1] !== 0 ||
-                groundNormals[corner * 3 + 2] !== 1
-            ) {
-                this.context.contractError(
-                    ground.declaration,
-                    `Pinned ground corner ${corner} left the authored XY plane.`,
-                );
-            }
-            const u = groundUvs[corner * 2]!;
-            const v = groundUvs[corner * 2 + 1]!;
-            if ((u !== 0 && u !== 1) || (v !== 0 && v !== 1)) {
-                this.context.contractError(
-                    ground.declaration,
-                    `Pinned ground corner ${corner} UV left the unit square.`,
-                );
-            }
-            groundVertexRows.push(
-                `        ModelVertex{Vec3{center.x ${
-                    x < 0 ? "-" : "+"
-                } half, center.y, center.z ${
-                    y < 0 ? "+" : "-"
-                } half}, Vec3{0.0f, 1.0f, 0.0f}, Vec4{1.0f, 0.0f, 0.0f, 1.0f}, Vec2{${this.context.floatLiteral(
-                    u,
-                )}, ${this.context.floatLiteral(v)}}},`,
-            );
-        }
-
-        const skyboxModules = [
-            backgroundDdsModule,
-            backgroundHdrModule,
-            backgroundSolidModule,
-        ] as const;
-        let corners: number[] | undefined;
-        let cubeIndices: number[] | undefined;
-        for (const modulePath of skyboxModules) {
-            const cube = this.context.functionDeclaration(
-                modulePath,
-                "createSkyboxBuffers",
-            );
-            const positions = this.pinnedBufferValues(
-                cube.declaration,
-                cube.file,
-                "positions",
-                "S",
-            );
-            const indices = this.pinnedBufferValues(
-                cube.declaration,
-                cube.file,
-                "indices",
-                "S",
-            );
-            if (
-                positions.length !== 24 ||
-                positions.some((value) => value !== 1 && value !== -1) ||
-                indices.length !== 36 ||
-                indices.some(
-                    (value) =>
-                        !Number.isInteger(value) || value < 0 || value >= 8,
-                )
-            ) {
-                this.context.contractError(
-                    cube.declaration,
-                    `Pinned skybox cube in ${modulePath} changed shape.`,
-                );
-            }
-            if (!corners || !cubeIndices) {
-                corners = positions;
-                cubeIndices = indices;
-                continue;
-            }
-            if (
-                positions.some((value, index) => value !== corners![index]) ||
-                indices.some((value, index) => value !== cubeIndices![index])
-            ) {
-                this.context.contractError(
-                    cube.declaration,
-                    `Pinned skybox cube in ${modulePath} disagrees with ${skyboxModules[0]}.`,
-                );
-            }
-        }
-        const cornerRow = (corner: number): string =>
-            [0, 1, 2]
-                .map((axis) =>
-                    corners![corner * 3 + axis]! < 0 ? "-half" : "half",
-                )
-                .join(", ");
-        const skyboxVertexRows: string[] = [];
-        const skyboxCornerRows: string[] = [];
-        for (let corner = 0; corner < 8; corner++) {
-            skyboxVertexRows.push(`        vertex(${cornerRow(corner)}),`);
-            skyboxCornerRows.push(`        {${cornerRow(corner)}},`);
-        }
-        const skyboxIndexRows: string[] = [];
-        for (let triangle = 0; triangle < 36; triangle += 6) {
-            skyboxIndexRows.push(
-                `        ${cubeIndices!
-                    .slice(triangle, triangle + 6)
-                    .join(", ")},`,
-            );
-        }
-
-        // The image skybox's pinned mesh is createBoxData(size); assert its
-        // ±size/2 span so the borrowed corner table above keeps covering the
-        // pinned cube surface.
-        const box = this.context.functionDeclaration(
-            "src/mesh/create-box.ts",
-            "createBoxData",
-        );
-        const boxStore = this.context.pinnedElementStores(
-            box.declaration,
-            "positions",
-        )[0];
-        if (!boxStore) {
-            this.context.contractError(
-                box.declaration,
-                "Expected the pinned box position store.",
-            );
-        }
-        this.context.assertExpressionShape(
-            boxStore.right,
-            "(sign - 0.5) * dimensions[index % 3]",
-            "Pinned box half-extent span",
-        );
-
-        return {
-            groundVertexRows: groundVertexRows.join("\n"),
-            groundIndexRow: groundIndices.join(", "),
-            groundAlpha,
-            skyboxVertexRows: skyboxVertexRows.join("\n"),
-            skyboxCornerRows: skyboxCornerRows.join("\n"),
-            skyboxIndexRows: skyboxIndexRows.join("\n"),
-        };
-    }
-
-    /**
-     * The solid skybox's two WGSL stages ship as `?raw` string literals with no
-     * source-map entry, so they are read out of the packaged module text — the
-     * vertex stage from the shared chunk `background-solid-skybox.js` imports,
-     * which keeps the pin's content hash out of this file.
-     */
-    private pinnedSolidSkyboxSource(): PinnedSolidSkyboxSource {
-        const packageRoot = this.context.store.packageRoot;
-        const modulePath = "material/pbr/background-solid-skybox.js";
-        return {
-            vertex: readPinnedRawShader(
-                modulePath,
-                "shaders/skybox.vertex.wgsl",
-            ),
-            fragment: readPinnedRawShader(
-                modulePath,
-                "shaders/skybox.fragment.wgsl",
-            ),
-            sceneUniforms: this.compiledSceneUniformsWgsl(),
-            dither: readPinnedDitherWgsl(packageRoot).dither,
-        };
     }
 }

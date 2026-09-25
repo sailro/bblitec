@@ -8,6 +8,8 @@
 // translation unit exists because a scene registering no `SceneContext`
 // generates no camera math and no render plan, so `pal_sdl_gpu.cpp` cannot be
 // compiled for it at all.
+#include <bblite/features/has_effect_renderer.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
@@ -31,7 +33,7 @@ namespace bbl::pal {
 #if BBLITE_HAS_EFFECT_RENDERER
 
 namespace {
-class SdlEffectRun : public FrameSession {
+class SdlEffectRun : public RendererRun<SdlEffectRun> {
     SdlGpuDevice gpu;
     SDL_Window*& window = gpu.window;
     SDL_GPUDevice*& device = gpu.device;
@@ -46,7 +48,8 @@ class SdlEffectRun : public FrameSession {
 
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
-    explicit SdlEffectRun(Engine& target) : FrameSession(target) {}
+    static constexpr const char* backend_label = "SDL_GPU";
+    explicit SdlEffectRun(Engine& target) : RendererRun(target) {}
     ~SdlEffectRun() {
         command.reset();
         for (auto& pass : passes)
@@ -84,17 +87,8 @@ public:
         }
         capture_run = captures.requested();
     }
-    FramePreparation prepare() {
-        poll_platform_events(engine, running, frame_options.test_pass);
-        input_replay.dispatch(frame, window, engine);
-        sync_engine_canvas_size(window, engine);
-        return FramePreparation::ready;
-    }
-    FramePreparation update() {
-        (void)advance_frame(engine, frame_clock, frame_options.frame_delta_ms);
-        begin_measurement();
-        return FramePreparation::ready;
-    }
+    SDL_Window* sdl_window() const { return window; }
+    std::string driver() const { return SDL_GetGPUDeviceDriver(device); }
     bool acquire() {
         command = SdlGpuCommand{SDL_AcquireGPUCommandBuffer(device)};
         if (!command)
@@ -114,8 +108,7 @@ public:
         return true;
     }
     void synchronize() {
-        capture_frame = frame >= frame_options.screenshot_frame && !captures.screenshot_saved &&
-                        !frame_options.screenshot_path.empty();
+        capture_frame = screenshot_due();
         captures.maybe_write_standalone_render_capture("sdl_gpu", engine, width, height, frame);
 
         // Offscreen textures exist only where a lane needs one: the
@@ -201,18 +194,10 @@ public:
             gpu_error("SDL_SubmitGPUCommandBuffer effect");
         }
     }
-    void report() { FrameSession::report("SDL_GPU", SDL_GetGPUDeviceDriver(device)); }
 };
 } // namespace
 
-bool run_effect_gpu_engine(Engine& engine) {
-    SdlEffectRun renderer(engine);
-    renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {
-    }
-    renderer.report();
-    return true;
-}
+void run_effect_gpu_engine(Engine& engine) { SdlEffectRun::run(engine); }
 #endif
 
 } // namespace bbl::pal

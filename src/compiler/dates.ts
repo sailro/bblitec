@@ -11,9 +11,7 @@ export function compileDateTimeFormat(
     if (
         !ts.isPropertyAccessExpression(callee) ||
         callee.name.text !== "DateTimeFormat" ||
-        !ts.isIdentifier(callee.expression) ||
-        callee.expression.text !== "Intl" ||
-        !lowerer.context.isDefaultLibraryIdentifier(callee.expression)
+        lowerer.context.libraryGlobal(callee.expression) !== "Intl"
     )
         return undefined;
     if (expression.arguments?.length)
@@ -42,7 +40,7 @@ export function compileDateTimeFormatMethod(
             `Intl.DateTimeFormat.${method} is not lowered.`,
         );
     lowerer.context.expectArgumentCount(call, 0, 0);
-    const timeZone = lowerer.context.pinValueToTemporary(
+    const timeZone = lowerer.context.bindings.pinValueToTemporary(
         { kind: "string", cpp: `*(${owner.cpp})` },
         "resolved_time_zone",
     );
@@ -55,11 +53,7 @@ export function compileDateNew(
     expression: ts.NewExpression,
 ): Value | undefined {
     const context = lowerer.context;
-    if (
-        !ts.isIdentifier(expression.expression) ||
-        expression.expression.text !== "Date" ||
-        !context.isDefaultLibraryIdentifier(expression.expression)
-    )
+    if (context.libraryGlobal(expression.expression) !== "Date")
         return undefined;
     const args = expression.arguments ?? [];
     if (args.length > 1)
@@ -108,7 +102,7 @@ export function compileDateMethod(
             return { kind: "number", cpp: `*(${owner.cpp})` };
         case "setTime": {
             context.expectArgumentCount(call, 1, 1);
-            const receiver = context.pinValueToTemporary(
+            const receiver = context.bindings.pinValueToTemporary(
                 owner,
                 "date_receiver",
             );

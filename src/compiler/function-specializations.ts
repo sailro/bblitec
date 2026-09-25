@@ -2,10 +2,24 @@ import ts from "typescript";
 import {
     EmissionMap,
     EmissionWeakMap,
-    isCompilerInput,
+    journaled,
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+
+/** AST nodes, checker types and symbols are immutable compiler inputs. */
+function isCompilerInput(value: object): boolean {
+    return (
+        ("kind" in value &&
+            typeof value.kind === "number" &&
+            "pos" in value &&
+            typeof value.pos === "number" &&
+            "end" in value &&
+            typeof value.end === "number") ||
+        ("getFlags" in value && typeof value.getFlags === "function")
+    );
+}
 
 export interface FunctionEmissionScope {
     readonly lexical: object;
@@ -18,7 +32,7 @@ export interface FunctionEmissionScope {
 export class FunctionSpecializations<T> {
     private readonly objects = new EmissionWeakMap<object, number>();
     private readonly symbols = new EmissionMap<symbol, number>();
-    private nextObject = 0;
+    @journaled private accessor nextObject = 0;
     private readonly entries = new EmissionMap<ts.Node, Map<string, T>>();
 
     private identity(value: object): number {
@@ -145,7 +159,7 @@ function dependencyIdentifiers(
             fn.body,
             (node) => {
                 if (ts.isIdentifier(node)) {
-                    const symbol = checker.getSymbolAtLocation(node);
+                    const symbol = declaredSymbol(checker, node);
                     if (symbol && !identifiers.has(symbol))
                         identifiers.set(symbol, node);
                 }
@@ -163,9 +177,8 @@ function dependencyIdentifiers(
                         visitFunction(called);
                 }
                 if (ts.isPropertyAccessExpression(node)) {
-                    for (const declaration of checker.getSymbolAtLocation(
-                        node.name,
-                    )?.declarations ?? []) {
+                    for (const declaration of resolvedSymbol(checker, node)
+                        ?.declarations ?? []) {
                         if (
                             ts.isGetAccessorDeclaration(declaration) ||
                             ts.isSetAccessorDeclaration(declaration)
@@ -193,7 +206,7 @@ function dependencyIdentifiers(
 }
 
 export function functionDependencies(
-    context: Pick<LoweringServices, "checker" | "lookupIdentifierValue">,
+    context: Pick<LoweringServices, "checker" | "bindings">,
     roots: readonly ts.FunctionLikeDeclaration[],
 ): unknown[] {
     return [
@@ -203,9 +216,9 @@ export function functionDependencies(
             ),
         ),
     ].flatMap((identifier) => {
-        const value = context.lookupIdentifierValue(identifier);
+        const value = context.bindings.lookupOptional(identifier);
         return value
-            ? [[context.checker.getSymbolAtLocation(identifier), value]]
+            ? [[declaredSymbol(context.checker, identifier), value]]
             : [];
     });
 }

@@ -4,9 +4,9 @@ import {
     POST_PROCESS_EFFECTS,
     postProcessComposite,
     postProcessEffect,
-    slotOption,
     type PostProcessEffect,
 } from "../post-process-effects.js";
+import { pinnedPostProcessDefault } from "./post-process-defaults.js";
 import type { PostProcessTaskManifest } from "../compiler/types.js";
 import {
     passSuffix,
@@ -15,7 +15,11 @@ import {
 } from "../pinned-post-process.js";
 import { doubleLiteral as dvalue, stringLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { blendSide, nativeBlendFactor } from "./pinned-blend-table.js";
+import {
+    blendSide,
+    nativeBlendFactor,
+    pinnedBlendSwitchArms,
+} from "./pinned-blend-table.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
@@ -28,6 +32,7 @@ import {
     compositeScalarAccessors,
     compositeScalarFunction,
 } from "./post-process-accessors.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** The feature every post-process refusal is keyed on. */
 const POST_PROCESS_FEATURE = "renderer:post-process";
@@ -282,38 +287,33 @@ export class PostProcessLowerer {
      * bump. A factor with no enumerator on this side fails generation.
      */
     private readBlendModes(): Map<number, readonly string[]> {
-        const { declaration: alphaModeToBlend } =
-            this.context.functionDeclaration(TASK_MODULE, "alphaModeToBlend");
+        const { declaration: alphaModeToBlend, arms } = pinnedBlendSwitchArms(
+            this.context,
+            TASK_MODULE,
+            "alphaModeToBlend",
+        );
         const modes = new Map<number, readonly string[]>();
-        for (const clause of this.context.findNodes(
-            alphaModeToBlend,
-            (node): node is ts.CaseClause => ts.isCaseClause(node),
-        )) {
-            const mode = this.context.numericValue(
-                this.context.unwrapExpression(clause.expression),
-                clause.getSourceFile(),
-            );
-            const state = this.context.findNodes(
-                clause,
-                (node): node is ts.ObjectLiteralExpression =>
-                    ts.isObjectLiteralExpression(node) &&
-                    node.properties.some(
-                        (property) =>
-                            property.name !== undefined &&
-                            this.context.propertyName(property.name) ===
-                                "color",
-                    ),
-            )[0];
-            if (!state) {
-                this.context.contractError(
+        for (const { mode, clause, returned } of arms) {
+            // The default arm returns no state: an unblended mode.
+            if (mode === undefined) continue;
+            if (
+                !returned ||
+                !ts.isObjectLiteralExpression(returned) ||
+                !returned.properties.some(
+                    (property) =>
+                        property.name !== undefined &&
+                        this.context.propertyName(property.name) === "color",
+                )
+            ) {
+                return this.context.contractError(
                     clause,
                     `Post-process alpha mode ${mode} names no blend state.`,
                 );
             }
             const label = `post-process alpha mode ${mode}`;
             modes.set(mode, [
-                ...blendSide(this.context, state, "color", label),
-                ...blendSide(this.context, state, "alpha", label),
+                ...blendSide(this.context, returned, "color", label),
+                ...blendSide(this.context, returned, "alpha", label),
             ]);
         }
         if (modes.size === 0) {
@@ -348,70 +348,17 @@ export class PostProcessLowerer {
     }
 
     /**
-     * The effect's own halves: the defaults its `??` fallbacks state and the
-     * options its factory makes settable. Both are read out of the table this
-     * repository keeps, so a pin that moves either fails rather than composing
-     * a pass against a stale default.
+     * The effect's own halves: the defaults its factory states and the
+     * textures it reads off the descriptor. The defaults are the table's own
+     * values, read from the pin (`post-process-defaults.ts`); reading every
+     * reached slot here refuses one the pin stopped defaulting before a
+     * record is emitted.
      */
     private assertEffectContracts(effect: PostProcessEffect): void {
-        const { file, declaration } = this.context.functionDeclaration(
+        const { declaration } = this.context.functionDeclaration(
             effect.module,
             effect.declaredIn ?? effect.intrinsic,
         );
-        const fallbacks = new Map<string, ts.Expression>();
-        for (const node of this.context.findNodes(
-            declaration,
-            (candidate): candidate is ts.BinaryExpression =>
-                ts.isBinaryExpression(candidate) &&
-                candidate.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken,
-        )) {
-            const path = this.context.propertyPath(node.left);
-            if (path?.[0] === "config" && path.length === 2) {
-                fallbacks.set(
-                    path[1]!,
-                    this.context.unwrapExpression(node.right),
-                );
-            }
-        }
-        // A default the pin states through a COERCER rather than `??`.
-        // SMAA runs three of its settings through `clampThreshold` and its
-        // siblings, whose second argument is the value used when the caller
-        // supplied nothing usable -- the same default `??` states, written
-        // where the range also has to be enforced. Reading it keeps the
-        // check on the pin's own text instead of exempting the effect.
-        //
-        // The callee has to be one of the module's OWN helpers, not any
-        // two-argument call: on arity alone this would equally read
-        // `Math.max(config.threshold, 0)` as a default, and first match
-        // would decide which. Resolving it against the file the writer is
-        // declared in keeps the contract on the pin's text.
-        const moduleHelpers = new Set(
-            file.statements
-                .filter(ts.isFunctionDeclaration)
-                .map((fn) => fn.name?.text)
-                .filter((name): name is string => name !== undefined),
-        );
-        for (const node of this.context.findNodes(
-            declaration,
-            (candidate): candidate is ts.CallExpression =>
-                ts.isCallExpression(candidate) &&
-                candidate.arguments.length === 2 &&
-                ts.isIdentifier(candidate.expression) &&
-                moduleHelpers.has(candidate.expression.text),
-        )) {
-            const path = this.context.propertyPath(node.arguments[0]!);
-            if (
-                path?.[0] === "config" &&
-                path.length === 2 &&
-                !fallbacks.has(path[1]!)
-            ) {
-                fallbacks.set(
-                    path[1]!,
-                    this.context.unwrapExpression(node.arguments[1]!),
-                );
-            }
-        }
         // An extra texture has no fallback -- the pin reads it straight off
         // the descriptor -- so what is checked is that the descriptor still
         // names it, which is what the emitted binding order depends on.
@@ -433,83 +380,7 @@ export class PostProcessLowerer {
             }
         }
         for (const slot of effect.params) {
-            if (slot.runtime) {
-                continue;
-            }
-            if (slot.owner === "task") {
-                this.expectDefault(
-                    this.context.propertyInitializer(
-                        this.context.objectInitializer(declaration, "task"),
-                        slot.path,
-                    ),
-                    slot.fallback,
-                    file,
-                    { intrinsic: effect.intrinsic, option: slot.path },
-                );
-                continue;
-            }
-            const { option, component } = slotOption(slot);
-            const found = fallbacks.get(option);
-            if (!found) {
-                this.context.contractError(
-                    declaration,
-                    `Expected ${effect.intrinsic} to default '${option}'.`,
-                );
-            }
-            if (!component) {
-                this.expectDefault(found, slot.fallback, file, {
-                    intrinsic: effect.intrinsic,
-                    option: slot.path,
-                });
-                continue;
-            }
-            // A vector option defaults as a whole object, so the component
-            // fallback is read out of that object rather than off the option.
-            if (!ts.isObjectLiteralExpression(found)) {
-                this.context.contractError(
-                    found,
-                    `Expected ${effect.intrinsic} to default '${option}' with an object literal.`,
-                );
-            }
-            this.expectDefault(
-                this.context.propertyInitializer(found, component),
-                slot.fallback,
-                file,
-                { intrinsic: effect.intrinsic, option: slot.path },
-            );
-        }
-    }
-
-    /**
-     * One pinned default, against the value this table carries.
-     *
-     * A flag is compared as the keyword the pin writes rather than as a
-     * number, so a setting that stopped being a flag reads as a changed
-     * default instead of quietly comparing 1 against `true`.
-     */
-    private expectDefault(
-        expression: ts.Expression,
-        expected: number | boolean,
-        file: ts.SourceFile,
-        label: { intrinsic: string; option: string },
-    ): void {
-        const unwrapped = this.context.unwrapExpression(expression);
-        const found =
-            unwrapped.kind === ts.SyntaxKind.TrueKeyword
-                ? true
-                : unwrapped.kind === ts.SyntaxKind.FalseKeyword
-                  ? false
-                  : typeof expected === "boolean"
-                    ? undefined
-                    : this.context.numericValue(unwrapped, file);
-        if (found !== expected) {
-            this.context.contractError(
-                expression,
-                `${label.intrinsic} default for '${label.option}' changed; ` +
-                    `expected ${expected}, found ${
-                        found === undefined ? unwrapped.getText(file) : found
-                    }.`,
-            );
+            pinnedPostProcessDefault(effect, slot);
         }
     }
 
@@ -570,7 +441,6 @@ void write_post_process_uniforms(
 } // namespace bbl::upstream
 ${this.compositeDeclarations()}
 ${[...lifecycleHeaders].join("\n")}
-#define BBLITE_HAS_TAA ${sceneUbo ? 1 : 0}
 ${sceneUbo ? `${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.storageHeader()}\n${sceneUbo.packingHeader()}` : ""}`;
     }
 
@@ -695,7 +565,7 @@ void resolve_post_process_pass_output(
             "source to size its own.");
     }
     const RenderTargetRecord& source =
-        engine.render_targets[pass.source.target.value];
+        ${recordAt("engine.render_targets", "pass.source.target")};
     RenderTargetOptions internal;
     internal.samples = 1u;
     internal.has_color = true;
@@ -727,7 +597,7 @@ void update_post_process_uniforms(Engine& engine, TaskHandle handle) {
     if (handle.value >= engine.frame_tasks.size()) {
         throw std::runtime_error("Invalid frame task handle.");
     }
-    FrameTaskRecord& task = engine.frame_tasks[handle.value];
+    FrameTaskRecord& task = ${recordAt("engine.frame_tasks", "handle")};
     if (task.kind != FrameTaskKind::post_process) {
         throw std::runtime_error(
             "updateUniforms names a task that is not a post-process pass.");
@@ -803,7 +673,7 @@ ${this.compositeAccessorDefinitions()}
                             `Composite scalar ${accessor.property} requires one retained inline pass.`,
                             this.featureSites,
                         );
-                    const parameter = `engine.frame_tasks.at(task.value).post_process.passes.at(${passes[0]}).params.at(${accessor.slot})`;
+                    const parameter = `${recordAt("engine.frame_tasks", "task")}.post_process.passes.at(${passes[0]}).params.at(${accessor.slot})`;
                     return `double ${compositeScalarFunction(index, accessor.property, false)}(const Engine& engine, TaskHandle task) {
     const double& parameter = ${parameter};
 ${accessor.getter}
@@ -957,7 +827,7 @@ ${
         ? `    options.taa = std::make_shared<TaaPostProcessState>(
         upstream::create_taa_post_process_state(${dvalue(composite.taa.factor)}, ${composite.taa.disableOnCameraMove}));
     upstream::initialize_taa_jitter(*options.taa, ${dvalue(composite.taa.samples)});
-    FrameTaskRecord& source = engine.frame_tasks.at(options.source_tasks.at(0).value);
+    FrameTaskRecord& source = ${recordAt("engine.frame_tasks", "options.source_tasks.at(0)")};
     if (source.kind != FrameTaskKind::render || !source.source_scene) {
         throw std::runtime_error("TAA source must retain its original render-task scene.");
     }
@@ -1163,11 +1033,11 @@ ${body}
         }
         if (effect.usesCamera) {
             bindings.set("camera.nearPlane", {
-                cpp: "engine.cameras[task.camera.value].near_plane",
+                cpp: `${recordAt("engine.cameras", "task.camera")}.near_plane`,
                 type: "scalar",
             });
             bindings.set("camera.farPlane", {
-                cpp: "engine.cameras[task.camera.value].far_plane",
+                cpp: `${recordAt("engine.cameras", "task.camera")}.far_plane`,
                 type: "scalar",
             });
         }
@@ -1318,7 +1188,7 @@ interface PostProcessPassOrder {
  * writer dispatch, the emitted records and the deployed stage table all index
  * by it, so it is derived here and nowhere else.
  */
-export function postProcessPassOrder(
+function postProcessPassOrder(
     tasks: readonly PostProcessTaskManifest[],
     composites: readonly ComposedComposite[],
 ): PostProcessPassOrder[] {

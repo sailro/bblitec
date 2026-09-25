@@ -1,6 +1,5 @@
 import type { LoweringServices } from "./lowering-services.js";
 /** Public node inputs retain their source slot; graphs alone are deduplicated. */
-/** Public node inputs retain their source slot; graphs alone are deduplicated. */
 import ts from "typescript";
 import { isPinnedType, pinnedHandleKind, type DataType } from "./data-types.js";
 import { isAssignmentExpression, isUpdateExpression } from "./syntax.js";
@@ -11,21 +10,20 @@ const textureType: DataType = {
     inner: { kind: "handle", handle: "texture" },
 };
 
-interface NodeInputContext extends Pick<
+export interface NodeInputContext extends Pick<
     LoweringServices,
     | "checker"
     | "unwrap"
     | "compileValue"
-    | "lookupOptional"
+    | "bindings"
     | "allocateTemporaryCppName"
     | "emit"
     | "dataLowerer"
     | "fail"
     | "reachFeature"
     | "reachJsData"
-    | "assertNodeInputMutable"
-    | "noteNodeInputAdmissionFailure"
-    | "isDefaultLibraryIdentifier"
+    | "admissions"
+    | "libraryGlobal"
 > {}
 
 export function readNodeInputProperty(
@@ -78,7 +76,7 @@ function isInput(
     const node = context.unwrap(expression);
     if (
         ts.isIdentifier(node) &&
-        context.lookupOptional(node)?.kind === "node-input"
+        context.bindings.lookupOptional(node)?.kind === "node-input"
     )
         return true;
     return (
@@ -112,9 +110,7 @@ export function compileNodeInputMutation(
     if (
         ts.isCallExpression(node) &&
         ts.isPropertyAccessExpression(node.expression) &&
-        ts.isIdentifier(node.expression.expression) &&
-        node.expression.expression.text === "Object" &&
-        context.isDefaultLibraryIdentifier(node.expression.expression) &&
+        context.libraryGlobal(node.expression.expression) === "Object" &&
         [
             "assign",
             "defineProperty",
@@ -126,7 +122,7 @@ export function compileNodeInputMutation(
         const target = node.arguments[0];
         const type = context.checker.getTypeAtLocation(target);
         if (isPinnedType(type, ["Texture2D"])) {
-            context.noteNodeInputAdmissionFailure(
+            context.admissions.noteNodeInputAdmissionFailure(
                 node,
                 "Node input bindings do not represent reflective texture producer mutation.",
             );
@@ -172,7 +168,7 @@ export function compileNodeInputMutation(
             "Node inputs support direct texture assignment only; numeric uniforms and computed mutation are not represented.",
         );
     }
-    context.assertNodeInputMutable(node);
+    context.admissions.assertNodeInputMutable(node);
     context.reachFeature("material:node-inputs", node);
     context.reachJsData();
     const owner = context.allocateTemporaryCppName("node_input");

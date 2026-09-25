@@ -1,10 +1,11 @@
 import type { RenderedCpp } from "../pinned-numeric-expression.js";
 import ts from "typescript";
-import { doubleLiteral, floatLiteral } from "../../cpp-literals.js";
+import { doubleLiteral } from "../../cpp-literals.js";
 import {
     findNodes,
     nullishDefault,
     numericValue,
+    topLevelFunctionDeclaration,
     unwrapExpression,
 } from "../context.js";
 
@@ -49,7 +50,6 @@ export function refuseNode(
 interface PinnedBinding {
     name: string;
     initializer: ts.Expression;
-    isConst: boolean;
     statement: ts.VariableStatement;
 }
 
@@ -85,7 +85,6 @@ export function singleBinding(
     return {
         name: declaration.name.text,
         initializer: declaration.initializer,
-        isConst: (statement.declarationList.flags & ts.NodeFlags.Const) !== 0,
         statement,
     };
 }
@@ -112,76 +111,18 @@ export function topLevelFunction(
     file: ts.SourceFile,
     symbolName: string,
 ): ts.FunctionDeclaration & { body: ts.Block } {
-    const declaration = file.statements.find(
-        (statement): statement is ts.FunctionDeclaration =>
-            ts.isFunctionDeclaration(statement) &&
-            statement.name?.text === symbolName &&
-            statement.body !== undefined,
-    );
-    if (!declaration?.body) {
+    const declaration = topLevelFunctionDeclaration(file, symbolName);
+    if (!declaration) {
         throw new Error(
             `Pinned function '${symbolName}' with a body was not found ` +
                 `in ${file.fileName}.`,
         );
     }
-    return declaration as ts.FunctionDeclaration & { body: ts.Block };
-}
-
-/**
- * A run of `buf[base + lane] = …` stores covering lanes 0..count-1 in
- * order — the pin's Float32Array writes that become one vector build.
- */
-export function collectLaneStores(
-    scope: CppExpressionScope,
-    statements: readonly ts.Statement[],
-    start: number,
-    count: number,
-    laneOf: (target: ts.ElementAccessExpression) => number | undefined,
-): { expressions: ts.Expression[]; next: number } {
-    const expressions: ts.Expression[] = [];
-    let index = start;
-    for (let lane = 0; lane < count; lane += 1) {
-        const statement = statements[index];
-        const assignment =
-            statement &&
-            ts.isExpressionStatement(statement) &&
-            ts.isBinaryExpression(statement.expression) &&
-            statement.expression.operatorToken.kind ===
-                ts.SyntaxKind.EqualsToken
-                ? statement.expression
-                : undefined;
-        if (
-            !assignment ||
-            !ts.isElementAccessExpression(assignment.left) ||
-            laneOf(assignment.left) !== lane
-        ) {
-            refuseNode(
-                scope.symbol,
-                scope.file,
-                statement ?? statements[start] ?? scope.file,
-                `no longer stores lane ${lane} where this lowering expects it`,
-            );
-        }
-        expressions.push(assignment.right);
-        index += 1;
-    }
-    return { expressions, next: index };
+    return declaration;
 }
 
 export const pinnedDoubleLiteral = (literal: ts.NumericLiteral): string =>
     doubleLiteral(Number(literal.text));
-
-/** Flattens a left-associated `a + b + c + …` chain into its terms. */
-export function additiveTerms(expression: ts.Expression): ts.Expression[] {
-    const node = unwrapExpression(expression);
-    if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.PlusToken
-    ) {
-        return [...additiveTerms(node.left), node.right];
-    }
-    return [expression];
-}
 
 export function refuseModule(symbol: string, reason: string): never {
     throw new Error(`Pinned ${symbol} ${reason}.`);
@@ -192,7 +133,7 @@ export function refuseModule(symbol: string, reason: string): never {
  * `Math.PI`, arithmetic over those (the spot default `Math.PI / 4`) or a
  * module constant -- refused in this family's voice.
  */
-export function pinnedNumericValue(
+function pinnedNumericValue(
     symbol: string,
     file: ts.SourceFile,
     expression: ts.Expression,
@@ -206,41 +147,6 @@ export function pinnedNumericValue(
                 "uses a constant this lowering cannot evaluate",
             ),
     });
-}
-
-/** The `a.b.c` property path of an assignment target, or undefined. */
-export function pinnedPropertyPath(
-    expression: ts.Expression,
-): string[] | undefined {
-    const node = unwrapExpression(expression);
-    if (ts.isIdentifier(node)) {
-        return [node.text];
-    }
-    if (ts.isPropertyAccessExpression(node)) {
-        const owner = pinnedPropertyPath(node.expression);
-        return owner ? [...owner, node.name.text] : undefined;
-    }
-    return undefined;
-}
-
-/** Every `path = …` assignment under `root`, matched by property path. */
-export function pinnedAssignments(
-    root: ts.Node,
-    path: string,
-): ts.BinaryExpression[] {
-    const result: ts.BinaryExpression[] = [];
-    const visit = (node: ts.Node): void => {
-        if (
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            pinnedPropertyPath(node.left)?.join(".") === path
-        ) {
-            result.push(node);
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(root);
-    return result;
 }
 
 /**
@@ -286,58 +192,9 @@ export function featureMethod(
     return found[0]!;
 }
 
-export const pinnedFloatLiteral = (literal: ts.NumericLiteral): string =>
-    floatLiteral(Number(literal.text));
-
 export function identifierText(expression: ts.Expression): string | undefined {
     const node = unwrapExpression(expression);
     return ts.isIdentifier(node) ? node.text : undefined;
-}
-
-/** A left-associated `a (+|-) b (+|-) c` chain as parts and operators. */
-export function additiveChainParts(expression: ts.Expression): {
-    parts: ts.Expression[];
-    operators: ("+" | "-")[];
-} {
-    const node = unwrapExpression(expression);
-    if (
-        ts.isBinaryExpression(node) &&
-        (node.operatorToken.kind === ts.SyntaxKind.PlusToken ||
-            node.operatorToken.kind === ts.SyntaxKind.MinusToken)
-    ) {
-        const left = additiveChainParts(node.left);
-        return {
-            parts: [...left.parts, node.right],
-            operators: [
-                ...left.operators,
-                node.operatorToken.kind === ts.SyntaxKind.PlusToken ? "+" : "-",
-            ],
-        };
-    }
-    return { parts: [expression], operators: [] };
-}
-
-/** `Math.<name>(...)` → the call, or undefined. */
-export function mathCall(
-    expression: ts.Expression,
-    name: string,
-): ts.CallExpression | undefined {
-    const node = unwrapExpression(expression);
-    return ts.isCallExpression(node) &&
-        ts.isPropertyAccessExpression(node.expression) &&
-        identifierText(node.expression.expression) === "Math" &&
-        node.expression.name.text === name
-        ? node
-        : undefined;
-}
-
-export function isMathPi(expression: ts.Expression): boolean {
-    const node = unwrapExpression(expression);
-    return (
-        ts.isPropertyAccessExpression(node) &&
-        identifierText(node.expression) === "Math" &&
-        node.name.text === "PI"
-    );
 }
 
 /**
@@ -423,24 +280,6 @@ export function pinnedRootFlip(file: ts.SourceFile): {
         );
     }
     return { lane: flips[0]!, sign: -1 };
-}
-
-/**
- * Resolves an identifier argument back to its `const` declaration
- * inside `root`, for tying a call argument to the binding whose
- * initializer carries the pinned default.
- */
-export function declarationOf(
-    root: ts.Node,
-    name: string,
-): ts.VariableDeclaration | undefined {
-    return findNodes(
-        root,
-        (node): node is ts.VariableDeclaration =>
-            ts.isVariableDeclaration(node) &&
-            ts.isIdentifier(node.name) &&
-            node.name.text === name,
-    )[0];
 }
 
 /**

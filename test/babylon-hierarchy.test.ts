@@ -1,24 +1,14 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { BabylonLowerer } from "../src/lowering/babylon-lowerer.js";
-import { FactoryLowerer } from "../src/lowering/factory/material-factories.js";
-import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
-import { LoweringContext } from "../src/lowering/context.js";
 import { lowerBabylonMeshConstruction } from "../src/lowering/babylon-mesh-construction.js";
-import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { importPinnedModuleFetching } from "../src/pinned-shader-composer.js";
 import { babylonRenderableCount } from "../src/pinned-standard-variants.js";
 import { packageBabylonMeshWalks } from "../src/babylon-mesh-walks.js";
 import { GLTF_MESH_WALKS, type JsonObject } from "../src/gltf-document.js";
-import {
-    cppFunction,
-    nativeFixtureVcpkgRoot,
-    optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
-} from "./native-fixture.js";
+import { runBabylonLoaderCheck } from "./babylon-loader-fixture.js";
+import { optionalNativeFixtureTools } from "./native-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 
 test("the complete Babylon loader preserves parent chains, split meshes and root traversal", async (t) => {
@@ -190,29 +180,13 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
     );
     assert.notDeepEqual(walks[0], walks[1]);
     assert.notDeepEqual(walks[1], walks[2]);
-    const context = new LoweringContext();
     const directory = resolve("artifacts/test-babylon-hierarchy");
-    const include = join(directory, "include");
-    mkdirSync(join(include, "bblite/upstream"), { recursive: true });
-    writeFileSync(
-        join(include, "bblite/upstream/pinned_world_transform.hpp"),
-        pinnedWorldTransformHeader(context),
-    );
-    writeFileSync(
-        join(include, "bblite/upstream/light_matrix.hpp"),
-        new LightLowerer(context).lowerMatrix().header,
-    );
+    mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "source.json"), JSON.stringify(packed));
     writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
     writeFileSync(
         join(directory, "containers.json"),
         JSON.stringify({ meshes: [{ id: "container", name: "container" }] }),
-    );
-    const source = join(directory, "check.cpp"),
-        executable = join(directory, "check.exe");
-    const fileTexture = cppFunction(
-        new FactoryLowerer(context).lowerFileTextureFactory().source,
-        "FileTexture load_file_texture(",
     );
     const changedName = lowerBabylonMeshConstruction(
         doctoredContext(
@@ -228,33 +202,11 @@ test("the complete Babylon loader preserves parent chains, split meshes and root
             "md.isVisible === true",
         ),
     ).replace("construct_babylon_meshes(", "construct_changed_visibility(");
-    writeFileSync(
-        source,
-        `#include <bblite/pal_image.hpp>
-#include <fstream>
-#include <cassert>
-${new LightLowerer(context).lowerMatrix().source}
-${new LightLowerer(context).lowerPointFactory().source}
-${new BabylonLowerer(context).lowerLoaderAdapter().source}
-namespace bbl {
-${changedName}
-${changedVisibility}
-namespace pal {
-std::vector<std::uint8_t> read_binary_file(const std::string& path) {
-    std::ifstream file(path,std::ios::binary);
-    if(!file) throw std::runtime_error("Unexpected fixture path: "+path);
-    return {std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>()};
-}
-std::string parent_path(const std::string&) { return ""; }
-std::string join_path(const std::string& a,const std::string& b) { return a+b; }
-DecodedImage decode_image(const js::ArrayBuffer&) { throw std::runtime_error("Unexpected fixture texture."); }
-}
-CameraHandle create_free_camera(Engine&,Vec3d,Vec3d) { throw std::runtime_error("Unexpected fixture camera."); }
-${fileTexture}
-}
-int main() {
-    using namespace bbl;
-    nlohmann::json expected;
+    runBabylonLoaderCheck(
+        native,
+        directory,
+        `${changedName}\n${changedVisibility}`,
+        `    nlohmann::json expected;
     std::ifstream("expected.json") >> expected;
     Engine engine;
     const auto loaded=load_babylon(engine,"source.json");
@@ -264,25 +216,31 @@ int main() {
         const auto& mesh=engine.meshes.at(asset.meshes[index].value);
         const auto& wanted=expected[index];
         assert(mesh.name==wanted.at("name").get<std::string>());
+        // The record's own TRS under the parent world its loader recorded is
+        // the pin's node worldMatrix.
+        auto world=upstream::trs_matrix(mesh);
+        if(mesh.parent_world) {
+            std::array<double,16> product{};
+            upstream::mat4_multiply_into_f64(product,0,*mesh.parent_world,0,world,0);
+            world=upstream::narrow_mat4(product);
+        }
         for(std::size_t cell=0;cell<16;++cell)
-            assert(std::abs(double(mesh.instance_parent_matrix[cell])-wanted.at("world")[cell].get<double>())<2e-6);
+            assert(std::abs(double(world[cell])-wanted.at("world")[cell].get<double>())<2e-6);
         const auto& geometry=engine.geometries.at(mesh.geometry);
-        assert(mesh.primitive==PrimitiveKind::babylon);
+        // load-babylon.ts builds a mesh without boundMin/boundMax.
+        assert(!mesh.has_bounds);
         assert(engine.materials.at(mesh.material.value).standard_material);
         assert(!mesh.receives_shadows);
         assert(geometry.vertices.size()*3==wanted.at("positions").size());
         for(std::size_t vertex=0;vertex<geometry.vertices.size();++vertex) {
-            const auto& normal=geometry.local_normals[vertex];
+            // The pin uploads the source lanes untransformed.
+            const auto& normal=geometry.vertices[vertex].normal;
             const std::array<float,3> normal_lanes{normal.x,normal.y,normal.z};
-            for(std::size_t lane=0;lane<3;++lane)
-                assert(normal_lanes[lane]==wanted.at("normals")[vertex*3+lane].get<float>());
             const auto& position=geometry.vertices[vertex].position;
-            const std::array<double,3> actual{position.x,position.y,position.z};
+            const std::array<float,3> position_lanes{position.x,position.y,position.z};
             for(std::size_t lane=0;lane<3;++lane) {
-                double target=wanted.at("world")[12+lane].get<double>();
-                for(std::size_t component=0;component<3;++component)
-                    target+=wanted.at("positions")[vertex*3+component].get<double>()*wanted.at("world")[component*4+lane].get<double>();
-                assert(std::abs(actual[lane]-target)<2e-6);
+                assert(normal_lanes[lane]==wanted.at("normals")[vertex*3+lane].get<float>());
+                assert(position_lanes[lane]==wanted.at("positions")[vertex*3+lane].get<float>());
             }
         }
     }
@@ -310,25 +268,6 @@ int main() {
             assert(changed.meshes.size()==expected.size());
             assert(std::all_of(changed.meshes.begin(),changed.meshes.end(),[](const auto& mesh){return mesh.name.find("_sub")!=std::string::npos;}));
         }
-    }
-}`,
+    }`,
     );
-    runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/O2",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        "/I",
-        include,
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
-        source,
-    ]);
-    execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });

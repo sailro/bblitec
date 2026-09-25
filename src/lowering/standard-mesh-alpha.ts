@@ -1,13 +1,11 @@
 import ts from "typescript";
-import { LoweringContext } from "./context.js";
+import { sharedPinnedContext, type LoweringContext } from "./context.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericConstant } from "./pinned-numeric-constant.js";
 import { javascriptModuleUrl } from "../data-url.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
 import { refuseGeneration } from "../generation-refusal.js";
 
 const MODULE = "src/material/standard/standard-renderable.ts";
@@ -62,12 +60,12 @@ function alphaFlags(context: LoweringContext): ReadonlyMap<string, number> {
     return new Map(
         ["VERTEX_ALPHA", "MATERIAL_ALPHA_BLEND"].map((name) => [
             name,
-            pinnedNumericConstant(context, FLAG_MODULE, name),
+            context.pinnedNumber(FLAG_MODULE, name),
         ]),
     );
 }
 
-export type StandardMeshAlphaDecision = (
+type StandardMeshAlphaDecision = (
     shadowOutput: boolean,
     hasVertexAlpha: boolean,
     hasVertexColor: boolean,
@@ -79,7 +77,7 @@ let executedAlpha: Promise<StandardMeshAlphaDecision> | undefined;
 /** Execute the pin's local decision without constructing a renderable or GPU. */
 export function pinnedStandardMeshAlpha(): Promise<StandardMeshAlphaDecision> {
     if (executedAlpha) return executedAlpha;
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     const { file, initializer, features } = alphaExpressions(context);
     const source = `
 ${[...alphaFlags(context)].map(([name, value]) => `const ${name} = ${value};`).join("\n")}
@@ -118,10 +116,9 @@ export function lowerStandardMeshAlpha(
         booleanAnd: true,
         booleanOr: true,
     });
-    // Defined only when on: both PALs read it as defined(...), so a 0
-    // branch would read as on. The inventory row carries the off state.
+    // BBLITE_STANDARD_VERTEX_ALPHA, which gates the shared PAL header's use
+    // of this block, is render_capabilities.hpp's.
     return `
-#define BBLITE_STANDARD_VERTEX_ALPHA 1
 inline constexpr bool standard_vertex_colors_enabled = ${vertexColors};
 // ${context.provenance(MODULE, "buildStandardMeshRenderables colour alpha")}
 inline std::uint32_t standard_color_alpha_features(

@@ -121,7 +121,6 @@ function bufferScope(
         bindings,
         calls,
         booleanOr: true,
-        checkedBitwiseCoercions: true,
         foldConditions: false,
         callShapes: new Map(
             [

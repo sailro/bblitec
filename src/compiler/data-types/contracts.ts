@@ -8,8 +8,8 @@ export interface DataTypeCppContext {
     tableCppType(dimensions: number[]): string;
 }
 
-export type DataTypeKey = (type: DataType) => string;
-export type DataTypeEquality = (left: DataType, right: DataType) => boolean;
+type DataTypeKey = (type: DataType) => string;
+type DataTypeEquality = (left: DataType, right: DataType) => boolean;
 export type StructFieldTypes = (name: string) => readonly DataType[];
 
 /** Every data kind supplies the operations that depend on its payload. */
@@ -30,5 +30,12 @@ export type DataKindOperations<K extends DataKind = DataKind> = {
         readonly byReference: boolean;
         /** Opaque Ref<T> leaf: copies retain identity, assignment reseats it, and get() exposes it. */
         readonly opaqueReference?: true;
+        /**
+         * Whether the native value can own an edge the cycle collector
+         * traces (`bbl::js::gc_traceable`): always, never, through its
+         * stored children, or decided by the payload.
+         */
+        readonly tracedEdges:
+            "always" | "never" | "children" | ((type: DataType<P>) => boolean);
     };
 };

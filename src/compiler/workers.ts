@@ -1,25 +1,25 @@
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { browserGlobalNamed } from "./browser-erasure.js";
 import { rootIdentifier, argumentAt } from "./syntax.js";
 import { validateObjectProperties } from "./option-helpers.js";
+import type { DataType } from "./data-types/model.js";
 import type { Value } from "./types.js";
 
 export interface WorkerLoweringContext extends Pick<
     LoweringServices,
     | "options"
+    | "checker"
     | "dataLowerer"
     | "dataTypes"
     | "unwrap"
-    | "isDefaultLibraryIdentifier"
-    | "lookupOptional"
+    | "libraryGlobal"
+    | "bindings"
     | "compileValue"
-    | "compileFrameCallback"
+    | "callbacks"
     | "reachFeature"
     | "reachJsData"
-    | "compileWorkerCallback"
+    | "asyncActivations"
     | "compileNumber"
-    | "pinValueToTemporary"
     | "emit"
     | "allocateTemporaryCppName"
     | "cppString"
@@ -30,25 +30,200 @@ export interface WorkerLoweringContext extends Pick<
 const realm = "bbl::pal::WorkerRealm::current()";
 const loop = "bbl::pal::EventLoop::current()";
 
+/**
+ * The first position in a message shape without a native structured-clone
+ * codec (js_structured_clone.hpp), described for a refusal. An OffscreenCanvas
+ * crosses by transfer; every other handle, like a browser's platform objects,
+ * has no serialization. A class instance has no faithful native copy: the
+ * browser delivers a plain object of its own data fields, without its
+ * prototype, methods or private fields.
+ */
+function uncloneablePosition(
+    context: WorkerLoweringContext,
+    type: DataType,
+    path: string,
+    node: ts.Node,
+    seen: Set<string>,
+): string | undefined {
+    const refuse = (name: string): string =>
+        `'${path}' is ${name}, which has no native structured-clone codec`;
+    switch (type.kind) {
+        case "number":
+        case "boolean":
+        case "string":
+        case "enum":
+        case "date":
+        case "tuple":
+        case "arraybuffer":
+        case "dataview":
+        case "u8array":
+        case "i8array":
+        case "u16array":
+        case "i16array":
+        case "u32array":
+        case "i32array":
+        case "f32array":
+        case "f64array":
+            return undefined;
+        case "optional":
+            return uncloneablePosition(context, type.inner, path, node, seen);
+        case "vector":
+            return uncloneablePosition(
+                context,
+                type.element,
+                `${path}[]`,
+                node,
+                seen,
+            );
+        case "set":
+            return uncloneablePosition(
+                context,
+                type.element,
+                `${path}.values()`,
+                node,
+                seen,
+            );
+        case "map":
+            return type.dictionary
+                ? uncloneablePosition(
+                      context,
+                      type.value,
+                      `${path}[key]`,
+                      node,
+                      seen,
+                  )
+                : (uncloneablePosition(
+                      context,
+                      type.key,
+                      `${path}.keys()`,
+                      node,
+                      seen,
+                  ) ??
+                      uncloneablePosition(
+                          context,
+                          type.value,
+                          `${path}.values()`,
+                          node,
+                          seen,
+                      ));
+        case "struct": {
+            const instance = context.dataTypes.classStruct(type.name);
+            if (instance)
+                return (
+                    `'${path}' is an instance of class ${instance.declaration.name?.text ?? type.name}, ` +
+                    "which a browser delivers as a plain object without its prototype, methods or " +
+                    "private fields; use a plain object instead"
+                );
+            if (seen.has(type.name)) return undefined;
+            seen.add(type.name);
+            for (const field of context.dataTypes.structFields(
+                type.name,
+                node,
+            )) {
+                const found = uncloneablePosition(
+                    context,
+                    field.type,
+                    `${path}.${field.sourceName}`,
+                    node,
+                    seen,
+                );
+                if (found) return found;
+            }
+            return undefined;
+        }
+        case "handle":
+            return type.handle === "offscreen-canvas"
+                ? undefined
+                : refuse(`a native ${type.handle} handle`);
+        case "error":
+            return refuse("an Error");
+        case "event-target":
+            return refuse("an EventTarget");
+        case "http-response":
+            return refuse("a Response");
+        case "search-params":
+            return refuse("a URLSearchParams");
+        case "promise":
+            return refuse("a Promise");
+        case "storage":
+            return refuse("a Storage");
+        case "date-time-format":
+            return refuse("an Intl.DateTimeFormat");
+        case "bufferview":
+            return refuse("an ArrayBufferView without its element class");
+        case "numberindex":
+            return refuse("a numeric index view");
+        case "borrowed-platform-event":
+            return refuse("a platform event");
+        case "function":
+            return refuse("a function");
+        case "json":
+            return refuse("a dynamic JSON value");
+        case "union":
+            return refuse("a mixed union");
+        case "iterator":
+            return refuse("an iterator");
+        case "span":
+            return refuse("a borrowed array view");
+        case "product":
+            return refuse("a heterogeneous fixed tuple");
+        case "enummap":
+            return refuse("an enum-keyed record");
+        case "table":
+            return refuse("a constant table");
+    }
+}
+
+/** Both message ends refuse a shape the native clone cannot carry. */
+function requireCloneable(
+    context: WorkerLoweringContext,
+    type: DataType,
+    root: string,
+    node: ts.Node,
+): void {
+    const position = uncloneablePosition(
+        context,
+        type,
+        root,
+        node,
+        new Set<string>(),
+    );
+    if (position) context.fail(node, `Worker message value ${position}.`);
+}
+
+/**
+ * A message position's data type. A class demands its representation here,
+ * as a stored field does, so `requireCloneable` names it rather than the
+ * position reading as an unmapped shape.
+ */
+function messageDataType(
+    context: WorkerLoweringContext,
+    node: ts.Expression,
+): DataType | undefined {
+    return context.dataTypes.fromStoredTsType(
+        context.checker.getTypeAtLocation(node),
+        node,
+    );
+}
+
 export function isNativeWorkerExpression(
     context: WorkerLoweringContext,
     expression: ts.Expression,
 ): boolean {
     if (!context.options.workers) return false;
     let node = context.unwrap(expression);
-    if (browserGlobalNamed(context, node)?.text === "fetch") return true;
+    if (context.libraryGlobal(node) === "fetch") return true;
     if (
         !context.options.workers.namespace &&
-        (browserGlobalNamed(context, node)?.text === "screen" ||
+        (context.libraryGlobal(node) === "screen" ||
             (ts.isPropertyAccessExpression(node) &&
-                browserGlobalNamed(context, node.expression)?.text ===
-                    "screen"))
+                context.libraryGlobal(node.expression) === "screen"))
     )
         return true;
     if (
         !context.options.workers.namespace &&
         ["window", "globalThis", "document"].includes(
-            browserGlobalNamed(context, node)?.text ?? "",
+            context.libraryGlobal(node) ?? "",
         )
     )
         return true;
@@ -65,12 +240,14 @@ export function isNativeWorkerExpression(
         (node.name.text === "reload" ||
             (context.options.runtimeLocationSearch &&
                 node.name.text === "search")) &&
-        browserGlobalNamed(context, node.expression)?.text === "location"
+        context.libraryGlobal(node.expression) === "location"
     )
         return true;
-    const globalMember = browserGlobalNamed(context, node);
-    if (globalMember && globalMember !== node) {
-        return [
+    const globalMember = context.libraryGlobal(node);
+    if (
+        globalMember !== undefined &&
+        ts.isPropertyAccessExpression(node) &&
+        [
             "Worker",
             "OffscreenCanvas",
             "ResizeObserver",
@@ -86,16 +263,17 @@ export function isNativeWorkerExpression(
             "queueMicrotask",
             "postMessage",
             "close",
-        ].includes(globalMember.text);
-    }
+        ].includes(globalMember)
+    )
+        return true;
     const root = rootIdentifier(node, (inner) => context.unwrap(inner));
     if (!root) return false;
-    const bound = context.lookupOptional(root);
+    const bound = context.bindings.lookupOptional(root);
     if (bound?.hostFunction) return true;
     if (bound?.kind.startsWith("worker") || bound?.kind === "offscreen-canvas")
         return true;
     return (
-        browserGlobalNamed(context, root) !== undefined &&
+        context.libraryGlobal(root) !== undefined &&
         [
             "Worker",
             "OffscreenCanvas",
@@ -122,19 +300,15 @@ export function compileWorkerValue(
 ): Value | undefined {
     if (!context.options.workers) return undefined;
     const node = context.unwrap(expression);
-    const isGlobal = (value: ts.Expression, name: string): boolean =>
-        ts.isIdentifier(value) &&
-        browserGlobalNamed(context, value)?.text === name;
     const scope = (value: ts.Expression): Value | undefined => {
         const unwrapped = context.unwrap(value);
-        if (isGlobal(unwrapped, "self") || isGlobal(unwrapped, "globalThis")) {
-            return { kind: "worker-scope", cpp: realm };
-        }
-        return ts.isIdentifier(unwrapped)
-            ? context.lookupOptional(unwrapped)
-            : undefined;
+        if (!ts.isIdentifier(unwrapped)) return undefined;
+        const global = context.libraryGlobal(unwrapped);
+        return global === "self" || global === "globalThis"
+            ? { kind: "worker-scope", cpp: realm }
+            : context.bindings.lookupOptional(unwrapped);
     };
-    if (ts.isIdentifier(node) && isGlobal(node, "self")) {
+    if (ts.isIdentifier(node) && context.libraryGlobal(node) === "self") {
         if (!context.options.workers.namespace)
             return context.fail(
                 node,
@@ -188,12 +362,13 @@ export function compileWorkerValue(
             owner?.kind === "worker-message-event" &&
             node.name.text === "data"
         ) {
-            const type = context.dataLowerer.dataTypeAt(expression);
+            const type = messageDataType(context, expression);
             if (!type)
                 return context.fail(
                     expression,
                     "MessageEvent.data requires a supported data type at its read boundary.",
                 );
+            requireCloneable(context, type, "event.data", expression);
             const cppType = context.dataTypes.cppType(type);
             return {
                 kind:
@@ -226,12 +401,12 @@ export function compileWorkerValue(
     const owner = ts.isPropertyAccessExpression(callee)
         ? scope(callee.expression)
         : undefined;
-    const global = browserGlobalNamed(context, callee) !== undefined;
+    const global = context.libraryGlobal(callee) !== undefined;
     if (
         global &&
         context.options.workers.namespace &&
         ts.isPropertyAccessExpression(callee) &&
-        browserGlobalNamed(context, callee.expression)?.text === "window"
+        context.libraryGlobal(callee.expression) === "window"
     ) {
         return context.fail(
             callee,
@@ -250,12 +425,13 @@ export function compileWorkerValue(
                 "Worker postMessage requires a message and optional transfer list.",
             );
         const argument = argumentAt(node, 0);
-        const type = context.dataLowerer.dataTypeAt(argument);
+        const type = messageDataType(context, argument);
         if (!type)
             return context.fail(
                 argument,
                 "Worker messages require a supported structured-clone data shape.",
             );
+        requireCloneable(context, type, "message", argument);
         const data = context.dataLowerer.compileForSink(argument, type);
         const snapshot = context.allocateTemporaryCppName("message_value");
         context.emit({
@@ -357,7 +533,7 @@ export function compileWorkerValue(
                 once = property.initializer.kind === ts.SyntaxKind.TrueKeyword;
             }
         }
-        const compiled = context.compileWorkerCallback(
+        const compiled = context.asyncActivations.compileWorkerCallback(
             callback,
             event.text as "message" | "error",
         );
@@ -416,7 +592,7 @@ export function compileWorkerValue(
                 node,
                 "Native timers require a callback and optional delay.",
             );
-        const callback = context.compileFrameCallback(
+        const callback = context.callbacks.compileFrameCallback(
             argumentAt(node, 0),
             member === "setInterval" ? "interval" : "void",
         );
@@ -448,7 +624,7 @@ export function compileWorkerValue(
             return context.fail(node, "queueMicrotask requires one callback.");
         return {
             kind: "void",
-            cpp: `${loop}.queue_microtask(${context.compileFrameCallback(argumentAt(node, 0), "void")})`,
+            cpp: `${loop}.queue_microtask(${context.callbacks.compileFrameCallback(argumentAt(node, 0), "void")})`,
         };
     }
     return undefined;

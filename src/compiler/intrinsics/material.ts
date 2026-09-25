@@ -1,4 +1,4 @@
-import { EmissionMap } from "../emission-transaction.js";
+import { EmissionMap, writable } from "../emission-transaction.js";
 import {
     compileCreateStorageBuffer,
     type StorageBufferIntrinsicContext,
@@ -6,7 +6,7 @@ import {
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import { floatLiteral } from "../../cpp-literals.js";
+import { float32Literal, floatLiteral } from "../../cpp-literals.js";
 import {
     compileLocalCubemapIntrinsic,
     type LocalCubemapIntrinsicContext,
@@ -39,6 +39,7 @@ import type {
     SceneMeshNamePredicate,
     ScenePbrLightmapManifest,
 } from "../types.js";
+import { recordAt } from "../record-access.js";
 
 export interface MaterialIntrinsicContext
     extends
@@ -51,56 +52,27 @@ export interface MaterialIntrinsicContext
         MaterialPluginResourceContext,
         Pick<
             LoweringServices,
-            | "engineHasStarted"
+            | "engineLifecycle"
             | "hasRegisteredScene"
-            | "recordScenePbrSheen"
-            | "recordScenePbrPlugins"
-            | "recordScenePbrNoColorView"
-            | "recordScenePbrUnlit"
-            | "recordAssetSceneUnlit"
-            | "recordScenePbrSkybox"
-            | "recordScenePbrGammaAlbedo"
-            | "recordScenePbrShadowOnly"
-            | "recordSceneMaterialSlot"
-            | "recordScenePbrClearCoat"
-            | "recordScenePbrIridescence"
-            | "recordScenePbrLightmap"
-            | "recordAssetSceneLightmap"
+            | "sceneManifest"
+            | "assetRegistry"
             | "pbrLightmapEnabled"
             | "boundPixelsTextures"
-            | "recordScenePbrAnisotropy"
-            | "recordScenePbrEmissive"
-            | "recordScenePbrMetallicReflectance"
-            | "recordScenePbrSubsurface"
             | "expectSameEngine"
             | "requireDefaultEngine"
             | "requireEngine"
             | "compileNumber"
             | "compileBoolean"
-            | "compileVec2"
+            | "evaluator"
             | "compileColor3"
             | "captureNativeExpression"
             | "compileStringLiteral"
-            | "compilePbrMaterialOptions"
-            | "compileMetallicReflectanceOptions"
+            | "intrinsicOptions"
             | "allocateTemporaryCppName"
             | "emit"
-            | "compileGridMaterialOptions"
-            | "compileClearCoatOptions"
-            | "compileIridescenceOptions"
-            | "compileAnisotropyOptions"
-            | "compileSheenOptions"
-            | "compileSubsurfaceOptions"
-            | "compileShaderMaterialOptions"
-            | "reachLinearDepthMaterial"
+            | "isRuntimeResourceConstruction"
             | "expectObjectLiteral"
             | "objectProperty"
-            | "compileNodeMaterialOptions"
-            | "expectShaderVariant"
-            | "resolveShaderUniform"
-            | "resolveShaderTextureSlot"
-            | "resolveShaderStorageBufferSlot"
-            | "compileShaderUniformComponents"
             | "cppString"
             | "fail"
         > {}
@@ -287,7 +259,7 @@ function foldedLightmapMeshWalk(
         !ts.isPropertyAccessExpression(subject) ||
         subject.name.text !== "meshes" ||
         !ts.isIdentifier(subject.expression) ||
-        context.lookupOptional(subject.expression)?.kind !== "scene"
+        context.bindings.lookupOptional(subject.expression)?.kind !== "scene"
     ) {
         context.fail(
             walk.expression,
@@ -351,12 +323,12 @@ function compileShaderUniformWrite(
     call: ts.CallExpression,
     expectedCounts: number[],
 ): Value {
-    const { offset, count } = context.resolveShaderUniform(
+    const { offset, count } = context.intrinsicOptions.resolveShaderUniform(
         material,
         argumentAt(call, 1),
         expectedCounts,
     );
-    const components = context.compileShaderUniformComponents(
+    const components = context.intrinsicOptions.compileShaderUniformComponents(
         argumentAt(call, 2),
         count,
     );
@@ -462,6 +434,24 @@ function compileCreatePbrMaterial(
 ): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const engine = context.requireDefaultEngine(call);
+    // Babylon Lite's PbrMaterialProps has neither field: the pin's
+    // createPbrMaterial spreads its props, and refraction lives on
+    // `_transmissive`/`_subsurface`, which only `setPbrTransmission` writes
+    // -- the call that also registers the scene transmission hook. Neither
+    // option reaches anything upstream, so neither may reach it here.
+    const props = context.expectObjectLiteral(argumentAt(call, 0));
+    for (const name of ["transmissive", "subsurface"] as const) {
+        const option = context.objectProperty(props, name);
+        if (option) {
+            context.fail(
+                option,
+                `createPbrMaterial takes no '${name}' option: Babylon Lite ` +
+                    "writes refraction only through setPbrTransmission, " +
+                    "which is not lowered, and subsurface state through " +
+                    "setPbrSubsurface.",
+            );
+        }
+    }
     const {
         baseColor,
         baseColorFactor,
@@ -491,21 +481,10 @@ function compileCreatePbrMaterial(
         usePhysicalLightFalloff,
         scenePbrMaterialIndex,
         plugins,
-    } = context.compilePbrMaterialOptions(argumentAt(call, 0));
+    } = context.intrinsicOptions.compilePbrMaterialOptions(argumentAt(call, 0));
     context.expectSameEngine(baseColor, orm, call);
     context.reachFeature("material:pbr", call);
     context.reachFeature("renderer:scene", call);
-    const linearImageProcessing =
-        transmission !== "0.0f" ||
-        thickness !== "0.0f" ||
-        attenuationColor !== "bbl::Color3{1.0f, 1.0f, 1.0f}" ||
-        attenuationDistance !== "1.0f";
-    if (skyboxMode !== "false" || linearImageProcessing) {
-        context.reachFeature("renderer:transmission", call);
-    }
-    if (linearImageProcessing) {
-        context.reachFeature("material:pbr-linear-image-processing", call);
-    }
     if (orm.textureFile?.srgb) {
         context.fail(call, "PBR ORM maps must be linear textures.");
     }
@@ -610,7 +589,7 @@ function compileCreatePbrMaterial(
         }
         if (plugins) {
             const folded = foldMaterialPluginList(context, plugins, "pbr");
-            context.recordScenePbrPlugins(
+            context.sceneManifest.recordScenePbrPlugins(
                 folded.manifests,
                 scenePbrMaterialIndex,
             );
@@ -664,34 +643,44 @@ function compileCreateGridMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    context.recordSceneMaterialSlot();
+    // The pin's grid is a ShaderMaterial its factory builds from the
+    // options; generation runs that factory, and the material it built
+    // draws through the shader-material family like any other.
+    const materialSlot = context.sceneManifest.recordSceneMaterialSlot();
+    const runtimeProfile = context.isRuntimeResourceConstruction();
     context.expectArgumentCount(call, 0, 1);
     const engine = context.requireDefaultEngine(call);
-    const options = call.arguments[0]
-        ? context.compileGridMaterialOptions(call.arguments[0])
-        : [
-              "bbl::Color3{0.0f, 0.0f, 0.0f}",
-              "bbl::Color3{0.0f, 0.5f, 0.5f}",
-              "1.0f",
-              "bbl::Vec3{}",
-              "10.0f",
-              "0.33f",
-              "1.0f",
-              "1.0f",
-              "true",
-              "false",
-              "false",
-              "true",
-          ];
-    context.reachFeature("material:grid", call);
+    const grid = context.intrinsicOptions.reachGridMaterial(
+        call,
+        call.arguments[0],
+    );
+    context.reachFeature("material:shader", call);
     context.reachFeature("renderer:scene", call);
+    const creation = `bbl::create_shader_material(${engine}, ${grid.id}u)`;
+    const material = context.allocateTemporaryCppName("grid_material");
+    context.emit({
+        kind: "declaration",
+        type: "const auto",
+        name: material,
+        initializer: runtimeProfile
+            ? creation
+            : `bbl::remember_scene_material(${engine}, ${materialSlot}u, ${creation})`,
+    });
+    // Each typed uniform carries the value the factory computed and the
+    // material normalized to float32.
+    for (const uniform of grid.uniforms) {
+        context.emit(
+            `bbl::set_shader_uniform_value(${engine}, ${material}, ` +
+                `${uniform.offset}u, ${uniform.values.map(float32Literal).join(", ")});`,
+        );
+    }
     return {
         kind: "material",
-        cpp:
-            `bbl::create_grid_material(${engine}, ` +
-            `bbl::GridMaterialOptions{` +
-            `${options.join(", ")}})`,
+        cpp: material,
         engineCpp: engine,
+        shaderVariant: grid.name,
+        sceneShaderVariant: grid.name,
+        ...(runtimeProfile ? {} : { sceneMaterialSlot: materialSlot }),
     };
 }
 
@@ -708,7 +697,7 @@ function compileCreateStandardNoColorMaterialView(
     context.reachFeature("material:no-color-view", call);
     context.reachFeature("renderer:scene", call);
     if (importedName === "createStandardNoColorMaterialView") {
-        context.recordSceneMaterialSlot();
+        context.sceneManifest.recordSceneMaterialSlot();
         return {
             kind: "material",
             cpp: `bbl::create_standard_no_color_material_view(${engineCpp}, ${source.cpp})`,
@@ -719,7 +708,7 @@ function compileCreateStandardNoColorMaterialView(
         kind: "material",
         cpp: `bbl::create_pbr_no_color_material_view(${engineCpp}, ${source.cpp})`,
         engineCpp,
-        scenePbrMaterialIndex: context.recordScenePbrNoColorView(
+        scenePbrMaterialIndex: context.sceneManifest.recordScenePbrNoColorView(
             source.scenePbrMaterialIndex,
         ),
     };
@@ -730,7 +719,10 @@ function compileSetStandardLightmapTexture(
     call: ts.CallExpression,
 ): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
-    if (context.hasRegisteredScene() || context.engineHasStarted())
+    if (
+        context.hasRegisteredScene() ||
+        context.engineLifecycle.engineHasStarted()
+    )
         context.fail(
             call,
             "Standard lightmap texture binding requires setup before scene registration.",
@@ -805,7 +797,7 @@ function compileMarkMaterialUboDirty(
     const engine = context.requireEngine(material, call);
     for (const [field, value] of material.materialUboArrayFields ?? []) {
         context.emit(
-            `${engine}.materials[${material.cpp}.value].${field} = ${value.cpp};`,
+            `${recordAt(`${engine}.materials`, material.cpp)}.${field} = ${value.cpp};`,
         );
     }
     return {
@@ -818,11 +810,13 @@ function compileCreateShaderMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    const materialSlot = context.recordSceneMaterialSlot();
+    const materialSlot = context.sceneManifest.recordSceneMaterialSlot();
     const runtimeProfile = context.isRuntimeResourceConstruction();
     context.expectArgumentCount(call, 1, 1);
     const engine = context.requireDefaultEngine(call);
-    const variant = context.compileShaderMaterialOptions(argumentAt(call, 0));
+    const variant = context.intrinsicOptions.compileShaderMaterialOptions(
+        argumentAt(call, 0),
+    );
     context.reachFeature("material:shader", call);
     context.reachFeature("renderer:scene", call);
     const creation = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
@@ -907,7 +901,7 @@ function compileSetShaderStorageBuffer(
     context.expectArgumentCount(call, 3, 3);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const slot = context.resolveShaderStorageBufferSlot(
+    const slot = context.intrinsicOptions.resolveShaderStorageBufferSlot(
         material,
         argumentAt(call, 1),
     );
@@ -952,7 +946,7 @@ function compileCreateLinearDepthMaterial(
     // fixed-function state read from the properties beside them.
     // What a caller settles is the near/far pair the one custom
     // uniform carries.
-    context.recordSceneMaterialSlot();
+    context.sceneManifest.recordSceneMaterialSlot();
     context.expectArgumentCount(call, 0, 1);
     const engine = context.requireDefaultEngine(call);
     const defaults = linearDepthDefaultPlanes();
@@ -987,7 +981,7 @@ function compileCreateLinearDepthMaterial(
         }
         return value;
     };
-    const variant = context.reachLinearDepthMaterial(call, {
+    const variant = context.intrinsicOptions.reachLinearDepthMaterial(call, {
         near: plane("near"),
         far: plane("far"),
     });
@@ -1024,7 +1018,7 @@ function compileSetShaderTexture(
     context.expectArgumentCount(call, 3, 3);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const slot = context.resolveShaderTextureSlot(
+    const slot = context.intrinsicOptions.resolveShaderTextureSlot(
         material,
         argumentAt(call, 1),
     );
@@ -1096,9 +1090,12 @@ function compileSetPbrEmissive(
     );
     const bindings =
         material.materialUboArrayFields ??
-        (material.materialUboArrayFields = new EmissionMap());
+        (writable(material).materialUboArrayFields = new EmissionMap());
     bindings.set("emissive_factor", color);
-    context.recordScenePbrEmissive(channels, material.scenePbrMaterialIndex);
+    context.sceneManifest.recordScenePbrEmissive(
+        channels,
+        material.scenePbrMaterialIndex,
+    );
     context.reachFeature("material:emissive", call);
     return {
         kind: "void",
@@ -1120,7 +1117,9 @@ function compileSetPbrGammaAlbedo(
     context.expectArgumentCount(call, 1, 1);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    context.recordScenePbrGammaAlbedo(material.scenePbrMaterialIndex);
+    context.sceneManifest.recordScenePbrGammaAlbedo(
+        material.scenePbrMaterialIndex,
+    );
     context.reachFeature("material:pbr-gamma-albedo", call);
     return {
         kind: "void",
@@ -1136,7 +1135,7 @@ function compileSetShadowOnly(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     if (
-        context.engineHasStarted() ||
+        context.engineLifecycle.engineHasStarted() ||
         context.hasRegisteredScene() ||
         context.isRuntimeResourceConstruction()
     )
@@ -1167,12 +1166,15 @@ function compileSetShadowOnly(
     const falloff = falloffValue
         ? compileStaticNumber(context, falloffValue, "Shadow-only falloff")
         : 1;
-    context.recordScenePbrShadowOnly(material.scenePbrMaterialIndex, {
-        color,
-        opacity,
-        falloff,
-    });
-    const record = `${context.requireEngine(material, call)}.materials.at(${material.cpp}.value)`;
+    context.sceneManifest.recordScenePbrShadowOnly(
+        material.scenePbrMaterialIndex,
+        {
+            color,
+            opacity,
+            falloff,
+        },
+    );
+    const record = `${recordAt(`${context.requireEngine(material, call)}.materials`, material.cpp)}`;
     return {
         kind: "void",
         cpp: `${record}.shadow_only = true; ${record}.shadow_only_color = {${color.map(floatLiteral).join(", ")}}; ${record}.shadow_only_opacity = ${floatLiteral(opacity)}; ${record}.shadow_only_falloff = ${floatLiteral(falloff)}; ${record}.alpha_mode = bbl::MaterialAlphaMode::blend`,
@@ -1211,9 +1213,15 @@ function compileSetPbrUnlit(
         ? material.assetWholeMeshList
         : undefined;
     if (container) {
-        context.recordAssetSceneUnlit(container, tint?.channels, call);
+        context.assetRegistry.recordAssetSceneUnlit(
+            container,
+            tint?.channels,
+            call,
+        );
     } else {
-        context.recordScenePbrUnlit(material.scenePbrMaterialIndex);
+        context.sceneManifest.recordScenePbrUnlit(
+            material.scenePbrMaterialIndex,
+        );
     }
     return {
         kind: "void",
@@ -1236,12 +1244,9 @@ function compileSetPbrSkybox(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     context.reachFeature("material:pbr", call);
-    context.recordScenePbrSkybox(material.scenePbrMaterialIndex);
-    // Skybox mode is composed by the transmission-capable renderer
-    // (its uniform block carries the skybox option), which the
-    // createPbrMaterial `skyboxMode` option used to reach before it
-    // became a setter.
-    context.reachFeature("renderer:transmission", call);
+    // The pin's setter registers the skybox extension alone; the composed
+    // variant carries the arm, and no transmission unit is reached.
+    context.sceneManifest.recordScenePbrSkybox(material.scenePbrMaterialIndex);
     return {
         kind: "void",
         cpp:
@@ -1264,9 +1269,10 @@ function compileSetPbrMetallicReflectance(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const reflectance = context.compileMetallicReflectanceOptions(
-        argumentAt(call, 1),
-    );
+    const reflectance =
+        context.intrinsicOptions.compileMetallicReflectanceOptions(
+            argumentAt(call, 1),
+        );
     for (const texture of [
         reflectance.texture,
         reflectance.reflectanceTexture,
@@ -1275,7 +1281,7 @@ function compileSetPbrMetallicReflectance(
             context.expectSameEngine(material, texture, call);
         }
     }
-    context.recordScenePbrMetallicReflectance(
+    context.sceneManifest.recordScenePbrMetallicReflectance(
         reflectance.manifest,
         material.scenePbrMaterialIndex,
     );
@@ -1300,11 +1306,13 @@ function compileSetPbrSubsurface(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const subsurface = context.compileSubsurfaceOptions(argumentAt(call, 1));
+    const subsurface = context.intrinsicOptions.compileSubsurfaceOptions(
+        argumentAt(call, 1),
+    );
     if (subsurface.thicknessTexture) {
         context.expectSameEngine(material, subsurface.thicknessTexture, call);
     }
-    context.recordScenePbrSubsurface(
+    context.sceneManifest.recordScenePbrSubsurface(
         subsurface.manifest,
         material.scenePbrMaterialIndex,
     );
@@ -1334,8 +1342,10 @@ function compileSetPbrClearCoat(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const clearCoat = context.compileClearCoatOptions(argumentAt(call, 1));
-    context.recordScenePbrClearCoat(
+    const clearCoat = context.intrinsicOptions.compileClearCoatOptions(
+        argumentAt(call, 1),
+    );
+    context.sceneManifest.recordScenePbrClearCoat(
         clearCoat.manifest,
         material.scenePbrMaterialIndex,
     );
@@ -1369,8 +1379,10 @@ function compileSetPbrIridescence(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const iridescence = context.compileIridescenceOptions(argumentAt(call, 1));
-    context.recordScenePbrIridescence(
+    const iridescence = context.intrinsicOptions.compileIridescenceOptions(
+        argumentAt(call, 1),
+    );
+    context.sceneManifest.recordScenePbrIridescence(
         iridescence.manifest,
         material.scenePbrMaterialIndex,
     );
@@ -1508,13 +1520,13 @@ function compileSetPbrLightmap(
     // call just composed.
     context.boundPixelsTextures.add(texture.cpp);
     if (material.assetPbrMaterial) {
-        context.recordAssetSceneLightmap(
+        context.sceneManifest.recordAssetSceneLightmap(
             foldedLightmapMeshWalk(context, call),
             lightmap,
             call,
         );
     } else {
-        context.recordScenePbrLightmap(
+        context.sceneManifest.recordScenePbrLightmap(
             lightmap,
             material.scenePbrMaterialIndex,
         );
@@ -1544,8 +1556,10 @@ function compileSetPbrAnisotropy(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const anisotropy = context.compileAnisotropyOptions(argumentAt(call, 1));
-    context.recordScenePbrAnisotropy(
+    const anisotropy = context.intrinsicOptions.compileAnisotropyOptions(
+        argumentAt(call, 1),
+    );
+    context.sceneManifest.recordScenePbrAnisotropy(
         anisotropy.manifest,
         material.scenePbrMaterialIndex,
     );
@@ -1598,8 +1612,13 @@ function compileSetPbrSheen(
     context.expectArgumentCount(call, 2, 2);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const sheen = context.compileSheenOptions(argumentAt(call, 1));
-    context.recordScenePbrSheen(sheen.manifest, material.scenePbrMaterialIndex);
+    const sheen = context.intrinsicOptions.compileSheenOptions(
+        argumentAt(call, 1),
+    );
+    context.sceneManifest.recordScenePbrSheen(
+        sheen.manifest,
+        material.scenePbrMaterialIndex,
+    );
     const engine = context.requireEngine(material, call);
     context.reachFeature("material:sheen", call);
     if (sheen.albedoScaling) {
@@ -1633,7 +1652,19 @@ function compileSetAlphaToCoverage(
         // turn, so yielding is how a shared name reaches it.
         return undefined;
     }
-    context.expectShaderVariant(material, "alpha-card", argumentAt(call, 0));
+    // Every reached shader-material program takes the flag at its pipeline;
+    // the Standard/PBR targets the pin also accepts are not reached here.
+    if (!material.shaderVariant) {
+        context.fail(
+            argumentAt(call, 0),
+            "setAlphaToCoverage reaches shader materials; a Standard or " +
+                "PBR target is not supported.",
+        );
+    }
+    context.sceneManifest.reachedShaderProgram(
+        material.shaderVariant,
+        argumentAt(call, 0),
+    );
     const enabled = context.compileBoolean(argumentAt(call, 1));
     return {
         kind: "void",
@@ -1647,7 +1678,7 @@ function compileCreateStandardMaterial(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    context.recordSceneMaterialSlot();
+    context.sceneManifest.recordSceneMaterialSlot();
     context.expectArgumentCount(call, 0, 0);
     const engine = context.requireDefaultEngine(call);
     context.reachFeature("material:standard", call);
@@ -1671,13 +1702,13 @@ function compileParseNodeMaterialFromSnippet(
     // same compiler over the same graph
     // (`src/pinned-node-material.ts`), so what the call reaches here
     // is the graph's index in the composed table.
-    context.recordSceneMaterialSlot();
+    context.sceneManifest.recordSceneMaterialSlot();
     context.expectArgumentCount(call, 2, 3);
     const engine = context.requireEngine(
         context.compileValue(argumentAt(call, 0)),
         call,
     );
-    const graph = context.compileNodeMaterialOptions(
+    const graph = context.intrinsicOptions.compileNodeMaterialOptions(
         argumentAt(call, 1),
         call.arguments[2],
     );
@@ -1804,7 +1835,7 @@ function compileRebuildMaterial(
     context.expectKind(scene, "scene", argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 1));
     context.expectSameEngine(scene, material, call);
-    if (context.engineHasStarted()) {
+    if (context.engineLifecycle.engineHasStarted()) {
         context.fail(
             call,
             "rebuildMaterial after startEngine requires live GPU material resource replacement.",

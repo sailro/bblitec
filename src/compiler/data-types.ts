@@ -7,16 +7,22 @@ import {
     dataTypesEqual,
     passesByReferenceKind,
     containsDataKind,
+    ownsTracedEdge,
+    untracedRecords,
     type DataTypeCppContext,
 } from "./data-types/operations.js";
 export type { DataType, TypedArrayKind } from "./data-types/model.js";
-export { isHandleKind, handleCppType } from "./data-types/handles.js";
+export {
+    isHandleKind,
+    handleCppType,
+    resourceValueCppType,
+} from "./data-types/handles.js";
 export {
     TYPED_ARRAY_KINDS,
     BUFFER_VIEW_KINDS,
     isTypedArrayType,
     typedArrayStem,
-    typedArrayCppType,
+    typedArrayElement,
     typedArrayStoreExpression,
 } from "./data-types/typed-arrays.js";
 export {
@@ -24,7 +30,12 @@ export {
     passesByReferenceKind,
     isOpaqueReference,
 } from "./data-types/operations.js";
-import { EmissionMap, EmissionSet } from "./emission-transaction.js";
+import {
+    emissionArray,
+    EmissionMap,
+    EmissionSet,
+    journaled,
+} from "./emission-transaction.js";
 import {
     NativeRecordStorageRequired,
     type NativeRecordStorageDemand,
@@ -37,14 +48,23 @@ import {
     stringLiteral,
 } from "../cpp-literals.js";
 import {
+    declaredIn,
     declaredInDefaultLibrary,
-    isDefaultLibraryIdentifier,
+    declaredInDomLibrary,
+    declaredSymbol,
+    libraryGlobal,
 } from "./symbols.js";
+import { isNullable, nullability, presentMembers } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
-import { classInstanceProperties } from "./class-properties.js";
+import {
+    type ClassHierarchy,
+    classChain,
+    classInstanceProperties,
+} from "./class-members.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { unwrapExpression } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
+import { optionalPresentCpp } from "./types.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -219,7 +239,7 @@ export function opaqueEngineValue(
             ? type.aliasSymbol
             : type.symbol;
     const entry = symbol ? opaqueEngineTypes[symbol.name] : undefined;
-    return entry && declaredInBabylonLite(symbol) ? entry : undefined;
+    return entry && declaredIn(symbol, "babylon") ? entry : undefined;
 }
 
 /**
@@ -280,7 +300,12 @@ export function propertyIsReadOnly(property: ts.Symbol): boolean {
 interface DataStructDefinition {
     name: string;
     fields: DataStructField[];
+    /** One struct for a class hierarchy: it stores which class each object is. */
+    classTag?: true;
 }
+
+/** The member a class hierarchy's shared struct keeps each object's class tag in. */
+export const classTagMember = "bbl_class_tag";
 
 /**
  * One local class with a demanded runtime representation.
@@ -305,45 +330,21 @@ interface DataTableDefinition {
     values: string;
 }
 
-/**
- * A union member standing for an absent value: `null`, `undefined`, or an
- * intersection the checker distributed one of them into (`S & undefined`,
- * from narrowing `S | null` past a null check).
- */
-function isAbsentMember(member: ts.Type): boolean {
-    const absent = ts.TypeFlags.Null | ts.TypeFlags.Undefined;
-    return (
-        (member.flags & absent) !== 0 ||
-        (member.isIntersection() &&
-            member.types.some((part) => (part.flags & absent) !== 0))
-    );
-}
-
 const numberType: DataType = { kind: "number" };
 const booleanType: DataType = { kind: "boolean" };
 
 /**
- * True when a symbol is declared by the pinned Babylon Lite typings, so
- * a scene's own interface named `Mesh` is never mistaken for the engine
- * resource type.
+ * Classify an opaque pinned handle without materializing any data types.
+ * Gated on the pinned typings, so a scene's own interface named `Mesh` is
+ * never mistaken for the engine resource type.
  */
-function declaredInBabylonLite(symbol: ts.Symbol): boolean {
-    return (symbol.declarations ?? []).some((declaration) =>
-        declaration
-            .getSourceFile()
-            .fileName.replace(/\\/g, "/")
-            .includes("@babylonjs/lite/"),
-    );
-}
-
-/** Classify an opaque pinned handle without materializing any data types. */
 export function pinnedHandleKind(type: ts.Type): HandleKind | undefined {
     const symbol =
         type.aliasSymbol && pinnedHandleTypes[type.aliasSymbol.name]
             ? type.aliasSymbol
             : type.symbol;
     const kind = symbol ? pinnedHandleTypes[symbol.name] : undefined;
-    return kind && declaredInBabylonLite(symbol) ? kind : undefined;
+    return kind && declaredIn(symbol, "babylon") ? kind : undefined;
 }
 
 export function isPinnedType(type: ts.Type, names: readonly string[]): boolean {
@@ -351,7 +352,7 @@ export function isPinnedType(type: ts.Type, names: readonly string[]): boolean {
         (symbol) =>
             symbol !== undefined &&
             names.includes(symbol.name) &&
-            declaredInBabylonLite(symbol),
+            declaredIn(symbol, "babylon"),
     );
 }
 
@@ -363,15 +364,6 @@ function isSceneGraphNode(type: ts.Type): boolean {
     return (
         type.getProperty("children") !== undefined &&
         type.getProperty("worldMatrix") !== undefined
-    );
-}
-
-export function declaredInDomLibrary(symbol: ts.Symbol): boolean {
-    return (symbol.declarations ?? []).some((declaration) =>
-        declaration
-            .getSourceFile()
-            .fileName.replace(/\\/g, "/")
-            .endsWith("/lib.dom.d.ts"),
     );
 }
 
@@ -404,16 +396,7 @@ export function domAudioHandleKind(type: ts.Type): HandleKind | undefined {
 export function platformHandleKind(
     type: ts.Type,
 ): "gamepad" | "gamepad-button" | "gpu-device" | "gpu-texture" | undefined {
-    if (
-        type.symbol &&
-        (declaredInDomLibrary(type.symbol) ||
-            type.symbol.declarations?.some((declaration) =>
-                declaration
-                    .getSourceFile()
-                    .fileName.replace(/\\/g, "/")
-                    .includes("/@webgpu/types/"),
-            ))
-    ) {
+    if (declaredIn(type.symbol, "dom", "webgpu")) {
         if (type.symbol.name === "GPUDevice") return "gpu-device";
         if (type.symbol.name === "GPUTexture") return "gpu-texture";
     }
@@ -435,7 +418,7 @@ function borrowedPlatformEventKind(
     return undefined;
 }
 
-function isDomElementType(symbol: ts.Symbol): boolean {
+export function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
         (symbol.name === "Element" ||
@@ -589,6 +572,7 @@ export class DataTypeRegistry {
             elementCppType: string;
             elements: string[];
             source: string;
+            allocates: boolean;
         }
     >();
     private readonly structNamesInProgress = new EmissionMap<
@@ -625,23 +609,25 @@ export class DataTypeRegistry {
      * member, a stored field, a callback parameter or result. Without that
      * demand a class maps to nothing and stays a record.
      */
-    private classDemanded = false;
+    @journaled private accessor classDemanded = false;
     /**
      * What the class's type parameters stand for while one of its bodies is
      * being inlined. Empty outside a generic receiver.
      */
-    private activeTypeArguments: ReadonlyMap<ts.Symbol, ts.Type> | undefined;
+    @journaled private accessor activeTypeArguments:
+        ReadonlyMap<ts.Symbol, ts.Type> | undefined;
     /**
      * What generic functions' type parameters stand for while their bodies
      * are inlined, innermost call last. A frame's binding may itself name an
      * enclosing frame's parameter (`g<U>` called on `f<T>`'s `T`), which the
      * lookup follows outward.
      */
-    private readonly callTypeArguments: ReadonlyMap<ts.Symbol, ts.Type>[] = [];
+    private readonly callTypeArguments: ReadonlyMap<ts.Symbol, ts.Type>[] =
+        emissionArray([]);
     /** Every substitution in force as one struct-identity key, spelled when they change. */
-    private activeTypeArgumentKey = "";
-    private anonymousStructIndex = 0;
-    private anonymousEnumIndex = 0;
+    @journaled private accessor activeTypeArgumentKey = "";
+    @journaled private accessor anonymousStructIndex = 0;
+    @journaled private accessor anonymousEnumIndex = 0;
     /**
      * The structs `JSON.stringify` actually reaches, in the order the walk
      * found them. Nothing else emits a codec: a scene that serializes one
@@ -658,6 +644,8 @@ export class DataTypeRegistry {
     public constructor(
         private readonly checker: ts.TypeChecker,
         private readonly fail: Fail,
+        /** Which local classes extend which, for class-backed structs and dispatch. */
+        public readonly classHierarchy: ClassHierarchy,
         private readonly asynchronous = false,
     ) {}
 
@@ -856,64 +844,26 @@ export class DataTypeRegistry {
     }
 
     private mapTsType(type: ts.Type, node: ts.Node): DataType | undefined {
-        if (
-            type.isUnion() &&
-            type.types.some(
-                (member) => (member.flags & ts.TypeFlags.Void) !== 0,
-            )
-        ) {
-            const present = type.types.filter(
-                (member) =>
-                    (member.flags &
-                        (ts.TypeFlags.Void |
-                            ts.TypeFlags.Null |
-                            ts.TypeFlags.Undefined)) ===
-                    0,
-            );
-            const inner =
-                present.length === 1
-                    ? this.fromTsType(present[0]!, node)
-                    : undefined;
-            return inner
-                ? this.nullableType(
-                      inner,
-                      !type.types.some(
-                          (member) => (member.flags & ts.TypeFlags.Null) !== 0,
-                      ),
-                  )
-                : undefined;
+        if (!type.isUnion() || !isNullable(type)) {
+            return this.fromNonNullableType(type, node);
         }
-        if (
-            (type.flags & ts.TypeFlags.Union) !== 0 &&
-            (type.flags & ts.TypeFlags.Boolean) === 0 &&
-            (type as ts.UnionType).types.some((member) =>
-                isAbsentMember(member),
-            )
-        ) {
-            // A lone member maps as itself, which also registers it as its own
-            // record source; the checker's NonNullable<T> intersection would map
-            // through the intersection arm of `fromNonNullableType` instead.
-            const present = (type as ts.UnionType).types.filter(
-                (member) => !isAbsentMember(member),
-            );
-            const inner =
-                present.length === 1
-                    ? this.fromTsType(present[0]!, node)
-                    : this.fromNonNullableType(
-                          this.checker.getNonNullableType(type),
-                          node,
-                      );
-            if (!inner) {
-                return undefined;
-            }
-            return this.nullableType(
-                inner,
-                !(type as ts.UnionType).types.some(
-                    (member) => (member.flags & ts.TypeFlags.Null) !== 0,
-                ),
-            );
-        }
-        return this.fromNonNullableType(type, node);
+        const absent = nullability(type);
+        // A lone member maps as itself, which also registers it as its own
+        // record source; the checker's NonNullable<T> intersection would map
+        // through the intersection arm of `fromNonNullableType` instead.
+        // Beside several present members, `void` marks a result nobody is
+        // meant to read, which names no storage.
+        const present = presentMembers(type);
+        const inner =
+            present.length === 1
+                ? this.fromTsType(present[0]!, node)
+                : absent.void
+                  ? undefined
+                  : this.fromNonNullableType(
+                        this.checker.getNonNullableType(type),
+                        node,
+                    );
+        return inner ? this.nullableType(inner, !absent.null) : undefined;
     }
 
     /** Callbacks and shared objects already carry their own absent state. */
@@ -971,7 +921,7 @@ export class DataTypeRegistry {
             : undefined;
     }
 
-    private dynamicJsonStorage = false;
+    @journaled private accessor dynamicJsonStorage = false;
     public get hasDynamicJsonStorage(): boolean {
         return this.dynamicJsonStorage;
     }
@@ -1093,10 +1043,13 @@ export class DataTypeRegistry {
             declaredInDefaultLibrary(type.symbol)
         )
             return { kind: "date-time-format" };
-        if (type.symbol?.name === "ArrayBuffer") {
+        // Every name below is the library's own type only when the library
+        // declares it: a program's `interface DataView` is its own record.
+        const library = declaredInDefaultLibrary(type.symbol);
+        if (library && type.symbol.name === "ArrayBuffer") {
             return { kind: "arraybuffer" };
         }
-        if (type.symbol?.name === "DataView") {
+        if (library && type.symbol.name === "DataView") {
             return { kind: "dataview" };
         }
         if (
@@ -1120,8 +1073,9 @@ export class DataTypeRegistry {
             };
         }
         if (
-            type.symbol?.name === "RegExpExecArray" ||
-            type.symbol?.name === "RegExpMatchArray"
+            library &&
+            (type.symbol.name === "RegExpExecArray" ||
+                type.symbol.name === "RegExpMatchArray")
         ) {
             return {
                 kind: "vector",
@@ -1169,7 +1123,7 @@ export class DataTypeRegistry {
             type.symbol &&
             (type.symbol.declarations ?? []).some(ts.isClassDeclaration)
         ) {
-            if (declaredInBabylonLite(type.symbol)) {
+            if (declaredIn(type.symbol, "babylon")) {
                 return undefined;
             }
             // Reached local classes keep their methods and identity in the
@@ -1183,7 +1137,7 @@ export class DataTypeRegistry {
         if (recordMap) {
             return recordMap;
         }
-        const typedArray = type.symbol
+        const typedArray = library
             ? TYPED_ARRAY_KINDS.get(type.symbol.name)
             : undefined;
         if (typedArray) {
@@ -1201,7 +1155,7 @@ export class DataTypeRegistry {
         }
         if (
             type.symbol &&
-            declaredInBabylonLite(type.symbol) &&
+            declaredIn(type.symbol, "babylon") &&
             isSceneGraphNode(type)
         ) {
             // A pinned scene-graph entity outside the handle table (Camera's
@@ -1214,7 +1168,7 @@ export class DataTypeRegistry {
         if ((objectType.objectFlags & ts.ObjectFlags.Reference) !== 0) {
             const reference = type as ts.TypeReference;
             const target = reference.target;
-            if (type.symbol?.name === "Promise") {
+            if (library && type.symbol.name === "Promise") {
                 const [resolvedType] = this.checker.getTypeArguments(reference);
                 if (!resolvedType) return undefined;
                 if (this.asynchronous) {
@@ -1245,15 +1199,10 @@ export class DataTypeRegistry {
             if ((target.objectFlags & ts.ObjectFlags.Tuple) !== 0) {
                 return this.fromTupleType(reference, node);
             }
-            const symbolName = type.symbol?.name;
+            const symbolName = library ? type.symbol.name : undefined;
             // Iterable describes a protocol, not a record with a callable iterator
             // field. Reached helpers specialize to their actual collection storage.
-            if (
-                symbolName === "Iterable" &&
-                type.symbol &&
-                declaredInDefaultLibrary(type.symbol)
-            )
-                return undefined;
+            if (symbolName === "Iterable") return undefined;
             if (
                 symbolName &&
                 [
@@ -1261,9 +1210,7 @@ export class DataTypeRegistry {
                     "IterableIterator",
                     "IteratorObject",
                     "Iterator",
-                ].includes(symbolName) &&
-                type.symbol &&
-                declaredInDefaultLibrary(type.symbol)
+                ].includes(symbolName)
             ) {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 const element = elementType
@@ -2112,8 +2059,8 @@ export class DataTypeRegistry {
     }
 
     /** The receiver frame's key, and the call frames' keys beside their stack. */
-    private activeTypeArgumentFrameKey: string | undefined;
-    private readonly callTypeArgumentKeys: string[] = [];
+    @journaled private accessor activeTypeArgumentFrameKey: string | undefined;
+    private readonly callTypeArgumentKeys: string[] = emissionArray([]);
 
     /**
      * The struct-identity key folds every instantiation in force in, and it
@@ -2415,6 +2362,9 @@ export class DataTypeRegistry {
             return undefined;
         }
         this.rejectUnsupportedRuntimeClass(declaration, node);
+        if (this.classHierarchy.inHierarchy(declaration)) {
+            return this.fromClassHierarchy(declaration, node);
+        }
         const name = this.uniqueName(
             sanitizeIdentifier(declaration.name?.text ?? "Instance"),
             this.structNames,
@@ -2427,6 +2377,93 @@ export class DataTypeRegistry {
             fields: this.classStructFields(declaration, type),
         });
         return { kind: "struct", name };
+    }
+
+    /**
+     * Mints the one reference struct every class of a hierarchy shares.
+     *
+     * A value typed as a base class can be an instance of any class under
+     * it, so the classes cannot each have a layout of their own: one struct,
+     * named after the root, holds the fields every class of the hierarchy
+     * declares, and a tag records which class an object is. A field two
+     * sibling classes both declare shares its slot, since one object is only
+     * ever one of them; a field an override restates is the base's slot.
+     */
+    private fromClassHierarchy(
+        declaration: ts.ClassDeclaration,
+        node: ts.Node,
+    ): DataType {
+        const root = this.classHierarchy.root(declaration);
+        const classes = this.classHierarchy.hierarchyClasses(root);
+        const typeOf = (member: ts.ClassDeclaration): ts.Type => {
+            const symbol = member.name
+                ? declaredSymbol(this.checker, member.name)
+                : undefined;
+            if (!symbol || member.typeParameters?.length) {
+                this.fail(
+                    node,
+                    `Class '${member.name?.text ?? "?"}' of the hierarchy under ` +
+                        `'${root.name?.text ?? "?"}' is ${symbol ? "generic" : "unnamed"}; ` +
+                        "a stored instance of a hierarchy needs one layout per class.",
+                );
+            }
+            return this.checker.getDeclaredTypeOfSymbol(symbol);
+        };
+        const name = this.uniqueName(
+            sanitizeIdentifier(root.name?.text ?? "Instance"),
+            this.structNames,
+        );
+        const types = classes.map(typeOf);
+        for (const type of types) {
+            this.classStructNames.set(this.structIdentity(type), name);
+        }
+        this.classStructDeclarations.set(name, {
+            declaration: root,
+            type: types[0]!,
+        });
+        this.referenceStructNames.add(name);
+        const fields: DataStructField[] = [];
+        classes.forEach((member, index) => {
+            for (const field of this.classStructFields(member, types[index]!)) {
+                if (field.name === classTagMember) {
+                    this.fail(
+                        node,
+                        `Field '${field.sourceName}' of class '${member.name?.text ?? "?"}' ` +
+                            "collides with the class tag the hierarchy's struct stores.",
+                    );
+                }
+                const existing = fields.find(
+                    (candidate) => candidate.sourceName === field.sourceName,
+                );
+                if (!existing) {
+                    fields.push(field);
+                    continue;
+                }
+                if (this.typeKey(existing.type) !== this.typeKey(field.type)) {
+                    this.fail(
+                        node,
+                        `Field '${field.sourceName}' has a different native type in ` +
+                            `class '${member.name?.text ?? "?"}' than elsewhere in the ` +
+                            `hierarchy under '${root.name?.text ?? "?"}', so one shared ` +
+                            "struct cannot store it.",
+                    );
+                }
+                if (existing.readOnly && !field.readOnly) {
+                    delete existing.readOnly;
+                }
+            }
+        });
+        this.registerStructDefinition(`class#${name}`, {
+            name,
+            fields,
+            classTag: true,
+        });
+        return { kind: "struct", name };
+    }
+
+    /** Whether a class-backed struct stands for a hierarchy and stores a class tag. */
+    public classStructTagged(name: string): boolean {
+        return this.structsByKey.get(`class#${name}`)?.classTag === true;
     }
 
     /**
@@ -2498,39 +2535,29 @@ export class DataTypeRegistry {
     }
 
     /**
-     * The shapes that cannot be one concrete `Ref<XData>`.
-     *
-     * A native data position names one layout. An abstract class or a
-     * subclass hierarchy would need a value that dispatches on its dynamic
-     * type, which this model has no representation for -- so the demand is
-     * refused by name rather than silently specialized to whichever class the
-     * walk reached first.
+     * The shapes that cannot be one concrete `Ref<XData>`: a class whose
+     * `extends` names something other than a local class, and a class no
+     * instance can have -- abstract with no concrete class under it.
      */
     private rejectUnsupportedRuntimeClass(
         declaration: ts.ClassDeclaration,
         node: ts.Node,
     ): void {
         const className = declaration.name?.text ?? "?";
-        if (
-            (ts.getCombinedModifierFlags(declaration) &
-                ts.ModifierFlags.Abstract) !==
-            0
-        ) {
-            this.fail(
-                node,
-                `Abstract class '${className}' has no single native representation; ` +
-                    "store a concrete class instead.",
-            );
+        for (const link of classChain(this.classHierarchy.table(declaration))) {
+            if (link.unsupportedHeritage) {
+                this.fail(
+                    node,
+                    `Class '${link.declaration.name?.text ?? "?"}' extends '${link.unsupportedHeritage.expression.getText()}', ` +
+                        "which is not a local class; a stored instance needs a local hierarchy.",
+                );
+            }
         }
-        if (
-            declaration.heritageClauses?.some(
-                (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-            )
-        ) {
+        if (this.classHierarchy.concreteClasses(declaration).length === 0) {
             this.fail(
                 node,
-                `Class '${className}' extends another class; a stored instance would ` +
-                    "need dynamic dispatch, which is outside the supported subset.",
+                `Abstract class '${className}' has no concrete class under it, so no ` +
+                    "instance can be stored.",
             );
         }
     }
@@ -2629,7 +2656,7 @@ export class DataTypeRegistry {
     }
 
     /** `fromTsType` in a stored position. */
-    private fromStoredTsType(
+    public fromStoredTsType(
         type: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
@@ -2705,7 +2732,7 @@ export class DataTypeRegistry {
         if (
             !symbol ||
             !declaration ||
-            declaredInBabylonLite(symbol) ||
+            declaredIn(symbol, "babylon") ||
             (ts.getCombinedModifierFlags(declaration) &
                 ts.ModifierFlags.Abstract) !==
                 0 ||
@@ -2818,17 +2845,16 @@ export class DataTypeRegistry {
     }
 
     private fromRecordType(type: ts.Type, node: ts.Node): DataType | undefined {
-        const directRecordAlias = type.aliasSymbol?.name === "Record";
+        const directRecordAlias =
+            type.aliasSymbol?.name === "Record" &&
+            declaredInDefaultLibrary(type.aliasSymbol);
         const namedRecordAlias = (type.aliasSymbol?.declarations ?? []).some(
             (declaration) =>
                 ts.isTypeAliasDeclaration(declaration) &&
                 ts.isTypeReferenceNode(declaration.type) &&
                 ts.isIdentifier(declaration.type.typeName) &&
-                declaration.type.typeName.text === "Record" &&
-                isDefaultLibraryIdentifier(
-                    this.checker,
-                    declaration.type.typeName,
-                ),
+                libraryGlobal(this.checker, declaration.type.typeName) ===
+                    "Record",
         );
         if (!directRecordAlias && !namedRecordAlias) {
             return undefined;
@@ -3152,20 +3178,34 @@ export class DataTypeRegistry {
     }
 
     /**
+     * The native expression naming a generated constant table. A table whose
+     * construction allocates is a function-local static behind an accessor,
+     * since a namespace-scope initializer that throws terminates the process.
+     */
+    private tableReference(name: string, allocates: boolean): string {
+        return allocates ? `bblscene::${name}()` : `bblscene::${name}`;
+    }
+
+    /** Whether constructing a constant of this element type can allocate. */
+    public constantAllocates(element: DataType): boolean {
+        return !["number", "boolean", "enum"].includes(element.kind);
+    }
+
+    /**
      * Materializes a uniform static numeric table (nested readonly array
-     * literals with numeric leaves) as a namespace-scope constant. Returns
-     * the table name and dimensions.
+     * literals with numeric leaves) as a generated constant. Returns the
+     * table's native reference and dimensions.
      */
     public registerTable(
         declaration: ts.Node,
         preferredName: string,
         literal: ts.ArrayLiteralExpression,
         compileLeaf: (expression: ts.Expression) => number,
-    ): { name: string; dimensions: number[] } {
+    ): { reference: string; dimensions: number[] } {
         const existing = this.tables.get(declaration);
         if (existing) {
             return {
-                name: existing.name,
+                reference: this.tableReference(existing.name, true),
                 dimensions: existing.dimensions,
             };
         }
@@ -3180,25 +3220,26 @@ export class DataTypeRegistry {
             dimensions,
             values,
         });
-        return { name, dimensions };
+        return { reference: this.tableReference(name, true), dimensions };
     }
 
     /**
-     * Materializes a one-dimensional constant array as a
-     * namespace-scope constant, so an index computed at runtime can
-     * read it. Keyed by the array's declaration, so every use site
-     * shares one constant. Returns the constant's name.
+     * Materializes a one-dimensional constant array as a generated
+     * constant, so an index computed at runtime can read it. Keyed by the
+     * array's declaration, so every use site shares one constant. Returns
+     * the constant's native reference.
      */
     public registerConstantArray(
         declaration: ts.Node,
         preferredName: string,
         elementCppType: string,
         elements: string[],
+        allocates: boolean,
         source: ts.Node = declaration,
     ): string {
         const existing = this.tagTables.get(declaration);
         if (existing) {
-            return existing.name;
+            return this.tableReference(existing.name, existing.allocates);
         }
         const name = this.uniqueName(
             sanitizeIdentifier(preferredName),
@@ -3209,8 +3250,9 @@ export class DataTypeRegistry {
             elementCppType,
             elements,
             source: source.getSourceFile().fileName,
+            allocates,
         });
-        return name;
+        return this.tableReference(name, allocates);
     }
 
     private readonly sharedConstantArrays = new EmissionMap<string, string>();
@@ -3219,6 +3261,7 @@ export class DataTypeRegistry {
         preferredName: string,
         elementCppType: string,
         elements: string[],
+        allocates: boolean,
         source: ts.Node,
     ): string {
         const key = createHash("sha256")
@@ -3226,15 +3269,16 @@ export class DataTypeRegistry {
             .digest("hex");
         const existing = this.sharedConstantArrays.get(key);
         if (existing !== undefined) return existing;
-        const name = this.registerConstantArray(
+        const reference = this.registerConstantArray(
             ts.factory.createNumericLiteral("0"),
             preferredName,
             elementCppType,
             elements,
+            allocates,
             source,
         );
-        this.sharedConstantArrays.set(key, name);
-        return name;
+        this.sharedConstantArrays.set(key, reference);
+        return reference;
     }
 
     private tableDimensions(
@@ -3309,6 +3353,7 @@ export class DataTypeRegistry {
         return dataTypeCppType(dataType, this.cppContext);
     }
 
+    /** @unjournaled Closures over this registry; never written. */
     private readonly cppContext: DataTypeCppContext = {
         cppType: (type) => this.cppType(type),
         namedType: (name) => {
@@ -3564,7 +3609,7 @@ export class DataTypeRegistry {
                     );
                 if (omittable) {
                     lines.push(
-                        `    if (value.${field.name}.has_value()) {`,
+                        `    if (${optionalPresentCpp(`value.${field.name}`)}) {`,
                         `        writer.key(${key});`,
                         `        json_write(writer, *value.${field.name});`,
                         "    }",
@@ -3678,6 +3723,9 @@ export class DataTypeRegistry {
                 "",
             );
         }
+        const fieldTypes = (name: string): DataType[] =>
+            this.structFieldTypes(name);
+        const untraced = untracedRecords(this.structsByName.keys(), fieldTypes);
         const emitStruct = (definition: DataStructDefinition): void => {
             if (emitted.has(definition.name)) {
                 return;
@@ -3717,14 +3765,44 @@ export class DataTypeRegistry {
             if (structuredClone) definition.fields.forEach(visitCloneField);
             lines.push(
                 `struct ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""} {`,
+                // Scalar members are value-initialized, so a record built
+                // field by field never exposes an indeterminate value. Class
+                // members keep their own construction: some (a borrowed
+                // event view) have no default constructor to name.
                 ...definition.fields.map(
-                    (field) => `    ${this.cppType(field.type)} ${field.name};`,
+                    (field) =>
+                        `    ${this.cppType(field.type)} ${field.name}${
+                            field.type.kind === "number" ||
+                            field.type.kind === "boolean" ||
+                            field.type.kind === "enum" ||
+                            field.type.kind === "numberindex"
+                                ? "{}"
+                                : ""
+                        };`,
                 ),
-                `    friend void gc_trace_edges([[maybe_unused]] const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, [[maybe_unused]] const bbl::js::TraceVisitor& visitor) {`,
-                ...definition.fields.map(
-                    (field) => `        visitor(record.${field.name});`,
-                ),
-                "    }",
+                ...(definition.classTag
+                    ? [`    int ${classTagMember}{};`]
+                    : []),
+                // Only a record that can own a traced edge joins cycle
+                // collection, and it visits only the fields that can.
+                ...(untraced.has(definition.name)
+                    ? []
+                    : [
+                          `    friend void gc_trace_edges(const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, const bbl::js::TraceVisitor& visitor) {`,
+                          ...definition.fields
+                              .filter((field) =>
+                                  ownsTracedEdge(
+                                      field.type,
+                                      fieldTypes,
+                                      untraced,
+                                  ),
+                              )
+                              .map(
+                                  (field) =>
+                                      `        visitor(record.${field.name});`,
+                              ),
+                          "    }",
+                      ]),
                 ...(structuredClone
                     ? [
                           "",
@@ -3796,14 +3874,20 @@ export class DataTypeRegistry {
             type: string,
             name: string,
             initializer: string,
+            allocates: boolean,
         ): void => {
-            const definition = `const ${type} ${name}${initializer};`;
             lines.push(
-                {
-                    source,
-                    declaration: `extern const ${type} ${name};`,
-                    definition,
-                },
+                allocates
+                    ? {
+                          source,
+                          declaration: `const ${type}& ${name}();`,
+                          definition: `const ${type}& ${name}() {\n    static const ${type} value${initializer};\n    return value;\n}`,
+                      }
+                    : {
+                          source,
+                          declaration: `extern const ${type} ${name};`,
+                          definition: `const ${type} ${name}${initializer};`,
+                      },
                 "",
             );
         };
@@ -3813,6 +3897,7 @@ export class DataTypeRegistry {
                 this.tableCppType(table.dimensions),
                 table.name,
                 ` = ${table.values}`,
+                true,
             );
         }
         for (const table of this.tagTables.values()) {
@@ -3821,6 +3906,7 @@ export class DataTypeRegistry {
                 `std::array<${table.elementCppType}, ${table.elements.length}>`,
                 table.name,
                 `{${table.elements.join(", ")}}`,
+                table.allocates,
             );
         }
         lines.push(...this.renderJsonCodecs(used.structs));

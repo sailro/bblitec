@@ -36,11 +36,11 @@ import { readBabylonLiteCorpus } from "./upstream-corpus.js";
 import { findRepositoryRoot } from "./upstream-source.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 
-export type CorpusCheckKind =
+type CorpusCheckKind =
     "upstream-tree" | "origin-file" | "archive-member" | "generated-file";
 
 /** One manifest digest and the pinned bytes it must agree with. */
-export interface CorpusCheck {
+interface CorpusCheck {
     /** Manifest section and upstream path, for the printed verdict. */
     label: string;
     kind: CorpusCheckKind;
@@ -54,7 +54,7 @@ export interface CorpusCheck {
     generatedOutputName?: string;
 }
 
-export interface ExactCorpusScene {
+interface ExactCorpusScene {
     id: string;
     sourceSha256: string;
 }

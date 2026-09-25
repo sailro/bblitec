@@ -4,10 +4,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
-import { PinnedNumericLowerer } from "../src/lowering/pinned-numeric-lowerer.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "../src/lowering/pinned-numeric-lowerer.js";
 import type { PinnedExpressionSpelling } from "../src/lowering/pinned-numeric-expression.js";
 import { pinnedNumericMathCalls } from "../src/lowering/pinned-operators.js";
-import { renderCppExpression } from "../src/lowering/gltf/animation-interpolation.js";
+import { renderCppExpression } from "../src/lowering/gltf/cpp-expression.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -32,7 +35,7 @@ function render(
                 { cpp: name, type: "scalar" },
             ]),
         ),
-        calls: pinnedNumericMathCalls("deduced"),
+        calls: pinnedNumericMathCalls(),
         expressionSpelling: spelling,
         booleanAnd: true,
         booleanOr: true,
@@ -50,16 +53,12 @@ test("minimal spelling retains grouping and separates adjacent unary operators",
     assert.equal(render("(a ? b : c) ? a : c", minimal), "(a ? b : c) ? a : c");
 });
 
-test("source spelling preserves parentheses through non-null assertions and prints float literals", () => {
-    const source: PinnedExpressionSpelling = {
-        parentheses: "source",
-        numeric: (node) =>
-            /[.e]/i.test(node.text) ? `${node.text}f` : `${node.text}.0f`,
-    };
-    assert.equal(render("(a * (b + 1))!", source), "(a * (b + 1.0f))");
+test("source spelling preserves parentheses through non-null assertions and prints double literals", () => {
+    const source: PinnedExpressionSpelling = { parentheses: "source" };
+    assert.equal(render("(a * (b + 1))!", source), "(a * (b + 1.0))");
     assert.equal(
         render("a ? Math.max(b, 1e-6) : 2", source),
-        "(a ? std::max(b, 0.000001f) : 2.0f)",
+        "(a ? bbl::js::math_extreme<true>({b, 0.000001}) : 2.0)",
     );
     assert.equal(render("a % b", source), "std::fmod(a, b)");
     assert.equal(
@@ -77,7 +76,10 @@ test("glTF expression scopes carry arithmetic, comparisons and Math calls throug
     for (const [source, expected] of [
         ["(a + b) * c", "(a + b) * c"],
         ["a <= b && b !== c", "a <= b && b != c"],
-        ["a <= b ? Math.max(a, b) : c", "a <= b ? std::max(a, b) : c"],
+        [
+            "a <= b ? Math.max(a, b) : c",
+            "a <= b ? bbl::js::math_extreme<true>({a, b}) : c",
+        ],
         ["a % 3", "a % 3"],
     ]) {
         const file = ts.createSourceFile(
@@ -130,6 +132,109 @@ test(
             "/WX",
             "/permissive-",
             "/EHsc",
+            `/Fo:${directory}\\`,
+            `/Fe:${executable}`,
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
+
+/**
+ * Statements lowered in a JavaScript-width scope over three scalars and a
+ * `Uint32Array` named `mask`, one C++ statement per line.
+ */
+function lowerStatements(source: string): string {
+    const file = ts.createSourceFile(
+        "statements.ts",
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+    );
+    return new PinnedNumericLowerer(file, {
+        bindings: new Map<string, PinnedBinding>([
+            ...["a", "b", "c"].map((name): [string, PinnedBinding] => [
+                name,
+                { cpp: name, type: "scalar" },
+            ]),
+            ["mask", { cpp: "mask", type: "u32" }],
+        ]),
+        calls: pinnedNumericMathCalls(),
+    })
+        .statements(file.statements, "        ")
+        .join("\n");
+}
+
+test("Math.max and Math.min lower to one JavaScript call over every argument", () => {
+    assert.equal(
+        lowerStatements("a = Math.max(a, b, c);"),
+        "        a = bbl::js::math_extreme<true>({a, b, c});",
+    );
+    assert.equal(
+        lowerStatements("a = Math.min(b, c);"),
+        "        a = bbl::js::math_extreme<false>({b, c});",
+    );
+});
+
+test("a Uint32Array store converts with ToUint32", () => {
+    const store = lowerStatements("mask[0] = -1;");
+    assert.match(store, /= bbl::js::to_uint32\(/);
+    assert.doesNotMatch(store, /static_cast<std::uint32_t>/);
+    assert.throws(
+        () => lowerStatements("mask[0] += a;"),
+        /compound assignment into a typed-array element/,
+    );
+});
+
+const headerTools = optionalNativeFixtureTools(false);
+test(
+    "lowered Math.max, Math.min and Uint32Array stores keep JavaScript's results natively",
+    { skip: !headerTools },
+    () => {
+        const directory = resolve("artifacts/pinned-math-extreme");
+        mkdirSync(directory, { recursive: true });
+        const source = resolve(directory, "check.cpp"),
+            executable = resolve(directory, "check.exe");
+        writeFileSync(
+            source,
+            `#include <bblite/js_data.hpp>
+#include <array>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+int main() {
+    std::array<std::uint32_t, 1> mask{};
+    double a = 1.0, b = std::numeric_limits<double>::quiet_NaN(), c = 3.0;
+${lowerStatements("a = Math.max(a, b, c);")}
+    assert(std::isnan(a));
+    a = -0.0; b = 0.0; c = -1.0;
+${lowerStatements("a = Math.max(a, b, c);")}
+    assert(a == 0.0 && !std::signbit(a));
+    a = 0.0; b = -0.0;
+${lowerStatements("a = Math.min(a, b);")}
+    assert(a == 0.0 && std::signbit(a));
+    a = 1.0; b = 7.0; c = 2.0;
+${lowerStatements("a = Math.max(a, b, c);")}
+    assert(a == 7.0);
+${lowerStatements("mask[0] = -1;")}
+    assert(mask[0] == 4294967295u);
+${lowerStatements("mask[0] = 1 << 31;")}
+    assert(mask[0] == 0x80000000u);
+${lowerStatements("mask[0] = 4294967296.5;")}
+    assert(mask[0] == 0u);
+}
+`,
+        );
+        runNativeFixtureCompiler(headerTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            "/MD",
+            `/I${resolve("native/include")}`,
             `/Fo:${directory}\\`,
             `/Fe:${executable}`,
             source,

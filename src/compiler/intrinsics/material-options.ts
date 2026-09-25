@@ -41,10 +41,6 @@ import {
 // asserts each discarded pinned default against this table, and the
 // defaults below read the same entries, so the record seed IS the number
 // the assert pins.
-// The pin's own `?? d` fallbacks, stated once: the UBO-writer lowerer
-// asserts each discarded pinned default against this table, and the
-// defaults below read the same entries, so the record seed IS the number
-// the assert pins.
 import {
     pinnedDefaultColor3,
     pinnedDefaultColor3Cpp,
@@ -55,6 +51,7 @@ import {
     type PinnedMaterialDefaultName,
 } from "../../lowering/pinned-material-defaults.js";
 import { floatLiteral } from "../../cpp-literals.js";
+import { isGlobalUndefined } from "../symbols.js";
 
 /** One pinned scalar default, in the two forms a setter resolves. */
 function pinnedScalarDefault(name: PinnedMaterialDefaultName): {
@@ -73,23 +70,21 @@ export interface MaterialOptionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
-            | "scenePbrMaterials"
-            | "currentGltfAssetCount"
-            | "recordSceneMaterialSlot"
+            | "sceneManifest"
+            | "checker"
             | "compileValue"
             | "compileForDataSink"
-            | "noteMaterialColorObjectWrite"
-            | "noteMaterialColorRead"
+            | "admissions"
             | "expectKind"
             | "expectObjectLiteral"
             | "objectProperty"
             | "compileNumber"
             | "compileBoolean"
-            | "compileCondition"
+            | "conditions"
             | "compileColor3"
             | "compileColor4"
             | "compileVec3"
-            | "compileVec2"
+            | "evaluator"
         > {}
 
 /**
@@ -198,26 +193,13 @@ export interface CompiledSubsurfaceOptions {
     manifest: ScenePbrSubsurfaceManifest;
 }
 
-/** A static RGB tuple in either source shape `compileColor3` accepts. */
+/** A static RGB tuple in the source shape `compileColor3` accepts. */
 export function staticColor3Value(
-    context: PositiveIntegerContext & {
-        objectProperty(
-            object: ts.ObjectLiteralExpression,
-            name: string,
-        ): ts.Expression | undefined;
-    },
+    context: PositiveIntegerContext,
     expression: ts.Expression,
 ): readonly [number, number, number] | undefined {
     const node = context.resolveStaticExpression(expression);
-    let channelValues: readonly (ts.Expression | undefined)[] | undefined;
-    if (ts.isArrayLiteralExpression(node) && node.elements.length === 3) {
-        channelValues = node.elements;
-    } else if (ts.isObjectLiteralExpression(node)) {
-        channelValues = ["r", "g", "b"].map((name) =>
-            context.objectProperty(node, name),
-        );
-    }
-    if (!channelValues || channelValues.some((value) => value === undefined)) {
+    if (!ts.isArrayLiteralExpression(node) || node.elements.length !== 3) {
         // Syntactic resolution follows `??`, module constants and const
         // literal initializers, and stops at a binding that has none of
         // those -- an inlined user function's parameter. The emitted half
@@ -242,8 +224,8 @@ export function staticColor3Value(
         // 20's emissive channels are runtime randoms and still refuse.
         return staticTupleChannels(context, node);
     }
-    const [r, g, b] = channelValues.map((value) =>
-        staticNumberValue(context, value!),
+    const [r, g, b] = node.elements.map((value) =>
+        staticNumberValue(context, value),
     );
     return r === undefined || g === undefined || b === undefined
         ? undefined
@@ -252,11 +234,11 @@ export function staticColor3Value(
 
 /** The three static channels of a bound compile-time 3-tuple, if it is one. */
 function staticTupleChannels(
-    context: Pick<PositiveIntegerContext, "lookupOptional">,
+    context: Pick<PositiveIntegerContext, "bindings">,
     node: ts.Expression,
 ): readonly [number, number, number] | undefined {
     if (!ts.isIdentifier(node)) return undefined;
-    const bound = context.lookupOptional(node);
+    const bound = context.bindings.lookupOptional(node);
     if (bound?.kind !== "tuple" || bound.tupleElements?.length !== 3) {
         return undefined;
     }
@@ -282,11 +264,14 @@ export function requiredStaticColor3(
     expression: ts.Expression,
     message: string,
 ): { cpp: string; channels: readonly [number, number, number] } {
+    // Compiled first, so a `{ r, g, b }` object meets the colour compiler's
+    // own refusal rather than this setter's static-channel message.
+    const cpp = context.compileColor3(expression);
     const channels = staticColor3Value(context, expression);
     if (!channels || channels.some((channel) => !Number.isFinite(channel))) {
         context.fail(expression, message);
     }
-    return { cpp: context.compileColor3(expression), channels };
+    return { cpp, channels };
 }
 
 function requiredStaticFiniteNumber(
@@ -462,12 +447,10 @@ export function compilePbrMaterialOptions(
             "_metallicF0Factor",
             "enableSpecularAA",
             "doubleSided",
-            "transmissive",
-            "subsurface",
             "usePhysicalLightFalloff",
             "plugins",
         ],
-        "Reached PBR lowering supports base/ORM textures, the base color factor, metallic/roughness factors, alpha and alpha blending, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, skybox mode, and transmission subsurface fields.",
+        "Reached PBR lowering supports base/ORM textures, the base color factor, metallic/roughness factors, alpha and alpha blending, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, and skybox mode.",
     );
     const baseColorExpression = context.objectProperty(
         object,
@@ -525,102 +508,34 @@ export function compilePbrMaterialOptions(
         object,
         "usePhysicalLightFalloff",
     );
-    const transmissive = context.objectProperty(object, "transmissive");
-    const subsurfaceExpression = context.objectProperty(object, "subsurface");
-    let transmission = requiredStaticFiniteNumber(
+    // Refraction is not a creation option: the pin writes `_transmissive`
+    // and `_subsurface` only through `setPbrTransmission`, and
+    // `compileCreatePbrMaterial` refuses both names. A created material
+    // therefore carries the refraction writer's absent-subsurface ground
+    // state: the pinned intensity and IOR defaults, and a zero thickness
+    // (the pin's `thick?.max ?? 1` applies only under a refraction object).
+    const transmission = requiredStaticFiniteNumber(
         context,
         undefined,
         pinnedDefaultNumber("transmissionIntensity"),
         "PBR transmission intensity",
     );
-    let ior = requiredStaticFiniteNumber(
+    const ior = requiredStaticFiniteNumber(
         context,
         undefined,
         pinnedDefaultNumber("transmissionIndexOfRefraction"),
         "PBR index of refraction",
     );
-    // NOT the pin's `?? 1`: with a refraction object and no thickness the
-    // pinned writer reads `thick?.max ?? 1` while this record seeds 0 —
-    // the absent-subsurface ground state. UNREACHABLE today, measured
-    // 2026-08-24: a scene-code refraction shape refuses at generation
-    // ("no composed arm yet", the open transmission item in TODO), so the
-    // divergence cannot reach a composed variant. When that arm lands,
-    // resolve this seed against the pin's `?? 1` for the
-    // refraction-without-thickness shape before measuring. The `?? 1` arm
-    // the defaults table anchors is the inner thickness branch below.
-    let thickness = requiredStaticFiniteNumber(
+    const thickness = requiredStaticFiniteNumber(
         context,
         undefined,
         0,
         "PBR thickness",
     );
-    let useThicknessAsDepth = "false";
-    let hasVolume = "false";
-    let attenuationColor = pinnedDefaultColor3Cpp("attenuationColor");
-    let attenuationDistance = pinnedDefaultFloatCpp("attenuationDistance");
-    if (subsurfaceExpression) {
-        const subsurface = context.expectObjectLiteral(subsurfaceExpression);
-        const refractionExpression = context.objectProperty(
-            subsurface,
-            "refraction",
-        );
-        if (refractionExpression) {
-            const refraction =
-                context.expectObjectLiteral(refractionExpression);
-            const intensity = context.objectProperty(refraction, "intensity");
-            const indexOfRefraction = context.objectProperty(
-                refraction,
-                "indexOfRefraction",
-            );
-            const thicknessAsDepth = context.objectProperty(
-                refraction,
-                "useThicknessAsDepth",
-            );
-            transmission = requiredStaticFiniteNumber(
-                context,
-                intensity,
-                transmissive ? 1 : pinnedDefaultNumber("transmissionIntensity"),
-                "PBR transmission intensity",
-            );
-            ior = requiredStaticFiniteNumber(
-                context,
-                indexOfRefraction,
-                pinnedDefaultNumber("transmissionIndexOfRefraction"),
-                "PBR index of refraction",
-            );
-            useThicknessAsDepth = thicknessAsDepth
-                ? context.compileBoolean(thicknessAsDepth)
-                : "false";
-        }
-        const thicknessExpression = context.objectProperty(
-            subsurface,
-            "thickness",
-        );
-        if (thicknessExpression) {
-            const thicknessObject =
-                context.expectObjectLiteral(thicknessExpression);
-            const maximum = context.objectProperty(thicknessObject, "max");
-            thickness = requiredStaticFiniteNumber(
-                context,
-                maximum,
-                pinnedDefaultNumber("transmissionThicknessMax"),
-                "PBR thickness",
-            );
-        }
-        const tintExpression = context.objectProperty(subsurface, "tint");
-        if (tintExpression) {
-            const tint = context.expectObjectLiteral(tintExpression);
-            const color = context.objectProperty(tint, "color");
-            const distance = context.objectProperty(tint, "atDistance");
-            hasVolume = distance ? "true" : "false";
-            attenuationColor = color
-                ? context.compileColor3(color)
-                : attenuationColor;
-            attenuationDistance = distance
-                ? context.compileNumber(distance)
-                : attenuationDistance;
-        }
-    }
+    const useThicknessAsDepth = "false";
+    const hasVolume = "false";
+    const attenuationColor = pinnedDefaultColor3Cpp("attenuationColor");
+    const attenuationDistance = pinnedDefaultFloatCpp("attenuationDistance");
     const metallicOption = requiredStaticFiniteNumber(
         context,
         metallic,
@@ -722,9 +637,9 @@ export function compilePbrMaterialOptions(
     // ARE the material record its feature derivation reads. Scalar options
     // are static; an array with runtime contents carries presence separately.
     const sceneMaterialIndex =
-        context.scenePbrMaterials.push({
-            materialsBefore: context.recordSceneMaterialSlot(),
-            gltfAssetsBefore: context.currentGltfAssetCount(),
+        context.sceneManifest.scenePbrMaterials.push({
+            materialsBefore: context.sceneManifest.recordSceneMaterialSlot(),
+            gltfAssetsBefore: context.sceneManifest.currentGltfAssetCount(),
             hasBaseColorTexture: true,
             hasOrmTexture: true,
             ...(baseColorFactor?.value
@@ -749,9 +664,6 @@ export function compilePbrMaterialOptions(
                 : { metallicF0Factor: staticMetallicF0Factor }),
             ...(staticEnableSpecularAA ? { enableSpecularAA: true } : {}),
             doubleSided: doubleSidedCpp === "true",
-            transmission: transmission.value,
-            ior: ior.value,
-            thickness: thickness.value,
             ...(staticPhysicalLightFalloff
                 ? {}
                 : { usePhysicalLightFalloff: false }),
@@ -794,8 +706,6 @@ export function compilePbrMaterialOptions(
 /**
  * The array's presence selects a UBO field; its contents remain runtime
  * numbers. Retain its storage and preserve static metadata when available.
- * Legacy color objects keep their existing renderer adapter, with numeric
- * array reads fenced because that adapter does not retain the object shape.
  */
 function compilePbrBaseColorFactor(
     context: MaterialOptionContext,
@@ -808,12 +718,12 @@ function compilePbrBaseColorFactor(
     const resolved = context.resolveStaticExpression(expression);
     const retainedStorage = (): string => {
         if (!ts.isArrayLiteralExpression(expression))
-            context.noteMaterialColorRead("baseColorFactor");
+            context.admissions.noteMaterialColorRead("baseColorFactor");
         return `(${context.compileForDataSink(expression, { kind: "vector", element: { kind: "number" } })}).retained_storage()`;
     };
     if (
         ts.isIdentifier(expression) &&
-        context.lookupOptional(expression)?.kind === "tuple"
+        context.bindings.lookupOptional(expression)?.kind === "tuple"
     ) {
         context.fail(
             expression,
@@ -850,17 +760,9 @@ function compilePbrBaseColorFactor(
             );
         channels = resolved.elements;
     } else if (ts.isObjectLiteralExpression(resolved)) {
-        context.noteMaterialColorObjectWrite(expression, "baseColorFactor");
-        channels = ["r", "g", "b", "a"].map((name) => {
-            const channel = context.objectProperty(resolved, name);
-            if (!channel) {
-                context.fail(
-                    resolved,
-                    `PBR baseColorFactor requires a '${name}' channel.`,
-                );
-            }
-            return channel;
-        });
+        // An object carries no array storage to retain; whether it is a
+        // colour at all is the colour compiler's one shape decision.
+        return { cpp: context.compileColor4(expression), storageCpp: "{}" };
     }
     if (!channels) {
         return {
@@ -877,11 +779,6 @@ function compilePbrBaseColorFactor(
                 channel === undefined || !Number.isFinite(channel),
         )
     ) {
-        if (ts.isObjectLiteralExpression(resolved))
-            context.fail(
-                expression,
-                "Legacy PBR color objects require finite static channels.",
-            );
         return {
             cpp: "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",
             storageCpp: retainedStorage(),
@@ -890,9 +787,7 @@ function compilePbrBaseColorFactor(
     const tuple = value as [number, number, number, number];
     return {
         cpp: context.compileColor4(expression),
-        storageCpp: ts.isArrayLiteralExpression(resolved)
-            ? retainedStorage()
-            : "{}",
+        storageCpp: retainedStorage(),
         value: tuple,
     };
 }
@@ -904,18 +799,14 @@ function optionalRecordOption(
 ): Value | undefined {
     if (!expression) return undefined;
     const resolved = context.resolveStaticExpression(expression);
-    if (
-        ts.isIdentifier(resolved) &&
-        resolved.text === "undefined" &&
-        !context.lookupOptional(resolved)
-    ) {
+    if (isGlobalUndefined(context.checker, resolved)) {
         return undefined;
     }
     if (
         ts.isPropertyAccessExpression(resolved) &&
         ts.isIdentifier(resolved.expression)
     ) {
-        const owner = context.lookupOptional(resolved.expression);
+        const owner = context.bindings.lookupOptional(resolved.expression);
         if (owner?.kind === "record") {
             return owner.recordProperties?.[resolved.name.text];
         }
@@ -1022,73 +913,6 @@ export function compileMetallicReflectanceOptions(
                 : {}),
         },
     };
-}
-
-export function compileGridMaterialOptions(
-    context: MaterialOptionContext,
-    expression: ts.Expression,
-): string[] {
-    const object = context.expectObjectLiteral(expression);
-    validateObjectProperties(
-        context,
-        object,
-        [
-            "name",
-            "mainColor",
-            "lineColor",
-            "gridRatio",
-            "gridOffset",
-            "majorUnitFrequency",
-            "minorUnitVisibility",
-            "opacity",
-            "antialias",
-            "preMultiplyAlpha",
-            "useMaxLine",
-            "visibility",
-            "backFaceCulling",
-        ],
-        "Grid material options support colors, object-space spacing/offset, line frequency/visibility, opacity, antialiasing, premultiplication, max-line composition, visibility, and culling.",
-    );
-    const mainColor = context.objectProperty(object, "mainColor");
-    const lineColor = context.objectProperty(object, "lineColor");
-    const gridRatio = context.objectProperty(object, "gridRatio");
-    const gridOffset = context.objectProperty(object, "gridOffset");
-    const majorUnitFrequency = context.objectProperty(
-        object,
-        "majorUnitFrequency",
-    );
-    const minorUnitVisibility = context.objectProperty(
-        object,
-        "minorUnitVisibility",
-    );
-    const opacity = context.objectProperty(object, "opacity");
-    const visibility = context.objectProperty(object, "visibility");
-    const antialias = context.objectProperty(object, "antialias");
-    const preMultiplyAlpha = context.objectProperty(object, "preMultiplyAlpha");
-    const useMaxLine = context.objectProperty(object, "useMaxLine");
-    const backFaceCulling = context.objectProperty(object, "backFaceCulling");
-    return [
-        mainColor
-            ? context.compileColor3(mainColor)
-            : "bbl::Color3{0.0f, 0.0f, 0.0f}",
-        lineColor
-            ? context.compileColor3(lineColor)
-            : "bbl::Color3{0.0f, 0.5f, 0.5f}",
-        gridRatio ? context.compileNumber(gridRatio) : "1.0f",
-        gridOffset ? context.compileVec3(gridOffset) : "bbl::Vec3{}",
-        majorUnitFrequency
-            ? context.compileNumber(majorUnitFrequency)
-            : "10.0f",
-        minorUnitVisibility
-            ? context.compileNumber(minorUnitVisibility)
-            : "0.33f",
-        opacity ? context.compileNumber(opacity) : "1.0f",
-        visibility ? context.compileNumber(visibility) : "1.0f",
-        antialias ? context.compileBoolean(antialias) : "true",
-        preMultiplyAlpha ? context.compileBoolean(preMultiplyAlpha) : "false",
-        useMaxLine ? context.compileBoolean(useMaxLine) : "false",
-        backFaceCulling ? context.compileBoolean(backFaceCulling) : "true",
-    ];
 }
 
 /**
@@ -1283,7 +1107,7 @@ export function compileAnisotropyOptions(
             ? context.compileNumber(intensity)
             : pinnedDefaultFloatCpp("anisotropyIntensity"),
         direction: direction
-            ? context.compileVec2(direction)
+            ? context.evaluator.compileVec2(direction)
             : pinnedDefaultVec2Cpp("anisotropyDirection"),
         manifest: {
             isEnabled: enabled === "true",

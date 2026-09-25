@@ -13,6 +13,7 @@ import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import { PINNED_DECOMPOSE_ROTATION } from "./pinned-mat4-decompose.js";
 import { assertRotationPointerContract } from "./rotation-pointer-contract.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const MATH = "src/gizmo/gizmo-math.ts";
 const ROTATION = "src/gizmo/plane-rotation-gizmo.ts";
@@ -167,7 +168,7 @@ export function lowerRotationPointerDrag(context: LoweringContext): string {
     calls.set(
         "rq.set",
         (args) =>
-            `set_mesh_rotation_quaternion(engine, handle, Vec4{${args.map((arg) => `static_cast<float>(${arg})`).join(", ")}}, true)`,
+            `set_mesh_rotation_quaternion(engine, handle, Vec4{${args.map((arg) => `static_cast<float>(${arg})`).join(", ")}})`,
     );
 
     const translated = lowerPinnedBody(
@@ -250,14 +251,14 @@ std::array<double, 4> drag_parent_rotation(const std::array<float, 16>& world) {
 std::array<double, 4> drag_local_rotation(Engine& engine, const MeshRecord& node,
     double dqx, double dqy, double dqz, double dqw) {
     std::optional<std::array<float, 16>> parent;
-    if (node.parent.value < engine.meshes.size()) parent = upstream::mesh_world_matrix(engine, engine.meshes[node.parent.value]);
+    if (node.parent.value < engine.meshes.size()) parent = upstream::mesh_world_matrix(engine, ${recordAt("engine.meshes", "node.parent")});
     else if (node.transform_parent.value < engine.transform_nodes.size()) parent = upstream::transform_node_world(engine, node.transform_parent);
     if (!parent) return {dqx, dqy, dqz, dqw};
 ${localBody}
 }
 // ${context.provenance(ROTATION, "createPlaneRotationGizmo", "onDrag quaternion update")}
 void drag_rotate(Engine& engine, MeshHandle handle, Vec3d lastDragPoint, const Vec3d& hit, const Vec3d& normal) {
-    auto& node = engine.meshes[handle.value];
+    auto& node = ${recordAt("engine.meshes", "handle")};
     const auto wm = upstream::mesh_world_matrix(engine, node);
 ${translated}
 }

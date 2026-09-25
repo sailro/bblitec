@@ -38,13 +38,13 @@ import { computeBuildStamp } from "../build-stamp.js";
 
 /** The generated tree and build a check runs against: the scene's own,
  *  or its twin (`generated/<id>-live`). */
-export interface CheckTarget {
+interface CheckTarget {
     output: string;
     buildDirectory: string;
     executable: string;
 }
 
-export interface CheckRunOptions {
+interface CheckRunOptions {
     checkId: string;
     scene: SceneDefinition;
     spec: CheckSpec;
@@ -58,7 +58,7 @@ export interface CheckRunOptions {
 }
 
 /** What one phase's native run left: the image, the capture, the log. */
-export interface PhaseResult {
+interface PhaseResult {
     id: string;
     backend: string;
     frame: number;
@@ -71,7 +71,7 @@ export interface PhaseResult {
     kept: boolean;
 }
 
-export interface ExpectationResult {
+interface ExpectationResult {
     index: number;
     kind: string;
     phase?: string;
@@ -80,16 +80,17 @@ export interface ExpectationResult {
     detail: string;
 }
 
-export interface CheckVerdict {
+interface CheckVerdict {
     ok: boolean;
     reportPath: string;
     results: ExpectationResult[];
 }
 
-/** The observation report `scene -- observe` writes, as the check reads it. */
+/** The observation report `scene -- check <id> --observe` writes, as the check reads it. */
 export interface ObservationsReport {
     sourceSha256?: string;
     moduleSha256?: string;
+    referenceSearch?: string;
     referenceSha256?: string;
     captureFrames?: Array<{ frame: number; image?: string; state?: unknown }>;
     steps?: Array<{
@@ -149,9 +150,9 @@ const MEASUREMENT_VARIABLES = [
 ];
 
 /**
- * The environment base a check's phases share: the registry pose first
- * (`docs/debugging.md`: a checker spreads it before its own frame
- * window), then the ad-hoc or fixed clock a check asks for.
+ * The environment base a check's phases share: the registry pose first,
+ * spread before the check's own frame window, then the ad-hoc or fixed
+ * clock a check asks for.
  */
 export function checkEnvironmentBase(
     scene: SceneDefinition,
@@ -305,7 +306,7 @@ function referenceImage(
         const observations = evaluation.observations;
         if (observations === undefined) {
             throw new Error(
-                `'${reference}' needs browser observations; run 'scene -- observe' for this check first`,
+                `'${reference}' needs browser observations; run 'scene -- check <id> --observe' for this check first`,
             );
         }
         const frameMatch = /^frame-(\d+)$/.exec(id);

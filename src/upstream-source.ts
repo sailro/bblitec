@@ -1,8 +1,10 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { findRepositoryRoot } from "./repository-root.js";
+import { PinnedProgram, registerPinnedSource } from "./pinned-program.js";
+import { listFiles } from "./tooling/records.js";
 export { findRepositoryRoot } from "./repository-root.js";
 
 import {
@@ -70,20 +72,10 @@ export function readUpstreamPin(
     };
 }
 
-export interface PublicExport {
+interface PublicExport {
     exportedName: string;
     importedName: string;
     modulePath: string;
-}
-
-function walk(directory: string): string[] {
-    const result: string[] = [];
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const path = join(directory, entry.name);
-        if (entry.isDirectory()) result.push(...walk(path));
-        else result.push(path);
-    }
-    return result;
 }
 
 function virtualSourcePath(source: string): string | undefined {
@@ -130,6 +122,7 @@ export class UpstreamSourceStore {
     private readonly packagedModules = new Map<string, string>();
     private readonly declarationModules = new Map<string, string[]>();
     private readonly publicExports = new Map<string, PublicExport>();
+    private typedProgram: PinnedProgram | undefined;
 
     public constructor(
         repositoryRoot = findRepositoryRoot(
@@ -173,7 +166,6 @@ export class UpstreamSourceStore {
         // only while the helper is the identity over its template; one
         // check per store settles it for every reader.
         assertPinnedWgslTagIsIdentity(this.getSourceFile("src/shader/wgsl.ts"));
-        this.loadPublicExports();
     }
 
     public getSource(modulePath: string): string {
@@ -219,15 +211,31 @@ export class UpstreamSourceStore {
             normalized.endsWith(".js") ? ts.ScriptKind.JS : ts.ScriptKind.TS,
         );
         this.sourceFiles.set(normalized, sourceFile);
+        registerPinnedSource(sourceFile, () => this.program);
         return sourceFile;
+    }
+
+    /**
+     * The checked program over these sources, built on the first question
+     * asked of it and shared by every reader of this store.
+     */
+    public get program(): PinnedProgram {
+        this.typedProgram ??= new PinnedProgram(this);
+        return this.typedProgram;
     }
 
     public listSources(): string[] {
         return [...this.sources.keys()].sort();
     }
 
+    /** The public export `name`, or undefined when the package exports no such name. */
+    public findPublicExport(name: string): PublicExport | undefined {
+        if (this.publicExports.size === 0) this.loadPublicExports();
+        return this.publicExports.get(name);
+    }
+
     public resolvePublicExport(name: string): PublicExport {
-        const entry = this.publicExports.get(name);
+        const entry = this.findPublicExport(name);
         if (!entry)
             throw new Error(
                 `Babylon Lite public export '${name}' was not found.`,
@@ -249,7 +257,7 @@ export class UpstreamSourceStore {
 
     private loadSources(): void {
         const libRoot = join(this.packageRoot, "lib");
-        for (const mapPath of walk(libRoot).filter((path) =>
+        for (const mapPath of listFiles(libRoot).filter((path) =>
             path.endsWith(".js.map"),
         )) {
             const map = JSON.parse(
@@ -283,21 +291,6 @@ export class UpstreamSourceStore {
                 "src/index.ts",
                 readFileSync(join(libRoot, "index.js"), "utf8"),
             );
-        }
-        // The bundled index has local export aliases. Index declaration
-        // candidates once instead of scanning every source for each export.
-        for (const path of this.listSources()) {
-            if (path === "src/index.ts") continue;
-            for (const match of this.sources
-                .get(path)!
-                .matchAll(
-                    /\bexport\s+(?:(?:async|declare)\s+)?(?:function|class|interface|type|enum|const|let|var)\s+(\w+)/g,
-                )) {
-                const name = match[1]!;
-                const modules = this.declarationModules.get(name) ?? [];
-                modules.push(path);
-                this.declarationModules.set(name, modules);
-            }
         }
     }
 
@@ -335,44 +328,66 @@ export class UpstreamSourceStore {
         }
     }
 
+    /**
+     * The module declaring an export the barrel names without a specifier
+     * (a bundled barrel aliases its imports through minified local names).
+     * The index of every source's exported declarations is built from their
+     * syntax the first time one is asked for, which is also the first time a
+     * public export is resolved: a process that never resolves one parses
+     * none of it. The parse is the index's own, so it retains no tree.
+     */
     private findSourceExport(name: string): string | undefined {
-        for (const path of this.declarationModules.get(name) ?? []) {
-            const file = this.getSourceFile(path);
-            for (const statement of file.statements) {
-                if (!(
-                    ts.canHaveModifiers(statement) &&
-                    ts
-                        .getModifiers(statement)
-                        ?.some(
-                            (modifier) =>
-                                modifier.kind === ts.SyntaxKind.ExportKeyword,
-                        )
+        if (this.declarationModules.size === 0) {
+            for (const path of this.listSources()) {
+                if (path === "src/index.ts") continue;
+                for (const declared of exportedDeclarationNames(
+                    ts.createSourceFile(
+                        path,
+                        this.sources.get(path)!,
+                        ts.ScriptTarget.Latest,
+                        false,
+                    ),
                 )) {
-                    continue;
-                }
-                if (
-                    (ts.isFunctionDeclaration(statement) ||
-                        ts.isClassDeclaration(statement) ||
-                        ts.isInterfaceDeclaration(statement) ||
-                        ts.isTypeAliasDeclaration(statement) ||
-                        ts.isEnumDeclaration(statement)) &&
-                    statement.name?.text === name
-                ) {
-                    return path;
-                }
-                if (ts.isVariableStatement(statement)) {
-                    for (const declaration of statement.declarationList
-                        .declarations) {
-                        if (
-                            ts.isIdentifier(declaration.name) &&
-                            declaration.name.text === name
-                        ) {
-                            return path;
-                        }
-                    }
+                    const modules = this.declarationModules.get(declared) ?? [];
+                    modules.push(path);
+                    this.declarationModules.set(declared, modules);
                 }
             }
         }
-        return undefined;
+        return this.declarationModules.get(name)?.[0];
     }
+}
+
+/** The names a module's `export`-modified declarations bind. */
+function exportedDeclarationNames(file: ts.SourceFile): string[] {
+    const names: string[] = [];
+    for (const statement of file.statements) {
+        if (
+            !ts.canHaveModifiers(statement) ||
+            !ts
+                .getModifiers(statement)
+                ?.some(
+                    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+                )
+        ) {
+            continue;
+        }
+        if (
+            (ts.isFunctionDeclaration(statement) ||
+                ts.isClassDeclaration(statement) ||
+                ts.isInterfaceDeclaration(statement) ||
+                ts.isTypeAliasDeclaration(statement) ||
+                ts.isEnumDeclaration(statement)) &&
+            statement.name
+        ) {
+            names.push(statement.name.text);
+        } else if (ts.isVariableStatement(statement)) {
+            for (const declaration of statement.declarationList.declarations) {
+                if (ts.isIdentifier(declaration.name)) {
+                    names.push(declaration.name.text);
+                }
+            }
+        }
+    }
+    return names;
 }

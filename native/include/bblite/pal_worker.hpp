@@ -1,6 +1,8 @@
 #pragma once
 
-#if !defined(BBLITE_WORKERS) || !BBLITE_WORKERS
+#include <bblite/features/workers.hpp>
+
+#if !BBLITE_WORKERS
 #error Worker runtime requires BBLITE_WORKERS for isolated JavaScript state.
 #endif
 
@@ -9,6 +11,7 @@
 #include <bblite/pal_host_services.hpp>
 #include <bblite/pal_animation_frame.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/uncaught_error.hpp>
 
 #include <iostream>
 
@@ -122,17 +125,19 @@ public:
     WorkerRealm(const WorkerRealm&) = delete;
     WorkerRealm& operator=(const WorkerRealm&) = delete;
     ~WorkerRealm() {
-        for (auto& [id, worker] : workers_) {
-            static_cast<void>(id);
-            worker->terminate();
-        }
-        for (auto& [id, worker] : workers_) {
-            static_cast<void>(id);
-            if (worker->thread_.joinable())
-                worker->thread_.join();
-        }
-        loop_.on_event({});
-        loop_.on_error({});
+        run_teardown("WorkerRealm teardown", [this] {
+            for (auto& [id, worker] : workers_) {
+                static_cast<void>(id);
+                worker->terminate();
+            }
+            for (auto& [id, worker] : workers_) {
+                static_cast<void>(id);
+                if (worker->thread_.joinable())
+                    worker->thread_.join();
+            }
+            loop_.on_event({});
+            loop_.on_error({});
+        });
         current_ = nullptr;
     }
     static WorkerRealm& current() {
@@ -239,12 +244,12 @@ private:
             std::rethrow_exception(error);
         } catch (const WorkerTerminated&) {
             throw;
-        } catch (const std::exception& problem) {
-            WorkerErrorEvent event{problem.what(), {}, 0, 0, false};
+        } catch (...) {
+            WorkerErrorEvent event{exception_message(std::current_exception()), {}, 0, 0, false};
             if (parent_)
                 worker_detail::post(*parent_, std::move(event));
             else
-                std::cerr << "Uncaught application error: " << event.message << '\n';
+                std::cerr << uncaught_error_prefix << event.message << '\n';
         }
     }
     void deliver(std::unique_ptr<ExternalEvent> external) {

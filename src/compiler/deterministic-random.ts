@@ -1,5 +1,6 @@
 import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 // `Math.random = <arrow>`: the deterministic seed a scene installs before
 // stepping a node-particle simulation.
 //
@@ -47,9 +48,9 @@ import { transpileForBrowser } from "../typescript-transpile.js";
 
 export interface DeterministicRandomContext extends Pick<
     LoweringServices,
-    | "isDefaultLibraryIdentifier"
-    | "reachedNodeParticles"
-    | "lookup"
+    | "libraryGlobal"
+    | "sceneManifest"
+    | "bindings"
     | "compileForDataSink"
     | "emit"
     | "fail"
@@ -57,14 +58,12 @@ export interface DeterministicRandomContext extends Pick<
 
 /** Whether an expression is the bare `Math.random` function reference. */
 export function isDeterministicRandomRead(
-    context: Pick<DeterministicRandomContext, "isDefaultLibraryIdentifier">,
+    context: Pick<DeterministicRandomContext, "libraryGlobal">,
     expression: ts.Expression,
 ): boolean {
     return (
         ts.isPropertyAccessExpression(expression) &&
-        ts.isIdentifier(expression.expression) &&
-        expression.expression.text === "Math" &&
-        context.isDefaultLibraryIdentifier(expression.expression) &&
+        context.libraryGlobal(expression.expression) === "Math" &&
         expression.name.text === "random"
     );
 }
@@ -108,12 +107,7 @@ function seedFactoryDeclaration(
 ): ts.FunctionDeclaration {
     // A factory is normally imported from a shared module, so the identifier
     // resolves to the import alias; the declaration is behind it.
-    const bound = checker.getSymbolAtLocation(callee);
-    const symbol =
-        bound && bound.flags & ts.SymbolFlags.Alias
-            ? checker.getAliasedSymbol(bound)
-            : bound;
-    const declaration = symbol?.valueDeclaration;
+    const declaration = resolvedSymbol(checker, callee)?.valueDeclaration;
     if (
         !declaration ||
         !ts.isFunctionDeclaration(declaration) ||
@@ -180,17 +174,17 @@ function capturedDeclarations(
     const declared = new EmissionSet<ts.Symbol>();
     const collectDeclared = (node: ts.Node): void => {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
-            const symbol = checker.getSymbolAtLocation(node.name);
+            const symbol = declaredSymbol(checker, node.name);
             if (symbol) declared.add(symbol);
         }
         // A factory's parameters are bound by the call, and its own name
         // binds the declaration itself; neither is closed over.
         if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
-            const symbol = checker.getSymbolAtLocation(node.name);
+            const symbol = declaredSymbol(checker, node.name);
             if (symbol) declared.add(symbol);
         }
         if (ts.isFunctionDeclaration(node) && node.name) {
-            const symbol = checker.getSymbolAtLocation(node.name);
+            const symbol = declaredSymbol(checker, node.name);
             if (symbol) declared.add(symbol);
         }
         ts.forEachChild(node, collectDeclared);
@@ -203,12 +197,10 @@ function capturedDeclarations(
             return;
         }
         if (ts.isIdentifier(node)) {
-            if (
-                node.text === "Math" &&
-                context.isDefaultLibraryIdentifier(node)
-            )
-                return;
-            const symbol = checker.getSymbolAtLocation(node);
+            if (context.libraryGlobal(node) === "Math") return;
+            // The arrow's own lexical locals: an imported name is not a
+            // declaration beside it the driver can re-declare.
+            const symbol = declaredSymbol(checker, node);
             if (!symbol || declared.has(symbol)) return;
             const declaration = symbol.valueDeclaration;
             if (
@@ -265,15 +257,23 @@ export function emitDeterministicRandomInstall(
             "Math.random is replaced by an arrow function or not at all.",
         );
     }
-    if (context.reachedNodeParticles.sets.some((set) => set.native)) {
-        if (context.reachedNodeParticles.sets.some((set) => !set.native)) {
+    if (
+        context.sceneManifest.reachedNodeParticles.sets.some(
+            (set) => set.native,
+        )
+    ) {
+        if (
+            context.sceneManifest.reachedNodeParticles.sets.some(
+                (set) => !set.native,
+            )
+        ) {
             context.fail(
                 expression,
                 "A Math.random override cannot span native and generation-only particle systems.",
             );
         }
         const saved = ts.isIdentifier(expression.right)
-            ? context.lookup(expression.right)
+            ? context.bindings.lookup(expression.right)
             : undefined;
         const callback =
             saved?.kind === "js-random"
@@ -291,9 +291,11 @@ export function emitDeterministicRandomInstall(
     // after this point draws from the browser's own again.
     if (
         ts.isIdentifier(expression.right) &&
-        context.lookup(expression.right).kind === "js-random"
+        context.bindings.lookup(expression.right).kind === "js-random"
     ) {
-        context.reachedNodeParticles.steps.push({ op: "random-restore" });
+        context.sceneManifest.reachedNodeParticles.steps.push({
+            op: "random-restore",
+        });
         return true;
     }
     // `Math.random = makeSeed()`: the generator comes from a module-level
@@ -330,7 +332,7 @@ export function emitDeterministicRandomInstall(
             }
             return argument.getText();
         });
-        context.reachedNodeParticles.steps.push({
+        context.sceneManifest.reachedNodeParticles.steps.push({
             op: "random",
             declarations: [
                 ...capturedDeclarations(context, factory, checker),
@@ -351,7 +353,7 @@ export function emitDeterministicRandomInstall(
                 "module-level factory returning one, or not at all.",
         );
     }
-    if (context.reachedNodeParticles.sets.length === 0) {
+    if (context.sceneManifest.reachedNodeParticles.sets.length === 0) {
         context.fail(
             expression,
             "Math.random is replaceable only as the deterministic seed of a " +
@@ -367,7 +369,7 @@ export function emitDeterministicRandomInstall(
         );
     }
     refuseTypeSyntax(context, arrow);
-    context.reachedNodeParticles.steps.push({
+    context.sceneManifest.reachedNodeParticles.steps.push({
         op: "random",
         declarations: capturedDeclarations(context, arrow, checker),
         arrow: arrow.getText(),
@@ -388,7 +390,7 @@ export function assertDeterministicRandomUnreached(
     jsRandomReached: boolean,
     site: ts.Node,
 ): void {
-    const installed = context.reachedNodeParticles.steps.some(
+    const installed = context.sceneManifest.reachedNodeParticles.steps.some(
         (step) => step.op === "random",
     );
     if (installed && jsRandomReached) {

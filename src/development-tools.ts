@@ -2,6 +2,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { developmentTriplet } from "./build-options.js";
+import { findTintTool } from "./tint-tool.js";
+import {
+    artifactPatchState,
+    type ArtifactPatchState,
+} from "./patch-inventory.js";
 
 import type { canonicalDevelopmentCompiler } from "./build-options.js";
 
@@ -9,7 +14,7 @@ type DevelopmentCompiler = ReturnType<typeof canonicalDevelopmentCompiler>;
 
 export const clangToolsMajor = 22;
 
-export interface ToolDiscoveryOptions {
+interface ToolDiscoveryOptions {
     cwd?: string;
     environment?: NodeJS.ProcessEnv;
     platform?: NodeJS.Platform;
@@ -22,13 +27,27 @@ export interface WindowsBuildTools {
     visualStudioRoot: string;
 }
 
+/** A pinned development artifact's source and patch record against the manifest. */
+export interface DependencyPatchRecord {
+    library: "dawn" | "labsound" | "rmlui";
+    state: ArtifactPatchState;
+    /** What doctor and setup report; absent when the record is current. */
+    message: string | undefined;
+}
+
 export interface DevelopmentTools {
+    /** bblite-tint, the pinned Tint the offline shader compiler drives
+     *  (tools/tint-sdl, built by tools/build-tint.ps1): `BBLITE_TINT_PATH`,
+     *  or the build that records this checkout's sources (src/tint-tool.ts). */
+    bbliteTint: string | undefined;
     ccache: string | undefined;
     cmake: string | undefined;
     cc: string | undefined;
     cxx: string | undefined;
     ninja: string | undefined;
     dawnDirectory: string;
+    /** The pinned artifacts' files are present (`dependencyPatchRecords`
+     *  says whether each was built from what the manifest selects). */
     dawnInstalled: boolean;
     dxc: string | undefined;
     git: string | undefined;
@@ -37,7 +56,6 @@ export interface DevelopmentTools {
     powershell: string | undefined;
     rmlUiDirectory: string;
     rmlUiInstalled: boolean;
-    tint: string | undefined;
     vcpkg: string | undefined;
     vcpkgRoot: string | undefined;
     vcpkgToolchain: string | undefined;
@@ -336,13 +354,6 @@ export function discoverDevelopmentTools(
         cwd,
         environment.BBLITE_RMLUI_DIR ?? join("artifacts", "tools", "rmlui"),
     );
-    const localTint = resolve(
-        cwd,
-        "artifacts",
-        "tools",
-        "tint",
-        platform === "win32" ? "tint.exe" : "tint",
-    );
     const localDxc = resolve(
         cwd,
         "tools",
@@ -377,8 +388,37 @@ export function discoverDevelopmentTools(
     const rmlUiHasSvg =
         existsSync(rmlUiConfig) &&
         /\bset\(RMLUI_SVG_PLUGIN ON\)/.test(readFileSync(rmlUiConfig, "utf8"));
+    const dawnBuilt = dawnFiles.every(existsSync);
+    const labSoundBuilt =
+        existsSync(
+            join(
+                labSoundDirectory,
+                "lib",
+                platform === "win32" ? "LabSound.lib" : "libLabSound.a",
+            ),
+        ) &&
+        existsSync(
+            join(
+                labSoundDirectory,
+                "lib",
+                platform === "win32" ? "libnyquist.lib" : "liblibnyquist.a",
+            ),
+        ) &&
+        existsSync(
+            join(labSoundDirectory, "include", "libnyquist", "Decoders.h"),
+        );
+    const rmlUiBuilt =
+        // The package must carry the SVG-enabled option set now consumed
+        // by bounded inner markup, plus the SDL platform source the UI
+        // feature compiles directly.
+        rmlUiHasSvg &&
+        existsSync(join(rmlUiDirectory, "Backends", "RmlUi_Platform_SDL.cpp"));
 
     return {
+        bbliteTint:
+            environment.BBLITE_TINT_PATH !== undefined
+                ? findExecutable(environment.BBLITE_TINT_PATH, options)
+                : findTintTool(resolve(cwd), cmake, platform),
         ccache:
             environment.CCACHE_PATH !== undefined
                 ? findExecutable(environment.CCACHE_PATH, options)
@@ -412,13 +452,7 @@ export function discoverDevelopmentTools(
             ? join(vcpkgRoot, "scripts", "buildsystems", "vcpkg.cmake")
             : undefined,
         dawnDirectory,
-        dawnInstalled: dawnFiles.every(existsSync),
-        tint:
-            environment.TINT_PATH !== undefined
-                ? findExecutable(environment.TINT_PATH, options)
-                : existsSync(localTint)
-                  ? localTint
-                  : findExecutable("tint", options),
+        dawnInstalled: dawnBuilt,
         dxc:
             environment.DXC_PATH !== undefined
                 ? findExecutable(environment.DXC_PATH, options)
@@ -426,32 +460,56 @@ export function discoverDevelopmentTools(
                   ? localDxc
                   : findExecutable("dxc", options),
         labSoundDirectory,
-        labSoundInstalled:
-            existsSync(
-                join(
-                    labSoundDirectory,
-                    "lib",
-                    platform === "win32" ? "LabSound.lib" : "libLabSound.a",
-                ),
-            ) &&
-            existsSync(
-                join(
-                    labSoundDirectory,
-                    "lib",
-                    platform === "win32" ? "libnyquist.lib" : "liblibnyquist.a",
-                ),
-            ) &&
-            existsSync(
-                join(labSoundDirectory, "include", "libnyquist", "Decoders.h"),
-            ),
+        labSoundInstalled: labSoundBuilt,
         rmlUiDirectory,
-        rmlUiInstalled:
-            // The package must carry the SVG-enabled option set now consumed
-            // by bounded inner markup, plus the SDL platform source the UI
-            // feature compiles directly.
-            rmlUiHasSvg &&
-            existsSync(
-                join(rmlUiDirectory, "Backends", "RmlUi_Platform_SDL.cpp"),
-            ),
+        rmlUiInstalled: rmlUiBuilt,
     };
+}
+
+/**
+ * The source/patch records of the pinned development artifacts present,
+ * checked by native/patch-identity.cmake: Dawn for the variants this
+ * platform applies, LabSound for the variants it recorded, RmlUi for none.
+ * Empty without CMake, which doctor reports first.
+ */
+export function dependencyPatchRecords(
+    tools: DevelopmentTools,
+    platform: NodeJS.Platform = process.platform,
+): DependencyPatchRecord[] {
+    const cmake = tools.cmake;
+    if (!cmake) return [];
+    return (
+        [
+            [
+                tools.dawnInstalled,
+                "dawn",
+                tools.dawnDirectory,
+                platform === "darwin" ? ["metal"] : [],
+            ],
+            [
+                tools.labSoundInstalled,
+                "labsound",
+                tools.labSoundDirectory,
+                undefined,
+            ],
+            [tools.rmlUiInstalled, "rmlui", tools.rmlUiDirectory, []],
+        ] as const
+    )
+        .filter(([built]) => built)
+        .map(([, library, directory, require]) => {
+            const state = artifactPatchState(
+                cmake,
+                library,
+                directory,
+                require,
+            );
+            return {
+                library,
+                state,
+                message:
+                    state.state === "current"
+                        ? undefined
+                        : `${library} at ${directory} ${state.detail}; ${state.state === "stale" ? "setup rebuilds it" : "rebuild it to record one"}.`,
+            };
+        });
 }

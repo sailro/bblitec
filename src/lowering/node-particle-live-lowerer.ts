@@ -1387,7 +1387,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             if (!ts.isIdentifier(callee)) continue;
             const value =
                 env.lookup(callee.text) ??
-                this.evaluator.findFree(callee.text, file, module);
+                this.evaluator.findFree(callee, module);
             if (value?.k === "function") {
                 this.bindFunctionCall(
                     callee.text,
@@ -1475,7 +1475,7 @@ class SystemLowering implements ValueModel<StaticValue, StaticValue> {
             case "constant-getter": {
                 const constant = value.value;
                 if (constant === null) {
-                    bindings.set(name, absentBinding());
+                    bindings.set(name, absentBinding("null"));
                     calls.set(name, () => {
                         throw new Error(
                             `The live node-particle lowering reached the unconnected ` +

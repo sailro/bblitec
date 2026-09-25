@@ -105,6 +105,6 @@ test("strict shared WGSL modules require unique declared entry stages", () => {
     assert.throws(() => parseWgslStages(vertex + vertex), /Duplicate @vertex/);
     assert.throws(
         () => parseWgslStages(vertex + "fn helper() -> f32 { return 0.0; }"),
-        /Expected/,
+        /Unsupported WGSL module-scope helper function 'helper'/,
     );
 });

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
+    geometryReferencePaths,
     geometryReferenceStaleness,
     geometryTaskPaths,
 } from "../src/geometry-output-diagnostics.js";
@@ -55,10 +56,9 @@ test("measured runs select coexisting backend builds without modifying their pay
     }
 });
 
-// TL-6's parseable pieces, in the gaps-test style: the per-task path
-// quartet, the diff-rule staleness reader for cached impostor
-// references, and the shared executable resolver the command now goes
-// through instead of its own truncated chain.
+// The geometry mode's parseable pieces: the per-task path quartet, the
+// shared browser-evidence staleness rule for cached impostor references,
+// and the shared executable resolver.
 
 test("spells the geometry task path quartet once for writer and reader", () => {
     const directory = join("artifacts", "parity", "scene145", "geometry");
@@ -75,17 +75,26 @@ test("spells the geometry task path quartet once for writer and reader", () => {
     const dawn = geometryTaskPaths(directory, "albedo", "dawn");
     assert.equal(dawn.reference, paths.reference);
     assert.equal(dawn.actual, resolve(directory, "albedo-native-dawn.png"));
+    assert.deepEqual(geometryReferencePaths(directory, "albedo"), {
+        reference: paths.reference,
+        referenceMeta: paths.referenceMeta,
+    });
 });
 
-test("a cached impostor reference is evidence only at its recorded pose", () => {
+test("a cached impostor reference is evidence only for its pose, pin and module", () => {
     const directory = resolve(".cache", "geometry-staleness");
     mkdirSync(directory, { recursive: true });
     const reference = join(directory, "albedo-lite.png");
     const meta = join(directory, "albedo-lite.meta.json");
+    const want = (seekSeconds: number | null, pin = "1.0@abc") => ({
+        seekSeconds,
+        pin,
+        moduleSha256: (seek: number | undefined) => `module-at-${seek}`,
+    });
     try {
         // No reference at all.
         assert.equal(
-            geometryReferenceStaleness(reference, meta, null),
+            geometryReferenceStaleness(reference, meta, want(null)),
             "missing",
         );
 
@@ -93,38 +102,51 @@ test("a cached impostor reference is evidence only at its recorded pose", () => 
         // reuse-on-bare-existence hole this rule closes.
         writeFileSync(reference, "png");
         assert.equal(
-            geometryReferenceStaleness(reference, meta, null),
-            "was captured at a different seek (or carries no provenance)",
+            geometryReferenceStaleness(reference, meta, want(null)),
+            "carries no provenance sidecar",
         );
 
-        // A recorded pose matches itself, seeked or not...
+        // A seek-only sidecar (the previous format) names no module.
         writeSeekMeta(meta, 0.5);
         assert.equal(
-            geometryReferenceStaleness(reference, meta, 0.5),
+            geometryReferenceStaleness(reference, meta, want(0.5)),
+            "carries no scene-module provenance",
+        );
+
+        // A complete sidecar matches itself, seeked or not...
+        writeSeekMeta(meta, 0.5, {
+            moduleSha256: "module-at-0.5",
+            pin: "1.0@abc",
+        });
+        assert.equal(
+            geometryReferenceStaleness(reference, meta, want(0.5)),
             undefined,
         );
-        writeSeekMeta(meta, undefined);
+        writeSeekMeta(meta, undefined, {
+            moduleSha256: "module-at-undefined",
+            pin: "1.0@abc",
+        });
         assert.equal(
-            geometryReferenceStaleness(reference, meta, null),
+            geometryReferenceStaleness(reference, meta, want(null)),
             undefined,
         );
 
-        // ...and any other wanted pose recaptures, in both directions —
-        // the animated-scene case TL-6 named: a settled browser pose
-        // against native frame 0.
-        writeSeekMeta(meta, 0.5);
+        // ...and any other pose, pin or module recaptures.
         assert.equal(
-            geometryReferenceStaleness(reference, meta, 1),
-            "was captured at a different seek (or carries no provenance)",
+            geometryReferenceStaleness(reference, meta, want(0.5)),
+            "was captured at a different seek",
         );
         assert.equal(
-            geometryReferenceStaleness(reference, meta, null),
-            "was captured at a different seek (or carries no provenance)",
+            geometryReferenceStaleness(reference, meta, want(null, "2.0@def")),
+            "was captured through 1.0@abc, not the current pin",
         );
-        writeSeekMeta(meta, undefined);
-        assert.equal(
-            geometryReferenceStaleness(reference, meta, 0.5),
-            "was captured at a different seek (or carries no provenance)",
+        writeSeekMeta(meta, undefined, {
+            moduleSha256: "an-older-module",
+            pin: "1.0@abc",
+        });
+        assert.match(
+            geometryReferenceStaleness(reference, meta, want(null)) ?? "",
+            /different scene module/,
         );
     } finally {
         rmSync(directory, { recursive: true, force: true });
@@ -135,7 +157,8 @@ test("the executable chain is explicit, then BBLITE_NATIVE_EXE, then the build",
     const previous = process.env.BBLITE_NATIVE_EXE;
     try {
         process.env.BBLITE_NATIVE_EXE = join("elsewhere", "bblite_native.exe");
-        // An explicit `--exe` wins over the ambient override.
+        // An explicit executable (the probe's resolved binary) wins over
+        // the ambient override.
         assert.equal(
             resolveNativeExecutable(
                 join("explicit", "exe"),

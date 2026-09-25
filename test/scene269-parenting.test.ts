@@ -53,7 +53,7 @@ test("preserves the pinned setParent world and hierarchy contract", () => {
 
     assert.match(
         source,
-        /const std::array<float, 16> child_world =\s*parenting_world_matrix\(engine, child_record\);/,
+        /const std::array<float, 16> child_world =\s*upstream::mesh_world_matrix\(engine, child_record\);/,
     );
     assert.match(
         source,
@@ -73,11 +73,11 @@ test("preserves the pinned setParent world and hierarchy contract", () => {
     );
     assert.match(
         source,
-        /record\.outer_position = Vec3d\{\};\s*record\.outer_rotation = Vec3d\{\};[\s\S]{0,1300}record\.gpu_world_transform = true;/,
+        /record\.parent_world\.reset\(\);\s*record\.outer_position = Vec3d\{\};\s*record\.outer_rotation = Vec3d\{\};/,
     );
     assert.match(
         source,
-        /for \(const MeshHandle mesh : engine\.assets\[child\.value\]\.meshes\) \{\s*set_mesh_parent\(engine, mesh, parent\);/,
+        /for \(const MeshHandle mesh : bbl::handle_at\(engine\.assets, child\)\.meshes\) \{\s*set_mesh_parent\(engine, mesh, parent\);/,
     );
     assert.match(
         source,
@@ -94,15 +94,15 @@ test("keeps imported authored winding separate from live parent reflection", () 
 
     assert.match(
         loader,
-        /record\.authored_clockwise_front_face =\s*clockwise_front_face;\s*record\.clockwise_front_face =\s*clockwise_front_face;/,
+        /const bool mirrored_world =\s*upstream::pinned_mat4_determinant3\(mesh_world\) < 0\.0;[\s\S]*record\.authored_clockwise_front_face =\s*clockwise_front_face != mirrored_world;\s*record\.clockwise_front_face =\s*clockwise_front_face;/,
     );
     assert.match(
         loader,
-        /record\.scene_node_name = string_or\(node, "name"\);[\s\S]{0,180}"gltf_node_"/,
+        /record\.scene_node_name = node_name && !node_name->is_null\(\)\s*\? node_name->as_string\(\)\s*: "node_" \+ std::to_string\(node_index\);/,
     );
     assert.match(
         renderer,
-        /const bool transform_mirrored =\s*pinned_mat4_determinant3\(\s*matrix_product\(\s*outer_transform_matrix\(mesh\), mesh_world_matrix\(engine, mesh\)\)\) < 0\.0;\s*const bool clockwise_front_face =\s*mesh\.authored_clockwise_front_face != transform_mirrored;/,
+        /const bool transform_mirrored =\s*pinned_mat4_determinant3\(mesh_world_matrix\(engine, mesh\)\) < 0\.0;\s*const bool clockwise_front_face =\s*mesh\.authored_clockwise_front_face != transform_mirrored;/,
     );
     assert.doesNotMatch(renderer, /mesh\.authored_clockwise_front_face\s*=/);
 });

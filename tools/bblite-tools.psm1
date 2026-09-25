@@ -49,6 +49,25 @@ function Resolve-RepositoryPath([string]$Path) {
     return [System.IO.Path]::GetFullPath($Path, (Get-RepositoryRoot))
 }
 
+# Refuses a path a script is about to delete or replace unless it lies under
+# $Root without crossing a link or junction on the way.
+function Assert-ContainedPath([string]$Root, [string]$Path) {
+    $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+    $child = [IO.Path]::GetFullPath($Path)
+    $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    if (-not $child.StartsWith($rootPath + [IO.Path]::DirectorySeparatorChar, $comparison)) {
+        throw "Path escapes its root: $Path"
+    }
+    $cursor = $child
+    while ($cursor -and $cursor -ne $rootPath) {
+        if ((Test-Path -LiteralPath $cursor) -and
+            ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Path crosses a link or junction: $cursor"
+        }
+        $cursor = [IO.Path]::GetDirectoryName($cursor)
+    }
+}
+
 # The Visual Studio installation carrying the C++ tools: VSINSTALLDIR when
 # it names one, otherwise the latest vswhere reports.
 function Get-VisualStudioRoot {
@@ -142,8 +161,8 @@ function Get-DevToolchain {
 # Brings a disposable checkout under $Path to exactly $Commit of
 # $Repository: initialized on first use, fetched only when the commit is
 # not yet present, and always reset with a forced detached checkout so a
-# patch applied to the working tree by an earlier run (which the callers
-# re-apply) never accumulates or blocks a changed patch.
+# patch applied to the working tree by an earlier run (which
+# Sync-PatchedCheckout re-applies) never accumulates or blocks a changed patch.
 function Sync-PinnedCheckout(
     [string]$Path,
     [string]$Repository,
@@ -168,13 +187,168 @@ function Sync-PinnedCheckout(
     }
 }
 
-# The `NAME:TYPE=value` entries of a CMakeCache.txt as a hashtable -- the
-# PowerShell twin of `readCacheConfiguration` (src/build-stamp.ts).
-function Read-CMakeCache([string]$Path) {
+# Runs native/patch-identity.cmake, the one owner of the maintained patch
+# series and of the record an artifact carries, and returns the lines it wrote.
+function Invoke-PatchIdentity(
+    [ValidateSet('series', 'record')][string]$Action,
+    [string]$Library,
+    [string[]]$Variants = @(),
+    [string]$CMake = ""
+) {
+    $cmakePath = Find-CMake $CMake
+    $output = [IO.Path]::GetTempFileName()
+    try {
+        & $cmakePath "-DBBLITE_PATCH_ACTION=$Action" "-DBBLITE_PATCH_LIBRARY=$Library" `
+            "-DBBLITE_PATCH_VARIANTS=$(@($Variants) -join ';')" "-DBBLITE_PATCH_OUTPUT=$output" `
+            -P (Join-Path (Get-RepositoryRoot) "native/patch-identity.cmake") | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "native/patch-identity.cmake $Action $Library failed ($LASTEXITCODE)." }
+        return @(Get-Content -LiteralPath $output | Where-Object { $_ -ne "" })
+    } finally {
+        Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# The maintained patches of one library that a build for $Variants applies,
+# in application order (native/patches/manifest.json).
+function Get-MaintainedPatches([string]$Library, [string[]]$Variants = @(), [string]$CMake = "") {
+    return @(Invoke-PatchIdentity series $Library $Variants $CMake | ForEach-Object {
+        [pscustomobject]@{ Name = Split-Path -Leaf $_; Path = $_ }
+    })
+}
+
+# The files a $Library artifact built for $Variants depends on: its pin file
+# and builder (native/patches/manifest.json), the manifest, the patch-identity
+# owner and the patches the build applies. Build-DependencyArtifact's inputs.
+function Get-DependencyInputs([string]$Library, [string[]]$Variants = @(), [string]$CMake = "") {
+    $root = Get-RepositoryRoot
+    $manifestPath = Join-Path $root 'native/patches/manifest.json'
+    $definition = (Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json).libraries.$Library
+    if (-not $definition -or -not $definition.builder) {
+        throw "native/patches/manifest.json names no builder for '$Library'."
+    }
+    return @(
+        (Join-Path $root $definition.pin.file),
+        (Join-Path $root $definition.builder),
+        $manifestPath,
+        (Join-Path $root 'native/patch-identity.cmake')
+    ) + @(Get-MaintainedPatches $Library $Variants $CMake | ForEach-Object Path)
+}
+
+# Applies patches to a checkout its builder has just reset to the pin. Each
+# one is staged, so the next forced checkout also removes files an earlier
+# version of a patch added; a patch that does not apply is a refusal, and
+# git applies each patch whole or not at all.
+function Install-MaintainedPatches([string]$Source, [object[]]$Patches, [string]$Label) {
+    foreach ($patch in $Patches) {
+        if (-not (Test-Path -LiteralPath $patch.Path)) { throw "$Label patch not found: $($patch.Path)" }
+        & git -C $Source apply --index $patch.Path
+        if ($LASTEXITCODE -ne 0) { throw "$Label patch $($patch.Name) does not apply to the pinned source at $Source." }
+        Write-Host "Applied $Label patch $($patch.Name)."
+    }
+}
+
+# The CMake lines the record of a $Library artifact built for $Variants
+# carries: its pinned source, each applied patch as name=sha256 in application
+# order, and the variants (native/patch-identity.cmake).
+function Get-PatchRecord([string]$Library, [string[]]$Variants = @(), [string]$CMake = "") {
+    return @(Invoke-PatchIdentity record $Library $Variants $CMake)
+}
+
+# What a checkout at $Commit with $Record's series staged records: empty when
+# HEAD is elsewhere or an unstaged edit sits over the staged series.
+function Get-AppliedSeriesState([string]$Path, [string]$Commit, [string[]]$Record) {
+    $head = git -C $Path rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -ne 0 -or $head -ne $Commit) { return "" }
+    git -C $Path diff --quiet
+    if ($LASTEXITCODE -ne 0) { return "" }
+    $tree = git -C $Path write-tree
+    if ($LASTEXITCODE -ne 0) { return "" }
+    return (@($Record) + "tree=$tree") -join "`n"
+}
+
+# Brings the disposable checkout at $Path to $Commit of $Repository with the
+# maintained series of $Library for $Variants applied, and returns that series.
+# The applied series and the tree it staged are recorded in the checkout's git
+# directory; a checkout still carrying exactly that state is left as it
+# stands, because a forced checkout and a re-applied series would give every
+# patched file a new timestamp and recompile the library and its consumers.
+# The record is removed before the source is reset and written only once the
+# whole series applied.
+function Sync-PatchedCheckout(
+    [string]$Path,
+    [string]$Repository,
+    [string]$Commit,
+    [string]$Label,
+    [string]$Library,
+    [string[]]$Variants = @(),
+    [string]$CMake = ""
+) {
+    $patches = @(Get-MaintainedPatches $Library $Variants $CMake)
+    $record = @(Get-PatchRecord $Library $Variants $CMake)
+    $statePath = Join-Path $Path ".git/bblite-applied-series.txt"
+    $recorded = if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw } else { "" }
+    if ($recorded -and $recorded -ceq (Get-AppliedSeriesState $Path $Commit $record)) {
+        Write-Host "$Label $Commit already carries its maintained series."
+        return $patches
+    }
+    if (Test-Path -LiteralPath $statePath) { Remove-Item -LiteralPath $statePath }
+    Sync-PinnedCheckout $Path $Repository $Commit $Label | Out-Host
+    Install-MaintainedPatches $Path $patches $Label | Out-Host
+    Set-Content -LiteralPath $statePath -Value (Get-AppliedSeriesState $Path $Commit $record) -NoNewline -Encoding utf8NoBOM
+    return $patches
+}
+
+# Writes $Value to $Path only when its bytes differ, so a warm rebuild leaves
+# an artifact's files, and the timestamps its consumers' builds compare, alone.
+function Set-ArtifactContent([string]$Path, [string]$Value) {
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Value)
+    if ((Test-Path -LiteralPath $Path -PathType Leaf) -and
+        [Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($Path), [byte[]]$bytes)) {
+        return
+    }
+    [IO.File]::WriteAllBytes($Path, $bytes)
+}
+
+# Copies the file or directory tree $Source to $Destination, rewriting only
+# the files whose bytes differ (Set-ArtifactContent's rule).
+function Copy-ArtifactItem([string]$Source, [string]$Destination) {
+    $files = if (Test-Path -LiteralPath $Source -PathType Leaf) {
+        @([pscustomobject]@{ From = $Source; To = $Destination })
+    } elseif (Test-Path -LiteralPath $Source -PathType Container) {
+        @(Get-ChildItem -LiteralPath $Source -Recurse -File | ForEach-Object {
+            [pscustomobject]@{
+                From = $_.FullName
+                To = Join-Path $Destination ([IO.Path]::GetRelativePath($Source, $_.FullName))
+            }
+        })
+    } else {
+        throw "Artifact input not found: $Source"
+    }
+    foreach ($file in $files) {
+        if ((Test-Path -LiteralPath $file.To -PathType Leaf) -and
+            (Get-Item -LiteralPath $file.To).Length -eq (Get-Item -LiteralPath $file.From).Length -and
+            (Get-FileHash -LiteralPath $file.To).Hash -eq (Get-FileHash -LiteralPath $file.From).Hash) {
+            continue
+        }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $file.To) -Force | Out-Null
+        Copy-Item -LiteralPath $file.From -Destination $file.To -Force
+    }
+}
+
+# The `NAME:TYPE=value` entries of a CMakeCache.txt as a hashtable of values
+# -- the PowerShell twin of `readCacheConfiguration` (src/build-stamp.ts).
+# -WithTypes maps each name to its Value and Type instead: BOOL, STRING,
+# INTERNAL, or UNINITIALIZED for a -D the project never declared.
+function Read-CMakeCache([string]$Path, [switch]$WithTypes) {
     $cache = @{}
     foreach ($line in Get-Content $Path) {
-        if ($line -match '^([A-Za-z0-9_]+):[A-Z]+=(.*)$') {
-            $cache[$Matches[1]] = $Matches[2].Trim()
+        if ($line -match '^([A-Za-z0-9_]+):([A-Z]+)=(.*)$') {
+            $value = $Matches[3].Trim()
+            $cache[$Matches[1]] = if ($WithTypes) {
+                [pscustomobject]@{ Value = $value; Type = $Matches[2] }
+            } else {
+                $value
+            }
         }
     }
     return $cache
@@ -233,7 +407,9 @@ function Get-BuildParallelArguments([int]$Jobs = 0) {
         if ($Jobs -lt 1) { throw "CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer." }
     }
     if ($Jobs) { return @("--parallel", "$Jobs") }
-    return @("--parallel")
+    # The comma keeps a one-element array an array: a bare @("--parallel")
+    # unrolls to a string, and splatting a string passes one character each.
+    return , @("--parallel")
 }
 
 Export-ModuleMember -Function @(
@@ -245,7 +421,15 @@ Export-ModuleMember -Function @(
     "Find-CMake",
     "Get-DevToolchain",
     "Sync-PinnedCheckout",
-    "Read-CMakeCache"
+    "Sync-PatchedCheckout",
+    "Get-MaintainedPatches",
+    "Get-DependencyInputs",
+    "Install-MaintainedPatches",
+    "Get-PatchRecord",
+    "Set-ArtifactContent",
+    "Copy-ArtifactItem",
+    "Assert-ContainedPath",
+    "Read-CMakeCache",
     "Get-BuildParallelArguments"
     "Get-PosixCompilerArguments"
     "Get-AndroidCompilerArguments"

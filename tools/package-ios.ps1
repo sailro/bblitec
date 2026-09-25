@@ -4,9 +4,11 @@ param(
     [string]$OutputRoot = 'artifacts/releases',
     [switch]$SkipGenerate
 )
+# Builds and verifies one unsigned iOS device bundle with the Xcode tools;
+# staging, the archive, the receipt and publication are
+# src/package-output.ts's, shared with every platform.
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'bblite-tools.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'package-output.psm1') -Force
 if (-not $IsMacOS) { throw 'iOS packaging requires macOS and Xcode with iOS SDK 16.4 or newer.' }
 $root = Get-RepositoryRoot
 $applicationId = "org.bblite.demo.$Scene"
@@ -41,8 +43,10 @@ console.log(status.expectedStamp);
 } finally { Pop-Location }
 
 $name = "bblitec-$Scene-sdl-gpu-ios-arm64"
-$plan = New-PackageOutput (Resolve-RepositoryPath $OutputRoot) $name
-$directory = Join-Path $plan.Staging $name
+$outputRootPath = Resolve-RepositoryPath $OutputRoot
+$packageOutput = Join-Path $root 'dist/src/package-output.js'
+$staging = @(Invoke-Checked 'node' @($packageOutput, 'stage', '--root', $outputRootPath, '--name', $name))[-1]
+$directory = Join-Path $staging $name
 $bundle = Join-Path $directory "bblite-$Scene.app"
 $executable = Join-Path $bundle 'bblite_native'
 New-Item -ItemType Directory -Path "$bundle/shaders" -Force | Out-Null
@@ -104,17 +108,8 @@ Native code uses BBLITE_MINSIZE, size optimization, LTO and dead stripping.
 Static dependencies retain reached audio, gamepad, codecs and UI only. Capture and Dawn are absent.
 Metal shaders, assets and third-party notices are inside the app.
 "@ | Set-Content "$directory/README.txt"
-$archive = Join-Path $plan.Staging "$name.zip"
-$cmake = Find-CMake
-Push-Location $plan.Staging
-try {
-    Invoke-Checked $cmake @('-E', 'tar', 'cf', $archive, '--format=zip', '--', $name)
-} finally { Pop-Location }
-$files = @(Get-ChildItem $bundle -Recurse -File | Sort-Object FullName | ForEach-Object {
-    @{ path = [IO.Path]::GetRelativePath($bundle, $_.FullName); bytes = $_.Length;
-        sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
-})
-@{
+$fields = Join-Path $staging 'receipt-fields.json'
+[ordered]@{
     scene = $Scene; platform = 'ios'; sdk = 'iphoneos'; sdkVersion = $configuration.sdkVersion
     architecture = $architecture; deviceFamilies = @('iPhone', 'iPad'); applicationId = $applicationId
     minSdk = $plist.MinimumOSVersion; backend = 'SDL_GPU'; nativeConfiguration = 'Release'
@@ -122,10 +117,8 @@ $files = @(Get-ChildItem $bundle -Recurse -File | Sort-Object FullName | ForEach
     qualification = 'unsigned-device-bundle'
     startup = @{ status = 'not-run'; reason = 'A provisioned physical iOS device is required; SDL_GPU excludes Simulator.' }
     buildStamp = $buildStamp; upstream = Get-Content "$directory/upstream.json" -Raw | ConvertFrom-Json
-    features = @($manifest.features); files = $files
-    exeBytes = (Get-Item $executable).Length; exeSha256 = (Get-FileHash $executable -Algorithm SHA256).Hash
-    bundleBytes = ($files | Measure-Object bytes -Sum).Sum
-    zipBytes = (Get-Item $archive).Length; zipSha256 = (Get-FileHash $archive -Algorithm SHA256).Hash
-} | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $plan.Staging "$name.json")
-Publish-PackageOutput $plan
-Write-Host "Unsigned iOS device package: $(Join-Path $plan.Root "$name.zip")"
+    features = @($manifest.features)
+} | ConvertTo-Json -Depth 8 | Set-Content $fields
+$published = @(Invoke-Checked 'node' @($packageOutput, 'finish', '--root', $outputRootPath, '--name', $name,
+    '--staging', $staging, '--receipt', $fields, '--artifact', "exe=$executable", '--files', "bundle=$bundle"))[-1]
+Write-Host "Unsigned iOS device package: $published"

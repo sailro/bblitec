@@ -86,11 +86,11 @@ int main(){
  auto list=material.plugin_uniform_writers;
  list->push_back([&](bbl::js::F32Array data,bbl::js::Map<std::string,double> offsets){const auto base=static_cast<std::size_t>(offsets.get("pluginVector").value()/4);data[base]=3;data[base+1]=4;data[base+2]=5;});
  bbl::upstream::PbrTestMaterialUniforms block{};
- bbl::upstream::write_pbr_variant_material(0,material,&block,sizeof(block),1);
+ bbl::upstream::write_pbr_variant_material(0,material,&block,sizeof(block));
  assert(block.pluginScalar==2&&block.pluginVector[0]==3&&block.pluginVector[2]==5&&block.materialAlpha==0.75f);
  assert(retained[static_cast<std::size_t>(retainedOffsets.get("pluginScalar").value()/4)]==2);
  material.plugin_uniform_writers=list;value=7;
- bbl::upstream::write_pbr_variant_material(0,material,&block,sizeof(block),1);assert(block.pluginScalar==7);
+ bbl::upstream::write_pbr_variant_material(0,material,&block,sizeof(block));assert(block.pluginScalar==7);
 }
 `,
     );

@@ -1,9 +1,9 @@
 import ts from "typescript";
-import { floatLiteral } from "../../cpp-literals.js";
-import { renderCppExpression } from "./animation-interpolation.js";
+import { renderCppExpression } from "./cpp-expression.js";
 import {
     CppExpressionScope,
     identifierParameters,
+    pinnedDoubleLiteral,
     refuseNode,
     singleBinding,
     topLevelFunction,
@@ -25,7 +25,9 @@ const preScaleConstantRenames: Readonly<Record<string, string>> = {
  * One pinned `polynomialToPreScaledHarmonics` body →
  * `pre_scale_harmonics`. The seven band constants, the nine polynomial
  * reads, and the nine store expressions all come from the pin; the
- * stride-4 output offsets collapse to the record's nine Color3 slots.
+ * stride-4 output offsets collapse to the record's nine Color3 slots. The
+ * pin reads a Float32Array, computes in double and rounds once at its
+ * Float32Array store, so the body is double and each store casts.
  */
 function emitPreScaleHarmonics(file: ts.SourceFile): string {
     const symbol = "polynomialToPreScaledHarmonics";
@@ -46,7 +48,7 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
         symbol,
         file,
         names,
-        numeric: (literal) => floatLiteral(Number(literal.text)),
+        numeric: pinnedDoubleLiteral,
     };
     const lines: string[] = [
         "std::array<Color3, 9> pre_scale_harmonics(",
@@ -72,8 +74,7 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
         }
         names.set(binding.name, cpp);
         lines.push(
-            `    constexpr float ${cpp} = ` +
-                `${floatLiteral(Number(value.text))};`,
+            `    constexpr double ${cpp} = ${pinnedDoubleLiteral(value)};`,
         );
         constants += 1;
     }
@@ -86,7 +87,7 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
         );
     }
     // `const out = new F32(36);` — nine stride-4 float32 harmonics, the
-    // rounding the C++ float math mirrors.
+    // one rounding each store below makes.
     const outBinding = singleBinding(
         symbol,
         file,
@@ -186,7 +187,7 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
         }
         names.set(binding.name, binding.name);
         lines.push(
-            `        const float ${binding.name} =`,
+            `        const double ${binding.name} =`,
             `            color_channel(polynomial[${slot}], channel);`,
         );
     }
@@ -220,21 +221,12 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
             );
         }
         const rendered = renderCppExpression(scope, assignment.right).text;
-        // The segment's fixed layout: a bare product stays inline, any
-        // composed expression splits one argument per line.
-        if (rendered.includes("(")) {
-            lines.push(
-                "        set_color_channel(",
-                `            result[${slot}],`,
-                "            channel,",
-                `            ${rendered});`,
-            );
-        } else {
-            lines.push(
-                "        set_color_channel(",
-                `            result[${slot}], channel, ${rendered});`,
-            );
-        }
+        lines.push(
+            "        set_color_channel(",
+            `            result[${slot}],`,
+            "            channel,",
+            `            static_cast<float>(${rendered}));`,
+        );
     }
     if (bodyIndex !== body.length) {
         refuseNode(

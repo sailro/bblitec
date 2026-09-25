@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { floatLiteral } from "../../cpp-literals.js";
-import { renderCppExpression } from "./animation-interpolation.js";
+import { renderCppExpression } from "./cpp-expression.js";
 import {
     CppExpressionScope,
     identifierParameters,
@@ -235,32 +235,24 @@ export function lowerMatrixComposeCpp(
 }
 
 /**
- * `native_matrix`, anchored to the pin's `RH_TO_LH_ROOT`.
+ * `gltf_rooted_world`, the pin's `RH_TO_LH_ROOT` left multiply.
  *
- * The function is the record's convention — the diagonal change of
- * basis D*M*D applied where a matrix enters a native record, instead of
- * the pin's left multiply at the hierarchy root — so only the flip axis
- * and its sign flow. See the round-3 notes for the exactness argument.
+ * `computeNodeWorldMatrix` parents every hierarchy root on that diagonal,
+ * so a node world the port composes from the root down (an animated
+ * node's live chain) takes it on the left, through the pinned multiply,
+ * exactly as the pin's own world does.
  */
-export function lowerMatrixNativeCpp(file: ts.SourceFile): string {
+export function lowerRootedWorldCpp(file: ts.SourceFile): string {
     const { lane, sign } = pinnedRootFlip(file);
-    const literal = floatLiteral(sign);
+    const lanes = Array.from({ length: 16 }, (_, index) =>
+        floatLiteral(index === lane * 5 ? sign : index % 5 === 0 ? 1 : 0),
+    );
     return [
-        "Matrix native_matrix(const Matrix& matrix) {",
-        "    Matrix result{};",
-        "    for (std::size_t column = 0; column < 4; ++column) {",
-        "        for (std::size_t row = 0; row < 4; ++row) {",
-        `            const float row_sign = row == ${lane} ? ` +
-            `${literal} : 1.0f;`,
-        "            const float column_sign =",
-        `                column == ${lane} ? ${literal} : 1.0f;`,
-        "            result[column * 4 + row] =",
-        "                matrix[column * 4 + row] *",
-        "                row_sign *",
-        "                column_sign;",
-        "        }",
-        "    }",
-        "    return result;",
+        "const Matrix gltf_rh_to_lh_root{",
+        `    ${lanes.join(", ")}};`,
+        "",
+        "Matrix gltf_rooted_world(const Matrix& world) {",
+        "    return upstream::matrix_product(gltf_rh_to_lh_root, world);",
         "}",
     ].join("\n");
 }

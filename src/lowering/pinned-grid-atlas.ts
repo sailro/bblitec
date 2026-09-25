@@ -1,14 +1,22 @@
-// `createGridSpriteAtlas`, emitted once.
+// `createGridSpriteAtlas`, lowered once.
 //
 // Two loaders partition a texture into frames: `loadSpriteAtlas`, which the
 // sprite and billboard families reach, and the particle bridge, whose atlas
-// `createParticleBillboard` builds over a `loadTexture2D` texture instead.
-// They differ only in how the texture arrived and which sampler it carries,
-// so the partition itself -- the pin's own row-major grid, its two defaulted
+// `createParticleBillboard` builds over a `loadTexture2D` texture instead --
+// and scene code reaches the factory itself over a file, pixel or render
+// texture. They differ only in how the texture arrived and which sampler it
+// carries, so the partition -- the pin's own row-major grid, its defaulted
 // margins, its floor-and-max column count and its four frame fields -- is
-// emitted from one place and asserted against the pinned declaration here.
+// translated from the pinned declaration into one function every caller
+// shares.
 import ts from "typescript";
-import type { LoweringContext } from "./context.js";
+import { type LoweringContext, unwrapExpression } from "./context.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import type {
+    PinnedBinding,
+    PinnedNumericLowerer,
+} from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 
@@ -43,156 +51,286 @@ export function pushAtlasHandleCpp(): string {
 }
 
 /**
- * The statements that fill `atlas.frames`, given `cell_w` and `cell_h`
- * doubles already in scope and an `atlas` whose width and height are set.
+ * The call a grid loader makes once `atlas` holds the decoded texture, with
+ * `cell_w` and `cell_h` doubles in scope: the pin's own loaders name the two
+ * cell sizes (and `loadSpriteAtlas` its premultiplied flag) and leave every
+ * other option to the factory's defaults, so the options record names only
+ * those and its omitted members are the absent ones.
  */
-export function gridSpriteAtlasFramesCpp(context: LoweringContext): string {
-    assertGridRule(context);
-    return `    const double margin = 0.0;
-    const double spacing = 0.0;
-    const double tw = static_cast<double>(atlas.width);
-    const double th = static_cast<double>(atlas.height);
-    const double columns = std::max(
-        1.0,
-        std::floor((tw - margin * 2.0 + spacing) / (cell_w + spacing)));
-    const double rows = std::max(
-        1.0,
-        std::floor((th - margin * 2.0 + spacing) / (cell_h + spacing)));
-    const double pivot_x = 0.5;
-    const double pivot_y = 0.5;
-    for (double r = 0.0; r < rows; r += 1.0) {
-        for (double c = 0.0; c < columns; c += 1.0) {
-            const double x = margin + c * (cell_w + spacing);
-            const double y = margin + r * (cell_h + spacing);
-            SpriteFrame frame;
-            frame.uv_min = Vec2{
-                static_cast<float>(x / tw),
-                static_cast<float>(y / th)};
-            frame.uv_max = Vec2{
-                static_cast<float>((x + cell_w) / tw),
-                static_cast<float>((y + cell_h) / th)};
-            frame.source_size_px = Vec2{
-                static_cast<float>(cell_w),
-                static_cast<float>(cell_h)};
-            frame.pivot = Vec2{
-                static_cast<float>(pivot_x),
-                static_cast<float>(pivot_y)};
-            atlas.frames.push_back(frame);
-        }
-    }`;
+export function gridSpriteAtlasFramesCpp(premultipliedAlpha?: string): string {
+    return `    // createGridSpriteAtlas(texture, { cellWidthPx, cellHeightPx${
+        premultipliedAlpha === undefined ? "" : ", premultipliedAlpha"
+    } }).
+    bbl::upstream::create_grid_sprite_atlas_frames(
+        atlas,
+        bbl::GridSpriteAtlasOptions{
+            .cell_width_px = cell_w,
+            .cell_height_px = cell_h${
+                premultipliedAlpha === undefined
+                    ? ""
+                    : `,
+            .has_premultiplied_alpha = true,
+            .premultiplied_alpha = ${premultipliedAlpha}`
+            }});`;
 }
 
+/** The two required options, each the member its value lands in. */
+const optionMembers: ReadonlyArray<readonly [string, string]> = [
+    ["options.cellWidthPx", "options.cell_width_px"],
+    ["options.cellHeightPx", "options.cell_height_px"],
+];
+
 /**
- * The pinned partition, asserted term by term.
- *
- * Everything the emitted C++ folds -- the two zero defaults, the half-pivot,
- * both dimension formulas and the four fields a frame carries -- is stated
- * once in the pin and checked once here, so a pin that adds a margin or
- * moves a pivot fails generation rather than partitioning differently.
+ * The optional options: the native record carries each with an explicit
+ * presence flag, so the pin's own `??` right side -- lowered where the pin
+ * writes it -- is what an absent one takes.
  */
-function assertGridRule(context: LoweringContext): void {
-    const { declaration } = context.functionDeclaration(
+const presenceOptions: ReadonlyMap<string, { present: string; cpp: string }> =
+    new Map(
+        (
+            [
+                ["options.columns", "columns"],
+                ["options.rows", "rows"],
+                ["options.marginPx", "margin_px"],
+                ["options.spacingPx", "spacing_px"],
+                ["options.premultipliedAlpha", "premultiplied_alpha"],
+            ] as const
+        ).map(([pinned, member]) => [
+            pinned,
+            { present: `options.has_${member}`, cpp: `options.${member}` },
+        ]),
+    );
+
+/** `SpriteFrame`'s members, in the order the native aggregate declares them. */
+const frameFields: readonly string[] = [
+    "uvMin",
+    "uvMax",
+    "sourceSizePx",
+    "pivot",
+];
+
+/**
+ * `createGridSpriteAtlas`, translated from its declaration into
+ * `create_grid_sprite_atlas_frames(atlas, options)`.
+ *
+ * The native atlas record is filled in place rather than returned: its
+ * texture has already arrived (decoded, uploaded or rendered) by the time
+ * any caller partitions it, so the pin's `texture` is that record and the
+ * record literal the pin returns is those same fields -- `frames` pushed
+ * into, `textureSizePx` the width and height already on it, and the one
+ * value the literal computes, `premultipliedAlpha`, stored.
+ */
+export function gridSpriteAtlasCpp(context: LoweringContext): string {
+    const { file, declaration } = context.functionDeclaration(
         atlasModule,
         "createGridSpriteAtlas",
     );
-    // Ten locals, the row-major loop, and the record: the shape checks
-    // below say each initializer is present, and only the inventory notices
-    // a statement the pin adds between them.
-    context.assertStatementInventory(
-        declaration,
-        declaration.body!.statements,
-        "createGridSpriteAtlas",
-        "the emitted grid partition restates a body",
-        [
-            ...Array.from({ length: 10 }, () => "variable statement"),
-            "for statement",
-            "return statement",
-        ],
-    );
-    const initializer = (name: string): ts.Expression => {
-        const found = context
-            .findNodes(declaration.body!, ts.isVariableDeclaration)
-            .find(
-                (candidate) =>
-                    ts.isIdentifier(candidate.name) &&
-                    candidate.name.text === name,
-            );
-        if (!found?.initializer) {
-            context.contractError(
-                declaration,
-                `createGridSpriteAtlas no longer declares '${name}'.`,
-            );
-        }
-        return found.initializer;
-    };
-    context.assertExpressionShape(
-        initializer("cellW"),
-        "options.cellWidthPx",
-        "grid atlas cell width",
-    );
-    context.assertExpressionShape(
-        initializer("cellH"),
-        "options.cellHeightPx",
-        "grid atlas cell height",
-    );
-    context.assertExpressionShape(
-        initializer("margin"),
-        "options.marginPx ?? 0",
-        "grid atlas margin",
-    );
-    context.assertExpressionShape(
-        initializer("spacing"),
-        "options.spacingPx ?? 0",
-        "grid atlas spacing",
-    );
-    context.assertExpressionShape(
-        initializer("cols"),
-        "options.columns ?? Math.max(1, Math.floor((texture.width - margin * 2 + spacing) / (cellW + spacing)))",
-        "grid atlas columns",
-    );
-    context.assertExpressionShape(
-        initializer("rows"),
-        "options.rows ?? Math.max(1, Math.floor((texture.height - margin * 2 + spacing) / (cellH + spacing)))",
-        "grid atlas rows",
-    );
-    context.assertExpressionShape(
-        initializer("pivot"),
-        "options.pivot ?? [0.5, 0.5]",
-        "grid atlas pivot",
-    );
-    const frame = context
-        .findNodes(declaration.body!, ts.isObjectLiteralExpression)
-        .find((candidate) =>
-            candidate.properties.some(
-                (property) =>
-                    property.name !== undefined &&
-                    context.propertyName(property.name) === "uvMin",
-            ),
-        );
-    if (!frame) {
+    const [texture, options] = declaration.parameters;
+    if (
+        declaration.parameters.length !== 2 ||
+        !texture ||
+        !options ||
+        texture.name.getText(file) !== "texture" ||
+        texture.type?.getText(file) !== "Texture2D" ||
+        options.name.getText(file) !== "options" ||
+        options.type?.getText(file) !== "GridAtlasOptions"
+    ) {
         context.contractError(
             declaration,
-            "createGridSpriteAtlas no longer builds frame records.",
+            "Expected pinned createGridSpriteAtlas(texture: Texture2D, options: GridAtlasOptions).",
         );
     }
-    const expected: ReadonlyArray<readonly [string, string]> = [
-        ["uvMin", "[x / tw, y / th]"],
-        ["uvMax", "[(x + cellW) / tw, (y + cellH) / th]"],
-        ["sourceSizePx", "[cellW, cellH]"],
-        ["pivot", "[pivot[0], pivot[1]]"],
-    ];
-    if (frame.properties.length !== expected.length) {
-        context.contractError(
-            frame,
-            `A grid atlas frame carries ${frame.properties.length} ` +
-                `fields; ${expected.length} are lowered.`,
-        );
+    const bindings = new Map<string, PinnedBinding>([
+        [
+            "texture.width",
+            { cpp: "static_cast<double>(atlas.width)", type: "scalar" },
+        ],
+        [
+            "texture.height",
+            { cpp: "static_cast<double>(atlas.height)", type: "scalar" },
+        ],
+        ...optionMembers.map(([pinned, cpp]): [string, PinnedBinding] => [
+            pinned,
+            { cpp, type: "scalar" },
+        ]),
+    ]);
+    const body = lowerPinnedBody(file, declaration.body!.statements, {
+        bindings,
+        calls: pinnedNumericMathCalls(),
+        expression: (node, lowerer) => {
+            if (
+                !ts.isBinaryExpression(node) ||
+                node.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+            ) {
+                return undefined;
+            }
+            const read = unwrapExpression(node.left).getText(file);
+            const presence = presenceOptions.get(read);
+            if (presence) {
+                return `(${presence.present} ? ${presence.cpp} : ${lowerer.expression(node.right)})`;
+            }
+            return undefined;
+        },
+        statement: (statement, lowerer, indent) =>
+            gridAtlasStatement(context, statement, lowerer, indent, bindings),
+    });
+    return `// ${context.provenance(atlasModule, "createGridSpriteAtlas")}
+inline void create_grid_sprite_atlas_frames(
+    SpriteAtlasRecord& atlas,
+    const GridSpriteAtlasOptions& options) {
+${body}
+}`;
+}
+
+/**
+ * The statements of the pinned body that build JavaScript records rather
+ * than numbers: the pivot pair, the growing frame list, each frame literal
+ * and the returned atlas. Everything else -- the cell sizes, the defaulted
+ * margins, the column and row counts and the per-cell arithmetic -- goes
+ * through the ordinary translator.
+ */
+function gridAtlasStatement(
+    context: LoweringContext,
+    statement: ts.Statement,
+    lowerer: PinnedNumericLowerer,
+    indent: string,
+    bindings: Map<string, PinnedBinding>,
+): readonly string[] | undefined {
+    if (ts.isVariableStatement(statement)) {
+        const [local] = statement.declarationList.declarations;
+        if (
+            statement.declarationList.declarations.length !== 1 ||
+            !local ||
+            !ts.isIdentifier(local.name) ||
+            !local.initializer
+        ) {
+            return undefined;
+        }
+        if (local.name.text === "pivot") {
+            // `options.pivot ?? [x, y]`: each lane is the caller's pair
+            // when the record carries one, or that lane of the pin's own
+            // default, lowered where the pin writes it.
+            const nullish = context.nullishDefault(local.initializer);
+            const fallback = nullish
+                ? unwrapExpression(nullish.right)
+                : undefined;
+            if (
+                !nullish ||
+                !fallback ||
+                unwrapExpression(nullish.left).getText() !== "options.pivot" ||
+                !ts.isArrayLiteralExpression(fallback) ||
+                fallback.elements.length !== 2
+            ) {
+                return context.contractError(
+                    local.initializer,
+                    "Expected createGridSpriteAtlas to default its pivot pair through '??'.",
+                );
+            }
+            (["x", "y"] as const).forEach((lane, index) => {
+                bindings.set(`pivot[${index}]`, {
+                    cpp:
+                        `(options.has_pivot ? static_cast<double>(options.pivot.${lane}) : ` +
+                        `${lowerer.expression(fallback.elements[index]!)})`,
+                    type: "scalar",
+                });
+            });
+            return [];
+        }
+        if (local.name.text === "frames") {
+            context.assertExpressionShape(
+                local.initializer,
+                "[]",
+                "createGridSpriteAtlas frame list",
+            );
+            return [];
+        }
+        return undefined;
     }
-    for (const [name, shape] of expected) {
-        context.assertExpressionShape(
-            context.propertyInitializer(frame, name),
-            shape,
-            `grid atlas frame ${name}`,
-        );
+    if (ts.isExpressionStatement(statement)) {
+        const call = unwrapExpression(statement.expression);
+        if (
+            !ts.isCallExpression(call) ||
+            call.expression.getText() !== "frames.push"
+        ) {
+            return undefined;
+        }
+        const frame = call.arguments[0]
+            ? unwrapExpression(call.arguments[0])
+            : undefined;
+        if (
+            call.arguments.length !== 1 ||
+            !frame ||
+            !ts.isObjectLiteralExpression(frame) ||
+            frame.properties.length !== frameFields.length
+        ) {
+            return context.contractError(
+                call,
+                `Expected pinned createGridSpriteAtlas to push one ${frameFields.length}-field frame literal.`,
+            );
+        }
+        const pairs = frameFields.map((name) => {
+            const pair = unwrapExpression(
+                context.propertyInitializer(frame, name),
+            );
+            if (
+                !ts.isArrayLiteralExpression(pair) ||
+                pair.elements.length !== 2
+            ) {
+                return context.contractError(
+                    pair,
+                    `Expected pinned grid frame ${name} to be a pair.`,
+                );
+            }
+            return `Vec2{${pair.elements
+                .map(
+                    (element) =>
+                        `static_cast<float>(${lowerer.expression(element)})`,
+                )
+                .join(", ")}}`;
+        });
+        return [
+            `${indent}atlas.frames.push_back(SpriteFrame{`,
+            ...pairs.map(
+                (pair, index) =>
+                    `${indent}    ${pair}${index + 1 < pairs.length ? "," : "});"}`,
+            ),
+        ];
     }
+    if (ts.isReturnStatement(statement)) {
+        const record = statement.expression
+            ? unwrapExpression(statement.expression)
+            : undefined;
+        if (!record || !ts.isObjectLiteralExpression(record)) {
+            return context.contractError(
+                statement,
+                "Expected pinned createGridSpriteAtlas to return an atlas literal.",
+            );
+        }
+        // The three fields the native record already holds, and the one
+        // the literal computes, stored below.
+        const held: ReadonlyArray<readonly [string, string]> = [
+            ["texture", "texture"],
+            ["textureSizePx", "[tw, th]"],
+            ["frames", "frames"],
+        ];
+        if (record.properties.length !== held.length + 1) {
+            context.contractError(
+                record,
+                `A grid atlas carries ${record.properties.length} fields; ${held.length + 1} are lowered.`,
+            );
+        }
+        for (const [name, shape] of held) {
+            context.assertExpressionShape(
+                context.propertyInitializer(record, name),
+                shape,
+                `createGridSpriteAtlas ${name}`,
+            );
+        }
+        return [
+            `${indent}atlas.premultiplied_alpha = ${lowerer.expression(
+                context.propertyInitializer(record, "premultipliedAlpha"),
+            )};`,
+        ];
+    }
+    return undefined;
 }

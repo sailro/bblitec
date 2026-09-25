@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** Output identities and captured material handles transport the source renderables. */
 export function lowerMaterialPublication(context: LoweringContext): string {
@@ -220,7 +221,13 @@ export function lowerMaterialPublication(context: LoweringContext): string {
         (node) =>
             ts.isForStatement(node) &&
             context.expressionMatchesShape(node.condition!, "i >= 0") &&
-            node.getText().includes("scene._renderables"),
+            context.hasNode(
+                node,
+                (candidate) =>
+                    ts.isPropertyAccessExpression(candidate) &&
+                    context.propertyPath(candidate)?.join(".") ===
+                        "scene._renderables",
+            ),
     );
     const runtimeAppend = runtime.declaration.body!.statements.find(
         (node) =>
@@ -507,8 +514,8 @@ bool source_material_draw_matches(MaterialHandle current, MaterialHandle capture
 bool source_standard_material_draw_matches(MaterialHandle current, MaterialHandle captured, bool is_override);
 bool source_shader_material_draw_matches(MaterialHandle current, MaterialHandle captured, bool is_override);
 SourceMaterialOutput capture_material_output(Scene& scene, MeshHandle mesh) {
-    const auto material = scene.engine->meshes.at(mesh.value).material;
-    const auto& record = scene.engine->materials.at(material.value);
+    const auto material = ${recordAt("scene.engine->meshes", "mesh")}.material;
+    const auto& record = ${recordAt("scene.engine->materials", "material")};
     const auto guard = record.source_pbr_group_builder ? source_material_draw_matches :
         record.source_group_builder == 2 ? source_standard_material_draw_matches :
         record.source_group_builder == 3 ? source_shader_material_draw_matches : nullptr;
@@ -522,7 +529,7 @@ SourceMaterialOutputs capture_material_outputs(Scene& scene, const std::vector<M
 }
 void append_material_outputs(Scene& scene, const SourceMaterialOutputs& outputs) {
     scene.state->material_outputs.insert(scene.state->material_outputs.end(), outputs.begin(), outputs.end());
-    for (const auto& output : outputs) scene.material_family_mask |= bbl::material_family_bit(scene.engine->materials.at(output->material.value));
+    for (const auto& output : outputs) scene.material_family_mask |= bbl::material_family_bit(${recordAt("scene.engine->materials", "output->material")});
 }
 // ${context.provenance(source, "processMaterialSwaps")}
 void publish_single_material_output(Scene& scene, MeshHandle mesh, const std::shared_ptr<SourceMaterialGroupState>& group) {

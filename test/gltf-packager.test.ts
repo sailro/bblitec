@@ -6,11 +6,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { specializeGltf } from "../src/asset-specializer.js";
-import { resolveGeometryExtensions } from "../src/compressed-geometry.js";
 import { packageGltf } from "../src/gltf-packager.js";
-import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-document.js";
+import {
+    GLTF_SOURCE_ALBEDO_IDENTITIES,
+    parseGlbJson,
+} from "../src/gltf-document.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
-import { buildGlb, readGlbFixture } from "./glb-fixture.js";
+import {
+    buildGlb,
+    readGlbFixture,
+    resolveGeometryExtensions,
+} from "./glb-fixture.js";
 
 test("packages external glTF buffers and images into a GLB", async () => {
     const directory = mkdtempSync(join(tmpdir(), "bblitec-gltf-package-"));
@@ -533,7 +539,7 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
                 Buffer.from(combinedResolvedBytes),
             );
             const specialization = specializeGltf(
-                combinedResolvedPath,
+                parseGlbJson(combinedResolvedPath),
                 "combined-resolved.glb",
             );
             assert.deepEqual(specialization.extensionsUsed, []);
@@ -552,8 +558,8 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
                 readUpstreamPin().sourceVersion,
                 "meshopt_decoder.js",
             );
-            const compressedGeometryModule = new URL(
-                "../src/compressed-geometry.js",
+            const geometryResolverModule = new URL(
+                "./glb-fixture.js",
                 import.meta.url,
             ).href;
             const retryScript = `
@@ -561,7 +567,7 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
                 import { readFileSync } from "node:fs";
 
                 const { resolveGeometryExtensions } = await import(
-                    process.env.BBLITE_TEST_COMPRESSED_GEOMETRY_MODULE
+                    process.env.BBLITE_TEST_GEOMETRY_RESOLVER_MODULE
                 );
                 const fixture = readFileSync(
                     process.env.BBLITE_TEST_MESHOPT_FIXTURE
@@ -600,8 +606,8 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
                     encoding: "utf8",
                     env: {
                         ...process.env,
-                        BBLITE_TEST_COMPRESSED_GEOMETRY_MODULE:
-                            compressedGeometryModule,
+                        BBLITE_TEST_GEOMETRY_RESOLVER_MODULE:
+                            geometryResolverModule,
                         BBLITE_TEST_MESHOPT_FIXTURE: retryFixture,
                         BBLITE_TEST_MESHOPT_ARTIFACT: decoderArtifact,
                     },
@@ -787,6 +793,91 @@ test("embeds an external image referenced by a GLB beside that GLB", async () =>
         assert.deepEqual(
             [...packaged.binary.subarray(0, 7)],
             [1, 2, 3, 4, 5, 6, 7],
+        );
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test("routes KHR_texture_basisu through the executed pinned extension", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-basisu-route-"));
+    const basisu = (source: number): Record<string, unknown> => ({
+        extensions: { KHR_texture_basisu: { source } },
+    });
+    const refuses = async (
+        materials: unknown[],
+        textures: unknown[],
+        pattern: RegExp,
+    ): Promise<void> => {
+        writeFileSync(
+            join(directory, "scene.gltf"),
+            JSON.stringify({
+                asset: { version: "2.0" },
+                extensionsUsed: ["KHR_texture_basisu"],
+                images: [{ uri: "a.ktx2" }, { uri: "b.ktx2" }],
+                textures,
+                materials,
+            }),
+        );
+        await assert.rejects(packageGltf("scene.gltf", directory), pattern);
+    };
+    try {
+        // Separate metallic-roughness and occlusion images take the pin's
+        // composite arm, which decodes to RGBA.
+        await refuses(
+            [
+                {
+                    pbrMetallicRoughness: {
+                        metallicRoughnessTexture: { index: 0 },
+                    },
+                    occlusionTexture: { index: 1 },
+                },
+            ],
+            [basisu(0), basisu(1)],
+            /OffscreenCanvas/,
+        );
+        // Specular slots route through setPbrMetallicReflectance.
+        await refuses(
+            [
+                {
+                    extensions: {
+                        KHR_materials_specular: {
+                            specularTexture: { index: 0 },
+                        },
+                    },
+                },
+            ],
+            [basisu(0)],
+            /setPbrMetallicReflectance/,
+        );
+        // The pin forwards a texCoord for occlusion alone.
+        await refuses(
+            [
+                {
+                    pbrMetallicRoughness: {
+                        baseColorTexture: { index: 0, texCoord: 1 },
+                    },
+                },
+            ],
+            [basisu(0)],
+            /baseColorTexture at texCoord 1/,
+        );
+        // One image at the base colour's sRGB and the normal map's linear.
+        await refuses(
+            [
+                {
+                    pbrMetallicRoughness: { baseColorTexture: { index: 0 } },
+                    normalTexture: { index: 0 },
+                },
+            ],
+            [basisu(0)],
+            /image 0 at both colour spaces/,
+        );
+        // A basisu texture no redirected slot reaches keeps no source.
+        await refuses(
+            [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
+            [basisu(0), basisu(1)],
+            /texture 1, which no slot/,
         );
     } finally {
         rmSync(directory, { recursive: true, force: true });

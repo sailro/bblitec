@@ -1,5 +1,6 @@
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 /** Fold source plugin declarations and retain their live textures and UBO callbacks.
  * Shader injection, binding layout and enabled-plugin ordering execute the pin's
  * composers. The fold proves that bindTextures/getActiveTextures refer to the
@@ -8,9 +9,9 @@ import type { LoweringServices } from "./lowering-services.js";
  */
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
-import { LoweringContext } from "../lowering/context.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
+import { LoweringContext, sharedPinnedContext } from "../lowering/context.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
+import { executeApplicationFunction } from "./executed-application-function.js";
 import type {
     MaterialPluginManifest,
     MaterialPluginSamplerManifest,
@@ -25,7 +26,7 @@ import type { Value } from "./types.js";
 type MaterialPluginFamily = "standard" | "pbr";
 
 /** The compiler surface a fold needs; the entry orchestrator supplies it. */
-export interface MaterialPluginContext extends Pick<
+interface MaterialPluginContext extends Pick<
     LoweringServices,
     | "checker"
     | "resolveStaticExpression"
@@ -34,7 +35,7 @@ export interface MaterialPluginContext extends Pick<
     | "probeStaticArrayLiteral"
     | "compileStaticString"
     | "compileValue"
-    | "withBoundParameters"
+    | "bindings"
     | "withRecordScopes"
     | "compileStoredDataFunction"
     | "dataLowerer"
@@ -167,9 +168,7 @@ function resolveTextureIdentity(
         return { root: "this", path };
     }
     const symbol = ts.isIdentifier(node)
-        ? ts.isShorthandPropertyAssignment(node.parent)
-            ? context.checker.getShorthandAssignmentValueSymbol(node.parent)
-            : context.checker.getSymbolAtLocation(node)
+        ? resolvedSymbol(context.checker, node)
         : undefined;
     if (!symbol) {
         context.fail(
@@ -179,17 +178,11 @@ function resolveTextureIdentity(
                 "texture is bound and kept alive.",
         );
     }
-    return {
-        root:
-            symbol.flags & ts.SymbolFlags.Alias
-                ? context.checker.getAliasedSymbol(symbol)
-                : symbol,
-        path,
-    };
+    return { root: symbol, path };
 }
 
 /** A folded `material.plugins = [...]` right-hand side. */
-export interface FoldedMaterialPlugins {
+interface FoldedMaterialPlugins {
     /** The plugin list, in the order the scene wrote it. */
     manifests: MaterialPluginManifest[];
     /**
@@ -239,7 +232,7 @@ let contract: PinnedPluginContract | undefined;
 
 function pinnedPluginContract(): PinnedPluginContract {
     if (contract) return contract;
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     const file = context.sourceFile(PLUGIN_BRIDGE);
     const { declaration } = context.functionDeclaration(
         PLUGIN_BRIDGE,
@@ -501,7 +494,7 @@ function foldMaterialPlugin(
 ): FoldedMaterialPlugin {
     const site = pluginObjectSite(context, expression);
     const fold = () =>
-        context.withBoundParameters(site.bindings, () =>
+        context.bindings.withBoundParameters(site.bindings, () =>
             foldPluginObject(
                 context,
                 expression,
@@ -1212,7 +1205,7 @@ function foldTexturePushes(
                         "Plugin texture iteration requires a named local.",
                     );
                 const name = variable.name;
-                const symbol = context.checker.getSymbolAtLocation(name);
+                const symbol = declaredSymbol(context.checker, name);
                 if (!symbol)
                     context.fail(
                         variable,
@@ -1227,7 +1220,7 @@ function foldTexturePushes(
                     });
                     // This fold accepts only pushes of existing texture
                     // identities; no runtime iteration binding is needed.
-                    context.withBoundParameters(
+                    context.bindings.withBoundParameters(
                         [{ name, value, compileTime: true }],
                         () =>
                             walk(
@@ -1438,13 +1431,13 @@ function foldSingleReturn(
 }
 
 /**
- * `getCustomCode(shaderType)` evaluated at one argument.
+ * `getCustomCode(shaderType)` run at one argument.
  *
- * Two body shapes reach: a block whose shader-type guard returns null for
- * the other type and an injection-point record for this one, and the arrow
- * whose whole body is that choice as a conditional expression. Both halves
- * are constants either way, so the call is folded at each of the pin's two
- * argument values rather than lowered — nothing in it reaches a run time.
+ * The pin calls it once per shader type at composition, so it is executed
+ * at each argument value (`executeApplicationFunction`), closing over the
+ * module constants and the enclosing bindings the compiler folds. What it
+ * returns is `null` or the point-to-WGSL record read here; nothing in it
+ * reaches a run time.
  */
 function foldCustomCode(
     context: MaterialPluginContext,
@@ -1452,209 +1445,49 @@ function foldCustomCode(
     shaderType: "fragment" | "vertex",
     accepted: ReadonlySet<string>,
 ): Readonly<Record<string, string>> | undefined {
-    const parameter = declaration.parameters[0];
-    const parameterName =
-        parameter && ts.isIdentifier(parameter.name)
-            ? parameter.name.text
-            : undefined;
-    const body = declaration.body;
-    if (!body) {
-        context.fail(declaration, "getCustomCode has no body.");
-    }
-    if (!ts.isBlock(body)) {
-        return foldCustomCodeChoice(
-            context,
-            body,
-            parameterName,
-            shaderType,
-            accepted,
-        );
-    }
-    for (const statement of body.statements) {
-        if (ts.isIfStatement(statement)) {
-            if (statement.elseStatement) {
-                context.fail(
-                    statement,
-                    "getCustomCode's shader-type guard takes no else branch.",
+    const value = executeApplicationFunction(
+        {
+            checker: context.checker,
+            fail: (node, message) => context.fail(node, message),
+            foldEnclosing: (identifier) => {
+                const folded = context.compileValue(identifier);
+                return (
+                    folded.staticString ??
+                    folded.staticBoolean ??
+                    folded.staticNumber
                 );
-            }
-            if (
-                !guardHolds(
-                    context,
-                    statement.expression,
-                    parameterName,
-                    shaderType,
-                )
-            ) {
-                continue;
-            }
-            const returned = onlyReturn(statement.thenStatement);
-            if (!returned) {
-                context.fail(
-                    statement,
-                    "getCustomCode's shader-type guard returns a value.",
-                );
-            }
-            return foldCustomCodeValue(context, returned, accepted);
-        }
-        if (ts.isReturnStatement(statement)) {
-            if (!statement.expression) {
-                context.fail(
-                    statement,
-                    "getCustomCode returns a value or null.",
-                );
-            }
-            return foldCustomCodeValue(context, statement.expression, accepted);
-        }
-        context.fail(
-            statement,
-            "getCustomCode's reached body is a shader-type guard and a " +
-                "return; a statement that computes is not folded, because " +
-                "the pin calls it at generation and never again.",
-        );
-    }
-    context.fail(
+            },
+        },
         declaration,
-        "getCustomCode falls off its body without returning.",
+        [shaderType],
+        "getCustomCode",
     );
-}
-
-/**
- * An arrow whose whole body is the shader-type choice.
- *
- * `shaderType === "fragment" ? { ... } : null` is the same fold as the
- * block's guard-and-return, written as one expression — which is how the
- * corpus writes it. The condition is evaluated at each of the pin's two
- * argument values and the arm it selects is folded.
- */
-function foldCustomCodeChoice(
-    context: MaterialPluginContext,
-    body: ts.Expression,
-    parameterName: string | undefined,
-    shaderType: "fragment" | "vertex",
-    accepted: ReadonlySet<string>,
-): Readonly<Record<string, string>> | undefined {
-    const expression = context.unwrap(body);
-    if (!ts.isConditionalExpression(expression)) {
-        return foldCustomCodeValue(context, expression, accepted);
-    }
-    const selected = guardHolds(
-        context,
-        expression.condition,
-        parameterName,
-        shaderType,
-    )
-        ? expression.whenTrue
-        : expression.whenFalse;
-    return foldCustomCodeValue(context, selected, accepted);
-}
-
-/** The single `return` a guard's branch carries. */
-function onlyReturn(branch: ts.Statement): ts.Expression | undefined {
-    const statement = ts.isBlock(branch)
-        ? branch.statements.length === 1
-            ? branch.statements[0]
-            : undefined
-        : branch;
-    return statement && ts.isReturnStatement(statement)
-        ? statement.expression
-        : undefined;
-}
-
-/**
- * Whether the shader-type guard holds at `shaderType`.
- *
- * Both spellings reach: the statement form writes `shaderType !== "<type>"`
- * before an early `return null`, and the expression form writes
- * `shaderType === "<type>"` before the record. Over the pin's two argument
- * values each is decided by one string comparison, so both fold — a guard
- * comparing anything else refuses, because the pin calls this once at
- * composition and the answer has to be a constant.
- */
-function guardHolds(
-    context: MaterialPluginContext,
-    condition: ts.Expression,
-    parameterName: string | undefined,
-    shaderType: "fragment" | "vertex",
-): boolean {
-    const expression = context.unwrap(condition);
-    if (!ts.isBinaryExpression(expression)) {
-        context.fail(
-            condition,
-            "getCustomCode's guard compares its shader-type parameter " +
-                "against a string literal with `===` or `!==`.",
-        );
-    }
-    const operator = expression.operatorToken.kind;
-    if (
-        operator !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
-        operator !== ts.SyntaxKind.ExclamationEqualsEqualsToken
-    ) {
-        context.fail(
-            condition,
-            "getCustomCode's guard compares its shader-type parameter " +
-                "against a string literal with `===` or `!==`.",
-        );
-    }
-    const left = context.unwrap(expression.left);
-    const right = context.unwrap(expression.right);
-    if (
-        !ts.isIdentifier(left) ||
-        left.text !== parameterName ||
-        !ts.isStringLiteral(right)
-    ) {
-        context.fail(
-            condition,
-            "getCustomCode's guard compares its shader-type parameter " +
-                "against a string literal.",
-        );
-    }
-    return operator === ts.SyntaxKind.EqualsEqualsEqualsToken
-        ? right.text === shaderType
-        : right.text !== shaderType;
-}
-
-/** `null`, or the point-to-WGSL record a `return` hands back. */
-function foldCustomCodeValue(
-    context: MaterialPluginContext,
-    expression: ts.Expression,
-    accepted: ReadonlySet<string>,
-): Readonly<Record<string, string>> | undefined {
-    const value = context.unwrap(context.resolveStaticExpression(expression));
-    if (value.kind === ts.SyntaxKind.NullKeyword) return undefined;
-    if (!ts.isObjectLiteralExpression(value)) {
-        context.fail(
-            expression,
-            "getCustomCode returns null or an object literal keyed by the " +
-                "pin's injection points.",
+    if (value === null) return undefined;
+    if (typeof value !== "object" || Array.isArray(value)) {
+        return context.fail(
+            declaration,
+            "getCustomCode returns null or a record keyed by the pin's " +
+                "injection points.",
         );
     }
     const code: Record<string, string> = {};
-    for (const property of value.properties) {
-        if (!ts.isPropertyAssignment(property)) {
-            context.fail(
-                property,
-                "An injection point maps to its WGSL by a plain property.",
-            );
-        }
-        const point = context.propertyName(property.name);
-        if (point === undefined) {
-            context.fail(property.name, "An injection point has a name.");
-        }
+    for (const [point, text] of Object.entries(value)) {
         if (!accepted.has(point)) {
             context.fail(
-                property.name,
+                declaration,
                 `${point} is not an injection point the pin maps onto a ` +
                     `template slot; it accepts ${[...accepted]
                         .sort()
                         .join(", ")}.`,
             );
         }
-        // The pin splices this text into the composed fragment at
-        // generation, so a value assembled from state would need a shader
-        // this port never composed -- `compileStaticString` accepts exactly
-        // the compile-time forms.
-        code[point] = context.compileStaticString(property.initializer);
+        if (typeof text !== "string") {
+            context.fail(
+                declaration,
+                `getCustomCode maps ${point} to ${typeof text}, not WGSL text.`,
+            );
+        }
+        code[point] = text;
     }
     return Object.keys(code).length > 0 ? code : undefined;
 }

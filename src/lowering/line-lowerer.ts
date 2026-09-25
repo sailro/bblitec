@@ -11,10 +11,10 @@
  *
  * Both halves come from the pin rather than from here:
  *
- * - the **material's WGSL** is folded out of `line-material.ts`'s own
- *   `vertexSource`/`fragmentSource` builders through `PinnedShaderText`, so a
- *   bump that rewrites a stage rewrites what this port deploys and a bump that
- *   changes the shape refuses generation;
+ * - the **material's WGSL** is what `line-material.ts`'s own
+ *   `vertexSource`/`fragmentSource` builders return, executed at generation
+ *   (`PinnedShaderBuilders`), so a bump that rewrites a stage rewrites what
+ *   this port deploys;
  * - the **flatten** is emitted as C++ from this file, with each rule the
  *   emitted loop folds asserted against the pinned declaration that states it
  *   — the index pair, the per-line disconnection, the zero normals, the
@@ -23,12 +23,13 @@
 import ts from "typescript";
 import { containsPinnedErrorMessage } from "./pinned-error.js";
 import type { LoweredSource, LoweringContext } from "./context.js";
-import { PinnedShaderText } from "./pinned-shader-text.js";
+import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
 import { lowerComputeAabb } from "./pinned-compute-aabb.js";
 import type { CompiledShaderProgram } from "../compiler/types.js";
+import { recordAt } from "../compiler/record-access.js";
 
-export const lineMaterialModule = "src/material/line/line-material.ts";
-export const lineSystemModule = "src/mesh/create-line-system.ts";
+const lineMaterialModule = "src/material/line/line-material.ts";
+const lineSystemModule = "src/mesh/create-line-system.ts";
 
 /** The permutation a `createLineMaterial` call settles at generation. */
 export interface LineMaterialOptions {
@@ -43,10 +44,10 @@ export interface LineMaterialOptions {
 }
 
 export class LineLowerer {
-    private readonly shaderText: PinnedShaderText;
+    private readonly shaderText: PinnedShaderBuilders;
 
     public constructor(private readonly context: LoweringContext) {
-        this.shaderText = new PinnedShaderText(context);
+        this.shaderText = new PinnedShaderBuilders(context);
     }
 
     // -----------------------------------------------------------------
@@ -523,7 +524,7 @@ MeshHandle create_line_system(
         {},
         {},
         data.colors);
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     record.material = material;
     record.line_point_counts = data.line_point_counts;
     record.line_has_colors = !data.colors.empty();
@@ -542,7 +543,7 @@ void update_line_system(
     if (mesh.value >= engine.meshes.size()) {
         throw std::runtime_error("Invalid line system mesh handle.");
     }
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     const std::vector<std::uint32_t>& point_counts = record.line_point_counts;
     if (point_counts.empty()) {
         throw std::runtime_error(
@@ -590,7 +591,6 @@ void update_line_system(
             positions[index * 3u],
             positions[index * 3u + 1u],
             positions[index * 3u + 2u]};
-        vertex.local_position = vertex.position;
         if (!updated_colors.empty()) {
             vertex.color = Vec4{
                 updated_colors[index * 4u],
@@ -613,8 +613,6 @@ void update_line_system(
         static_cast<float>(aabb[1][2])};
     geometry.bounds_min = bounds_min;
     geometry.bounds_max = bounds_max;
-    geometry.world_bounds_min = bounds_min;
-    geometry.world_bounds_max = bounds_max;
 }
 
 }  // namespace bbl

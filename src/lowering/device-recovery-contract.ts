@@ -15,7 +15,8 @@ export function assertDeviceRecoveryContracts(context: LoweringContext): void {
         );
     };
 
-    // Registration defaults, disabled ownership, loss snapshot and callback/re-arm order map to DeviceRecoveryState and the renderer restart dispatcher.
+    // The coordinator's own defaults map to DeviceRecoveryState; its registration, arming,
+    // continuations and forced loss are lowered (device-recovery-lowerer.ts).
     check(
         "device-lost-recovery",
         "getState",
@@ -35,133 +36,6 @@ function getState(engine: EngineContext): DeviceLostRecoveryState {
 }
 `,
     );
-    check(
-        "device-lost-recovery",
-        "_enableDeviceLostRecovery",
-        `
-export function _enableDeviceLostRecovery(engine: EngineContext, registration: DeviceLostRecoveryRegistration): DeviceLostRecoveryHandle {
-    const state = getState(engine);
-    const registrations = state._registrations;
-    if (registrations.length === 0) {
-        state._requiredFeatures = Array.from(engine._device.features) as GPUFeatureName[];
-    }
-    if (!registrations.some((current) => current._kind === registration._kind)) {
-        registration._enable?.(engine);
-    }
-    registrations.push(registration);
-    arm(engine, state);
-    let disabled = false;
-    return {
-        disable(): void {
-            if (disabled) {
-                return;
-            }
-            disabled = true;
-            const index = registrations.indexOf(registration);
-            if (index >= 0) {
-                registrations.splice(index, 1);
-            }
-            if (!registrations.some((current) => current._kind === registration._kind)) {
-                registration._disable?.(engine);
-            }
-        },
-    };
-}
-`,
-    );
-    check(
-        "device-lost-recovery",
-        "markNextDeviceLossForRecovery",
-        `
-export function markNextDeviceLossForRecovery(engine: EngineContext): boolean {
-    const state = engine._deviceLostRecovery;
-    return !!state?._registrations.length && (state._forceNextLoss = true);
-}
-`,
-    );
-    check(
-        "device-lost-recovery",
-        "arm",
-        `
-function arm(engine: EngineContext, state: DeviceLostRecoveryState): void {
-    const device = engine._device;
-    if (state._armedDevice === device || state._recovering) {
-        return;
-    }
-    state._armedDevice = device;
-    void device.lost.then((info) => {
-        if (state._registrations.length === 0 || state._armedDevice !== device) {
-            return;
-        }
-        if (info.reason === "destroyed" && !state._forceNextLoss) {
-            return;
-        }
-        state._forceNextLoss = false;
-        state._recovering = true;
-        const registrations = [...state._registrations];
-        for (const registration of registrations) {
-            registration._onLost?.(info);
-        }
-        void import("./device-lost-recovery-run.js")
-            .then(({ runDeviceLostRecovery }) => runDeviceLostRecovery(engine, state, registrations))
-            .then(() => {
-            state._recovering = false;
-            arm(engine, state);
-            for (const registration of registrations) {
-                registration._onRecovered?.();
-            }
-        }, (error) => {
-            state._recovering = false;
-            for (const registration of registrations) {
-                registration._onRecoveryFailed?.(error);
-            }
-        });
-    });
-}
-`,
-    );
-
-    // The PAL destroys the old native device when the active frame returns.
-    check(
-        "device-lost-recovery-testing",
-        "forceWebGpuDeviceLossForTesting",
-        `
-export function forceWebGpuDeviceLossForTesting(engine: EngineContext): void {
-    if (!markNextDeviceLossForRecovery(engine)) {
-        throw new Error("forceWebGpuDeviceLossForTesting requires a device-lost recovery handler to be enabled first");
-    }
-    engine._device.destroy();
-}
-`,
-    );
-
-    // One scene strategy uses the existing retained CPU owners; the compiler refuses other context kinds.
-    check(
-        "device-lost-scene-recovery",
-        "enableDeviceLostSceneRecovery",
-        `
-export function enableDeviceLostSceneRecovery(engine: EngineContext, options: DeviceLostRecoveryCallbacks = {}): DeviceLostRecoveryHandle {
-    return _enableDeviceLostRecovery(engine, {
-        _kind: "scene",
-        _recoverOrder: 100,
-        _enable(currentEngine): void {
-            _retainDeviceLostRecoveryCapture(currentEngine, true);
-        },
-        _disable(currentEngine): void {
-            _releaseDeviceLostRecoveryCapture(currentEngine, true);
-        },
-        async _recover(currentEngine): Promise<void> {
-            const { rebuildRegisteredScenes } = await import("./recovery-rebuild.js");
-            await rebuildRegisteredScenes(currentEngine);
-        },
-        _onLost: options.onLost,
-        _onRecovered: options.onRecovered,
-        _onRecoveryFailed: options.onRecoveryFailed,
-    });
-}
-`,
-    );
-
     // Adapter/device acquisition, surface configuration and texture ownership settlement use synchronous backend teardown/reconstruction over retained owners.
     check(
         "device-lost-recovery-run",
@@ -257,27 +131,6 @@ async function rebuildRecoverableTextures(engine: EngineContext, state: DeviceLo
         throw error;
     }
     return () => settleRebuiltTextureOwnership(state);
-}
-`,
-    );
-    check(
-        "device-lost-recovery-run",
-        "assertEveryActiveContextKindIsRecoverable",
-        `
-function assertEveryActiveContextKindIsRecoverable(engine: EngineContext, handlers: ReadonlyMap<string, DeviceLostRecoveryRegistration>): void {
-    const unrecoverable = new Set<string>();
-    for (const surface of engine.surfaces) {
-        for (const context of surface._renderingContexts) {
-            if (!handlers.has(context._kind)) {
-                unrecoverable.add(context._kind);
-            }
-        }
-    }
-    if (unrecoverable.size) {
-        throw new Error(\`Device-lost recovery cannot rebuild registered rendering contexts of kind: \${Array.from(unrecoverable).sort().join(", ")}. \` +
-            \`Recovering around them would leave them bound to the lost device and crash the browser's renderer process on the next frame. \` +
-            \`Enable that kind's device-lost recovery before the device is lost, or unregister the context.\`);
-    }
 }
 `,
     );

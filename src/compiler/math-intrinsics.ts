@@ -14,21 +14,25 @@
  * `Math.max`/`Math.min` are deliberately absent: they are n-ary, fold only
  * when every operand is a finite static number, and lower a spread over a
  * numeric container as a loop, so `DataLowerer.compileMathCall` owns them
- * as one arm rather than this table pretending they are one call.
+ * as one arm rather than this table pretending they are one call. That arm
+ * spells an argument list through `mathExtremeCall`, the spelling pinned
+ * bodies lower `Math.max`/`Math.min` through too.
  */
 import { EmissionMap } from "./emission-transaction.js";
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
+import type { LibraryGlobal } from "./symbols.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { nativeFunctionValue } from "./native-function-values.js";
 import {
+    mathExtremeCpp,
     pinnedHypotCall,
     pinnedMathSpelling,
     pinnedRoundCall,
 } from "../lowering/pinned-operators.js";
 
-export interface MathMember {
+interface MathMember {
     /** How many arguments the member takes, or the minimum for a variadic one. */
     readonly arity: number;
     readonly variadic?: true;
@@ -74,10 +78,10 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ["sqrt", { arity: 1, cpp: shared("sqrt") }],
     ["tan", { arity: 1, cpp: shared("tan") }],
     ["atan", { arity: 1, cpp: compilerOnly("atan") }],
-    ["acos", { arity: 1, cpp: compilerOnly("acos") }],
-    ["asin", { arity: 1, cpp: compilerOnly("asin") }],
-    ["log", { arity: 1, cpp: compilerOnly("log") }],
-    ["log2", { arity: 1, cpp: compilerOnly("log2") }],
+    ["acos", { arity: 1, cpp: shared("acos") }],
+    ["asin", { arity: 1, cpp: shared("asin") }],
+    ["log", { arity: 1, cpp: shared("log") }],
+    ["log2", { arity: 1, cpp: shared("log2") }],
     ["cbrt", { arity: 1, cpp: compilerOnly("cbrt") }],
     ["sinh", { arity: 1, cpp: compilerOnly("sinh") }],
     [
@@ -101,7 +105,7 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ["exp", { arity: 1, cpp: compilerOnly("exp") }],
     ["trunc", { arity: 1, cpp: compilerOnly("trunc"), fold: Math.trunc }],
     ["pow", { arity: 2, cpp: shared("pow") }],
-    ["atan2", { arity: 2, cpp: compilerOnly("atan2") }],
+    ["atan2", { arity: 2, cpp: shared("atan2") }],
     // Not `std::round`: JavaScript rounds a tie toward +Infinity and C
     // rounds it away from zero, so the two disagree on every negative
     // half. `round_js` carries the spec's own rule.
@@ -153,11 +157,6 @@ export const MATH_MEMBERS: ReadonlyMap<string, MathMember> = new EmissionMap<
     ],
 ]);
 
-/** Native min/max calls share the same range and list overloads. */
-export function mathExtremeCpp(method: string, source: string): string {
-    return `bbl::js::math_extreme<${method === "max"}>(${source})`;
-}
-
 /** The exact fold of a one-argument member, where the table carries one. */
 export function mathUnaryFold(
     name: string,
@@ -177,7 +176,7 @@ export function describeMathArity(member: MathMember): string {
     return member.variadic ? `at least ${count}` : count;
 }
 
-export interface MathConstant {
+interface MathConstant {
     readonly value: number;
     /**
      * The single-precision spelling a float sink takes, where the runtime
@@ -219,12 +218,10 @@ export const FORMATTED_MATH_FOLDS: ReadonlyMap<
  */
 export function mathMemberAccess(
     expression: ts.Expression,
-    isDefaultLibraryIdentifier: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): ts.PropertyAccessExpression | undefined {
     return ts.isPropertyAccessExpression(expression) &&
-        ts.isIdentifier(expression.expression) &&
-        expression.expression.text === "Math" &&
-        isDefaultLibraryIdentifier(expression.expression)
+        libraryGlobal(expression.expression) === "Math"
         ? expression
         : undefined;
 }
@@ -232,13 +229,10 @@ export function mathMemberAccess(
 /** A call of one such member, with the member's name. */
 export function mathMemberCall(
     expression: ts.Expression,
-    isDefaultLibraryIdentifier: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): { readonly name: string; readonly call: ts.CallExpression } | undefined {
     if (!ts.isCallExpression(expression)) return undefined;
-    const access = mathMemberAccess(
-        expression.expression,
-        isDefaultLibraryIdentifier,
-    );
+    const access = mathMemberAccess(expression.expression, libraryGlobal);
     return access ? { name: access.name.text, call: expression } : undefined;
 }
 
@@ -247,7 +241,7 @@ export function mathFunctionValue(
     context: Pick<
         LoweringServices,
         | "checker"
-        | "isDefaultLibraryIdentifier"
+        | "libraryGlobal"
         | "dataLowerer"
         | "dataTypes"
         | "callbackIdentity"
@@ -257,8 +251,8 @@ export function mathFunctionValue(
     >,
     expression: ts.Expression,
 ): Value | undefined {
-    const access = mathMemberAccess(expression, (identifier) =>
-        context.isDefaultLibraryIdentifier(identifier),
+    const access = mathMemberAccess(expression, (candidate) =>
+        context.libraryGlobal(candidate),
     );
     if (!access) return undefined;
     const member = MATH_MEMBERS.get(access.name.text);

@@ -16,6 +16,7 @@ import {
     generationIsCurrent,
     generationOutputFingerprint,
     generationStampPath,
+    historicalGenerationCostMs,
     recordGeneration,
     refreshBuildStamp,
 } from "../src/generation-stamp.js";
@@ -183,4 +184,18 @@ test("post-compilation materialization refreshes the generated input digests", (
         refreshBuildStamp(scene.output, { generatedInputsChanged: true }),
         false,
     );
+});
+
+test("the record keeps what the generation cost, for the next stage's schedule", () => {
+    assert.equal(historicalGenerationCostMs(scene.id), undefined);
+    const startedAt = Date.now() - 250;
+    assert.equal(recordGeneration(scene, arguments_, startedAt), true);
+    assert.ok((historicalGenerationCostMs(scene.id) ?? 0) >= 250);
+    // A specialization after a wait records its own cost, not the wait.
+    recordGeneration(scene, arguments_, startedAt, { durationMs: 42 });
+    assert.equal(historicalGenerationCostMs(scene.id), 42);
+    // A stale record still schedules: the cost outlives the inputs.
+    writeFileSync(source, "export const probe = 3;\n");
+    assert.equal(generationIsCurrent(scene, arguments_), false);
+    assert.equal(historicalGenerationCostMs(scene.id), 42);
 });

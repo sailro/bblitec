@@ -1,7 +1,7 @@
 import type ts from "typescript";
 import type { DataType } from "../data-types.js";
 import type { LoweringServices } from "../lowering-services.js";
-import type { Value } from "../types.js";
+import { optionalPresentCpp, type Value } from "../types.js";
 
 export interface RetainedOption {
     name: string;
@@ -14,7 +14,7 @@ export interface RetainedOption {
 
 export type RetainedOptionsContext = Pick<
     LoweringServices,
-    "fail" | "pinValueToTemporary" | "dataTypes" | "emit"
+    "fail" | "bindings" | "dataTypes" | "emit"
 >;
 
 /** Project named options from a closed record or an owned typed record. */
@@ -47,7 +47,11 @@ export function retainedOptions(
     if (value.kind !== "data" || value.dataType?.kind !== "struct")
         return context.fail(site, "Options require a retained record.");
     const type = value.dataType;
-    const owner = context.pinValueToTemporary(value, "options_owner", site);
+    const owner = context.bindings.pinValueToTemporary(
+        value,
+        "options_owner",
+        site,
+    );
     const access = context.dataTypes.isReferenceStruct(type.name) ? "->" : ".";
     return context.dataTypes.structFields(type.name, site).map((field) => ({
         name: field.sourceName,
@@ -72,7 +76,7 @@ export function emitPresentOption(
 ): void {
     let { cpp, type } = member;
     const guard =
-        type?.kind === "optional" ? `${cpp}.has_value()` : member.present;
+        type?.kind === "optional" ? optionalPresentCpp(cpp) : member.present;
     if (type?.kind === "optional") {
         cpp = `${cpp}.value()`;
         type = type.inner;

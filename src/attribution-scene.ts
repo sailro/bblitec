@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { SceneDefinition } from "./scene-registry.js";
+import { artifactDirectory } from "./tooling/artifacts.js";
 
 /** An instrumented build with the source scene's pose and independent outputs. */
 export function attributionScene(scene: SceneDefinition): SceneDefinition {
@@ -8,7 +9,7 @@ export function attributionScene(scene: SceneDefinition): SceneDefinition {
         throw new Error(`Scene '${scene.id}' has no parity definition.`);
     const id = `${scene.id}-attribution`;
     const output = `generated/${id}`;
-    const outputDirectory = `artifacts/parity-attribution/${scene.id}`;
+    const outputDirectory = artifactDirectory("parity-attribution", scene.id);
     return {
         ...scene,
         id,
@@ -19,7 +20,7 @@ export function attributionScene(scene: SceneDefinition): SceneDefinition {
             outputDirectory,
             reference: {
                 ...scene.parity.reference,
-                path: `${outputDirectory}/reference.png`,
+                path: join(outputDirectory, "reference.png"),
             },
             attribution: {
                 specialization: `${output}/upstream/gltf-specialization.json`,
@@ -40,8 +41,8 @@ export function copyAttributionReferences(
     const pairs = [
         [scene.parity.reference.path, twin.parity.reference.path],
         [
-            `artifacts/parity-canvas/${scene.id}/browser-canvas.png`,
-            `artifacts/parity-canvas/${twin.id}/browser-canvas.png`,
+            artifactDirectory("parity-canvas", scene.id, "browser-canvas.png"),
+            artifactDirectory("parity-canvas", twin.id, "browser-canvas.png"),
         ],
     ] as const;
     for (const [source, destination] of pairs) {

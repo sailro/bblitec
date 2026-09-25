@@ -1,6 +1,55 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { runModuleJsonPass } from "../src/executed-module-graph.js";
+
+const fixture = (name: string): string =>
+    resolve("test/fixtures/executed-module", name);
+
+test("a generation pass settles its own promises and declines one that waits on anything else", () => {
+    assert.deepEqual(
+        runModuleJsonPass(fixture("settling.ts"), "settledCounts", []),
+        { value: { oak: 3 } },
+    );
+    assert.deepEqual(
+        runModuleJsonPass(fixture("settling.ts"), "pendingCounts", []),
+        {
+            declined:
+                "does not settle at generation: it waits on something outside the pass",
+        },
+    );
+});
+
+test("a generation pass runs in a realm of its own, without host globals", () => {
+    assert.deepEqual(
+        runModuleJsonPass(fixture("settling.ts"), "hostCounts", []),
+        { declined: "threw at generation: process is not defined" },
+    );
+    assert.deepEqual(
+        runModuleJsonPass(fixture("settling.ts"), "globalCounts", []),
+        { value: { oak: 3 } },
+    );
+    assert.equal(Reflect.has(globalThis, "bblGenerationPassLeak"), false);
+});
+
+test("a generation pass decides import erasure from the emitted code", () => {
+    // The value-kind import names only a type, so the transpiler drops it
+    // and the sibling that reaches the engine is never loaded.
+    assert.deepEqual(
+        runModuleJsonPass(fixture("value-typed.ts"), "typedCounts", []),
+        { value: { oak: 3, pine: 4 } },
+    );
+    assert.deepEqual(
+        runModuleJsonPass(fixture("via-sibling.ts"), "siblingCounts", []),
+        {
+            declined:
+                `Executed module ${fixture("kinds.ts")} imports ` +
+                "'@babylonjs/lite'; a graph module may only import its own " +
+                "relative siblings.",
+        },
+    );
+});
 
 test("a module pass run at generation resolves extensionless siblings and skips type-only imports", () => {
     const result = compileSource(
@@ -28,8 +77,8 @@ test("a generation-time fold whose module reaches the engine lowers as an ordina
     `,
         { fileName: "test/executed-module-entry.ts" },
     );
-    // The module imports the engine, so the pass declines before any child
-    // is spawned and the call lowers as ordinary code.
+    // The module imports the engine, so the pass declines before anything
+    // runs and the call lowers as ordinary code.
     assert.match(result.cpp, /spawnCounts/);
 });
 
@@ -42,8 +91,9 @@ test("a generation-time fold whose sibling reaches the engine lowers as an ordin
     `,
         { fileName: "test/executed-module-entry.ts" },
     );
-    // Only the sibling reaches the engine: the child discovers it while
-    // inlining the graph, classifies the decline, and the call lowers.
+    // Only the sibling reaches the engine: the evaluation discovers it when
+    // the sibling requires the package, classifies the decline, and the call
+    // lowers.
     assert.match(result.cpp, /siblingCounts/);
 });
 

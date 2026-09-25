@@ -36,7 +36,7 @@ export function vec3MemberBindings(
 }
 
 /** Native storage replacing one validated top-level pinned initializer. */
-export interface PinnedLocalStorage {
+interface PinnedLocalStorage {
     pinned: string;
     initializer: string;
     binding: PinnedBinding;
@@ -44,7 +44,7 @@ export interface PinnedLocalStorage {
 }
 
 /** Select one top-level source guard while retaining the surrounding statements. */
-export interface PinnedFunctionArm {
+interface PinnedFunctionArm {
     condition: string;
     arm: "then" | "else";
 }
@@ -416,7 +416,7 @@ export function lowerMat4MultiplyWriterCpp(
  * enclosing declaration is resolved first, so a nested name that moved
  * out of it -- or gained a twin -- fails by both names.
  */
-function nestedFunctionDeclaration(
+export function nestedFunctionDeclaration(
     context: LoweringContext,
     modulePath: string,
     enclosing: string,
@@ -574,6 +574,12 @@ export function lowerPinnedFunction(
          */
         leadingParameters?: readonly string[];
         trailingParameters?: readonly string[];
+        /** See `PinnedNumericScope.statement`. */
+        statement?: PinnedNumericScope["statement"];
+        /** See `PinnedNumericScope.expression`. */
+        expression?: PinnedNumericScope["expression"];
+        /** See `PinnedNumericScope.vec3Literal`. */
+        vec3Literal?: PinnedNumericScope["vec3Literal"];
         /** See `PinnedNumericScope.indexedCall`. */
         indexedCall?: PinnedNumericScope["indexedCall"];
         /** See `PinnedNumericScope.callShapes`. */
@@ -693,7 +699,7 @@ export function lowerPinnedFunctionParts(
                         "slice supplies none.",
                 );
             }
-            bindings.set(spec.pinned, absentBinding());
+            bindings.set(spec.pinned, absentBinding("undefined"));
             return;
         }
         bindings.set(
@@ -793,6 +799,9 @@ export function lowerPinnedFunctionParts(
             ? { recordLiteral: options.recordLiteral }
             : {}),
         ...(options.forOf ? { forOf: options.forOf } : {}),
+        ...(options.statement ? { statement: options.statement } : {}),
+        ...(options.expression ? { expression: options.expression } : {}),
+        ...(options.vec3Literal ? { vec3Literal: options.vec3Literal } : {}),
         ...(options.returns === "void"
             ? {}
             : {

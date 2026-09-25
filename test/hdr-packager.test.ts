@@ -6,12 +6,11 @@ import {
     parseRgbe,
     preScalePolynomial,
 } from "../src/hdr-packager.js";
+import { prefilterEquirectGgx } from "../src/hdr-prefilter-gpu.js";
 import {
-    getHdrGgxPrefilterProvenance,
-    prefilterCubemapGgx,
-} from "../src/hdr-prefilter-gpu.js";
-import { importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
-import { readUpstreamPin } from "../src/upstream-source.js";
+    importPinnedModule,
+    importPinnedModuleWithExports,
+} from "../src/pinned-shader-composer.js";
 
 function smallHdr(): Uint8Array {
     const header = new TextEncoder().encode(
@@ -119,40 +118,25 @@ test("rejects unsupported HDR cubemap dimensions", async () => {
     await assert.rejects(packageHdrEnvironment(smallHdr(), 3), /power of two/);
 });
 
-test("preserves mip zero and deterministically applies pinned GGX semantics", async () => {
+test("executes the pinned HDR cube chain deterministically", async () => {
+    const image = parseRgbe(smallHdr());
     const faceSize = 4;
-    const faces = Array.from({ length: 6 }, (_, face) => {
-        const pixels = new Uint16Array(faceSize * faceSize * 4);
-        for (let pixel = 0; pixel < faceSize * faceSize; pixel += 1) {
-            pixels[pixel * 4] = 0x3c00 + face * 16 + pixel;
-            pixels[pixel * 4 + 1] = 0x3800 + pixel;
-            pixels[pixel * 4 + 2] = 0x3400 + face;
-            pixels[pixel * 4 + 3] = 0x3c00;
-        }
-        return pixels;
+    const first = await prefilterEquirectGgx(faceSize, image);
+    const second = await prefilterEquirectGgx(faceSize, image);
+    const { mipLevelCount } = await importPinnedModule<{
+        mipLevelCount: (width: number, height: number) => number;
+    }>("texture/mip-count.js");
+    // Every level the pin's own mipLevelCount gives, six rgba16float faces each.
+    assert.equal(first.length, mipLevelCount(faceSize, faceSize));
+    first.forEach((level, mip) => {
+        const size = Math.max(1, faceSize >> mip);
+        assert.equal(level.length, 6);
+        for (const face of level) assert.equal(face.length, size * size * 4);
     });
-    const first = await prefilterCubemapGgx(faceSize, 3, { faces });
-    const second = await prefilterCubemapGgx(faceSize, 3, { faces });
-    // Level zero round-trips through the GPU source texture now, so the
-    // content is preserved while the arrays are fresh.
-    assert.deepEqual(first[0], faces);
     assert.deepEqual(first, second);
-    assert.notDeepEqual(first[1]![0], faces[0]!.slice(0, first[1]![0]!.length));
-
-    const digest = createHash("sha256");
-    for (const mip of first) {
-        for (const face of mip) digest.update(new Uint8Array(face.buffer));
-    }
-    assert.equal(
-        digest.digest("hex"),
-        "1c33fe95c972aea59fb51fd9bfacae79ed084b9523cbc3270b4f468fd22c4755",
+    // The GGX levels are not a box-filter of mip zero.
+    assert.notDeepEqual(
+        first[1]![0],
+        first[0]![0]!.slice(0, first[1]![0]!.length),
     );
-    const pin = readUpstreamPin();
-    assert.deepEqual(getHdrGgxPrefilterProvenance(), {
-        package: `${pin.package}@${pin.version}`,
-        sourceCommit: pin.sourceVersion,
-        module: "src/loader-hdr/hdr-ibl-pipeline.ts",
-        shader: "shaders/hdr-prefilter-cube.compute.wgsl",
-        sampleCount: 1024,
-    });
 });

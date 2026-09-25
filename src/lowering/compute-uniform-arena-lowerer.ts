@@ -149,7 +149,6 @@ function scope(
     return {
         bindings,
         calls,
-        checkedBitwiseCoercions: true,
         booleanOr: true,
         callShapes: new Map([
             ["Number.isInteger", "bool"],

@@ -8,6 +8,7 @@ import {
     pinnedShadowHeader,
     shadowFactorySource,
 } from "../src/lowering/shadow-lowerer.js";
+import { sceneBackendSource, sharedGpuSource } from "./native-fixture.js";
 
 /**
  * The pinned render gate: `renderEsmShadowMap`, `renderPcfShadowMap` and
@@ -24,7 +25,40 @@ const header = pinnedShadowHeader(new LoweringContext());
 test("emits the pinned caster version sum over transform and thin-instance versions", () => {
     assert.match(
         header,
-        /inline std::uint64_t shadow_caster_version_sum\([\s\S]{0,400}sum \+= mesh\.transform_version \+ mesh\.instance_version;/,
+        /inline std::uint64_t shadow_caster_version_sum\([\s\S]{0,800}sum \+= mesh\.transform_version \+ mesh\.instance_version;/,
+    );
+});
+
+test("emits the morph-target caster bounds only for a scene that registers them", () => {
+    // enableMorphTargetShadows is its own pinned module: without it the
+    // header carries no provider and the version sum has no weight term.
+    assert.doesNotMatch(
+        header,
+        /expand_morph_caster_bounds|ensure_morph_target_ranges|morph_weights_version|morph_shadow_bounds/,
+    );
+    assert.doesNotMatch(
+        shadowFactorySource(new LoweringContext(), ["shadow:pcf"]).source,
+        /enable_morph_target_shadows/,
+    );
+    const morph = pinnedShadowHeader(new LoweringContext(), [
+        "shadow:morph-bounds",
+    ]);
+    assert.match(morph, /inline void expand_morph_caster_bounds\(/);
+    assert.match(morph, /inline void ensure_morph_target_ranges\(/);
+    assert.match(
+        morph,
+        /if \(morph_shadow_bounds\) sum \+= mesh\.morph_weights_version;/,
+    );
+    assert.match(
+        morph,
+        /shadow_caster_version_sum\(\s*engine, generator\.caster_meshes, generator\.morph_shadow_bounds\)/,
+    );
+    assert.match(
+        shadowFactorySource(new LoweringContext(), [
+            "shadow:pcf",
+            "shadow:morph-bounds",
+        ]).source,
+        /void enable_morph_target_shadows\(/,
     );
 });
 
@@ -90,12 +124,24 @@ test("bumps the caster-list identity on every re-registration", () => {
     ]).source;
     assert.match(
         source,
-        /void set_shadow_task_caster_meshes\([\s\S]{0,900}\+\+engine\.shadow_generators\[generator\.value\]\.caster_list_version;/,
+        /void set_shadow_task_caster_meshes\([\s\S]{0,900}ShadowGeneratorRecord& record = bbl::handle_at\(engine\.shadow_generators, generator\);[\s\S]{0,700}\+\+record\.caster_list_version;/,
     );
 });
 
+test("a caster array names every mesh it lists, so a removed caster keeps its record", () => {
+    const source = shadowFactorySource(new LoweringContext(), [
+        "shadow:pcf",
+    ]).source;
+    assert.match(
+        source,
+        /std::vector<MeshName> caster_names = name_meshes\(engine, caster_meshes\);[\s\S]{0,200}record\.caster_names = std::move\(caster_names\);/,
+    );
+    // Every reader then finds the record the array names.
+    assert.doesNotMatch(source, /current_mesh_record/);
+});
+
 test("gates each family's fit and publishes the verdict to the task loops", () => {
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     // ONE gate ask per generator, and the verdict lands on the gate the
     // task loops read.
     assert.match(
@@ -126,8 +172,8 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
     // Both backends' shadow arms skip their pass on a gated frame, and a
     // frame-graph texture recreation clears the rendered sentinels.
     for (const backend of [
-        readFileSync("native/src/pal_sdl_gpu.cpp", "utf8"),
-        readFileSync("native/src/pal_dawn.cpp", "utf8"),
+        sceneBackendSource("sdl"),
+        sceneBackendSource("dawn"),
     ]) {
         assert.match(
             backend,
@@ -141,7 +187,7 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
 });
 
 test("fits CSM casters to every active non-degenerate thin instance", () => {
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     assert.match(
         shared,
         /const std::size_t active_instances =\s*thin_instance_active_count\(record\);/,
@@ -171,7 +217,7 @@ test("fits CSM casters to every active non-degenerate thin instance", () => {
 });
 
 test("builds vertex-only custom shader pipelines for shadow targets", () => {
-    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const sdl = sceneBackendSource("sdl");
     assert.match(
         sdl,
         /std::vector<SDL_GPUGraphicsPipeline\*> shader_shadow_pipelines;/,
@@ -189,7 +235,7 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
         /draw_scene\(\s*graph_scene, graph_meshes,\s*shadow_pass,[\s\S]{0,300}state\.shader_shadow_pipelines,\s*state\.shader_shadow_pipelines/,
     );
 
-    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const dawn = sceneBackendSource("dawn");
     assert.match(
         dawn,
         /std::map<DawnMeshPipelineKey, DawnPipeline> pipelines;/,
@@ -202,10 +248,7 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
         dawn,
         /depth_format = target\s*\? target->depth[\s\S]{0,100}shadow_pass\s*\? WGPUTextureFormat_Depth32Float/,
     );
-    assert.match(
-        dawn,
-        /descriptor\.fragment =\s*shadow_pass &&\s*shader_info\s*\? nullptr/,
-    );
+    assert.match(dawn, /descriptor\.fragment =\s*shadow_pass\s*\? nullptr/);
     assert.match(
         dawn,
         /if \(!shadow_pass && !state\.shader_fragment_modules\[shader_variant\]\) \{/,
@@ -228,12 +271,12 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
     // layout -- and every task supplies its own light-space uniform block.
     assert.match(
         dawn,
-        /WGPUPipelineLayout shader_pipeline_layout_for\([\s\S]{0,3200}WGPUBufferBindingType_ReadOnlyStorage/,
+        /WGPUBindGroupLayout shader_group_layout\([\s\S]{0,600}case 0:[\s\S]{0,300}storage_layout_entry\(binding\+\+, WGPUShaderStage_Vertex\)/,
     );
     assert.match(dawn, /return WGPUTextureViewDimension_2DArray;/);
     assert.match(
         dawn,
-        /descriptor\.layout = shader_info\s*\? shader_pipeline_layout_for\(state, shader_variant\)\s*: mesh_pipeline_layout_for\(state\)/,
+        /descriptor\.layout = shader_pipeline_layout_for\(state, shader_variant\);/,
     );
     assert.match(dawn, /esm_shadow_index,\s*render_task\.view_projection\);/);
     assert.match(dawn, /sync_shader_storage_buffers\(state, engine\);/);

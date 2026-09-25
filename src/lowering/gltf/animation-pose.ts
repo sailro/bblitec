@@ -87,12 +87,7 @@ export function lowerGltfAnimationPose(context: LoweringContext): string {
         "PATH_WEIGHTS",
         "PATH_POINTER",
     ])
-        bind(
-            name,
-            context.doubleLiteral(
-                context.numericValue(ts.factory.createIdentifier(name), types),
-            ),
-        );
+        bind(name, context.doubleLiteral(context.pinnedNumber(types, name)));
     for (const name of [
         "currentTRS",
         "localMat",

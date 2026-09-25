@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/features/workers.hpp>
+
 #include <bblite/js_callback.hpp>
 #include <bblite/js_error.hpp>
 #include <bblite/dom_event_state.hpp>
@@ -105,7 +107,10 @@ public:
     Finally& operator=(const Finally&) = delete;
     Finally(Finally&&) = delete;
     Finally& operator=(Finally&&) = delete;
-    ~Finally() noexcept(noexcept(action_())) { run(); }
+    // A finally body reached by an early exit may throw, as JavaScript's
+    // does. Exceptional paths run the guard explicitly (or skip it while
+    // unwinding), so this destructor never throws during unwinding.
+    ~Finally() noexcept(false) { run(); }
     void run() noexcept(noexcept(action_())) {
         if (!pending_)
             return;
@@ -324,8 +329,8 @@ public:
 private:
     struct BufferView {
         ArrayBuffer buffer;
-        std::size_t offset;
-        std::size_t length;
+        std::size_t offset = 0;
+        std::size_t length = 0;
     };
     [[nodiscard]] std::vector<T>& owned() const {
         if (view_) {
@@ -515,7 +520,11 @@ public:
     [[nodiscard]] T& operator*() const { return require_value(); }
     [[nodiscard]] T* operator->() const { return std::addressof(require_value()); }
     explicit operator bool() const { return block_ != nullptr; }
-    void gc_trace(const TraceVisitor& visitor) const { visitor.edge(block_); }
+    /** Only a registered block is an edge; `make_ref` registers traceable payloads. */
+    void gc_trace(const TraceVisitor& visitor) const {
+        if (block_ && block_->linked)
+            visitor.edge(block_);
+    }
     [[nodiscard]] std::weak_ptr<const void> weak_identity() const {
         if (!block_)
             return {};
@@ -588,9 +597,22 @@ private:
     Block* block_ = nullptr;
 };
 
+namespace gc {
+/**
+ * A reference is an edge exactly when `make_ref` registers its payload, so a
+ * container of references to edge-free payloads stays out of the registry.
+ */
+template <typename T> struct Traceable<Ref<T>> : Traceable<std::remove_cv_t<T>> {};
+} // namespace gc
+
+/**
+ * A payload that can own a traced edge joins cycle collection; any other
+ * payload cannot close a cycle, and reference counting alone releases it.
+ */
 template <typename T, typename... Args> [[nodiscard]] Ref<T> make_ref(Args&&... args) {
     auto block = std::make_unique<typename Ref<T>::Block>(std::forward<Args>(args)...);
-    block->attach();
+    if constexpr (gc_traceable<T>)
+        block->attach();
     auto* value = block.get();
     value->lifetime = std::move(block);
     return Ref<T>(value);
@@ -885,12 +907,12 @@ public:
     using iterator = typename Storage::iterator;
     using const_iterator = typename Storage::const_iterator;
 
-    Array() : values_(make_gc_shared<Storage>()) {}
-    Array(std::initializer_list<T> values) : values_(make_gc_shared<Storage>(values)) {}
-    explicit Array(std::size_t count) : values_(make_gc_shared<Storage>(count)) {}
-    Array(std::size_t count, const T& value) : values_(make_gc_shared<Storage>(count, value)) {}
+    Array() : values_(make_storage()) {}
+    Array(std::initializer_list<T> values) : values_(make_storage(values)) {}
+    explicit Array(std::size_t count) : values_(make_storage(count)) {}
+    Array(std::size_t count, const T& value) : values_(make_storage(count, value)) {}
     template <typename Iterator>
-    Array(Iterator first, Iterator last) : values_(make_gc_shared<Storage>(first, last)) {}
+    Array(Iterator first, Iterator last) : values_(make_storage(first, last)) {}
     /** Rewrap a native producer's retained JavaScript array without copying it. */
     explicit Array(std::shared_ptr<Storage> values) : values_(std::move(values)) {
         if (!values_)
@@ -954,6 +976,9 @@ public:
     void gc_trace(const TraceVisitor& visitor) const { visitor(values_); }
 
 private:
+    template <typename... Args> static std::shared_ptr<Storage> make_storage(Args&&... args) {
+        return make_gc_shared_if<gc_traceable<T>, Storage>(std::forward<Args>(args)...);
+    }
     // A JavaScript array literal that then grows a few elements -- the
     // per-face corner and light lists a voxel mesher builds -- would
     // otherwise pay std::vector's 1, 2, 3, 4 growth ladder: one heap
@@ -970,6 +995,9 @@ private:
 
     std::shared_ptr<Storage> values_;
 };
+namespace gc {
+template <typename T> struct Traceable<Array<T>> : Traceable<T> {};
+} // namespace gc
 
 template <typename T, typename Iterable>
 [[nodiscard]] inline Array<T> array_from_iterable(const Iterable& values) {
@@ -1044,12 +1072,12 @@ public:
     [[nodiscard]] T& value() {
         if (reference_)
             return *reference_;
-        return owned_.value();
+        return require_owned(*this);
     }
     [[nodiscard]] const T& value() const {
         if (reference_)
             return *reference_;
-        return owned_.value();
+        return require_owned(*this);
     }
     [[nodiscard]] T& operator*() { return value(); }
     [[nodiscard]] const T& operator*() const { return value(); }
@@ -1086,9 +1114,19 @@ public:
     }
 
 private:
+    /** JavaScript refuses a property read through null or undefined. */
+    template <typename Self> static auto& require_owned(Self& self) {
+        if (!self.owned_)
+            throw std::runtime_error("Cannot access a nullish value.");
+        return *self.owned_;
+    }
+
     T* reference_ = nullptr;
     std::optional<T> owned_;
 };
+namespace gc {
+template <typename T> struct Traceable<Nullable<T>> : Traceable<T> {};
+} // namespace gc
 
 template <typename T> struct IsNullable : std::false_type {};
 template <typename T> struct IsNullable<Nullable<T>> : std::true_type {};
@@ -1278,10 +1316,9 @@ private:
         bool global;
         double last_index = 0;
         State(const std::string& source, bool global_, bool ignore_case)
-            : expression(wide(source),
-                         std::regex_constants::ECMAScript |
-                             (ignore_case ? std::regex_constants::icase
-                                          : std::regex_constants::syntax_option_type{})),
+            : expression(wide(source), ignore_case ? std::regex_constants::ECMAScript |
+                                                         std::regex_constants::icase
+                                                   : std::regex_constants::ECMAScript),
               global(global_) {}
     };
     std::shared_ptr<State> state_;
@@ -1654,7 +1691,8 @@ protected:
         storage_->index.emplace(std::move(key), std::prev(storage_->entries.end()));
     }
 
-    std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
+    std::shared_ptr<Storage> storage_ =
+        make_gc_shared_if<gc_traceable<EntryT> || gc_traceable<KeyT>, Storage>();
 };
 
 template <typename K, typename V> class Map : public IndexedInsertionOrdered<std::pair<K, V>, K> {
@@ -1718,6 +1756,10 @@ public:
         return *this;
     }
 };
+namespace gc {
+template <typename K, typename V>
+struct Traceable<Map<K, V>> : std::disjunction<Traceable<K>, Traceable<V>> {};
+} // namespace gc
 
 using WeakIdentity = std::weak_ptr<const void>;
 
@@ -1750,6 +1792,8 @@ template <typename V> class WeakMap {
             }
         }
     };
+    // Registered whatever its values: each collection prunes the entries
+    // whose keys died, even when no value can own a traced edge.
     std::shared_ptr<Storage> storage_ = make_gc_shared<Storage>();
 
 public:
@@ -1781,6 +1825,9 @@ public:
     }
     void gc_trace(const TraceVisitor& visitor) const { visitor(storage_); }
 };
+namespace gc {
+template <typename V> struct Traceable<WeakMap<V>> : Traceable<V> {};
+} // namespace gc
 
 /** Immediate snapshot of JavaScript Map.prototype.values iteration order. */
 template <typename K, typename V> [[nodiscard]] inline Array<V> map_values(const Map<K, V>& map) {
@@ -1922,6 +1969,9 @@ public:
         return *this;
     }
 };
+namespace gc {
+template <typename T> struct Traceable<Set<T>> : Traceable<T> {};
+} // namespace gc
 
 /** A stored JavaScript iterator: aliases share one advancing cursor. */
 template <typename T> class Iterator {
@@ -2048,8 +2098,9 @@ private:
 template <typename... T> class Product {
 public:
     using Storage = std::tuple<T...>;
-    Product() : values_(make_gc_shared<Storage>()) {}
-    Product(T... values) : values_(make_gc_shared<Storage>(std::move(values)...)) {}
+    Product() : values_(make_gc_shared_if<gc_traceable<Storage>, Storage>()) {}
+    Product(T... values)
+        : values_(make_gc_shared_if<gc_traceable<Storage>, Storage>(std::move(values)...)) {}
     template <std::size_t I> [[nodiscard]] auto& get() const { return std::get<I>(*values_); }
     [[nodiscard]] constexpr std::size_t size() const { return sizeof...(T); }
     [[nodiscard]] const void* identity() const { return values_.get(); }
@@ -2059,6 +2110,9 @@ public:
 private:
     std::shared_ptr<Storage> values_;
 };
+namespace gc {
+template <typename... T> struct Traceable<Product<T...>> : Traceable<std::tuple<T...>> {};
+} // namespace gc
 
 template <std::size_t N> [[nodiscard]] inline Tuple<N> clone_tuple(const Tuple<N>& tuple) {
     return tuple.clone();
@@ -2350,25 +2404,49 @@ relative_slice_bounds(std::size_t length, double begin_value, double end_value) 
     return value;
 }
 
-/** The six characters JavaScript's own trim and number parsing skip. */
-[[nodiscard]] inline bool is_ascii_whitespace(char value) {
-    return value == ' ' || value == '\t' || value == '\n' || value == '\r' || value == '\f' ||
-           value == '\v';
+/** JavaScript's WhiteSpace and LineTerminator code points, which trimming and number parsing skip. */
+[[nodiscard]] inline bool is_js_whitespace(char32_t point) {
+    return (point >= 0x09 && point <= 0x0d) || point == 0x20 || point == 0xa0 || point == 0x1680 ||
+           (point >= 0x2000 && point <= 0x200a) || point == 0x2028 || point == 0x2029 ||
+           point == 0x202f || point == 0x205f || point == 0x3000 || point == 0xfeff;
 }
 
-// The first byte past the leading ASCII whitespace.
+/** The code point of the (W)UTF-8 sequence starting at `index`, and its byte length. */
+[[nodiscard]] inline std::pair<char32_t, std::size_t> code_point_at(const std::string& value,
+                                                                    std::size_t index) {
+    const auto lead = static_cast<unsigned char>(value[index]);
+    const std::size_t length = lead < 0x80u ? 1 : lead < 0xe0u ? 2 : lead < 0xf0u ? 3 : 4;
+    if (index + length > value.size())
+        return {static_cast<char32_t>(lead), 1};
+    char32_t point = length == 1 ? lead : lead & (0x7fu >> length);
+    for (std::size_t byte = 1; byte < length; ++byte)
+        point = (point << 6u) | (static_cast<unsigned char>(value[index + byte]) & 0x3fu);
+    return {point, length};
+}
+
+// The first byte past the leading JavaScript white space.
 [[nodiscard]] inline std::size_t trimmed_begin(const std::string& value) {
     std::size_t begin = 0;
-    while (begin < value.size() && is_ascii_whitespace(value[begin]))
-        ++begin;
+    while (begin < value.size()) {
+        const auto [point, length] = code_point_at(value, begin);
+        if (!is_js_whitespace(point))
+            break;
+        begin += length;
+    }
     return begin;
 }
 
-// The end of the text before the trailing ASCII whitespace, never before `begin`.
+// The end of the text before the trailing JavaScript white space, never before `begin`.
 [[nodiscard]] inline std::size_t trimmed_end(const std::string& value, std::size_t begin) {
     std::size_t end = value.size();
-    while (end > begin && is_ascii_whitespace(value[end - 1]))
-        --end;
+    while (end > begin) {
+        std::size_t start = end - 1;
+        while (start > begin && (static_cast<unsigned char>(value[start]) & 0xc0u) == 0x80u)
+            --start;
+        if (!is_js_whitespace(code_point_at(value, start).first))
+            break;
+        end = start;
+    }
     return end;
 }
 
@@ -2386,44 +2464,106 @@ relative_slice_bounds(std::size_t length, double begin_value, double end_value) 
 }
 
 /**
- * JavaScript `parseFloat`: leading whitespace, an optional sign, decimal
- * digits with an optional fraction and exponent, or `Infinity`; anything
- * else in front is NaN and anything after the number is ignored.
+ * The end of the longest decimal literal at `index` (an optional sign,
+ * digits with an optional fraction, and an exponent when digits follow
+ * it), or `index` itself when it has no digits.
  */
-[[nodiscard]] inline double parse_float(const std::string& value) {
-    std::size_t index = trimmed_begin(value);
+[[nodiscard]] inline std::size_t decimal_literal_end(std::string_view value, std::size_t index) {
+    const auto digit = [&](std::size_t at) {
+        return at < value.size() && value[at] >= '0' && value[at] <= '9';
+    };
     const std::size_t start = index;
     if (index < value.size() && (value[index] == '+' || value[index] == '-'))
         ++index;
-    if (value.compare(index, 8, "Infinity") == 0) {
-        return value[start] == '-' ? -std::numeric_limits<double>::infinity()
-                                   : std::numeric_limits<double>::infinity();
-    }
     std::size_t digits = 0;
-    while (index < value.size() && value[index] >= '0' && value[index] <= '9') {
-        ++index;
+    for (; digit(index); ++index)
         ++digits;
-    }
-    if (index < value.size() && value[index] == '.') {
-        ++index;
-        while (index < value.size() && value[index] >= '0' && value[index] <= '9') {
-            ++index;
+    if (index < value.size() && value[index] == '.')
+        for (++index; digit(index); ++index)
             ++digits;
-        }
-    }
     if (digits == 0)
-        return std::numeric_limits<double>::quiet_NaN();
+        return start;
     if (index < value.size() && (value[index] == 'e' || value[index] == 'E')) {
         std::size_t exponent = index + 1;
         if (exponent < value.size() && (value[exponent] == '+' || value[exponent] == '-'))
             ++exponent;
-        if (exponent < value.size() && value[exponent] >= '0' && value[exponent] <= '9') {
-            while (exponent < value.size() && value[exponent] >= '0' && value[exponent] <= '9')
+        if (digit(exponent)) {
+            while (digit(exponent))
                 ++exponent;
             index = exponent;
         }
     }
-    return std::strtod(value.substr(start, index - start).c_str(), nullptr);
+    return index;
+}
+
+/** A signed `Infinity` at `index`: its value and where it ends. */
+[[nodiscard]] inline std::optional<std::pair<double, std::size_t>>
+infinity_at(std::string_view value, std::size_t index) {
+    const bool has_sign = index < value.size() && (value[index] == '+' || value[index] == '-');
+    const std::size_t word = index + (has_sign ? 1 : 0);
+    if (value.substr(word, 8) != "Infinity")
+        return std::nullopt;
+    const double infinity = std::numeric_limits<double>::infinity();
+    return std::pair{has_sign && value[index] == '-' ? -infinity : infinity, word + 8};
+}
+
+/** A letter or digit's value as a digit of radix up to 36, or -1. */
+[[nodiscard]] inline int radix_digit(char character) {
+    return character >= '0' && character <= '9'   ? character - '0'
+           : character >= 'a' && character <= 'z' ? character - 'a' + 10
+           : character >= 'A' && character <= 'Z' ? character - 'A' + 10
+                                                  : -1;
+}
+
+/**
+ * An unsigned `0x`/`0o`/`0b` integer literal's value, correctly rounded
+ * (NaN when it has no digits or one outside its radix), or nothing when
+ * `text` is not one.
+ */
+[[nodiscard]] inline std::optional<double> radix_integer_literal(std::string_view text) {
+    if (text.size() < 2 || text[0] != '0')
+        return std::nullopt;
+    const char tag = text[1];
+    const int bits = tag == 'x' || tag == 'X'   ? 4
+                     : tag == 'o' || tag == 'O' ? 3
+                     : tag == 'b' || tag == 'B' ? 1
+                                                : 0;
+    if (bits == 0)
+        return std::nullopt;
+    // The digits' bits, regrouped as hexadecimal, which strtod rounds correctly.
+    std::string binary;
+    for (const char character : text.substr(2)) {
+        const int digit = radix_digit(character);
+        if (digit < 0 || digit >= (1 << bits))
+            return std::numeric_limits<double>::quiet_NaN();
+        for (int bit = bits - 1; bit >= 0; --bit)
+            binary.push_back(((digit >> bit) & 1) != 0 ? '1' : '0');
+    }
+    if (binary.empty())
+        return std::numeric_limits<double>::quiet_NaN();
+    binary.insert(0, (4 - binary.size() % 4) % 4, '0');
+    std::string hexadecimal = "0x";
+    for (std::size_t at = 0; at < binary.size(); at += 4) {
+        int nibble = 0;
+        for (std::size_t bit = at; bit < at + 4; ++bit)
+            nibble = nibble * 2 + (binary[bit] - '0');
+        hexadecimal.push_back("0123456789abcdef"[nibble]);
+    }
+    return std::strtod(hexadecimal.c_str(), nullptr);
+}
+
+/**
+ * JavaScript `parseFloat`: leading white space, then a signed decimal
+ * literal or `Infinity`; anything else in front is NaN and anything after
+ * the number is ignored.
+ */
+[[nodiscard]] inline double parse_float(const std::string& value) {
+    const std::size_t start = trimmed_begin(value);
+    if (const auto infinity = infinity_at(value, start))
+        return infinity->first;
+    const std::size_t end = decimal_literal_end(value, start);
+    return end == start ? std::numeric_limits<double>::quiet_NaN()
+                        : std::strtod(value.substr(start, end - start).c_str(), nullptr);
 }
 
 /**
@@ -2776,30 +2916,28 @@ template <typename Replacement>
         all);
 }
 
+/**
+ * JavaScript's string-to-number conversion: white space around a signed
+ * decimal literal, a signed `Infinity` or an unsigned `0x`/`0o`/`0b`
+ * integer; white space alone is 0 and anything else NaN.
+ */
 [[nodiscard]] inline double number_from_string(const std::string& value) {
-    const char* begin = value.c_str();
-    char* end = nullptr;
-    const double parsed = std::strtod(begin, &end);
-    while (is_ascii_whitespace(*end)) {
-        ++end;
-    }
-    if (end == begin) {
-        for (const char character : value) {
-            if (!is_ascii_whitespace(character)) {
-                return std::numeric_limits<double>::quiet_NaN();
-            }
-        }
+    const std::size_t begin = trimmed_begin(value);
+    const std::string_view text(value.data() + begin, trimmed_end(value, begin) - begin);
+    if (text.empty())
         return 0.0;
-    }
-    return *end == '\0' ? parsed : std::numeric_limits<double>::quiet_NaN();
+    if (const auto infinity = infinity_at(text, 0); infinity && infinity->second == text.size())
+        return infinity->first;
+    if (const auto integer = radix_integer_literal(text))
+        return *integer;
+    return decimal_literal_end(text, 0) == text.size()
+               ? std::strtod(std::string(text).c_str(), nullptr)
+               : std::numeric_limits<double>::quiet_NaN();
 }
 
 /** JavaScript parseInt over a string and a validated literal radix. */
 [[nodiscard]] inline double parse_int(const std::string& value, int radix) {
-    std::size_t index = 0;
-    while (index < value.size() && is_ascii_whitespace(value[index])) {
-        ++index;
-    }
+    std::size_t index = trimmed_begin(value);
     bool negative = false;
     if (index < value.size() && (value[index] == '+' || value[index] == '-')) {
         negative = value[index] == '-';
@@ -2816,11 +2954,7 @@ template <typename Replacement>
     double parsed = 0.0;
     bool found_digit = false;
     while (index < value.size()) {
-        const char character = value[index];
-        const int digit = character >= '0' && character <= '9'   ? character - '0'
-                          : character >= 'a' && character <= 'z' ? character - 'a' + 10
-                          : character >= 'A' && character <= 'Z' ? character - 'A' + 10
-                                                                 : -1;
+        const int digit = radix_digit(value[index]);
         if (digit < 0 || digit >= radix)
             break;
         found_digit = true;
@@ -2955,6 +3089,16 @@ template <typename Range>
     return array_join(values, separator, [](const auto& value) -> const auto& { return value; });
 }
 
+/** `Array.prototype.sort()` with no comparator over strings: stable, ascending UTF-16
+ * code units. An `Array` shares its storage, so the caller's array is the one sorted. */
+template <typename Strings> [[nodiscard]] inline Strings string_array_sort(Strings values) {
+    std::stable_sort(values.begin(), values.end(),
+                     [](const std::string& left, const std::string& right) {
+                         return string_code_units(left) < string_code_units(right);
+                     });
+    return values;
+}
+
 /** `%TypedArray%.prototype.subarray`: a view over the same bytes for a numeric range. */
 template <typename Values>
 [[nodiscard]] inline Values typed_array_subarray(const Values& values, double begin_value,
@@ -3007,6 +3151,18 @@ template <typename T>
     return -1.0;
 }
 
+/** The same search over the owned list a lowered pinned body keeps. */
+template <typename T>
+[[nodiscard]] inline double array_index_of(const std::vector<T>& values,
+                                           const std::type_identity_t<T>& value) {
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (values[index] == value) {
+            return static_cast<double>(index);
+        }
+    }
+    return -1.0;
+}
+
 // Constant arrays materialize as `std::array`, so searching one needs
 // no conversion at the call site.
 template <typename T, std::size_t N>
@@ -3026,10 +3182,10 @@ template <typename Values, typename T>
     return value ? array_index_of(values, *value) : -1.0;
 }
 
-// `array.pop()!` — the compiled subset requires a non-empty array (the
-// corpus always guards with `.length`); JavaScript would yield `undefined`,
-// which the plain-data model cannot represent, so an empty pop refuses by
-// name in every build configuration instead of reading freed storage.
+// `array.pop()!` — the non-null assertion states the array is not empty. A
+// nullable element is its own absent state; any other element has none, so an
+// empty pop refuses by name in every build configuration instead of reading
+// freed storage. An unasserted `pop()` lowers to `array_pop_or_absent`.
 template <typename T> inline T array_pop(Array<T>& values) {
     if (values.empty()) [[unlikely]] {
         if constexpr (std::is_same_v<T, typename MapGetResult<T>::Type>)
@@ -3060,6 +3216,50 @@ template <typename T> inline T array_shift(Array<T>& values) {
 }
 
 template <typename T> inline T array_shift(Array<T>&& values) { return array_shift(values); }
+
+/**
+ * What `array.pop()` and `array.shift()` yield: the removed element, or
+ * absent -- JavaScript's `undefined` -- for an empty array. Null and
+ * undefined are one absent state, so a nullable element is its own result,
+ * and an object reference is absent as the empty reference.
+ */
+template <typename T> struct ArrayRemovalResult {
+    using Type = Nullable<T>;
+};
+template <typename T> struct ArrayRemovalResult<Nullable<T>> {
+    using Type = Nullable<T>;
+};
+template <typename T> struct ArrayRemovalResult<Ref<T>> {
+    using Type = Ref<T>;
+};
+
+template <typename T>
+inline typename ArrayRemovalResult<T>::Type array_pop_or_absent(Array<T>& values) {
+    if (values.empty())
+        return {};
+    T last = values.back();
+    values.pop_back();
+    return last;
+}
+
+template <typename T>
+inline typename ArrayRemovalResult<T>::Type array_pop_or_absent(Array<T>&& values) {
+    return array_pop_or_absent(values);
+}
+
+template <typename T>
+inline typename ArrayRemovalResult<T>::Type array_shift_or_absent(Array<T>& values) {
+    if (values.empty())
+        return {};
+    T first = values.front();
+    values.erase(values.begin());
+    return first;
+}
+
+template <typename T>
+inline typename ArrayRemovalResult<T>::Type array_shift_or_absent(Array<T>&& values) {
+    return array_shift_or_absent(values);
+}
 
 // `array.unshift(...items)` inserts the arguments at the front in source
 // order and returns the new JavaScript length.
@@ -3250,7 +3450,7 @@ template <typename T> [[nodiscard]] inline bool array_has_index(const T& values,
 template <typename T> [[nodiscard]] inline T& missing_array_value() {
     // Re-defaulted on every miss so a stray write through one missed index
     // cannot persist into every later miss of the same element type.
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     T& slot = realm_scratch<T>();
 #else
     static T slot{};
@@ -3615,6 +3815,20 @@ template <typename T> [[nodiscard]] T numeric_store_value(double value) {
     }
 }
 
+/**
+ * A JavaScript number handed to a native parameter the way an emscripten
+ * binding hands it: converted to whatever arithmetic type the parameter
+ * declares, as a store of the number into that type converts it.
+ */
+struct NumberArgument {
+    double value;
+    template <typename T>
+        requires std::is_arithmetic_v<T>
+    operator T() const {
+        return numeric_store_value<T>(value);
+    }
+};
+
 [[nodiscard]] inline U8Array u8_array_sized(double count) {
     return U8Array(static_cast<std::size_t>(count));
 }
@@ -3718,17 +3932,16 @@ inline void typed_array_set(TypedArray<T>& target, const TypedArray<T>& source, 
                  source_bytes.data() + source.byte_offset(), source.size() * sizeof(T));
 }
 
-/**
- * `Math.round`, at ECMA-262's own rule rather than C's.
- *
- * The two differ on a negative tie: JavaScript rounds halves toward
- * +Infinity (`Math.round(-0.5)` is `-0`), while `std::round` rounds halves
- * away from zero (`-1`). The spec's rule is "the integer closest to x, ties
- * toward +Infinity", which is `floor(x) + (x - floor(x) >= 0.5)` -- written
- * that way rather than as `floor(x + 0.5)` because the addition is not
- * exact for large magnitudes, where `floor(x) == x` makes this branch return
- * `x` unchanged, as the spec requires.
- */
+/** The same `set`, over the owned storage a lowered pinned body keeps a typed array in. */
+template <typename T>
+inline void typed_array_set(std::vector<T>& target, const std::vector<T>& source, double offset) {
+    const auto start = array_index(offset);
+    if (start > target.size() || source.size() > target.size() - start) [[unlikely]] {
+        throw std::runtime_error("TypedArray set does not fit the target array.");
+    }
+    std::copy(source.begin(), source.end(), target.begin() + static_cast<std::ptrdiff_t>(start));
+}
+
 /**
  * `Math.hypot`, as the plain root of the sum of squares.
  *
@@ -3751,21 +3964,104 @@ template <typename Range> [[nodiscard]] inline double hypot_js(const Range& valu
     return hypot_js<std::initializer_list<double>>(values);
 }
 
-template <bool Maximum, typename Range>
-[[nodiscard]] inline double math_extreme(const Range& values) {
-    double result = Maximum ? -std::numeric_limits<double>::infinity()
-                            : std::numeric_limits<double>::infinity();
-    for (const double value : values) {
-        if (std::isnan(value))
-            return value;
-        if ((Maximum ? value > result : value < result) ||
-            (value == 0.0 && result == 0.0 &&
-             (Maximum ? !std::signbit(value) : std::signbit(value))))
-            result = value;
+/**
+ * `Math.max` (`Maximum`) or `Math.min` of two operands at ECMA-262's rules:
+ * NaN when either is NaN, and `-0` ordered below `+0`. Equal operands tie
+ * on their sign bits -- the maximum ANDs them (`+0` wins), the minimum ORs
+ * them (`-0` wins) -- and equal nonzero operands share every bit.
+ *
+ * The ordering is a select; NaN and ties are predicted branches, so a
+ * loop-carried fold (a running bound) waits on one compare-select per step
+ * rather than on the blends a fully branchless step chains, and no library
+ * `signbit` call spills the operands.
+ */
+template <bool Maximum, std::floating_point Number>
+[[nodiscard]] inline Number math_extreme_step(Number left, Number right) {
+    using Bits =
+        std::conditional_t<sizeof(Number) == sizeof(std::uint64_t), std::uint64_t, std::uint32_t>;
+    static_assert(sizeof(Bits) == sizeof(Number));
+    // A NaN is the one value unequal to itself; a sum with one is NaN.
+    if (left != left || right != right) [[unlikely]] {
+        return left + right;
+    }
+    if (left == right) [[unlikely]] {
+        const Bits left_bits = std::bit_cast<Bits>(left);
+        const Bits right_bits = std::bit_cast<Bits>(right);
+        return std::bit_cast<Number>(
+            static_cast<Bits>(Maximum ? left_bits & right_bits : left_bits | right_bits));
+    }
+    if constexpr (Maximum) {
+        return left > right ? left : right;
+    } else {
+        return left < right ? left : right;
+    }
+}
+
+/**
+ * `Math.max` (`Maximum`) or `Math.min` over `values`, at ECMA-262's rules: a
+ * NaN operand makes the result NaN, `-0` orders below `+0`, and an empty
+ * list is -Infinity for the maximum and +Infinity for the minimum. None of
+ * that is `std::max`/`std::min`'s, and a third argument to either is its
+ * comparator. The result is one of the operands, that infinity or NaN, so it
+ * is exact at the width it is computed in.
+ */
+template <bool Maximum, typename Number, typename Range>
+[[nodiscard]] inline Number math_extreme_in(const Range& values) {
+    auto value = std::begin(values);
+    const auto end = std::end(values);
+    if (value == end) {
+        return Maximum ? -std::numeric_limits<Number>::infinity()
+                       : std::numeric_limits<Number>::infinity();
+    }
+    // Seeded with the first operand rather than the empty list's infinity,
+    // which would cost every call one more step.
+    Number result = static_cast<Number>(*value);
+    while (++value != end) {
+        result = math_extreme_step<Maximum>(result, static_cast<Number>(*value));
     }
     return result;
 }
 
+/** Over a range of JavaScript numbers: a rest array or a spread source. */
+template <bool Maximum, typename Range>
+[[nodiscard]] inline double math_extreme(const Range& values) {
+    return math_extreme_in<Maximum, double>(values);
+}
+
+/**
+ * One operand of a `Math.max`/`Math.min` argument list: any native number,
+ * as the JavaScript Number it denotes. A braced list of `double` would
+ * refuse an integer lane or a `std::uint32_t` option field as narrowing;
+ * this converts each one exactly as an arithmetic operand would.
+ */
+struct MathOperand {
+    template <typename Value>
+        requires std::convertible_to<Value, double>
+    MathOperand(Value value) : number(static_cast<double>(value)) {}
+    [[nodiscard]] operator double() const { return number; }
+    double number;
+};
+
+/**
+ * Over a call's own argument list, at JavaScript's width. The braced list
+ * evaluates its operands left to right, as JavaScript's argument list does.
+ */
+template <bool Maximum>
+[[nodiscard]] inline double math_extreme(std::initializer_list<MathOperand> operands) {
+    return math_extreme_in<Maximum, double>(operands);
+}
+
+/**
+ * `Math.round`, at ECMA-262's own rule rather than C's.
+ *
+ * The two differ on a negative tie: JavaScript rounds halves toward
+ * +Infinity (`Math.round(-0.5)` is `-0`), while `std::round` rounds halves
+ * away from zero (`-1`). The spec's rule is "the integer closest to x, ties
+ * toward +Infinity", which is `floor(x) + (x - floor(x) >= 0.5)` -- written
+ * that way rather than as `floor(x + 0.5)` because the addition is not
+ * exact for large magnitudes, where `floor(x) == x` makes this branch return
+ * `x` unchanged, as the spec requires.
+ */
 [[nodiscard]] inline double round_js(double value) {
     if (!std::isfinite(value) || value == 0.0) {
         return value;
@@ -3778,7 +4074,7 @@ template <bool Maximum, typename Range>
 // reference capture installs the identical generator before module load, so
 // both sides consume the same sequence (recorded as a fidelity adaptation).
 inline std::uint32_t& random_state() {
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     return realm_state.random;
 #else
     static std::uint32_t state = 1u;
@@ -3792,7 +4088,7 @@ inline void seed_random(std::uint32_t seed) { random_state() = seed; }
 // generator's state. Saving this callback preserves an override's closure
 // identity; an empty callback denotes the built-in generator.
 inline Callback<double()>& random_override() {
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     struct RandomOverride {
         Callback<double()> callback;
     };
@@ -3820,7 +4116,7 @@ inline void set_random_override(Callback<double()> callback) {
     const auto& override = random_override();
     if (override)
         return override;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     struct BuiltinRandom {
         Callback<double()> callback{random_builtin};
     };

@@ -5,10 +5,10 @@
  * different `_shader` record, so the pass itself needs no per-effect code:
  * what differs is the composed WGSL, which textures bind after the source, and
  * which scalars the effect's `writeUniforms` reads. This table states only
- * what the *record* needs, and each row is checked against the pin —
- * `PostProcessLowerer` asserts every default against the pinned `??` fallback
- * and emits the uniform writer out of the pinned `writeUniforms` body,
- * refusing a parameter this table does not carry.
+ * what the *record* needs: each slot's default is the pin's own, read where
+ * the factory states it (`lowering/post-process-defaults.ts`), and
+ * `PostProcessLowerer` emits the uniform writer out of the pinned
+ * `writeUniforms` body, refusing a parameter this table does not carry.
  *
  * What the table deliberately does NOT decide is which options reach the
  * composer. Those are forwarded whole, because the pin owns the question of
@@ -21,6 +21,7 @@
  * record's parameter vector, so a scene-code setter and the emitted writer
  * name the same slot.
  */
+import { pinnedPostProcessDefault } from "./lowering/post-process-defaults.js";
 
 /** One scalar the effect's own `params` object carries. */
 export interface PostProcessParamSlot {
@@ -29,15 +30,18 @@ export interface PostProcessParamSlot {
     /** The pinned writer's state owner; ordinary effects close over `params`. */
     owner?: "task";
     /**
-     * The pin's own default for it, in the pin's own type.
+     * The pin's own default for it, in the pin's own type, read where the
+     * factory states it: `config.<option> ?? <default>` (or the module's own
+     * coercer), the `task` record for a task-owned slot, and the `params`
+     * record for a `runtime` one.
      *
      * A boolean slot is one the pin keeps as a flag and its writer spends
      * through a conditional (`params.sourceIsSrgb ? 1 : 0`); the parameter
      * vector is numeric either way, so the flag travels as 0 or 1 and the
-     * lowered conditional reads it back. Naming the pinned type here is what
-     * lets the default be checked against the pin as the pin spells it.
+     * lowered conditional reads it back, and a scene value of the other
+     * type is refused.
      */
-    fallback: number | boolean;
+    readonly fallback: number | boolean;
     /**
      * A slot the pin fills from the pass rather than from the config. The
      * chromatic aberration's screen size is the only one: its factory
@@ -97,6 +101,27 @@ export interface PostProcessEffect {
      * same reason. The row exists because the pass still needs its writer.
      */
     internal?: true;
+}
+
+/** A slot as the table below names it; its default is read from the pin. */
+type PostProcessParamSite = Omit<PostProcessParamSlot, "fallback">;
+
+/** An effect row as the table below states it, before its defaults are read. */
+type PostProcessEffectSite = Omit<PostProcessEffect, "params"> & {
+    params: readonly PostProcessParamSite[];
+};
+
+/** A row whose every slot reads its default from the pin on first use. */
+function withPinnedDefaults(row: PostProcessEffectSite): PostProcessEffect {
+    return {
+        ...row,
+        params: row.params.map((slot) => ({
+            ...slot,
+            get fallback(): number | boolean {
+                return pinnedPostProcessDefault(row, slot);
+            },
+        })),
+    };
 }
 
 /**
@@ -159,7 +184,7 @@ export interface PostProcessComposite {
     sourceTasks?: readonly string[];
 }
 
-export const POST_PROCESS_COMPOSITES: readonly PostProcessComposite[] = [
+const POST_PROCESS_COMPOSITES: readonly PostProcessComposite[] = [
     {
         intrinsic: "createTaaPostProcessTask",
         module: "src/post-process/taa.ts",
@@ -257,18 +282,18 @@ export function postProcessComposite(
     );
 }
 
-export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
+const POST_PROCESS_EFFECT_SITES: readonly PostProcessEffectSite[] = [
     {
         intrinsic: "createTaaBlendPostProcessTask",
         module: "src/post-process/taa.ts",
         declaredIn: "createTaaPostProcessTask",
         declaredAs: "-blend",
-        params: [{ path: "_factor", owner: "task", fallback: 1 }],
+        params: [{ path: "_factor", owner: "task" }],
         extraTextures: [],
         usesCamera: false,
         internal: true,
     },
-    ...["Present", "HistoryUpdate"].map((name): PostProcessEffect => ({
+    ...["Present", "HistoryUpdate"].map((name): PostProcessEffectSite => ({
         intrinsic: `createTaa${name}PostProcessTask`,
         module: "src/post-process/taa.ts",
         declaredIn: "createTaaPostProcessTask",
@@ -290,7 +315,7 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         module: "src/post-process/bloom.ts",
         declaredIn: "createBloomPostProcessTask",
         declaredAs: "-merge",
-        params: [{ path: "weight", fallback: 0.25 }],
+        params: [{ path: "weight" }],
         // The blurred highlights bind after the source, but as the
         // composite's own intermediate rather than a config option, so the
         // observation reads them off the pass's `_shader.extraTextures`.
@@ -307,10 +332,7 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         module: "src/post-process/smaa.ts",
         declaredIn: "createSmaaPostProcessTask",
         declaredAs: "-edges",
-        params: [
-            { path: "threshold", fallback: 0.05 },
-            { path: "sourceIsSrgb", fallback: false },
-        ],
+        params: [{ path: "threshold" }, { path: "sourceIsSrgb" }],
         extraTextures: [],
         usesCamera: false,
     },
@@ -323,10 +345,10 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         declaredIn: "createSmaaPostProcessTask",
         declaredAs: "-weights",
         params: [
-            { path: "maxSearchSteps", fallback: 16 },
-            { path: "diagonalDetection", fallback: false },
-            { path: "minDiagonalRun", fallback: 4 },
-            { path: "cornerDetection", fallback: false },
+            { path: "maxSearchSteps" },
+            { path: "diagonalDetection" },
+            { path: "minDiagonalRun" },
+            { path: "cornerDetection" },
         ],
         extraTextures: [],
         usesCamera: false,
@@ -339,7 +361,7 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         module: "src/post-process/smaa.ts",
         declaredIn: "createSmaaPostProcessTask",
         declaredAs: "-blend",
-        params: [{ path: "dominantAxisBlend", fallback: true }],
+        params: [{ path: "dominantAxisBlend" }],
         extraTextures: [],
         usesCamera: false,
     },
@@ -349,10 +371,7 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         // gamma space, which the lowerer takes from the pinned body.
         intrinsic: "createExtractHighlightsPostProcessTask",
         module: "src/post-process/extract-highlights.ts",
-        params: [
-            { path: "threshold", fallback: 0.9 },
-            { path: "exposure", fallback: 1 },
-        ],
+        params: [{ path: "threshold" }, { path: "exposure" }],
         extraTextures: [],
         usesCamera: false,
     },
@@ -363,10 +382,7 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         // carries and what each weighs, so it reaches the composed text rather
         // than a uniform — which is also why the pin rebuilds the module when
         // it changes.
-        params: [
-            { path: "direction.x", fallback: 1 },
-            { path: "direction.y", fallback: 0 },
-        ],
+        params: [{ path: "direction.x" }, { path: "direction.y" }],
         extraTextures: [],
         usesCamera: false,
     },
@@ -374,14 +390,14 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         intrinsic: "createChromaticAberrationPostProcessTask",
         module: "src/post-process/chromatic-aberration.ts",
         params: [
-            { path: "aberrationAmount", fallback: 30 },
-            { path: "screenWidth", fallback: 1, runtime: "sourceWidth" },
-            { path: "screenHeight", fallback: 1, runtime: "sourceHeight" },
-            { path: "direction.x", fallback: 0.707 },
-            { path: "direction.y", fallback: 0.707 },
-            { path: "radialIntensity", fallback: 0 },
-            { path: "centerPosition.x", fallback: 0.5 },
-            { path: "centerPosition.y", fallback: 0.5 },
+            { path: "aberrationAmount" },
+            { path: "screenWidth", runtime: "sourceWidth" },
+            { path: "screenHeight", runtime: "sourceHeight" },
+            { path: "direction.x" },
+            { path: "direction.y" },
+            { path: "radialIntensity" },
+            { path: "centerPosition.x" },
+            { path: "centerPosition.y" },
         ],
         extraTextures: [],
         usesCamera: false,
@@ -389,7 +405,7 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
     {
         intrinsic: "createBlackAndWhitePostProcessTask",
         module: "src/post-process/black-and-white.ts",
-        params: [{ path: "degree", fallback: 1 }],
+        params: [{ path: "degree" }],
         extraTextures: [],
         usesCamera: false,
     },
@@ -404,10 +420,10 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         intrinsic: "createCircleOfConfusionPostProcessTask",
         module: "src/post-process/circle-of-confusion.ts",
         params: [
-            { path: "lensSize", fallback: 50 },
-            { path: "fStop", fallback: 1.4 },
-            { path: "focusDistance", fallback: 2000 },
-            { path: "focalLength", fallback: 50 },
+            { path: "lensSize" },
+            { path: "fStop" },
+            { path: "focusDistance" },
+            { path: "focalLength" },
         ],
         extraTextures: ["depthTexture"],
         usesCamera: true,
@@ -418,10 +434,7 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         // the composed text, which weighs every tap by the circle of confusion.
         intrinsic: "createDepthOfFieldBlurPostProcessTask",
         module: "src/post-process/depth-of-field-blur.ts",
-        params: [
-            { path: "direction.x", fallback: 1 },
-            { path: "direction.y", fallback: 0 },
-        ],
+        params: [{ path: "direction.x" }, { path: "direction.y" }],
         extraTextures: ["circleOfConfusionTexture"],
         usesCamera: false,
         internal: true,
@@ -438,6 +451,9 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         internal: true,
     },
 ];
+
+export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] =
+    POST_PROCESS_EFFECT_SITES.map(withPinnedDefaults);
 
 /**
  * The settings `createPostProcessTask` reads itself, which every effect
@@ -489,7 +505,7 @@ export function pinnedEffectModule(
  * The option a slot is written from. A vector option contributes one slot per
  * component, so `direction.x` reads `direction` and takes `x`.
  */
-export function slotOption(slot: PostProcessParamSlot): {
+export function slotOption(slot: Pick<PostProcessParamSlot, "path">): {
     option: string;
     component?: "x" | "y";
 } {

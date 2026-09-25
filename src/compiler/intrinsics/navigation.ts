@@ -7,14 +7,6 @@ import type { LoweringServices } from "../lowering-services.js";
 // PAL's, linked from the exact recastnavigation commit the pinned
 // wrapper's wasm compiles — so unlike physics, nothing is substituted
 // and the answers are expected to match the browser reference.
-// The navigation family: `createNavigationPluginAsync`, `createNavMesh`,
-// `createDebugNavMeshGeometry`, `raycast`.
-//
-// The pinned module's own logic is generated (upstream/navigation.cpp,
-// src/lowering/navigation-lowerer.ts); the toolset behind it is the
-// PAL's, linked from the exact recastnavigation commit the pinned
-// wrapper's wasm compiles — so unlike physics, nothing is substituted
-// and the answers are expected to match the browser reference.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { handleCppType } from "../data-types.js";
@@ -27,7 +19,8 @@ import {
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
-import { PINNED_AGENT_PARAM_DEFAULTS } from "../../lowering/navigation-lowerer.js";
+import { pinnedAgentParamDefaults } from "../../lowering/navigation-lowerer.js";
+import { NAV_MESH_BUILD_PARAM_FIELDS } from "../../lowering/navigation-build-plan.js";
 
 export interface NavigationIntrinsicContext
     extends
@@ -52,35 +45,14 @@ export interface NavigationIntrinsicContext
         > {}
 
 /**
- * The build parameters a reached `createNavMesh` may name, each mapping
- * to the PAL field the generated build copies into the wrapper's own
- * config spread. `keepIntermediates` is accepted and discarded — it
- * only decides whether the wrapper frees Recast intermediates, which
- * the native build frees unconditionally; nothing reached reads them.
+ * The build parameters a reached `createNavMesh` may name: the numbers
+ * the generated build plan reads (`NAV_MESH_BUILD_PARAM_FIELDS`), then the
+ * rest. `keepIntermediates` is accepted and discarded — it only decides
+ * whether the wrapper frees Recast intermediates, which the native build
+ * frees unconditionally; nothing reached reads them.
  */
-const NAV_MESH_NUMBER_PARAMS: readonly (readonly [string, string])[] = [
-    ["cs", "cs"],
-    ["ch", "ch"],
-    ["walkableSlopeAngle", "walkable_slope_angle"],
-    ["walkableHeight", "walkable_height"],
-    ["walkableClimb", "walkable_climb"],
-    ["walkableRadius", "walkable_radius"],
-    ["maxEdgeLen", "max_edge_len"],
-    ["maxSimplificationError", "max_simplification_error"],
-    ["minRegionArea", "min_region_area"],
-    ["mergeRegionArea", "merge_region_area"],
-    ["maxVertsPerPoly", "max_verts_per_poly"],
-    ["detailSampleDist", "detail_sample_dist"],
-    ["detailSampleMaxError", "detail_sample_max_error"],
-    // The tile-cache arm's three. `maxObstacles > 0` is what selects that
-    // arm, and the other two are read only once it has been.
-    ["tileSize", "tile_size"],
-    ["expectedLayersPerTile", "expected_layers_per_tile"],
-    ["maxObstacles", "max_obstacles"],
-];
-
 const NAV_MESH_PARAM_NAMES = [
-    ...NAV_MESH_NUMBER_PARAMS.map(([name]) => name),
+    ...NAV_MESH_BUILD_PARAM_FIELDS.keys(),
     "keepIntermediates",
     "doNotReverseIndices",
     "offMeshConnections",
@@ -199,12 +171,13 @@ export function compileNavigationIntrinsic(
             // the feature is what carries it to the emitted dispatch, to
             // the PAL half that gets compiled, and to the third-party
             // library that gets linked.
-            if (buildGate(context, options, "maxObstacles") !== 0) {
+            const tileCache = buildGate(context, options, "maxObstacles") !== 0;
+            if (tileCache) {
                 context.reachFeature("navigation:tile-cache", call);
             }
             const parameters = context.allocateTemporaryCppName("nav_params");
             context.emit(`bbl::pal::NavMeshBuildParams ${parameters}{};`);
-            for (const [name, field] of NAV_MESH_NUMBER_PARAMS) {
+            for (const [name, field] of NAV_MESH_BUILD_PARAM_FIELDS) {
                 const value = context.objectProperty(options, name);
                 if (value) {
                     context.emit(
@@ -366,6 +339,10 @@ export function compileNavigationIntrinsic(
                         cpp: `${temporary}.indices`,
                         dataType: { kind: "u32array" },
                     },
+                    positionsHash: {
+                        kind: "number",
+                        cpp: `${temporary}.positions_hash`,
+                    },
                 },
             };
         }
@@ -451,7 +428,7 @@ export function compileNavigationIntrinsic(
             validateObjectProperties(
                 context,
                 options,
-                AGENT_PARAM_NAMES,
+                agentParamNames(),
                 "Reached crowd agents name the pinned dtCrowdAgentParams fields.",
             );
             // `reachRadius` is the one `AgentParameters` field the pinned
@@ -482,10 +459,9 @@ export function compileNavigationIntrinsic(
                 );
             }
             // The pin's own `?? N` defaults, resolved here so the
-            // wrapper's spread never decides them. The numbers come from
-            // the table the lowerer gates against the pinned expression,
-            // so neither side can move alone.
-            for (const [name, field, fallback] of PINNED_AGENT_PARAM_DEFAULTS) {
+            // wrapper's spread never decides them, read off the pinned
+            // `addAgent` itself.
+            for (const [name, field, fallback] of pinnedAgentParamDefaults()) {
                 const value = context.objectProperty(options, name);
                 const resolved = value
                     ? context.compileNumber(value, "double")
@@ -522,10 +498,9 @@ export function compileNavigationIntrinsic(
 
 /**
  * The `AgentParameters` fields the pinned `addAgent` forwards and the
- * caller must supply. The three it defaults with `?? N` live in
- * `PINNED_AGENT_PARAM_DEFAULTS`, beside the assertion that gates them
- * against the pin; `reachRadius` is declared upstream and forwarded
- * nowhere, so it is refused at the call site instead.
+ * caller must supply. The three it defaults with `?? N` are read off it
+ * (`pinnedAgentParamDefaults`); `reachRadius` is declared upstream and
+ * forwarded nowhere, so it is refused at the call site instead.
  */
 const AGENT_FLOAT_PARAMS: readonly (readonly [string, string])[] = [
     ["radius", "radius"],
@@ -537,11 +512,13 @@ const AGENT_FLOAT_PARAMS: readonly (readonly [string, string])[] = [
     ["separationWeight", "separation_weight"],
 ];
 
-const AGENT_PARAM_NAMES = [
-    ...AGENT_FLOAT_PARAMS.map(([name]) => name),
-    ...PINNED_AGENT_PARAM_DEFAULTS.map(([name]) => name),
-    "reachRadius",
-];
+function agentParamNames(): string[] {
+    return [
+        ...AGENT_FLOAT_PARAMS.map(([name]) => name),
+        ...pinnedAgentParamDefaults().map(([name]) => name),
+        "reachRadius",
+    ];
+}
 
 /**
  * The three lanes of a native vector, as a record the scene reads at run
@@ -591,14 +568,15 @@ function validateNavMeshParams(
             "config keys.",
     );
     // The pin dispatches on `maxObstacles` first and `tileSize` second, so
-    // the four corners of those two gates are the arm, and both refusals
-    // are stated together because that is how the table reads:
+    // the corners of those two gates are the arm, and both refusals are
+    // stated together because that is how the table reads:
     //
     //   obstacles  tiles      arm
     //   0          0          solo
     //   0          > 0        tiled -- no reached scene, refused
     //   > 0        > 0        tile cache
-    //   > 0        0          a cache with no tile size, refused
+    //   > 0        absent     tile cache at the pin's own `?? 32`
+    //   > 0        0          a cache of zero-cell tiles, refused
     const obstacles = buildGate(context, options, "maxObstacles");
     const tiles = buildGate(context, options, "tileSize");
     if (obstacles === 0 && tiles !== 0) {
@@ -609,12 +587,31 @@ function validateNavMeshParams(
                 "tile-cache arms are.",
         );
     }
-    if (obstacles !== 0 && tiles === 0) {
+    if (
+        obstacles !== 0 &&
+        tiles === 0 &&
+        context.objectProperty(options, "tileSize")
+    ) {
         context.fail(
-            requiredProperty(context, options, "maxObstacles"),
-            "createNavMesh with maxObstacles > 0 needs a tileSize: the " +
-                "cache is sized in tiles, and the pin's own default of 32 " +
-                "is a size no reached scene relies on.",
+            requiredProperty(context, options, "tileSize"),
+            "createNavMesh with maxObstacles > 0 and tileSize 0 sizes the " +
+                "cache in zero-cell tiles.",
+        );
+    }
+    // The pin's tile-cache arm bakes non-empty off-mesh connections through
+    // its own `_createDefaultTileCacheMeshProcess`, which is not lowered;
+    // the PAL's tile cache installs the wrapper's default process only.
+    const connections = context.objectProperty(options, "offMeshConnections");
+    if (
+        obstacles !== 0 &&
+        connections &&
+        context.expectStaticArrayLiteral(connections).elements.length > 0
+    ) {
+        context.fail(
+            connections,
+            "createNavMesh with maxObstacles > 0 and offMeshConnections " +
+                "installs the pinned _createDefaultTileCacheMeshProcess, " +
+                "which is not lowered.",
         );
     }
     if (context.objectProperty(options, "doNotReverseIndices")) {

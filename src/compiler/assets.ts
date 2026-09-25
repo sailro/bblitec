@@ -1,27 +1,25 @@
 import { EmissionMap, EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
+import type { BindingLookup } from "./binding-scopes.js";
 // Asset registration: from a scene URL to a packaged local file.
 //
 // A reached asset URL registers once per (kind, source) pair and maps
-// to a deterministic hashed output name beside the executable; bundled
-// root-relative paths resolve against the pinned upstream tree, and a
-// drawn sprite atlas registers the module that draws it rather than a
-// URL. The intrinsic lowerers in asset.ts and sprite.ts call these
-// through their contexts.
-// Asset registration: from a scene URL to a packaged local file.
-//
-// A reached asset URL registers once per (kind, source) pair and maps
-// to a deterministic hashed output name beside the executable; bundled
-// root-relative paths resolve against the pinned upstream tree, and a
-// drawn sprite atlas registers the module that draws it rather than a
-// URL. The intrinsic lowerers in asset.ts and sprite.ts call these
-// through their contexts.
+// to a deterministic hashed output name beside the executable;
+// root-relative paths resolve against the deployment's public directory
+// or public URL, and a drawn sprite atlas registers the module that draws
+// it rather than a URL. The intrinsic lowerers in asset.ts and sprite.ts
+// call these through their contexts.
 import ts from "typescript";
-import { deploymentAssetSource, type DeploymentOptions } from "./deployment.js";
+import {
+    deploymentAssetSource,
+    deploymentPublicAsset,
+    type DeploymentOptions,
+} from "./deployment.js";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { findRepositoryRoot, readUpstreamPin } from "../upstream-source.js";
+import { pinnedLabPublicUrl } from "../pinned-lab-public.js";
 import {
     pixelsAssetSource,
     spriteAtlasAssetSource,
@@ -194,7 +192,9 @@ export function registerAsset(
             }
         }
     }
-    const asset = assetRecord(source, kind, context.assetPayloads, faceSize);
+    const asset = assetRecord(source, kind, context.assetPayloads, {
+        faceSize,
+    });
     context.assets.set(key, asset);
     return asset;
 }
@@ -280,15 +280,26 @@ export function canonicalLocalAssetSource(
  * entry AST, and generation, whose one source -- a node-particle graph's
  * texture -- is only known once the pin has resolved it against the scene's
  * `textureBaseUrl`. Both must package it under the same name, so the naming
- * rule lives here rather than in either.
+ * rule lives here rather than in either. The compiler resolves its sources
+ * before they reach here; generation passes the entry and the deployment,
+ * so a root-relative texture URL resolves the way a scene's own does.
  */
 export function assetRecord(
     source: string,
     kind: CompileAsset["kind"],
     assetPayloads: Map<string, string>,
-    faceSize?: number,
+    placement: {
+        faceSize?: number | undefined;
+        entryFileName?: string | undefined;
+        deployment?: DeploymentOptions;
+    } = {},
 ): CompileAsset {
-    source = resolveBundledAsset(source);
+    const { faceSize } = placement;
+    source = resolveBundledAsset(
+        source,
+        placement.entryFileName,
+        placement.deployment,
+    );
     const materializationSource = source;
     const sourcePath = source.split(/[?#]/, 1)[0] ?? source;
     // A data URL's text IS the payload, so it names nothing; the media type
@@ -494,12 +505,7 @@ export function resolveBundledAsset(
         return `https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${pin.sourceVersion}/packages/babylon-lite/assets/brdf-lut.png`;
     }
     if (source === "/environment.env") {
-        const pin = readUpstreamPin();
-        return (
-            "https://raw.githubusercontent.com/" +
-            `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-            "/lab/public/textures/environment.env"
-        );
+        return `${pinnedLabPublicUrl()}textures/environment.env`;
     }
     if (source.startsWith("/") && entryFileName) {
         const entryDirectory = dirname(resolve(entryFileName));
@@ -509,15 +515,13 @@ export function resolveBundledAsset(
         }
     }
     if (source.startsWith("/")) {
-        // Root-relative asset paths always mean the pinned lab/public
-        // root: corpus scenes and project-owned gates share the demo
-        // asset conventions, and repository-local fixtures use
-        // relative paths instead.
-        const pin = readUpstreamPin();
-        return (
-            "https://raw.githubusercontent.com/" +
-            `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-            `/lab/public${source}`
+        // A root-relative URL no check above placed names the deployment's
+        // public files as the public URL serves them; without one, nothing
+        // says where the file is.
+        const served = deploymentPublicAsset(source, deployment);
+        if (served !== undefined) return served;
+        throw new Error(
+            `Root-relative asset '${source}' needs --public-dir or --public-url.`,
         );
     }
     return source;
@@ -552,7 +556,9 @@ interface StaticGraphDocumentContext
     extends
         ExecutedModuleReferenceContext,
         StaticJsonContext,
-        Pick<LoweringServices, "lookupOptional" | "fail"> {}
+        Pick<LoweringServices, "fail"> {
+    readonly bindings: BindingLookup;
+}
 
 type StaticGraphDocument =
     | { kind: "literal"; graph: Record<string, unknown> }
@@ -586,7 +592,7 @@ export function staticGraphDocument(
     }
     const unwrapped = context.unwrap(expression);
     const carried = ts.isIdentifier(unwrapped)
-        ? context.lookupOptional(unwrapped)?.staticJson
+        ? context.bindings.lookupOptional(unwrapped)?.staticJson
         : undefined;
     if (carried !== undefined) {
         if (

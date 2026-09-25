@@ -1,4 +1,3 @@
-#define BBLITE_PHYSICS_VIEWER 1
 #include <bblite/runtime.hpp>
 #include "pal_physics_bullet.cpp"
 #include "physics.cpp"
@@ -25,7 +24,7 @@ int main() {
 
     const auto ground =
         p::physics_shape_create_heightfield(3, 3, {2, 1, 3}, {0, 1, 2, 3, 4, 5, 6, 7, 8});
-    assert((p::physics_shape_debug_descriptor(ground) ==
+    assert((p::shape_at(ground).debug_descriptor ==
             p::PhysicsDebugShapeDescriptor{
                 "HEIGHTFIELD", {3, 3, 2, 1, 3, 0, 1, 2, 3, 4, 5, 6, 7, 8}, {}, {}}));
     auto body = p::physics_body_create();
@@ -106,13 +105,14 @@ int main() {
     u::enable_havok_floating_origin(source_handle, 10);
     u::set_physics_gravity(source_handle, {0, 4, 0}, Vec3d{50, 0, 0});
     assert(source_world->fo->regions.size() == 2);
-    assert(gravity(source_world->fo->regions[0].world) == btVector3(1, -2, 3));
-    assert(gravity(source_world->fo->regions[1].world) == btVector3(0, 4, 0));
+    assert(gravity(source_world->fo->regions[0]->_world) == btVector3(1, -2, 3));
+    assert(gravity(source_world->fo->regions[1]->_world) == btVector3(0, 4, 0));
     assert(source_world->fo->gravity == source_world->gravity);
     u::set_physics_gravity(source_handle, {5, 6, 7}, {});
     assert((source_world->fo->gravity == std::array<double, 3>{5, 6, 7}));
     for (const auto& region : source_world->fo->regions)
-        assert(gravity(region.world) == btVector3(5, 6, 7));
-    assert(gravity(u::get_or_create_region(*source_world, {100, 0, 0})) == btVector3(5, 6, 7));
+        assert(gravity(region->_world) == btVector3(5, 6, 7));
+    assert(gravity(u::get_or_create_region(*source_world, {100, 0, 0})->_world) ==
+           btVector3(5, 6, 7));
     std::cout << "physics-heightfield: ok; settled y=" << settled[1] << '\n';
 }

@@ -2,17 +2,16 @@ import type { LoweringServices } from "./lowering-services.js";
 // Web Storage references and the supported durable key/value methods.
 import ts from "typescript";
 
-import { browserGlobalNamed } from "./browser-erasure.js";
-import { declaredInDomLibrary, type DataType } from "./data-types.js";
-import type { Value } from "./types.js";
+import type { DataType } from "./data-types.js";
+import { declaredInDomLibrary } from "./symbols.js";
+import { optionalPresentCpp, type Value } from "./types.js";
 
 /** The narrow slice of the expression context this lowering needs. */
 interface WebStorageContext extends Pick<
     LoweringServices,
     | "unwrap"
     | "fail"
-    | "isDefaultLibraryIdentifier"
-    | "lookupOptional"
+    | "libraryGlobal"
     | "reachFeature"
     | "reachJsData"
     | "reachLocalStorage"
@@ -34,7 +33,7 @@ function isLocalStorage(
     context: WebStorageContext,
     expression: ts.Expression,
 ): boolean {
-    return browserGlobalNamed(context, expression)?.text === "localStorage";
+    return context.libraryGlobal(expression) === "localStorage";
 }
 
 /** A storage dependency can be passed through ordinary method-bearing records. */
@@ -134,7 +133,7 @@ export function compileWebStorageCall(
         callback.cpp,
         callback.dataType,
         owner.dataType?.kind === "optional"
-            ? `${receiver}.has_value()`
+            ? optionalPresentCpp(receiver)
             : receiver,
     );
 }

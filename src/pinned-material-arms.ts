@@ -64,14 +64,20 @@ import {
     packagedGltfMeshPlan,
     type GltfConstructedMaterialPlan,
 } from "./gltf-mesh-plan.js";
-import { packagedGltfLights } from "./gltf-light-plan.js";
+import { packagedGltfLights, type GltfLight } from "./gltf-light-plan.js";
 import {
     packagedGltfTransmissionPlan,
     selectedGltfTransmission,
     type GltfTransmissionPlan,
 } from "./gltf-transmission-plan.js";
 import { pinnedPbrTransmissionSelection } from "./pinned-pbr-transmission.js";
-import type { LoweringContext } from "./lowering/context.js";
+import ts from "typescript";
+import {
+    numericValue,
+    unwrapExpression,
+    variableInitializer,
+    type LoweringContext,
+} from "./lowering/context.js";
 
 /**
  * The uv2-mask bit `createPbrTemplateExt` decodes as `_hasOcclusionUv2`.
@@ -83,20 +89,36 @@ import type { LoweringContext } from "./lowering/context.js";
  * generation here rather than emitting a texture slot no variant declares.
  */
 function pinnedOcclusionUv2Bit(): number {
-    const source = sharedUpstreamStore().getSource(
-        "src/material/pbr/pbr-template-ext.ts",
+    const module = "src/material/pbr/pbr-template-ext.ts";
+    const file = sharedUpstreamStore().getSourceFile(module);
+    const negated = (
+        expression: ts.Expression | undefined,
+    ): ts.Expression | undefined =>
+        expression &&
+        ts.isPrefixUnaryExpression(expression) &&
+        expression.operator === ts.SyntaxKind.ExclamationToken
+            ? unwrapExpression(expression.operand)
+            : undefined;
+    // `!!(uv2Mask & <bit>)`: the masked read under two negations.
+    const decoded = negated(
+        negated(
+            unwrapExpression(variableInitializer(file, "_hasOcclusionUv2")),
+        ),
     );
-    const match = /_hasOcclusionUv2\s*=\s*!!\(uv2Mask\s*&\s*(\d+)\)/.exec(
-        source,
-    );
-    if (!match) {
+    if (
+        !decoded ||
+        !ts.isBinaryExpression(decoded) ||
+        decoded.operatorToken.kind !== ts.SyntaxKind.AmpersandToken ||
+        !ts.isIdentifier(decoded.left) ||
+        decoded.left.text !== "uv2Mask"
+    ) {
         refuseGeneration(
-            "src/material/pbr/pbr-template-ext.ts",
+            module,
             "Pinned pbr-template-ext.ts no longer decodes _hasOcclusionUv2 " +
-                "from a uv2Mask bit literal.",
+                "as !!(uv2Mask & <bit>).",
         );
     }
-    return Number(match[1]);
+    return numericValue(decoded.right, file);
 }
 
 /**
@@ -162,6 +184,8 @@ const noArms: PinnedMaterialArms = {
 
 /** The pin's own bits the arms that have no fragment id of their own read. */
 interface PinnedArmBits {
+    /** PBR2_CC_F0_REMAP_OFF: the coat keeps its base F0 unremapped. */
+    clearcoatF0RemapOff: number;
     sheenAlbedoScaling: number;
     specGloss: number;
     occlusionUv2: number;
@@ -178,7 +202,12 @@ function pinnedArmBits(): Promise<PinnedArmBits> {
         importPinnedModule<{ PBR_HAS_SPEC_GLOSS: number }>(
             "material/pbr/pbr-flag-bits.js",
         ),
-    ]).then(([sheen, core]) => ({
+        importPinnedModuleWithExports<{ PBR2_CC_F0_REMAP_OFF: number }>(
+            "material/pbr/fragments/clearcoat-fragment.js",
+            ["PBR2_CC_F0_REMAP_OFF"],
+        ),
+    ]).then(([sheen, core, coat]) => ({
+        clearcoatF0RemapOff: coat.PBR2_CC_F0_REMAP_OFF,
         sheenAlbedoScaling: sheen.PBR_HAS_SHEEN_ALBEDO_SCALING,
         specGloss: core.PBR_HAS_SPEC_GLOSS,
         occlusionUv2: pinnedOcclusionUv2Bit(),
@@ -205,9 +234,10 @@ function pinnedVariantArms(
     const coat = key.includes("clearcoat");
     return {
         clearcoat: coat,
-        // `-X` in the coat's own key is PBR2_CC_F0_REMAP_OFF, which
-        // every glTF coat sets; a coat without it wants the remap.
-        clearcoatF0Remap: coat && !/clearcoat-[A-Z]*X/.test(key),
+        // PBR2_CC_F0_REMAP_OFF, which every glTF coat sets; a coat
+        // without it wants the remap.
+        clearcoatF0Remap:
+            coat && (variant.features2 & bits.clearcoatF0RemapOff) === 0,
         sheen: key.includes("sheen"),
         // The two sheen models live inside one `sheen` arm, so the key
         // does not separate them and the bit has to be read. A glTF
@@ -291,12 +321,11 @@ export interface MaterialSubject {
 /** Source-registered lights that join the scene's composed lighting arms. */
 export interface GltfNodeLights {
     count: number;
-    kinds: readonly string[];
+    kinds: readonly GltfLight["kind"][];
 }
 
-export function gltfNodeLights(path: string): GltfNodeLights {
-    const document = glbDocument(path);
-    if (!document) return { count: 0, kinds: [] };
+/** The lights a packaged document's executed light plan registers. */
+export function gltfNodeLights(document: JsonObject): GltfNodeLights {
     const plan = packagedGltfLights(document);
     const kinds = new Set(
         plan.sceneLights.map((index) => plan.lights[index]!.kind),
@@ -313,10 +342,8 @@ export function gltfNodeLights(path: string): GltfNodeLights {
  * composes every fragment with `PBR_HAS_ENV` and the tone-mapping arms the
  * environment turns on.
  */
-export function gltfHasImageBasedLight(path: string): boolean {
-    const record = glbDocument(path);
-    if (!record) return false;
-    const used = record["extensionsUsed"];
+export function gltfHasImageBasedLight(document: JsonObject): boolean {
+    const used = document["extensionsUsed"];
     return Array.isArray(used) && used.includes("EXT_lights_image_based");
 }
 
@@ -1392,14 +1419,6 @@ export async function composeScenePbrVariants(
         }
         if (material.shadowOnly)
             setters.setShadowOnly(input, material.shadowOnly);
-        if (material.transmission > 0) {
-            refuseGeneration(
-                "renderer:transmission",
-                "A scene-code transmissive material has no composed arm yet; " +
-                    "the refraction pass structure is the open transmission " +
-                    "item.",
-            );
-        }
         const noColor = material.noColorView
             ? {
                   passFeatures2: (

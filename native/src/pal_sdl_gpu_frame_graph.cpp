@@ -1,6 +1,11 @@
 // SDL_GPU driver for a standalone FrameGraphContext. The context owns only
 // ordered render-target tasks, so this translation unit deliberately has no
 // scene renderer, camera, mesh, material, or image-loader dependency.
+#include <bblite/features/gpu_task_timing.hpp>
+#include <bblite/features/has_effect_task.hpp>
+#include <bblite/features/has_frame_graph_renderer.hpp>
+#include <bblite/features/has_post_process.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
@@ -32,8 +37,7 @@
 
 namespace bbl::pal {
 
-#if defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER &&                 \
-    BBLITE_HAS_SDL_GPU
+#if BBLITE_HAS_FRAME_GRAPH_RENDERER && BBLITE_HAS_SDL_GPU
 
 namespace {
 
@@ -88,24 +92,6 @@ struct State {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
 };
-
-SDL_GPUTextureFormat texture_format(TextureFormatClass format) {
-    switch (format) {
-    case TextureFormatClass::rgba8_unorm:
-        return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    case TextureFormatClass::r8_unorm:
-        return SDL_GPU_TEXTUREFORMAT_R8_UNORM;
-    case TextureFormatClass::r16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
-    case TextureFormatClass::rg16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
-    case TextureFormatClass::r32_float:
-        return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
-    case TextureFormatClass::rgba16_float:
-        return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-    }
-    return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-}
 
 SDL_GPUSampleCount target_samples(const State& state, std::uint32_t requested) {
     return requested == 4 ? state.samples : SDL_GPU_SAMPLECOUNT_1;
@@ -215,7 +201,7 @@ void build_graph(State& state, const Engine& engine, std::uint32_t width, std::u
 
 SDL_GPUTexture* target_texture(State& state, const Engine& engine, RenderTargetHandle handle,
                                SDL_GPUTexture* swapchain, bool sampled) {
-    const RenderTargetRecord& record = engine.render_targets.at(handle.value);
+    const RenderTargetRecord& record = handle_at(engine.render_targets, handle);
     if (record.swapchain)
         return swapchain;
     const Target& target = state.targets.at(handle.value);
@@ -228,7 +214,7 @@ SDL_GPUTexture* source_texture(State& state, const Engine& engine, const RenderT
     if (source.source != RenderTextureSource::render_target) {
         throw std::runtime_error("A standalone frame graph cannot sample a scene geometry task.");
     }
-    const RenderTargetRecord& record = engine.render_targets.at(source.target.value);
+    const RenderTargetRecord& record = handle_at(engine.render_targets, source.target);
     if (record.swapchain) {
         throw std::runtime_error("A post-process pass cannot sample the swapchain target.");
     }
@@ -250,14 +236,10 @@ PostProcessProgram build_post_process_program(State& state, std::uint32_t module
     const std::string fragment_name = stem + ".frag";
     program.vertex_slots = read_pinned_stage_slots(vertex_name);
     program.fragment_slots = read_pinned_stage_slots(fragment_name);
-    auto vertex =
-        load_shader(state.gpu.device, vertex_name.c_str(), SDL_GPU_SHADERSTAGE_VERTEX,
-                    static_cast<Uint32>(program.vertex_slots.textures.size()),
-                    static_cast<Uint32>(program.vertex_slots.uniforms.size()), "postProcessVertex");
-    auto fragment = load_shader(
-        state.gpu.device, fragment_name.c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-        static_cast<Uint32>(program.fragment_slots.textures.size()),
-        static_cast<Uint32>(program.fragment_slots.uniforms.size()), "postProcessFragment");
+    auto vertex = load_shader(state.gpu.device, vertex_name, SDL_GPU_SHADERSTAGE_VERTEX,
+                              program.vertex_slots);
+    auto fragment = load_shader(state.gpu.device, fragment_name, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                                program.fragment_slots);
     const upstream::PostProcessBlend blend = upstream::post_process_blend(alpha_mode);
     SDL_GPUColorTargetDescription target{};
     target.format = format;
@@ -298,11 +280,11 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
                          SDL_GPUTexture* swapchain, std::uint32_t width, std::uint32_t height,
                          SDL_GPUTexture*& capture_texture) {
     PostProcessPassOptions& pass =
-        engine.frame_tasks.at(task_handle.value).post_process.passes.at(pass_index);
+        handle_at(engine.frame_tasks, task_handle).post_process.passes.at(pass_index);
     const upstream::PostProcessShaderInfo& info =
         upstream::post_process_shader_infos.at(pass.shader_index);
     PostProcessPass& gpu = state.post_processes.at(task_handle.value).at(pass_index);
-    const RenderTargetRecord& output_record = engine.render_targets.at(pass.output_target.value);
+    const RenderTargetRecord& output_record = handle_at(engine.render_targets, pass.output_target);
     const Target& output = state.targets.at(pass.output_target.value);
     const std::uint32_t output_width = output_record.swapchain ? width : output.width;
     const std::uint32_t output_height = output_record.swapchain ? height : output.height;
@@ -408,7 +390,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
 } // namespace
 
 namespace {
-class SdlFrameGraphRun : public FrameSession {
+class SdlFrameGraphRun : public RendererRun<SdlFrameGraphRun> {
     State state;
     FrameGraphContext* context = nullptr;
     std::uint32_t width = 0, height = 0;
@@ -418,7 +400,8 @@ class SdlFrameGraphRun : public FrameSession {
 
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
-    explicit SdlFrameGraphRun(Engine& target) : FrameSession(target) {}
+    static constexpr const char* backend_label = "SDL_GPU";
+    explicit SdlFrameGraphRun(Engine& target) : RendererRun(target) {}
     ~SdlFrameGraphRun() {
         command.reset();
         release(state);
@@ -452,14 +435,12 @@ public:
         }
 #endif
     }
-    FramePreparation prepare() {
-        poll_platform_events(engine, running, frame_options.test_pass);
-        input_replay.dispatch(frame, state.gpu.window, engine);
-        sync_engine_canvas_size(state.gpu.window, engine);
-        return FramePreparation::ready;
-    }
+    SDL_Window* sdl_window() const { return state.gpu.window; }
+    std::string driver() const { return SDL_GetGPUDeviceDriver(state.gpu.device); }
     FramePreparation update() {
-        (void)advance_frame(engine, *context, frame_clock, frame_options.frame_delta_ms);
+        static_cast<void>(
+            advance_frame(engine, *context, frame_clock, frame_options.frame_delta_ms));
+        begin_measurement();
 #if BBLITE_GPU_TASK_TIMING
         begin_gpu_task_timing_frame(engine);
 #endif
@@ -476,7 +457,8 @@ public:
             gpu_error("SDL_WaitAndAcquireGPUSwapchainTexture frame graph");
         }
         if (!swapchain || width == 0 || height == 0) {
-            command.submit();
+            if (!command.submit())
+                gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
             return false;
         }
         return true;
@@ -489,7 +471,7 @@ public:
             engine, [&](const auto& write) { encode_sdl_gpu_timestamp(command, write); });
 #endif
         for (const TaskHandle handle : context->tasks) {
-            FrameTaskRecord& task = engine.frame_tasks.at(handle.value);
+            FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
             if (task.execution_enabled == false)
                 continue;
 #if BBLITE_GPU_TASK_TIMING
@@ -499,7 +481,7 @@ public:
             if (task.kind == FrameTaskKind::effect) {
                 EffectPass& pass = state.effects.at(handle.value);
                 const RenderTargetRecord& record =
-                    engine.render_targets.at(task.effect.target.value);
+                    handle_at(engine.render_targets, task.effect.target);
                 const Target& output = state.targets.at(task.effect.target.value);
                 if (!pass.pipeline) {
                     pass = create_effect_pass(
@@ -543,9 +525,7 @@ public:
         }
     }
     void present() {
-        const bool capture_frame = frame >= frame_options.screenshot_frame &&
-                                   !captures.screenshot_saved &&
-                                   !frame_options.screenshot_path.empty();
+        const bool capture_frame = screenshot_due();
         captures.maybe_write_standalone_render_capture("sdl_gpu", engine, width, height, frame);
         if (capture_frame) {
             if (!capture_texture) {
@@ -562,25 +542,15 @@ public:
         finish_gpu_task_timing_frame(engine);
 #endif
     }
-    void complete() {
-        finish_frame(engine);
-        ++frame;
-    }
     void finish_run() {
         if (!SDL_WaitForGPUIdle(state.gpu.device))
             gpu_error("SDL_WaitForGPUIdle frame graph");
+        RendererRun::finish_run();
     }
 };
 } // namespace
 
-bool run_frame_graph_gpu_engine(Engine& engine) {
-    SdlFrameGraphRun renderer(engine);
-    renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {
-    }
-    renderer.finish_run();
-    return true;
-}
+void run_frame_graph_gpu_engine(Engine& engine) { SdlFrameGraphRun::run(engine); }
 
 #endif
 

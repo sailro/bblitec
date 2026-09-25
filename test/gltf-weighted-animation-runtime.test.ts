@@ -139,7 +139,7 @@ function sourceResult(context: LoweringContext, overrides: boolean): unknown {
         "INTERP_CUBICSPLINE",
     ];
     const constants = constantNames.map((name) =>
-        context.numericValue(ts.factory.createIdentifier(name), types),
+        context.pinnedNumber(types, name),
     );
     const body =
         text("src/lite-error.ts") +

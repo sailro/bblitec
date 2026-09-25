@@ -6,7 +6,7 @@ import type { Value } from "./types.js";
 
 export interface PromiseLoweringContext extends Pick<
     LoweringServices,
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "compileValue"
     | "compileCallbackWithValues"
     | "catchBindingIsErased"
@@ -20,6 +20,7 @@ export interface PromiseLoweringContext extends Pick<
     | "takeNativeTemporary"
     | "fail"
     | "reachJsData"
+    | "options"
 > {}
 
 type InlineCallback = ts.ArrowFunction | ts.FunctionExpression;
@@ -35,13 +36,17 @@ function rejectionClause(
     callback: InlineCallback,
 ): { header: string; values: () => Value[] } {
     const parameter = callback.parameters[0];
-    if (!parameter) return { header: "} catch (...) {", values: () => [] };
+    // An abandoned activation is no rejection: its unwinding passes on.
+    const anything = context.options.pendingActivations
+        ? "} catch (const bbl::js::PendingActivation&) { throw;\n} catch (...) {"
+        : "} catch (...) {";
+    if (!parameter) return { header: anything, values: () => [] };
     if (
         ts.isIdentifier(parameter.name) &&
         context.catchBindingIsErased(parameter.name, callback.body)
     ) {
         return {
-            header: "} catch (...) {",
+            header: anything,
             values: () => [{ kind: "browser", cpp: "" }],
         };
     }
@@ -58,9 +63,7 @@ export function compileImmediatePromise(
 ): Value | undefined {
     if (
         ts.isPropertyAccessExpression(call.expression) &&
-        ts.isIdentifier(call.expression.expression) &&
-        call.expression.expression.text === "Promise" &&
-        context.isDefaultLibraryIdentifier(call.expression.expression) &&
+        context.libraryGlobal(call.expression.expression) === "Promise" &&
         call.expression.name.text === "resolve"
     ) {
         if (call.arguments.length !== 1) {
@@ -70,9 +73,7 @@ export function compileImmediatePromise(
     }
     if (
         ts.isPropertyAccessExpression(call.expression) &&
-        ts.isIdentifier(call.expression.expression) &&
-        call.expression.expression.text === "Promise" &&
-        context.isDefaultLibraryIdentifier(call.expression.expression) &&
+        context.libraryGlobal(call.expression.expression) === "Promise" &&
         call.expression.name.text === "all"
     ) {
         if (call.arguments.length !== 1) {

@@ -1,11 +1,17 @@
 /** Build-shape decisions shared by the scene command and its tests. */
 
+import {
+    compiledBackend,
+    parseBackendName,
+    type CompiledBackend,
+} from "./tooling/backends.js";
+
 export const DEVELOPMENT_VCPKG_INSTALL = "development-full";
 
 /** Platforms with both native renderers use the differential development build. */
 export function defaultDevelopmentBackend(
     platform: NodeJS.Platform,
-): "SDL_GPU" | "BOTH" {
+): CompiledBackend {
     return platform === "win32" || platform === "linux" || platform === "darwin"
         ? "BOTH"
         : "SDL_GPU";
@@ -24,13 +30,14 @@ export function developmentTriplet(
     return `${arch}-${target}`;
 }
 
-export function selectedCompiledBackend(): ReturnType<
-    typeof canonicalCompiledBackend
-> {
-    return canonicalCompiledBackend(
-        process.env.BBLITE_BACKEND ??
-            defaultDevelopmentBackend(process.platform),
-        "BBLITE_BACKEND",
+export function selectedCompiledBackend(): CompiledBackend {
+    return compiledBackend(
+        parseBackendName(
+            process.env.BBLITE_BACKEND ??
+                defaultDevelopmentBackend(process.platform),
+            "BBLITE_BACKEND",
+            true,
+        ),
     );
 }
 
@@ -48,7 +55,7 @@ export type OfflineShaderTarget = "d3d12" | "vulkan" | "metal" | "all";
 
 /** Dawn consumes WGSL directly; an explicit offline target still requests a sweep. */
 export function needsOfflineShaders(
-    backend: string,
+    backend: CompiledBackend,
     requestedTarget?: string,
 ): boolean {
     return backend !== "DAWN" || requestedTarget !== undefined;
@@ -125,16 +132,8 @@ export function canonicalDevelopmentCompiler(
 export function canonicalCompiledBackend(
     value: string,
     command: string,
-): "SDL_GPU" | "DAWN" | "BOTH" {
-    const canonical = value.toUpperCase().replaceAll("-", "_");
-    if (
-        canonical === "SDL_GPU" ||
-        canonical === "DAWN" ||
-        canonical === "BOTH"
-    ) {
-        return canonical;
-    }
-    throw new Error(
-        `--backend must be sdl_gpu|dawn|both (got '${value}') for ${command}.`,
+): CompiledBackend {
+    return compiledBackend(
+        parseBackendName(value, `${command}: --backend`, true),
     );
 }

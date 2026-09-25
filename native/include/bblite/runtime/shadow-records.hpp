@@ -1,5 +1,7 @@
 #pragma once
-// Included within namespace bbl by runtime.hpp.
+// Included within namespace bbl by runtime.hpp, after the macro headers.
+#include <bblite/features/shadow_morph_bounds.hpp>
+#include <bblite/features/shadows_csm.hpp>
 
 enum class ShadowFilter {
     pcf_spot,
@@ -27,7 +29,7 @@ enum class ShadowFilter {
  * renders through `caster_view_projection` — the PCF family's unbiased /
  * biased split, applied per cascade.
  */
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 struct ShadowCascade {
     /** The cascade's light-space view, from the pinned light basis. */
     std::array<float, 16> view{};
@@ -56,11 +58,15 @@ struct ShadowGeneratorRecord {
     std::optional<bool> runtime_enabled;
     std::uint64_t runtime_enabled_version = 0;
     ShadowFilter filter = ShadowFilter::pcf_spot;
-    std::uint32_t map_size = 512;
+    // The configuration scalars here and below start at zero: each factory
+    // writes every one its filter reads from its options, which generation
+    // fills from the pin's own `??` chain. A directional generator's near
+    // and far come back out of its caster fit instead.
+    std::uint32_t map_size = 0;
     double bias = 0.0;
     double darkness = 0.0;
-    double near_plane = 1.0;
-    double far_plane = 10000.0;
+    double near_plane = 0.0;
+    double far_plane = 0.0;
     /** `sg._lightMatrix` — unbiased, what the receiver samples with. */
     std::array<float, 16> light_matrix{};
     /** The shadow camera's view, from the pinned light-space basis. */
@@ -70,6 +76,11 @@ struct ShadowGeneratorRecord {
     /** The `ShadowTask` inputs `setShadowTaskCasterMeshes` registered. */
     std::vector<MeshHandle> caster_meshes;
     /**
+     * The fit reads every caster the array names, a removed one included,
+     * so the array names each (`name_mesh`) and none gives up its slot.
+     */
+    std::vector<MeshName> caster_names;
+    /**
      * Bumped by every `set_shadow_task_caster_meshes`. The pin rebuilds a
      * generator's task state when the caster ARRAY it is handed is a new
      * one (`existing._casterMeshes === casterMeshes` in the ensure hooks),
@@ -77,10 +88,12 @@ struct ShadowGeneratorRecord {
      * this counter is that identity change, read by the render gate.
      */
     std::uint64_t caster_list_version = 0;
+#if BBLITE_SHADOW_MORPH_BOUNDS
     // enableMorphTargetShadows: bound each caster by its morph-expanded
     // AABB rather than its unmorphed geometry box. Off unless the scene
     // asks, exactly as upstream installs no provider unless it is called.
     bool morph_shadow_bounds = false;
+#endif
     /**
      * `sg._config._forceRefreshEveryFrame`: when set, the pinned render
      * gate never skips (`renderEsmShadowMap` / `renderPcfShadowMap` /
@@ -106,8 +119,8 @@ struct ShadowGeneratorRecord {
     /** ESM and CSM: the soft fade at the edge of the fitted volume. */
     double frustum_edge_falloff = 0.0;
     /** ESM only: the ortho volume the caster fit projects into. */
-    double ortho_min_z = 1.0;
-    double ortho_max_z = 10000.0;
+    double ortho_min_z = 0.0;
+    double ortho_max_z = 0.0;
     /**
      * CSM only: the cascade configuration, and the fit it produces.
      *
@@ -117,10 +130,10 @@ struct ShadowGeneratorRecord {
      * `csm_shadow_max_z` is the pin's own `?? null`, resolved against the
      * active camera's far plane where the split is computed.
      */
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
-    std::uint32_t csm_num_cascades = 4;
-    double csm_lambda = 0.5;
-    double csm_cascade_blend_percentage = 0.1;
+#if BBLITE_SHADOWS_CSM
+    std::uint32_t csm_num_cascades = 0;
+    double csm_lambda = 0.0;
+    double csm_cascade_blend_percentage = 0.0;
     std::optional<double> csm_shadow_max_z{};
     std::vector<ShadowCascade> csm_cascades;
     /** Subscribers to the exact packed CSM receiver block for this frame. */

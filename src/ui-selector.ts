@@ -3,7 +3,7 @@ export { splitUiCssList as splitUiSelectorList } from "./ui-css-syntax.js";
 
 /** Compound selector chains admitted by the retained CSS projection. The same
  * parsed terms drive native matching, serialization and conservative proofs. */
-export const UI_SELECTOR_STATES = {
+const UI_SELECTOR_STATES = {
     hover: "Hover",
     active: "Active",
     focus: "Focus",
@@ -12,7 +12,7 @@ export const UI_SELECTOR_STATES = {
     disabled: "Disabled",
     checked: "Checked",
 } as const;
-export const UI_SELECTOR_TESTS = {
+const UI_SELECTOR_TESTS = {
     tag: "Tag",
     id: "Id",
     class: "Class",
@@ -31,8 +31,8 @@ export const UI_SELECTOR_TESTS = {
     where: "Where",
     has: "Has",
 } as const;
-export type UiSelectorTestKind = keyof typeof UI_SELECTOR_TESTS;
-export interface UiSelectorTest {
+type UiSelectorTestKind = keyof typeof UI_SELECTOR_TESTS;
+interface UiSelectorTest {
     kind: UiSelectorTestKind;
     name: string;
     value: string;
@@ -40,7 +40,7 @@ export interface UiSelectorTest {
     a?: number;
     b?: number;
 }
-export const UI_SELECTOR_RELATIONS = {
+const UI_SELECTOR_RELATIONS = {
     self: "Self",
     descendant: "Descendant",
     child: "Child",
@@ -323,34 +323,6 @@ export function uiSelectorSequenceCss(
         .join("");
 }
 
-export function uiSelectorSequenceSpecificity(
-    steps: readonly UiSelectorStep[],
-): number {
-    return steps.reduce(
-        (sum, step) =>
-            sum +
-            step.tests.reduce(
-                (value, test) =>
-                    value +
-                    (test.kind === "where"
-                        ? 0
-                        : test.kind === "id"
-                          ? 0x10000
-                          : test.kind === "tag"
-                            ? 1
-                            : isUiSelectorList(test.kind)
-                              ? Math.max(
-                                    ...test.alternatives!.map(
-                                        uiSelectorSequenceSpecificity,
-                                    ),
-                                )
-                              : 0x100),
-                0,
-            ),
-        0,
-    );
-}
-
 export function* uiSelectorSequenceTests(
     steps: readonly UiSelectorStep[],
 ): Generator<UiSelectorTest> {
@@ -360,28 +332,6 @@ export function* uiSelectorSequenceTests(
             for (const alternative of test.alternatives ?? [])
                 yield* uiSelectorSequenceTests(alternative);
         }
-}
-
-export function uiSelectorSequenceNeedsAuthoredTree(
-    steps: readonly UiSelectorStep[],
-): boolean {
-    return steps.some(
-        (step) =>
-            step.relation === "child" ||
-            step.relation === "next" ||
-            step.relation === "following" ||
-            step.tests.length === 0 ||
-            step.tests.some(
-                (test) =>
-                    isUiNthSelector(test.kind) ||
-                    test.kind === "only-child" ||
-                    test.kind === "only-of-type" ||
-                    test.kind === "empty" ||
-                    test.alternatives?.some(
-                        uiSelectorSequenceNeedsAuthoredTree,
-                    ),
-            ),
-    );
 }
 
 /** Attribute/state conditions and relationships are not unconditional static facts. */

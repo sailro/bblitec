@@ -7,6 +7,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerMat4InvertCpp } from "./pinned-function-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const modulePath = "src/physics/havok.ts";
 
@@ -70,14 +71,10 @@ export function lowerPhysicsMesh(context: LoweringContext): {
     helpers: string;
     source: string;
 } {
-    const file = context.sourceFile(modulePath);
-    const owner = file.statements.find(
-        (node): node is ts.ClassDeclaration =>
-            ts.isClassDeclaration(node) &&
-            node.name?.text === "MeshAccumulator",
+    const { file, declaration: owner } = context.classDeclaration(
+        modulePath,
+        "MeshAccumulator",
     );
-    if (!owner)
-        context.contractError(file, "Physics MeshAccumulator class changed.");
     const fields = new Map([
         ["_vertices", "[]"],
         ["_indices", "[]"],
@@ -241,20 +238,20 @@ void append_physics_mesh_geometry(
     const Engine& engine, PhysicsNodeRef node, const std::array<float, 16>& root_to_body,
     bool include_children, bool collect_indices,
     std::vector<std::array<double, 3>>& positions, std::vector<std::uint32_t>& indices) {
-    if (node.kind == PhysicsNodeKind::mesh) {
-        const auto& record = engine.meshes.at(node.value);
+    if (const auto* mesh = std::get_if<MeshHandle>(&node)) {
+        // A disposed child contributes nothing: \`removeFromScene\` released
+        // its geometry, and a later mesh may hold its slot.
+        const MeshRecord* found = current_mesh_record(engine, *mesh);
+        if (!found) return;
+        const auto& record = *found;
         if (record.geometry < engine.geometries.size()) {
             const auto& geometry = engine.geometries.at(record.geometry);
             if (!geometry.vertices.empty()) {
-                if (geometry.vertex_space != VertexSpace::local && !record.detached_imported_mesh) {
-                    throw std::runtime_error("Physics mesh accumulation requires source-local geometry and a represented source world matrix.");
-                }
                 const auto mesh_to_body = physics_matrix_product(root_to_body, physics_node_world(engine, node));
                 const std::uint32_t index_offset = static_cast<std::uint32_t>(positions.size());
                 positions.reserve(positions.size() + geometry.vertices.size());
                 for (const auto& vertex : geometry.vertices) {
-                    const auto& position = record.detached_imported_mesh ? vertex.local_position : vertex.position;
-                    const double x = position.x, y = position.y, z = position.z;
+                    const double x = vertex.position.x, y = vertex.position.y, z = vertex.position.z;
                     // getVertices writes through Float32Array before the PAL consumes its span.
                     positions.push_back({${lanes.join(", ")}});
                 }
@@ -276,7 +273,7 @@ void append_physics_mesh_geometry(
             append_physics_mesh_geometry(engine, physics_node(child), root_to_body, true, collect_indices, positions, indices);
         }
     } else if (include_children) {
-        for (const auto& child : engine.transform_nodes.at(node.value).children) {
+        for (const auto& child : ${recordAt("engine.transform_nodes", "std::get<TransformNodeHandle>(node)")}.children) {
             std::visit([&](auto value) {
                 append_physics_mesh_geometry(engine, physics_node(value), root_to_body, true, collect_indices, positions, indices);
             }, child);
@@ -286,9 +283,8 @@ void append_physics_mesh_geometry(
 `,
         source: `
 std::array<float, 16> physics_node_world(const Engine& engine, PhysicsNodeRef node) {
-    if (node.kind == PhysicsNodeKind::mesh) return mesh_world_matrix(engine, engine.meshes.at(node.value));
-    if (node.value >= engine.transform_nodes.size()) throw std::runtime_error("Physics geometry requires a live node.");
-    return transform_node_world(engine, TransformNodeHandle{node.value});
+    if (const auto* mesh = std::get_if<MeshHandle>(&node)) return mesh_world_matrix(engine, ${recordAt("engine.meshes", "*mesh")});
+    return transform_node_world(engine, std::get<TransformNodeHandle>(node));
 }
 PhysicsShape create_physics_mesh_shape(
     PhysicsWorldHandle handle, PhysicsShapeType type, PhysicsNodeRef root, bool include_child_meshes) {
@@ -296,7 +292,8 @@ PhysicsShape create_physics_mesh_shape(
     const Engine& engine = *physics_world_record(handle).engine;
     const auto inverse = mat4_invert(physics_node_world(engine, root));
     if (!inverse) throw std::runtime_error("Cannot create physics mesh shape from a singular root transform.");
-    const auto& scale = root.kind == PhysicsNodeKind::mesh ? engine.meshes.at(root.value).scaling : engine.transform_nodes.at(root.value).scaling;
+    const auto* root_mesh = std::get_if<MeshHandle>(&root);
+    const auto& scale = root_mesh ? ${recordAt("engine.meshes", "*root_mesh")}.scaling : ${recordAt("engine.transform_nodes", "std::get<TransformNodeHandle>(root)")}.scaling;
     const auto root_to_body = physics_matrix_product(physics_root_scale(scale.x, scale.y, scale.z), *inverse);
     std::vector<std::array<double, 3>> positions;
     std::vector<std::uint32_t> indices;

@@ -61,6 +61,11 @@ import {
     lowerMat4DecomposeRotation,
 } from "./pinned-mat4-decompose.js";
 import { pinnedMeshOptionFlag } from "../pinned-mesh-defaults.js";
+import {
+    pinnedOptionFlag,
+    pinnedOptionNumber,
+    pinnedOptionTuple,
+} from "./pinned-option-defaults.js";
 import { pinnedPolyhedron } from "../pinned-polyhedra.js";
 import { lowerPointerDrag } from "./pointer-drag-lowerer.js";
 import {
@@ -69,6 +74,7 @@ import {
     pinnedGizmoGeometry,
 } from "./pinned-gizmo-geometry.js";
 import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -802,18 +808,24 @@ export class GizmoLowerer {
                 returns: this.quatReturn(MATH_MODULE, "lookAtQuat"),
             },
         );
-        // `lengthVec3` and `normalizeVec3` serve `directionToQuat`,
-        // which the light gizmo reaches; the shortest-arc trio below
-        // them is called only from an editing widget's root
-        // orientation, and an emitted static function nothing calls is
-        // an error under -Werror.
+        // Each helper is emitted beside the widgets that call it, because
+        // an emitted static function nothing calls is an error under
+        // -Werror. `lengthVec3` and `normalizeVec3` serve `directionToQuat`,
+        // which the light gizmo and the editing widgets reach; the
+        // shortest-arc trio is called only from an editing widget's root
+        // orientation; the rotation decomposition from the camera follow,
+        // the editing follow and the cage's refresh.
+        const camera = this.reachesCameraGizmo();
+        const light = this.reachesLightGizmo();
+        const editing = this.reachesEditGizmos();
+        const boundingBox = this.reachesBoundingBox();
         return [
-            quatFromBjsEuler,
-            rotateVec3ByQuat,
-            directionToQuat,
-            lengthVec3,
-            normalizeVec3,
-            ...(this.reachesEditGizmos()
+            ...(camera || light || editing ? [quatFromBjsEuler] : []),
+            ...(light || boundingBox ? [rotateVec3ByQuat] : []),
+            ...(light || editing
+                ? [directionToQuat, lengthVec3, normalizeVec3]
+                : []),
+            ...(editing
                 ? [
                       quatFromAxisAngle,
                       quatNormalize,
@@ -822,7 +834,9 @@ export class GizmoLowerer {
                       transformDirectionByWorld,
                   ]
                 : []),
-            lowerMat4DecomposeRotation(this.context),
+            ...(camera || editing || boundingBox
+                ? [lowerMat4DecomposeRotation(this.context)]
+                : []),
         ].join("\n\n");
     }
 
@@ -919,7 +933,7 @@ export class GizmoLowerer {
         lowerer: PinnedNumericLowerer,
     ): string {
         const call = this.context.unwrapExpression(
-            this.localInitializer(scope, local),
+            this.context.variableInitializer(scope, local),
         );
         if (
             !ts.isCallExpression(call) ||
@@ -1047,37 +1061,6 @@ export class GizmoLowerer {
         };
     }
 
-    /** The `const <name> = ...` initializer inside one pinned body. */
-    private localInitializer(
-        scope: ts.Node | readonly ts.Node[],
-        name: string,
-    ): ts.Expression {
-        let found: ts.Expression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (
-                !found &&
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.name.text === name &&
-                node.initializer
-            ) {
-                found = node.initializer;
-            }
-            ts.forEachChild(node, visit);
-        };
-        const roots = Array.isArray(scope)
-            ? (scope as readonly ts.Node[])
-            : [scope as ts.Node];
-        for (const root of roots) visit(root);
-        return (
-            found ??
-            this.context.contractError(
-                roots[0]!,
-                `Expected the pinned body to declare '${name}'.`,
-            )
-        );
-    }
-
     /**
      * The widget's own local-frame axis, as the pinned body derives it.
      *
@@ -1154,7 +1137,7 @@ export class GizmoLowerer {
                     `its ${axisMember} option.`,
             );
         };
-        return render(this.localInitializer(declaration, local));
+        return render(this.context.variableInitializer(declaration, local));
     }
 
     /**
@@ -1225,80 +1208,6 @@ export class GizmoLowerer {
             value.node,
             value.node.getSourceFile(),
         );
-    }
-
-    /** The boolean form of `optionDefault`, for a `?? false` flag. */
-    private optionDefaultFlag(declaration: ts.Node, member: string): string {
-        let found: ts.Expression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
-            const coalesce = ts.isExpression(node)
-                ? this.context.nullishDefault(node)
-                : undefined;
-            if (
-                coalesce &&
-                ts.isPropertyAccessExpression(
-                    this.context.unwrapExpression(coalesce.left),
-                ) &&
-                (
-                    this.context.unwrapExpression(
-                        coalesce.left,
-                    ) as ts.PropertyAccessExpression
-                ).name.text === member
-            ) {
-                found = this.context.unwrapExpression(coalesce.right);
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration);
-        if (
-            !found ||
-            (found.kind !== ts.SyntaxKind.TrueKeyword &&
-                found.kind !== ts.SyntaxKind.FalseKeyword)
-        ) {
-            this.context.contractError(
-                declaration,
-                `Expected the pinned body to default '${member}' to a ` +
-                    "boolean literal through a nullish coalesce.",
-            );
-        }
-        return found.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false";
-    }
-
-    /** The right side of the pin's own `options.<member> ?? <default>`. */
-    private optionDefault(
-        declaration: ts.Node,
-        member: string,
-        file: ts.SourceFile,
-    ): number {
-        let found: ts.Expression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken &&
-                ts.isPropertyAccessExpression(
-                    this.context.unwrapExpression(node.left),
-                ) &&
-                (
-                    this.context.unwrapExpression(
-                        node.left,
-                    ) as ts.PropertyAccessExpression
-                ).name.text === member
-            ) {
-                found = node.right;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration);
-        return found
-            ? this.context.numericValue(found, file)
-            : this.context.contractError(
-                  declaration,
-                  `Expected the pinned body to default '${member}' ` +
-                      "through a nullish coalesce.",
-              );
     }
 
     /** The three arguments of `<local>.<channel>.set(a, b, c)`. */
@@ -1417,7 +1326,7 @@ export class GizmoLowerer {
             guardMode,
         );
         const initializer = this.context.unwrapExpression(
-            this.localInitializer(roots, local),
+            this.context.variableInitializer(roots, local),
         );
         if (!ts.isCallExpression(initializer)) {
             this.context.contractError(
@@ -1708,7 +1617,7 @@ MaterialHandle gizmo_material(
     Vec3d color,
     bool double_sided) {
     const MaterialHandle material = create_standard_material(engine);
-    MaterialRecord& record = engine.materials[material.value];
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
     set_material_diffuse_color(engine, material,
         js::Array<double>{color.x, color.y, color.z});
     record.specular_color = Color3{
@@ -1751,7 +1660,7 @@ void edit_gizmo_mesh(
     const std::array<double, 3>& rotation,
     Vec3 scaling,
     TransformNodeHandle parent) {
-    engine.meshes[mesh.value].material = material;
+    ${recordAt("engine.meshes", "mesh")}.material = material;
     add_to_scene(scene, mesh);
     // The pin writes \`mesh.rotation\`, which is a BJS Euler triple; the
     // quaternion helper above is the pin's own conversion for it.
@@ -1792,11 +1701,11 @@ EditGizmoHandle push_edit_gizmo(
     Engine* live_engine = &engine;
     on_before_render(scene, [live_engine, handle, layer](float) {
         Engine& e = *live_engine;
-        EditGizmoRecord& g = e.edit_gizmos[handle.value];
+        EditGizmoRecord& g = ${recordAt("e.edit_gizmos", "handle")};
         if (g.attached_node.value >= e.meshes.size()) return;
         const std::array<float, 16> wm = upstream::mesh_world_matrix(
             e,
-            e.meshes[g.attached_node.value]);
+            ${recordAt("e.meshes", "g.attached_node")});
         const double tx = static_cast<double>(wm[12]);
         const double ty = static_cast<double>(wm[13]);
         const double tz = static_cast<double>(wm[14]);
@@ -1804,7 +1713,7 @@ EditGizmoHandle push_edit_gizmo(
         Scene& utility = utility_layer_scene(e, layer);
         if (utility.camera.value >= e.cameras.size()) return;
         const std::array<float, 16> cw =
-            upstream::camera_world_matrix(e.cameras[utility.camera.value]);
+            upstream::camera_world_matrix(${recordAt("e.cameras", "utility.camera")});
         const Vec3d scale = gizmo_projected_scaling(
             Vec3d{tx, ty, tz}, cw, g.scale_ratio);
         set_transform_node_scaling(
@@ -1849,7 +1758,7 @@ EditGizmoHandle push_edit_gizmo(
             static_cast<float>(rotation[1]),
             static_cast<float>(rotation[2]),
             static_cast<float>(rotation[3])};
-        const TransformNodeRecord& root_record = e.transform_nodes[g.root.value];
+        const TransformNodeRecord& root_record = ${recordAt("e.transform_nodes", "g.root")};
         const Vec4& current_rotation = root_record.rotation_quaternion;
         if (!root_record.has_rotation_quaternion ||
             current_rotation.x != desired_rotation.x ||
@@ -2365,15 +2274,18 @@ ${body}
             AXIS_DRAG_MODULE,
             "createAxisDragGizmo",
         ).declaration;
-        const thickness = this.optionDefault(factory, "thickness", file);
-        const color = this.context
-            .numericTuple(
-                this.context.nullishDefault(
-                    this.localInitializer(factory, "color"),
-                )!.right,
-                file,
-            )
-            .map((component) => this.context.doubleLiteral(component));
+        const thickness = pinnedOptionNumber(
+            this.context,
+            factory,
+            { member: "thickness" },
+            file,
+        );
+        const color = pinnedOptionTuple(
+            this.context,
+            factory,
+            { local: "color" },
+            file,
+        ).map((component) => this.context.doubleLiteral(component));
         const arrow = this.widgetLowerer(
             AXIS_DRAG_MODULE,
             new Map([["thickness", "thickness"]]),
@@ -2469,7 +2381,7 @@ ${
     const auto collider_start = scene.meshes.size();
 ${this.widgetPart(`create_cylinder(engine, ${this.widgetCylinder(colliderCone)})`, colliderCone)}
 ${this.widgetPart(`create_cylinder(engine, ${this.widgetCylinder(colliderLine)})`, colliderLine)}
-    for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) engine.meshes[scene.meshes[i].value].visible = false;
+    for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) ${recordAt("engine.meshes", "scene.meshes[i]")}.visible = false;
 `
         : ""
 }
@@ -2509,19 +2421,23 @@ ${
             AXIS_SCALE_MODULE,
             "createAxisScaleGizmo",
         ).declaration;
-        const thickness = this.optionDefault(factory, "thickness", file);
-        const uniformScalingDefault = this.optionDefaultFlag(
+        const thickness = pinnedOptionNumber(
+            this.context,
             factory,
-            "uniformScaling",
+            { member: "thickness" },
+            file,
         );
-        const color = this.context
-            .numericTuple(
-                this.context.nullishDefault(
-                    this.localInitializer(factory, "color"),
-                )!.right,
-                file,
-            )
-            .map((component) => this.context.doubleLiteral(component));
+        const uniformScalingDefault = pinnedOptionFlag(this.context, factory, {
+            member: "uniformScaling",
+        })
+            ? "true"
+            : "false";
+        const color = pinnedOptionTuple(
+            this.context,
+            factory,
+            { local: "color" },
+            file,
+        ).map((component) => this.context.doubleLiteral(component));
         const arrow = this.widgetLowerer(
             AXIS_SCALE_MODULE,
             new Map([["thickness", "thickness"]]),
@@ -2725,14 +2641,12 @@ ${this.widgetPart(
             PLANE_DRAG_MODULE,
             "createPlaneDragGizmo",
         ).declaration;
-        const color = this.context
-            .numericTuple(
-                this.context.nullishDefault(
-                    this.localInitializer(factory, "color"),
-                )!.right,
-                file,
-            )
-            .map((component) => this.context.doubleLiteral(component));
+        const color = pinnedOptionTuple(
+            this.context,
+            factory,
+            { local: "color" },
+            file,
+        ).map((component) => this.context.doubleLiteral(component));
         // The pin turns culling OFF on all three materials: the card is a
         // single quad and is looked at from both sides.
         if (
@@ -2825,16 +2739,24 @@ ${
             PLANE_ROTATION_MODULE,
             "createPlaneRotationGizmo",
         ).declaration;
-        const color = this.context
-            .numericTuple(
-                this.context.nullishDefault(
-                    this.localInitializer(factory, "color"),
-                )!.right,
-                file,
-            )
-            .map((component) => this.context.doubleLiteral(component));
-        const thickness = this.optionDefault(factory, "thickness", file);
-        const tessellation = this.optionDefault(factory, "tessellation", file);
+        const color = pinnedOptionTuple(
+            this.context,
+            factory,
+            { local: "color" },
+            file,
+        ).map((component) => this.context.doubleLiteral(component));
+        const thickness = pinnedOptionNumber(
+            this.context,
+            factory,
+            { member: "thickness" },
+            file,
+        );
+        const tessellation = pinnedOptionNumber(
+            this.context,
+            factory,
+            { member: "tessellation" },
+            file,
+        );
         const lowerer = this.widgetLowerer(
             PLANE_ROTATION_MODULE,
             new Map([
@@ -2910,7 +2832,7 @@ ${
         ? `
     const auto collider_start = scene.meshes.size();
 ${this.widgetPart(`create_torus(engine, TorusOptions{${this.widgetOption(collider, "diameter")}, ${this.widgetOption(collider, "thickness")}, static_cast<std::uint32_t>(${this.widgetOption(collider, "tessellation")})})`, collider)}
-    for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) engine.meshes[scene.meshes[i].value].visible = false;
+    for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) ${recordAt("engine.meshes", "scene.meshes[i]")}.visible = false;
 `
         : ""
 }
@@ -2938,7 +2860,7 @@ ${
     this.features.includes("gizmo:pointer-drag")
         ? `
     initialize_pointer_gizmo(engine, layer, handle, material, true);
-    engine.edit_gizmos[handle.value].rotation_drag = true;
+    ${recordAt("engine.edit_gizmos", "handle")}.rotation_drag = true;
 `
         : ""
 }
@@ -2951,46 +2873,14 @@ ${
         return this.features.includes("gizmo:bounding-box");
     }
 
-    /**
-     * The right side of the pin's own `options.<member> ?? [a, b, c]`.
-     *
-     * The tuple twin of `optionDefault`, for the one option in this family
-     * whose default is a colour rather than a number.
-     */
-    private optionDefaultTuple(
-        declaration: ts.Node,
-        member: string,
-        file: ts.SourceFile,
-    ): readonly number[] {
-        let found: ts.Expression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (found) return;
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind ===
-                    ts.SyntaxKind.QuestionQuestionToken &&
-                ts.isPropertyAccessExpression(
-                    this.context.unwrapExpression(node.left),
-                ) &&
-                (
-                    this.context.unwrapExpression(
-                        node.left,
-                    ) as ts.PropertyAccessExpression
-                ).name.text === member
-            ) {
-                found = node.right;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration);
-        if (!found) {
-            this.context.contractError(
-                declaration,
-                `Expected the pinned body to default '${member}' ` +
-                    "through a nullish coalesce.",
-            );
-        }
-        return this.context.numericTuple(found, file);
+    /** Whether this scene builds a camera gizmo. */
+    private reachesCameraGizmo(): boolean {
+        return this.features.includes("gizmo:camera");
+    }
+
+    /** Whether this scene builds a light gizmo. */
+    private reachesLightGizmo(): boolean {
+        return this.features.includes("gizmo:light");
     }
 
     /**
@@ -3097,7 +2987,7 @@ ${
         lowerer: PinnedNumericLowerer,
         retainedColor: { source: string; cpp: string },
     ): string {
-        const target = `engine.materials[${material}.value]`;
+        const target = `${recordAt("engine.materials", material)}`;
         const fields = new Map<string, "color3" | "number" | "boolean">([
             ["diffuseColor", "color3"],
             ["emissiveColor", "color3"],
@@ -3157,18 +3047,6 @@ ${
                             "static_cast<float>(" +
                             `${lowerer.expression(value)});`,
                     );
-                    if (member === "alpha") {
-                        // The pin reads `mat.alpha < 1` live when it
-                        // builds renderables, so writing the factor is
-                        // what moves the material between the opaque and
-                        // blended families -- through the same one home
-                        // every other alpha write goes through, which is
-                        // what makes the pin's zero-alpha body draw
-                        // nothing in the colour pass.
-                        lines.push(
-                            `    derive_material_alpha_mode(${target});`,
-                        );
-                    }
                 } else {
                     // A colour the pin spells out, or the resolved option
                     // it hands over whole. Diffuse colours retain the
@@ -3277,7 +3155,7 @@ ${
     /** The `const <name> = (...) => {...}` arrow inside one pinned body. */
     private arrowLocal(scope: ts.Node, name: string): ts.ArrowFunction {
         const initializer = this.context.unwrapExpression(
-            this.localInitializer(scope, name),
+            this.context.variableInitializer(scope, name),
         );
         if (!ts.isArrowFunction(initializer)) {
             this.context.contractError(
@@ -3553,29 +3431,17 @@ std::array<float, 16> bbox_mat4_from_quat(
         this.assertHidden(factory, "root");
 
         // ---- the options the pinned factory defaults through a `??` ----
-        const colorDefault = this.optionDefaultTuple(factory, "color", file);
-        if (colorDefault.length !== 3) {
-            this.context.contractError(
-                factory,
-                "Expected the pinned bounding-box colour default to have " +
-                    "three components.",
-            );
-        }
-        const edgeThicknessDefault = this.optionDefault(
+        const optionDefault = (member: string): number =>
+            pinnedOptionNumber(this.context, factory, { member }, file);
+        const colorDefault = pinnedOptionTuple(
+            this.context,
             factory,
-            "edgeThickness",
+            { member: "color" },
             file,
         );
-        const scaleBoxSizeDefault = this.optionDefault(
-            factory,
-            "scaleBoxSize",
-            file,
-        );
-        const rotationAnchorDefault = this.optionDefault(
-            factory,
-            "rotationAnchorSize",
-            file,
-        );
+        const edgeThicknessDefault = optionDefault("edgeThickness");
+        const scaleBoxSizeDefault = optionDefault("scaleBoxSize");
+        const rotationAnchorDefault = optionDefault("rotationAnchorSize");
         const constants = this.widgetLowerer(
             BOUNDING_BOX_MODULE,
             new Map([
@@ -3584,13 +3450,16 @@ std::array<float, 16> bbox_mat4_from_quat(
             ]),
         );
         const cornerArmLen = constants.expression(
-            this.localInitializer(factory, "cornerArmLen"),
+            this.context.variableInitializer(factory, "cornerArmLen"),
         );
         const rotationAnchorThickness = constants.expression(
-            this.localInitializer(factory, "rotationAnchorThickness"),
+            this.context.variableInitializer(
+                factory,
+                "rotationAnchorThickness",
+            ),
         );
         const faceBoxSize = constants.expression(
-            this.localInitializer(factory, "faceBoxSize"),
+            this.context.variableInitializer(factory, "faceBoxSize"),
         );
 
         // ---- the two materials, read from the pin's own writes ----
@@ -3700,7 +3569,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         });
         const rootCalls = this.factoryCalls(
             file,
-            this.localInitializer(factory, "root"),
+            this.context.variableInitializer(factory, "root"),
             ["createCylinder"],
         );
         if (rootCalls.length !== 1) {
@@ -3750,7 +3619,7 @@ std::array<float, 16> bbox_mat4_from_quat(
             (name) =>
                 `    const double ${name} = ` +
                 `${anchorLowerer.expression(
-                    this.localInitializer(anchorBuilder, name),
+                    this.context.variableInitializer(anchorBuilder, name),
                 )};`,
         );
         const cornerLowerer = new PinnedNumericLowerer(file, {
@@ -3785,7 +3654,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         }));
         const cornerOffsets = ["offX", "offY", "offZ"].map((name) =>
             cornerLowerer.expression(
-                this.localInitializer(cornerBuilder, name),
+                this.context.variableInitializer(cornerBuilder, name),
             ),
         );
         this.assertHidden(cornerLoop, "c.meshes[1]!", "pickable");
@@ -3802,7 +3671,7 @@ std::array<float, 16> bbox_mat4_from_quat(
             (name) =>
                 `        const double ${name} = ` +
                 `${signLowerer.expression(
-                    this.localInitializer(factory, name),
+                    this.context.variableInitializer(factory, name),
                 )};`,
         );
         const cornerCall = this.context.callExpression(
@@ -3835,7 +3704,7 @@ std::array<float, 16> bbox_mat4_from_quat(
 
         // ---- the rotation-anchor axis table ----
         const axisTable = this.context.unwrapExpression(
-            this.localInitializer(factory, "rotationAxes"),
+            this.context.variableInitializer(factory, "rotationAxes"),
         );
         if (
             !ts.isArrayLiteralExpression(axisTable) ||
@@ -3937,7 +3806,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         const boxAxes = ["xs", "ys", "zs"]
             .map((name) => {
                 const initializer = this.context.unwrapExpression(
-                    this.localInitializer(layout, name),
+                    this.context.variableInitializer(layout, name),
                 );
                 if (
                     !ts.isArrayLiteralExpression(initializer) ||
@@ -3968,7 +3837,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         // `rotatePoint(q, ...)`, and the translator inlines only a block
         // body -- so it is asserted here and bound as that call instead.
         const toWorld = this.context.unwrapExpression(
-            this.localInitializer(layout, "toWorld"),
+            this.context.variableInitializer(layout, "toWorld"),
         );
         if (
             !ts.isArrowFunction(toWorld) ||
@@ -4187,7 +4056,7 @@ std::array<float, 16> bbox_mat4_from_quat(
         }
         const bodyName = this.stringAssignment(factory, "body", "name");
         const bodyBoxSizes = this.boxSizes(
-            this.localInitializer(factory, "body"),
+            this.context.variableInitializer(factory, "body"),
             unitLowerer,
         );
         if (bodyBoxSizes.length !== 1) {
@@ -4296,13 +4165,6 @@ ${rotatePoint}
  * space, so each write is one record store plus a dirty mark -- and the
  * quaternion goes through the setter, which is what selects the quaternion
  * lane over the record's Euler one.
- *
- * The mark is the RUNTIME-TRANSFORM one, because layout runs from
- * onBeforeRender: all 55 cage meshes are rewritten every frame, and the
- * plain mark would rebuild and re-upload every one of their baked vertex
- * streams each time. That is the rule mark_mesh_runtime_transform states
- * for exactly this shape, and the same rule meshTransformDirtyEntry
- * applies to a transform written inside a frame callback.
  */
 void bbox_set_position(
     Engine& engine,
@@ -4310,8 +4172,8 @@ void bbox_set_position(
     double x,
     double y,
     double z) {
-    engine.meshes[mesh.value].position = Vec3d{x, y, z};
-    mark_mesh_runtime_transform(engine, mesh);
+    ${recordAt("engine.meshes", "mesh")}.position = Vec3d{x, y, z};
+    mark_mesh_dirty(engine, mesh);
 }
 
 void bbox_set_scaling(
@@ -4320,11 +4182,11 @@ void bbox_set_scaling(
     double x,
     double y,
     double z) {
-    engine.meshes[mesh.value].scaling = Vec3{
+    ${recordAt("engine.meshes", "mesh")}.scaling = Vec3{
         static_cast<float>(x),
         static_cast<float>(y),
         static_cast<float>(z)};
-    mark_mesh_runtime_transform(engine, mesh);
+    mark_mesh_dirty(engine, mesh);
 }
 
 void bbox_set_rotation(
@@ -4341,8 +4203,7 @@ void bbox_set_rotation(
             static_cast<float>(x),
             static_cast<float>(y),
             static_cast<float>(z),
-            static_cast<float>(w)},
-        true);
+            static_cast<float>(w)});
 }
 
 // ${this.context.provenance(BOUNDING_BOX_MODULE, "buildEdge")}
@@ -4407,13 +4268,13 @@ bool bbox_is_descendant(
         if (mesh.parent.value >= engine.meshes.size()) return false;
         return bbox_is_descendant(
             engine,
-            engine.meshes[mesh.parent.value],
+            ${recordAt("engine.meshes", "mesh.parent")},
             root);
     }
     TransformNodeHandle node = mesh.transform_parent;
     while (node.value < engine.transform_nodes.size()) {
         if (node.value == root.value) return true;
-        node = engine.transform_nodes[node.value].parent;
+        node = ${recordAt("engine.transform_nodes", "node")}.parent;
     }
     return false;
 }
@@ -4475,7 +4336,7 @@ BoundingBoxBounds bbox_compute_bounds(
     std::vector<std::uint32_t> visited_nodes;
     if (root.value < engine.transform_nodes.size()) {
         for (const TransformNodeChild& child :
-             engine.transform_nodes[root.value].children) {
+             ${recordAt("engine.transform_nodes", "root")}.children) {
             pending.push_back(child);
         }
     }
@@ -4495,17 +4356,19 @@ BoundingBoxBounds bbox_compute_bounds(
             }
             visited_nodes.push_back(node.value);
             for (const TransformNodeChild& nested :
-                 engine.transform_nodes[node.value].children) {
+                 ${recordAt("engine.transform_nodes", "node")}.children) {
                 pending.push_back(nested);
             }
             continue;
         }
         const MeshHandle node = std::get<MeshHandle>(child);
-        if (node.value >= engine.meshes.size() || seen(node.value)) {
+        // A disposed mesh folds nothing: removeFromScene released its
+        // geometry, and a later mesh may hold its slot.
+        if (!current_mesh_record(engine, node) || seen(node.value)) {
             continue;
         }
         visited.push_back(node.value);
-        const MeshRecord& record = engine.meshes[node.value];
+        const MeshRecord& record = ${recordAt("engine.meshes", "node")};
         bbox_fold_mesh(engine, record, pre_transform, bounds);
         for (const MeshHandle descendant : record.children) {
             pending.push_back(TransformNodeChild{descendant});
@@ -4515,7 +4378,7 @@ BoundingBoxBounds bbox_compute_bounds(
         if (candidate.value >= engine.meshes.size() || seen(candidate.value)) {
             continue;
         }
-        const MeshRecord& mesh = engine.meshes[candidate.value];
+        const MeshRecord& mesh = ${recordAt("engine.meshes", "candidate")};
         if (!bbox_is_descendant(engine, mesh, root)) continue;
         visited.push_back(candidate.value);
         bbox_fold_mesh(engine, mesh, pre_transform, bounds);
@@ -4530,7 +4393,7 @@ BoundingBoxBounds bbox_compute_bounds(
  * which collapses every handle onto the origin exactly as upstream does.
  */
 void bbox_refresh(Engine& engine, BoundingBoxGizmoHandle handle) {
-    BoundingBoxGizmoRecord& record = engine.bounding_box_gizmos[handle.value];
+    BoundingBoxGizmoRecord& record = ${recordAt("engine.bounding_box_gizmos", "handle")};
     const std::array<double, 4> identity{${identityQuat}};
     if (
         !record.attached ||
@@ -4614,9 +4477,9 @@ ${materialWrites}
         const MeshHandle mesh = create_cylinder(
             engine,
             ${edgeCylinder});
-        engine.meshes[mesh.value].name = ${edgeName};
-        engine.meshes[mesh.value].material = gizmo.material;
-        engine.meshes[mesh.value].pickable = false;
+        ${recordAt("engine.meshes", "mesh")}.name = ${edgeName};
+        ${recordAt("engine.meshes", "mesh")}.material = gizmo.material;
+        ${recordAt("engine.meshes", "mesh")}.pickable = false;
         add_to_scene(scene, mesh);
         gizmo.edges.push_back(mesh);
     }
@@ -4629,21 +4492,21 @@ ${cornerParts
         (part, index) => `        ${part.target} = create_box(
             engine,
             ${cube(cornerBoxSizes[index]!)});
-        engine.meshes[${part.target}.value].material = gizmo.material;
-        engine.meshes[${part.target}.value].scaling = Vec3{
+        ${recordAt("engine.meshes", part.target)}.material = gizmo.material;
+        ${recordAt("engine.meshes", part.target)}.scaling = Vec3{
             static_cast<float>(${part.scaling[0]}),
             static_cast<float>(${part.scaling[1]}),
             static_cast<float>(${part.scaling[2]})};
-        engine.meshes[${part.target}.value].position = Vec3d{
+        ${recordAt("engine.meshes", part.target)}.position = Vec3d{
             ${part.position[0]},
             ${part.position[1]},
             ${part.position[2]}};
         add_to_scene(scene, ${part.target});`,
     )
     .join("\n")}
-        engine.meshes[corner.anchor.value].name = ${cornerName};
-        engine.meshes[corner.y_arm.value].pickable = false;
-        engine.meshes[corner.z_arm.value].pickable = false;
+        ${recordAt("engine.meshes", "corner.anchor")}.name = ${cornerName};
+        ${recordAt("engine.meshes", "corner.y_arm")}.pickable = false;
+        ${recordAt("engine.meshes", "corner.z_arm")}.pickable = false;
         corner.offsets = Vec3d{
             ${cornerOffsets[0]},
             ${cornerOffsets[1]},
@@ -4658,12 +4521,12 @@ ${cornerParts
             engine,
             ${cube(anchorBoxSizes[0]!)});
 ${anchorAbs.map((line) => `    ${line}`).join("\n")}
-        engine.meshes[mesh.value].scaling = Vec3{
+        ${recordAt("engine.meshes", "mesh")}.scaling = Vec3{
             static_cast<float>(${anchorScaling[0]}),
             static_cast<float>(${anchorScaling[1]}),
             static_cast<float>(${anchorScaling[2]})};
-        engine.meshes[mesh.value].material = gizmo.material;
-        engine.meshes[mesh.value].name = ${rotatorName};
+        ${recordAt("engine.meshes", "mesh")}.material = gizmo.material;
+        ${recordAt("engine.meshes", "mesh")}.name = ${rotatorName};
         add_to_scene(scene, mesh);
         gizmo.rotators.push_back(mesh);
     }
@@ -4671,16 +4534,16 @@ ${anchorAbs.map((line) => `    ${line}`).join("\n")}
         const MeshHandle mesh = create_box(
             engine,
             ${cube(faceBoxSizes[0]!)});
-        engine.meshes[mesh.value].material = gizmo.material;
-        engine.meshes[mesh.value].name = ${faceName};
+        ${recordAt("engine.meshes", "mesh")}.material = gizmo.material;
+        ${recordAt("engine.meshes", "mesh")}.name = ${faceName};
         add_to_scene(scene, mesh);
         gizmo.faces.push_back(mesh);
     }
     gizmo.body_material = create_standard_material(engine);
 ${bodyMaterialWrites}
     gizmo.body = create_box(engine, ${cube(bodyBoxSizes[0]!)});
-    engine.meshes[gizmo.body.value].name = "${bodyName}";
-    engine.meshes[gizmo.body.value].material = gizmo.body_material;
+    ${recordAt("engine.meshes", "gizmo.body")}.name = "${bodyName}";
+    ${recordAt("engine.meshes", "gizmo.body")}.material = gizmo.body_material;
     add_to_scene(scene, gizmo.body);
     return push_bounding_box_gizmo(engine, scene, std::move(gizmo));
 }
@@ -4689,7 +4552,7 @@ void attach_bounding_box_gizmo_to_node(
     Engine& engine,
     BoundingBoxGizmoHandle gizmo,
     TransformNodeHandle node) {
-    BoundingBoxGizmoRecord& record = engine.bounding_box_gizmos[gizmo.value];
+    BoundingBoxGizmoRecord& record = ${recordAt("engine.bounding_box_gizmos", "gizmo")};
     record.attached = true;
     record.attached_node = node;
     // The pin recomputes immediately, so the handles match the new target
@@ -4796,6 +4659,630 @@ void attach_bounding_box_gizmo_to_node(
         }
     }
 
+    /** A pinned `createCylinder` call, as the native builder's options. */
+    private cylinderOptions(call: PinnedFactoryCall, at: ts.Node): string {
+        const top = this.option(call, "diameterTop", at);
+        const bottom = this.option(call, "diameterBottom", at);
+        return (
+            `CylinderOptions{` +
+            `${this.context.doubleLiteral(this.option(call, "height", at))}, ` +
+            `${this.context.doubleLiteral(top)}, ` +
+            `${this.context.doubleLiteral(bottom)}, ` +
+            `${this.context.doubleLiteral(
+                this.option(call, "tessellation", at),
+            )}, ` +
+            `1.0, ` +
+            `${top === 0 ? "true" : "false"}}`
+        );
+    }
+
+    /** A pinned `createSphere` call, as the native builder's options. */
+    private sphereOptions(call: PinnedFactoryCall, at: ts.Node): string {
+        const diameter = this.option(call, "diameter", at);
+        return (
+            `SphereOptions{` +
+            `${this.option(call, "segments", at)}u, ` +
+            `${this.context.doubleLiteral(diameter)}, ` +
+            `${this.context.doubleLiteral(diameter)}, ` +
+            `${this.context.doubleLiteral(diameter)}}`
+        );
+    }
+
+    /**
+     * `createCameraGizmo` and `attachCameraGizmoToCamera`, emitted only for
+     * a scene that builds a camera gizmo (`gizmo:camera`).
+     */
+    private cameraGizmoSource(): string {
+        const cameraFile = this.context.sourceFile(CAMERA_MODULE);
+        const cameraDeclaration = this.context.functionDeclaration(
+            CAMERA_MODULE,
+            "buildCameraBodyMesh",
+        ).declaration;
+        const bodyCalls = this.factoryCalls(cameraFile, cameraDeclaration, [
+            "createBox",
+            "createCylinder",
+        ]);
+        if (
+            bodyCalls.length !== 4 ||
+            bodyCalls[0]!.callee !== "createBox" ||
+            bodyCalls[0]!.scalar === undefined ||
+            bodyCalls.slice(1).some((call) => call.callee !== "createCylinder")
+        ) {
+            this.context.contractError(
+                cameraDeclaration,
+                "Expected the pinned camera body to be one box and three " +
+                    "cylinders, in that order.",
+            );
+        }
+        const cameraFactory = this.context.functionDeclaration(
+            CAMERA_MODULE,
+            "createCameraGizmo",
+        ).declaration;
+        const cameraMath = this.displayLowerer(CAMERA_MODULE, [
+            ["rotX", { cpp: "rot_x", type: "f64-buffer" }],
+            ["rotZ", { cpp: "rot_z", type: "f64-buffer" }],
+            ["outerRot", { cpp: "outer_rot", type: "f64-buffer" }],
+            ["canvas.width", { cpp: "canvas_width", type: "scalar" }],
+            ["canvas.height", { cpp: "canvas_height", type: "scalar" }],
+        ]);
+        return `CameraGizmoHandle create_camera_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer) {
+    Scene& scene = layer_record(engine, layer).scene;
+    CameraGizmoRecord gizmo;
+    gizmo.layer = layer;
+    gizmo.material = create_standard_material(engine);
+    set_material_diffuse_color(engine, gizmo.material,
+        js::Array<double>{0.5, 0.5, 0.5});
+    ${recordAt("engine.materials", "gizmo.material")}.specular_color =
+        Color3{0.1f, 0.1f, 0.1f};
+    gizmo.frustum_material = create_standard_material(engine);
+    set_material_diffuse_color(engine, gizmo.frustum_material,
+        js::Array<double>{1.0, 1.0, 1.0});
+    ${recordAt("engine.materials", "gizmo.frustum_material")}.emissive_factor =
+        Color3{1.0f, 1.0f, 1.0f};
+    ${recordAt("engine.materials", "gizmo.frustum_material")}.disable_lighting = true;
+    gizmo.root = create_transform_node(
+        engine,
+        ${this.displayNodeArguments(cameraFactory, "root", cameraMath)});
+    add_to_scene(scene, gizmo.root);
+
+    const std::array<double, 4> outer_rot =
+        ${cameraMath.expression(this.context.variableInitializer(cameraFactory, "outerRot"))};
+    const TransformNodeHandle body_outer = create_transform_node(
+        engine,
+        ${this.displayNodeArguments(cameraFactory, "bodyOuter", cameraMath)});
+    set_transform_node_parent(engine, body_outer, gizmo.root);
+    const TransformNodeHandle body_mesh = create_transform_node(
+        engine,
+        ${this.displayNodeArguments(cameraFactory, "bodyMesh", cameraMath)});
+    set_transform_node_parent(engine, body_mesh, body_outer);
+    gizmo.body_outer = body_outer;
+
+    // ${this.context.provenance(CAMERA_MODULE, "buildCameraBodyMesh")}
+    const std::array<double, 4> rot_x =
+        ${cameraMath.expression(this.context.variableInitializer(cameraDeclaration, "rotX"))};
+    const std::array<double, 4> rot_z =
+        ${cameraMath.expression(this.context.variableInitializer(cameraDeclaration, "rotZ"))};
+    const MeshHandle box = create_box(
+        engine,
+        BoxOptions{
+            ${this.context.floatLiteral(bodyCalls[0]!.scalar)},
+            ${this.context.floatLiteral(bodyCalls[0]!.scalar)},
+            ${this.context.floatLiteral(bodyCalls[0]!.scalar)}});
+    gizmo_mesh(engine, scene, box, gizmo.material);
+    place_mesh(
+        engine,
+        box,
+        ${this.displayPlacement(cameraDeclaration, "box", cameraMath)},
+        body_mesh);
+    const MeshHandle reel_a = create_cylinder(
+        engine,
+        ${this.cylinderOptions(bodyCalls[1]!, cameraDeclaration)});
+    gizmo_mesh(engine, scene, reel_a, gizmo.material);
+    place_mesh(
+        engine,
+        reel_a,
+        ${this.displayPlacement(cameraDeclaration, "cyl1", cameraMath)},
+        body_mesh);
+    const MeshHandle reel_b = create_cylinder(
+        engine,
+        ${this.cylinderOptions(bodyCalls[2]!, cameraDeclaration)});
+    gizmo_mesh(engine, scene, reel_b, gizmo.material);
+    place_mesh(
+        engine,
+        reel_b,
+        ${this.displayPlacement(cameraDeclaration, "cyl2", cameraMath)},
+        body_mesh);
+    const MeshHandle lens = create_cylinder(
+        engine,
+        ${this.cylinderOptions(bodyCalls[3]!, cameraDeclaration)});
+    gizmo_mesh(engine, scene, lens, gizmo.material);
+    place_mesh(
+        engine,
+        lens,
+        ${this.displayPlacement(cameraDeclaration, "cyl3", cameraMath)},
+        body_mesh);
+
+    engine.camera_gizmos.push_back(gizmo);
+    const CameraGizmoHandle handle{
+        static_cast<std::uint32_t>(engine.camera_gizmos.size() - 1u)};
+    Engine* live_engine = &engine;
+    on_before_render(scene, [live_engine, handle, layer](float) {
+        Engine& e = *live_engine;
+        CameraGizmoRecord& g = ${recordAt("e.camera_gizmos", "handle")};
+        if (g.attached_camera.value >= e.cameras.size()) return;
+        const std::array<float, 16> wm =
+            upstream::camera_world_matrix(${recordAt("e.cameras", "g.attached_camera")});
+        set_transform_node_position(
+            e,
+            g.root,
+            Vec3d{
+                static_cast<double>(wm[12]),
+                static_cast<double>(wm[13]),
+                static_cast<double>(wm[14])});
+        const PinnedQuat q = ${PINNED_DECOMPOSE_ROTATION}(wm);
+        set_transform_node_rotation_quaternion(
+            e,
+            g.root,
+            Vec4{
+                static_cast<float>(q.x),
+                static_cast<float>(q.y),
+                static_cast<float>(q.z),
+                static_cast<float>(q.w)});
+        Scene& utility = utility_layer_scene(e, layer);
+        const bool has_camera = utility.camera.value < e.cameras.size();
+        const std::array<float, 16> cw = has_camera
+            ? upstream::camera_world_matrix(${recordAt("e.cameras", "utility.camera")})
+            : std::array<float, 16>{};
+        const Vec3d scale = gizmo_camera_scaling(has_camera, cw, wm);
+        set_transform_node_scaling(
+            e,
+            g.body_outer,
+            Vec3{
+                static_cast<float>(scale.x),
+                static_cast<float>(scale.y),
+                static_cast<float>(scale.z)});
+    });
+    return handle;
+}
+
+void attach_camera_gizmo_to_camera(
+    Engine& engine,
+    CameraGizmoHandle gizmo,
+    CameraHandle camera) {
+    CameraGizmoRecord& record = ${recordAt("engine.camera_gizmos", "gizmo")};
+    record.attached_camera = camera;
+    if (record.frustum_built || camera.value >= engine.cameras.size()) {
+        return;
+    }
+    record.frustum_built = true;
+    Scene& scene = layer_record(engine, record.layer).scene;
+    const CameraRecord& cam = ${recordAt("engine.cameras", "camera")};
+    const double canvas_width = engine.canvas_client_width;
+    const double canvas_height = engine.canvas_client_height;
+    const double aspect = ${cameraMath.expression(this.context.variableInitializer(cameraFactory, "aspect"))};
+    for (const GizmoFrustumEdge& edge : gizmo_frustum_geometry(
+             cam.fov, aspect, cam.near_plane, cam.far_plane)) {
+        const MeshHandle mesh = create_cylinder(
+            engine,
+            CylinderOptions{
+                edge.height,
+                edge.diameterTop,
+                edge.diameterBottom,
+                edge.tessellation,
+                1.0,
+                edge.diameterTop == 0.0});
+        gizmo_mesh(engine, scene, mesh, record.frustum_material);
+        place_mesh(
+            engine,
+            mesh,
+            edge.position,
+            Vec3{
+                static_cast<float>(edge.scaling.x),
+                static_cast<float>(edge.scaling.y),
+                static_cast<float>(edge.scaling.z)},
+            edge.rotation,
+            record.root);
+    }
+}
+
+`;
+    }
+
+    /**
+     * `createLightGizmo` and `attachLightGizmoToLight`, emitted only for a
+     * scene that builds a light gizmo (`gizmo:light`): the two entry points,
+     * and the hemisphere and light-line builders inside the unit's
+     * anonymous namespace that only they call.
+     */
+    private lightGizmoSource(): { helpers: string; source: string } {
+        const lightFile = this.context.sourceFile(LIGHT_MODULE);
+        const lineDeclaration = this.context.functionDeclaration(
+            LIGHT_MODULE,
+            "buildLightLines",
+        ).declaration;
+        const lineCall = this.factoryCalls(lightFile, lineDeclaration, [
+            "createCylinder",
+        ])[0]!;
+        const lightDeclaration = this.context.functionDeclaration(
+            LIGHT_MODULE,
+            "buildLightTypeMesh",
+        ).declaration;
+        const typeCalls = this.factoryCalls(lightFile, lightDeclaration, [
+            "createSphere",
+            "createCylinder",
+        ]);
+        // directional: sphere, shaft, head. point/hemi/spot: one sphere
+        // each for point and spot (the hemispheres come from the pin's own
+        // mesh builder, which has no factory call).
+        if (typeCalls.length !== 5) {
+            this.context.contractError(
+                lightDeclaration,
+                "Expected the pinned per-type light geometry to make five " +
+                    "factory meshes (directional sphere, shaft, head; the " +
+                    "point and spot spheres).",
+            );
+        }
+        const [dirSphere, shaft, head, pointSphere, spotSphere] = typeCalls as [
+            PinnedFactoryCall,
+            PinnedFactoryCall,
+            PinnedFactoryCall,
+            PinnedFactoryCall,
+            PinnedFactoryCall,
+        ];
+        const lightFactory = this.context.functionDeclaration(
+            LIGHT_MODULE,
+            "createLightGizmo",
+        ).declaration;
+        const lineMath = this.displayLowerer(LIGHT_MODULE, [
+            ["rootQ", { cpp: "root_q", type: "f64-buffer" }],
+            ["q", { cpp: "q", type: "f64-buffer" }],
+            ["px", { cpp: "p[0]", type: "scalar" }],
+            ["py", { cpp: "p[1]", type: "scalar" }],
+            ["pz", { cpp: "p[2]", type: "scalar" }],
+            ...["pivotY", "pivotZ", "posY", "sx", "sy", "sz"].map(
+                (member): [string, PinnedBinding] => [
+                    `def.${member}`,
+                    { cpp: `def.${member}`, type: "scalar" },
+                ],
+            ),
+        ]);
+        const lightMath = this.displayLowerer(LIGHT_MODULE, [
+            ["mq", { cpp: "mq", type: "f64-buffer" }],
+            ["sq", { cpp: "sphere_rotation", type: "f64-buffer" }],
+            ["hq", { cpp: "hemi_rotation", type: "f64-buffer" }],
+            ["x", { cpp: "entry[0]", type: "scalar" }],
+            ["y", { cpp: "entry[1]", type: "scalar" }],
+            ["sy", { cpp: "entry[1]", type: "scalar" }],
+        ]);
+        const directionalArm = this.lightGeometryArm(
+            lightDeclaration,
+            "directional",
+        );
+        const pointArm = this.lightGeometryArm(lightDeclaration, "point");
+        const hemisphereArm = this.lightGeometryArm(
+            lightDeclaration,
+            "hemispheric",
+        );
+        const spotArm = this.lightGeometryArm(lightDeclaration, "spot");
+        const shaftBuilder = this.arrowLocal(directionalArm, "makeShaft");
+        const headBuilder = this.arrowLocal(directionalArm, "makeHead");
+        const argumentRows = (
+            scope: ts.Node,
+            callee: string,
+        ): readonly string[] =>
+            this.context
+                .findNodes(
+                    scope,
+                    (node): node is ts.CallExpression =>
+                        ts.isCallExpression(node) &&
+                        ts.isIdentifier(node.expression) &&
+                        node.expression.text === callee,
+                )
+                .map((call) => {
+                    if (call.arguments.length !== 2) {
+                        this.context.contractError(
+                            call,
+                            "Expected two pinned directional-light placement arguments.",
+                        );
+                    }
+                    return `{{${call.arguments.map((argument) => lightMath.expression(argument)).join(", ")}}}`;
+                });
+        const shafts = argumentRows(directionalArm, "makeShaft");
+        const heads = argumentRows(directionalArm, "makeHead");
+        const lightLinesLevel = (scope: ts.Node): string => {
+            const call = this.context.callExpression(scope, "buildLightLines");
+            if (call.arguments.length !== 5) {
+                this.context.contractError(
+                    call,
+                    "Expected the pinned light-line level argument.",
+                );
+            }
+            return lightMath.expression(call.arguments[4]!);
+        };
+        const hemisphereArguments = (scope: ts.Node): string => {
+            const call = this.context.callExpression(
+                scope,
+                "buildHemisphereMesh",
+            );
+            if (call.arguments.length !== 3) {
+                this.context.contractError(
+                    call,
+                    "Expected pinned hemisphere segments and diameter.",
+                );
+            }
+            return call.arguments
+                .slice(1)
+                .map((argument) => lightMath.expression(argument))
+                .join(", ");
+        };
+        return {
+            helpers: `MeshHandle build_hemisphere_mesh(
+    Engine& engine,
+    double segments,
+    double diameter) {
+    const GizmoHemisphereGeometry geometry =
+        gizmo_hemisphere_geometry(segments, diameter);
+    return create_mesh_from_data(
+        engine,
+        geometry.name,
+        geometry.positions,
+        geometry.normals,
+        geometry.indices,
+        geometry.uvs,
+        {},
+        {},
+        {});
+}
+
+// ${this.context.provenance(LIGHT_MODULE, "buildLightLines")}
+void build_light_lines(
+    Engine& engine,
+    Scene& scene,
+    MaterialHandle material,
+    TransformNodeHandle parent,
+    double levels) {
+    const std::array<double, 4> root_q =
+        ${lineMath.expression(this.context.variableInitializer(lineDeclaration, "rootQ"))};
+    const TransformNodeHandle lines_root = create_transform_node(
+        engine,
+        ${this.displayNodeArguments(lineDeclaration, "linesRoot", lineMath)});
+    set_transform_node_parent(engine, lines_root, parent);
+    for (const GizmoLineDef& def : line_defs_for_level(levels)) {
+        const std::array<double, 4> q =
+            ${lineMath.expression(this.context.variableInitializer(lineDeclaration, "q"))};
+        const std::array<double, 3> p =
+            ${lineMath.expression(this.context.callExpression(lineDeclaration, "rotateVec3ByQuat"))};
+        const MeshHandle line = create_cylinder(
+            engine,
+            ${this.cylinderOptions(lineCall, lightDeclaration)});
+        ${recordAt("engine.meshes", "line")}.name = "lightLine";
+        gizmo_mesh(engine, scene, line, material);
+        place_mesh(
+            engine,
+            line,
+            ${this.displayPlacement(lineDeclaration, "line", lineMath)},
+            lines_root);
+    }
+}
+
+`,
+            source: `LightGizmoHandle create_light_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer) {
+    Scene& scene = layer_record(engine, layer).scene;
+    LightGizmoRecord gizmo;
+    gizmo.layer = layer;
+    gizmo.material = create_standard_material(engine);
+    set_material_diffuse_color(engine, gizmo.material,
+        js::Array<double>{0.5, 0.5, 0.5});
+    ${recordAt("engine.materials", "gizmo.material")}.specular_color =
+        Color3{0.1f, 0.1f, 0.1f};
+    gizmo.root = create_transform_node(
+        engine,
+        ${this.displayNodeArguments(lightFactory, "root", lightMath)});
+    add_to_scene(scene, gizmo.root);
+    engine.light_gizmos.push_back(gizmo);
+    const LightGizmoHandle handle{
+        static_cast<std::uint32_t>(engine.light_gizmos.size() - 1u)};
+    Engine* live_engine = &engine;
+    on_before_render(scene, [live_engine, handle, layer](float) {
+        Engine& e = *live_engine;
+        LightGizmoRecord& g = ${recordAt("e.light_gizmos", "handle")};
+        if (g.attached_light.value >= e.lights.size()) return;
+        const LightRecord& light = ${recordAt("e.lights", "g.attached_light")};
+        // The pin tests \`if (pos)\` and \`if (dir)\` on the light OBJECT,
+        // and which of the two a light carries is decided by the factory
+        // that made it: hemispheric declares only a direction, point only
+        // a position, directional and spot both.
+        const bool has_position =
+            light.kind == LightKind::point ||
+            light.kind == LightKind::spot ||
+            light.kind == LightKind::directional;
+        const bool has_direction =
+            light.kind == LightKind::hemispheric ||
+            light.kind == LightKind::spot ||
+            light.kind == LightKind::directional;
+        if (has_position) {
+            set_transform_node_position(
+                e,
+                g.root,
+                Vec3d{
+                    static_cast<double>(light.position.x),
+                    static_cast<double>(light.position.y),
+                    static_cast<double>(light.position.z)});
+        }
+        if (has_direction) {
+            const std::array<double, 4> q =
+                direction_to_quat(light.direction);
+            set_transform_node_rotation_quaternion(
+                e,
+                g.root,
+                Vec4{
+                    static_cast<float>(q[0]),
+                    static_cast<float>(q[1]),
+                    static_cast<float>(q[2]),
+                    static_cast<float>(q[3])});
+        }
+        Scene& utility = utility_layer_scene(e, layer);
+        const Vec3d root_position =
+            ${recordAt("e.transform_nodes", "g.root")}.position;
+        const bool has_camera = utility.camera.value < e.cameras.size();
+        const std::array<float, 16> cw = has_camera
+            ? upstream::camera_world_matrix(${recordAt("e.cameras", "utility.camera")})
+            : std::array<float, 16>{};
+        const Vec3d scale = gizmo_light_scaling(has_camera, cw, root_position);
+        set_transform_node_scaling(
+            e,
+            g.root,
+            Vec3{
+                static_cast<float>(scale.x),
+                static_cast<float>(scale.y),
+                static_cast<float>(scale.z)});
+    });
+    return handle;
+}
+
+// ${this.context.provenance(LIGHT_MODULE, "buildLightTypeMesh")}
+void attach_light_gizmo_to_light(
+    Engine& engine,
+    LightGizmoHandle gizmo,
+    LightHandle light) {
+    LightGizmoRecord& record = ${recordAt("engine.light_gizmos", "gizmo")};
+    record.attached_light = light;
+    if (light.value >= engine.lights.size()) return;
+    const LightKind kind = ${recordAt("engine.lights", "light")}.kind;
+    if (record.built) {
+        // The pin's _build has two arms: it early-returns when the new
+        // light's lightType matches the one it built for, and otherwise
+        // DISPOSES the widget and builds the other type's. Only the first
+        // arm is lowered -- the second needs the pinned disposal this port
+        // does not reach -- so a re-attach to a different type fails by
+        // name rather than keeping a widget that no longer describes the
+        // light it follows.
+        if (record.built_kind != kind) {
+            throw std::runtime_error(
+                "A light gizmo was re-attached to a light of a different "
+                "type. The pin rebuilds the widget for the new type; this "
+                "port builds it once.");
+        }
+        return;
+    }
+    record.built = true;
+    record.built_kind = kind;
+    Scene& scene = layer_record(engine, record.layer).scene;
+    if (kind == LightKind::directional) {
+        const std::array<double, 4> mq =
+            ${lightMath.expression(this.context.variableInitializer(directionalArm, "mq"))};
+        const TransformNodeHandle mesh_root = create_transform_node(
+            engine,
+            ${this.displayNodeArguments(directionalArm, "meshRoot", lightMath)});
+        set_transform_node_parent(engine, mesh_root, record.root);
+        const MeshHandle sphere = create_sphere(
+            engine,
+            ${this.sphereOptions(dirSphere, lightDeclaration)});
+        gizmo_mesh(engine, scene, sphere, record.material);
+        place_mesh(
+            engine,
+            sphere,
+            ${this.displayPlacement(directionalArm, "sphere", lightMath)},
+            mesh_root);
+        const std::array<std::array<double, 2>, ${shafts.length}> shafts{{
+            ${shafts.join(", ")},
+        }};
+        for (const std::array<double, 2>& entry : shafts) {
+            const MeshHandle shaft = create_cylinder(
+                engine,
+                ${this.cylinderOptions(shaft, lightDeclaration)});
+            gizmo_mesh(engine, scene, shaft, record.material);
+            place_mesh(
+                engine,
+                shaft,
+                ${this.displayPlacement(shaftBuilder, "shaft", lightMath)},
+                mesh_root);
+        }
+        const std::array<std::array<double, 2>, ${heads.length}> heads{{
+            ${heads.join(", ")},
+        }};
+        for (const std::array<double, 2>& entry : heads) {
+            const MeshHandle head = create_cylinder(
+                engine,
+                ${this.cylinderOptions(head, lightDeclaration)});
+            gizmo_mesh(engine, scene, head, record.material);
+            place_mesh(
+                engine,
+                head,
+                ${this.displayPlacement(headBuilder, "head", lightMath)},
+                mesh_root);
+        }
+        return;
+    }
+    const std::string type_name =
+        kind == LightKind::point
+            ? "pointLight"
+            : kind == LightKind::hemispheric ? "hemisphericLight"
+                                             : "spotLight";
+    const TransformNodeHandle type_root = create_transform_node(
+        engine,
+        type_name,
+        Vec3d{0.0, 0.0, 0.0},
+        Vec4{0.0f, 0.0f, 0.0f, 1.0f},
+        Vec3{1.0f, 1.0f, 1.0f});
+    set_transform_node_parent(engine, type_root, record.root);
+    if (kind == LightKind::point) {
+        const std::array<double, 4> sphere_rotation =
+            ${lightMath.expression(this.context.variableInitializer(pointArm, "sq"))};
+        const MeshHandle sphere = create_sphere(
+            engine,
+            ${this.sphereOptions(pointSphere, lightDeclaration)});
+        gizmo_mesh(engine, scene, sphere, record.material);
+        place_mesh(
+            engine,
+            sphere,
+            ${this.displayPlacement(pointArm, "sphere", lightMath)},
+            type_root);
+        build_light_lines(engine, scene, record.material, type_root, ${lightLinesLevel(pointArm)});
+        return;
+    }
+    if (kind == LightKind::hemispheric) {
+        const std::array<double, 4> hemi_rotation =
+            ${lightMath.expression(this.context.variableInitializer(hemisphereArm, "hq"))};
+        const MeshHandle hemi = build_hemisphere_mesh(engine, ${hemisphereArguments(hemisphereArm)});
+        gizmo_mesh(engine, scene, hemi, record.material);
+        place_mesh(
+            engine,
+            hemi,
+            ${this.displayPlacement(hemisphereArm, "hemi", lightMath)},
+            type_root);
+        build_light_lines(engine, scene, record.material, type_root, ${lightLinesLevel(hemisphereArm)});
+        return;
+    }
+    const MeshHandle sphere = create_sphere(
+        engine,
+        ${this.sphereOptions(spotSphere, lightDeclaration)});
+    gizmo_mesh(engine, scene, sphere, record.material);
+    place_mesh(
+        engine,
+        sphere,
+        ${this.displayPlacement(spotArm, "sphere", lightMath)},
+        type_root);
+    const std::array<double, 4> hemi_rotation =
+        ${lightMath.expression(this.context.variableInitializer(spotArm, "hq"))};
+    const MeshHandle hemi = build_hemisphere_mesh(engine, ${hemisphereArguments(spotArm)});
+    gizmo_mesh(engine, scene, hemi, record.material);
+    place_mesh(
+        engine,
+        hemi,
+        ${this.displayPlacement(spotArm, "hemi", lightMath)},
+        type_root);
+    build_light_lines(engine, scene, record.material, type_root, ${lightLinesLevel(spotArm)});
+}
+
+`,
+        };
+    }
+
     public lower(): LoweredSource {
         // Anchored: the pinned surface this family is generated from.
         // `createGizmoMaterials` is NOT anchored -- it belongs to the four
@@ -4888,219 +5375,16 @@ void attach_bounding_box_gizmo_to_node(
             .join(", ");
         // `light.intensity = options?.lightIntensity ?? 2` -- the pin's own
         // default, read from the coalesce rather than restated.
-        let utilityIntensity: number | undefined;
-        this.context.hasNode(utility.declaration, (node) => {
-            if (!ts.isExpression(node)) return false;
-            const coalesce = this.context.nullishDefault(node);
-            if (coalesce && utilityIntensity === undefined) {
-                utilityIntensity = this.context.numericValue(
-                    coalesce.right,
-                    utilityFile,
-                );
-            }
-            return false;
-        });
-        if (utilityIntensity === undefined) {
-            this.context.contractError(
-                utility.declaration,
-                "Expected createUtilityLayer to default its light " +
-                    "intensity through a nullish coalesce.",
-            );
-        }
-        const cameraFile = this.context.sourceFile(CAMERA_MODULE);
-        const lightFile = this.context.sourceFile(LIGHT_MODULE);
-        const bodyCalls = this.factoryCalls(
-            cameraFile,
-            this.context.functionDeclaration(
-                CAMERA_MODULE,
-                "buildCameraBodyMesh",
-            ).declaration,
-            ["createBox", "createCylinder"],
+        const utilityIntensity = pinnedOptionNumber(
+            this.context,
+            utility.declaration,
+            { member: "lightIntensity" },
+            utilityFile,
         );
-        if (
-            bodyCalls.length !== 4 ||
-            bodyCalls[0]!.callee !== "createBox" ||
-            bodyCalls[0]!.scalar === undefined ||
-            bodyCalls.slice(1).some((call) => call.callee !== "createCylinder")
-        ) {
-            this.context.contractError(
-                this.context.functionDeclaration(
-                    CAMERA_MODULE,
-                    "buildCameraBodyMesh",
-                ).declaration,
-                "Expected the pinned camera body to be one box and three " +
-                    "cylinders, in that order.",
-            );
-        }
-        const lineCall = this.factoryCalls(
-            lightFile,
-            this.context.functionDeclaration(LIGHT_MODULE, "buildLightLines")
-                .declaration,
-            ["createCylinder"],
-        )[0]!;
-        const typeCalls = this.factoryCalls(
-            lightFile,
-            this.context.functionDeclaration(LIGHT_MODULE, "buildLightTypeMesh")
-                .declaration,
-            ["createSphere", "createCylinder"],
-        );
-        // directional: sphere, shaft, head. point/hemi/spot: one sphere
-        // each for point and spot (the hemispheres come from the pin's own
-        // mesh builder, which has no factory call).
-        if (typeCalls.length !== 5) {
-            this.context.contractError(
-                this.context.functionDeclaration(
-                    LIGHT_MODULE,
-                    "buildLightTypeMesh",
-                ).declaration,
-                "Expected the pinned per-type light geometry to make five " +
-                    "factory meshes (directional sphere, shaft, head; the " +
-                    "point and spot spheres).",
-            );
-        }
-        const [dirSphere, shaft, head, pointSphere, spotSphere] = typeCalls as [
-            PinnedFactoryCall,
-            PinnedFactoryCall,
-            PinnedFactoryCall,
-            PinnedFactoryCall,
-            PinnedFactoryCall,
-        ];
-        const cylinder = (call: PinnedFactoryCall, at: ts.Node): string => {
-            const top = this.option(call, "diameterTop", at);
-            const bottom = this.option(call, "diameterBottom", at);
-            return (
-                `CylinderOptions{` +
-                `${this.context.doubleLiteral(
-                    this.option(call, "height", at),
-                )}, ` +
-                `${this.context.doubleLiteral(top)}, ` +
-                `${this.context.doubleLiteral(bottom)}, ` +
-                `${this.context.doubleLiteral(
-                    this.option(call, "tessellation", at),
-                )}, ` +
-                `1.0, ` +
-                `${top === 0 ? "true" : "false"}}`
-            );
-        };
-        const sphere = (call: PinnedFactoryCall, at: ts.Node): string => {
-            const diameter = this.option(call, "diameter", at);
-            return (
-                `SphereOptions{` +
-                `${this.option(call, "segments", at)}u, ` +
-                `${this.context.doubleLiteral(diameter)}, ` +
-                `${this.context.doubleLiteral(diameter)}, ` +
-                `${this.context.doubleLiteral(diameter)}}`
-            );
-        };
-        const cameraDeclaration = this.context.functionDeclaration(
-            CAMERA_MODULE,
-            "buildCameraBodyMesh",
-        ).declaration;
-        const lightDeclaration = this.context.functionDeclaration(
-            LIGHT_MODULE,
-            "buildLightTypeMesh",
-        ).declaration;
-        const cameraFactory = this.context.functionDeclaration(
-            CAMERA_MODULE,
-            "createCameraGizmo",
-        ).declaration;
-        const lightFactory = this.context.functionDeclaration(
-            LIGHT_MODULE,
-            "createLightGizmo",
-        ).declaration;
-        const cameraMath = this.displayLowerer(CAMERA_MODULE, [
-            ["rotX", { cpp: "rot_x", type: "f64-buffer" }],
-            ["rotZ", { cpp: "rot_z", type: "f64-buffer" }],
-            ["outerRot", { cpp: "outer_rot", type: "f64-buffer" }],
-            ["canvas.width", { cpp: "canvas_width", type: "scalar" }],
-            ["canvas.height", { cpp: "canvas_height", type: "scalar" }],
-        ]);
-        const lineDeclaration = this.context.functionDeclaration(
-            LIGHT_MODULE,
-            "buildLightLines",
-        ).declaration;
-        const lineMath = this.displayLowerer(LIGHT_MODULE, [
-            ["rootQ", { cpp: "root_q", type: "f64-buffer" }],
-            ["q", { cpp: "q", type: "f64-buffer" }],
-            ["px", { cpp: "p[0]", type: "scalar" }],
-            ["py", { cpp: "p[1]", type: "scalar" }],
-            ["pz", { cpp: "p[2]", type: "scalar" }],
-            ...["pivotY", "pivotZ", "posY", "sx", "sy", "sz"].map(
-                (member): [string, PinnedBinding] => [
-                    `def.${member}`,
-                    { cpp: `def.${member}`, type: "scalar" },
-                ],
-            ),
-        ]);
-        const lightMath = this.displayLowerer(LIGHT_MODULE, [
-            ["mq", { cpp: "mq", type: "f64-buffer" }],
-            ["sq", { cpp: "sphere_rotation", type: "f64-buffer" }],
-            ["hq", { cpp: "hemi_rotation", type: "f64-buffer" }],
-            ["x", { cpp: "entry[0]", type: "scalar" }],
-            ["y", { cpp: "entry[1]", type: "scalar" }],
-            ["sy", { cpp: "entry[1]", type: "scalar" }],
-        ]);
-        const directionalArm = this.lightGeometryArm(
-            lightDeclaration,
-            "directional",
-        );
-        const pointArm = this.lightGeometryArm(lightDeclaration, "point");
-        const hemisphereArm = this.lightGeometryArm(
-            lightDeclaration,
-            "hemispheric",
-        );
-        const spotArm = this.lightGeometryArm(lightDeclaration, "spot");
-        const shaftBuilder = this.arrowLocal(directionalArm, "makeShaft");
-        const headBuilder = this.arrowLocal(directionalArm, "makeHead");
-        const argumentRows = (
-            scope: ts.Node,
-            callee: string,
-        ): readonly string[] =>
-            this.context
-                .findNodes(
-                    scope,
-                    (node): node is ts.CallExpression =>
-                        ts.isCallExpression(node) &&
-                        ts.isIdentifier(node.expression) &&
-                        node.expression.text === callee,
-                )
-                .map((call) => {
-                    if (call.arguments.length !== 2) {
-                        this.context.contractError(
-                            call,
-                            "Expected two pinned directional-light placement arguments.",
-                        );
-                    }
-                    return `{{${call.arguments.map((argument) => lightMath.expression(argument)).join(", ")}}}`;
-                });
-        const shafts = argumentRows(directionalArm, "makeShaft");
-        const heads = argumentRows(directionalArm, "makeHead");
-        const lightLinesLevel = (scope: ts.Node): string => {
-            const call = this.context.callExpression(scope, "buildLightLines");
-            if (call.arguments.length !== 5) {
-                this.context.contractError(
-                    call,
-                    "Expected the pinned light-line level argument.",
-                );
-            }
-            return lightMath.expression(call.arguments[4]!);
-        };
-        const hemisphereArguments = (scope: ts.Node): string => {
-            const call = this.context.callExpression(
-                scope,
-                "buildHemisphereMesh",
-            );
-            if (call.arguments.length !== 3) {
-                this.context.contractError(
-                    call,
-                    "Expected pinned hemisphere segments and diameter.",
-                );
-            }
-            return call.arguments
-                .slice(1)
-                .map((argument) => lightMath.expression(argument))
-                .join(", ");
-        };
+        const camera = this.reachesCameraGizmo();
+        const light = this.reachesLightGizmo();
+        const editing = this.reachesEditGizmos();
+        const lightGizmo = light ? this.lightGizmoSource() : undefined;
         return {
             modulePath: CAMERA_MODULE,
             symbolName: "createCameraGizmo",
@@ -5138,29 +5422,35 @@ UtilityLayerRecord& layer_record(
     if (layer.value >= engine.utility_layers.size()) {
         throw std::runtime_error("Invalid utility layer handle.");
     }
-    return *engine.utility_layers[layer.value];
+    return *${recordAt("engine.utility_layers", "layer")};
 }
 
-/** One gizmo mesh: the shared material, unpickable, added to the layer. */
+${
+    camera || light
+        ? `/** One gizmo mesh: the shared material, unpickable, added to the layer. */
 MeshHandle gizmo_mesh(
     Engine& engine,
     Scene& scene,
     MeshHandle mesh,
     MaterialHandle material) {
-    engine.meshes[mesh.value].material = material;
-    engine.meshes[mesh.value].pickable = false;
+    ${recordAt("engine.meshes", "mesh")}.material = material;
+    ${recordAt("engine.meshes", "mesh")}.pickable = false;
     add_to_scene(scene, mesh);
     return mesh;
 }
 
-void place_mesh(
+`
+        : ""
+}${
+                camera || light || editing
+                    ? `void place_mesh(
     Engine& engine,
     MeshHandle mesh,
     Vec3d position,
     Vec3 scaling,
     const std::array<double, 4>& rotation,
     TransformNodeHandle parent) {
-    MeshRecord& record = engine.meshes[mesh.value];
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     record.position = position;
     record.scaling = scaling;
     // Through the setter rather than the field: a quaternion write also
@@ -5173,66 +5463,18 @@ void place_mesh(
             static_cast<float>(rotation[0]),
             static_cast<float>(rotation[1]),
             static_cast<float>(rotation[2]),
-            static_cast<float>(rotation[3])},
-        false);
+            static_cast<float>(rotation[3])});
     set_mesh_transform_parent(engine, mesh, parent);
     mark_mesh_dirty(engine, mesh);
 }
 
-${pinnedGizmoGeometry(this.context)}
+`
+                    : ""
+            }${pinnedGizmoGeometry(this.context, { camera, light })}
 
-${pinnedGizmoFollowGeometry(this.context, this.reachesEditGizmos())}
+${pinnedGizmoFollowGeometry(this.context, { camera, light, editing })}
 
-MeshHandle build_hemisphere_mesh(
-    Engine& engine,
-    double segments,
-    double diameter) {
-    const GizmoHemisphereGeometry geometry =
-        gizmo_hemisphere_geometry(segments, diameter);
-    return create_mesh_from_data(
-        engine,
-        geometry.name,
-        geometry.positions,
-        geometry.normals,
-        geometry.indices,
-        geometry.uvs,
-        {},
-        {},
-        {});
-}
-
-// ${this.context.provenance(LIGHT_MODULE, "buildLightLines")}
-void build_light_lines(
-    Engine& engine,
-    Scene& scene,
-    MaterialHandle material,
-    TransformNodeHandle parent,
-    double levels) {
-    const std::array<double, 4> root_q =
-        ${lineMath.expression(this.localInitializer(lineDeclaration, "rootQ"))};
-    const TransformNodeHandle lines_root = create_transform_node(
-        engine,
-        ${this.displayNodeArguments(lineDeclaration, "linesRoot", lineMath)});
-    set_transform_node_parent(engine, lines_root, parent);
-    for (const GizmoLineDef& def : line_defs_for_level(levels)) {
-        const std::array<double, 4> q =
-            ${lineMath.expression(this.localInitializer(lineDeclaration, "q"))};
-        const std::array<double, 3> p =
-            ${lineMath.expression(this.context.callExpression(lineDeclaration, "rotateVec3ByQuat"))};
-        const MeshHandle line = create_cylinder(
-            engine,
-            ${cylinder(lineCall, lightDeclaration)});
-        engine.meshes[line.value].name = "lightLine";
-        gizmo_mesh(engine, scene, line, material);
-        place_mesh(
-            engine,
-            line,
-            ${this.displayPlacement(lineDeclaration, "line", lineMath)},
-            lines_root);
-    }
-}
-
-${this.reachesEditGizmos() ? this.editGizmoRuntime() : ""}
+${lightGizmo ? lightGizmo.helpers : ""}${this.reachesEditGizmos() ? this.editGizmoRuntime() : ""}
 
 ${boundingBox ? boundingBox.helpers : ""}
 
@@ -5256,7 +5498,7 @@ UtilityLayerHandle create_utility_layer(
         engine,
         Vec3{${utilityDirection}},
         ${this.context.floatLiteral(utilityIntensity)});
-    engine.lights[light.value].ground_color = Color3{0.5f, 0.5f, 0.5f};
+    ${recordAt("engine.lights", "light")}.ground_color = Color3{0.5f, 0.5f, 0.5f};
     add_to_scene(record->scene, light);
     engine.utility_layers.push_back(std::move(record));
     return UtilityLayerHandle{
@@ -5275,380 +5517,7 @@ void dispose_utility_layer(Engine& engine, UtilityLayerHandle layer) {
     dispose_scene(layer_record(engine, layer).scene);
 }
 
-CameraGizmoHandle create_camera_gizmo(
-    Engine& engine,
-    UtilityLayerHandle layer) {
-    Scene& scene = layer_record(engine, layer).scene;
-    CameraGizmoRecord gizmo;
-    gizmo.layer = layer;
-    gizmo.material = create_standard_material(engine);
-    set_material_diffuse_color(engine, gizmo.material,
-        js::Array<double>{0.5, 0.5, 0.5});
-    engine.materials[gizmo.material.value].specular_color =
-        Color3{0.1f, 0.1f, 0.1f};
-    gizmo.frustum_material = create_standard_material(engine);
-    set_material_diffuse_color(engine, gizmo.frustum_material,
-        js::Array<double>{1.0, 1.0, 1.0});
-    engine.materials[gizmo.frustum_material.value].emissive_factor =
-        Color3{1.0f, 1.0f, 1.0f};
-    engine.materials[gizmo.frustum_material.value].disable_lighting = true;
-    gizmo.root = create_transform_node(
-        engine,
-        ${this.displayNodeArguments(cameraFactory, "root", cameraMath)});
-    add_to_scene(scene, gizmo.root);
-
-    const std::array<double, 4> outer_rot =
-        ${cameraMath.expression(this.localInitializer(cameraFactory, "outerRot"))};
-    const TransformNodeHandle body_outer = create_transform_node(
-        engine,
-        ${this.displayNodeArguments(cameraFactory, "bodyOuter", cameraMath)});
-    set_transform_node_parent(engine, body_outer, gizmo.root);
-    const TransformNodeHandle body_mesh = create_transform_node(
-        engine,
-        ${this.displayNodeArguments(cameraFactory, "bodyMesh", cameraMath)});
-    set_transform_node_parent(engine, body_mesh, body_outer);
-    gizmo.body_outer = body_outer;
-
-    // ${this.context.provenance(CAMERA_MODULE, "buildCameraBodyMesh")}
-    const std::array<double, 4> rot_x =
-        ${cameraMath.expression(this.localInitializer(cameraDeclaration, "rotX"))};
-    const std::array<double, 4> rot_z =
-        ${cameraMath.expression(this.localInitializer(cameraDeclaration, "rotZ"))};
-    const MeshHandle box = create_box(
-        engine,
-        BoxOptions{
-            ${this.context.floatLiteral(bodyCalls[0]!.scalar)},
-            ${this.context.floatLiteral(bodyCalls[0]!.scalar)},
-            ${this.context.floatLiteral(bodyCalls[0]!.scalar)}});
-    gizmo_mesh(engine, scene, box, gizmo.material);
-    place_mesh(
-        engine,
-        box,
-        ${this.displayPlacement(cameraDeclaration, "box", cameraMath)},
-        body_mesh);
-    const MeshHandle reel_a = create_cylinder(
-        engine,
-        ${cylinder(bodyCalls[1]!, cameraDeclaration)});
-    gizmo_mesh(engine, scene, reel_a, gizmo.material);
-    place_mesh(
-        engine,
-        reel_a,
-        ${this.displayPlacement(cameraDeclaration, "cyl1", cameraMath)},
-        body_mesh);
-    const MeshHandle reel_b = create_cylinder(
-        engine,
-        ${cylinder(bodyCalls[2]!, cameraDeclaration)});
-    gizmo_mesh(engine, scene, reel_b, gizmo.material);
-    place_mesh(
-        engine,
-        reel_b,
-        ${this.displayPlacement(cameraDeclaration, "cyl2", cameraMath)},
-        body_mesh);
-    const MeshHandle lens = create_cylinder(
-        engine,
-        ${cylinder(bodyCalls[3]!, cameraDeclaration)});
-    gizmo_mesh(engine, scene, lens, gizmo.material);
-    place_mesh(
-        engine,
-        lens,
-        ${this.displayPlacement(cameraDeclaration, "cyl3", cameraMath)},
-        body_mesh);
-
-    engine.camera_gizmos.push_back(gizmo);
-    const CameraGizmoHandle handle{
-        static_cast<std::uint32_t>(engine.camera_gizmos.size() - 1u)};
-    Engine* live_engine = &engine;
-    on_before_render(scene, [live_engine, handle, layer](float) {
-        Engine& e = *live_engine;
-        CameraGizmoRecord& g = e.camera_gizmos[handle.value];
-        if (g.attached_camera.value >= e.cameras.size()) return;
-        const std::array<float, 16> wm =
-            upstream::camera_world_matrix(e.cameras[g.attached_camera.value]);
-        set_transform_node_position(
-            e,
-            g.root,
-            Vec3d{
-                static_cast<double>(wm[12]),
-                static_cast<double>(wm[13]),
-                static_cast<double>(wm[14])});
-        const PinnedQuat q = ${PINNED_DECOMPOSE_ROTATION}(wm);
-        set_transform_node_rotation_quaternion(
-            e,
-            g.root,
-            Vec4{
-                static_cast<float>(q.x),
-                static_cast<float>(q.y),
-                static_cast<float>(q.z),
-                static_cast<float>(q.w)});
-        Scene& utility = utility_layer_scene(e, layer);
-        const bool has_camera = utility.camera.value < e.cameras.size();
-        const std::array<float, 16> cw = has_camera
-            ? upstream::camera_world_matrix(e.cameras[utility.camera.value])
-            : std::array<float, 16>{};
-        const Vec3d scale = gizmo_camera_scaling(has_camera, cw, wm);
-        set_transform_node_scaling(
-            e,
-            g.body_outer,
-            Vec3{
-                static_cast<float>(scale.x),
-                static_cast<float>(scale.y),
-                static_cast<float>(scale.z)});
-    });
-    return handle;
-}
-
-void attach_camera_gizmo_to_camera(
-    Engine& engine,
-    CameraGizmoHandle gizmo,
-    CameraHandle camera) {
-    CameraGizmoRecord& record = engine.camera_gizmos[gizmo.value];
-    record.attached_camera = camera;
-    if (record.frustum_built || camera.value >= engine.cameras.size()) {
-        return;
-    }
-    record.frustum_built = true;
-    Scene& scene = layer_record(engine, record.layer).scene;
-    const CameraRecord& cam = engine.cameras[camera.value];
-    const double canvas_width = engine.canvas_client_width;
-    const double canvas_height = engine.canvas_client_height;
-    const double aspect = ${cameraMath.expression(this.localInitializer(cameraFactory, "aspect"))};
-    for (const GizmoFrustumEdge& edge : gizmo_frustum_geometry(
-             cam.fov, aspect, cam.near_plane, cam.far_plane)) {
-        const MeshHandle mesh = create_cylinder(
-            engine,
-            CylinderOptions{
-                edge.height,
-                edge.diameterTop,
-                edge.diameterBottom,
-                edge.tessellation,
-                1.0,
-                edge.diameterTop == 0.0});
-        gizmo_mesh(engine, scene, mesh, record.frustum_material);
-        place_mesh(
-            engine,
-            mesh,
-            edge.position,
-            Vec3{
-                static_cast<float>(edge.scaling.x),
-                static_cast<float>(edge.scaling.y),
-                static_cast<float>(edge.scaling.z)},
-            edge.rotation,
-            record.root);
-    }
-}
-
-LightGizmoHandle create_light_gizmo(
-    Engine& engine,
-    UtilityLayerHandle layer) {
-    Scene& scene = layer_record(engine, layer).scene;
-    LightGizmoRecord gizmo;
-    gizmo.layer = layer;
-    gizmo.material = create_standard_material(engine);
-    set_material_diffuse_color(engine, gizmo.material,
-        js::Array<double>{0.5, 0.5, 0.5});
-    engine.materials[gizmo.material.value].specular_color =
-        Color3{0.1f, 0.1f, 0.1f};
-    gizmo.root = create_transform_node(
-        engine,
-        ${this.displayNodeArguments(lightFactory, "root", lightMath)});
-    add_to_scene(scene, gizmo.root);
-    engine.light_gizmos.push_back(gizmo);
-    const LightGizmoHandle handle{
-        static_cast<std::uint32_t>(engine.light_gizmos.size() - 1u)};
-    Engine* live_engine = &engine;
-    on_before_render(scene, [live_engine, handle, layer](float) {
-        Engine& e = *live_engine;
-        LightGizmoRecord& g = e.light_gizmos[handle.value];
-        if (g.attached_light.value >= e.lights.size()) return;
-        const LightRecord& light = e.lights[g.attached_light.value];
-        // The pin tests \`if (pos)\` and \`if (dir)\` on the light OBJECT,
-        // and which of the two a light carries is decided by the factory
-        // that made it: hemispheric declares only a direction, point only
-        // a position, directional and spot both.
-        const bool has_position =
-            light.kind == LightKind::point ||
-            light.kind == LightKind::spot ||
-            light.kind == LightKind::directional;
-        const bool has_direction =
-            light.kind == LightKind::hemispheric ||
-            light.kind == LightKind::spot ||
-            light.kind == LightKind::directional;
-        if (has_position) {
-            set_transform_node_position(
-                e,
-                g.root,
-                Vec3d{
-                    static_cast<double>(light.position.x),
-                    static_cast<double>(light.position.y),
-                    static_cast<double>(light.position.z)});
-        }
-        if (has_direction) {
-            const std::array<double, 4> q =
-                direction_to_quat(light.direction);
-            set_transform_node_rotation_quaternion(
-                e,
-                g.root,
-                Vec4{
-                    static_cast<float>(q[0]),
-                    static_cast<float>(q[1]),
-                    static_cast<float>(q[2]),
-                    static_cast<float>(q[3])});
-        }
-        Scene& utility = utility_layer_scene(e, layer);
-        const Vec3d root_position =
-            e.transform_nodes[g.root.value].position;
-        const bool has_camera = utility.camera.value < e.cameras.size();
-        const std::array<float, 16> cw = has_camera
-            ? upstream::camera_world_matrix(e.cameras[utility.camera.value])
-            : std::array<float, 16>{};
-        const Vec3d scale = gizmo_light_scaling(has_camera, cw, root_position);
-        set_transform_node_scaling(
-            e,
-            g.root,
-            Vec3{
-                static_cast<float>(scale.x),
-                static_cast<float>(scale.y),
-                static_cast<float>(scale.z)});
-    });
-    return handle;
-}
-
-// ${this.context.provenance(LIGHT_MODULE, "buildLightTypeMesh")}
-void attach_light_gizmo_to_light(
-    Engine& engine,
-    LightGizmoHandle gizmo,
-    LightHandle light) {
-    LightGizmoRecord& record = engine.light_gizmos[gizmo.value];
-    record.attached_light = light;
-    if (light.value >= engine.lights.size()) return;
-    const LightKind kind = engine.lights[light.value].kind;
-    if (record.built) {
-        // The pin's _build has two arms: it early-returns when the new
-        // light's lightType matches the one it built for, and otherwise
-        // DISPOSES the widget and builds the other type's. Only the first
-        // arm is lowered -- the second needs the pinned disposal this port
-        // does not reach -- so a re-attach to a different type fails by
-        // name rather than keeping a widget that no longer describes the
-        // light it follows.
-        if (record.built_kind != kind) {
-            throw std::runtime_error(
-                "A light gizmo was re-attached to a light of a different "
-                "type. The pin rebuilds the widget for the new type; this "
-                "port builds it once.");
-        }
-        return;
-    }
-    record.built = true;
-    record.built_kind = kind;
-    Scene& scene = layer_record(engine, record.layer).scene;
-    if (kind == LightKind::directional) {
-        const std::array<double, 4> mq =
-            ${lightMath.expression(this.localInitializer(directionalArm, "mq"))};
-        const TransformNodeHandle mesh_root = create_transform_node(
-            engine,
-            ${this.displayNodeArguments(directionalArm, "meshRoot", lightMath)});
-        set_transform_node_parent(engine, mesh_root, record.root);
-        const MeshHandle sphere = create_sphere(
-            engine,
-            ${sphere(dirSphere, lightDeclaration)});
-        gizmo_mesh(engine, scene, sphere, record.material);
-        place_mesh(
-            engine,
-            sphere,
-            ${this.displayPlacement(directionalArm, "sphere", lightMath)},
-            mesh_root);
-        const std::array<std::array<double, 2>, ${shafts.length}> shafts{{
-            ${shafts.join(", ")},
-        }};
-        for (const std::array<double, 2>& entry : shafts) {
-            const MeshHandle shaft = create_cylinder(
-                engine,
-                ${cylinder(shaft, lightDeclaration)});
-            gizmo_mesh(engine, scene, shaft, record.material);
-            place_mesh(
-                engine,
-                shaft,
-                ${this.displayPlacement(shaftBuilder, "shaft", lightMath)},
-                mesh_root);
-        }
-        const std::array<std::array<double, 2>, ${heads.length}> heads{{
-            ${heads.join(", ")},
-        }};
-        for (const std::array<double, 2>& entry : heads) {
-            const MeshHandle head = create_cylinder(
-                engine,
-                ${cylinder(head, lightDeclaration)});
-            gizmo_mesh(engine, scene, head, record.material);
-            place_mesh(
-                engine,
-                head,
-                ${this.displayPlacement(headBuilder, "head", lightMath)},
-                mesh_root);
-        }
-        return;
-    }
-    const std::string type_name =
-        kind == LightKind::point
-            ? "pointLight"
-            : kind == LightKind::hemispheric ? "hemisphericLight"
-                                             : "spotLight";
-    const TransformNodeHandle type_root = create_transform_node(
-        engine,
-        type_name,
-        Vec3d{0.0, 0.0, 0.0},
-        Vec4{0.0f, 0.0f, 0.0f, 1.0f},
-        Vec3{1.0f, 1.0f, 1.0f});
-    set_transform_node_parent(engine, type_root, record.root);
-    if (kind == LightKind::point) {
-        const std::array<double, 4> sphere_rotation =
-            ${lightMath.expression(this.localInitializer(pointArm, "sq"))};
-        const MeshHandle sphere = create_sphere(
-            engine,
-            ${sphere(pointSphere, lightDeclaration)});
-        gizmo_mesh(engine, scene, sphere, record.material);
-        place_mesh(
-            engine,
-            sphere,
-            ${this.displayPlacement(pointArm, "sphere", lightMath)},
-            type_root);
-        build_light_lines(engine, scene, record.material, type_root, ${lightLinesLevel(pointArm)});
-        return;
-    }
-    if (kind == LightKind::hemispheric) {
-        const std::array<double, 4> hemi_rotation =
-            ${lightMath.expression(this.localInitializer(hemisphereArm, "hq"))};
-        const MeshHandle hemi = build_hemisphere_mesh(engine, ${hemisphereArguments(hemisphereArm)});
-        gizmo_mesh(engine, scene, hemi, record.material);
-        place_mesh(
-            engine,
-            hemi,
-            ${this.displayPlacement(hemisphereArm, "hemi", lightMath)},
-            type_root);
-        build_light_lines(engine, scene, record.material, type_root, ${lightLinesLevel(hemisphereArm)});
-        return;
-    }
-    const MeshHandle sphere = create_sphere(
-        engine,
-        ${sphere(spotSphere, lightDeclaration)});
-    gizmo_mesh(engine, scene, sphere, record.material);
-    place_mesh(
-        engine,
-        sphere,
-        ${this.displayPlacement(spotArm, "sphere", lightMath)},
-        type_root);
-    const std::array<double, 4> hemi_rotation =
-        ${lightMath.expression(this.localInitializer(spotArm, "hq"))};
-    const MeshHandle hemi = build_hemisphere_mesh(engine, ${hemisphereArguments(spotArm)});
-    gizmo_mesh(engine, scene, hemi, record.material);
-    place_mesh(
-        engine,
-        hemi,
-        ${this.displayPlacement(spotArm, "hemi", lightMath)},
-        type_root);
-    build_light_lines(engine, scene, record.material, type_root, ${lightLinesLevel(spotArm)});
-}
-
-${this.features.includes("gizmo:pointer-drag") ? "void initialize_pointer_gizmo(Engine&, UtilityLayerHandle, EditGizmoHandle, MaterialHandle, bool);" : ""}
+${camera ? this.cameraGizmoSource() : ""}${lightGizmo ? lightGizmo.source : ""}${this.features.includes("gizmo:pointer-drag") ? "void initialize_pointer_gizmo(Engine&, UtilityLayerHandle, EditGizmoHandle, MaterialHandle, bool);" : ""}
 ${this.reachesEditGizmos() ? this.editGizmos() : ""}
 
 // ${this.context.provenance(
@@ -5660,8 +5529,9 @@ void attach_gizmo_to_node(
     Engine& engine,
     EditGizmoHandle gizmo,
     MeshHandle node) {
-    EditGizmoRecord& record = engine.edit_gizmos[gizmo.value];
+    EditGizmoRecord& record = ${recordAt("engine.edit_gizmos", "gizmo")};
     record.attached_node = node;
+    record.attached_name = node.value != invalid_handle ? name_mesh(engine, node) : MeshName{};
     record.enabled = node.value != invalid_handle;
 }
 
@@ -5676,8 +5546,8 @@ bool pointer_drag_has_collider(
     }
     // Visible geometry and enlarged invisible colliders share one root;
     // both identify the widget, as in the pinned collider list.
-    return engine.meshes[mesh.value].transform_parent.value ==
-        engine.edit_gizmos[drag.value].root.value;
+    return ${recordAt("engine.meshes", "mesh")}.transform_parent.value ==
+        ${recordAt("engine.edit_gizmos", "drag")}.root.value;
 }
 
 ${
@@ -5693,7 +5563,7 @@ void set_edit_gizmo_local_coordinates(
     Engine& engine,
     EditGizmoHandle gizmo,
     bool use_local) {
-    engine.edit_gizmos[gizmo.value].use_local_coordinates = use_local;
+    ${recordAt("engine.edit_gizmos", "gizmo")}.use_local_coordinates = use_local;
 }
 
 // ${this.context.provenance(
@@ -5729,14 +5599,14 @@ void dispose_composite_gizmo(
     for (std::uint32_t i = 0; i < gizmo.part_count; ++i) {
         const EditGizmoHandle part = gizmo.parts[i];
         if (part.value >= engine.edit_gizmos.size()) continue;
-        EditGizmoRecord& record = engine.edit_gizmos[part.value];
+        EditGizmoRecord& record = ${recordAt("engine.edit_gizmos", "part")};
         record.dispose_pointer();
         record.dispose_pointer = []() {};
         std::vector<MeshHandle> meshes;
         for (const MeshHandle mesh : scene.meshes) {
             if (
                 mesh.value < engine.meshes.size() &&
-                engine.meshes[mesh.value].transform_parent.value ==
+                ${recordAt("engine.meshes", "mesh")}.transform_parent.value ==
                     record.root.value) {
                 meshes.push_back(mesh);
             }
@@ -5745,6 +5615,7 @@ void dispose_composite_gizmo(
             remove_from_scene(scene, mesh);
         }
         record.attached_node = {};
+        record.attached_name.reset();
         record.enabled = false;
         record.dragging = false;
         record.hovering = false;

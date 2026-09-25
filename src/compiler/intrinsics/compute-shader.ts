@@ -15,7 +15,7 @@ import type { UniformBufferIntrinsicContext } from "./uniform-buffer.js";
 export interface ComputeShaderIntrinsicContext
     extends
         UniformBufferIntrinsicContext,
-        Pick<LoweringServices, "reachedComputePrograms"> {}
+        Pick<LoweringServices, "sceneManifest"> {}
 export function compileComputeShaderIntrinsic(
     context: ComputeShaderIntrinsicContext,
     name: string,
@@ -82,11 +82,11 @@ export function compileComputeShaderIntrinsic(
     if (
         source.length > 0 &&
         entry.length > 0 &&
-        !context.reachedComputePrograms.some(
+        !context.sceneManifest.reachedComputePrograms.some(
             (value) => value.name === program.name,
         )
     )
-        context.reachedComputePrograms.push(program);
+        context.sceneManifest.reachedComputePrograms.push(program);
     const target = context.allocateTemporaryCppName("compute_shader_options");
     context.emit(`bbl::ComputeShaderOptions ${target};`);
     for (const field of fields)

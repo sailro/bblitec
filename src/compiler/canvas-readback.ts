@@ -16,7 +16,7 @@ import {
 import { runGenerationChild } from "./generation-child.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { ModuleJsonDeclined, runModuleJsonSync } from "./module-json-sync.js";
-import { CompilerSymbols, isDefaultLibraryIdentifier } from "./symbols.js";
+import { CompilerSymbols } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 import {
     parameterIsReadOnly,
@@ -73,17 +73,18 @@ function checkClosedInputs(
             member.body!,
             (child) => {
                 if (!ts.isIdentifier(child)) return;
-                if (isDefaultLibraryIdentifier(context.checker, child)) {
+                const global = symbols.libraryGlobal(child);
+                if (global !== undefined) {
                     const property =
                         ts.isPropertyAccessExpression(child.parent) &&
                         child.parent.expression === child
                             ? child.parent
                             : undefined;
                     if (
-                        !globals.has(child.text) ||
-                        (child.text === "Math" &&
+                        !globals.has(global) ||
+                        (global === "Math" &&
                             property?.name.text === "random") ||
-                        (child.text === "document" &&
+                        (global === "document" &&
                             property?.name.text !== "createElement")
                     ) {
                         context.fail(
@@ -355,7 +356,7 @@ function runCanvasReadback(input: string): Uint8Array {
             response.end("<!doctype html><title>Canvas readback</title>");
         });
         const value = await withBrowserPage(server, {
-            serverName: "Canvas readback server", browserRequirement: "Canvas readback requires Chromium.",
+            serverName: "Canvas readback server", browserRequirement: "Canvas readback requires Chromium.", shared: true,
         }, async (page, origin) => {
             await page.route("**/*", route => {
                 const url = route.request().url();

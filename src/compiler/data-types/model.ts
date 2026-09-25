@@ -66,7 +66,7 @@ export type HandleKind =
     | "scene-skeleton"
     | "bone"
     | "navigation-obstacle";
-export type AudioHandleKind =
+type AudioHandleKind =
     "audio-node" | "audio-param" | "media-stream" | "media-stream-track";
 export type TypedArrayKind =
     | "u8array"
@@ -77,7 +77,7 @@ export type TypedArrayKind =
     | "i16array"
     | "u32array"
     | "i32array";
-export interface DataKinds {
+interface DataKinds {
     error: { kind: "error" };
     "event-target": { kind: "event-target" };
     "http-response": { kind: "http-response" };

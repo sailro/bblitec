@@ -2,6 +2,11 @@ import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { CameraMutationLowerer } from "./camera-mutation-lowerer.js";
+import { lowerFreeCameraControls } from "./configurable-camera-controls.js";
+import {
+    lowerWorldAabbHelpers,
+    worldAabbLaneBindings,
+} from "./world-bounds-lowerer.js";
 
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
@@ -11,6 +16,7 @@ import {
     lowerPinnedFunction,
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const arcRotateEyeMembers = [
     "alpha",
@@ -22,10 +28,7 @@ const arcRotateEyeMembers = [
 ] as const;
 
 export class CameraLowerer {
-    public constructor(
-        private readonly context: LoweringContext,
-        private readonly trackVersions = false,
-    ) {}
+    public constructor(private readonly context: LoweringContext) {}
 
     /**
      * The parented-world composition `camera_world_matrix` mirrors when a
@@ -58,9 +61,6 @@ export class CameraLowerer {
             this.context.unwrapExpression(call.arguments[index]!);
         const parentOperand = operand(2);
         const localOperand = operand(4);
-        let composition: ts.Node = call;
-        while (composition.parent && !ts.isMethodDeclaration(composition))
-            composition = composition.parent;
         if (
             call.arguments.length !== 6 ||
             !ts.isIdentifier(parentOperand) ||
@@ -73,18 +73,12 @@ export class CameraLowerer {
         }
         if (
             !this.context.expressionMatchesShape(
-                this.context.variableInitializer(
-                    composition,
-                    parentOperand.text,
-                ),
+                this.context.initializerOf(parentOperand),
                 "_parent.worldMatrix",
             ) ||
             !this.context.expressionMatchesShape(
                 this.context.unwrapExpression(
-                    this.context.variableInitializer(
-                        composition,
-                        localOperand.text,
-                    ),
+                    this.context.initializerOf(localOperand),
                 ),
                 "_cachedLocal ??= getLocalMatrix()",
             )
@@ -522,7 +516,7 @@ CameraHandle create_arc_rotate_camera(
 namespace bbl {
 CameraHandle enable_orthographic_camera(Engine& engine, CameraHandle camera, double half_height,
     std::optional<double> left, std::optional<double> right, std::optional<double> bottom, std::optional<double> top) {
-    CameraRecord& record = engine.cameras[camera.value];
+    CameraRecord& record = ${recordAt("engine.cameras", "camera")};
     record.orthographic = true;
     record.ortho_half_height = half_height;
     record.ortho_left = left;
@@ -535,6 +529,93 @@ ${invalidation}
 } // namespace bbl
 `,
         };
+    }
+
+    /**
+     * The initial orientation `_createFreeCamera` derives from position and
+     * target: the `_yaw`/`_pitch` closure variables its accessors back, and
+     * the locals they are computed from, lowered in source order. The
+     * accessors' storage is the record's, so each initializer is stored
+     * there.
+     */
+    private lowerFreeOrientation(
+        file: ts.SourceFile,
+        factory: ts.FunctionDeclaration,
+    ): string {
+        const storage = new Map([
+            ["_yaw", "camera.free_yaw"],
+            ["_pitch", "camera.free_pitch"],
+        ]);
+        const declared = new Map<string, ts.VariableStatement>();
+        for (const statement of factory.body!.statements) {
+            if (!ts.isVariableStatement(statement)) continue;
+            for (const declaration of statement.declarationList.declarations)
+                if (ts.isIdentifier(declaration.name))
+                    declared.set(declaration.name.text, statement);
+        }
+        const selected = new Set<ts.VariableStatement>();
+        const include = (name: string): void => {
+            const statement =
+                declared.get(name) ??
+                this.context.contractError(
+                    factory,
+                    `Expected _createFreeCamera to declare '${name}'.`,
+                );
+            if (selected.has(statement)) return;
+            selected.add(statement);
+            for (const identifier of this.context.findNodes(
+                statement,
+                ts.isIdentifier,
+            ))
+                if (
+                    identifier.text !== name &&
+                    declared.has(identifier.text) &&
+                    !(
+                        ts.isPropertyAccessExpression(identifier.parent) &&
+                        identifier.parent.name === identifier
+                    )
+                )
+                    include(identifier.text);
+        };
+        for (const name of storage.keys()) include(name);
+        const bindings = new Map<string, PinnedBinding>([
+            ["position", { cpp: "position", type: "vec3" }],
+            ["target", { cpp: "target", type: "vec3" }],
+            ...[...storage].map(([name, cpp]): [string, PinnedBinding] => [
+                name,
+                { cpp, type: "scalar" },
+            ]),
+        ]);
+        return lowerPinnedBody(
+            file,
+            factory.body!.statements.filter(
+                (statement): statement is ts.VariableStatement =>
+                    ts.isVariableStatement(statement) &&
+                    selected.has(statement),
+            ),
+            {
+                bindings,
+                calls: pinnedNumericMathCalls(),
+                statement: (statement, lowerer, indent) => {
+                    if (!ts.isVariableStatement(statement)) return undefined;
+                    const [declaration] =
+                        statement.declarationList.declarations;
+                    const field =
+                        declaration && ts.isIdentifier(declaration.name)
+                            ? storage.get(declaration.name.text)
+                            : undefined;
+                    if (
+                        !field ||
+                        statement.declarationList.declarations.length !== 1 ||
+                        !declaration!.initializer
+                    )
+                        return undefined;
+                    return [
+                        `${indent}${field} = ${lowerer.expression(declaration!.initializer)};`,
+                    ];
+                },
+            },
+        );
     }
 
     public lowerFreeFactory(): LoweredSource {
@@ -584,17 +665,11 @@ CameraHandle create_free_camera(
     Engine& engine,
     Vec3d position,
     Vec3d target) {
-    const double dx = target.x - position.x;
-    const double dy = target.y - position.y;
-    const double dz = target.z - position.z;
     CameraRecord camera;
     camera.kind = CameraKind::free;
     camera.position = position;
     camera.target = target;
-    camera.free_yaw = std::atan2(dx, dz);
-    camera.free_pitch = std::atan2(
-        dy,
-        std::sqrt(dx * dx + dz * dz));
+${this.lowerFreeOrientation(file, declaration)}
     camera.fov = ${number("fov")};
     camera.near_plane = ${number("nearPlane")};
     camera.far_plane = ${number("farPlane")};
@@ -612,7 +687,7 @@ CameraHandle create_banked_free_camera(
     Vec3d target,
     Vec3d up) {
     const CameraHandle camera = create_free_camera(engine, position, target);
-    engine.cameras[camera.value].up_vector = up;
+    ${recordAt("engine.cameras", "camera")}.up_vector = up;
     return camera;
 }
 
@@ -621,243 +696,170 @@ CameraHandle create_banked_free_camera(
         };
     }
 
-    public lowerDefaultFactory(
-        nodeVisibility = false,
-        animatedWorldBounds = false,
-    ): LoweredSource {
+    public lowerDefaultFactory(nodeVisibility = false): LoweredSource {
         const modulePath = "src/scene/scene-camera.ts";
         const symbolName = "createDefaultCamera";
         const { file, declaration } = this.context.functionDeclaration(
             modulePath,
             symbolName,
         );
-        const radiusExpression = this.context.variableInitializer(
-            declaration,
-            "radius",
-        );
-        this.context.assertExpressionShape(
-            radiusExpression,
-            "diag * 1.5",
-            "Default camera radius",
-        );
-        const radiusBinary = this.context.unwrapExpression(radiusExpression);
-        if (!ts.isBinaryExpression(radiusBinary)) {
-            this.context.contractError(
-                radiusExpression,
-                "Expected computed default camera radius.",
-            );
-        }
-        const radiusScale = this.context.numericValue(radiusBinary.right, file);
-        const assignments = this.context.findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken,
-        );
-        const assignment = (path: string): ts.BinaryExpression => {
-            const result = assignments.find(
-                (candidate) =>
-                    this.context.propertyPath(candidate.left)?.join(".") ===
-                    path,
-            );
-            if (!result) {
-                this.context.contractError(
-                    declaration,
-                    `Expected assignment to '${path}'.`,
-                );
-            }
-            return result;
-        };
-        const fallbackRadiusExpression = assignment("radius").right;
-        const fallbackRadius = this.context.numericValue(
-            fallbackRadiusExpression,
-            file,
-        );
-        const createCamera = this.context.callExpression(
-            declaration,
-            "createArcRotateCamera",
-        );
-        const expectedArguments = [
-            "-(Math.PI / 2)",
-            "Math.PI / 2",
-            "radius",
-            "center",
-        ];
-        if (createCamera.arguments.length !== expectedArguments.length) {
-            this.context.contractError(
-                createCamera,
-                "Unexpected default camera arguments.",
-            );
-        }
-        createCamera.arguments.forEach((argument, index) =>
-            this.context.assertExpressionShape(
-                argument,
-                expectedArguments[index]!,
-                `Default camera argument ${index}`,
-            ),
-        );
-        const nearExpression = assignment("cam.nearPlane").right;
-        const farExpression = assignment("cam.farPlane").right;
-        this.context.assertExpressionShape(
-            nearExpression,
-            "radius * 0.01",
-            "Default camera near plane",
-        );
-        this.context.assertExpressionShape(
-            farExpression,
-            "radius * 1000",
-            "Default camera far plane",
-        );
-        if (
-            !ts.isBinaryExpression(nearExpression) ||
-            !ts.isBinaryExpression(farExpression)
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected scaled default camera planes.",
-            );
-        }
-        const nearScale = this.context.numericValue(nearExpression.right, file);
-        const farScale = this.context.numericValue(farExpression.right, file);
-        const value = (input: number): string =>
-            this.context.floatLiteral(input);
-        const dvalue = (input: number): string =>
-            this.context.doubleLiteral(input);
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
+            bindings: new Map<string, PinnedBinding>([
+                ["scene", { cpp: "scene", type: "opaque" }],
+                ["scene.camera", { cpp: "scene.camera", type: "opaque" }],
+                ["Math.PI", { cpp: "pi_double", type: "scalar" }],
+                ["cam", { cpp: "cam", type: "opaque" }],
+                [
+                    "cam.nearPlane",
+                    {
+                        cpp: `${recordAt("engine.cameras", "cam")}.near_plane`,
+                        type: "scalar",
+                    },
+                ],
+                [
+                    "cam.farPlane",
+                    {
+                        cpp: `${recordAt("engine.cameras", "cam")}.far_plane`,
+                        type: "scalar",
+                    },
+                ],
+                ...worldAabbLaneBindings(this.context, "acc", "acc"),
+            ]),
+            calls: new Map([
+                ...pinnedNumericMathCalls(),
+                ["emptyWorldAabb", () => "empty_world_aabb()"],
+                [
+                    "expandWorldAabbForMesh",
+                    (args: readonly string[]) =>
+                        `expand_world_aabb_for_mesh(${args[0]}, ` +
+                        `default_camera_world_aabb_mesh(engine, ${args[1]}))`,
+                ],
+                [
+                    "isFinite",
+                    (args: readonly string[]) =>
+                        `std::isfinite(${args.join(", ")})`,
+                ],
+                [
+                    "vec3",
+                    (args: readonly string[]) => `Vec3d{${args.join(", ")}}`,
+                ],
+            ]),
+            callShapes: new Map<string, PinnedBinding["type"]>([
+                ["emptyWorldAabb", "f64-buffer"],
+                ["vec3", "vec3"],
+            ]),
+            booleanOr: true,
+            forOf: (iterated, element) =>
+                iterated === "scene.meshes"
+                    ? {
+                          range: "scene.meshes",
+                          bindings: new Map<string, PinnedBinding>([
+                              [element, { cpp: element, type: "opaque" }],
+                              [
+                                  `${element}.visible === false`,
+                                  nodeVisibility
+                                      ? {
+                                            cpp:
+                                                `(${element}.value < engine.meshes.size() && ` +
+                                                `!${recordAt("engine.meshes", element)}.visible)`,
+                                            type: "bool",
+                                        }
+                                      : // Nothing writes `visible` in a
+                                        // scene without the feature.
+                                        {
+                                            cpp: "false",
+                                            type: "bool",
+                                            staticBoolean: false,
+                                        },
+                              ],
+                          ]),
+                      }
+                    : undefined,
+            // `createArcRotateCamera` returns the native camera's handle.
+            statement: (statement, lowerer, indent) => {
+                if (!ts.isVariableStatement(statement)) return undefined;
+                const [camera] = statement.declarationList.declarations;
+                if (
+                    !camera ||
+                    !ts.isIdentifier(camera.name) ||
+                    camera.name.text !== "cam"
+                )
+                    return undefined;
+                const call = camera.initializer
+                    ? this.context.unwrapExpression(camera.initializer)
+                    : undefined;
+                if (
+                    !call ||
+                    !ts.isCallExpression(call) ||
+                    call.expression.getText(file) !== "createArcRotateCamera"
+                )
+                    return this.context.contractError(
+                        camera,
+                        "Expected the default camera from createArcRotateCamera.",
+                    );
+                return [
+                    `${indent}const CameraHandle cam = create_arc_rotate_camera(engine, ${call.arguments
+                        .map((argument) => lowerer.expression(argument))
+                        .join(", ")});`,
+                ];
+            },
+            returnValue: (node, lowerer) =>
+                node
+                    ? lowerer.expression(node)
+                    : this.context.contractError(
+                          declaration,
+                          "Expected createDefaultCamera to return its camera.",
+                      ),
+        });
         return {
             modulePath,
             symbolName,
             header: "",
             source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/renderer_plan.hpp>
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
+#include <vector>
 
 namespace bbl {
 namespace {
 
-// src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh takes each
-// object-local box through mesh.worldMatrix. The record splits that world
-// into the mesh's own TRS and an imported clone root's outer transform,
-// applied in the order the draw path applies them, each through the
-// vertex stage's own f32 multiply.
-Vec3 transform_bounds_point(
-    Vec3 point,
-    const std::array<float, 16>& local,
-    const std::array<float, 16>& outer) {
-    return upstream::transform_position(
-        outer, upstream::transform_position(local, point));
-}
+${lowerWorldAabbHelpers(this.context, { emptyAccumulator: true })}
 
-void extend_bounds(Vec3 point, Vec3& minimum, Vec3& maximum) {
-    minimum.x = std::min(minimum.x, point.x);
-    minimum.y = std::min(minimum.y, point.y);
-    minimum.z = std::min(minimum.z, point.z);
-    maximum.x = std::max(maximum.x, point.x);
-    maximum.y = std::max(maximum.y, point.y);
-    maximum.z = std::max(maximum.z, point.z);
+// The Mesh members the framing reads, off the native record: the object-local
+// box its producer set (\`has_bounds\`), and \`mesh.worldMatrix\`. A .babylon
+// mesh has neither bound upstream (load-babylon.ts builds it without them),
+// so it frames nothing unless the scene assigns them. A scene may replace
+// either public bound.
+WorldAabbMesh default_camera_world_aabb_mesh(const Engine& engine, MeshHandle handle) {
+    WorldAabbMesh result{};
+    if (handle.value >= engine.meshes.size()) return result;
+    const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
+    const auto lanes = [](const Vec3& value) {
+        return std::array<float, 3>{value.x, value.y, value.z};
+    };
+    if (mesh.has_bounds && mesh.geometry < engine.geometries.size()) {
+        result.bound_min = lanes(engine.geometries[mesh.geometry].bounds_min);
+        result.bound_max = lanes(engine.geometries[mesh.geometry].bounds_max);
+    }
+    if (mesh.has_bounds_min_override) result.bound_min = lanes(mesh.bounds_min_override);
+    if (mesh.has_bounds_max_override) result.bound_max = lanes(mesh.bounds_max_override);
+    result.world_matrix = upstream::mesh_world_matrix(engine, mesh);
+    read_thin_instance_world_bounds(result, mesh);
+    return result;
 }
 
 } // namespace
 
 CameraHandle create_default_camera(Engine& engine, Scene& scene) {
-    Vec3 minimum{
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max(),
-        std::numeric_limits<float>::max(),
-    };
-    Vec3 maximum{
-        std::numeric_limits<float>::lowest(),
-        std::numeric_limits<float>::lowest(),
-        std::numeric_limits<float>::lowest(),
-    };
-    bool has_bounds = false;
-    for (const MeshHandle handle : scene.meshes) {
-        if (handle.value >= engine.meshes.size()) continue;
-        const MeshRecord& mesh = engine.meshes[handle.value];${
-            nodeVisibility
-                ? `
-        // The pinned framing pass skips \`visible === false\` meshes, whether
-        // scene source wrote the field or KHR_node_visibility materialized it.
-        if (!mesh.visible) continue;`
-                : ""
-        }
-        Vec3 local_min{};
-        Vec3 local_max{};
-        if (mesh.primitive == PrimitiveKind::gltf && mesh.geometry < engine.geometries.size()) {
-            local_min = engine.geometries[mesh.geometry].${animatedWorldBounds ? "world_" : ""}bounds_min;
-            local_max = engine.geometries[mesh.geometry].${animatedWorldBounds ? "world_" : ""}bounds_max;
-        } else {
-            local_min = Vec3{
-                -mesh.dimensions.x * 0.5f,
-                -mesh.dimensions.y * 0.5f,
-                -mesh.dimensions.z * 0.5f,
-            };
-            local_max = Vec3{
-                mesh.dimensions.x * 0.5f,
-                mesh.dimensions.y * 0.5f,
-                mesh.dimensions.z * 0.5f,
-            };
-        }
-        // A reached scene may replace either public Mesh bound after the
-        // factory/loader created it. Those values are object-local in the
-        // pin and therefore take the same world-transform path as the
-        // factory bounds they replace.
-        apply_mesh_bound_overrides(mesh, local_min, local_max);
-        const std::array<Vec3, 8> corners{
-            Vec3{local_min.x, local_min.y, local_min.z},
-            Vec3{local_max.x, local_min.y, local_min.z},
-            Vec3{local_min.x, local_max.y, local_min.z},
-            Vec3{local_max.x, local_max.y, local_min.z},
-            Vec3{local_min.x, local_min.y, local_max.z},
-            Vec3{local_max.x, local_min.y, local_max.z},
-            Vec3{local_min.x, local_max.y, local_max.z},
-            Vec3{local_max.x, local_max.y, local_max.z},
-        };
-        const std::array<float, 16> local = upstream::trs_matrix(mesh);
-        const std::array<float, 16> outer = upstream::outer_transform_matrix(mesh);
-        for (const Vec3 corner : corners) extend_bounds(transform_bounds_point(corner, local, outer), minimum, maximum);
-        has_bounds = true;
-    }
-
-    Vec3 center{};
-    float radius = ${value(fallbackRadius)};
-    if (has_bounds) {
-        const float sx = maximum.x - minimum.x;
-        const float sy = maximum.y - minimum.y;
-        const float sz = maximum.z - minimum.z;
-        const float diagonal = std::sqrt(sx * sx + sy * sy + sz * sz);
-        radius = diagonal * ${value(radiusScale)};
-        center = Vec3{
-            minimum.x + sx * 0.5f,
-            minimum.y + sy * 0.5f,
-            minimum.z + sz * 0.5f,
-        };
-        if (!std::isfinite(radius) || radius == 0.0f) {
-            radius = ${value(fallbackRadius)};
-            center = Vec3{};
-        }
-    }
-    // The framing box above is still accumulated in float from the baked
-    // mesh bounds, where the pinned pass composes each object-local box
-    // through its world matrix in JavaScript doubles. That difference is
-    // the sizing entry in TODO.md; the camera scalars it feeds are
-    // doubles here so the pinned view/projection chain below is exact for
-    // every camera whose scalars the scene sets itself.
-    const CameraHandle camera = create_arc_rotate_camera(
-        engine,
-        -pi_double / 2.0,
-        pi_double / 2.0,
-        radius,
-        Vec3d{center.x, center.y, center.z});
-    CameraRecord& record = engine.cameras[camera.value];
-    record.near_plane = radius * ${dvalue(nearScale)};
-    record.far_plane = radius * ${dvalue(farScale)};
-    scene.camera = camera;
-    return camera;
+${body}
 }
 
 } // namespace bbl
@@ -865,653 +867,65 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         };
     }
 
-    /**
-     * Anchors one pinned assignment: the write at `path` with `operator`
-     * whose right side has `expectedRight`'s shape. The arc block requires
-     * exactly one match; the free block accepts the first, because its
-     * accumulations repeat per axis.
-     */
-    private requirePinnedWrite(
-        list: readonly ts.BinaryExpression[],
-        errorNode: ts.Node,
-        exactlyOne: boolean,
-        path: string,
-        operator: ts.SyntaxKind,
-        expectedRight: string,
-        label: string,
-    ): void {
-        const matches = list.filter(
-            (expression) =>
-                expression.operatorToken.kind === operator &&
-                this.context.propertyPath(expression.left)?.join(".") === path,
-        );
-        if (exactlyOne ? matches.length !== 1 : matches.length === 0) {
-            this.context.contractError(
-                errorNode,
-                exactlyOne ? `Expected one ${label}.` : `Expected ${label}.`,
-            );
-        }
-        this.context.assertExpressionShape(
-            matches[0]!.right,
-            expectedRight,
-            label,
-        );
-    }
-
     public lowerControls(): LoweredSource {
         const modulePath = "src/camera/arc-rotate-controls.ts";
         const symbolName = "attachControl";
         const freeModule = "src/camera/free-camera-controls.ts";
-        const { file, declaration } = this.context.functionDeclaration(
-            modulePath,
-            symbolName,
-        );
-        const numericConstant = (name: string): number =>
-            this.context.numericValue(
-                this.context.variableInitializer(declaration, name),
-                file,
-            );
-        const rotationEpsilon = numericConstant("ROTATION_EPSILON");
-        const radiusEpsilon = numericConstant("RADIUS_EPSILON");
-        const panningEpsilon = numericConstant("PANNING_EPSILON");
-        const assignments = this.context.findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
-        );
-        if (
-            !assignments.some(
-                (expression) =>
-                    expression.operatorToken.kind ===
-                        ts.SyntaxKind.AsteriskEqualsToken &&
-                    this.context.propertyPath(expression.left)?.join(".") ===
-                        "camera.inertialAlphaOffset" &&
-                    this.context.propertyPath(expression.right)?.join(".") ===
-                        "camera.inertia",
-            )
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected ArcRotate inertia decay.",
-            );
-        }
-        // The pinned applyInertia pole margin (`eps`) keeps beta strictly
-        // inside (0, PI). The value flows into the emitted
-        // `constexpr double epsilon` and the clamp shape (max against the
-        // lower margin, min against the upper) is asserted against the
-        // emitted beta line, with `eps` left symbolic so the margin has a
-        // single owner.
-        const betaClampEpsilon = this.context.numericValue(
-            this.context.variableInitializer(declaration, "eps"),
-            file,
-        );
-        const betaClamps = assignments.filter(
-            (expression) =>
-                expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                this.context.propertyPath(expression.left)?.join(".") ===
-                    "camera.beta",
-        );
-        if (betaClamps.length !== 1) {
-            this.context.contractError(
-                declaration,
-                "Expected one ArcRotate beta clamp.",
-            );
-        }
-        this.context.assertExpressionShape(
-            betaClamps[0]!.right,
-            "Math.max(eps, Math.min(Math.PI - eps, camera.beta))",
-            "ArcRotate beta clamp",
-        );
-        // The radius floor: the pin writes `Math.max(<floor>, ...)` after
-        // both the inertial zoom and the direct pinch write. The emitted
-        // `apply_arc_rotate_inertia` carries the zoom one; extracting
-        // every occurrence and requiring one shared value means a pin
-        // that splits them fails loudly instead of leaving the emission
-        // silently mirroring the wrong surface.
-        const radiusFloors = assignments
-            .filter(
-                (expression) =>
-                    expression.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    this.context.propertyPath(expression.left)?.join(".") ===
-                        "camera.radius",
-            )
-            .map((expression) =>
-                this.context.unwrapExpression(expression.right),
-            )
-            .filter(
-                (right): right is ts.CallExpression =>
-                    ts.isCallExpression(right) &&
-                    this.context.propertyPath(right.expression)?.join(".") ===
-                        "Math.max",
-            )
-            .map((call) => {
-                if (
-                    call.arguments.length !== 2 ||
-                    this.context.propertyPath(call.arguments[1]!)?.join(".") !==
-                        "camera.radius"
-                ) {
-                    this.context.contractError(
-                        call,
-                        "Expected the radius floor to clamp the radius itself.",
-                    );
-                }
-                return this.context.numericValue(call.arguments[0]!, file);
-            });
-        if (
-            radiusFloors.length === 0 ||
-            radiusFloors.some((value) => value !== radiusFloors[0])
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected one shared ArcRotate radius floor.",
-            );
-        }
-        const radiusFloor = radiusFloors[0]!;
-        // The pan scale is proportional to the radius; the factor flows
-        // into the emitted `pan_scale` line. The pan basis and the three
-        // target increments are shape-asserted because the emission
-        // inlines `rightX = -sinA` / `rightZ = cosA` into its own
-        // `-sine * ...` / `cosine * ...` terms — the signs would
-        // otherwise be trusted.
-        const panScaleInitializer = this.context.unwrapExpression(
-            this.context.variableInitializer(declaration, "panScale"),
-        );
-        if (
-            !ts.isBinaryExpression(panScaleInitializer) ||
-            panScaleInitializer.operatorToken.kind !==
-                ts.SyntaxKind.AsteriskToken ||
-            this.context.propertyPath(panScaleInitializer.left)?.join(".") !==
-                "camera.radius"
-        ) {
-            this.context.contractError(
-                panScaleInitializer,
-                "Expected the pan scale to be proportional to the radius.",
-            );
-        }
-        const panScaleFactor = this.context.numericValue(
-            panScaleInitializer.right,
-            file,
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "rightX"),
-            "-sinA",
-            "ArcRotate pan basis X",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "rightZ"),
-            "cosA",
-            "ArcRotate pan basis Z",
-        );
-        const requirePanIncrement = (
-            path: string,
-            expected: string,
-            label: string,
-        ): void => {
-            const increments = assignments.filter(
-                (expression) =>
-                    expression.operatorToken.kind ===
-                        ts.SyntaxKind.PlusEqualsToken &&
-                    this.context.propertyPath(expression.left)?.join(".") ===
-                        path,
-            );
-            if (increments.length !== 1) {
-                this.context.contractError(
-                    declaration,
-                    `Expected one ${label}.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                increments[0]!.right,
-                expected,
-                label,
-            );
-        };
-        requirePanIncrement(
-            "camera.target.x",
-            "rightX * camera.inertialPanningX * panScale",
-            "ArcRotate pan X increment",
-        );
-        requirePanIncrement(
-            "camera.target.y",
-            "camera.inertialPanningY * panScale",
-            "ArcRotate pan Y increment",
-        );
-        requirePanIncrement(
-            "camera.target.z",
-            "rightZ * camera.inertialPanningX * panScale",
-            "ArcRotate pan Z increment",
-        );
-        // The pointer and wheel handlers the platform layer routes into
-        // the record (onPointerMove/onWheel). Each accumulation is stated
-        // once in the pin, dividing the event delta by a sensibility
-        // local snapshotted from the live camera field on that same
-        // event — so the local initializers are asserted alongside the
-        // accumulation shapes, and the emitted bodies read the record
-        // fields directly.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "dx"),
-            "e.clientX - lastX",
-            "ArcRotate pointer delta X",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "dy"),
-            "e.clientY - lastY",
-            "ArcRotate pointer delta Y",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "angularSensibility"),
-            "camera.angularSensibility",
-            "ArcRotate live angular sensibility",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "panningSensibility"),
-            "camera.panningSensibility",
-            "ArcRotate live panning sensibility",
-        );
-        const requireArcAccumulation = (
-            path: string,
-            operator: ts.SyntaxKind,
-            expectedRight: string,
-            label: string,
-        ): void =>
-            this.requirePinnedWrite(
-                assignments,
-                declaration,
-                true,
-                path,
-                operator,
-                expectedRight,
-                label,
-            );
-        requireArcAccumulation(
-            "camera.inertialAlphaOffset",
-            ts.SyntaxKind.MinusEqualsToken,
-            "dx / angularSensibility",
-            "ArcRotate orbit alpha accumulation",
-        );
-        requireArcAccumulation(
-            "camera.inertialBetaOffset",
-            ts.SyntaxKind.MinusEqualsToken,
-            "dy / angularSensibility",
-            "ArcRotate orbit beta accumulation",
-        );
-        requireArcAccumulation(
-            "camera.inertialPanningX",
-            ts.SyntaxKind.PlusEqualsToken,
-            "-dx / panningSensibility",
-            "ArcRotate pan X accumulation",
-        );
-        requireArcAccumulation(
-            "camera.inertialPanningY",
-            ts.SyntaxKind.PlusEqualsToken,
-            "dy / panningSensibility",
-            "ArcRotate pan Y accumulation",
-        );
-        // The wheel-zoom accumulation: the pin subtracts
-        // (deltaY * radius) / (wheelPrecision * <scale>) from the radius
-        // offset, reading wheelPrecision live. The scale flows into the
-        // emitted apply_arc_rotate_wheel; the caller owns only the
-        // translation of its platform wheel units into the DOM deltaY the
-        // pin consumes.
-        const wheelWrites = assignments.filter(
-            (expression) =>
-                expression.operatorToken.kind ===
-                    ts.SyntaxKind.MinusEqualsToken &&
-                this.context.propertyPath(expression.left)?.join(".") ===
-                    "camera.inertialRadiusOffset",
-        );
-        if (wheelWrites.length !== 1) {
-            this.context.contractError(
-                declaration,
-                "Expected one ArcRotate wheel-zoom accumulation.",
-            );
-        }
-        const wheelRight = this.context.unwrapExpression(wheelWrites[0]!.right);
-        if (
-            !ts.isBinaryExpression(wheelRight) ||
-            wheelRight.operatorToken.kind !== ts.SyntaxKind.SlashToken
-        ) {
-            this.context.contractError(
-                wheelRight,
-                "Expected the wheel zoom to divide by the precision term.",
-            );
-        }
-        this.context.assertExpressionShape(
-            wheelRight.left,
-            "e.deltaY * camera.radius",
-            "ArcRotate wheel-zoom numerator",
-        );
-        const wheelDivisor = this.context.unwrapExpression(wheelRight.right);
-        if (
-            !ts.isBinaryExpression(wheelDivisor) ||
-            wheelDivisor.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
-            this.context.propertyPath(wheelDivisor.left)?.join(".") !==
-                "camera.wheelPrecision"
-        ) {
-            this.context.contractError(
-                wheelDivisor,
-                "Expected the wheel zoom to scale the live wheel precision.",
-            );
-        }
-        const wheelPrecisionScale = this.context.numericValue(
-            wheelDivisor.right,
-            file,
-        );
-        const { file: freeFile, declaration: attachFreeControl } =
-            this.context.functionDeclaration(freeModule, "attachFreeControl");
-        const freeAssignments = this.context.findNodes(
-            attachFreeControl,
-            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node),
-        );
-        const requireAssignment = (
-            path: string,
-            operator: ts.SyntaxKind,
-            expectedRight: string,
-            label: string,
-        ): void =>
-            this.requirePinnedWrite(
-                freeAssignments,
-                attachFreeControl,
-                false,
-                path,
-                operator,
-                expectedRight,
-                label,
-            );
-        requireAssignment(
-            "camera._pitch",
-            ts.SyntaxKind.EqualsToken,
-            "Math.max(-maxPitch, Math.min(maxPitch, camera._pitch))",
-            "FreeCamera pitch clamp",
-        );
-        requireAssignment(
-            "camera.position.x",
-            ts.SyntaxKind.PlusEqualsToken,
-            "sinY * cosP * cdZ + cosY * cdX",
-            "FreeCamera X movement",
-        );
-        requireAssignment(
-            "cdX",
-            ts.SyntaxKind.AsteriskEqualsToken,
-            "inertia",
-            "FreeCamera movement inertia",
-        );
-        // The look accumulation and its application signs. The pin
-        // accumulates crY/crX from the pointer deltas and applies
-        // _yaw += crY, _pitch -= crX; the record keeps both offsets in
-        // apply-additive form (apply_free_camera_inertia adds them), so
-        // the pitch sign folds into the emitted accumulator and both
-        // pinned statements anchor that fold.
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(attachFreeControl, "dx"),
-            "e.clientX - lastPX",
-            "FreeCamera pointer delta X",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(attachFreeControl, "dy"),
-            "e.clientY - lastPY",
-            "FreeCamera pointer delta Y",
-        );
-        requireAssignment(
-            "crY",
-            ts.SyntaxKind.PlusEqualsToken,
-            "dx / camera.angularSensitivity",
-            "FreeCamera yaw accumulation",
-        );
-        requireAssignment(
-            "crX",
-            ts.SyntaxKind.PlusEqualsToken,
-            "dy / camera.angularSensitivity",
-            "FreeCamera pitch accumulation",
-        );
-        requireAssignment(
-            "camera._yaw",
-            ts.SyntaxKind.PlusEqualsToken,
-            "crY",
-            "FreeCamera yaw application",
-        );
-        requireAssignment(
-            "camera._pitch",
-            ts.SyntaxKind.MinusEqualsToken,
-            "crX",
-            "FreeCamera pitch application",
-        );
-        // Each pressed key contributes exactly one moveSpeed step to a
-        // direction accumulator; one axis anchors the shape, the platform
-        // layer owns only the scancode translation.
-        requireAssignment(
-            "cdZ",
-            ts.SyntaxKind.PlusEqualsToken,
-            "moveSpeed",
-            "FreeCamera forward accumulation",
-        );
-        // The pinned pitch ceiling is `Math.PI / 2 - <margin>`; the
-        // quarter-turn divisor and the margin both flow into the emitted
-        // `max_pitch` line (whose `pi_double` mirrors the pinned
-        // Math.PI), so a retuned margin regenerates rather than
-        // passing behind the shape assert above.
-        const maxPitchInitializer = this.context.unwrapExpression(
-            this.context.variableInitializer(attachFreeControl, "maxPitch"),
-        );
-        if (
-            !ts.isBinaryExpression(maxPitchInitializer) ||
-            maxPitchInitializer.operatorToken.kind !== ts.SyntaxKind.MinusToken
-        ) {
-            this.context.contractError(
-                maxPitchInitializer,
-                "Expected the pitch ceiling to subtract a margin.",
-            );
-        }
-        const pitchQuarterTurn = this.context.unwrapExpression(
-            maxPitchInitializer.left,
-        );
-        if (
-            !ts.isBinaryExpression(pitchQuarterTurn) ||
-            pitchQuarterTurn.operatorToken.kind !== ts.SyntaxKind.SlashToken ||
-            this.context.propertyPath(pitchQuarterTurn.left)?.join(".") !==
-                "Math.PI"
-        ) {
-            this.context.contractError(
-                maxPitchInitializer,
-                "Expected the pitch ceiling to divide Math.PI.",
-            );
-        }
-        const pitchDivisor = this.context.numericValue(
-            pitchQuarterTurn.right,
-            freeFile,
-        );
-        const pitchMargin = this.context.numericValue(
-            maxPitchInitializer.right,
-            freeFile,
-        );
-        // The pinned stop thresholds both scale with the camera speed.
-        // The emitted `apply_free_camera_inertia` uses one `epsilon` for
-        // movement and rotation, so the two pinned scales must agree for
-        // that sharing to stay faithful; the shared factor then flows.
-        const freeStopScale = (name: string): number => {
-            const initializer = this.context.unwrapExpression(
-                this.context.variableInitializer(attachFreeControl, name),
-            );
-            if (
-                !ts.isBinaryExpression(initializer) ||
-                initializer.operatorToken.kind !==
-                    ts.SyntaxKind.AsteriskToken ||
-                this.context.propertyPath(initializer.left)?.join(".") !==
-                    "camera.speed"
-            ) {
-                this.context.contractError(
-                    initializer,
-                    `Expected ${name} to scale with the camera speed.`,
-                );
-            }
-            return this.context.numericValue(initializer.right, freeFile);
-        };
-        const moveStopScale = freeStopScale("moveEpsilon");
-        if (moveStopScale !== freeStopScale("rotEpsilon")) {
-            this.context.contractError(
-                attachFreeControl,
-                "Expected one shared free-camera stop-threshold scale.",
-            );
-        }
-        // The pinned per-frame move scale: update computes
-        // moveSpeed = camera.speed * Math.sqrt((dt * dt) / <divisor>)
-        // from dt = Math.max(deltaMs, <floor>). Both numbers flow into
-        // the emitted free_camera_move_speed, which evaluates the pin's
-        // own formula at full precision from whatever frame step the
-        // caller hands in — the native loop's fixed cadence stays a
-        // platform fact, never a hand-evaluated constant.
-        const frameStep = this.context.unwrapExpression(
-            this.context.variableInitializer(attachFreeControl, "dt"),
-        );
-        if (
-            !ts.isCallExpression(frameStep) ||
-            this.context.propertyPath(frameStep.expression)?.join(".") !==
-                "Math.max" ||
-            frameStep.arguments.length !== 2 ||
-            this.context.propertyPath(frameStep.arguments[0]!)?.join(".") !==
-                "deltaMs"
-        ) {
-            this.context.contractError(
-                frameStep,
-                "Expected the free-camera frame step to floor deltaMs.",
-            );
-        }
-        const frameStepFloor = this.context.numericValue(
-            frameStep.arguments[1]!,
-            freeFile,
-        );
-        const moveSpeed = this.context.unwrapExpression(
-            this.context.variableInitializer(attachFreeControl, "moveSpeed"),
-        );
-        if (
-            !ts.isBinaryExpression(moveSpeed) ||
-            moveSpeed.operatorToken.kind !== ts.SyntaxKind.AsteriskToken ||
-            this.context.propertyPath(moveSpeed.left)?.join(".") !==
-                "camera.speed"
-        ) {
-            this.context.contractError(
-                moveSpeed,
-                "Expected the move speed to scale with the camera speed.",
-            );
-        }
-        const moveSqrt = this.context.unwrapExpression(moveSpeed.right);
-        if (
-            !ts.isCallExpression(moveSqrt) ||
-            this.context.propertyPath(moveSqrt.expression)?.join(".") !==
-                "Math.sqrt" ||
-            moveSqrt.arguments.length !== 1
-        ) {
-            this.context.contractError(
-                moveSpeed,
-                "Expected the move scale to take a square root.",
-            );
-        }
-        const moveRatio = this.context.unwrapExpression(moveSqrt.arguments[0]!);
-        if (
-            !ts.isBinaryExpression(moveRatio) ||
-            moveRatio.operatorToken.kind !== ts.SyntaxKind.SlashToken
-        ) {
-            this.context.contractError(
-                moveRatio,
-                "Expected the move scale to divide the squared step.",
-            );
-        }
-        this.context.assertExpressionShape(
-            moveRatio.left,
-            "dt * dt",
-            "FreeCamera move-scale numerator",
-        );
-        const moveScaleDivisor = this.context.numericValue(
-            moveRatio.right,
-            freeFile,
-        );
-        const dvalue = (input: number): string =>
-            this.context.doubleLiteral(input);
+        const mutations = new CameraMutationLowerer(this.context);
+        const free = lowerFreeCameraControls(this.context);
         return {
             modulePath,
             symbolName,
             header: pinnedHeader(
-                ["<bblite/runtime.hpp>"],
+                ["<bblite/runtime.hpp>", "", "<functional>", "<string_view>"],
                 `
-// Event accumulation from the pinned attachControl/attachFreeControl
-// handlers. dx/dy are the pin's client-pixel pointer deltas and delta_y
-// is the DOM WheelEvent deltaY; the platform layer translates its native
-// events into those units and owns none of the math.
-void apply_arc_rotate_pointer_rotation(
+// ${this.context.provenance(modulePath, symbolName)}
+// The handlers of the pinned attachControl closure. The drag flags are the
+// platform layer's pointer state; the button is a DOM
+// \`PointerEvent.button\`, the deltas relative client motion and
+// \`delta_y\` a DOM \`WheelEvent.deltaY\`.
+void arc_rotate_pointer_down(
     CameraRecord& camera,
-    double dx,
-    double dy);
-void apply_arc_rotate_pointer_pan(
+    bool& is_dragging,
+    bool& is_panning,
+    double button,
+    bool touch);
+void arc_rotate_pointer_move(
     CameraRecord& camera,
-    double dx,
-    double dy);
+    bool& is_dragging,
+    bool& is_panning,
+    double touch_count,
+    double delta_x,
+    double delta_y);
+void arc_rotate_pointer_up(bool& is_dragging, bool& is_panning);
 void apply_arc_rotate_wheel(CameraRecord& camera, double delta_y);
-void apply_free_camera_pointer_rotation(
-    CameraRecord& camera,
-    double dx,
-    double dy);
-// The pinned per-frame move scale from attachFreeControl's update; the
-// caller hands in the frame step it runs at, in milliseconds.
-double free_camera_move_speed(const CameraRecord& camera, double delta_ms);
-
 void apply_arc_rotate_inertia(CameraRecord& camera);
-void apply_free_camera_inertia(CameraRecord& camera);
-`,
+${free.declarations}`,
             ),
             source: `// ${this.context.provenance(modulePath, symbolName, `${freeModule}#attachFreeControl`)}
 #include <bblite/upstream/camera_controls.hpp>
+#include <bblite/js_data.hpp>
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <numbers>
+#include <optional>
 #include <stdexcept>
+#include <string_view>
 
 namespace bbl {
 
 void clamp_camera_to_limits(CameraRecord& camera);
-${
-    this.trackVersions
-        ? new CameraMutationLowerer(this.context).setters()
-        : `
-void write_camera_scalar(CameraRecord& camera, double CameraRecord::*field, double value) {
-    camera.*field = value;
-}
-void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::*vector,
-    double Vec3d::*component, double value) {
-    (camera.*vector).*component = value;
-}
-void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::*vector, Vec3d value) {
-    camera.*vector = value;
-}`
-}
+${mutations.setters()}
 
 void clamp_camera_to_limits(CameraRecord& camera) {
-${
-    this.trackVersions
-        ? new CameraMutationLowerer(this.context).clamp()
-        : `    if (camera.lower_radius_limit && camera.radius < *camera.lower_radius_limit) {
-        camera.radius = *camera.lower_radius_limit;
-        camera.inertial_radius_offset = 0.0;
-    } else if (camera.upper_radius_limit && camera.radius > *camera.upper_radius_limit) {
-        camera.radius = *camera.upper_radius_limit;
-        camera.inertial_radius_offset = 0.0;
-    }
-    if (camera.lower_beta_limit && camera.beta < *camera.lower_beta_limit) {
-        camera.beta = *camera.lower_beta_limit;
-        camera.inertial_beta_offset = 0.0;
-    } else if (camera.upper_beta_limit && camera.beta > *camera.upper_beta_limit) {
-        camera.beta = *camera.upper_beta_limit;
-        camera.inertial_beta_offset = 0.0;
-    }
-    if (camera.lower_alpha_limit && camera.alpha < *camera.lower_alpha_limit) {
-        camera.alpha = *camera.lower_alpha_limit;
-        camera.inertial_alpha_offset = 0.0;
-    } else if (camera.upper_alpha_limit && camera.alpha > *camera.upper_alpha_limit) {
-        camera.alpha = *camera.upper_alpha_limit;
-        camera.inertial_alpha_offset = 0.0;
-    }`
-}
+${mutations.clamp()}
 }
 
+// setCameraLimits: the compiled presence mask stands in for the pin's
+// \`in\` tests, and the record's flag is the self-clamp hook the scalar
+// setters call.
 void set_camera_limits(
     Engine& engine,
     CameraHandle handle,
@@ -1520,14 +934,14 @@ void set_camera_limits(
     if (handle.value >= engine.cameras.size()) {
         throw std::runtime_error("Invalid camera handle.");
     }
-    CameraRecord& camera = engine.cameras[handle.value];
+    CameraRecord& camera = ${recordAt("engine.cameras", "handle")};
     if ((present_mask & (1u << 0u)) != 0u) camera.lower_alpha_limit = limits[0];
     if ((present_mask & (1u << 1u)) != 0u) camera.upper_alpha_limit = limits[1];
     if ((present_mask & (1u << 2u)) != 0u) camera.lower_beta_limit = limits[2];
     if ((present_mask & (1u << 3u)) != 0u) camera.upper_beta_limit = limits[3];
     if ((present_mask & (1u << 4u)) != 0u) camera.lower_radius_limit = limits[4];
     if ((present_mask & (1u << 5u)) != 0u) camera.upper_radius_limit = limits[5];
-${this.trackVersions ? "    camera.limits_installed = true;" : ""}
+    camera.limits_installed = true;
     clamp_camera_to_limits(camera);
 }
 
@@ -1536,179 +950,58 @@ ${this.trackVersions ? "    camera.limits_installed = true;" : ""}
 // listeners and push an inertia hook onto scene._beforeRender, and neither
 // makes their camera the scene's. A scene that attaches controls to a
 // second camera -- an anaglyph's left eye -- renders through the camera it
-// assigned, which is what the pin does.
-void attach_control(Engine& engine, CameraHandle camera) {
+// assigned, which is what the pin does. The scene is the one whose
+// \`_update\` hands the hook its delta.
+void attach_control(Engine& engine, CameraHandle camera, const Scene& scene) {
     if (camera.value >= engine.cameras.size()) {
         throw std::runtime_error("Invalid camera handle.");
     }
-    engine.cameras[camera.value].controls_enabled = true;
+    CameraRecord& record = ${recordAt("engine.cameras", "camera")};
+    record.controls_enabled = true;
+    record.controls_scene = scene.state;
 }
 
 // The free-camera entry point is a separate pinned symbol reaching a separate
-// input handler, and the same one line of runtime state.
-void attach_free_control(Engine& engine, CameraHandle camera) {
-    attach_control(engine, camera);
+// input handler, and the same runtime state.
+void attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene) {
+    attach_control(engine, camera, scene);
 }
 
 } // namespace bbl
 
 namespace bbl::upstream {
 
-// The pointer and wheel accumulations (attachControl's onPointerMove and
-// onWheel): each event delta is divided by the sensibility the pin
-// snapshots from the live camera field on that same event — so reading
-// the record field here is the same value — and folded into the inertial
-// accumulators the per-frame applyInertia integrates.
-void apply_arc_rotate_pointer_rotation(
+void arc_rotate_pointer_down(
     CameraRecord& camera,
-    double dx,
-    double dy) {
-    camera.inertial_alpha_offset -= dx / camera.angular_sensibility;
-    camera.inertial_beta_offset -= dy / camera.angular_sensibility;
+    bool& is_dragging,
+    bool& is_panning,
+    double button,
+    bool touch) {
+${mutations.pointerDown()}
 }
 
-void apply_arc_rotate_pointer_pan(
+void arc_rotate_pointer_move(
     CameraRecord& camera,
-    double dx,
-    double dy) {
-    camera.inertial_panning_x += -dx / camera.panning_sensibility;
-    camera.inertial_panning_y += dy / camera.panning_sensibility;
+    bool& is_dragging,
+    bool& is_panning,
+    double touch_count,
+    double delta_x,
+    double delta_y) {
+${mutations.pointerMove()}
+}
+
+void arc_rotate_pointer_up(bool& is_dragging, bool& is_panning) {
+${mutations.pointerUp()}
 }
 
 void apply_arc_rotate_wheel(CameraRecord& camera, double delta_y) {
-    camera.inertial_radius_offset -=
-        (delta_y * camera.radius) /
-        (camera.wheel_precision * ${dvalue(wheelPrecisionScale)});
+${mutations.wheel()}
 }
 
 void apply_arc_rotate_inertia(CameraRecord& camera) {
-${
-    this.trackVersions
-        ? new CameraMutationLowerer(this.context).inertia()
-        : `    constexpr double rotation_epsilon = ${dvalue(rotationEpsilon)};
-    constexpr double radius_epsilon = ${dvalue(radiusEpsilon)};
-    constexpr double panning_epsilon = ${dvalue(panningEpsilon)};
-    if (camera.inertial_alpha_offset != 0.0 || camera.inertial_beta_offset != 0.0) {
-        camera.alpha += camera.inertial_alpha_offset;
-        camera.beta += camera.inertial_beta_offset;
-        constexpr double epsilon = ${dvalue(betaClampEpsilon)};
-        camera.beta = std::max(epsilon, std::min(pi_double - epsilon, camera.beta));
-        bbl::clamp_camera_to_limits(camera);
-        camera.inertial_alpha_offset *= camera.inertia;
-        camera.inertial_beta_offset *= camera.inertia;
-        if (std::abs(camera.inertial_alpha_offset) < rotation_epsilon) camera.inertial_alpha_offset = 0.0;
-        if (std::abs(camera.inertial_beta_offset) < rotation_epsilon) camera.inertial_beta_offset = 0.0;
-    }
-
-    if (camera.inertial_radius_offset != 0.0) {
-        camera.radius -= camera.inertial_radius_offset;
-        camera.radius = std::max(${dvalue(radiusFloor)}, camera.radius);
-        bbl::clamp_camera_to_limits(camera);
-        camera.inertial_radius_offset *= camera.inertia;
-        if (std::abs(camera.inertial_radius_offset) < radius_epsilon) camera.inertial_radius_offset = 0.0;
-    }
-    if (camera.inertial_panning_x != 0.0 || camera.inertial_panning_y != 0.0) {
-        const double cosine = std::cos(camera.alpha);
-        const double sine = std::sin(camera.alpha);
-        const double pan_scale = camera.radius * ${dvalue(panScaleFactor)};
-        camera.target.x += -sine * camera.inertial_panning_x * pan_scale;
-        camera.target.y += camera.inertial_panning_y * pan_scale;
-        camera.target.z += cosine * camera.inertial_panning_x * pan_scale;
-        camera.inertial_panning_x *= camera.panning_inertia;
-        camera.inertial_panning_y *= camera.panning_inertia;
-        if (std::abs(camera.inertial_panning_x) < panning_epsilon) camera.inertial_panning_x = 0.0;
-        if (std::abs(camera.inertial_panning_y) < panning_epsilon) camera.inertial_panning_y = 0.0;
-    }`
+${mutations.inertia()}
 }
-}
-
-// src/camera/free-camera-controls.ts accumulates crY += dx / sensitivity
-// and crX += dy / sensitivity, then applies _yaw += crY and
-// _pitch -= crX. The record keeps both offsets in apply-additive form
-// (apply_free_camera_inertia adds them), so the pinned pitch sign folds
-// into this accumulation.
-void apply_free_camera_pointer_rotation(
-    CameraRecord& camera,
-    double dx,
-    double dy) {
-    camera.inertial_yaw_offset += dx / camera.angular_sensibility;
-    camera.inertial_pitch_offset -= dy / camera.angular_sensibility;
-}
-
-// The pinned per-frame move scale each pressed key contributes to the
-// direction accumulator: update floors the frame step and takes
-// camera.speed * sqrt(dt^2 / the pinned divisor), evaluated here at
-// full double precision from whatever step the caller runs at.
-double free_camera_move_speed(
-    const CameraRecord& camera,
-    double delta_ms) {
-    const double dt = std::max(delta_ms, ${dvalue(frameStepFloor)});
-    return camera.speed *
-        std::sqrt((dt * dt) / ${dvalue(moveScaleDivisor)});
-}
-
-void apply_free_camera_inertia(CameraRecord& camera) {
-    const bool has_rotation =
-        camera.inertial_yaw_offset != 0.0 ||
-        camera.inertial_pitch_offset != 0.0;
-    const bool has_movement =
-        camera.inertial_direction.x != 0.0 ||
-        camera.inertial_direction.y != 0.0 ||
-        camera.inertial_direction.z != 0.0;
-    if (has_rotation) {
-        write_camera_scalar(camera, &CameraRecord::free_yaw,
-            camera.free_yaw + camera.inertial_yaw_offset);
-        write_camera_scalar(camera, &CameraRecord::free_pitch,
-            camera.free_pitch + camera.inertial_pitch_offset);
-        constexpr double max_pitch = pi_double / ${dvalue(pitchDivisor)} - ${dvalue(pitchMargin)};
-        write_camera_scalar(camera, &CameraRecord::free_pitch,
-            std::max(-max_pitch, std::min(max_pitch, camera.free_pitch)));
-    }
-    const double cosine_yaw = std::cos(camera.free_yaw);
-    const double sine_yaw = std::sin(camera.free_yaw);
-    const double cosine_pitch = std::cos(camera.free_pitch);
-    const double sine_pitch = std::sin(camera.free_pitch);
-    if (has_movement) {
-        write_camera_vector_component(camera, &CameraRecord::position, &Vec3d::x, camera.position.x + (
-            sine_yaw * cosine_pitch * camera.inertial_direction.z +
-            cosine_yaw * camera.inertial_direction.x));
-        write_camera_vector_component(camera, &CameraRecord::position, &Vec3d::y, camera.position.y + (
-            sine_pitch * camera.inertial_direction.z +
-            camera.inertial_direction.y));
-        write_camera_vector_component(camera, &CameraRecord::position, &Vec3d::z, camera.position.z + (
-            cosine_yaw * cosine_pitch * camera.inertial_direction.z -
-            sine_yaw * camera.inertial_direction.x));
-    }
-    if (has_movement || has_rotation) {
-        set_camera_vector(camera, &CameraRecord::target, Vec3d{
-            camera.position.x + sine_yaw * cosine_pitch,
-            camera.position.y + sine_pitch,
-            camera.position.z + cosine_yaw * cosine_pitch,
-        });
-    }
-    camera.inertial_direction.x *= camera.inertia;
-    camera.inertial_direction.y *= camera.inertia;
-    camera.inertial_direction.z *= camera.inertia;
-    camera.inertial_yaw_offset *= camera.inertia;
-    camera.inertial_pitch_offset *= camera.inertia;
-    const double epsilon = camera.speed * ${dvalue(moveStopScale)};
-    if (std::abs(camera.inertial_direction.x) < epsilon) {
-        camera.inertial_direction.x = 0.0;
-    }
-    if (std::abs(camera.inertial_direction.y) < epsilon) {
-        camera.inertial_direction.y = 0.0;
-    }
-    if (std::abs(camera.inertial_direction.z) < epsilon) {
-        camera.inertial_direction.z = 0.0;
-    }
-    if (std::abs(camera.inertial_yaw_offset) < epsilon) {
-        camera.inertial_yaw_offset = 0.0;
-    }
-    if (std::abs(camera.inertial_pitch_offset) < epsilon) {
-        camera.inertial_pitch_offset = 0.0;
-    }
-}
-
+${free.definitions}
 } // namespace bbl::upstream
 `,
         };

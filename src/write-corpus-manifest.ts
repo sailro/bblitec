@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { suiteBrowserModule } from "./capture-suite-reference.js";
@@ -37,6 +37,10 @@ import { isMainModule, parseFlags } from "./tooling/flags.js";
  *   source moved is named so that operation is not forgotten.
  * - `capturedAt` records when the goldens were captured, not when this file
  *   was written.
+ *
+ * `--adopt-reference <id>` records such a deliberate recapture: it moves only
+ * that row's `referenceSha256` and `capturedAt`, and only while every other
+ * input the row pins still holds (`adoptRecapturedRow`).
  */
 
 /** One scene's row, as the manifest stores it. */
@@ -59,7 +63,7 @@ interface ExactCorpusDocument {
 }
 
 /** The pinned pair a set of rows was written under. */
-export interface UpstreamPinPair {
+interface UpstreamPinPair {
     version: string;
     sourceVersion: string;
 }
@@ -76,7 +80,7 @@ function sha256(bytes: Buffer | string): string {
 }
 
 /** What a rewrite moved, for the caller to report. */
-export interface ManifestRewrite {
+interface ManifestRewrite {
     /** The serialized document, whether or not it was written. */
     content: string;
     /** True when it differs from what is on disk. */
@@ -227,6 +231,117 @@ function rewriteExactCorpusManifest(
     };
 }
 
+/** What the repository holds now for one row's inputs. */
+interface ReferenceInputs {
+    corpusSha256: string;
+    moduleSha256: string;
+    referenceSearch: string | undefined;
+    referenceHostPage: string | undefined;
+    referenceHostPageSha256: string | undefined;
+    goldenSha256: string;
+    /** When the golden's bytes were written, as an ISO timestamp. */
+    goldenWrittenAt: string;
+}
+
+/**
+ * A provenance row after adopting a recaptured golden. A recapture replaces
+ * the reference image of an unchanged capture -- the same corpus source, the
+ * same composed module (so the same pin and pose), the same query and host
+ * page -- so any other input that moved is a change to explain first, and a
+ * golden whose bytes did not move has nothing to adopt.
+ */
+export function adoptRecapturedRow(
+    row: ExactCorpusReference,
+    inputs: ReferenceInputs,
+): ExactCorpusReference {
+    const moved = [
+        row.sourceSha256 !== inputs.corpusSha256 && "corpus source",
+        row.moduleSha256 !== inputs.moduleSha256 && "capture module",
+        row.referenceSearch !== inputs.referenceSearch && "capture query",
+        (row.referenceHostPage !== inputs.referenceHostPage ||
+            row.referenceHostPageSha256 !== inputs.referenceHostPageSha256) &&
+            "host page",
+    ].filter((entry): entry is string => entry !== false);
+    if (moved.length > 0) {
+        throw new Error(
+            `${row.id}: ${moved.join(", ")} moved since the golden was captured; ` +
+                "a recapture adopts new reference bytes of an unchanged capture only.",
+        );
+    }
+    if (row.referenceSha256 === inputs.goldenSha256) {
+        throw new Error(
+            `${row.id}: the golden matches its recorded digest; there is no recapture to adopt.`,
+        );
+    }
+    return {
+        ...row,
+        referenceSha256: inputs.goldenSha256,
+        capturedAt: inputs.goldenWrittenAt,
+    };
+}
+
+/** `adoptRecapturedRow` for one registered scene, over the repository. */
+function adoptRecapturedReference(
+    id: string,
+    repositoryRoot = findRepositoryRoot(),
+): { content: string; changed: boolean } {
+    const path = resolve(repositoryRoot, MANIFEST_PATH);
+    const original = readFileSync(path, "utf8");
+    const document = JSON.parse(original) as ExactCorpusDocument;
+    if (serialize(document) !== original) {
+        throw new Error(
+            `${MANIFEST_PATH} does not round-trip through this writer's ` +
+                "serialization; refusing rather than reformatting every row.",
+        );
+    }
+    const corpus = readBabylonLiteCorpus(repositoryRoot);
+    if (document.sourceVersion !== corpus.sourceVersion) {
+        throw new Error(
+            `${MANIFEST_PATH} describes ${document.sourceVersion}, not the pinned ` +
+                `corpus ${corpus.sourceVersion}; bring it to the pin first.`,
+        );
+    }
+    const index = document.scenes.findIndex((row) => row.id === id);
+    const row = document.scenes[index];
+    if (row === undefined) {
+        throw new Error(`${id} has no row in ${MANIFEST_PATH}.`);
+    }
+    const parity = getScene(id).parity;
+    if (!parity) throw new Error(`${id} has no registry parity entry.`);
+    const corpusSha256 = corpus.scenes.find((entry) => entry.id === id)?.sha256;
+    if (corpusSha256 === undefined) {
+        throw new Error(`${id} is not in the corpus manifest.`);
+    }
+    const golden = resolve(repositoryRoot, row.reference);
+    document.scenes[index] = adoptRecapturedRow(row, {
+        corpusSha256,
+        moduleSha256: sha256(
+            suiteBrowserModule(
+                getScene(id).source,
+                undefined,
+                parity.referenceTimeSeconds,
+                parity.referenceAnimationGroups,
+                parity.referenceFrame,
+                parity.independentEngines,
+            ),
+        ),
+        referenceSearch: parity.referenceSearch,
+        referenceHostPage: parity.referenceHostPage,
+        referenceHostPageSha256:
+            parity.referenceHostPage === undefined
+                ? undefined
+                : sha256(
+                      readFileSync(
+                          resolve(repositoryRoot, parity.referenceHostPage),
+                      ),
+                  ),
+        goldenSha256: sha256(readFileSync(golden)),
+        goldenWrittenAt: statSync(golden).mtime.toISOString(),
+    });
+    const content = serialize(document);
+    return { content, changed: content !== original };
+}
+
 /**
  * Whether the pin alone explains a moved module digest.
  *
@@ -299,17 +414,40 @@ async function main(): Promise<void> {
                 "--previous-version",
                 "--previous-commit",
                 "--previous-tree",
+                "--adopt-reference",
             ],
             boolean: ["--write"],
         },
         "corpus:manifest",
     );
+    const adopt = parsed.values.get("--adopt-reference");
     const version = parsed.values.get("--previous-version");
     const sourceVersion = parsed.values.get("--previous-commit");
+    if (adopt !== undefined) {
+        if (version !== undefined || sourceVersion !== undefined) {
+            throw new Error(
+                "corpus:manifest: --adopt-reference records one recapture and does not compose with a pin bump.",
+            );
+        }
+        const root = findRepositoryRoot();
+        const result = adoptRecapturedReference(adopt, root);
+        if (!parsed.flags.has("--write")) {
+            console.log(
+                `${adopt}: the recaptured golden can be adopted. Dry run: pass --write to record it.`,
+            );
+            return;
+        }
+        writeFileSync(resolve(root, MANIFEST_PATH), result.content);
+        console.log(
+            `Recorded ${adopt}'s recaptured golden in ${MANIFEST_PATH}`,
+        );
+        return;
+    }
     if (!version || !sourceVersion) {
         console.error(
             "usage: corpus:manifest --previous-version <v> --previous-commit <sha> " +
-                "[--previous-tree <git ref, default HEAD>] [--write]\n\n" +
+                "[--previous-tree <git ref, default HEAD>] [--write]\n" +
+                "       corpus:manifest --adopt-reference <id> [--write]\n\n" +
                 "The previous pin and tree are what make a moved module digest\n" +
                 "checkable: composing the previous source and reverting the pin must\n" +
                 "reproduce the committed value, or the move is a finding rather than churn.",

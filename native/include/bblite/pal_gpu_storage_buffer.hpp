@@ -15,8 +15,8 @@ struct StorageBufferOptions {
 };
 
 struct StorageBufferSource {
-    double byte_length;
-    bool numeric;
+    double byte_length{};
+    bool numeric{};
     std::span<const std::uint8_t> bytes;
 };
 

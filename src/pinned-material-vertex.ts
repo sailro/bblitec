@@ -1,9 +1,6 @@
-import ts from "typescript";
+import type ts from "typescript";
 import { LoweringContext } from "./lowering/context.js";
-import {
-    PinnedShaderText,
-    type ShaderTextBinding,
-} from "./lowering/pinned-shader-text.js";
+import { PinnedShaderBuilders } from "./lowering/pinned-shader-builders.js";
 import {
     expressionUsesPath,
     mapShaderExpression,
@@ -37,7 +34,7 @@ const assign = (name: string, value: ShaderExpression): ShaderStatement => ({
     value,
 });
 /** Whether a shader expression is exactly the dotted path `parts` spells. */
-export const isPath = (value: ShaderExpression, ...parts: string[]): boolean =>
+const isPath = (value: ShaderExpression, ...parts: string[]): boolean =>
     value.kind === "path" &&
     value.parts.length === parts.length &&
     value.parts.every((part, index) => part === parts[index]);
@@ -77,64 +74,124 @@ function substitute(
     );
 }
 
-/** Raw pinned vertex computation, shared by GPU transport and CPU projections. */
-export function pinnedPbrVertexTemplate(
+/**
+ * Raw pinned vertex computation, shared by GPU transport and CPU projections:
+ * the `_vertexTemplate` `createPbrTemplate` builds for a tangent-space
+ * normal, with or without the morph fragment's inputs.
+ */
+function pinnedPbrVertexTemplate(
     context: LoweringContext,
-    morph = false,
+    morph: boolean,
 ): {
     declaration: ts.FunctionDeclaration;
     module: ShaderModule;
-    position: string;
-    normal: string;
+    /** The vertex attributes the template declares, by name. */
+    attributes: string[];
 } {
-    const text = new PinnedShaderText(context);
     const { declaration } = context.functionDeclaration(
         templateModule,
         "createPbrTemplate",
     );
-    const parameters = new Map<string, ShaderTextBinding>([
-        ["_hasMorph", morph],
-        ["hasNormal", true],
-        ["_ext", false],
+    const builders = new PinnedShaderBuilders(context);
+    const template = builders.call(templateModule, "createPbrTemplate", [
+        { _hasMorph: morph, _normalMode: "tangent" },
     ]);
-    for (const name of ["posVar", "normVar", "tangentBlock"]) {
-        parameters.set(
-            name,
-            text.text(
-                templateModule,
-                context.variableInitializer(declaration, name),
-                parameters,
-            ),
-        );
-    }
-    const position = parameters.get("posVar"),
-        normal = parameters.get("normVar");
-    if (typeof position !== "string" || typeof normal !== "string") {
-        context.contractError(
-            declaration,
-            "Pinned vertex template inputs must resolve to shader text.",
-        );
-    }
+    const declared: unknown =
+        typeof template === "object" && template !== null
+            ? Reflect.get(template, "_baseVertexAttributes")
+            : undefined;
+    const attributes = Array.isArray(declared)
+        ? declared.map((attribute: unknown) =>
+              builders.text(
+                  attribute,
+                  ["_name"],
+                  declaration,
+                  "createPbrTemplate",
+              ),
+          )
+        : context.contractError(
+              declaration,
+              "Pinned createPbrTemplate no longer lists its vertex attributes.",
+          );
     return {
         declaration,
+        attributes,
         module: parseWgslModule(
-            text.text(
-                templateModule,
-                context.variableInitializer(declaration, "_vertexTemplate"),
-                parameters,
+            builders.text(
+                template,
+                ["_vertexTemplate"],
+                declaration,
+                "createPbrTemplate",
             ),
             "vertex",
         ),
-        position,
-        normal,
     };
+}
+
+/**
+ * The attribute a world output transports homogeneously, as the template
+ * writes it: `(mesh.world * vec4<f32>(input, w)).xyz`, the input normalized
+ * first for a direction.
+ */
+function homogeneousInput(
+    value: ShaderExpression | undefined,
+    w: number,
+    direction: boolean,
+): string | undefined {
+    if (
+        value?.kind !== "member" ||
+        value.member !== "xyz" ||
+        value.expression.kind !== "binary" ||
+        value.expression.operator !== "*" ||
+        !isPath(value.expression.left, "mesh", "world")
+    )
+        return undefined;
+    const vector = value.expression.right;
+    if (
+        vector.kind !== "construct" ||
+        vector.type !== "vec4<f32>" ||
+        vector.arguments.length !== 2 ||
+        !isNumber(vector.arguments[1], w)
+    )
+        return undefined;
+    const input = vector.arguments[0]!;
+    if (!direction) {
+        return input.kind === "path" && input.parts.length === 1
+            ? input.parts[0]
+            : undefined;
+    }
+    if (
+        input.kind !== "call" ||
+        input.name !== "normalize" ||
+        input.arguments.length !== 1
+    )
+        return undefined;
+    // The direction the pin normalizes may be any expression over the one
+    // attribute it reads; that attribute is the input.
+    const read = new Set<string>();
+    let single = true;
+    mapShaderExpression(input.arguments[0]!, (node) => {
+        if (node.kind === "path") {
+            read.add(node.parts[0]!);
+            single &&= node.parts.length === 1;
+        }
+        return node;
+    });
+    return single && read.size === 1 ? [...read][0] : undefined;
 }
 
 /** Resolve the pin's local aliases and output identity before choosing a transport. */
 export function pinnedPbrVertexOutputs(
     context: LoweringContext,
     morph = false,
-): ReturnType<typeof pinnedPbrVertexTemplate> & {
+): {
+    declaration: ts.FunctionDeclaration;
+    module: ShaderModule;
+    attributes: string[];
+    /** The position the template transforms: the attribute or the morphed one. */
+    position: string;
+    /** The normal the template transforms: the attribute or the morphed one. */
+    normal: string;
     outputs: ReadonlyMap<string, ShaderExpression>;
 } {
     const template = pinnedPbrVertexTemplate(context, morph);
@@ -145,18 +202,6 @@ export function pinnedPbrVertexOutputs(
                 `Pinned shared vertex ${what} changed.`,
             );
     };
-    checkReferences(
-        template.module.entryPoint.statements,
-        new Set([
-            "mesh",
-            "scene",
-            template.position,
-            template.normal,
-            "tangent",
-            "uv",
-        ]),
-        requireShape,
-    );
     const locals = new Map<string, ShaderExpression>();
     const outputs = new Map<string, ShaderExpression>();
     let outputName: string | undefined;
@@ -210,13 +255,29 @@ export function pinnedPbrVertexOutputs(
             outputFields.every((name) => outputs.has(name)),
         "template outputs",
     );
-    return { ...template, outputs };
+    const position = homogeneousInput(outputs.get("worldPos"), 1, false);
+    const normal = homogeneousInput(outputs.get("worldNormal"), 0, true);
+    requireShape(position, "homogeneous position transport");
+    requireShape(normal, "homogeneous normal transport");
+    checkReferences(
+        template.module.entryPoint.statements,
+        // The morph fragment declares the morphed inputs; without it the
+        // template reads only the attributes it declares.
+        new Set([
+            "mesh",
+            "scene",
+            ...template.attributes,
+            ...(morph ? [position, normal] : []),
+        ]),
+        requireShape,
+    );
+    return { ...template, position, normal, outputs };
 }
 
 /**
  * Project the pinned material computations onto the specialized PAL stage.
- * Only transport is native: pre-baked worlds, uniform bone columns, two-target
- * attributes, and the shared varying locations. The builders own every sum,
+ * Only transport is native: the mesh world as its own uniform, uniform bone
+ * columns, two-target attributes, and the shared varying locations. The builders own every sum,
  * normalization, cross product, matrix application and storage-morph index.
  */
 export function pinnedMaterialVertex(
@@ -227,7 +288,7 @@ export function pinnedMaterialVertex(
         morphStorage: boolean;
     },
 ): { body: string; helpers: string; morphStructs: string; provenance: string } {
-    const text = new PinnedShaderText(context);
+    const builders = new PinnedShaderBuilders(context);
     const pinnedTemplate = pinnedPbrVertexOutputs(context, options.deformation);
     const { declaration, outputs } = pinnedTemplate;
     const requireShape: RequireShape = (condition, what) => {
@@ -237,32 +298,25 @@ export function pinnedMaterialVertex(
                 `Pinned shared vertex ${what} changed.`,
             );
     };
+    /** A slot text of the record a pinned fragment factory returns. */
     const fragmentText = (
         module: string,
         factory: string,
+        args: readonly unknown[],
         ...properties: string[]
-    ): string => {
-        const { declaration: factoryDeclaration } = context.functionDeclaration(
-            module,
+    ): string =>
+        builders.text(
+            builders.call(module, factory, args),
+            properties,
+            context.functionDeclaration(module, factory).declaration,
             factory,
         );
-        let value: ts.Expression = context.returnObject(factoryDeclaration);
-        for (const property of properties) {
-            const object = context.unwrapExpression(value);
-            if (!ts.isObjectLiteralExpression(object))
-                context.contractError(
-                    value,
-                    "Expected a pinned vertex fragment record.",
-                );
-            value = context.propertyInitializer(object, property);
-        }
-        return text.text(module, value, new Map());
-    };
     const morph = options.deformation
         ? parseWgslStatements(
               fragmentText(
                   morphModule,
                   "createMorphFragment",
+                  [],
                   "_vertexSlots",
                   "VR",
               ),
@@ -319,39 +373,36 @@ export function pinnedMaterialVertex(
             isNumber(position.expression.right.arguments[1], 1),
         "homogeneous position transport",
     );
-    const direction = output("worldBitangent");
-    if (
-        direction.kind !== "member" ||
-        direction.member !== "xyz" ||
-        direction.expression.kind !== "binary" ||
-        direction.expression.operator !== "*" ||
-        !isPath(direction.expression.left, "mesh", "world") ||
-        direction.expression.right.kind !== "construct" ||
-        direction.expression.right.type !== "vec4<f32>" ||
-        direction.expression.right.arguments.length !== 2 ||
-        !isNumber(direction.expression.right.arguments[1], 0)
-    ) {
-        context.contractError(
-            declaration,
-            "Pinned shared vertex homogeneous direction transport changed.",
+    // The template's world outputs, each applied with `finalWorld` where
+    // the template writes `mesh.world` (its own `var finalWorld=mesh.world`,
+    // which the VW slot rewrites).
+    const clip = output("clipPos");
+    requireShape(
+        clip.kind === "binary" &&
+            clip.operator === "*" &&
+            isPath(clip.left, "scene", "viewProjection") &&
+            clip.right.kind === "binary" &&
+            clip.right.operator === "*" &&
+            isPath(clip.right.left, "mesh", "world"),
+        "world-space clip position",
+    );
+    for (const name of ["worldBitangent", "worldNormal", "worldTangent"]) {
+        const value = output(name);
+        requireShape(
+            value.kind === "member" &&
+                value.member === "xyz" &&
+                value.expression.kind === "binary" &&
+                value.expression.operator === "*" &&
+                isPath(value.expression.left, "mesh", "world") &&
+                value.expression.right.kind === "construct" &&
+                value.expression.right.type === "vec4<f32>" &&
+                value.expression.right.arguments.length === 2 &&
+                isNumber(value.expression.right.arguments[1], 0),
+            "homogeneous direction transport",
         );
     }
-    const directionProduct = direction.expression;
-    const directionVector = direction.expression.right;
-    const transformDirection = (
-        value: string,
-        world: string,
-    ): ShaderExpression => ({
-        ...direction,
-        expression: {
-            ...directionProduct,
-            left: path(world),
-            right: {
-                ...directionVector,
-                arguments: [path(value), directionVector.arguments[1]!],
-            },
-        },
-    });
+    // The local inputs the template reads, morphed in place below; the
+    // world outputs overwrite them once `finalWorld` is chosen.
     const statements: ShaderStatement[] = [
         {
             kind: "var",
@@ -364,21 +415,52 @@ export function pinnedMaterialVertex(
             name: "worldTangent",
             value: path("input", "tangent", "xyz"),
         },
-        // The shared transport retains its pre-morph bitangent independently.
-        {
-            kind: "var",
-            name: "worldBitangent",
-            value: bind(directionVector.arguments[0]!),
-        },
+        { kind: "var", name: "finalWorld", value: path("mesh", "world") },
     ];
     let helpers = "";
     let morphStructs = "";
     const origins = [context.provenance(templateModule, "createPbrTemplate")];
+    if (options.instancing) {
+        // This stage transports the instance world columns only; an
+        // instance colour rides the composed families, not this stage.
+        // The pin's own `finalWorld=mesh.world*instanceWorld` verbatim: a
+        // draw without a pool reads the identity instance stream, so this
+        // one product carries every draw's world in an instancing build.
+        const instance = parseWgslStatements(
+            fragmentText(
+                instanceModule,
+                "createThinInstanceFragment",
+                [false],
+                "_vertexSlots",
+                "VW",
+            ),
+        );
+        const last = instance.at(-1);
+        requireShape(
+            last?.kind === "assign" && isPath(last.target, "finalWorld"),
+            "instance world assignment",
+        );
+        const bindings = new Map<string, ShaderExpression>();
+        for (let column = 0; column < 4; ++column)
+            bindings.set(
+                `world${column}`,
+                path("input", `instanceColumn${column}`),
+            );
+        statements.push(
+            ...mapShaderStatements(instance, (expression) =>
+                substitutePath(expression, bindings),
+            ),
+        );
+        origins.push(
+            context.provenance(instanceModule, "createThinInstanceFragment"),
+        );
+    }
     if (options.deformation) {
         requireShape(morph && projectedMorph, "morph projection");
         const structs = fragmentText(
             morphModule,
             "createMorphFragment",
+            [],
             "_vertexHelperFunctions",
         );
         const declarations = parseWgslStructDeclarations(structs);
@@ -420,28 +502,31 @@ export function pinnedMaterialVertex(
         } else {
             deformation.push(...attributeMorph(projectedMorph));
         }
+        // The pin's skinning body, its closing
+        // `finalWorld=mesh.world*influence` included: the palette and the
+        // world multiply before any vertex does. Its world is the one the
+        // instance arm chose, which is `mesh.world` itself for a draw
+        // without a pool, so a draw taking one arm takes the pin's product.
         const skin = parseWgslStatements(
-            text.evaluate(
+            builders.evaluate(
                 skeletonModule,
                 "makeSkinningCode",
                 new Map([["has8Bones", false]]),
             ),
         );
-        const last = skin.pop();
+        const last = skin.at(-1);
         requireShape(
             last?.kind === "assign" &&
                 isPath(last.target, "finalWorld") &&
                 last.value.kind === "binary" &&
                 last.value.operator === "*" &&
                 isPath(last.value.left, "mesh", "world"),
-            "pre-baked palette world",
+            "palette world",
         );
-        // World is already in each palette entry. The pin's influence sum stays
-        // ordered; only this now-redundant outer world application is removed.
-        skin.push({ kind: "let", name: "skin", value: last.value.right });
         const skinInputs = new Map([
             ["joints", path("input", "joints")],
             ["weights", path("input", "weights")],
+            ["mesh.world", path("finalWorld")],
         ]);
         deformation.push(
             ...mapShaderStatements(skin, (expression) => {
@@ -471,26 +556,6 @@ export function pinnedMaterialVertex(
                 return substitutePath(expression, skinInputs);
             }),
         );
-        deformation.push(
-            assign("worldPosition", bind(output("worldPos"), "skin")),
-            {
-                kind: "if",
-                condition: {
-                    kind: "binary",
-                    operator: "<",
-                    left: path("deformation", "options", "y"),
-                    right: { kind: "number", value: "0.5" },
-                },
-                statements: [
-                    assign("worldNormal", bind(output("worldNormal"), "skin")),
-                ],
-            },
-            assign("worldTangent", bind(output("worldTangent"), "skin")),
-            assign(
-                "worldBitangent",
-                transformDirection("worldBitangent", "skin"),
-            ),
-        );
         statements.push({
             kind: "if",
             condition: {
@@ -501,19 +566,13 @@ export function pinnedMaterialVertex(
             },
             statements: deformation,
         });
-        const helperSource = context.moduleScopeConstant(
-            context.sourceFile(skeletonModule),
-            "SKELETON_HELPERS",
-        );
-        if (!helperSource)
+        const helperSource = builders.value(skeletonModule, "SKELETON_HELPERS");
+        if (typeof helperSource !== "string")
             context.contractError(
                 declaration,
                 "Pinned skeleton helper is missing.",
             );
-        helpers = paletteReader(
-            text.text(skeletonModule, helperSource, new Map()),
-            requireShape,
-        );
+        helpers = paletteReader(helperSource, requireShape);
         origins.push(
             context.provenance(
                 skeletonModule,
@@ -522,67 +581,28 @@ export function pinnedMaterialVertex(
             context.provenance(morphModule, "createMorphFragment"),
         );
     }
-    if (options.instancing) {
-        const instance = parseWgslStatements(
-            fragmentText(
-                instanceModule,
-                "createThinInstanceFragment",
-                "_vertexSlots",
-                "VW",
-            ),
-        );
-        const last = instance.pop();
-        requireShape(
-            last?.kind === "assign" && isPath(last.target, "finalWorld"),
-            "instance world assignment",
-        );
-        instance.push({
+    // The clip position and the bitangent read the local position, normal
+    // and tangent, so they are written before those are. The clip position
+    // is the template's own `scene.viewProjection*worldPos4`: a palette
+    // whose weights do not sum to one exactly leaves `worldPos4.w` off one.
+    statements.push(
+        {
             kind: "let",
-            name: "instanceMatrix",
-            value: last.value,
-        });
-        const bindings = new Map<string, ShaderExpression>([
-            ["mesh.world", path("instanceUniforms", "parentWorld")],
-        ]);
-        for (let column = 0; column < 4; ++column)
-            bindings.set(
-                `world${column}`,
-                path("input", `instanceColumn${column}`),
-            );
-        statements.push(
-            ...mapShaderStatements(instance, (expression) =>
-                substitutePath(expression, bindings),
-            ),
-            assign("worldPosition", bind(output("worldPos"), "instanceMatrix")),
-            ...["worldNormal", "worldTangent", "worldBitangent"].map((name) =>
-                assign(name, transformDirection(name, "instanceMatrix")),
-            ),
-        );
-        origins.push(
-            context.provenance(instanceModule, "createThinInstanceFragment"),
-        );
-    }
-    const clip = mapShaderExpression(output("clipPos"), (expression) => {
-        if (
-            expression.kind === "binary" &&
-            isPath(expression.left, "mesh", "world")
-        ) {
-            requireShape(
-                expression.operator === "*" &&
-                    expression.right.kind === "construct" &&
-                    expression.right.type === "vec4<f32>" &&
-                    expression.right.arguments.length === 2 &&
-                    isPath(expression.right.arguments[0]!, positionName) &&
-                    isNumber(expression.right.arguments[1], 1),
-                "pre-transformed position",
-            );
-            return expression.right;
-        }
-        return expression;
-    });
+            name: "clipPosition",
+            value: bind(output("clipPos"), "finalWorld"),
+        },
+        {
+            kind: "let",
+            name: "worldBitangent",
+            value: bind(output("worldBitangent"), "finalWorld"),
+        },
+        assign("worldPosition", bind(output("worldPos"), "finalWorld")),
+        assign("worldNormal", bind(output("worldNormal"), "finalWorld")),
+        assign("worldTangent", bind(output("worldTangent"), "finalWorld")),
+    );
     statements.push(
         { kind: "var", name: "output", type: "VertexOutput" },
-        assign("output.position", bind(clip)),
+        assign("output.position", path("clipPosition")),
         assign("output.worldPosition", path("worldPosition")),
         assign("output.normal", path("worldNormal")),
         assign("output.tangent", {
@@ -591,7 +611,9 @@ export function pinnedMaterialVertex(
             arguments: [path("worldTangent"), path("input", "tangent", "w")],
         }),
         assign("output.uv", bind(output("uv"))),
-        ...["localPosition", "uv2", "color"].map((name) =>
+        // The local position is the raw attribute, before any morph.
+        assign("output.localPosition", path("input", "position")),
+        ...["uv2", "color"].map((name) =>
             assign(`output.${name}`, path("input", name)),
         ),
         assign("output.bitangent", path("worldBitangent")),
@@ -608,7 +630,8 @@ export function pinnedMaterialVertex(
                       ...(options.morphStorage ? ["morph", "morphDeltas"] : []),
                   ]
                 : []),
-            ...(options.instancing ? ["instanceUniforms"] : []),
+            // The mesh block carries the world alone.
+            "mesh.world",
         ]),
         requireShape,
     );
@@ -713,22 +736,29 @@ function projectMorph(
             loop?.kind === "for",
         "bounded morph statement inventory",
     );
-    const counter = loop.initializer.name;
+    const { initializer, condition, update } = loop;
+    requireShape(
+        initializer?.kind === "var" &&
+            condition?.kind === "binary" &&
+            update?.kind === "assign" &&
+            update.operator === undefined,
+        "bounded morph loop header",
+    );
+    const counter = initializer.name;
     requireShape(
         position.value &&
             isPath(position.value, "position") &&
             normal.value &&
             isPath(normal.value, "normal") &&
-            isNumber(loop.initializer.value, 0) &&
-            loop.condition.kind === "binary" &&
-            loop.condition.operator === "<" &&
-            isPath(loop.condition.left, counter) &&
-            isPath(loop.condition.right, "morph", "count") &&
-            isPath(loop.update.target, counter) &&
-            loop.update.value.kind === "binary" &&
-            loop.update.value.operator === "+" &&
-            isPath(loop.update.value.left, counter) &&
-            isNumber(loop.update.value.right, 1),
+            isNumber(initializer.value, 0) &&
+            condition.operator === "<" &&
+            isPath(condition.left, counter) &&
+            isPath(condition.right, "morph", "count") &&
+            isPath(update.target, counter) &&
+            update.value.kind === "binary" &&
+            update.value.operator === "+" &&
+            isPath(update.value.left, counter) &&
+            isNumber(update.value.right, 1),
         "bounded morph loop",
     );
     const locals = new Map<string, ShaderExpression>();
@@ -888,6 +918,10 @@ function attributeMorph(projection: MorphProjection): ShaderStatement[] {
     return result;
 }
 
+/**
+ * Refuse a reference outside `names`: a name binds its whole root, and a
+ * dotted `root.member` entry binds that one member of the root.
+ */
 function checkReferences(
     statements: ShaderStatement[],
     names: Set<string>,
@@ -897,7 +931,8 @@ function checkReferences(
         mapShaderExpression(expression, (node) => {
             if (node.kind === "path")
                 requireShape(
-                    scope.has(node.parts[0]!),
+                    scope.has(node.parts[0]!) ||
+                        scope.has(node.parts.slice(0, 2).join(".")),
                     `unbound input '${node.parts.join(".")}'`,
                 );
             if (node.kind === "call")
@@ -919,6 +954,7 @@ function checkReferences(
         switch (statement.kind) {
             case "var":
             case "let":
+            case "const":
                 if (statement.value) check(statement.value);
                 requireShape(
                     !names.has(statement.name),
@@ -929,6 +965,9 @@ function checkReferences(
             case "assign":
                 check(statement.target);
                 check(statement.value);
+                break;
+            case "increment":
+                check(statement.target);
                 break;
             case "return":
                 if (statement.value) check(statement.value);
@@ -943,25 +982,46 @@ function checkReferences(
                     new Set(names),
                     requireShape,
                 );
+                if (statement.alternative)
+                    checkReferences(
+                        statement.alternative,
+                        new Set(names),
+                        requireShape,
+                    );
                 break;
             case "for": {
                 const loopNames = new Set(names);
-                checkReferences(
-                    [statement.initializer],
-                    loopNames,
-                    requireShape,
-                );
-                check(statement.condition, loopNames);
+                if (statement.initializer)
+                    checkReferences(
+                        [statement.initializer],
+                        loopNames,
+                        requireShape,
+                    );
+                if (statement.condition) check(statement.condition, loopNames);
                 checkReferences(
                     statement.statements,
                     new Set(loopNames),
                     requireShape,
                 );
-                checkReferences([statement.update], loopNames, requireShape);
+                if (statement.update)
+                    checkReferences(
+                        [statement.update],
+                        loopNames,
+                        requireShape,
+                    );
                 break;
             }
             case "discard":
                 requireShape(false, "vertex discard");
+                break;
+            case "while":
+            case "loop":
+            case "switch":
+            case "block":
+            case "break":
+            case "continue":
+            case "assert":
+                requireShape(false, `vertex ${statement.kind} statement`);
                 break;
         }
     }

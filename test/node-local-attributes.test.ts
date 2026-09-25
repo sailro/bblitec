@@ -16,22 +16,24 @@ import {
 const lowerer = new GltfLowerer(new LoweringContext());
 const tools = optionalNativeFixtureTools(false);
 
-test("raw normal retention is absent from ordinary glTF loaders", () => {
-    assert.doesNotMatch(
-        lowerer.lowerLoaderAdapter().source,
-        /geometry\.local_normals/,
-    );
-    const local = lowerer.lowerLoaderAdapter({
-        retainLocalNormals: true,
-    }).source;
+test("the glTF loader stores each primitive's source lanes untransformed", () => {
+    const source = lowerer.lowerLoaderAdapter().source;
     assert.match(
-        local,
-        /if \(normals\) \{\s*geometry\.local_normals\.resize\(positions\.count\);/,
+        source,
+        /vertex\.normal = Vec3\{\s*read_component\(buffer, container, views, normals, index, 0\),/,
     );
-    assert.match(local, /geometry\.local_normals\[index\] = local_normal;/);
+    assert.match(
+        source,
+        /vertex\.position = Vec3\{\s*read_component\(buffer, container, views, positions, index, 0\),/,
+    );
+    assert.doesNotMatch(
+        source,
+        /transform_point\(|local_normals|bind_vertices/,
+    );
+    assert.match(source, /record\.parent_world = mesh_world;/);
 });
 
-test("raw normal retention refuses a pin that changes the uploaded source", () => {
+test("the loader refuses a pin that changes the uploaded source lanes", () => {
     const store = new UpstreamSourceStore();
     const modulePath = "src/loader-gltf/load-gltf.ts";
     const original = store.getSourceFile.bind(store);
@@ -50,10 +52,7 @@ test("raw normal retention refuses a pin that changes the uploaded source", () =
     store.getSourceFile = (path) =>
         path === modulePath ? changed : original(path);
     assert.throws(
-        () =>
-            new GltfLowerer(new LoweringContext(store)).lowerLoaderAdapter({
-                retainLocalNormals: true,
-            }),
+        () => new GltfLowerer(new LoweringContext(store)).lowerLoaderAdapter(),
         /upload source _normals without transformation/,
     );
 });
@@ -70,7 +69,7 @@ class MappedBuffer {
 }
 
 test(
-    "loader retains the actual pin's nonunit and signed-zero normal upload before native transforms",
+    "loader keeps the actual pin's nonunit and signed-zero normal upload",
     {
         skip: !tools,
     },
@@ -107,14 +106,11 @@ test(
             new Uint8Array(normals.buffer),
         );
         const expected = [...new Uint32Array(mesh._gpu.normalBuffer.bytes)];
-        const source = lowerer.lowerLoaderAdapter({
-            retainLocalNormals: true,
-        }).source;
-        const begin = source.indexOf("Vec3 live_local_normal = vertex.normal;");
-        const end = source.indexOf("Vec4 live_local_tangent", begin);
+        const source = lowerer.lowerLoaderAdapter().source;
+        const begin = source.indexOf("                vertex.normal = Vec3{");
+        const end = source.indexOf("                if (tangents) {", begin);
         assert.ok(begin >= 0 && end > begin);
-        // Execute the complete production accessor/store block. The two transform
-        // callbacks are deliberate sentinels: retained bytes must precede them.
+        // Execute the production accessor/store block over the pin's bytes.
         const block = source.slice(begin, end);
         const output = resolve("artifacts/node-local-normal-check");
         mkdirSync(output, { recursive: true });
@@ -127,45 +123,33 @@ test(
 #include <cassert>
 #include <iostream>
 using namespace bbl;
-namespace bbl::upstream {
-Vec3 normalize_baked_direction(Vec3) { return {10, 20, 30}; }
-}
-Vec3 transform_direction(int, Vec3) { return {40, 50, 60}; }
-void read_normals(ModelGeometry& geometry, const std::vector<float>& source, bool deformed_geometry, bool instanced) {
+void read_normals(ModelGeometry& geometry, const std::vector<float>& source) {
     const auto& buffer = source;
-    const int container = 0, views = 0, accessor = 0, matrix = 0;
-    const int* normals = &accessor;
+    const int container = 0, views = 0, accessor = 0;
+    const int& normals = accessor;
     const auto read_component = [&](const auto&, int, int, int, std::size_t i, std::size_t c) {
         return source[i * 3 + c];
     };
     for (std::size_t index = 0; index < geometry.vertices.size(); ++index) {
-        ModelVertex& vertex = geometry.vertices[index];
+        ModelVertex vertex;
         ${block}
-        assert(live_local_normal.x == 10);
-        assert(vertex.normal.x == (deformed_geometry || instanced ? 10 : 40));
+        geometry.vertices[index] = vertex;
     }
 }
 int main() {
     const std::vector<std::uint32_t> words{${expected.map((word) => `${word}u`).join(",")}};
     std::vector<float> source;
     for (auto word : words) source.push_back(std::bit_cast<float>(word));
-    for (const bool animated : {false, true}) for (const bool instanced : {false, true}) {
-        ModelGeometry geometry;
-        geometry.vertices.resize(2);
-        geometry.local_normals.resize(2);
-        read_normals(geometry, source, animated, instanced);
-        for (std::size_t i = 0; i < 2; ++i) {
-            const auto n = geometry.local_normals[i];
-            assert(std::bit_cast<std::uint32_t>(n.x) == words[i*3]);
-            assert(std::bit_cast<std::uint32_t>(n.y) == words[i*3+1]);
-            assert(std::bit_cast<std::uint32_t>(n.z) == words[i*3+2]);
-        }
-        ModelGeometry copy = geometry;
-        release_geometry_storage(geometry);
-        assert(geometry.local_normals.empty() && geometry.local_normals.capacity() == 0);
-        assert(copy.local_normals.size() == 2);
+    ModelGeometry geometry;
+    geometry.vertices.resize(2);
+    read_normals(geometry, source);
+    for (std::size_t i = 0; i < 2; ++i) {
+        const auto n = geometry.vertices[i].normal;
+        assert(std::bit_cast<std::uint32_t>(n.x) == words[i*3]);
+        assert(std::bit_cast<std::uint32_t>(n.y) == words[i*3+1]);
+        assert(std::bit_cast<std::uint32_t>(n.z) == words[i*3+2]);
     }
-    std::cout << "node local normals: ok\\n";
+    std::cout << "source normals: ok\\n";
 }
 `,
         );
@@ -184,7 +168,7 @@ int main() {
         ]);
         assert.match(
             execFileSync(executable, { encoding: "utf8" }),
-            /node local normals: ok/,
+            /source normals: ok/,
         );
     },
 );

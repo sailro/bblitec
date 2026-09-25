@@ -2,32 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { lowerWgslShaderProgram } from "../src/shader-ir.js";
 import { emitNativeWgslProgram } from "../src/shader-wgsl-emitter.js";
-import {
-    composeStandaloneWgsl,
-    getShaderMaterialProgram,
-} from "../src/shader-material-programs.js";
+import { composeStandaloneWgsl } from "../src/shader-material-programs.js";
+import { fixtureShaderProgram as predeclaredProgram } from "./shader-program-fixtures.js";
 import {
     blitFragmentWgsl,
     blitVertexWgsl,
     depthOnlyFragmentWgsl,
     diagnosticClusterFragmentWgsl,
     diagnosticIdFragmentWgsl,
-    imageProcessingFragmentWgsl,
 } from "../src/shader-builtins-utility.js";
-import {
-    backgroundGroundFragmentWgsl,
-    backgroundSkyboxFragmentWgsl,
-    readPinnedBackgroundGroundSource,
-    readPinnedBackgroundSkyboxSource,
-} from "../src/shader-builtins-background.js";
-import { findRepositoryRoot, readUpstreamPin } from "../src/upstream-source.js";
-import { resolve } from "node:path";
 import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
 
 test("lowers reached alpha-card WGSL through typed reflection", () => {
-    const program = lowerWgslShaderProgram(
-        getShaderMaterialProgram("alpha-card"),
-    );
+    const program = lowerWgslShaderProgram(predeclaredProgram("alpha-card"));
     assert.deepEqual(program.reflection.attributes, [
         { name: "position", location: 0, type: "vec3<f32>" },
     ]);
@@ -85,7 +72,7 @@ test("lowers reached alpha-card WGSL through typed reflection", () => {
 
 test("lowers matrix, varying, branch, and discard WGSL nodes", () => {
     const program = lowerWgslShaderProgram(
-        getShaderMaterialProgram("circular-cutout"),
+        predeclaredProgram("circular-cutout"),
     );
     assert.deepEqual(
         program.reflection.varyings.map(({ name, type, attribute }) => ({
@@ -138,7 +125,7 @@ test("lowers matrix, varying, branch, and discard WGSL nodes", () => {
 
 test("composes Babylon custom shader snippets into standalone WGSL", () => {
     const source = composeStandaloneWgsl(
-        getShaderMaterialProgram("circular-cutout"),
+        predeclaredProgram("circular-cutout"),
         "struct Scene {} @group(0) @binding(0) var<uniform> scene: Scene;",
         "vertex",
     );
@@ -152,20 +139,16 @@ test("composes Babylon custom shader snippets into standalone WGSL", () => {
 });
 
 test("generates Tint utility WGSL entry points and bindings", () => {
+    // The pin's copy-task blit: its vertex stage alone, its sampler pair
+    // re-homed to the native fragment-resource group.
     assert.match(blitVertexWgsl(), /@builtin\(vertex_index\)/);
+    assert.match(blitVertexWgsl(), /fn mainVertex\(/);
+    assert.doesNotMatch(blitVertexWgsl(), /@group/);
     assert.match(
         blitFragmentWgsl(),
-        /@group\(2\) @binding\(1\) var sourceSampler/,
+        /@group\(2\) @binding\(1\) var s: sampler/,
     );
-    assert.match(blitFragmentWgsl(), /textureSampleLevel/);
-    // The lifted pinned `ip()`: the pin's own parameter block and exposure
-    // multiply, under the native fragment uniform space.
-    assert.match(imageProcessingFragmentWgsl(), /var c=r\.rgb\*p\.e;/);
-    assert.match(
-        imageProcessingFragmentWgsl(),
-        /@group\(3\)@binding\(0\)var<uniform> p:P;/,
-    );
-    assert.match(imageProcessingFragmentWgsl(), /1\.590579/);
+    assert.match(blitFragmentWgsl(), /textureSampleLevel\(t, s, v\.u, 0\.0\)/);
     assert.match(depthOnlyFragmentWgsl(), /@fragment\s+fn mainFragment\(\)/);
     assert.match(diagnosticIdFragmentWgsl(), /@group\(3\) @binding\(0\)/);
     assert.match(diagnosticIdFragmentWgsl(), /textureSample/);
@@ -174,35 +157,6 @@ test("generates Tint utility WGSL entry points and bindings", () => {
         /@builtin\(primitive_index\)/,
     );
     assert.match(diagnosticClusterFragmentWgsl(), /clusterId >> 16u/);
-});
-
-function pinnedPackageRoot(): string {
-    const repositoryRoot = findRepositoryRoot();
-    const pin = readUpstreamPin(repositoryRoot);
-    return resolve(repositoryRoot, "node_modules", ...pin.package.split("/"));
-}
-
-test("generates Tint background WGSL for 2D and cube textures", () => {
-    const packageRoot = pinnedPackageRoot();
-    const ground = backgroundGroundFragmentWgsl(
-        "ground provenance",
-        readPinnedBackgroundGroundSource(packageRoot),
-    );
-    const skybox = backgroundSkyboxFragmentWgsl(
-        "skybox provenance",
-        readPinnedBackgroundSkyboxSource(packageRoot),
-    );
-    assert.match(ground, /texture_2d<f32>/);
-    // The pin's own premultiply, from groundFragSrc.
-    assert.match(ground, /a=vec4<f32>\(a\.rgb\*a\.a,a\.a\);/);
-    assert.match(ground, /1\.590579/);
-    assert.match(skybox, /texture_cube<f32>/);
-    assert.match(skybox, /textureSampleLevel/);
-    assert.match(skybox, /primaryColorExposure/);
-    // The undithered file is the pinned environment-cubemap arm: gamma and
-    // contrast only, no tone mapping and no noise.
-    assert.doesNotMatch(skybox, /1\.590579/);
-    assert.doesNotMatch(skybox, /dither\(/);
 });
 
 test("generates the shared Tint material vertex interface", () => {
@@ -214,18 +168,28 @@ test("generates the shared Tint material vertex interface", () => {
     assert.doesNotMatch(staticVertex, /@location\(8\) joints/);
     assert.match(vertex, /@location\(6\) color: vec4<f32>/);
     assert.match(vertex, /@location\(5\) uv2: vec2<f32>/);
-    assert.match(vertex, /uniforms\.viewProjection \* vec4<f32>/);
+    assert.match(
+        vertex,
+        /uniforms\.viewProjection \* \(finalWorld \* vec4<f32>/,
+    );
     assert.match(vertex, /output\.worldPosition = worldPosition/);
     assert.match(vertex, /boneMatrices: array<mat4x4<f32>, 64>/);
     assert.match(vertex, /input\.morphPosition0/);
     assert.match(vertex, /@location\(15\) morphTangent1: vec3<f32>/);
-    assert.match(vertex, /deformation\.options\.y < 0\.5/);
-    assert.match(instancedVertex, /@binding\(1\).*instanceUniforms/);
+    assert.match(staticVertex, /@binding\(1\) var<uniform> mesh: MeshUniforms/);
+    assert.match(
+        staticVertex,
+        /var finalWorld = mesh\.world;[\s\S]*\(finalWorld \* vec4<f32>\(worldPosition, 1\.0\)\)/,
+    );
     assert.match(
         instancedVertex,
-        /instanceUniforms\.parentWorld \* instanceWorld/,
+        /@binding\(1\) var<uniform> mesh: MeshUniforms/,
     );
-    assert.match(deformedInstancedVertex, /@binding\(2\).*instanceUniforms/);
+    assert.match(instancedVertex, /mesh\.world \* instanceWorld/);
+    assert.match(
+        deformedInstancedVertex,
+        /@binding\(2\) var<uniform> mesh: MeshUniforms/,
+    );
 });
 
 test("places stage storage buffers in SDL resource groups after samplers", () => {

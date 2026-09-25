@@ -341,7 +341,7 @@ test("checks apply registered capture queries without changing no-query twins", 
     );
 });
 
-test("every declared check names a registry scene, existing plugins and unique hook markers", () => {
+test("every declared check names a registry scene or repository source, existing plugins and unique hook markers", () => {
     const ids = listCheckIds();
     assert.ok(ids.length >= 20, `declared checks: ${ids.join(", ")}`);
     for (const id of ids) {
@@ -372,7 +372,9 @@ test("every declared check names a registry scene, existing plugins and unique h
             );
         }
     }
-    // The plugins directory carries nothing a check does not name.
+    // The plugins directory carries nothing a check does not name, beside
+    // the shared helpers and the type declarations the plugins and init
+    // scripts share.
     const named = new Set(
         ids.flatMap((id) =>
             readCheckSpec(id).expect.flatMap((expectation) =>
@@ -391,7 +393,10 @@ test("every declared check names a registry scene, existing plugins and unique h
     for (const name of readdirSync(resolve("checks", "plugins"))) {
         const path = resolve("checks", "plugins", name);
         assert.ok(
-            named.has(path) || initScripts.has(path) || name === "support.mjs",
+            named.has(path) ||
+                initScripts.has(path) ||
+                name === "support.mjs" ||
+                name.endsWith(".d.ts"),
             `checks/plugins/${name} is named by no check`,
         );
     }

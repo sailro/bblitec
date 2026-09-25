@@ -1,5 +1,6 @@
 // A28: inject failures inside the real pinned Recast/Detour implementation.
 #include "pal_navigation_recast.cpp"
+#include "navigation_build_plan.hpp"
 #include <RecastAlloc.h>
 #include <DetourNode.h>
 #include <cstdio>
@@ -305,17 +306,19 @@ int main(int argc, char** argv) try {
     const NavMeshGeometry ground{{-10, 0, -10, -10, 0, 10, 10, 0, 10, 10, 0, -10},
                                  {0, 1, 2, 0, 2, 3}};
     const NavMeshBuildParams params{};
+    const NavQueryDefaults& defaults = bbl::upstream::navigation_query_defaults;
+    const NavSoloBuild solo = bbl::upstream::solo_nav_mesh_build(ground, params);
     unsigned build_allocations = 0;
     {
         auto plugin = navigation_create_plugin();
-        navigation_create_solo_nav_mesh(plugin, ground, params);
+        navigation_create_solo_nav_mesh(plugin, ground, solo, defaults);
         allocation_count = 0;
-        navigation_create_solo_nav_mesh(plugin, ground, params);
+        navigation_create_solo_nav_mesh(plugin, ground, solo, defaults);
         build_allocations = allocation_count;
         require(build_allocations == 498, "pinned solo-floor allocation sequence changed");
         if (selection.empty() || selection == "queries")
             check_query_reinitialization(plugin.ownership->mesh->nav_mesh.get());
-        const auto expected = navigation_debug_geometry(plugin);
+        const auto expected = navigation_positions_and_indices(plugin);
         std::fprintf(stderr, "solo build: %u allocations\n", build_allocations);
         const unsigned first = selection.empty() || selection == "queries"
                                    ? 1
@@ -334,7 +337,7 @@ int main(int argc, char** argv) try {
             std::fprintf(stderr, "failure %u\n", failure);
             bool failed = false;
             try {
-                navigation_create_solo_nav_mesh(plugin, ground, params);
+                navigation_create_solo_nav_mesh(plugin, ground, solo, defaults);
             } catch (const std::bad_alloc&) {
                 failed = true;
             } catch (const std::runtime_error& error) {
@@ -352,9 +355,8 @@ int main(int argc, char** argv) try {
                     "required allocation failure was not rejected");
             if (failed)
                 require(original == plugin.ownership->mesh, "failed build replaced a valid mesh");
-            const auto actual = navigation_debug_geometry(plugin);
-            require(actual.positions == expected.positions && actual.normals == expected.normals &&
-                        actual.indices == expected.indices,
+            const auto actual = navigation_positions_and_indices(plugin);
+            require(actual.positions == expected.positions && actual.indices == expected.indices,
                     "allocation failure produced incomplete navigation geometry");
             // A failed reserve is only a capacity hint; a later growth can
             // recover. Release a successful replacement before counting.

@@ -1,5 +1,10 @@
 // Dawn driver for a standalone FrameGraphContext. It records only the tasks
 // the context owns and therefore carries no scene/camera/mesh renderer.
+#include <bblite/features/gpu_task_timing.hpp>
+#include <bblite/features/has_effect_task.hpp>
+#include <bblite/features/has_frame_graph_renderer.hpp>
+#include <bblite/features/has_post_process.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
@@ -29,7 +34,7 @@
 
 namespace bbl::pal {
 
-#if defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER && BBLITE_HAS_DAWN
+#if BBLITE_HAS_FRAME_GRAPH_RENDERER && BBLITE_HAS_DAWN
 
 namespace {
 
@@ -115,24 +120,6 @@ struct State : DawnDevice {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
 };
-
-WGPUTextureFormat texture_format(TextureFormatClass format) {
-    switch (format) {
-    case TextureFormatClass::rgba8_unorm:
-        return WGPUTextureFormat_RGBA8Unorm;
-    case TextureFormatClass::r8_unorm:
-        return WGPUTextureFormat_R8Unorm;
-    case TextureFormatClass::r16_float:
-        return WGPUTextureFormat_R16Float;
-    case TextureFormatClass::rg16_float:
-        return WGPUTextureFormat_RG16Float;
-    case TextureFormatClass::r32_float:
-        return WGPUTextureFormat_R32Float;
-    case TextureFormatClass::rgba16_float:
-        return WGPUTextureFormat_RGBA16Float;
-    }
-    return WGPUTextureFormat_RGBA16Float;
-}
 
 std::uint32_t target_samples(const State& state, std::uint32_t requested) {
     return requested == 4 ? state.samples : 1u;
@@ -243,7 +230,7 @@ std::pair<WGPUTexture, WGPUTextureView> source_view(State& state, const Engine& 
     if (source.source != RenderTextureSource::render_target) {
         throw std::runtime_error("A standalone frame graph cannot sample a scene geometry task.");
     }
-    const RenderTargetRecord& record = engine.render_targets.at(source.target.value);
+    const RenderTargetRecord& record = handle_at(engine.render_targets, source.target);
     if (record.swapchain) {
         throw std::runtime_error("A post-process pass cannot sample the swapchain target.");
     }
@@ -265,33 +252,16 @@ PostProcessProgram build_post_process_program(State& state,
     program.extra_textures = extras;
     program.uniform_binding = info.uniform_binding;
     program.uniform_size = uniform_size;
-    program.shader = load_wgsl_module(state.device,
-                                      "postprocess-" + std::to_string(info.module_index) + ".frag");
-    std::vector<WGPUBindGroupLayoutEntry> entries;
-    WGPUBindGroupLayoutEntry sampler = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-    sampler.binding = 0;
-    sampler.visibility = WGPUShaderStage_Fragment;
-    sampler.sampler.type = WGPUSamplerBindingType_Filtering;
-    entries.push_back(sampler);
-    for (std::size_t texture = 0; texture <= extras; ++texture) {
-        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entry.binding = 1u + static_cast<std::uint32_t>(texture);
-        entry.visibility = WGPUShaderStage_Fragment;
-        entry.texture.sampleType = WGPUTextureSampleType_Float;
-        entry.texture.viewDimension = WGPUTextureViewDimension_2D;
-        entries.push_back(entry);
-    }
-    if (uniform_size > 0) {
-        WGPUBindGroupLayoutEntry uniform = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        uniform.binding = info.uniform_binding;
-        uniform.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        uniform.buffer.type = WGPUBufferBindingType_Uniform;
-        entries.push_back(uniform);
-    }
-    WGPUBindGroupLayoutDescriptor group = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    group.entryCount = entries.size();
-    group.entries = entries.data();
-    program.group_layout = wgpuDeviceCreateBindGroupLayout(state.device, &group);
+    const std::string stem = "postprocess-" + std::to_string(info.module_index);
+    const std::string vertex_stem = stem + ".vert", fragment_stem = stem + ".frag";
+    program.shader = load_wgsl_module(state.device, fragment_stem);
+    // Group 0 as the module declares it: the source sampler and texture,
+    // the program's extra textures, and its uniform block when it has one.
+    const std::array<DawnLayoutStage, 2> stages{{
+        {vertex_stem, WGPUShaderStage_Vertex},
+        {fragment_stem, WGPUShaderStage_Fragment},
+    }};
+    program.group_layout = create_dawn_reflected_layout(state.device, stages, 0);
     WGPUPipelineLayoutDescriptor layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     layout.bindGroupLayoutCount = 1;
     layout.bindGroupLayouts = &program.group_layout;
@@ -348,11 +318,11 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
                          std::size_t pass_index, WGPUCommandEncoder encoder,
                          WGPUTextureView surface_view, std::uint32_t width, std::uint32_t height) {
     PostProcessPassOptions& pass =
-        engine.frame_tasks.at(task_handle.value).post_process.passes.at(pass_index);
+        handle_at(engine.frame_tasks, task_handle).post_process.passes.at(pass_index);
     const upstream::PostProcessShaderInfo& info =
         upstream::post_process_shader_infos.at(pass.shader_index);
     PostProcessPass& gpu = state.post_processes.at(task_handle.value).at(pass_index);
-    const RenderTargetRecord& output_record = engine.render_targets.at(pass.output_target.value);
+    const RenderTargetRecord& output_record = handle_at(engine.render_targets, pass.output_target);
     const Target& output = state.targets.at(pass.output_target.value);
     const std::uint32_t output_width = output_record.swapchain ? width : output.width;
     const std::uint32_t output_height = output_record.swapchain ? height : output.height;
@@ -442,18 +412,19 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
 } // namespace
 
 namespace {
-class DawnFrameGraphRun : public FrameSession {
+class DawnFrameGraphRun : public RendererRun<DawnFrameGraphRun> {
     State state;
     FrameGraphContext* context = nullptr;
     std::uint32_t width = 0, height = 0;
     DawnCommandEncoder encoder;
     DawnTexture surface;
     DawnTextureView surface_view;
-    WGPUSurfaceTexture surface_texture{};
+    WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
 
 public:
     static constexpr FrameAcquirePhase acquire_phase = FrameAcquirePhase::before_uploads;
-    explicit DawnFrameGraphRun(Engine& target) : FrameSession(target) {}
+    static constexpr const char* backend_label = "Dawn";
+    explicit DawnFrameGraphRun(Engine& target) : RendererRun(target) {}
     ~DawnFrameGraphRun() {
         encoder.reset();
         surface_view.reset();
@@ -495,21 +466,20 @@ public:
         }
         build_graph(state, engine, width, height);
     }
-    FramePreparation prepare() {
-        poll_platform_events(engine, running, frame_options.test_pass);
-        input_replay.dispatch(frame, state.window, engine);
-        sync_engine_canvas_size(state.window, engine);
+    SDL_Window* sdl_window() const { return state.window; }
+    std::string driver() const { return "D3D12"; }
+    FramePreparation prepare_surface() {
         if (resize_dawn_surface(state, engine.options)) {
             width = state.surface_width;
             height = state.surface_height;
             build_graph(state, engine, width, height);
         }
-        if (!state.surface)
-            return FramePreparation::skip;
-        return FramePreparation::ready;
+        return state.surface ? FramePreparation::ready : FramePreparation::skip;
     }
     FramePreparation update() {
-        (void)advance_frame(engine, *context, frame_clock, frame_options.frame_delta_ms);
+        static_cast<void>(
+            advance_frame(engine, *context, frame_clock, frame_options.frame_delta_ms));
+        begin_measurement();
 #if BBLITE_GPU_TASK_TIMING
         begin_gpu_task_timing_frame(engine);
 #endif
@@ -532,7 +502,7 @@ public:
             engine, [&](const auto& write) { encode_dawn_gpu_timestamp(encoder, write); });
 #endif
         for (const TaskHandle handle : context->tasks) {
-            FrameTaskRecord& task = engine.frame_tasks.at(handle.value);
+            FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
             if (task.execution_enabled == false)
                 continue;
 #if BBLITE_GPU_TASK_TIMING
@@ -542,7 +512,7 @@ public:
             if (task.kind == FrameTaskKind::effect) {
                 DawnEffectPass& pass = state.effects.at(handle.value);
                 const RenderTargetRecord& record =
-                    engine.render_targets.at(task.effect.target.value);
+                    handle_at(engine.render_targets, task.effect.target);
                 const Target& output = state.targets.at(task.effect.target.value);
                 if (!pass.pipeline) {
                     pass = create_dawn_effect_pass(
@@ -584,9 +554,7 @@ public:
         }
     }
     void present() {
-        const bool capture_frame = frame >= frame_options.screenshot_frame &&
-                                   !captures.screenshot_saved &&
-                                   !frame_options.screenshot_path.empty();
+        const bool capture_frame = screenshot_due();
         captures.maybe_write_standalone_render_capture("dawn", engine, width, height, frame);
         DawnSurfaceCapture capture{};
         if (capture_frame) {
@@ -613,20 +581,10 @@ public:
             dawn_error(state.uncaptured_error);
         }
     }
-    void complete() {
-        finish_frame(engine);
-        ++frame;
-    }
 };
 } // namespace
 
-bool run_frame_graph_dawn_engine(Engine& engine) {
-    DawnFrameGraphRun renderer(engine);
-    renderer.setup();
-    while (conduct_frame(renderer) != FrameOutcome::stopped) {
-    }
-    return true;
-}
+void run_frame_graph_dawn_engine(Engine& engine) { DawnFrameGraphRun::run(engine); }
 
 #endif
 

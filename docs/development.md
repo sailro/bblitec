@@ -10,7 +10,7 @@ npm ci
 npm run dev:setup
 npm run doctor
 npm run scene -- process scene1
-npm run scene -- parity scene1 --differential
+npm run scene -- parity scene1
 ```
 
 On this Windows checkout, set CMake before native commands:
@@ -20,10 +20,12 @@ $env:CMAKE_COMMAND = 'C:/Program Files/Microsoft Visual Studio/18/Community/Comm
 ```
 
 `scene` discovers CMake through vswhere; dependency scripts accept PATH, CMAKE_COMMAND or `-CMake`.
-Rebuild installed dependencies after maintained patches change, including `pwsh -File tools/build-rmlui.ps1`.
-
-Runtime Window applications start with their authored live defaults. Parity and interaction checks
-apply their registered query internally to the same executable.
+`native/patch-identity.cmake` alone reads the patch series of
+[native/patches/manifest.json](../native/patches/manifest.json), for the overlay portfiles, the
+dependency scripts, configure and doctor. Built Dawn, LabSound, RmlUi and trimmed-SDL artifacts record
+their source, patch set and variants; configure refuses a record that differs and warns on an
+unrecorded artifact, and `dev:setup` rebuilds a stale one. A dependency script whose checkout already
+carries its series leaves the source untouched, so a repeated run recompiles nothing.
 
 ### Linux prerequisites
 
@@ -47,15 +49,15 @@ export CMAKE_BUILD_PARALLEL_LEVEL=3
 export VCPKG_MAX_CONCURRENCY=3
 ```
 
-Both backends use Vulkan. Generation/browser capture and native scenes need a graphical session,
-GPU-device access and X11/Wayland authorization. `SDL_VIDEODRIVER=x11|wayland` selects the display path.
+Generation/browser capture and native scenes need a graphical session, GPU-device access and
+X11/Wayland authorization. `SDL_VIDEODRIVER=x11|wayland` selects the display path.
 Set `CHROME_PATH` and `CC`/`CXX` as needed. Compiler changes require compatible dependency workspaces.
 Fontconfig/FreeType metrics can differ from Windows/browser references.
 
 ### macOS prerequisites
 
 Install Apple's Command Line Tools, Clang 18+, CMake, Ninja, Node.js, PowerShell, Git, pkg-config and vcpkg.
-Both backends use Metal/Cocoa in a logged-in graphical session. DXC/offline metal compilation is unnecessary.
+Native scenes need a logged-in graphical session. DXC/offline metal compilation is unnecessary.
 
 ```sh
 export VCPKG_ROOT="$HOME/vcpkg"
@@ -71,9 +73,9 @@ On older systems, LLVM libc++ must retain Apple's availability annotations; inst
 `_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS` may emit unavailable runtime symbols. A dedicated
 LLVM configuration can remove that define from `include/c++/v1/__config_site`, retaining a backup.
 
-Development uses host x64-osx/arm64-osx dependencies. CoreText/FreeType supplies fonts; Boost.Charconv
-provides floating formatting on systems lacking floating `to_chars`. Maintained Dawn patches support
-older SDK capability checks. Apple Silicon runtime validation requires an Apple Silicon host.
+Development uses host x64-osx/arm64-osx dependencies. Boost.Charconv provides floating formatting on
+systems lacking floating `to_chars`. Maintained Dawn patches support older SDK capability checks. Apple
+Silicon runtime validation requires an Apple Silicon host.
 
 ### Android
 
@@ -85,34 +87,27 @@ sdkmanager --sdk_root=$env:ANDROID_HOME "platform-tools" "platforms;android-35" 
 npm run android -- -Scene torus-states -Sdk C:/Dev/android-sdk -Device <serial> -Install
 npm run android -- -Scene torus-states -Backend DAWN -Sdk C:/Dev/android-sdk -Device <serial> -Smoke
 npm run android:sweep -- --sdk C:/Dev/android-sdk --device emulator-5554
-npm run package:demo -- -Platform android -Scene torus-states -ExpectBackend DAWN -Sdk C:/Dev/android-sdk -Device <serial>
+npm run package:demo -- --platform android --scene torus-states --backend dawn --sdk C:/Dev/android-sdk --device <serial>
 npm run demos:release -- --platform android --scene torus-states --backend dawn --sdk C:/Dev/android-sdk --device <serial>
 ```
 
-ARM64 is the default; use -Abi x86_64 (--abi x86_64 for npm workflows) for emulators.
-SDL_GPU remains the default. -Backend DAWN builds Dawn only; -Backend BOTH includes both renderers.
-Sweeps and release workflows select one renderer with --backend sdl_gpu|dawn.
--Install opens the app; -Smoke requires native exit 0 and a PNG. APKs/logs are in
-artifacts/android/<scene>/<abi>, with -dawn/-both suffixes for those build variants.
--Smoke checks both renderers in a BOTH APK. Debug intents select a compiled renderer with
-BBLITE_GPU_BACKEND=sdl_gpu|dawn; unavailable selections refuse.
-Development installs share the default application ID.
-Reached UI/audio dependencies and selected Dawn build automatically into artifacts/tools/<library>-android-<abi>.
-Dawn is monolithic/static at the Tint pin and consumes WGSL without offline shader compilation.
--DawnDirectory selects a compatible static install.
-Their input fingerprints permit reuse; sweep workers consume one prepared dependency set.
+`android`, `package:demo` and `demos:release` default to arm64-v8a; `android:sweep` defaults to x86_64;
+`-Abi`/`--abi` overrides. SDL_GPU is the default renderer; `-Backend DAWN` builds Dawn only and
+`-Backend BOTH` both (`-Smoke` then checks each); sweeps and releases take `--backend sdl_gpu|dawn`.
+Debug intents select a compiled renderer with `BBLITE_GPU_BACKEND=sdl_gpu|dawn`. `-Install` opens the
+app; `-Smoke` requires native exit 0 and a PNG. APKs/logs are in `artifacts/android/<scene>/<abi>`
+(`-dawn`/`-both` suffixes); development installs share one application ID, release packages each have
+their own. Reached UI/audio dependencies and Dawn (monolithic/static at the Tint pin, WGSL only) build
+into `artifacts/tools/<library>-android-<abi>` and are reused by input fingerprint; `-DawnDirectory`
+selects a compatible static install.
 
-Packaging builds Release native code in a debug-signed APK, embeds assets/notices, validates the
-staged APK on --device, and publishes a ZIP/receipt under artifacts/releases. Each demo has its own
-application ID. Existing packages move to .replaced/.
-Android release workflows serialize shared dependency and device work.
-
-The sweep completes source/shader generation and dependency preparation before building four APKs concurrently, then captures serially at the
-registered pose and golden dimensions. It preserves thresholds, restores display size and distinguishes
-unsupported features, failures and mismatches. --scene is repeatable; --parallel and --jobs control builds.
-Evidence is in artifacts/android/sweep/<run-id>. Standalone builds must run outside an active sweep.
--SkipGenerate -UseInstalledDependencies reuses prepared source, shaders and dependencies, not native binaries.
-For device-local rendering measurements instead of registered-reference comparisons, see
+Packaging builds Release code into a debug-signed APK with assets/notices, validates it on `--device` and
+publishes a ZIP/receipt under `artifacts/releases` (replaced packages move to `.replaced/`). The sweep
+prepares sources, shaders and one dependency set, builds four APKs concurrently (`--parallel`, `--jobs`),
+then captures serially at the registered pose and golden dimensions, reporting unsupported features,
+failures and mismatches separately; `--scene` is repeatable and evidence is in
+`artifacts/android/sweep/<run-id>`. Release workflows serialize dependency and device work; run
+standalone builds outside an active sweep. Device-local measurements:
 [same-device diagnosis](debugging.md#same-device-rendering-comparisons).
 
 Use adb devices -l to select an authorized, unlocked phone or a Vulkan-capable emulator:
@@ -123,7 +118,7 @@ avdmanager create avd -n bblite-api35 -k "system-images;android-35;google_apis;x
 emulator -avd bblite-api35 -gpu host -no-snapshot
 ```
 
-Emulator captures do not qualify physical-device performance. See [limits](features.md#android).
+See [limits](features.md#android).
 
 ### iOS
 
@@ -135,12 +130,13 @@ npm run ios -- -Scene scene1 -Device <simulator-udid> -Install
 ```
 
 The default is `iphonesimulator`, host architecture, Dawn/Metal. `-Install` launches the selected app;
-`-Smoke` requires a matching exit marker, build stamp and GPU readback. SDL_GPU/BOTH refuse on Simulator.
-`-Sdk iphoneos -Architecture arm64` selects an unsigned device bundle; SDL_GPU requires SDK 16.4+.
+`-Smoke` requires a matching exit marker, build stamp and GPU readback.
+`-Sdk iphoneos -Architecture arm64` selects a device bundle; SDL_GPU requires SDK 16.4+.
 `-MinSize` selects [trimmed device publishing](#minimal-size-shipping-builds).
 
 Static dependencies are SDK/architecture-specific. Generation and shared dependency preparation precede
-parallel builds; `-SkipGenerate -UseInstalledDependencies` reuses those inputs, not native binaries.
+parallel builds; on Android and iOS, `-SkipGenerate -UseInstalledDependencies` reuses those inputs, not
+native binaries.
 `-SweepGeneratedDirectoriesFile` selects the dependency union; `-DawnDirectory` selects a compatible Dawn install.
 `BBLITE_IOS_TEST_DEVICE=<udid>` enables the headless system-emoji fixture on a booted Simulator.
 
@@ -150,16 +146,19 @@ Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript p
 
 | Command | Result |
 | --- | --- |
-| `help`, `list [--json]`, `show <scene>` | Usage and registry data |
+| `help [command]`, `list [--json]`, `show <scene>` | Usage (all, or one command's) and registry data |
 | `show <scene> --activation\|--adaptations\|--provenance` | Feature/evidence inventory |
 | `status <scene> [--run]` | Generation, payload and executable stamps |
 | `compile <scene\|all>` | C++, WGSL, assets, manifests |
 | `build <scene\|all>` | Native build/deployment; no shader compilation |
 | `process <scene\|all>` | Generate, compile shaders, build |
-| `parity <scene\|all> --differential` | Both backends against the reference |
-| `check <id>`, `observe <id>` | Declared interaction check/browser observation |
+| `parity <scene\|all> [--backend sdl_gpu\|dawn]` | Both backends (or one) against the reference, and their differential |
+| `check <id> [--observe]` | Declared interaction check / its browser observation |
 | `validate <scene\|all> [--cold]` | Process, parity, status checks |
-| `clean --report\|--orphans\|--all\|--pch\|--dlls\|--artifacts` | Inspect/clean selected outputs |
+| `survey <entry.ts>` | Compile census and API readiness of an external entry |
+| `clean --report\|--orphans\|--all\|--pch\|--dlls\|--artifacts` | Inspect/clean selected outputs; `--artifacts` keeps the tools' roots |
+
+Diagnosis commands are in [debugging](debugging.md#the-ladder).
 
 Build dist once with `npm run build`; repeated commands can use `node dist/src/scene-command.js`.
 Never rebuild/delete dist during its runs. Finish generation before native builds; finish shared-header
@@ -173,28 +172,14 @@ folders by stem and have diagnostic-only comparisons without configured threshol
 ### Sizing a capability before implementing it
 
 ```powershell
-node tools/project-requirements.mjs <entry.ts> <ignored-report.json>
-node dist/src/cli.js <entry.ts> --survey <ignored-census.json>
-node tools/project-progress.mjs <ignored-acceptance-ledger.json> [ignored-progress.md]
+npm run scene -- survey <entry.ts>
 ```
 
-The scan inventories imports, library members, event shapes and language forms with source hashes/sites.
-It includes potentially unused bodies and does not prove compilation. Group findings by shared capability,
-match TODOs, and run independent source-shape probes before implementation batches. Record generation,
-native build and execution separately. Retry the unchanged entry at batch boundaries.
-
-The survey lowers the entry past every compile refusal: each statement runs in an emission transaction,
-a refusal rolls it back and is recorded, and lowering continues. The census lists every refusal reached
-(site, message, message class, enclosing function, cascades from refused declarations) with attempted and
-refused lowering counts; it writes no tree. Refusals inside speculative probes belong to the probe, storage
-replays keep only their final attempt, and an error outside statement lowering ends the survey as incomplete.
-Nested statement transactions journal into every open transaction, so a survey of a large entry costs up to
-about 1.6 times its generation.
-
-Progress is closed acceptance groups / fixed baseline groups, with equal credit per group. Every inventoried
-requirement needs one owner. Closure requires passing evidence with file hashes and completed dependencies;
-100% includes full generation, native builds, execution and validation. Document scope additions explicitly.
-This measures verified delivery, not effort or remaining time. Keep private ledgers and reports in artifacts.
+The survey writes `artifacts/survey/<directory>-<stem>/`: `census.json` lists every compile refusal the
+lowering reaches (site, message, message class, enclosing function, cascades) and writes no tree;
+`api/report.html` lists the pinned declarations the entry references, credited by the evidence
+`npm run api -- report --run` collected. Group findings by shared capability and run independent
+source-shape probes before implementation batches.
 
 | File | Required data |
 | --- | --- |
@@ -205,10 +190,10 @@ This measures verified delivery, not effort or remaining time. Keep private ledg
 | `docs/status.md`, `docs/images/scenes/<id>.png` | Current measurement and preview |
 | `checks/<id>.json` | Interaction phases/expectations; plugins in `checks/plugins/` |
 
-Match source queries, reference time/frame and canvas size. New scenes need full/foreground MAD below
-0.5 on both backends plus interaction checks. Canvas-only gates supplement UI-heavy scenes.
-Update registry/corpus membership tests. Fixture generators are in `tools/fixtures/`; previews use
-`tools/create-status-preview.mjs`; ICU changes require `tools/generate-emoji-presentation.mjs`.
+Match the [reference pose](fidelity.md#the-reference-pose). New scenes need full/foreground MAD below
+0.5 on both backends plus interaction checks. Update registry/corpus membership tests. Fixture
+generators are in `tools/fixtures/`; previews use `tools/create-status-preview.mjs`; ICU changes require
+`tools/generate-emoji-presentation.mjs`.
 
 ## Linting and formatting
 
@@ -218,6 +203,8 @@ override their executable paths; Unix versioned names such as `clang-tidy-22` ar
 
 ```powershell
 npm run lint:ts
+npm run lint:tools
+npm run patches:check
 npm run format
 npm run format:check
 npm run scene -- build scene1 --backend both
@@ -225,7 +212,12 @@ npm run lint -- scene1
 ```
 
 ESLint checks maintained compiler, tooling and test code with type-aware TypeScript rules.
-`npm run lint:ts -- --fix` applies safe fixes. Prettier leaves embedded source strings unchanged.
+`npm run lint:ts -- --fix` applies safe fixes. `lint:tools` type-checks the JavaScript tools and check
+plugins (`tsconfig.tools.json`, strict `checkJs`) against the declarations the build emits for
+`dist/src`, and the browser init scripts (`tsconfig.browser.json`) against the DOM and WebGPU
+declarations with the page globals of `checks/plugins/browser-globals.d.ts`. Prettier leaves embedded
+source strings unchanged.
+`patches:check` verifies the patch manifest against the patch files, their headers and every consumer.
 clang-format formats maintained native sources and C++ test fixtures without sorting includes.
 Corpus, example scenes, references, source pins, vendored code and generated output are excluded.
 
@@ -233,27 +225,32 @@ Corpus, example scenes, references, source pins, vendored code and generated out
 `--backend sdl_gpu|dawn|both` selects registered build directories; `--file <source>` and `--jobs <count>`
 bound the work. CMake exports `compile_commands.json`; clang-tidy uses its flags and includes and fails
 on diagnostics. Missing builds or matching sources are errors; lint never generates or builds scenes.
+A build whose precompiled header is older than one of its inputs is refused: clang-tidy would
+otherwise reuse the stale header and report diagnostics against code that no longer exists.
 Each run writes logs, clang-tidy YAML diagnostics and a JSON result index to `artifacts/code-quality/`.
 
-By default, native lint checks handwritten translation units and headers. `--generated` includes the
-build's emitted C++ and cached generated headers without changing their bytes:
+`.clang-tidy` enables only checks that pass on maintained and generated code. By default, native lint
+checks handwritten translation units and headers. `--generated` includes the build's emitted C++ and
+cached generated headers without changing their bytes:
 
 ```powershell
 npm run lint:cpp -- all --generated --backend both
 ```
 
-Generate and build the selected scenes first. A build covers only its reached features and platform;
-use both backends and the affected subsystem configurations. Fix generated-code defects in the
-compiler, not its output. Generated analysis is opt-in and uses the same configured checks as maintained
-sources. Suggested fixes are never applied to generated files.
+Generate and build the selected scenes first; a build covers only its reached features and platform, so
+use both backends and the affected subsystem configurations. Suggested fixes are never applied to
+generated files.
 
 ## Validation
 
-Use focused checks per unit. Run the full checks below at integration milestones or on explicit request;
-do not repeat them after individual fixes:
+Use focused checks per unit. Run the full checks below only for final validation or on explicit request;
+do not repeat them after individual fixes. `npm run sweep` builds and measures every registered scene on
+both backends: about 20 minutes on a warm cache, hours from a cold one. A new worktree starts cold (its
+precompiled headers and the units built on them are cached per checkout).
 
 ```powershell
 npm run lint:ts
+npm run lint:tools
 npm run format:check
 npm run lint:cpp -- <representative-native-build-directory>
 npm run simplify:verify
@@ -263,17 +260,18 @@ node dist/src/scene-command.js neutrality <saved-baseline-directory>
 ```
 
 Simplify covers the full diff; `npm run simplify:record` identifies its content-hashed record.
-`docs/reviews/` contains the open branch's record only. Status verification checks published measurements,
-registry names and canvas gates; measured repeatability exceptions live in the neutrality allowlist.
-There is no hosted CI.
+`docs/reviews/` holds the record of the most recent reviewed change. Status verification checks
+published measurements, registry names and canvas gates; measured repeatability exceptions live in the
+neutrality allowlist.
 
 Documentation-only changes require link and affected metadata checks. Rendering checks are required
 when executable inputs or measurement contracts change. `lint:exports` is advisory.
 
 ## Proving a change moved nothing
 
-`neutrality-generated <file> --write` saves generated-byte baselines. Compare after full registry
-regeneration. Native/shader changes use saved differential reports and the validation sequence above.
+`neutrality <file> --generated --write` saves a generated-byte baseline and `neutrality <file> --generated`
+compares against it after full registry regeneration. Native/shader changes use saved differential
+reports and the validation sequence above.
 
 ## Native builds
 
@@ -282,26 +280,27 @@ regeneration. Native/shader changes use saved differential reports and the valid
 `BBLITE_BACKEND`, `BBLITE_DEV_COMPILER` and `BBLITE_CMAKE_GENERATOR`.
 
 Dual builds use `native/build-<id>-release`; single-backend folders append `-sdl_gpu`/`-dawn`.
-Measuring commands' `--backend` chooses the runtime renderer; `--exe` overrides the binary.
+`parity` and `check` measure every backend the build compiles; `--backend sdl_gpu|dawn` (any case, `gpu`
+means `sdl_gpu`) or an ambient `BBLITE_GPU_BACKEND` selects one. `BBLITE_NATIVE_EXE` overrides the executable.
 
-| Reached feature | Dependency/build effect |
-| --- | --- |
-| renderer:scene | PBR renderer and selected backend units |
-| Image formats | Codecs/notices from `native/vcpkg.json` |
-| glTF / Babylon / JSON | nlohmann-json |
-| ui:rml | FreeType, pinned RmlUi, platform fonts |
-| ui:inline-svg | LunaSVG and RmlUi `-EnableSvg` |
-| text:layout / text rendering | HarfBuzz / BBLITE_HAS_TEXT |
-| physics:world | Bullet |
-| navigation / crowd / tile-cache | Corresponding Recast/Detour features |
-| audio | LabSound/libnyquist; byte-selected codecs where known |
-| platform:window | Offscreen surfaces and presenters |
-| gamepad / files / audio | Matching SDL subsystem |
+Generation writes reached features and image codecs to `generated/<id>/features.cmake`;
+`native/dependency-features.cmake` maps them to `native/vcpkg.json` manifest features and native units.
+vcpkg's SDL is the `sdl` feature, requested unless a trimmed SDL artifact (`BBLITE_SDL_DIR`, every shipping
+build) replaces it.
+Each native macro has one owner and is defined, 0 or 1, wherever it is tested: CMake defines build options,
+generation writes each feature-keyed macro to its own `bblite/features/<name>.hpp` (`src/feature-macros.ts`),
+which every file testing it includes, and its composition decisions to `render_capabilities.hpp`. Guards are
+plain `#if X`; an undefined name in a project unit's `#if` is a compile error (`-Wundef`, MSVC `/we4668` with
+SDK and dependency headers external). Native test fixtures (`test/native-fixture.ts`) build the same way:
+their `/D` feature macros become those headers, and `/we4668` applies.
 
-Development shares `artifacts/vcpkg-installed/development-full`. Reconcile an install once, never
-concurrently; parallel builds use `VCPKG_MANIFEST_INSTALL=OFF`. `BBLITE_VCPKG_INSTALLED_ROOT` relocates it.
-`tools/setup-worktree.ps1 -Path <path> -Branch <branch>` isolates outputs/shares caches; `-SharedVcpkg`
-needs coordinated installation. Use `-Remove` to unlink junctions before removing a worktree.
+Development shares `artifacts/vcpkg-installed/development-full-<key>`, keyed by `native/vcpkg.json`,
+its configuration and the overlay ports; `BBLITE_VCPKG_INSTALLED_ROOT` relocates the root. Each
+`scene build` reconciles it once, before any configure (configures never run vcpkg), when the features,
+triplet or vcpkg changed; shipping installs are keyed the same way, and the three most recently used
+installs per name are kept. `tools/setup-worktree.ps1 -Path <path> -Branch <branch>` isolates
+outputs/shares caches; `-SharedVcpkg` junctions the install root, so checkouts of different manifests
+share it without reinstalling. Use `-Remove` to unlink junctions before removing a worktree.
 
 ### Concurrency
 
@@ -313,14 +312,31 @@ needs coordinated installation. Use `-Remove` to unlink junctions before removin
 | BBLITE_PARALLEL_PARITY | Comparisons; default 8, audio serialized |
 
 Defaults use CPU affinity/RAM and Ninja history. `tools/model-build-scheduling.mjs` inspects scheduling.
-Native ccache uses `artifacts/native-cache`; `CCACHE_PATH` overrides it and `BBLITE_NATIVE_CACHE=0`
-disables it. Identical generated headers share cache storage. Debug keys retain directory identity.
+Native ccache stores objects in `artifacts/native-cache` (CMake `BBLITE_NATIVE_CACHE_DIR`, 25 GiB);
+`BBLITE_NATIVE_CACHE=0` disables it. Keys are relative to the checkout, so worktrees share hits; a miss
+takes its headers from the compiler's own dependency output (ccache's depend mode) rather than a preprocessor
+pass. Each
+repository unit reads a content-addressed folder holding exactly the generated headers its include closure
+names (`native/native-header-cache.cmake`), so a generated header rebuilds only its includers and a unit
+hits across scenes whose inputs to it agree; lowered modules compile from content-addressed copies under the
+cache (`sources/<module>-<digest>.cpp`, the name their diagnostics carry). clang-cl builds the precompiled
+header from a source under the cache named by its text, so every tree of a checkout whose PCH inputs agree
+shares it and its users' entries; its own entry keys on the checkout's absolute paths, which the PCH
+records. Like `/Yc`, it instantiates the templates its headers use (`-fpch-instantiate-templates`), so units
+do not repeat them. Debug keys retain directory identity.
 
 ## Shader compilation
 
 `process --shader d3d12|vulkan|metal|all` selects offline targets; default is the host target.
-`BBLITE_SHADER_TARGET`, `TINT_PATH` and `DXC_PATH` override defaults. Dawn uses WGSL.
-Shader checkpoints include input/output bytes and compiler identity.
+`BBLITE_SHADER_TARGET`, `BBLITE_TINT_PATH` and `DXC_PATH` override defaults. Dawn uses WGSL.
+`tools/build-tint.ps1` builds the pinned `tint` and bblite-tint (`tools/tint-sdl`), the offline
+compiler's writer driver, from its own checkout carrying the `tint` patch series. Each set of tool
+sources (the script, the Tint pin, `tools/tint-sdl` and the series) builds into
+`artifacts/tools/tint/<identity>`, whose `provenance.json` records every source's SHA-256, so
+worktrees with other tool sources keep their own builds. A checkout uses only the build recording
+exactly its sources; `compile-shaders` refuses any other tool, including `BBLITE_TINT_PATH`, and
+names the fix: `pwsh -File tools/build-tint.ps1`.
+Shader checkpoints include input/output bytes, compiler identity and the tool sources.
 
 | Cache | Location |
 | --- | --- |
@@ -332,7 +348,8 @@ Shader checkpoints include input/output bytes and compiler identity.
 
 ## Build identity
 
-Measured runs verify generated/native digests, deployed payload and CMake configuration. Generation and
+Measured runs verify generated/native digests, the deployed payload (the compiled backends' shader files
+and assets) and CMake configuration. Generation and
 shaders use content identity; native outputs also use size/mtime. Native edits refresh build stamps.
 CMakeLists edits require process before parity. Explicit payload overrides are diagnostic.
 
@@ -342,10 +359,11 @@ CMakeLists edits require process before parity. Explicit payload overrides are d
 npm run demos:release -- --output artifacts/releases
 ```
 
-Options: `--scene <id,id>`, `--workers N`, `--jobs N`, `--plan`. One workflow owns dependency installation.
-It prepares reached static dependencies, builds and packages application demos. Plans/logs live in
+Options: `--scene <id,id>`, `--workers N`, `--jobs N`, `--plan` (generates, then prints the plan). The workflow owns dependency installation,
+prepares reached static dependencies, and builds and packages application demos. Plans/logs live in
 `artifacts/shipping/`; receipts include bytes, hashes and startup results. Replaced packages go to
-`.replaced/`; `@previous/` is preserved.
+`.replaced/`; `@previous/` is preserved. Every platform stages, archives, publishes and credits its
+dependencies' notices through `src/package-output.ts` and `src/package-notices.ts`.
 
 | Platform | Shipping configuration |
 | --- | --- |
@@ -361,25 +379,25 @@ runs only on the build host's architecture. ARM requires deployment target 11+.
 
 Manual builds use `BBLITE_MINSIZE=ON`, matching backend/CRT/triplet, generated directory and trimmed
 SDL/Dawn/LabSound/RmlUi artifacts. Dependency flags include `-EnableAudio`, `-EnableGamepad`,
-`-EnableCodecs`, `-EnableSvg`, `-MinSize` and Windows `-StaticRuntime`. Missing reached subsystems refuse.
+`-EnableCodecs`, `-EnableSvg`, `-MinSize` and Windows `-StaticRuntime`. Missing reached subsystems refuse,
+as do artifacts whose recorded source or patch set differs.
 `BBLITE_PCH` is off; capture options are explicit and disabled capture requests fail.
 
 ```powershell
-npm run package:demo -- -Scene <id> -BuildDirectory <dir>
+npm run package:demo -- --scene <id> --build-directory <dir>
 ```
 
-macOS packaging requires both slices via `-BuildDirectory <intel>` and `-Arm64BuildDirectory <arm>`;
+macOS packaging requires both slices via `--build-directory <intel>` and `--arm64-build-directory <arm>`;
 defaults are `native/build-<id>-min-sdl-x86_64` and `native/build-<id>-min-sdl-arm64`.
 Dependency builds accept `-MacArchitecture`; use matching vcpkg and CMAKE_OSX_ARCHITECTURES.
 
 ```sh
-npm run package:demo -- -Platform ios -Scene tetris -Jobs 3
+npm run package:demo -- --platform ios --scene tetris --jobs 3
 npm run demos:release -- --platform ios --scene tetris,platformer --jobs 3
 ```
 
-iOS publishing requires SDK 16.4+. Packages contain Metal shaders and reached static dependencies;
-capture is disabled. Each ZIP contains an unsigned iPhone/iPad app, not a Simulator binary.
-Receipts record hashes, sizes and `startup.status=not-run`; [device qualification](features.md#ios) is incomplete.
+iOS packages contain Metal shaders and reached static dependencies with capture disabled; each ZIP holds
+an iPhone/iPad device app. Receipts record hashes, sizes and `startup.status=not-run`.
 
 The desktop packager runs the staged executable for five frames with GPU validation, then publishes the ZIP
 only after success. CMake presets provide Windows developer-prompt recipes. Linker size attribution:
@@ -400,24 +418,15 @@ API updates: `npm run api -- diff`, update affected cases/fingerprints, then
 ```powershell
 npm run api -- report --run
 npm run api -- report --filter BoxOptions
-npm run api -- report --project <entry.ts>
 npm run api -- check
 npm run api -- diff --baseline <previous-snapshot.json>
 ```
 
-Searchable HTML/JSON reports, logs and receipts live in ignored `artifacts/api-coverage`;
-`--output <directory>` changes the destination. [Features](features.md#api-coverage-inventory) owns the metrics.
-`--project` restricts the report to the declarations one external entry references, scanned against this
-repository's pin and credited by the collected receipts; collect them at the current inputs first, or the
-report marks its evidence stale. Its readiness lists supported use sites and declarations, referenced exported
-functions without a routing hook, and imported names the pin does not export. It writes under
-`artifacts/api-coverage/projects/<directory>-<entry>` and collects nothing.
-
-`report --run` collects compiler evidence from all tests and registered scenes/demos, then runs semantic cases.
-Scenes use their registered query and host companion. Missing corpus entries, failed/skipped tests or missing
-scene receipts prevent publication. Collection leaves native outputs intact.
-`report` reuses current receipts, scans corpus/fixture references (including unused code), and probes
-entry routing with omitted arguments. It executes no test suite or native programs.
+Reports, logs and receipts live in ignored `artifacts/api-coverage` (`--output <directory>` relocates);
+[features](features.md#api-coverage-inventory) owns the metrics. `report --run` collects compiler evidence
+from all tests and registered scenes/demos (registered query and host companion), then runs semantic cases;
+missing corpus entries, failed/skipped tests or missing scene receipts block publication. `report` reuses
+current receipts and runs no tests or native programs.
 
 Semantic cases contain `id`, `level` (`generation`, `native`, `parity`, `refusal`), `scope`, `limitations`,
 `test: {file, name}`, and `targets: [{id, fingerprint}]`. Targets describe the named test's assertions.
@@ -429,7 +438,6 @@ changed external toolchains/assets and other hosts require separate qualificatio
 | Failure | Action |
 | --- | --- |
 | Missing tools/dependencies | doctor; verify path overrides |
-| Patched dependency | Rebuild its installed artifact |
 | LNK1168 | Stop the executable holding the output |
 | Long vcpkg paths | Short --x-buildtrees-root |
 | Wrong compiler/generator | Recreate the affected disposable build tree |

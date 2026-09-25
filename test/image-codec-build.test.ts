@@ -9,69 +9,6 @@ import { discoverDevelopmentTools } from "../src/development-tools.js";
 const tools = discoverDevelopmentTools();
 
 test(
-    "shipping codec notices follow reached formats and capture",
-    { skip: !tools.powershell },
-    () => {
-        assert.ok(tools.powershell);
-        const script = `
-        $ErrorActionPreference = 'Stop'
-        Import-Module $env:BBLITE_TEST_CODEC_MODULE -Force
-        $results = @()
-        foreach ($case in @(
-            @{ Features = 'set(BBLITE_IMAGE_CODECS\n    ""\n)'; Capture = $false },
-            @{ Features = 'set(BBLITE_IMAGE_CODECS "jpeg")'; Capture = $false },
-            @{ Features = 'set(BBLITE_IMAGE_CODECS "webp")'; Capture = $false },
-            @{ Features = 'set(BBLITE_IMAGE_CODECS "jpeg")'; Capture = $true },
-            @{ Features = 'set(BBLITE_IMAGE_CODECS "png" "jpeg" "webp")'; Capture = $true }
-        )) {
-            $results += Get-ImageCodecLicenses $env:BBLITE_TEST_CODEC_MANIFEST $case.Features $case.Capture
-        }
-        foreach ($features in @('', 'set(BBLITE_IMAGE_CODECS "unknown")', 'set(BBLITE_IMAGE_CODECS JPEG)')) {
-            try {
-                Get-ImageCodecLicenses $env:BBLITE_TEST_CODEC_MANIFEST $features $false | Out-Null
-                throw 'unexpected admission'
-            } catch {
-                if ($_.Exception.Message -eq 'unexpected admission') { throw }
-                $results += $_.Exception.Message
-            }
-        }
-        ConvertTo-Json -InputObject $results -Compress
-    `;
-        const result = spawnSync(
-            tools.powershell,
-            ["-NoProfile", "-Command", script],
-            {
-                encoding: "utf8",
-                env: {
-                    ...process.env,
-                    BBLITE_TEST_CODEC_MODULE: resolve(
-                        "tools/image-codecs.psm1",
-                    ),
-                    BBLITE_TEST_CODEC_MANIFEST: resolve("native/vcpkg.json"),
-                },
-            },
-        );
-        assert.equal(result.status, 0, result.stdout + result.stderr);
-        const results: unknown = JSON.parse(result.stdout);
-        assert.ok(Array.isArray(results));
-        const common = { "SDL3_image.txt": "sdl3-image" };
-        const png = { "libpng.txt": "libpng", "zlib.txt": "zlib" };
-        const jpeg = { "libjpeg-turbo.txt": "libjpeg-turbo" };
-        const webp = { "libwebp.txt": "libwebp" };
-        assert.deepEqual(results.slice(0, 5), [
-            {},
-            { ...common, ...jpeg },
-            { ...common, ...webp },
-            { ...common, ...jpeg, ...png },
-            { ...common, ...jpeg, ...png, ...webp },
-        ]);
-        assert.match(String(results[5]), /no BBLITE_IMAGE_CODECS/);
-        assert.match(String(results[6]), /Unknown BBLITE_IMAGE_CODECS/);
-        assert.match(String(results[7]), /Malformed BBLITE_IMAGE_CODECS/);
-    },
-);
-
-test(
     "SDL_image codec options follow port features",
     { skip: !tools.cmake || !tools.vcpkgRoot },
     (t) => {

@@ -4,12 +4,23 @@ import {
     propertyNameText,
     unwrapExpression as unwrapSyntaxWrappers,
 } from "../compiler/syntax.js";
-import { UpstreamSourceStore } from "../upstream-source.js";
+import {
+    sharedUpstreamStore,
+    UpstreamSourceStore,
+} from "../upstream-source.js";
+import {
+    moduleScopeVariable,
+    pinnedNamesOf,
+    registerPinnedSource,
+    type PinnedProgram,
+} from "../pinned-program.js";
 import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
 import { sourceLocation } from "../source-location.js";
+import { pinnedProvenanceLead } from "../pinned-provenance.js";
+import { foldNumericBinary, foldNumericUnary } from "./pinned-operators.js";
 
 export interface LoweredSource {
     header: string;
@@ -118,15 +129,23 @@ export function unwrapExpression(expression: ts.Expression): ts.Expression {
  * declares `HDR_LOD_GENERATION_SCALE` on one line and a mutable
  * `let _prefilteredEnvironmentExtraUsage = 0` counter on the next, and a
  * scan that folded the second would bake a value the pin means to change.
+ *
+ * `frozen` admits a module-scope `let` for the one reader that means its
+ * initial value: a binding the pin mutates at run time (`MAX_LIGHTS`, which
+ * `setMaxLights` grows) that this port freezes and refuses the mutation of.
  */
-export function moduleScopeConstant(
+function moduleScopeConstant(
     file: ts.SourceFile,
     name: string,
+    options: { frozen?: boolean } = {},
 ): ts.Expression | undefined {
+    const admitted = options.frozen
+        ? ts.NodeFlags.Const | ts.NodeFlags.Let
+        : ts.NodeFlags.Const;
     for (const statement of file.statements) {
         if (
             !ts.isVariableStatement(statement) ||
-            (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+            (statement.declarationList.flags & admitted) === 0
         ) {
             continue;
         }
@@ -141,6 +160,96 @@ export function moduleScopeConstant(
         }
     }
     return undefined;
+}
+
+/**
+ * The initializer of the first variable a pinned scope declares under a
+ * name, at any depth, searching several roots in order when the scope is
+ * split (a body and the arm it guards). A whole module is a scope too; its
+ * module-scope constants read through `LoweringContext.pinnedConstant`,
+ * which stops at the top level and follows imports.
+ */
+export function variableInitializer(
+    scope: ts.Node | readonly ts.Node[],
+    variableName: string,
+): ts.Expression {
+    const roots: readonly ts.Node[] = isNodeList(scope) ? scope : [scope];
+    let initializer: ts.Expression | undefined;
+    const visit = (node: ts.Node): void => {
+        if (initializer) return;
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === variableName &&
+            node.initializer
+        ) {
+            initializer = node.initializer;
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    roots.forEach(visit);
+    if (!initializer) {
+        contractError(
+            roots[0]!,
+            `Expected variable '${variableName}' with an initializer.`,
+        );
+    }
+    return initializer;
+}
+
+function isNodeList(
+    scope: ts.Node | readonly ts.Node[],
+): scope is readonly ts.Node[] {
+    return Array.isArray(scope);
+}
+
+/**
+ * The top-level function a pinned module declares with a body, or undefined.
+ *
+ * The one lookup behind `LoweringContext.functionDeclaration` and the glTF
+ * leaves' `topLevelFunction`, which hold only a `ts.SourceFile` and refuse
+ * in their own voice.
+ */
+export function topLevelFunctionDeclaration(
+    file: ts.SourceFile,
+    name: string,
+): (ts.FunctionDeclaration & { body: ts.Block }) | undefined {
+    return file.statements.find(
+        (statement): statement is ts.FunctionDeclaration & { body: ts.Block } =>
+            ts.isFunctionDeclaration(statement) &&
+            statement.name?.text === name &&
+            statement.body !== undefined,
+    );
+}
+
+/**
+ * A pinned declaration's own source text from its first token after any
+ * `export` modifier: the form a generation-time executor wraps in a
+ * function body, where a module-level `export` does not parse.
+ */
+export function unexportedDeclarationText(
+    declaration: ts.FunctionDeclaration,
+): string {
+    const file = declaration.getSourceFile();
+    // The first token that is not `export`: a remaining modifier (`async`)
+    // or the `function` keyword itself.
+    const first = declaration
+        .getChildren(file)
+        .flatMap((child) =>
+            child.kind === ts.SyntaxKind.SyntaxList
+                ? child.getChildren(file)
+                : [child],
+        )
+        .find(
+            (token) =>
+                token.kind !== ts.SyntaxKind.ExportKeyword &&
+                !ts.isJSDoc(token),
+        );
+    return file.text.slice(
+        (first ?? declaration).getStart(file),
+        declaration.end,
+    );
 }
 
 /**
@@ -161,26 +270,71 @@ export function nullishDefault(
     return { left: node.left, right: node.right };
 }
 
+/** A pinned constant's initializer, with the module declaring it. */
+interface PinnedConstant {
+    initializer: ts.Expression;
+    file: ts.SourceFile;
+}
+
 /** How `numericValue` reaches past the expression it is handed. */
-export interface NumericValueOptions {
+interface NumericValueOptions {
     /**
-     * A name's constant initializer. The default reads the file's own
-     * module-scope `const`s; a caller with a store follows imports too.
+     * The constant an identifier names. The default reads a module-scope
+     * `const` its own file declares; a caller with a store follows imports
+     * too.
      */
-    constant?: (
-        name: string,
-        file: ts.SourceFile,
-    ) => { initializer: ts.Expression; file: ts.SourceFile } | undefined;
+    constant?: (identifier: ts.Identifier) => PinnedConstant | undefined;
     /** The refusal, in the caller's own voice. */
     refuse?: (node: ts.Node, file: ts.SourceFile) => never;
 }
 
+/**
+ * The declaration an identifier in pinned source names, resolved by the
+ * checker of the program that parsed its file rather than by its spelling:
+ * a local that shadows a module constant is the local, and an import is
+ * followed through its rename and re-exports.
+ */
+function declarationOf(identifier: ts.Identifier): ts.Declaration | undefined {
+    const file = ts.getOriginalNode(identifier).getSourceFile() as
+        ts.SourceFile | undefined;
+    if (!file) {
+        throw new Error(
+            `The synthesized name '${identifier.text}' has no declaration; ` +
+                "a constant named by a string reads through pinnedNumber.",
+        );
+    }
+    return pinnedNamesOf(file).declarationOf(identifier);
+}
+
+/**
+ * The module-scope constant a pinned identifier names: a `const` (or, with
+ * `frozen`, a `let`) declared at a module's top level with an initializer.
+ * `sameFile` keeps the reader to the identifier's own module.
+ */
+export function constantOf(
+    identifier: ts.Identifier,
+    options: { frozen?: boolean; sameFile?: boolean } = {},
+): PinnedConstant | undefined {
+    const declaration = moduleScopeVariable(declarationOf(identifier));
+    if (!declaration?.initializer) return undefined;
+    const admitted = options.frozen
+        ? ts.NodeFlags.Const | ts.NodeFlags.Let
+        : ts.NodeFlags.Const;
+    if ((declaration.parent.flags & admitted) === 0) return undefined;
+    const file = declaration.getSourceFile();
+    if (
+        options.sameFile &&
+        file !== ts.getOriginalNode(identifier).getSourceFile()
+    ) {
+        return undefined;
+    }
+    return { initializer: declaration.initializer, file };
+}
+
 function sameFileConstant(
-    name: string,
-    file: ts.SourceFile,
-): { initializer: ts.Expression; file: ts.SourceFile } | undefined {
-    const initializer = moduleScopeConstant(file, name);
-    return initializer ? { initializer, file } : undefined;
+    identifier: ts.Identifier,
+): PinnedConstant | undefined {
+    return constantOf(identifier, { sameFile: true });
 }
 
 /**
@@ -201,11 +355,12 @@ export function numericValue(
 ): number {
     const unwrapped = unwrapExpression(expression);
     if (ts.isNumericLiteral(unwrapped)) return Number(unwrapped.text);
-    if (
-        ts.isPrefixUnaryExpression(unwrapped) &&
-        unwrapped.operator === ts.SyntaxKind.MinusToken
-    ) {
-        return -numericValue(unwrapped.operand, file, options);
+    if (ts.isPrefixUnaryExpression(unwrapped)) {
+        const folded = foldNumericUnary(
+            unwrapped.operator,
+            numericValue(unwrapped.operand, file, options),
+        );
+        if (folded !== undefined) return folded;
     }
     if (
         ts.isPropertyAccessExpression(unwrapped) &&
@@ -216,38 +371,15 @@ export function numericValue(
         return Math.PI;
     }
     if (ts.isBinaryExpression(unwrapped)) {
-        const left = numericValue(unwrapped.left, file, options);
-        const right = numericValue(unwrapped.right, file, options);
-        switch (unwrapped.operatorToken.kind) {
-            case ts.SyntaxKind.PlusToken:
-                return left + right;
-            case ts.SyntaxKind.MinusToken:
-                return left - right;
-            case ts.SyntaxKind.AsteriskToken:
-                return left * right;
-            case ts.SyntaxKind.SlashToken:
-                return left / right;
-            case ts.SyntaxKind.LessThanLessThanToken:
-                return left << right;
-            case ts.SyntaxKind.GreaterThanGreaterThanToken:
-                return left >> right;
-            case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
-                return left >>> right;
-            case ts.SyntaxKind.BarToken:
-                return left | right;
-            case ts.SyntaxKind.AmpersandToken:
-                return left & right;
-            case ts.SyntaxKind.CaretToken:
-                return left ^ right;
-            default:
-                break;
-        }
+        const folded = foldNumericBinary(
+            unwrapped.operatorToken.kind,
+            numericValue(unwrapped.left, file, options),
+            numericValue(unwrapped.right, file, options),
+        );
+        if (folded !== undefined) return folded;
     }
     if (ts.isIdentifier(unwrapped)) {
-        const bound = (options.constant ?? sameFileConstant)(
-            unwrapped.text,
-            file,
-        );
+        const bound = (options.constant ?? sameFileConstant)(unwrapped);
         if (bound) return numericValue(bound.initializer, bound.file, options);
     }
     if (options.refuse) return options.refuse(unwrapped, file);
@@ -258,7 +390,69 @@ export function numericValue(
 }
 
 export class LoweringContext {
-    public constructor(public readonly store = new UpstreamSourceStore()) {}
+    public constructor(
+        public readonly store: UpstreamSourceStore = sharedUpstreamStore(),
+    ) {}
+
+    /** The typed program over the store's sources: symbols and types of pinned nodes. */
+    public get program(): PinnedProgram {
+        return this.store.program;
+    }
+
+    /** `declarationOf`: what a pinned identifier names, by the checker. */
+    public declarationOf(
+        identifier: ts.Identifier,
+    ): ts.Declaration | undefined {
+        return declarationOf(identifier);
+    }
+
+    /** `constantOf`: the module-scope constant a pinned identifier names, wherever declared. */
+    public constantOf(
+        identifier: ts.Identifier,
+        options: { frozen?: boolean } = {},
+    ): PinnedConstant | undefined {
+        return constantOf(identifier, options);
+    }
+
+    /** The initializer of the variable a pinned identifier names, wherever declared. */
+    public initializerOf(identifier: ts.Identifier): ts.Expression {
+        const declaration = declarationOf(identifier);
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !declaration.initializer
+        ) {
+            return contractError(
+                identifier,
+                `Expected '${identifier.text}' to name a variable with an initializer.`,
+            );
+        }
+        return declaration.initializer;
+    }
+
+    /** The function with a body a pinned identifier names, wherever declared. */
+    public functionOf(identifier: ts.Identifier): {
+        file: ts.SourceFile;
+        declaration: ts.FunctionDeclaration & { body: ts.Block };
+    } {
+        const declaration = declarationOf(identifier);
+        if (
+            !declaration ||
+            !ts.isFunctionDeclaration(declaration) ||
+            !declaration.body
+        ) {
+            return contractError(
+                identifier,
+                `Expected '${identifier.text}' to name a function with a body.`,
+            );
+        }
+        return {
+            file: declaration.getSourceFile(),
+            declaration: declaration as ts.FunctionDeclaration & {
+                body: ts.Block;
+            },
+        };
+    }
 
     public provenance(
         modulePath: string,
@@ -266,13 +460,20 @@ export class LoweringContext {
         extra?: string,
     ): string {
         const base =
-            `Generated from ${this.store.pin.package}@${this.store.pin.version} ` +
+            `${pinnedProvenanceLead}${this.store.pin.package}@${this.store.pin.version} ` +
             `(${this.store.pin.sourceVersion}) ${modulePath}#${symbolName}`;
         return `${base}${extra ? ` and ${extra}` : ""}.`;
     }
 
+    /**
+     * A pinned module as this context's store serves it, owned by that
+     * store's typed program: a store that serves an edited module resolves
+     * that module's names through its own program.
+     */
     public sourceFile(modulePath: string): ts.SourceFile {
-        return this.store.getSourceFile(modulePath);
+        const file = this.store.getSourceFile(modulePath);
+        registerPinnedSource(file, () => this.store.program);
+        return file;
     }
 
     public contractError(node: ts.Node, message: string): never {
@@ -408,19 +609,74 @@ export class LoweringContext {
         declaration: ts.FunctionDeclaration;
     } {
         const file = this.sourceFile(modulePath);
-        const declaration = file.statements.find(
-            (statement): statement is ts.FunctionDeclaration =>
-                ts.isFunctionDeclaration(statement) &&
-                statement.name?.text === symbolName &&
-                statement.body !== undefined,
-        );
-        if (!declaration?.body) {
+        const declaration = topLevelFunctionDeclaration(file, symbolName);
+        if (!declaration) {
             this.contractError(
                 file,
                 `Expected function '${symbolName}' with a body.`,
             );
         }
         return { file, declaration };
+    }
+
+    /** The top-level class a pinned module declares under a name. */
+    public classDeclaration(
+        modulePath: string,
+        name: string,
+    ): { file: ts.SourceFile; declaration: ts.ClassDeclaration } {
+        const file = this.sourceFile(modulePath);
+        const declaration = file.statements.find(
+            (statement): statement is ts.ClassDeclaration =>
+                ts.isClassDeclaration(statement) &&
+                statement.name?.text === name,
+        );
+        if (!declaration) {
+            this.contractError(file, `Expected class '${name}'.`);
+        }
+        return { file, declaration };
+    }
+
+    /** The top-level enum a pinned module declares under a name. */
+    public enumDeclaration(
+        modulePath: string,
+        name: string,
+    ): { file: ts.SourceFile; declaration: ts.EnumDeclaration } {
+        const file = this.sourceFile(modulePath);
+        const declaration = file.statements.find(
+            (statement): statement is ts.EnumDeclaration =>
+                ts.isEnumDeclaration(statement) && statement.name.text === name,
+        );
+        if (!declaration) {
+            this.contractError(file, `Expected enum '${name}'.`);
+        }
+        return { file, declaration };
+    }
+
+    /**
+     * The number one member of a pinned enum stands for, read from its own
+     * initializer. A member the pin leaves to implicit numbering refuses:
+     * its value is its position, which is a contract a reader has to state
+     * rather than infer.
+     */
+    public enumMember(
+        modulePath: string,
+        enumName: string,
+        memberName: string,
+    ): number {
+        const { file, declaration } = this.enumDeclaration(
+            modulePath,
+            enumName,
+        );
+        const member = declaration.members.find(
+            (candidate) => this.propertyName(candidate.name) === memberName,
+        );
+        if (!member?.initializer) {
+            this.contractError(
+                member ?? declaration,
+                `Expected ${enumName}.${memberName} with an explicit value.`,
+            );
+        }
+        return this.numericValue(member.initializer, file);
     }
 
     /**
@@ -644,31 +900,10 @@ export class LoweringContext {
     }
 
     public variableInitializer(
-        declaration: ts.Node,
+        scope: ts.Node | readonly ts.Node[],
         variableName: string,
     ): ts.Expression {
-        let initializer: ts.Expression | undefined;
-        const visit = (node: ts.Node): void => {
-            if (
-                !initializer &&
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.name.text === variableName &&
-                node.initializer
-            ) {
-                initializer = node.initializer;
-                return;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration);
-        if (!initializer) {
-            this.contractError(
-                declaration,
-                `Expected variable '${variableName}' with an initializer.`,
-            );
-        }
-        return initializer;
+        return variableInitializer(scope, variableName);
     }
 
     public returnObject(
@@ -1094,13 +1329,13 @@ export class LoweringContext {
         file: ts.SourceFile,
     ): number {
         return numericValue(expression, file, {
-            constant: (name, at) => this.moduleConstant(at, name),
+            constant: (identifier) => constantOf(identifier),
         });
     }
 
     /**
      * The module-scope `const` a pinned module declares under a name, or the
-     * one it imports that name from.
+     * one it imports under that name.
      *
      * The pin names a value the moment a second module needs it — the HDR
      * loader's LOD generation scale became `HDR_LOD_GENERATION_SCALE` in the
@@ -1109,19 +1344,79 @@ export class LoweringContext {
      * the value the pin's; refusing the name instead would have to be
      * answered by restating the number here, which is the copy that drifts.
      *
-     * An aliased import resolves to nothing rather than to a guess.
+     * The name is the one the module's own scope binds; an import is
+     * followed by the typed program, through a rename and re-exports.
+     * `frozen` is `moduleScopeConstant`'s.
      */
-    private moduleConstant(
-        file: ts.SourceFile,
+    public pinnedConstant(
+        module: ts.SourceFile | string,
         name: string,
-    ): { initializer: ts.Expression; file: ts.SourceFile } | undefined {
-        const local = this.moduleScopeConstant(file, name);
+        options: { frozen?: boolean } = {},
+    ): PinnedConstant | undefined {
+        const file =
+            typeof module === "string" ? this.sourceFile(module) : module;
+        const local = moduleScopeConstant(file, name, options);
         if (local) return { initializer: local, file };
-        const declaringPath = this.moduleOfImport(file.fileName, name);
-        if (!declaringPath) return undefined;
-        const declaring = this.sourceFile(declaringPath);
-        const initializer = this.moduleScopeConstant(declaring, name);
-        return initializer ? { initializer, file: declaring } : undefined;
+        const imported = this.importedName(file, name);
+        return imported ? constantOf(imported, options) : undefined;
+    }
+
+    /** The binding a module's named import introduces under `localName`. */
+    private importedName(
+        file: ts.SourceFile,
+        localName: string,
+    ): ts.Identifier | undefined {
+        for (const statement of file.statements) {
+            const bindings = ts.isImportDeclaration(statement)
+                ? statement.importClause?.namedBindings
+                : undefined;
+            if (!bindings || !ts.isNamedImports(bindings)) continue;
+            const element = bindings.elements.find(
+                (candidate) => candidate.name.text === localName,
+            );
+            if (element) return element.name;
+        }
+        return undefined;
+    }
+
+    /** `pinnedConstant`, refusing when the module names no such constant. */
+    private requiredConstant(
+        module: ts.SourceFile | string,
+        name: string,
+        options: { frozen?: boolean },
+    ): PinnedConstant {
+        const constant = this.pinnedConstant(module, name, options);
+        if (!constant) {
+            this.contractError(
+                typeof module === "string" ? this.sourceFile(module) : module,
+                `Expected module-scope const '${name}'.`,
+            );
+        }
+        return constant;
+    }
+
+    /** The number a pinned module-scope `const` states, folded. */
+    public pinnedNumber(
+        module: ts.SourceFile | string,
+        name: string,
+        options: { frozen?: boolean } = {},
+    ): number {
+        const { initializer, file } = this.requiredConstant(
+            module,
+            name,
+            options,
+        );
+        return this.numericValue(initializer, file);
+    }
+
+    /** The string a pinned module-scope `const` states. */
+    public pinnedString(modulePath: string, name: string): string {
+        const { initializer, file } = this.requiredConstant(
+            modulePath,
+            name,
+            {},
+        );
+        return this.stringValue(initializer, file);
     }
 
     public moduleScopeConstant(
@@ -1360,4 +1655,32 @@ export class LoweringContext {
             .map((child) => this.nodeFingerprint(child))
             .join(",")})`;
     }
+}
+
+let sharedPinned: LoweringContext | undefined;
+
+/**
+ * The one context a process reads pinned facts through outside a scene's
+ * own lowering, over `sharedUpstreamStore()`.
+ *
+ * A reader that folds a pinned default or declaration once per process
+ * (the material, mesh and post-process defaults, the navigation agent
+ * defaults, the option-kind survey) holds no state of its own, and a
+ * `LoweringContext` holds none beyond its store, so they share this rather
+ * than each caching a private one.
+ */
+export function sharedPinnedContext(): LoweringContext {
+    sharedPinned ??= new LoweringContext(sharedUpstreamStore());
+    return sharedPinned;
+}
+
+/**
+ * The context over `store`: the shared one for the process's store, and a
+ * context of its own for another (a test pointing at another tree). These
+ * two are the only places a context is built outside tests.
+ */
+export function pinnedContextOver(store: UpstreamSourceStore): LoweringContext {
+    return store === sharedUpstreamStore()
+        ? sharedPinnedContext()
+        : new LoweringContext(store);
 }

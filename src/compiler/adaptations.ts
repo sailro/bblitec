@@ -2,31 +2,87 @@
 import type { LoweringServices } from "./lowering-services.js";
 import type { CompileAdaptation } from "../fidelity.js";
 import { pixelsSourcePrefix } from "../executed-module-assets.js";
-import { bakedDirectionMinimumLength } from "../lowering/pinned-vertex-normalization.js";
 import type { Feature } from "./types.js";
+import type { UiProjection } from "./ui-projection.js";
 
-export interface AdaptationContext extends Pick<
+interface AdaptationContext extends Pick<
     LoweringServices,
     | "hasMainEntry"
     | "erasedBrowserExpressions"
     | "erasedBrowserInstrumentation"
     | "unwrappedAwaitExpressions"
     | "jsDataReached"
+    | "fileReaderReached"
+    | "options"
     | "jsRandomReached"
-    | "voxelFileStorageReached"
     | "browserTextureFunctions"
     | "canvasReadbackFunctions"
     | "assets"
-    | "reachedShaderPrograms"
-    | "geometryOutputTasks"
+    | "sceneManifest"
     | "defaultRenderTaskAdapted"
-    | "uiDegradedStyleProperties"
-    | "uiScopedSheetSelectors"
-> {}
+> {
+    readonly ui: Pick<
+        UiProjection,
+        "uiDegradedStyleProperties" | "uiScopedSheetSelectors"
+    >;
+}
+
+/**
+ * The rows the feature list alone decides, from the appenders that read
+ * nothing else. `compileAdaptations` appends each in place for the compiled
+ * features; the asset join runs them over the finished list and keeps the
+ * rows its joined features added, so a feature an asset carries records the
+ * adaptation a scene call reaching it would. A row keyed on a feature an
+ * asset can join therefore belongs in one of these appenders.
+ */
+export function featureKeyedAdaptations(
+    features: readonly Feature[],
+): CompileAdaptation[] {
+    const adaptations: CompileAdaptation[] = [];
+    appendSplatAdaptations(features, adaptations);
+    appendGizmoAdaptations(features, adaptations);
+    appendPhysicsAdaptations(features, adaptations);
+    appendTransmissionAdaptations(features, adaptations);
+    return adaptations;
+}
+
+/**
+ * The row for a splat container whose parse answered spherical harmonics:
+ * the one fork no scene call reaches, so only the asset join records it,
+ * naming the parser that produced them.
+ */
+export function splatHarmonicsSidecarAdaptation(
+    parser: string,
+): CompileAdaptation {
+    return {
+        id: "splat-harmonics-sidecar",
+        category: "asset-materialization",
+        sourceSemantics:
+            parser +
+            " returns the 32-byte rows " +
+            "beside a flat spherical-harmonic byte stream, and " +
+            "attachParsedSplat hands both to the SH pipeline in one call.",
+        nativeSemantics:
+            "The rows package to the interchange .splat buffer " +
+            "unchanged -- a .ply and a .splat of one cloud must still " +
+            "produce identical bytes -- so the harmonics package to a " +
+            "sidecar named off the row file, and the degree becomes a " +
+            "generation-time constant the loader, the payload packer " +
+            "and the deployed stages all read. The pin's run-time fork " +
+            "on parsed.shDegree is therefore taken at generation: a " +
+            "scene whose clouds disagree on degree refuses.",
+        risk: "low",
+        validation: [
+            "scene 124 parity against the browser golden on both backends",
+            "the browser's own compiled module is byte-identical to " +
+                "buildShShaderSource(3)",
+        ],
+    };
+}
 
 export function compileAdaptations(
     context: AdaptationContext,
-    features: Feature[],
+    features: readonly Feature[],
 ): CompileAdaptation[] {
     const adaptations: CompileAdaptation[] = [];
     if (features.includes("renderer:text")) {
@@ -194,23 +250,37 @@ export function compileAdaptations(
             ],
         });
     }
-    if (context.voxelFileStorageReached) {
+    if (context.options.pendingActivations) {
         adaptations.push({
-            id: "native-voxel-file-dialog",
-            category: "browser-erasure",
+            id: "synchronous-constructed-promise",
+            category: "async",
             sourceSemantics:
-                "Voxel Sandbox opens browser save/open pickers and falls back to a download or hidden file input.",
+                "A constructed promise settles whenever its escaped resolving functions run, and an await on it suspends until then, for good when nothing settles it.",
             nativeSemantics:
-                "Ctrl+S and Ctrl+O open the host save/open dialog and write or read the same JSON payload, with world.voxelsave.json as the suggested name.",
+                "The executor and the platform callbacks it starts run in place, so an await reads the settlement where it stands: a value, a rejection rethrown, or a still-pending promise that ends the awaiting activation there without running its catch or finally blocks, resuming after the statement that discarded its promise. A settlement after that throws; an activation that can end this way is only awaited, returned or discarded as a statement.",
             risk: "medium",
             validation: [
-                "voxel file-boundary compiler test",
-                "native SaveData JSON round-trip",
-                "non-interactive file-dialog path override",
+                "synchronous promise compiler and native execution fixture",
+                "pending-activation refusal tests",
             ],
         });
     }
-    if (features.includes("browser:file") && !context.voxelFileStorageReached) {
+    if (context.fileReaderReached) {
+        adaptations.push({
+            id: "synchronous-file-reader",
+            category: "platform",
+            sourceSemantics:
+                "FileReader.readAsText reads asynchronously and dispatches load or error as a later task.",
+            nativeSemantics:
+                "The read completes inside readAsText: the bytes are decoded by byte order mark (UTF-8 otherwise) and load or error runs before the call returns. Handlers assigned after the read starts refuse at generation.",
+            risk: "low",
+            validation: [
+                "native FileReader Blob-decoding fixture",
+                "native File read and error contract check",
+            ],
+        });
+    }
+    if (features.includes("browser:file")) {
         adaptations.push({
             id: "native-browser-file-bridge",
             category: "platform",
@@ -633,7 +703,7 @@ export function compileAdaptations(
             sourceSemantics:
                 "Babylon Lite composes WGSL and renders through WebGPU.",
             nativeSemantics:
-                "The compiler emits native-specialized WGSL; pinned Tint produces the target-selected HLSL or MSL source, register normalization and DXC produce the selected SDL-compatible DXIL or SPIR-V artifact, and SDL_GPU selects the native backend.",
+                "The compiler emits native-specialized WGSL; bblite-tint drives the pinned Tint's HLSL, MSL or SPIR-V writer with SDL_GPU's binding slots and writes the `.slots` sidecar from the same assignment, DXC compiles the HLSL to DXIL, and SDL_GPU selects the native backend.",
             risk: "high",
             validation: [
                 "upstream formula marker tests",
@@ -642,24 +712,12 @@ export function compileAdaptations(
             ],
         });
         adaptations.push({
-            id: "guarded-cpu-vertex-normalization",
-            category: "rendering",
-            sourceSemantics:
-                "Material vertex shaders normalize their normal/tangent directions with WGSL f32 arithmetic.",
-            nativeSemantics: `The CPU vertex bake projects the pinned normalization through typed WGSL lowering after its world transform, retaining f32 intermediates and division. It returns zero unless the length is strictly above ${bakedDirectionMinimumLength}; this guard is a native adaptation, not the JavaScript tuple/object normalizer's epsilon or fallback.`,
-            risk: "medium",
-            validation: [
-                "compiled normalization bit-pattern and threshold checks",
-                "both-backend scene parity",
-            ],
-        });
-        adaptations.push({
             id: "shared-material-vertex-transport",
             category: "rendering",
             sourceSemantics:
                 "Pinned material composers combine mesh worlds and optional skeleton, morph and instance resources in their vertex stages.",
             nativeSemantics:
-                "The shared diagnostic/depth/background stage projects those computations through typed shader IR onto pre-baked worlds and fixed PAL bindings. Enabled deformation uses four bone influences in a 64-matrix uniform palette and either two-target attributes or the pinned storage-morph payload. The attribute path retains tangent deltas and a pre-morph bitangent; colour materials keep their own pinned composers.",
+                "The shared diagnostic/depth stage projects those computations through typed shader IR onto the mesh block's world and fixed PAL bindings, multiplying the palette or instance world into it before any vertex as the pin's finalWorld does. Enabled deformation uses four bone influences in a 64-matrix uniform palette and either two-target attributes or the pinned storage-morph payload; the attribute path retains tangent deltas. A draw both skinned and pooled composes the instance world and then the palette, where the pin's last writer keeps the instance world alone; colour materials keep their own pinned composers.",
             risk: "medium",
             validation: [
                 "executed-pin vertex transport and arithmetic-drift tests",
@@ -668,22 +726,7 @@ export function compileAdaptations(
             ],
         });
     }
-    if (features.includes("renderer:transmission")) {
-        adaptations.push({
-            id: "sdl-gpu-scene-transmission",
-            category: "rendering",
-            sourceSemantics:
-                "Babylon Lite copies scene color before transmissive draws and applies KHR_materials_transmission, IOR Fresnel, and KHR_materials_volume attenuation.",
-            nativeSemantics:
-                "Generated render stages copy opaque scene color into an SDL_GPU sampled texture; Tint WGSL applies dielectric F0 ((ior-1)/(ior+1))^2 and Beer-Lambert exp(log(color)/distance*thickness) attenuation.",
-            risk: "high",
-            validation: [
-                "independent skybox/transmission/IOR/volume gates",
-                "scene 176 MosquitoInAmber parity",
-                "Tint binding reflection",
-            ],
-        });
-    }
+    appendTransmissionAdaptations(features, adaptations);
     if (features.includes("environment:hdr")) {
         adaptations.push({
             id: "compile-time-hdr-cubemap",
@@ -700,29 +743,13 @@ export function compileAdaptations(
             ],
         });
     }
-    if (features.includes("material:grid")) {
-        adaptations.push({
-            id: "grid-tint-specialization",
-            category: "rendering",
-            sourceSemantics:
-                "Babylon Lite composes GridMaterial WGSL variants from antialias, max-line, transparency, premultiplication, and opacity-texture features, with world/view/projection system uniforms.",
-            nativeSemantics:
-                "The compiler emits one generated native WGSL program parameterized by the reached GridMaterial controls, uses the native view-projection matrix plus local position/normal attributes, and compiles it through pinned Tint.",
-            risk: "medium",
-            validation: [
-                "pinned GridMaterial formula marker tests",
-                "Tint binding reflection",
-                "scene 213 native/reference parity",
-            ],
-        });
-    }
-    if (context.reachedShaderPrograms.length > 0) {
+    if (context.sceneManifest.reachedShaderPrograms.length > 0) {
         adaptations.push({
             id: "typed-reached-shader-variants",
             category: "rendering",
-            sourceSemantics: `Babylon Lite composes the reached custom WGSL shader variant(s): ${context.reachedShaderPrograms.map(({ name }) => name).join(", ")}.`,
+            sourceSemantics: `Babylon Lite composes the reached custom WGSL shader variant(s): ${context.sceneManifest.reachedShaderPrograms.map(({ name }) => name).join(", ")}.`,
             nativeSemantics:
-                "The compiler validates reached WGSL, attributes, uniforms, and fixed-function state, lowers the supported WGSL subset into typed shader IR, reflects interfaces and uniform layouts, and emits native-specialized WGSL. Pinned Tint emits the target-selected HLSL or MSL source; register normalization and DXC emit the selected SDL-compatible DXIL or SPIR-V artifact.",
+                "The compiler validates reached WGSL, attributes, uniforms, and fixed-function state, lowers the supported WGSL subset into typed shader IR, reflects interfaces and uniform layouts, and emits native-specialized WGSL. bblite-tint drives the pinned Tint's HLSL, MSL or SPIR-V writer with SDL_GPU's binding slots and writes the `.slots` sidecar; DXC compiles the HLSL to DXIL.",
             risk: "high",
             validation: [
                 "shader variant compiler tests",
@@ -736,7 +763,7 @@ export function compileAdaptations(
         adaptations.push({
             id: "sdl-gpu-frame-graph",
             category: "rendering",
-            sourceSemantics: `Babylon Lite frame-graph tasks execute with ${context.geometryOutputTasks.length} typed geometry renderer task(s), explicit render lists, render-target textures, and ordered copy/resolve tasks.`,
+            sourceSemantics: `Babylon Lite frame-graph tasks execute with ${context.sceneManifest.geometryOutputTasks.length} typed geometry renderer task(s), explicit render lists, render-target textures, and ordered copy/resolve tasks.`,
             nativeSemantics:
                 "Generated task records preserve cameras, material overrides, geometry attachment order, depth-only targets, shader semantics, and source-derived integer viewport/scissor bounds while PAL executes SDL_GPU passes, reverse-depth views, MSAA resolve, and viewport blits.",
             risk: "high",
@@ -765,8 +792,31 @@ export function compileAdaptations(
     return adaptations;
 }
 
+/** Scene transmission, reached by a scene call or joined by an asset. */
+function appendTransmissionAdaptations(
+    features: readonly Feature[],
+    adaptations: CompileAdaptation[],
+): void {
+    if (features.includes("renderer:transmission")) {
+        adaptations.push({
+            id: "sdl-gpu-scene-transmission",
+            category: "rendering",
+            sourceSemantics:
+                "Babylon Lite copies scene color before transmissive draws and applies KHR_materials_transmission, IOR Fresnel, and KHR_materials_volume attenuation.",
+            nativeSemantics:
+                "Generated render stages copy opaque scene color into an SDL_GPU sampled texture; Tint WGSL applies dielectric F0 ((ior-1)/(ior+1))^2 and Beer-Lambert exp(log(color)/distance*thickness) attenuation.",
+            risk: "high",
+            validation: [
+                "independent skybox/transmission/IOR/volume gates",
+                "scene 176 MosquitoInAmber parity",
+                "Tint binding reflection",
+            ],
+        });
+    }
+}
+
 function appendSplatAdaptations(
-    features: Feature[],
+    features: readonly Feature[],
     adaptations: CompileAdaptation[],
 ): void {
     if (features.includes("loader:splat")) {
@@ -836,7 +886,7 @@ function appendSplatAdaptations(
 }
 
 function appendPhysicsAdaptations(
-    features: Feature[],
+    features: readonly Feature[],
     adaptations: CompileAdaptation[],
 ): void {
     if (features.includes("physics:world")) {
@@ -873,7 +923,7 @@ function appendPhysicsAdaptations(
                 "free fall is exact: the measured pose after N steps " +
                     "matches the closed form of the semi-implicit Euler " +
                     "integration both solvers use, to float32 precision " +
-                    "(examples/physics-drop.ts, 1e-7 at magnitude 4)",
+                    "(scene 40's sphere dropped from y=4, 1e-7)",
                 "a resting body settles at its geometric height " +
                     "(sphere radius 1 on a ground plane at y=0 rests at " +
                     "y=1.0 exactly), which is what the degenerate-box " +
@@ -912,12 +962,12 @@ function appendPhysicsAdaptations(
 
 function appendUiAdaptations(
     context: AdaptationContext,
-    features: Feature[],
+    features: readonly Feature[],
     adaptations: CompileAdaptation[],
 ): void {
     if (features.includes("ui:rml")) {
-        const degraded = [...context.uiDegradedStyleProperties].sort();
-        const scoped = [...context.uiScopedSheetSelectors].sort();
+        const degraded = [...context.ui.uiDegradedStyleProperties].sort();
+        const scoped = [...context.ui.uiScopedSheetSelectors].sort();
         adaptations.push({
             id: "substituted-ui-runtime",
             category: "platform",
@@ -979,7 +1029,7 @@ function appendUiAdaptations(
 }
 
 function appendGizmoAdaptations(
-    features: Feature[],
+    features: readonly Feature[],
     adaptations: CompileAdaptation[],
 ): void {
     // The frozen node-particle bake is recorded by generation

@@ -74,7 +74,7 @@ test("reads a camera field through the engine record", () => {
     // content of the table row.
     assert.match(
         result.cpp,
-        /v_engine\.cameras\[v_camera\.value\]\.near_plane/,
+        /bbl::handle_at\(v_engine\.cameras, v_camera\)\.near_plane/,
     );
 });
 
@@ -135,15 +135,15 @@ test("reads a path written as a path, at any depth", () => {
 
     assert.match(
         result.cpp,
-        /v_engine\.cameras\[v_camera\.value\]\.ortho_half_height/,
+        /bbl::handle_at\(v_engine\.cameras, v_camera\)\.ortho_half_height/,
     );
     assert.match(
         result.cpp,
-        /v_engine\.cameras\[v_scene\.camera\.value\]\.alpha/,
+        /bbl::handle_at\(v_engine\.cameras, v_scene\.camera\)\.alpha/,
     );
     assert.match(
         result.cpp,
-        /v_engine\.cameras\[v_scene\.camera\.value\]\.target\.y/,
+        /bbl::handle_at\(v_engine\.cameras, v_scene\.camera\)\.target\.y/,
     );
 });
 
@@ -180,7 +180,7 @@ test("re-tags a handle and then reads through it", () => {
     assert.match(result.cpp, /auto& v_ortho = v_camera;/);
     assert.match(
         result.cpp,
-        /v_engine\.cameras\[v_ortho\.value\]\.ortho_half_height/,
+        /bbl::handle_at\(v_engine\.cameras, v_ortho\)\.ortho_half_height/,
     );
 });
 
@@ -200,15 +200,15 @@ test("names the same camera fields for reads and both write paths", () => {
         ),
     );
 
-    const cameraRecord = /v_engine\.cameras\[v_camera\.value\]/;
+    const cameraRecord = /bbl::handle_at\(v_engine\.cameras, v_camera\)/;
     assert.match(result.cpp, /\.speed = 2\.0;/);
     assert.match(
         result.cpp,
-        /v_engine\.cameras\[v_scene\.camera\.value\]\.speed = 3\.0;/,
+        /bbl::handle_at\(v_engine\.cameras, v_scene\.camera\)\.speed = 3\.0;/,
     );
     assert.match(result.cpp, /\.angular_sensibility = 500\.0;/);
     assert.match(result.cpp, cameraRecord);
-    assert.match(result.cpp, /bbl::create_box\([^)]*angular_sensibility/);
+    assert.match(result.cpp, /bbl::create_box\([^;]*angular_sensibility/);
 });
 
 test("keeps the raw GPU device closed outside the matrix upload helper", () => {

@@ -9,6 +9,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("standalone renderers synchronize live contexts, batch uploads and capture frame targets", (t) => {
@@ -22,7 +23,7 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
     }
     const directory = resolve("artifacts/test-standalone-capture");
     mkdirSync(directory, { recursive: true });
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     writeFileSync(
         join(directory, "capture-options.hpp"),
         [
@@ -31,7 +32,7 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
             cppRecord(shared, "class CaptureGate {"),
             cppFunction(
                 shared,
-                "inline void refuse_disposed_sprite_render_texture_in_use(",
+                "void refuse_disposed_sprite_render_texture_in_use(",
             ),
             ...[
                 "inline bool sprite_passes_match_registered(",
@@ -42,6 +43,13 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
                     cppFunction(shared, signature),
             ),
         ].join("\n"),
+    );
+    writeFileSync(
+        join(directory, "frame-session.hpp"),
+        cppFunction(
+            readFileSync("native/src/pal_frame_session.hpp", "utf8"),
+            "[[nodiscard]] bool screenshot_due() const",
+        ),
     );
     writeFileSync(
         join(directory, "buffer-batch.hpp"),
@@ -119,6 +127,9 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
     runNativeFixtureCompiler(tools, [
         "/nologo",
         "/std:c++20",
+        "/DBBLITE_HAS_TEXT_RENDERER=0",
+        "/DBBLITE_HAS_UI=0",
+        "/DBBLITE_HAS_SPRITE_RENDERER=1",
         "/W4",
         "/WX",
         "/EHsc",

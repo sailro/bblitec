@@ -590,7 +590,15 @@ test(
                 ${lowerGltfMaterialAssembly(context)}
                 ${lowerGltfMaterialTextures(context)}
                 ${lowerGltfMaterialProperties(context).source}
-                ${["void gltf_pbr_number(", "void gltf_pbr_color(", "void gltf_pbr_transform("].map((signature) => cppFunction(loader, signature)).join("\n")}
+                ${[
+                    "void gltf_pbr_number(const GltfPbrValue& object, const char* key, float& field)",
+                    "void gltf_pbr_color(const GltfPbrValue& object, const char* key, Color3& field)",
+                    "void gltf_pbr_number(const GltfPbrValue& object, const char* key, float& field, float absent)",
+                    "void gltf_pbr_color(const GltfPbrValue& object, const char* key, Color3& field, Color3 absent)",
+                    "void gltf_pbr_transform(",
+                ]
+                    .map((signature) => cppFunction(loader, signature))
+                    .join("\n")}
                 ${cppFunction(loader, "MaterialHandle load_material(")}
             }`,
                 )

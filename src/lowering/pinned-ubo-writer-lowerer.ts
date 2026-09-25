@@ -12,18 +12,31 @@
  * This module owns the translation, never the formula: `data[off + n]` becomes
  * the field the composer placed at that offset, `x ?? default` becomes the
  * record field (which always carries a value natively), and `Math.*` becomes
- * `std::*`. Anything else in the pinned body fails generation, which is what
- * keeps a changed writer visible instead of silently stale. The discarded
+ * `std::*`. The body computes in double, as the pin's numbers do, and rounds
+ * once where it stores into the Float32Array: the `static_cast<float>` at
+ * each `data[...]` write. Anything else in the pinned body fails generation,
+ * which keeps a changed writer visible instead of silently stale. The discarded
  * `?? default` is not thrown away blind: it is folded and asserted against
  * `pinned-material-defaults.ts`, the table the intrinsics seed the record
  * from, so a pin that moves a default fails generation by name.
  */
 import ts from "typescript";
-import type { LoweringContext } from "./context.js";
+import {
+    hasNode,
+    nullishDefault,
+    unwrapExpression,
+    type LoweringContext,
+} from "./context.js";
 import {
     pinnedDefaultForDiscard,
+    pinnedDefaultSites,
     type PinnedMaterialDefault,
 } from "./pinned-material-defaults.js";
+import {
+    pinnedDefaultValue,
+    samePinnedDefault,
+    type PinnedDefaultValue,
+} from "./pinned-option-defaults.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
 
@@ -104,11 +117,11 @@ interface UboWriterRequest {
     vectorHooks?: Readonly<Record<string, { property: string; lanes: number }>>;
     /** Source-lowered helpers that write a fixed number of contiguous float lanes. */
     bufferWriters?: Readonly<Record<string, { cpp: string; lanes: number }>>;
-    /** Preserve JavaScript numeric intermediates for writers with live f64 inputs. */
-    scalarPrecision?: "float" | "double";
 }
 
 interface WriterState {
+    /** Folds a discarded default the way every pinned-default reader does. */
+    context: LoweringContext;
     file: ts.SourceFile;
     request: UboWriterRequest;
     baseLane: number;
@@ -181,16 +194,92 @@ function slotAtLane(
     );
 }
 
+/**
+ * A read of the composer's offset map: `offsets.<method>(key)` on an
+ * extension writer's parameter, or `spec._offsets.<method>(key)` in the
+ * base writer.
+ */
+function offsetsCall(
+    node: ts.Node,
+    method: "get" | "has",
+): ts.CallExpression | undefined {
+    if (
+        !ts.isCallExpression(node) ||
+        node.arguments.length !== 1 ||
+        !ts.isPropertyAccessExpression(node.expression) ||
+        node.expression.name.text !== method
+    ) {
+        return undefined;
+    }
+    const map = unwrapExpression(node.expression.expression);
+    const name = ts.isIdentifier(map)
+        ? map.text
+        : ts.isPropertyAccessExpression(map)
+          ? map.name.text
+          : undefined;
+    return name === "offsets" || name === "_offsets" ? node : undefined;
+}
+
+/**
+ * The key of the first offset-map read under `root`, in source order, whose
+ * key has the shape the predicate accepts.
+ */
+function offsetsKey<T extends ts.Expression>(
+    root: ts.Node,
+    method: "get" | "has",
+    key: (argument: ts.Expression) => argument is T,
+): T | undefined {
+    let found: T | undefined;
+    const visit = (node: ts.Node): void => {
+        if (found) return;
+        const argument = offsetsCall(node, method)?.arguments[0];
+        if (argument && key(argument)) {
+            found = argument;
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(root);
+    return found;
+}
+
 function isOffsetsLookup(expression: ts.Expression): boolean {
-    return /offsets\s*\.\s*get\s*\(/.test(expression.getText());
+    return hasNode(
+        expression,
+        (node) => offsetsCall(node, "get") !== undefined,
+    );
 }
 
 /** The field name inside an `offsets.get("x")` lookup. */
 function offsetsLookupField(expression: ts.Expression): string | undefined {
-    const match = /offsets\s*\.\s*get\s*\(\s*["']([^"']+)["']/.exec(
-        expression.getText(),
+    return offsetsKey(expression, "get", ts.isStringLiteral)?.text;
+}
+
+/**
+ * A key built as `${base}<suffix>`: one substitution of a plain name, then
+ * the literal tail the caller reads the field's `m`/`t` role off.
+ */
+function isSuffixedKey(
+    argument: ts.Expression,
+): argument is ts.TemplateExpression {
+    return (
+        ts.isTemplateExpression(argument) &&
+        argument.head.text === "" &&
+        argument.templateSpans.length === 1 &&
+        ts.isIdentifier(argument.templateSpans[0]!.expression)
     );
-    return match?.[1];
+}
+
+/** The literal tail of a `${base}<suffix>` key. */
+function keySuffix(key: ts.TemplateExpression): string {
+    return key.templateSpans[0]!.literal.text;
+}
+
+/** The property an element read names: `x["key"]` by its key, `x[k]` by `k`. */
+function elementKey(argument: ts.Expression): string {
+    return ts.isStringLiteralLike(argument) || ts.isIdentifier(argument)
+        ? argument.text
+        : argument.getText();
 }
 
 /**
@@ -206,11 +295,8 @@ function parameterOffsetField(
     state: WriterState,
     expression: ts.Expression,
 ): string | undefined {
-    const match = /offsets\s*\.\s*get\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(
-        expression.getText(state.file),
-    );
-    if (!match) return undefined;
-    return state.parameterFields?.[match[1]!];
+    const parameter = offsetsKey(expression, "get", ts.isIdentifier);
+    return parameter ? state.parameterFields?.[parameter.text] : undefined;
 }
 
 /**
@@ -221,12 +307,17 @@ function templateOffsetField(
     state: WriterState,
     expression: ts.Expression,
 ): string | undefined {
-    const match = /offsets\s*\.\s*get\s*\(\s*`\$\{\w+\}\w*([mt])`/.exec(
-        expression.getText(),
+    const key = offsetsKey(
+        expression,
+        "get",
+        (argument): argument is ts.TemplateExpression =>
+            isSuffixedKey(argument) &&
+            (keySuffix(argument).endsWith("m") ||
+                keySuffix(argument).endsWith("t")),
     );
-    if (!match) return undefined;
+    if (!key) return undefined;
     const base = state.request.baseField;
-    return match[1] === "m" ? base : base.replace(/m$/, "t");
+    return keySuffix(key).endsWith("m") ? base : base.replace(/m$/, "t");
 }
 
 /** The absolute float lane a `data[...]` index refers to. */
@@ -257,7 +348,7 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         return fieldLane(state.request, field);
     };
     if (ts.isNumericLiteral(expression)) {
-        return Number.parseInt(expression.text, 10);
+        return Number(expression.text);
     }
     if (ts.isIdentifier(expression)) return base(expression);
     // `data[off / 4]`: the local holds the byte offset and the writer divides at
@@ -269,7 +360,7 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         ts.isBinaryExpression(expression) &&
         expression.operatorToken.kind === ts.SyntaxKind.SlashToken &&
         ts.isNumericLiteral(expression.right) &&
-        expression.right.text === "4"
+        Number(expression.right.text) === 4
     ) {
         return dataLane(state, expression.left);
     }
@@ -281,10 +372,7 @@ function dataLane(state: WriterState, expression: ts.Expression): number {
         expression.operatorToken.kind === ts.SyntaxKind.PlusToken &&
         ts.isNumericLiteral(expression.right)
     ) {
-        return (
-            dataLane(state, expression.left) +
-            Number.parseInt(expression.right.text, 10)
-        );
+        return dataLane(state, expression.left) + Number(expression.right.text);
     }
     throw new Error(
         `Unsupported data index in pinned ${state.request.symbolName}: ` +
@@ -328,10 +416,7 @@ function offsetLocalComparedToUndefined(
 
 /** The field an `offsets.has("x")` guard tests. */
 function guardedFieldByHas(condition: ts.Expression): string | undefined {
-    const match = /offsets\s*\.\s*has\s*\(\s*["']([^"']+)["']/.exec(
-        condition.getText(),
-    );
-    return match?.[1];
+    return offsetsKey(condition, "has", ts.isStringLiteral)?.text;
 }
 
 /**
@@ -556,7 +641,7 @@ function discardedProperty(
 /** A discarded pinned default, folded to what the pin would evaluate. */
 type FoldedDefault =
     | { kind: "number"; value: number }
-    | { kind: "vector"; value: number[] }
+    | { kind: "vector"; value: readonly number[] }
     /** The fallback reads another mapped record value — the same
      *  always-carried argument that lets the outer read discard it. */
     | { kind: "record" };
@@ -564,45 +649,20 @@ type FoldedDefault =
 /**
  * Evaluates a discarded `?? default` right-hand side.
  *
- * The pin's defaults are numeric literals, small vectors of them, or — the
+ * The pin's defaults are numeric constants, small vectors of them, or — the
  * reflectance writer's `_specularWeight ?? _metallicF0Factor ?? 1.0` — a
  * chain over further record-carried properties; a chained fallback folds to
  * its all-absent ground state, which is the constant the chain terminates
- * in. Anything else returns undefined and fails at the assert.
+ * in. The constant is `pinnedDefaultValue`'s, and anything that states
+ * neither a number nor a list of them refuses.
  */
 function foldDiscardedDefault(
     state: WriterState,
     expression: ts.Expression,
-): FoldedDefault | undefined {
-    let node = expression;
-    if (ts.isParenthesizedExpression(node)) node = node.expression;
-    if (ts.isNumericLiteral(node)) {
-        return { kind: "number", value: Number(node.text) };
-    }
-    if (
-        ts.isPrefixUnaryExpression(node) &&
-        node.operator === ts.SyntaxKind.MinusToken
-    ) {
-        const operand = foldDiscardedDefault(state, node.operand);
-        return operand?.kind === "number"
-            ? { kind: "number", value: -operand.value }
-            : undefined;
-    }
-    if (ts.isArrayLiteralExpression(node)) {
-        const lanes: number[] = [];
-        for (const element of node.elements) {
-            const lane = foldDiscardedDefault(state, element);
-            if (lane?.kind !== "number") return undefined;
-            lanes.push(lane.value);
-        }
-        return { kind: "vector", value: lanes };
-    }
-    if (
-        ts.isBinaryExpression(node) &&
-        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-    ) {
-        return foldDiscardedDefault(state, node.right);
-    }
+): FoldedDefault {
+    const node = unwrapExpression(expression);
+    const chained = nullishDefault(node);
+    if (chained) return foldDiscardedDefault(state, chained.right);
     // A fallback that is itself a MAPPED property read: `_specularWeight ??
     // _metallicF0Factor` discards a value the record carries either way. An
     // unmapped read stays unfoldable — the always-carried argument does not
@@ -614,7 +674,14 @@ function foldDiscardedDefault(
     ) {
         return { kind: "record" };
     }
-    return undefined;
+    const value = pinnedDefaultValue(state.context, node, state.file);
+    if (typeof value === "number") return { kind: "number", value };
+    if (typeof value === "object") return { kind: "vector", value };
+    return state.context.contractError(
+        node,
+        `Expected pinned ${state.request.symbolName} to default to a number ` +
+            `or a list of numbers, found ${node.getText(state.file)}.`,
+    );
 }
 
 /** Whether a folded default is a plain `?? 0`/`?? 1` (per lane). */
@@ -628,8 +695,7 @@ function isZeroOrOne(folded: FoldedDefault): boolean {
     return false;
 }
 
-function foldedText(folded: FoldedDefault | undefined): string {
-    if (folded === undefined) return "<unfoldable>";
+function foldedText(folded: FoldedDefault): string {
     if (folded.kind === "number") return String(folded.value);
     if (folded.kind === "vector") {
         return `[${folded.value.join(", ")}]`;
@@ -637,38 +703,30 @@ function foldedText(folded: FoldedDefault | undefined): string {
     return "<another record property>";
 }
 
-function defaultText(value: PinnedMaterialDefault["value"]): string {
+function defaultText(value: PinnedDefaultValue): string {
     return Array.isArray(value) ? `[${value.join(", ")}]` : String(value);
 }
 
-/** Whether the fold agrees with one of the entry's pinned values. */
+/** Whether the fold agrees with one of the entry's pinned sites. */
 function matchesEntry(
     entry: PinnedMaterialDefault,
     folded: FoldedDefault,
 ): boolean {
-    const candidates = [entry.value, ...(entry.alsoPinned ?? [])];
-    return candidates.some((candidate) => {
-        if (folded.kind === "number") return candidate === folded.value;
-        if (folded.kind === "vector") {
-            return (
-                Array.isArray(candidate) &&
-                candidate.length === folded.value.length &&
-                candidate.every((lane, index) => lane === folded.value[index])
-            );
-        }
-        return false;
-    });
+    return (
+        folded.kind !== "record" &&
+        pinnedDefaultSites(entry).some((candidate) =>
+            samePinnedDefault(candidate, folded.value),
+        )
+    );
 }
 
 /**
  * The RD-4 guard: a mapped property's `?? default` lowers to the record
- * field alone, so the pin's fallback is discarded here — and the record's
- * seed (the intrinsics' defaults, the loader's) restates the same number
- * with nothing tying the copies together. Before discarding, the pin's own
- * default expression is evaluated and asserted against
- * `PINNED_MATERIAL_DEFAULTS`, the table the intrinsics read: a pin bump
- * that moves a default fails generation naming the property and both
- * values instead of silently splitting the reference from the record.
+ * field alone, so the pin's fallback is discarded here, and the record is
+ * seeded by the intrinsics from `PINNED_MATERIAL_DEFAULTS`, which folds the
+ * same pinned site. Before discarding, the property must be anchored there
+ * — so a pin that grows a default no intrinsic seeds fails generation by
+ * name — and this site's fold must be one of the defaults the table read.
  *
  * Properties the table does not carry keep the silent discard only for the
  * plain `?? 0`/`?? 1` texture-transform and flag lanes with no
@@ -679,14 +737,14 @@ function assertDiscardedPinnedDefault(
     node: ts.BinaryExpression,
 ): void {
     const folded = foldDiscardedDefault(state, node.right);
-    if (folded?.kind === "record") return;
+    if (folded.kind === "record") return;
     const property = discardedProperty(state, node.left);
     const key = `${state.request.modulePath}#${state.request.symbolName}#${
         property ?? "<unnamed>"
     }`;
     const entry = pinnedDefaultForDiscard(key);
     if (entry === undefined) {
-        if (folded !== undefined && isZeroOrOne(folded)) return;
+        if (isZeroOrOne(folded)) return;
         throw new Error(
             `Pinned ${state.request.symbolName} discards the default of ` +
                 `'${property ?? node.left.getText(state.file)}' ` +
@@ -697,14 +755,13 @@ function assertDiscardedPinnedDefault(
                 "the record seed and the pin cannot drift apart.",
         );
     }
-    if (folded === undefined || !matchesEntry(entry, folded)) {
+    if (!matchesEntry(entry, folded)) {
         throw new Error(
             `Pinned ${state.request.symbolName} defaults '${property}' to ` +
                 `${foldedText(folded)}, but PINNED_MATERIAL_DEFAULTS ` +
-                `carries ${defaultText(entry.value)} for '${key}'. The ` +
-                "pin moved a discarded default; update the table (and the " +
-                "record seed it feeds) rather than letting the reference " +
-                "and the native record split.",
+                `folds [${pinnedDefaultSites(entry).map(defaultText).join(", ")}] ` +
+                `for '${key}': the two readers of the pin disagree about ` +
+                "which site this is.",
         );
     }
 }
@@ -737,7 +794,7 @@ function vectorMember(
 }
 
 const numericWriters = new WeakMap<WriterState, PinnedNumericLowerer>();
-const writerMathCalls = pinnedNumericMathCalls("deduced");
+const writerMathCalls = pinnedNumericMathCalls();
 
 function emitExpression(state: WriterState, expression: ts.Expression): string {
     let lowerer = numericWriters.get(state);
@@ -748,13 +805,7 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
             booleanOr: true,
             booleanAnd: true,
             foldConditions: false,
-            expressionSpelling: {
-                parentheses: "source",
-                numeric: (node) =>
-                    /[.e]/i.test(node.text)
-                        ? node.text + "f"
-                        : node.text + ".0f",
-            },
+            expressionSpelling: { parentheses: "source" },
             expression: (node) => emitRecordExpression(state, node),
         });
         numericWriters.set(state, lowerer);
@@ -843,7 +894,7 @@ function emitRecordExpression(
         state.vectorLocals.has(node.expression.text) &&
         ts.isNumericLiteral(node.argumentExpression)
     ) {
-        const lane = Number.parseInt(node.argumentExpression.text, 10);
+        const lane = Number(node.argumentExpression.text);
         const laneSource = state.laneSourceFor(node.expression.text, lane);
         if (laneSource !== undefined) return laneSource;
         const local = state.vectorLocals.get(node.expression.text)!;
@@ -865,7 +916,7 @@ function emitRecordExpression(
         // optional chain reads exactly like the plain access.
         const property = ts.isPropertyAccessChain(node)
             ? node.name.getText()
-            : node.argumentExpression.getText().replace(/["']/g, "");
+            : elementKey(node.argumentExpression);
         const source = state.request.propertySources[property];
         if (source === undefined || source === null) {
             throw new Error(
@@ -886,13 +937,13 @@ function emitRecordExpression(
         const owner = node.expression.name.getText();
         const direct =
             state.request.laneSources?.[owner]?.[
-                Number.parseInt(node.argumentExpression.text, 10)
+                Number(node.argumentExpression.text)
             ];
         if (direct !== undefined) return direct;
         const lanes = state.request.vectorProperties?.[owner];
         const source = state.request.propertySources[owner];
         if (lanes !== undefined && typeof source === "string") {
-            const lane = Number.parseInt(node.argumentExpression.text, 10);
+            const lane = Number(node.argumentExpression.text);
             if (lanes > 4) return `${source}[${lane}]`;
             const member = vectorMember(
                 state.request.symbolName,
@@ -909,7 +960,7 @@ function emitRecordExpression(
     ) {
         const property = ts.isPropertyAccessExpression(node)
             ? node.name.getText()
-            : node.argumentExpression.getText().replace(/["']/g, "");
+            : elementKey(node.argumentExpression);
         const source = state.request.propertySources[property];
         if (source === undefined || source === null) {
             throw new Error(
@@ -1149,9 +1200,7 @@ function emitPlainStatement(
                         continue;
                     }
                     state.locals.add(local);
-                    lines.push(
-                        `    const ${state.request.scalarPrecision ?? "float"} ${local} = ${source};`,
-                    );
+                    lines.push(`    const double ${local} = ${source};`);
                 }
                 continue;
             }
@@ -1268,7 +1317,7 @@ function emitPlainStatement(
                     kind: "array",
                 });
                 lines.push(
-                    `    const std::array<float, ${defaultLanes}> ${name}` +
+                    `    const std::array<double, ${defaultLanes}> ${name}` +
                         `${emitExpression(state, binding.initializer)};`,
                 );
                 continue;
@@ -1280,8 +1329,8 @@ function emitPlainStatement(
             // single-assignment form expresses.
             lines.push(
                 state.mutatedLocals.has(name)
-                    ? `    ${state.request.scalarPrecision ?? "float"} ${name} = ${value};`
-                    : `    const ${state.request.scalarPrecision ?? "float"} ${name} = ${value};`,
+                    ? `    double ${name} = ${value};`
+                    : `    const double ${name} = ${value};`,
             );
         }
         return lines;
@@ -1472,9 +1521,13 @@ function emitPlainStatement(
  */
 function nestedFieldSuffix(state: WriterState, callee: string): string {
     const { declaration } = state.nestedDeclarations[callee]!;
-    const text = declaration.body.getText();
-    const match = /offsets\s*\.\s*get\s*\(\s*`\$\{\w+\}(\w*)m`/.exec(text);
-    return match?.[1] ?? "";
+    const key = offsetsKey(
+        declaration.body,
+        "get",
+        (argument): argument is ts.TemplateExpression =>
+            isSuffixedKey(argument) && keySuffix(argument).endsWith("m"),
+    );
+    return key ? keySuffix(key).slice(0, -1) : "";
 }
 
 /** Lowers a shared transform helper against one variant's `<base>m`/`<base>t`. */
@@ -1487,6 +1540,7 @@ function lowerNested(
 ): string[] {
     const { declaration } = state.nestedDeclarations[symbolName]!;
     const nestedState: WriterState = {
+        context: state.context,
         file: state.file,
         request: {
             ...state.request,
@@ -1559,6 +1613,7 @@ export function lowerPinnedUboWriter(
         offsetLocals.set(request.offsetParameter, request.baseField);
     }
     const state: WriterState = {
+        context,
         file,
         request,
         baseLane: fieldLane(request, request.baseField),

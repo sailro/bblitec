@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** Native handles use an engine-local map; weak owners follow SceneState lifetime. */
 export function lowerMeshMaterialSetter(context: LoweringContext): string {
@@ -47,7 +48,7 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
         [
             "_mat",
             {
-                cpp: "engine.meshes.at(mesh.value).material.value",
+                cpp: `${recordAt("engine.meshes", "mesh")}.material.value`,
                 type: "scalar",
             },
         ],

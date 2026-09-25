@@ -76,7 +76,7 @@ inline void release_dawn_effect_pass(DawnEffectPass& pass) {
 inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const Engine& engine,
                                               EffectWrapperHandle handle, WGPUTextureFormat format,
                                               std::uint32_t samples) {
-    const EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
+    const EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     const upstream::EffectVariantEntry& entry = upstream::effect_variants.at(wrapper.variant);
     DawnEffectPass pass;
 
@@ -197,7 +197,7 @@ inline void upload_dawn_effect_pass(WGPUQueue queue, Engine& engine, const DawnE
                                     EffectWrapperHandle handle) {
     if (!pass.uniforms || pass.uniform_bytes == 0)
         return;
-    EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
+    EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     if (!wrapper.uniforms_dirty || wrapper.uniform_values.empty())
         return;
     // The symmetric size validation (pal_gpu_shared.hpp): a short write

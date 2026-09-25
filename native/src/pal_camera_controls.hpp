@@ -1,15 +1,18 @@
 // Camera controls layered over the application event bridge. Scene-less
 // drivers include pal_platform_events.hpp directly and pull no camera code.
 //
-// Every control formula lives in the generated camera_controls TU
+// Every control handler lives in the generated camera_controls TU
 // (bblite/upstream/camera_controls.hpp), lowered from the pinned
-// attachControl/attachFreeControl declarations. This header only
-// translates SDL buttons, motion deltas, wheel detents, and scancodes
-// into the pinned units and calls the generated accumulators.
+// attachControl/attachFreeControl closures. This header only translates
+// SDL buttons, motion deltas, wheel detents, scancodes and the frame delta
+// into the DOM units those handlers take, and holds the closures' drag
+// flags.
 #pragma once
 
+#include <bblite/features/has_ui.hpp>
+
 #include <bblite/runtime.hpp>
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 #include <bblite/pal_ui.hpp>
 #endif
 
@@ -22,8 +25,14 @@
 namespace bbl::pal {
 
 struct CameraPointerState {
-    bool orbiting = false;
+    // The pinned closures' drag flags: attachControl's isDragging and
+    // isPanning, attachFreeControl's isDragging.
+    bool dragging = false;
     bool panning = false;
+    // The SDL mouse buttons held. A browser fires pointerdown for the first
+    // button of a chord and pointerup when the last one is released, so the
+    // handlers see one gesture per chord.
+    SDL_MouseButtonFlags buttons = 0;
     std::map<std::pair<std::uint64_t, std::uint64_t>, std::array<double, 2>> touches;
 };
 
@@ -31,12 +40,6 @@ struct SurfaceCameraPointerState {
     CameraPointerState pointer;
     CameraHandle captured{};
 };
-
-// The fixed frame step this loop runs at, handed to the generated
-// free_camera_move_speed so the pin's own formula computes the per-frame
-// move scale at full precision. The cadence is the platform's fact; the
-// formula is the pin's.
-inline constexpr double nominal_frame_milliseconds = 1000.0 / 60.0;
 
 inline void handle_camera_pointer_event(const SDL_Event& event, CameraRecord& camera,
                                         CameraPointerState& state, double touch_width = 1,
@@ -46,6 +49,10 @@ inline void handle_camera_pointer_event(const SDL_Event& event, CameraRecord& ca
         return;
     }
     if (!camera.controls_enabled) {
+        return;
+    }
+    // The pinned geospatial pointer input reaches its own accumulators.
+    if (camera.kind == CameraKind::geospatial) {
         return;
     }
 
@@ -64,7 +71,7 @@ inline void handle_camera_pointer_event(const SDL_Event& event, CameraRecord& ca
                 return;
             }
             state.touches.insert_or_assign(key, point);
-            state.orbiting = state.touches.size() == 1;
+            state.dragging = state.touches.size() == 1;
             state.panning = false;
             return;
         }
@@ -73,7 +80,7 @@ inline void handle_camera_pointer_event(const SDL_Event& event, CameraRecord& ca
             return;
         if (event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) {
             state.touches.erase(found);
-            state.orbiting = state.touches.size() == 1;
+            state.dragging = state.touches.size() == 1;
             return;
         }
         SDL_Event translated{};
@@ -98,76 +105,70 @@ inline void handle_camera_pointer_event(const SDL_Event& event, CameraRecord& ca
 
     if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
         const bool pressed = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
-        if (pressed && camera.should_handle_pointer_down && !camera.should_handle_pointer_down()) {
-            state = {};
-            return;
+        const bool idle = state.buttons == 0;
+        if (pressed) {
+            state.buttons |= SDL_BUTTON_MASK(event.button.button);
+        } else {
+            state.buttons &= ~SDL_BUTTON_MASK(event.button.button);
         }
-        if (event.button.button == SDL_BUTTON_LEFT) {
-            state.orbiting = pressed;
-        } else if (event.button.button == SDL_BUTTON_RIGHT ||
-                   event.button.button == SDL_BUTTON_MIDDLE) {
-            state.panning = pressed;
+        // SDL numbers the buttons from one; PointerEvent.button from zero.
+        const double button = static_cast<double>(event.button.button - 1);
+        const bool free = camera.kind == CameraKind::free;
+        if (pressed && idle) {
+            if (free) {
+                upstream::free_camera_pointer_down(state.dragging, button);
+            } else {
+                upstream::arc_rotate_pointer_down(camera, state.dragging, state.panning, button,
+                                                  false);
+            }
+        } else if (!pressed && state.buttons == 0) {
+            if (free) {
+                upstream::free_camera_pointer_up(state.dragging);
+            } else {
+                upstream::arc_rotate_pointer_up(state.dragging, state.panning);
+            }
         }
         return;
     }
 
     if (event.type == SDL_EVENT_MOUSE_MOTION) {
-        if ((state.orbiting || state.panning) && camera.external_drag_active &&
-            camera.external_drag_active()) {
-            state = {};
-            camera.inertial_alpha_offset = 0.0;
-            camera.inertial_beta_offset = 0.0;
-            camera.inertial_panning_x = 0.0;
-            camera.inertial_panning_y = 0.0;
-            return;
-        }
-        if (camera.external_pick_pending && camera.external_pick_pending())
-            return;
-        if (camera.kind == CameraKind::geospatial) {
-            // The pinned geospatial pointer input reaches its own
-            // accumulators, not the ArcRotate ones below.
-            return;
-        }
         if (camera.kind == CameraKind::free) {
-            if (camera.configurable_free_pointer && (state.orbiting || state.panning)) {
+            if (!camera.configurable_free_pointer) {
+                upstream::free_camera_pointer_move(camera, state.dragging, event.motion.xrel,
+                                                   event.motion.yrel);
+            } else if (state.dragging) {
                 camera.configurable_free_pointer(camera, event.motion.xrel, event.motion.yrel);
-            } else if (state.orbiting) {
-                upstream::apply_free_camera_pointer_rotation(camera, event.motion.xrel,
-                                                             event.motion.yrel);
             }
             return;
         }
-        if (state.orbiting) {
-            upstream::apply_arc_rotate_pointer_rotation(camera, event.motion.xrel,
-                                                        event.motion.yrel);
-        }
-        if (state.panning) {
-            upstream::apply_arc_rotate_pointer_pan(camera, event.motion.xrel, event.motion.yrel);
-        }
+        upstream::arc_rotate_pointer_move(camera, state.dragging, state.panning,
+                                          static_cast<double>(state.touches.size()),
+                                          event.motion.xrel, event.motion.yrel);
         return;
     }
 
-    if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-        // The pinned onWheel consumes a DOM WheelEvent deltaY; the one
-        // translation of SDL's detents into that convention (sign and the
-        // 100-pixel notch) is the application bridge's, so both wheel
-        // consumers cannot disagree on it.
+    // Only attachControl listens for the wheel. It consumes a DOM WheelEvent
+    // deltaY; the one translation of SDL's detents into that convention
+    // (sign and the 100-pixel notch) is the application bridge's, so both
+    // wheel consumers cannot disagree on it.
+    if (event.type == SDL_EVENT_MOUSE_WHEEL && camera.kind == CameraKind::arc_rotate) {
         upstream::apply_arc_rotate_wheel(camera, dom_wheel_delta_y(event.wheel));
     }
 }
 
+// `primary` is the scene's active camera, null when it has none.
 inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, const SDL_Event& event,
-                                            CameraRecord& primary,
+                                            CameraRecord* primary,
                                             CameraPointerState& primary_state,
                                             SurfaceCameraPointerState& surfaces) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (engine.surface_canvas) {
         if (surfaces.captured.value < engine.cameras.size()) {
             const auto index = surfaces.captured.value;
             handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer,
                                         engine.canvas_client_width, engine.canvas_client_height);
-            if (!surfaces.pointer.orbiting && !surfaces.pointer.panning &&
-                surfaces.pointer.touches.empty())
+            if (!surfaces.pointer.dragging && !surfaces.pointer.panning &&
+                surfaces.pointer.buttons == 0 && surfaces.pointer.touches.empty())
                 surfaces.captured = {};
             return;
         }
@@ -193,8 +194,8 @@ inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, con
             const auto index = scene->camera.value;
             handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer,
                                         engine.canvas_client_width, engine.canvas_client_height);
-            if (surfaces.pointer.orbiting || surfaces.pointer.panning ||
-                !surfaces.pointer.touches.empty())
+            if (surfaces.pointer.dragging || surfaces.pointer.panning ||
+                surfaces.pointer.buttons != 0 || !surfaces.pointer.touches.empty())
                 surfaces.captured = scene->camera;
             return;
         }
@@ -202,11 +203,15 @@ inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, con
     }
 #endif
     (void)surfaces;
-    handle_camera_pointer_event(event, primary, primary_state, engine.canvas_client_width,
-                                engine.canvas_client_height);
+    if (primary) {
+        handle_camera_pointer_event(event, *primary, primary_state, engine.canvas_client_width,
+                                    engine.canvas_client_height);
+    }
 }
 
-inline void update_camera(CameraRecord& camera) {
+// One frame of a camera's pinned before-render hook, at the frame's own
+// delta: attachControl's applyInertia, or the free controls' update(deltaMs).
+inline void update_camera(CameraRecord& camera, double delta_ms) {
     if (!camera.controls_enabled) {
         return;
     }
@@ -224,66 +229,56 @@ inline void update_camera(CameraRecord& camera) {
         upstream::apply_arc_rotate_inertia(camera);
         return;
     }
-
+    // The free controls ask for the KeyboardEvent.code values held down;
+    // SDL's keyboard state answers for the portable scancodes.
     int key_count = 0;
     const bool* keys = SDL_GetKeyboardState(&key_count);
+    std::vector<std::string_view> pressed_codes;
+    for (int index = 0; index < key_count; ++index) {
+        if (keys[index])
+            pressed_codes.push_back(keyboard_event_code(static_cast<SDL_Scancode>(index)));
+    }
+    const std::function<bool(std::string_view)> pressed = [&pressed_codes](std::string_view code) {
+        return std::find(pressed_codes.begin(), pressed_codes.end(), code) != pressed_codes.end();
+    };
     if (camera.configurable_free_update) {
-        std::vector<std::string_view> pressed_codes;
-        for (int index = 0; index < key_count; ++index) {
-            if (keys[index])
-                pressed_codes.push_back(keyboard_event_code(static_cast<SDL_Scancode>(index)));
-        }
-        camera.configurable_free_update(
-            camera, nominal_frame_milliseconds, [&pressed_codes](std::string_view code) {
-                return std::find(pressed_codes.begin(), pressed_codes.end(), code) !=
-                       pressed_codes.end();
-            });
+        camera.configurable_free_update(camera, delta_ms, pressed);
         return;
     }
-    const auto pressed = [keys, key_count](SDL_Scancode scancode) {
-        const int index = static_cast<int>(scancode);
-        return index >= 0 && index < key_count && keys[index];
-    };
-    // The pin's per-frame move scale (free-camera-controls.ts computes
-    // moveSpeed from the frame's delta milliseconds), evaluated by the
-    // generated formula at the fixed step this loop runs.
-    const double movement = upstream::free_camera_move_speed(camera, nominal_frame_milliseconds);
-    if (pressed(SDL_SCANCODE_W) || pressed(SDL_SCANCODE_UP)) {
-        camera.inertial_direction.z += movement;
-    }
-    if (pressed(SDL_SCANCODE_S) || pressed(SDL_SCANCODE_DOWN)) {
-        camera.inertial_direction.z -= movement;
-    }
-    if (pressed(SDL_SCANCODE_A) || pressed(SDL_SCANCODE_LEFT)) {
-        camera.inertial_direction.x -= movement;
-    }
-    if (pressed(SDL_SCANCODE_D) || pressed(SDL_SCANCODE_RIGHT)) {
-        camera.inertial_direction.x += movement;
-    }
-    if (pressed(SDL_SCANCODE_SPACE) || pressed(SDL_SCANCODE_PAGEUP)) {
-        camera.inertial_direction.y += movement;
-    }
-    if (pressed(SDL_SCANCODE_LSHIFT) || pressed(SDL_SCANCODE_RSHIFT) ||
-        pressed(SDL_SCANCODE_PAGEDOWN)) {
-        camera.inertial_direction.y -= movement;
-    }
-    upstream::apply_free_camera_inertia(camera);
+    upstream::free_camera_update(camera, delta_ms, pressed);
 }
 
-inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord& primary) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+/**
+ * One frame of `camera`'s control hook at the delta the pin hands it: the
+ * hook lives in the `_beforeRender` list of the scene `attachControl` was
+ * given, whose `_update` passes `fixedDeltaMs > 0 ? fixedDeltaMs :
+ * _currentDelta` (`scene_callback_delta`). A control installed without a
+ * scene has no per-frame hook there.
+ */
+inline void update_attached_camera(const Engine& engine, CameraRecord& camera) {
+    const std::shared_ptr<SceneState> scene = camera.controls_scene.lock();
+    if (!scene)
+        return;
+    update_camera(camera, scene_callback_delta(Scene::from_state(scene), engine.current_delta_ms));
+}
+
+// `primary` is the scene's active camera, null when it has none.
+inline void update_surface_cameras([[maybe_unused]] Engine& engine, CameraRecord* primary) {
+#if BBLITE_HAS_UI
     if (engine.surface_canvas) {
         for (std::size_t i = 0; i < engine.cameras.size(); ++i) {
             const bool attached =
                 std::any_of(engine.registered_scenes.begin(), engine.registered_scenes.end(),
                             [i](const auto& scene) { return scene && scene->camera.value == i; });
             if (attached)
-                update_camera(engine.cameras[i]);
+                update_attached_camera(engine, engine.cameras[i]);
         }
         return;
     }
 #endif
-    update_camera(primary);
+    if (primary) {
+        update_attached_camera(engine, *primary);
+    }
 }
 
 } // namespace bbl::pal

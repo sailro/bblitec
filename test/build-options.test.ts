@@ -13,6 +13,8 @@ import {
     hostOfflineShaderTarget,
     needsOfflineShaders,
 } from "../src/build-options.js";
+import { listFiles } from "../src/tooling/records.js";
+import { sceneBackendFiles, sceneBackendSource } from "./native-fixture.js";
 
 test("compiled backends have independent build and deployment directories", () => {
     const directory = "native/build-primitives-release";
@@ -77,6 +79,7 @@ test("the repository manifest automatically feeds the full dev set", () => {
             "navigation-tile-cache",
             "physics",
             "png",
+            "sdl",
             "text-layout",
             "ui",
             "ui-svg",
@@ -93,16 +96,16 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
         "native/include/bblite/pal_system_fonts.hpp",
         "utf8",
     );
-    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
-    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const sdl = sceneBackendSource("sdl");
+    const dawn = sceneBackendSource("dawn");
     const spriteSdl = readFileSync("native/src/pal_sdl_gpu_sprite.cpp", "utf8");
     const spriteDawn = readFileSync("native/src/pal_dawn_sprite.cpp", "utf8");
     const spriteSdlUi = readFileSync(
-        "native/src/pal_sprite_ui_sdl.hpp",
+        "native/src/pal_sdl_gpu_sprite_ui.hpp",
         "utf8",
     );
     const spriteDawnUi = readFileSync(
-        "native/src/pal_sprite_ui_dawn.hpp",
+        "native/src/pal_dawn_sprite_ui.hpp",
         "utf8",
     );
     const textureCache = readFileSync(
@@ -131,16 +134,23 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
         /take_crosshair_color[\s\S]{0,120}--bbl-crosshair/,
     );
     assert.match(projection, /append_crosshair[\s\S]{0,900}SetInnerRML/);
-    assert.match(sdl, /render_ui_sdl_frame/);
-    assert.match(dawn, /render_ui_dawn_frame/);
-    assert.match(sdl, /multisample_layer/);
-    assert.match(dawn, /multisample_layer/);
+    // One compositor per backend: the scene renderer passes its sample
+    // count and gets the multisampled layer; sprite and Window hosts blend
+    // directly.
+    assert.match(
+        sdl,
+        /render_sprite_ui_sdl_frame\([\s\S]{0,200}state\.sample_count\)/,
+    );
+    assert.match(
+        dawn,
+        /render_sprite_ui_dawn_frame\([\s\S]{0,200}state\.sample_count\)/,
+    );
+    assert.match(spriteSdlUi, /layer\.multisample/);
+    assert.match(spriteDawnUi, /multisample_view/);
     assert.match(spriteSdl, /render_sprite_ui_sdl_frame/);
     assert.match(spriteDawn, /render_sprite_ui_dawn_frame/);
     assert.match(spriteSdl, /handle_ui_rml_event/);
     assert.match(spriteDawn, /handle_ui_rml_event/);
-    for (const renderer of [sdl, dawn])
-        assert.match(renderer, /ui_frame_uses_texture/);
     assert.match(
         textureCache,
         /std::weak_ptr<const std::vector<std::uint8_t>> source/,
@@ -155,7 +165,12 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
         );
         assert.doesNotMatch(renderer, /ui_frame_uses_texture/);
     }
-    for (const renderer of [sdl, dawn, spriteSdlUi, spriteDawnUi])
+    for (const renderer of [sdl, dawn])
+        assert.doesNotMatch(
+            renderer,
+            /ui_frame_uses_texture|draw\.nearest_sampling/,
+        );
+    for (const renderer of [spriteSdlUi, spriteDawnUi])
         assert.match(renderer, /draw\.nearest_sampling/);
 });
 
@@ -219,6 +234,7 @@ test("canonicalizes the build-time backend flag", () => {
     assert.equal(canonicalCompiledBackend("sdl_gpu", "build"), "SDL_GPU");
     assert.equal(canonicalCompiledBackend("DAWN", "process"), "DAWN");
     assert.equal(canonicalCompiledBackend("both", "process"), "BOTH");
+    assert.equal(canonicalCompiledBackend("gpu", "build"), "SDL_GPU");
     assert.throws(
         () => canonicalCompiledBackend("vulkan", "build"),
         /--backend must be sdl_gpu\|dawn\|both/,
@@ -251,49 +267,10 @@ test("minimal mode has dedicated MSVC and clang-cl size flags", () => {
     assert.match(block, /\/clang:-Oz \/clang:-flto/);
     assert.match(block, /\/O1 \/Ob1 \/GL \/Gw/);
     assert.match(block, /\/STACK:8388608/);
-    assert.match(
-        cmake,
-        /"\$\{BBLITE_ENTRY_SOURCE\}" \$\{BBLITE_APPLICATION_UNITS\}\s+PROPERTIES COMPILE_OPTIONS "\/wd4702"/,
-    );
+    // Generated units are warning-clean under MSVC too: the lowering emits
+    // no unreachable fallthrough for LTCG to report as C4702.
+    assert.doesNotMatch(cmake, /\/wd4702/);
     assert.match(block, /INTERFACE -Os -ffunction-sections/);
-});
-
-test("shipping packages require the trimmed static build", () => {
-    const script = readFileSync("tools/package-demo.ps1", "utf8");
-    const patterns = script.slice(
-        script.indexOf("$shaderPatterns ="),
-        script.indexOf("$shaderFiles ="),
-    );
-    // The executable runs directly; packaging tests exercise the host shader
-    // payload selection. Windows retains its console for startup errors.
-    assert.doesNotMatch(
-        script.slice(0, script.indexOf("$smokeFrames")),
-        /SDL_GPU_DRIVER|run-\$Scene\.cmd|\.log/,
-    );
-    assert.match(script, /\$smokeStart\.Environment\["SDL_ASSERT"\] = "abort"/);
-    assert.match(script, /Double-click \$exeName/);
-    assert.match(patterns, /\*\.dxil/);
-    assert.match(script, /VCPKG_INSTALLED_DIR/);
-    assert.match(script, /BBLITE_MINSIZE/);
-    assert.match(script, /x64-windows-static/);
-    assert.match(script, /CMAKE_MSVC_RUNTIME_LIBRARY/);
-    assert.match(script, /MultiThreaded/);
-    assert.match(script, /single backend/);
-    assert.match(script, /generated scene id/);
-    assert.match(script, /IsPathRooted\(\$OutputRoot\)/);
-    assert.match(script, /if \(Test-Path \$assetSource\)/);
-    assert.doesNotMatch(script, /numbered scene id/);
-    assert.doesNotMatch(script, /run-\$Scene-dawn/);
-    // The staged package runs for a few frames and must exit cleanly
-    // before the archive is written.
-    const smoke = script.slice(
-        script.indexOf("$smokeFrames = 5"),
-        script.indexOf("Compress-Archive"),
-    );
-    assert.match(smoke, /Environment\["BBLITE_MAX_FRAMES"\] = "\$smokeFrames"/);
-    assert.match(smoke, /WorkingDirectory = \$packageDirectory/);
-    assert.match(smoke, /WaitForExit\(120000\)/);
-    assert.match(smoke, /\$smoke\.ExitCode -ne 0/);
 });
 
 test("the trimmed SDL build has a separate audio-capable variant", () => {
@@ -319,13 +296,38 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
     assert.match(script, /Contains\('\$'\)/);
     assert.match(script, /BBLITE_SDL_DIALOG \$dialogSetting/);
     assert.match(script, /bblite-sdl-features\.cmake/);
-    // The script-only patch lives beside the LabSound one, outside the
-    // overlay port directory that keys the development vcpkg install.
-    assert.match(script, /tools\\patches\\sdl-static-no-dynapi\.patch/);
-    assert.doesNotMatch(script, /overlay-ports\\sdl3\\static-no-dynapi/);
-    assert.ok(existsSync("tools/patches/sdl-static-no-dynapi.patch"));
+    // Every trimmed-SDL patch comes from the inventory; the script-only one
+    // lives outside the overlay port directory that keys the development
+    // vcpkg install. Only SDL's own options (BOOL, or INTERNAL when SDL
+    // forces a dependent one) are admitted to the trim table.
+    assert.match(
+        script,
+        /Sync-PatchedCheckout \$source \$repository \$tagCommit "SDL \$tag" sdl3 @\("trimmed"\)/,
+    );
+    assert.match(script, /Get-PatchRecord sdl3 @\("trimmed"\)/);
+    // The engine only converts decoded images: the blending, modulating and
+    // scaling blitters, RLE, YUV and SDL's stb_image loader are compiled out,
+    // so the trimmed SDL owes no YUV or stb_image notice.
+    assert.match(
+        script,
+        /\$surfaceDefines = @\("SDL_LEAN_AND_MEAN", "SDL_HAVE_BLIT_0", "SDL_HAVE_BLIT_1", "SDL_HAVE_BLIT_N", "SDL_DISABLE_STB"\)/,
+    );
+    // SDL's targets drop /D flags from CMAKE_C_FLAGS*: the definitions reach
+    // them from a project include.
+    assert.match(
+        script,
+        /add_compile_definitions\(\$\(\$surfaceDefines -join ' '\)\)/,
+    );
+    assert.match(script, /"-DCMAKE_PROJECT_SDL3_INCLUDE=/);
+    assert.doesNotMatch(script, /\$defines/);
+    assert.doesNotMatch(script, /yuv2rgb\/LICENSE|stb_image\.h"/);
+    assert.doesNotMatch(script, /SDL_(MISC|LOCALE) =/);
+    assert.match(script, /-notin @\("BOOL", "INTERNAL"\)/);
+    assert.ok(existsSync("native/patches/sdl3/0009-static-no-dynapi.patch"));
     assert.ok(
-        !existsSync("native/vcpkg-overlay-ports/sdl3/static-no-dynapi.patch"),
+        !existsSync(
+            "native/vcpkg-overlay-ports/sdl3/0009-static-no-dynapi.patch",
+        ),
     );
 
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
@@ -353,15 +355,40 @@ test("the PowerShell tools share one module for discovery, checkouts and caches"
         "Find-CMake",
         "Get-DevToolchain",
         "Sync-PinnedCheckout",
+        "Sync-PatchedCheckout",
+        "Set-ArtifactContent",
         "Read-CMakeCache",
     ]) {
         assert.match(module, new RegExp(`function ${helper}`));
         assert.match(module, new RegExp(`"${helper}"`));
     }
-    const scripts = readdirSync("tools").filter(
-        (name) => /^build-.*\.ps1$/.test(name) || name === "package-demo.ps1",
+    const scripts = readdirSync("tools").filter((name) =>
+        /^build-.*\.ps1$/.test(name),
     );
-    assert.equal(scripts.length, 7);
+    assert.equal(scripts.length, 6);
+    // Every builder of a patched library brings its checkout to the pin and
+    // series through the one applied-series record, and rewrites its record
+    // file only when it changes (a record is a configure input).
+    for (const name of [
+        "build-sdl-min.ps1",
+        "build-labsound.ps1",
+        "build-rmlui.ps1",
+        "build-dawn.ps1",
+        "build-dawn-min.ps1",
+    ]) {
+        const script = readFileSync(`tools/${name}`, "utf8");
+        assert.match(script, /Sync-PatchedCheckout /, name);
+        assert.doesNotMatch(
+            script,
+            /Install-MaintainedPatches|applied-series/,
+            name,
+        );
+        assert.match(
+            script,
+            /Set-ArtifactContent \(Join-Path \$output "bblite-[a-z]+-features\.cmake"\)/,
+            name,
+        );
+    }
     for (const name of scripts) {
         const script = readFileSync(`tools/${name}`, "utf8");
         assert.match(
@@ -392,45 +419,48 @@ test("the PowerShell tools share one module for discovery, checkouts and caches"
     }
 });
 
-test("feature macros come from one CMake function", () => {
+test("a generated tree without its codec list or macro headers is refused", () => {
+    // The one stack reservation sits outside the compiler split.
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
-    assert.match(cmake, /function\(bblite_feature_define macro\)/);
-    for (const [macro, feature] of [
-        ["BBLITE_HAS_GAMEPAD", "input:gamepad"],
-        ["BBLITE_HAS_PBR_RENDERER", "renderer:scene"],
-        ["BBLITE_HAS_PHYSICS_QUERIES", "physics:queries"],
-        ["BBLITE_HAS_PHYSICS_CONSTRAINTS", "physics:constraints"],
-        ["BBLITE_HAS_PHYSICS_TRIGGER", "physics:trigger"],
-        ["BBLITE_HAS_PHYSICS_HEIGHTFIELD", "physics:heightfield"],
-        ["BBLITE_HAS_PHYSICS_CHARACTER", "physics:character-controller"],
-        ["BBLITE_HAS_PHYSICS_FLOATING_ORIGIN", "physics:floating-origin"],
-        ["BBLITE_HAS_NAV_TILE_CACHE", "navigation:tile-cache"],
-        ["BBLITE_PHYSICS_VIEWER", "physics:viewer"],
-    ]) {
-        assert.match(
-            cmake,
-            new RegExp(`bblite_feature_define\\(${macro} "${feature}"\\)`),
-        );
-    }
-    assert.match(
-        cmake,
-        /bblite_feature_define\(BBLITE_HAS_TEXT "text:renderable" "renderer:text"\)/,
-    );
-    assert.ok((cmake.match(/bblite_feature_define\(/g) ?? []).length >= 36);
-    // No hand-written 1/0 pair is left for a single-feature macro, no
-    // macro is defined without a reader, and the one stack reservation
-    // sits outside the compiler split.
-    assert.doesNotMatch(
-        cmake,
-        /if\("[a-z:-]+" IN_LIST BBLITE_RUNTIME_FEATURES\)\s*target_compile_definitions\(\s*bblite_native\s+PRIVATE\s+BBLITE_[A-Z_]+=1\s*\)\s*else\(\)/,
-    );
-    assert.doesNotMatch(cmake, /BBLITE_HAS_GLTF/);
     assert.equal((cmake.match(/\/STACK:8388608/g) ?? []).length, 1);
-    // A generated tree without a codec list is refused, not defaulted.
     assert.match(
         readFileSync("native/dependency-features.cmake", "utf8"),
         /if\(NOT DEFINED BBLITE_IMAGE_CODECS\)\s*message\(\s*FATAL_ERROR/,
     );
+    assert.match(
+        cmake,
+        /if\(NOT EXISTS "\$\{BBLITE_GENERATED_DIR\}\/upstream\/include\/bblite\/features"\)\s*message\(\s*FATAL_ERROR/,
+    );
+});
+
+test("every bblite macro test is a plain #if over an always-defined macro", () => {
+    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
+    // An undefined name in a project unit's #if is a compile error.
+    assert.match(cmake, /\/we4668 \/external:env:INCLUDE \/external:W0/);
+    assert.match(cmake, /INTERFACE -Wundef -Werror=undef\)/);
+    assert.match(cmake, /-Wpedantic -Werror -Wundef\)/);
+    // No spelling decides what a missing macro means: `defined(X) && X`
+    // read it as off, `!defined(X) || X` as on, and an #ifndef default
+    // supplied a value CMake or the generator already owns.
+    const sources = [
+        ...listFiles("native/include"),
+        ...listFiles("native/src"),
+        ...listFiles("src").filter((file) => file.endsWith(".ts")),
+    ];
+    const wrong: string[] = [];
+    for (const file of sources) {
+        for (const [index, line] of readFileSync(file, "utf8")
+            .split("\n")
+            .entries()) {
+            if (
+                /#\s*(?:if|elif)\b.*\bdefined\s*\(?\s*BBLITE_/.test(line) ||
+                /#\s*(?:ifdef|ifndef)\s+BBLITE_(?!\w*_HPP\b)/.test(line)
+            ) {
+                wrong.push(`${file}:${index + 1}: ${line.trim()}`);
+            }
+        }
+    }
+    assert.deepEqual(wrong, []);
 });
 
 test("the scene-invariant PAL units compile in their own object library", () => {
@@ -438,9 +468,10 @@ test("the scene-invariant PAL units compile in their own object library", () => 
     const pattern = /BBLITE_PAL_COMMON_PATTERN\s*"([^"]+)"/.exec(cmake)?.[1];
     assert.ok(pattern, "no PAL-common pattern");
     const selector = new RegExp(pattern.replaceAll("\\\\", "\\"));
-    // Verified with the preprocessor: these units include no header under
-    // the generated tree, the backend families, the window realm and the
-    // build stamp do.
+    // These units read the generated tree only through activation macros;
+    // the backend families, the window realm, the build stamp and the
+    // navigation PAL include lowered module headers (configure refuses a
+    // PAL-common unit that does).
     for (const unit of [
         "pal",
         "pal_sdl",
@@ -448,7 +479,6 @@ test("the scene-invariant PAL units compile in their own object library", () => 
         "pal_audio_labsound",
         "pal_physics_bullet",
         "pal_physics_debug",
-        "pal_navigation_recast",
         "pal_file",
         "pal_storage",
         "pal_text_layout",
@@ -464,8 +494,9 @@ test("the scene-invariant PAL units compile in their own object library", () => 
         "pal_sdl_gpu_sprite",
         "pal_dawn",
         "pal_window_realm",
-        "pal_window_presenter_sdl",
+        "pal_sdl_gpu_window_presenter",
         "pal_build_stamp",
+        "pal_navigation_recast",
     ]) {
         assert.doesNotMatch(
             `/src/${unit}.cpp`,
@@ -482,11 +513,49 @@ test("the scene-invariant PAL units compile in their own object library", () => 
         cmake,
         /target_link_libraries\(bblite_native PRIVATE bblite_features bblite_pal_common\)/,
     );
-    // Only the executable's own units see the generated include directory;
-    // every other usage requirement rides the interface target.
+    // Each backend's scene renderer compiles as one checked-in translation
+    // unit that includes its family files and its driver by name (CMake's
+    // UNITY_BUILD writes absolute paths into the source it generates, which
+    // would enter the object cache's key); no family file compiles alone.
+    assert.ok(
+        cmake.includes(
+            'list(TRANSFORM BBLITE_RUNTIME_SOURCES REPLACE "/src/pal_sdl_gpu\\\\.cpp$" "/src/pal_sdl_gpu_scene_all.cpp")',
+        ),
+        "the feature table's scene driver compiles through its unity unit",
+    );
+    assert.doesNotMatch(
+        cmake,
+        /_scene_(?:meshes|variants|shadows|textures|targets|post_process|picking)/,
+    );
+    for (const backend of ["sdl", "dawn"] as const) {
+        const sources = sceneBackendFiles(backend).filter((path) =>
+            path.endsWith(".cpp"),
+        );
+        const unity = readFileSync(
+            sources[0]!.replace(/_scene_\w+\.cpp$/, "_scene_all.cpp"),
+            "utf8",
+        );
+        assert.deepEqual(
+            [...unity.matchAll(/^#include "([^"]+)"$/gm)].map(
+                (match) => `native/src/${match[1]}`,
+            ),
+            sources,
+            `${backend} scene renderer unit`,
+        );
+        assert.doesNotMatch(
+            unity.replace(/^(?:\/\/.*|#include "[^"]+")$/gm, ""),
+            /\S/,
+            `${backend} scene renderer unit holds only its includes`,
+        );
+    }
+    // Under the object cache each repository unit reads its own
+    // content-addressed header folder, and a PAL-common unit reaching a
+    // generated header other than an activation macro is refused
+    // (executed in native-cache.test.ts); every other usage requirement
+    // rides the interface target.
     assert.match(
         cmake,
-        /target_include_directories\(bblite_native PRIVATE "\$\{BBLITE_GENERATED_DIR\}\/upstream\/include"\)/,
+        /bblite_cache_unit_headers\(\s*TARGETS bblite_pal_common bblite_native\s+SCENE_INVARIANT bblite_pal_common/,
     );
     assert.doesNotMatch(cmake, /target_compile_definitions\(\s*bblite_native/);
     assert.doesNotMatch(
@@ -500,6 +569,23 @@ test("the scene-invariant PAL units compile in their own object library", () => 
     assert.match(
         cmake,
         /target_precompile_headers\(bblite_native REUSE_FROM bblite_pal_common\)/,
+    );
+    // Under the object cache the lowered modules compile from
+    // content-addressed copies and clang-cl builds one precompiled header the
+    // trees of a checkout share (executed in native-cache.test.ts).
+    assert.match(
+        cmake,
+        /bblite_content_addressed_sources\(BBLITE_GENERATED_UNITS \$\{BBLITE_GENERATED_SOURCES\}\)/,
+    );
+    assert.match(
+        cmake,
+        /bblite_shared_pch\(\s*NAME bblite_pch\s+TARGETS bblite_pal_common bblite_native\s+HEADERS \$\{BBLITE_PCH_HEADERS\}/,
+    );
+    // clang-cl's /Yc instantiates the templates a PCH leaves pending; the
+    // -emit-pch PCHs must too, or every user instantiates them again.
+    assert.match(
+        readFileSync("native/native-header-cache.cmake", "utf8"),
+        /"SHELL:-Xclang -emit-pch" "SHELL:-Xclang -fpch-instantiate-templates"/,
     );
     assert.match(
         cmake,
@@ -554,7 +640,7 @@ test("minimal audio dependencies use a static runtime and ship their notices", (
     assert.match(cmake, /NOT BBLITE_LABSOUND_STATIC_RUNTIME/);
     assert.match(
         cmake,
-        /BBLITE_HAS_AUDIO_CAPTURE=\$<BOOL:\$\{BBLITE_AUDIO_CAPTURE\}>/,
+        /BBLITE_AUDIO_CAPTURE=\$<BOOL:\$\{BBLITE_AUDIO_CAPTURE\}>/,
     );
     assert.match(
         cmake,
@@ -564,13 +650,6 @@ test("minimal audio dependencies use a static runtime and ship their notices", (
         cmake,
         /LabSound\.lib"\s*"\$\{BBLITE_LABSOUND_DIR\}\/lib\/libnyquist\.lib/,
     );
-
-    const packager = readFileSync("tools/package-demo.ps1", "utf8");
-    assert.match(packager, /\$audioReached/);
-    assert.match(packager, /\$audioDecoded/);
-    assert.match(packager, /LabSound-LICENSE\.txt/);
-    assert.match(packager, /libnyquist-COPYING\.txt/);
-    assert.match(packager, /if \(\$audioCapture -or \$audioDecoded\)/);
 });
 
 test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () => {
@@ -585,31 +664,23 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(String(record.repository), /^https:\/\/github\.com\//);
     assert.match(String(record.commit), /^[0-9a-f]{40}$/);
     assert.equal(record.license, "MIT");
-
-    // The pin names every maintained patch, and the directory is the
-    // set the builder applies and records; the two must be one set.
-    const directoryPatches = readdirSync("native/patches")
-        .filter((name) => /^rmlui-.*\.patch$/.test(name))
-        .sort();
-    assert.deepEqual(record.patches, directoryPatches);
-    assert.ok(directoryPatches.length >= 5);
+    // The inventory, not the pin, lists the maintained patches.
+    assert.equal(record.patches, undefined);
+    assert.ok(
+        readdirSync("native/patches/rmlui").filter((name) =>
+            /^\d{4}-[a-z0-9-]+\.patch$/.test(name),
+        ).length >= 5,
+    );
 
     const builder = readFileSync("tools/build-rmlui.ps1", "utf8");
     assert.match(builder, /\[switch\]\$StaticRuntime/);
     assert.match(builder, /upstream\\rmlui\.json/);
-    assert.match(builder, /apply-rmlui-patch\.cmake/);
     assert.match(
         builder,
-        /Get-ChildItem \$patchDirectory -Filter "rmlui-\*\.patch"/,
+        /Sync-PatchedCheckout \$source \$pin\.repository \$pin\.commit "RmlUi" rmlui @\(\)/,
     );
-    assert.match(
-        builder,
-        /\$pinnedPatches -join ";"\) -ne \(\$directoryPatches -join ";"/,
-    );
-    assert.doesNotMatch(builder, /rmlui-premultiplied-rounding\.patch/);
-    assert.match(builder, /Get-FileHash \$_\.FullName -Algorithm SHA256/);
-    assert.match(builder, /set\(BBLITE_RMLUI_COMMIT/);
-    assert.match(builder, /set\(BBLITE_RMLUI_PATCHES/);
+    assert.match(builder, /Get-PatchRecord rmlui @\(\)/);
+    assert.doesNotMatch(builder, /\.patch\b/);
     assert.match(builder, /CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded/);
     assert.match(builder, /bblite-rmlui-features\.cmake/);
     assert.match(builder, /RMLUI_SVG_PLUGIN=\$rmlSvgSetting/);
@@ -630,50 +701,38 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(cmake, /NOT BBLITE_RMLUI_STATIC_RUNTIME/);
     assert.match(cmake, /ui:inline-svg/);
     assert.match(cmake, /NOT RMLUI_SVG_PLUGIN/);
-    // An artifact is refused when its recorded commit or patch set is not
-    // what the pin and native/patches say now, naming the rebuild.
+    // Every prebuilt artifact's recorded source and patch set is verified
+    // by one function against the pin and the inventory
+    // (executed in test/patch-inventory.test.ts).
     assert.match(
         cmake,
-        /string\(JSON BBLITE_RMLUI_PINNED_COMMIT GET "\$\{BBLITE_RMLUI_PIN\}" commit\)/,
+        /include\("\$\{BBLITE_NATIVE_ROOT\}\/patch-identity\.cmake"\)\s*bblite_verify_dependency_artifacts\(\)/,
     );
     assert.match(
-        cmake,
-        /file\(GLOB BBLITE_RMLUI_PATCH_FILES "\$\{BBLITE_NATIVE_ROOT\}\/patches\/rmlui-\*\.patch"\)/,
-    );
-    assert.match(
-        cmake,
-        /file\(SHA256 "\$\{bblite_rmlui_patch\}" bblite_rmlui_patch_digest\)/,
-    );
-    assert.match(
-        cmake,
-        /NOT BBLITE_RMLUI_COMMIT STREQUAL BBLITE_RMLUI_PINNED_COMMIT/,
-    );
-    assert.match(
-        cmake,
-        /NOT "\$\{BBLITE_RMLUI_PATCHES\}" STREQUAL "\$\{BBLITE_RMLUI_EXPECTED_PATCHES\}"/,
-    );
-    assert.match(
-        cmake,
-        /Rebuild it with "\s*"\$\{BBLITE_RMLUI_BUILD_COMMAND\}\."/,
+        readFileSync("native/patch-identity.cmake", "utf8"),
+        /bblite_verify_patch_record\(\s*rmlui "\$\{BBLITE_RMLUI_DIR\}" "\$\{BBLITE_RMLUI_BUILD_COMMAND\}" REQUIRE\s*\)/,
     );
     assert.match(
         cmake,
         /\$\{BBLITE_RMLUI_DIR\}\/Backends\/RmlUi_Platform_SDL\.cpp/,
     );
-
-    const packager = readFileSync("tools/package-demo.ps1", "utf8");
-    assert.match(packager, /BBLITE_RMLUI_DIR/);
-    assert.match(packager, /RmlUi-LICENSE\.txt/);
-    assert.match(packager, /LunaSVG\.txt.*lunasvg/s);
-    assert.match(packager, /PlutoVG\.txt.*plutovg/s);
 });
 
-test("SDL shader slot loading rejects unbounded generated indices", () => {
-    const source = readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8");
-    assert.match(source, /constexpr std::size_t max_slot_index = 4096;/);
-    assert.match(source, /digit < '0' \|\| digit > '9'/);
-    assert.match(source, /Malformed shader slot/);
-    assert.doesNotMatch(source, /std::stoul\(reg\.substr\(1\)\)/);
+test("shader sidecar loading rejects unbounded generated indices", () => {
+    // One bounded index parser, which both backends' sidecar readers use.
+    const common = readFileSync("native/src/pal_gpu_common.hpp", "utf8");
+    assert.match(common, /constexpr std::uint32_t max_sidecar_index = 4096;/);
+    assert.match(common, /digit < '0' \|\| digit > '9'/);
+    for (const file of ["pal_sdl_gpu_shared.hpp", "pal_dawn_shared.hpp"]) {
+        const source = readFileSync(`native/src/${file}`, "utf8");
+        assert.match(source, /parse_sidecar_index\(/, file);
+        assert.match(source, /for_each_sidecar_line\(/, file);
+        assert.doesNotMatch(source, /std::stoul\(/, file);
+    }
+    assert.match(
+        readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"),
+        /Malformed shader slot/,
+    );
 });
 
 test("native shader snapshots track additions and removals", () => {

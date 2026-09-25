@@ -15,7 +15,7 @@ export interface ProceduralSkyIntrinsicContext
         Pick<
             LoweringServices,
             | "allocateTemporaryCppName"
-            | "registerAsset"
+            | "assetRegistry"
             | "cppString"
             | "castNumber"
             | "reachJsData"
@@ -96,7 +96,10 @@ function compileOptions(
                     site,
                     "Procedural sky brdfUrl requires a packaged static asset URL.",
                 );
-            const asset = context.registerAsset(source, "texture");
+            const asset = context.assetRegistry.registerAsset(
+                source,
+                "texture",
+            );
             brdfPath = `bbl::asset_path(${context.cppString(asset.output)})`;
         } else
             context.fail(
@@ -129,7 +132,7 @@ export function compileProceduralSkyIntrinsic(
     );
     const owner = sun
         ? undefined
-        : context.pinValueToTemporary(
+        : context.bindings.pinValueToTemporary(
               context.compileValue(argumentAt(call, 0)),
               "sky_owner",
               call,

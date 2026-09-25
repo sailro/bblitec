@@ -7,7 +7,7 @@ export const AUDIO_CODECS = [
     "opus",
     "ogg",
 ] as const;
-export type AudioCodec = (typeof AUDIO_CODECS)[number];
+type AudioCodec = (typeof AUDIO_CODECS)[number];
 
 /** Container signatures consumed by the pinned libnyquist decoders. */
 export function audioCodecForBytes(bytes: Uint8Array): AudioCodec | undefined {

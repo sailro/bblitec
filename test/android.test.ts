@@ -10,8 +10,9 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { jsonObject, jsonRecords } from "./json.js";
+import { jsonObject } from "./json.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
+import { runPatchIdentity } from "../src/patch-inventory.js";
 import {
     cppFunction,
     cppRecord,
@@ -21,6 +22,34 @@ import {
 } from "./native-fixture.js";
 
 const tools = discoverDevelopmentTools();
+
+/**
+ * `run_window_flags` reads the selected backend's window flags from the
+ * dispatch table, which needs SDL and every renderer entry. The fixture has
+ * neither, so the table's Android rule is checked here and handed to the
+ * extracted function as the backend it selects: Dawn marks its external
+ * Vulkan context, SDL_GPU adds nothing.
+ */
+function androidWindowFlagBackend(): string {
+    const dispatch = readFileSync("native/src/pal_gpu_dispatch.hpp", "utf8");
+    const dawn = cppSection(
+        dispatch,
+        "inline constexpr GpuBackend dawn_gpu_backend{",
+        "#endif",
+    );
+    assert.match(dawn, /#ifdef __ANDROID__[\s\S]*SDL_WINDOW_VULKAN,/);
+    const sdl = cppSection(
+        dispatch,
+        "inline constexpr GpuBackend sdl_gpu_backend{",
+        "};",
+    );
+    assert.match(sdl, /,\s*0,\s*$/);
+    return `struct SelectedGpuBackend { SDL_WindowFlags window_flags; };
+inline SelectedGpuBackend selected_gpu_backend() {
+    return {use_dawn_backend() ? SDL_WindowFlags{SDL_WINDOW_VULKAN} : SDL_WindowFlags{0}};
+}
+`;
+}
 
 test(
     "the Android surface-loss patch applies to the pinned Dawn sources",
@@ -38,7 +67,7 @@ test(
                 "apply",
                 "--cached",
                 "--check",
-                resolve("tools/patches/dawn-android-surface-loss.patch"),
+                resolve("native/patches/dawn/0001-android-surface-loss.patch"),
             ],
             { stdio: "pipe", windowsHide: true },
         );
@@ -102,7 +131,7 @@ endif()
 
 test(
     "Android Dawn cross-build uses the target ABI, static Vulkan and no host DXC or desktop surfaces",
-    { skip: !tools.powershell },
+    { skip: !tools.powershell || !tools.cmake },
     (t) => {
         mkdirSync("artifacts", { recursive: true });
         const directory = mkdtempSync(resolve("artifacts/android-dawn-tools-"));
@@ -116,18 +145,21 @@ test(
         const source = readFileSync("tools/build-dawn.ps1", "utf8").replace(
             'Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force',
             `Import-Module '${quote(resolve("tools/bblite-tools.psm1"))}' -Force
-function Sync-PinnedCheckout([string]$Path, [string]$Repository, [string]$Commit, [string]$Label) {
+function Sync-PatchedCheckout([string]$Path, [string]$Repository, [string]$Commit, [string]$Label, [string]$Library, [string[]]$Variants, [string]$CMake) {
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
     Set-Content (Join-Path $Path 'LICENSE') 'fixture license'
+    Set-Content (Join-Path $Path 'variants.txt') ($Variants -join ',')
 }
 function Get-PosixCompilerArguments { throw 'Android must not select the host compiler.' }
 function git { $global:LASTEXITCODE = 0 }
 `,
         );
         writeFileSync(script, source);
+        // The patch record comes from the real native/patch-identity.cmake.
         writeFileSync(
             cmake,
             `
+if ($args -contains '-P') { & '${quote(tools.cmake!)}' @args; exit $LASTEXITCODE }
 Add-Content (Join-Path $PSScriptRoot 'commands.jsonl') (ConvertTo-Json -InputObject @($args) -Compress)
 $global:LASTEXITCODE = 0
 `,
@@ -203,18 +235,27 @@ $global:LASTEXITCODE = 0
                 ["webgpu_dawn"],
             );
             assert.ok(existsSync(join(output, "LICENSE.txt")));
-            const provenance: unknown = JSON.parse(
-                readFileSync(join(output, "provenance.json"), "utf8"),
+            // The checkout carries, and the artifact records, the Android series.
+            assert.equal(
+                readFileSync(
+                    join(directory, `workspace-${abi}`, "dawn", "variants.txt"),
+                    "utf8",
+                ).trim(),
+                "android",
             );
-            assert.ok(
-                provenance &&
-                    typeof provenance === "object" &&
-                    "patches" in provenance &&
-                    Array.isArray(provenance.patches),
+            const expected = runPatchIdentity(tools.cmake!, "record", "dawn", {
+                variants: ["android"],
+            });
+            assert.match(
+                expected,
+                /set\(BBLITE_DAWN_PATCHES "0001-android-surface-loss\.patch=[0-9a-f]{64}"\)\nset\(BBLITE_DAWN_VARIANTS "android"\)/,
             );
-            assert.deepEqual(
-                jsonRecords(provenance.patches).map((patch) => patch.file),
-                ["dawn-android-surface-loss.patch"],
+            assert.equal(
+                readFileSync(
+                    join(output, "bblite-dawn-features.cmake"),
+                    "utf8",
+                ),
+                expected,
             );
             const incompatible = spawnSync(
                 tools.powershell!,
@@ -238,7 +279,7 @@ test(
                 "-Command",
                 `
 $ErrorActionPreference = 'Stop'
-foreach ($file in @('tools/android.ps1', 'tools/package-android.ps1', 'tools/package-demo.ps1')) {
+foreach ($file in @('tools/android.ps1', 'tools/package-android.ps1')) {
     $tokens = $null; $errors = $null
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $file), [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw ($errors | Out-String) }
@@ -268,7 +309,7 @@ foreach ($file in @('tools/android.ps1', 'tools/package-android.ps1', 'tools/pac
             const args = jsonObject(plan[0]).args;
             assert.ok(Array.isArray(args));
             assert.equal(
-                args[args.indexOf("-ExpectBackend") + 1],
+                args[args.indexOf("-Backend") + 1],
                 backend.toUpperCase(),
             );
         }
@@ -319,6 +360,7 @@ test("Dawn Android surfaces negotiate worker formats and retain native windows a
                 "struct DawnOffscreenImage",
             ) +
             "\n" +
+            androidWindowFlagBackend() +
             cppFunction(
                 readFileSync("native/src/pal_window.hpp", "utf8"),
                 "inline SDL_WindowFlags run_window_flags",

@@ -1,19 +1,20 @@
 import ts from "typescript";
 import { argumentAt, identifierText } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
+import { declaredSymbol, type LibraryGlobal } from "./symbols.js";
 
 /** A closed Promise executor: local setup, one zero-argument RAF poll, and its initial call. */
 export function framePollExecutor(
     expression: ts.Expression,
     checker: ts.TypeChecker,
-    isGlobal: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ):
     | {
           setup: readonly ts.Statement[];
           condition: ts.Expression;
       }
     | undefined {
-    const head = promiseExecutor(expression, isGlobal);
+    const head = promiseExecutor(expression, libraryGlobal);
     if (!head) return undefined;
     const { executor, resolve: resolveParameter } = head;
     if (!ts.isBlock(executor.body)) return undefined;
@@ -68,9 +69,7 @@ export function framePollExecutor(
         return undefined;
     const raf = scheduled.expression;
     if (
-        !ts.isIdentifier(raf.expression) ||
-        raf.expression.text !== "requestAnimationFrame" ||
-        !isGlobal(raf.expression) ||
+        libraryGlobal(raf.expression) !== "requestAnimationFrame" ||
         raf.arguments.length !== 1 ||
         identifierText(argumentAt(raf, 0)) !== poll.name.text ||
         !ts.isIdentifier(initialCall.expression.expression) ||
@@ -79,9 +78,8 @@ export function framePollExecutor(
     )
         return undefined;
     const sameSymbol = (left: ts.Node, right: ts.Node) =>
-        checker.getSymbolAtLocation(left) !== undefined &&
-        checker.getSymbolAtLocation(left) ===
-            checker.getSymbolAtLocation(right);
+        declaredSymbol(checker, left) !== undefined &&
+        declaredSymbol(checker, left) === declaredSymbol(checker, right);
     if (
         !sameSymbol(resolve.expression.expression, resolveParameter) ||
         !sameSymbol(argumentAt(raf, 0), poll.name) ||

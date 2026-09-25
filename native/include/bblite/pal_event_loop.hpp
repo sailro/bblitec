@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/teardown.hpp>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -153,7 +155,9 @@ public:
     }
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
-    ~EventLoop() { discard(); }
+    ~EventLoop() {
+        run_teardown("EventLoop teardown", [this] { discard(); });
+    }
 
     std::shared_ptr<Inbox> inbox() const { return inbox_; }
     double now() const {
@@ -180,8 +184,12 @@ public:
         continuations_.emplace(id, Continuation{continuation, std::move(context)});
         return id;
     }
-    void release_continuation(ContinuationId id) {
-        require_owner();
+    /** Promise-frame destructors release here; a frame released off the
+     *  realm's thread is a broken ownership invariant, not an exception. */
+    void release_continuation(ContinuationId id) noexcept {
+        if (owner_ != std::this_thread::get_id())
+            terminate_after("EventLoop::release_continuation",
+                            "Realm accessed from another thread.");
         continuations_.erase(id);
     }
     void resume_continuation(ContinuationId id) {

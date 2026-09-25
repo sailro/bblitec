@@ -5,9 +5,15 @@ import {
 import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 import { createHash } from "node:crypto";
 import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
-import ts from "typescript";
 import { lowerLocalCubemap } from "./lowering/local-cubemap-lowerer.js";
 import type { ShaderModuleDeclaration } from "./shader-composition.js";
+import {
+    reflectWgslBindingStruct,
+    reflectWgslModule,
+    reflectWgslStruct,
+    sameWgslMembers,
+    wgslEntryPoints,
+} from "./shader-ir.js";
 import {
     SPLAT_CONTAINERS,
     type SplatContainerKind,
@@ -15,7 +21,11 @@ import {
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { TextLowerer } from "./lowering/text-lowerer.js";
 import { TextLayoutLowerer } from "./lowering/text-layout-lowerer.js";
-import { TextDataUpdateLowerer } from "./lowering/text-data-update-lowerer.js";
+import {
+    compiledTextDataSource,
+    TextDataUpdateLowerer,
+    textRecordsHeader,
+} from "./lowering/text-data-update-lowerer.js";
 import { TextGpuLowerer } from "./lowering/text-gpu-lowerer.js";
 import { TextRendererLowerer } from "./lowering/text-renderer-lowerer.js";
 import { TextWeightLowerer } from "./lowering/text-weight-lowerer.js";
@@ -26,9 +36,13 @@ import {
     textPipelineHeader,
     textPipelineStem,
 } from "./pinned-text-pipeline-cpp.js";
-import { stringLiteral as cppStringLiteral } from "./cpp-literals.js";
 import { GeospatialCameraLowerer } from "./lowering/geospatial-camera-lowerer.js";
-import { LoweredSource, LoweringContext } from "./lowering/context.js";
+import {
+    LoweredSource,
+    LoweringContext,
+    sharedPinnedContext,
+    pinnedContextOver,
+} from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
 import { lowerProceduralSkyAtmosphere } from "./lowering/procedural-sky-atmosphere.js";
 import { lowerProceduralSkyLoader } from "./lowering/procedural-sky-loader.js";
@@ -78,6 +92,7 @@ import {
 import { characterControllerHeader } from "./lowering/character-controller-runtime.js";
 import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
+import { navigationLibraryHeader } from "./lowering/navigation-library.js";
 import { PickingLowerer } from "./lowering/picking-lowerer.js";
 import { GizmoLowerer } from "./lowering/gizmo-lowerer.js";
 import { TubeLowerer } from "./lowering/factory/tube.js";
@@ -97,6 +112,7 @@ import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedMat4InvertHeader } from "./lowering/pinned-mat4-invert.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
+import { morphTargetsHeader } from "./lowering/morph-targets-lowerer.js";
 import { pinnedQuaternionHeader } from "./lowering/pinned-euler-proxy.js";
 import { pinnedMat4CreateHeader } from "./lowering/pinned-mat4-create.js";
 import { pinnedLookDirectionHeader } from "./lowering/pinned-look-direction.js";
@@ -114,18 +130,8 @@ import {
 import { SpriteLowerer } from "./lowering/sprite-lowerer.js";
 import { SpriteAnimationLowerer } from "./lowering/sprite-animation-lowerer.js";
 import {
-    billboardFragmentWgsl,
-    billboardVertexWgsl,
-} from "./shader-builtins-billboard.js";
-import {
-    spriteFragmentWgsl,
-    spriteVertexWgsl,
-} from "./shader-builtins-sprite.js";
-import {
     pinnedSplatShShader,
     pinnedSplatShader,
-    splatFragmentWgsl,
-    splatVertexWgsl,
 } from "./shader-builtins-splat.js";
 import type { PinnedSplatShModule } from "./pinned-splat-fragments.js";
 import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
@@ -152,11 +158,7 @@ import type {
     EffectManifest,
     SpriteCustomShaderManifest,
 } from "./compiler/types.js";
-import {
-    reachesShadowGenerator,
-    nodeShadowInputs,
-    shadowCapabilities,
-} from "./shadow-capabilities.js";
+import { nodeShadowInputs, shadowCapabilities } from "./shadow-capabilities.js";
 import {
     refusalReachedFrom,
     refuseGeneration,
@@ -204,68 +206,47 @@ import type {
     ComposedComposite,
     ComposedPostProcess,
 } from "./pinned-post-process.js";
-import {
-    extractPackagedTemplateLiteral,
-    readPinnedLibraryModule,
-} from "./pinned-shader-composer.js";
 
 /**
- * The byte count `shader/scene-uniforms-size.ts` publishes for the scene block.
- * Read rather than assumed, so the mirrored layout is checked against the pin's
- * own allocation.
+ * The pin's own MAX_LIGHTS, so the lights buffer is sized by it. The pin
+ * declares it `let` because `setMaxLights` grows it at run time; its
+ * initial value is the capacity this port freezes, and activation refuses
+ * the growth.
  */
-/**
- * The word offset `lights-ubo.ts` writes a mesh's light indices from, read so
- * the mirrored mesh block is checked against the pin's own constant.
- */
-/** The pin's own MAX_LIGHTS, so the lights buffer is sized by it. */
 function pinnedMaxLights(context: LoweringContext): number {
-    const file = context.sourceFile("src/light/types.ts");
-    const initializer = context.unwrapExpression(
-        context.variableInitializer(file, "MAX_LIGHTS"),
-    );
-    if (!ts.isNumericLiteral(initializer)) {
-        context.contractError(
-            initializer,
-            "Expected MAX_LIGHTS to be a numeric constant.",
-        );
-    }
-    return Number.parseInt(initializer.text, 10);
+    return context.pinnedNumber("src/light/types.ts", "MAX_LIGHTS", {
+        frozen: true,
+    });
 }
 
 /** The pin's frozen MAX_LIGHTS, read for the activation inventory's
  *  max-lights refusal row so it records the constant's value beside
  *  the checked count. */
 export function readPinnedMaxLights(): number {
-    return pinnedMaxLights(new LoweringContext(sharedUpstreamStore()));
+    return pinnedMaxLights(sharedPinnedContext());
 }
 
+/**
+ * The word offset `lights-ubo.ts` writes a mesh's light indices from, read so
+ * the mirrored mesh block is checked against the pin's own constant.
+ */
 function meshLightIndexWordOffset(context: LoweringContext): number {
-    const file = context.sourceFile("src/render/mesh-light-selection.ts");
-    const initializer = context.unwrapExpression(
-        context.variableInitializer(file, "MSH_LIGHT_INDEX_WORD_OFFSET"),
+    return context.pinnedNumber(
+        "src/render/mesh-light-selection.ts",
+        "MSH_LIGHT_INDEX_WORD_OFFSET",
     );
-    if (!ts.isNumericLiteral(initializer)) {
-        context.contractError(
-            initializer,
-            "Expected MSH_LIGHT_INDEX_WORD_OFFSET to be a numeric constant.",
-        );
-    }
-    return Number.parseInt(initializer.text, 10);
 }
 
+/**
+ * The byte count `shader/scene-uniforms-size.ts` publishes for the scene block.
+ * Read rather than assumed, so the mirrored layout is checked against the pin's
+ * own allocation.
+ */
 function sceneUboBytes(context: LoweringContext): number {
-    const file = context.sourceFile("src/shader/scene-uniforms-size.ts");
-    const initializer = context.unwrapExpression(
-        context.variableInitializer(file, "SCENE_UBO_BYTES"),
+    return context.pinnedNumber(
+        "src/shader/scene-uniforms-size.ts",
+        "SCENE_UBO_BYTES",
     );
-    if (!ts.isNumericLiteral(initializer)) {
-        context.contractError(
-            initializer,
-            "Expected SCENE_UBO_BYTES to be a numeric constant.",
-        );
-    }
-    return Number.parseInt(initializer.text, 10);
 }
 
 /** The light kinds the pin writes an entry for, in its own order. */
@@ -338,11 +319,15 @@ import type {
     GeometryOutputTaskManifest,
     PostProcessTaskManifest,
 } from "./compiler.js";
+import { blitVertexWgsl } from "./shader-builtins-utility.js";
 import {
-    blitVertexWgsl,
-    pinnedImageProcessingSource,
-} from "./shader-builtins-utility.js";
-import { uiFilterFragmentWgsl } from "./shader-builtins-ui.js";
+    pinnedMipBlitModule,
+    pinnedTransmissionModules,
+    type PinnedUtilityModule,
+} from "./pinned-utility-passes.js";
+import type { PinnedBackgroundArm } from "./pinned-background-modules.js";
+import { pinnedBackgroundsHeader } from "./lowering/pinned-background-lowerer.js";
+import { uiDrawWgsl, uiFilterFragmentWgsl } from "./shader-builtins-ui.js";
 
 /**
  * What a scene reached, as the emitters need to see it. Named once
@@ -419,12 +404,6 @@ export interface UpstreamEmitOptions {
         composed: ComposedScreenSpaceTask;
     }[];
     gpuDeformation: boolean;
-    /**
-     * Whether the loader records live world boxes and default framing reads
-     * them — asset animations alone, where `gpuDeformation` also covers
-     * scene-source morph targets for the vertex layout and the define.
-     */
-    animatedWorldBounds: boolean;
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
     /** Any loaded glTF carries packaged Gaussian-splat clouds. */
@@ -470,6 +449,12 @@ export interface UpstreamEmitOptions {
      * was, which is what keeps a plugin-free splat scene byte-identical.
      */
     splatShaderModule?: string;
+    /**
+     * The pin's background arms this scene reached, as their factories built
+     * and drew them at generation (`composePinnedBackgroundModules`): the
+     * modules deploy whole and `pinned_backgrounds.hpp` carries the rest.
+     */
+    pinnedBackgrounds?: readonly PinnedBackgroundArm[];
     /**
      * The spherical-harmonic pipeline this scene's packaged cloud reached.
      *
@@ -526,6 +511,12 @@ export interface UpstreamEmitOptions {
     animationPointer: boolean;
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
+    /**
+     * The transmission renderer (`BBLITE_RENDERER_TRANSMISSION`): the scene
+     * reaches scene transmission, or a composed variant carries the pin's
+     * refraction fragment -- `sceneTransmission` in asset-feature-join.ts.
+     */
+    transmission: boolean;
     materialSpecular: boolean;
     /** The `KHR_materials_variants` a scene selected, or "" when unreached. */
     selectedMaterialVariant: string;
@@ -643,8 +634,13 @@ const SHADER_FAMILIES = {
     },
     /** A node graph, likewise one module carrying both stages. */
     node: { vertex: "vs_main", fragment: "fs_main", pinnedBindings: true },
-    /** The pin's Gaussian-splat module. */
-    splat: { vertex: "vs", fragment: "fs", pinnedBindings: true },
+    /**
+     * A pinned module deployed whole -- the Gaussian-splat module, the
+     * utility passes, the background arms, the sprite and billboard
+     * programs -- each stage entering where the module declares it does
+     * (`wholeModuleShader`).
+     */
+    pinnedModule: { vertex: "", fragment: "", pinnedBindings: true },
     /**
      * A screen-space producer or temporal resolve: the pin's own module in
      * its own group scheme, naming its stages per module rather than per
@@ -670,8 +666,9 @@ const SHADER_FAMILIES = {
         pinnedBindings: true,
     },
     /**
-     * Everything this repository authors or specializes: the sprite and
-     * billboard stages, and the Dawn utility passes.
+     * Everything this repository authors or specializes: the scene vertex
+     * stage, the blit, depth-only and diagnostic stages, and the retained-UI
+     * modules.
      */
     owned: {
         vertex: "mainVertex",
@@ -682,41 +679,59 @@ const SHADER_FAMILIES = {
 
 type ShaderFamily = keyof typeof SHADER_FAMILIES;
 
-export interface SpriteVertexPermutation {
-    output: string;
+/** A reached sprite permutation, and the suffix its programs' stems take. */
+interface SpriteProgramPermutation {
+    suffix: string;
     uvScroll: boolean;
     depthHosted: boolean;
 }
 
-/** The independently reached pure-2D/depth and base/UV-scroll vertex rows. */
-export function spriteVertexPermutations(options: {
+/** The independently reached pure-2D/depth and base/UV-scroll rows. */
+export function spritePermutations(options: {
     pure: boolean;
     depthHosted: boolean;
     uvScroll: boolean;
-}): SpriteVertexPermutation[] {
-    const permutations: SpriteVertexPermutation[] = [];
+}): SpriteProgramPermutation[] {
+    const permutations: SpriteProgramPermutation[] = [];
     const add = (
-        output: string,
+        suffix: string,
         uvScroll: boolean,
         depthHosted: boolean,
     ): void => {
-        permutations.push({ output, uvScroll, depthHosted });
+        permutations.push({ suffix, uvScroll, depthHosted });
     };
     if (options.pure) {
-        add("sprite.vert.native.wgsl", false, false);
+        add("", false, false);
     }
     if (options.depthHosted) {
-        add("sprite_depth.vert.native.wgsl", false, true);
+        add("_depth", false, true);
     }
     if (options.uvScroll && options.pure) {
-        add("sprite_uvscroll.vert.native.wgsl", true, false);
+        add("_uvscroll", true, false);
     }
     if (options.uvScroll && options.depthHosted) {
-        add("sprite_depth_uvscroll.vert.native.wgsl", true, true);
+        add("_depth_uvscroll", true, true);
     }
     return permutations;
 }
 
+/**
+ * A sprite program's stem: the stock program (0) or a custom one (its
+ * 1-based index), under a permutation. `sprite_program_stem`
+ * (pal_gpu_shared.hpp) names the same file from a layer's record.
+ */
+export function spriteProgramStem(
+    program: number,
+    permutation: SpriteProgramPermutation,
+): string {
+    const base =
+        program === 0
+            ? "sprite"
+            : program === 1
+              ? "sprite_custom"
+              : `sprite_custom_${program}`;
+    return `${base}${permutation.suffix}`;
+}
 /** Extra pinned origins implemented by the consolidated sprite_2d.cpp. */
 export const spriteCoreAdditionalProvenance = [
     {
@@ -733,11 +748,17 @@ export const spriteCoreAdditionalProvenance = [
     },
 ] as const;
 
-/** The two optional metallic-reflectance pairs are independent slots. */
+/** The optional single-slot material maps, each keyed on its composed binding. */
 export function metallicReflectanceCapabilityDefines(
     pbrBindingNames: ReadonlySet<string>,
 ): string {
     return (
+        `#define BBLITE_MATERIAL_TRANSMISSION_MAP ${
+            pbrBindingNames.has("refractionMapTexture") ? 1 : 0
+        }\n` +
+        `#define BBLITE_MATERIAL_THICKNESS_MAP ${
+            pbrBindingNames.has("thicknessTexture_") ? 1 : 0
+        }\n` +
         `#define BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP ${
             pbrBindingNames.has("metallicReflectanceMap") ? 1 : 0
         }\n` +
@@ -784,11 +805,109 @@ interface ComposedShader {
     entryPoint?: string;
 }
 
+/** The one entry point a module declares for `stage`, read off the module. */
+function moduleEntryPoint(
+    wgsl: string,
+    stage: "vertex" | "fragment",
+    what: string,
+): string {
+    const entries = wgslEntryPoints(reflectWgslModule(wgsl), stage);
+    if (entries.length !== 1) {
+        refuseGeneration(
+            what,
+            `Pinned ${what} declares ${entries.length} ${stage} entry ` +
+                "points; a deployed module names one per stage.",
+        );
+    }
+    return entries[0]!.name;
+}
+
+/**
+ * One stage's module, deployed whole under its own stem: a pinned factory
+ * that hands WebGPU a separate module per stage deploys each at the stage
+ * its stem names, entering where the module declares it does.
+ */
+function pinnedStageShader(
+    stem: string,
+    stage: "vertex" | "fragment",
+    wgsl: string,
+    provenance: string,
+): ComposedShader {
+    return {
+        output: `upstream/shaders/${stem}.native.wgsl`,
+        data: `// ${provenance}
+${wgsl}`,
+        family: "pinnedModule",
+        entryPoint: moduleEntryPoint(wgsl, stage, stem),
+    };
+}
+
+/**
+ * A pinned module deployed whole, as the pin hands it to WebGPU: the
+ * fragment stem carries the module and the vertex stem compiles from it, and
+ * each stage enters where the module itself declares it does. The compiler
+ * keeps, per stage, only what that entry point reads, so nothing is split or
+ * renamed here.
+ */
+function wholeModuleShader(
+    stem: string,
+    wgsl: string,
+    provenance: string,
+): ComposedShader {
+    return {
+        output: `upstream/shaders/${stem}.frag.native.wgsl`,
+        data: `// ${provenance}\n${wgsl}`,
+        family: "pinnedModule",
+        entryPoint: moduleEntryPoint(wgsl, "fragment", stem),
+        alsoStages: [
+            {
+                stem: `${stem}.vert`,
+                entryPoint: moduleEntryPoint(wgsl, "vertex", stem),
+            },
+        ],
+    };
+}
+
+/**
+ * A billboard module binds the pin's per-pass scene block at group 0
+ * binding 0, which both backends fill from the mirrored `SceneUniforms`;
+ * a module declaring any other layout there refuses generation.
+ */
+function assertBillboardSceneBlock(
+    stem: string,
+    wgsl: string,
+    sceneWgsl: string,
+): void {
+    const declared = reflectWgslBindingStruct(wgsl, {
+        group: 0,
+        binding: 0,
+        name: "scene",
+    });
+    const mirrored = reflectWgslBindingStruct(sceneWgsl, {
+        group: 0,
+        binding: 0,
+        name: "scene",
+    });
+    if (
+        !declared ||
+        !mirrored ||
+        !sameWgslMembers(declared.members, mirrored.members)
+    ) {
+        refuseGeneration(
+            stem,
+            `Pinned ${stem} no longer binds the pin's scene block as ` +
+                "`scene` at @group(0) @binding(0).",
+        );
+    }
+}
+
 class GeneratedSourceWriter {
     private readonly variantHeaders: string[] = [];
     private readonly variantDefinitions: string[] = [];
     /** Native sources this run wrote, checked against the reached table. */
     private readonly emitted = new Set<string>();
+    /** The generated-source table's answer for the feature set `emit` runs. */
+    private reachedSources: ReadonlySet<string> = new Set();
 
     public constructor(
         private readonly tree: GeneratedTree,
@@ -796,8 +915,18 @@ class GeneratedSourceWriter {
     ) {}
 
     public emit(features: string[], options: UpstreamEmitOptions): void {
-        const context = new LoweringContext(this.store);
+        const context = pinnedContextOver(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
+        // The generated-source table is the one statement of which units a
+        // feature set reaches; each emitter below states only how its unit
+        // is lowered, and lowers it only when the table reaches it.
+        this.reachedSources = new Set(reachedGeneratedSources(features));
+        const reachedSources = this.reachedSources;
+        const emitReached = (
+            source: string,
+            lower: () => LoweredSource,
+            header?: string,
+        ): void => this.emitReached(source, lower, generated, header);
         // Which programs a node-particle system draws is the pin's answer
         // twice over: the blend mode comes from the graph's own SystemBlock
         // (so from the bake), and how many passes that mode draws comes from
@@ -809,15 +938,7 @@ class GeneratedSourceWriter {
             options.nodeParticleSprite2d ?? [],
             options.nodeParticleRegistrations ?? [],
         );
-        // Scene transmission is reached from the scene's own code and from a
-        // loaded asset alike: the pin's `registerPbrTransmission` enables it for
-        // any transmissive surface the asset carries, without the scene naming
-        // it. That makes it an asset capability like the material extensions
-        // beside it, so the compiled define lives here rather than being derived
-        // from the reached-feature list alone.
-        const transmission =
-            features.includes("renderer:transmission") ||
-            options.assetTransmission;
+        const transmission = options.transmission;
         // Every binding-derived material capability -- a composed Standard
         // variant binding the pin's 2D reflection pair (`rT`) or bump pair
         // (`bT`), a PBR variant binding a lightmap or metallic-reflectance
@@ -880,7 +1001,7 @@ class GeneratedSourceWriter {
         // billboard pass draws under the same convention.
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_depth_state.hpp",
-            pinnedDepthStateHeader(new LoweringContext(this.store)),
+            pinnedDepthStateHeader(context),
         );
         // The pinned default sample count, the same way: the one inline
         // definition of `preferred_sample_count()`, for every scene shape —
@@ -888,32 +1009,27 @@ class GeneratedSourceWriter {
         // scene compiles no render plan at all.
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_surface.hpp",
-            pinnedSurfaceHeader(
-                new LoweringContext(this.store),
-                options.msaaSamples ?? 4,
-            ),
+            pinnedSurfaceHeader(context, options.msaaSamples ?? 4),
         );
-        // The float world-basis multiplies restated from the pinned WGSL
-        // vertex stages, and the pin's own mirrored-basis determinant.
-        // Always emitted, because the consumers sit on both sides of the
-        // generated/PAL boundary: the PAL's CPU vertex bake compiles for
-        // every scene shape, and both geometry loaders bake node worlds
-        // through the same pair.
+        // The pinned TRS composition and the pin's own mirrored-basis
+        // determinant. Always emitted, because the consumers sit on both
+        // sides of the generated/PAL boundary: every render plan composes
+        // its mesh worlds through it, and both geometry loaders read it.
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_world_transform.hpp",
-            pinnedWorldTransformHeader(new LoweringContext(this.store)),
+            pinnedWorldTransformHeader(context),
         );
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_matrix.hpp",
-            pinnedMatrixHeader(new LoweringContext(this.store)),
+            pinnedMatrixHeader(context),
         );
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_texture.hpp",
-            pinnedTextureHeader(new LoweringContext(this.store)),
+            pinnedTextureHeader(context),
         );
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_rgbd.hpp",
-            pinnedRgbdHeader(new LoweringContext(this.store)),
+            pinnedRgbdHeader(context),
         );
         // The pin's own inverse image processing, translated whole from its
         // declaration and cross-checked against the forward curve, so the
@@ -921,34 +1037,42 @@ class GeneratedSourceWriter {
         // function instead of a float-width PAL transcription.
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_inverse_image_processing.hpp",
-            pinnedInverseImageProcessingHeader(new LoweringContext(this.store)),
+            pinnedInverseImageProcessingHeader(context),
         );
         // The pin's tuple normalization, where a scene calls it or the
         // detailed pick's own two bodies import it. Gated rather than
         // always emitted because nothing else reaches it, and the header
         // is what its consumers on both sides of the split include.
+        // The pin's deltas packing, where the morph storage the two render
+        // backends upload compiles at all (`BBLITE_GPU_MORPH_STORAGE`).
+        if (gpuMorphStorage) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/morph_targets.hpp",
+                morphTargetsHeader(context),
+            );
+        }
         if (features.includes("math:normalize-vec3")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_normalize_vec3.hpp",
-                pinnedNormalizeVec3Header(new LoweringContext(this.store)),
+                pinnedNormalizeVec3Header(context),
             );
         }
         if (features.includes("math:quaternion")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_quaternion.hpp",
-                pinnedQuaternionHeader(new LoweringContext(this.store)),
+                pinnedQuaternionHeader(context),
             );
         }
         if (features.includes("math:mat4-invert")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_mat4_invert.hpp",
-                pinnedMat4InvertHeader(new LoweringContext(this.store)),
+                pinnedMat4InvertHeader(context),
             );
         }
         if (features.includes("math:mat4-create")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_mat4_create.hpp",
-                pinnedMat4CreateHeader(new LoweringContext(this.store)),
+                pinnedMat4CreateHeader(context),
             );
         }
         // The public look-direction quaternion and the private basis fold it
@@ -957,7 +1081,7 @@ class GeneratedSourceWriter {
         if (features.includes("math:look-direction")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_look_direction.hpp",
-                pinnedLookDirectionHeader(new LoweringContext(this.store)),
+                pinnedLookDirectionHeader(context),
             );
         }
         // The texture-slot table both render backends execute. Emitted for
@@ -971,6 +1095,8 @@ class GeneratedSourceWriter {
             materialTextureSlotsHeader(
                 {
                     transmission,
+                    transmissionMap: composedMaterials.transmissionMap,
+                    thicknessMap: composedMaterials.thicknessMap,
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     iridescence: options.iridescence,
@@ -996,47 +1122,36 @@ class GeneratedSourceWriter {
             ),
         );
 
-        this.writeSource(
-            "upstream/src/engine.cpp",
+        emitReached("upstream/src/engine.cpp", () =>
             new EngineLowerer(context).lowerCore(
                 features.includes("platform:workers"),
                 features.includes("backend:sdl"),
+                features.includes("renderer:scene")
+                    ? options.meshProfiles
+                    : undefined,
             ),
-            generated,
         );
-        if (features.includes("engine:gpu-task-timing"))
-            this.writeSource(
-                "upstream/src/gpu_task_timing.cpp",
-                lowerGpuTaskTiming(context),
-                generated,
-            );
-        if (features.includes("engine:gpu-retirement"))
-            this.writeSource(
-                "upstream/src/gpu_retirement.cpp",
-                lowerGpuRetirement(context),
-                generated,
-            );
-        if (features.includes("compute:storage-texture"))
-            this.writeSource(
-                "upstream/src/compute_texture.cpp",
-                lowerComputeTexture(context),
-                generated,
-            );
-        if (features.includes("compute:task"))
-            this.writeSource(
-                "upstream/src/compute_task.cpp",
-                lowerComputeTask(
-                    context,
-                    features.includes("compute:task-execution"),
-                ),
-                generated,
-            );
+        emitReached("upstream/src/gpu_task_timing.cpp", () =>
+            lowerGpuTaskTiming(context),
+        );
+        emitReached("upstream/src/gpu_retirement.cpp", () =>
+            lowerGpuRetirement(context),
+        );
+        emitReached("upstream/src/compute_texture.cpp", () =>
+            lowerComputeTexture(context),
+        );
+        emitReached("upstream/src/compute_task.cpp", () =>
+            lowerComputeTask(
+                context,
+                features.includes("compute:task-execution"),
+            ),
+        );
         if (features.includes("light:parameters"))
             this.tree.write(
                 "upstream/include/bblite/upstream/light_parameters.hpp",
                 lightParameterHeader(context),
             );
-        if (features.includes("environment:sky-atmosphere")) {
+        if (this.reaches("upstream/src/procedural_sky_atmosphere.cpp")) {
             const atmosphere = lowerProceduralSkyAtmosphere(context);
             this.tree.write(
                 "upstream/include/bblite/upstream/procedural_sky_atmosphere.hpp",
@@ -1048,144 +1163,77 @@ class GeneratedSourceWriter {
                 generated,
             );
         }
-        if (features.includes("environment:procedural-sky")) {
-            const gpu = proceduralSkyGpuSource(context);
-            this.writeSource(
-                "upstream/src/procedural_sky_loader.cpp",
-                lowerProceduralSkyLoader(
-                    context,
-                    "make_procedural_sky_descriptor()",
-                    gpu.source,
-                ),
-                generated,
-            );
-            this.writeSource(
-                "upstream/src/procedural_sky_update.cpp",
-                lowerProceduralSkyUpdate(context),
-                generated,
-            );
-        }
-        if (features.includes("compute:texture-mipmaps"))
-            this.writeSource(
-                "upstream/src/compute_texture_mipmaps.cpp",
-                lowerComputeTextureMipmaps(context),
-                generated,
-            );
-        if (features.includes("compute:task-execution"))
-            this.writeSource(
-                "upstream/src/compute_task_execution.cpp",
-                lowerComputeTaskExecution(context),
-                generated,
-            );
-        if (features.includes("compute:frame-graph"))
-            this.writeSource(
-                "upstream/src/compute_frame_graph.cpp",
-                lowerComputeFrameGraph(context),
-                generated,
-            );
-        if (features.includes("compute:dispatch"))
-            this.writeSource(
-                "upstream/src/compute_dispatch.cpp",
-                lowerComputeDispatch(context),
-                generated,
-            );
-        if (
-            features.includes("compute:storage-texture") ||
-            features.includes("compute:uniform-buffer")
-        )
-            this.writeSource(
-                "upstream/src/managed_resources.cpp",
-                lowerManagedResources(context),
-                generated,
-            );
-        if (features.includes("compute:uniform-arena"))
-            this.writeSource(
-                "upstream/src/compute_uniform_arena.cpp",
-                lowerComputeUniformArena(context),
-                generated,
-            );
-        if (features.includes("compute:uniform-writer"))
-            this.writeSource(
-                "upstream/src/compute_uniform_writer.cpp",
-                lowerComputeUniformWriter(context),
-                generated,
-            );
-        if (features.includes("compute:binding-decl"))
-            this.writeSource(
-                "upstream/src/compute_binding_decl.cpp",
-                lowerComputeBindingDecl(context),
-                generated,
-            );
-        if (features.includes("compute:shader"))
-            this.writeSource(
-                "upstream/src/compute_shader.cpp",
-                lowerComputeShader(context),
-                generated,
-            );
-        if (features.includes("compute:bindings")) {
-            this.writeSource(
-                "upstream/src/compute_bindings.cpp",
-                lowerComputeBindings(context),
-                generated,
-            );
-            this.writeSource(
-                "upstream/src/compute_buffer_binding.cpp",
-                lowerComputeBufferBinding(context),
-                generated,
-            );
-            this.writeSource(
-                "upstream/src/compute_binding_resolvers.cpp",
-                lowerComputeBindingResolvers(context),
-                generated,
-            );
-        }
-        if (features.includes("compute:one-shot"))
-            this.writeSource(
-                "upstream/src/compute_one_shot.cpp",
-                lowerComputeOneShot(context),
-                generated,
-            );
-        if (features.includes("compute:uniform-buffer"))
-            this.writeSource(
-                "upstream/src/uniform_buffer.cpp",
-                lowerUniformBuffer(context),
-                generated,
-            );
-        if (features.includes("compute:storage-buffer"))
-            this.writeSource(
-                "upstream/src/storage_buffer.cpp",
-                lowerStorageBuffer(
-                    context,
-                    features.includes("compute:storage-readback"),
-                ),
-                generated,
-            );
-        if (features.includes("compute:storage-readback"))
-            this.writeSource(
-                "upstream/src/storage_readback.cpp",
-                lowerStorageReadback(context),
-                generated,
-            );
-        if (features.includes("camera:configurable-free"))
-            this.writeSource(
-                "upstream/src/camera_configurable_free.cpp",
-                lowerConfigurableCameraControls(context),
-                generated,
-            );
-        if (features.includes("engine:device-recovery"))
-            this.writeSource(
-                "upstream/src/device_recovery.cpp",
-                lowerDeviceRecovery(context),
-                generated,
-            );
-        if (features.includes("engine:dispose"))
-            this.writeSource(
-                "upstream/src/engine_dispose.cpp",
-                lowerEngineDisposal(context),
-                generated,
-            );
-        this.writeSource(
-            "upstream/src/scene_core.cpp",
+        emitReached("upstream/src/procedural_sky_loader.cpp", () =>
+            lowerProceduralSkyLoader(
+                context,
+                "make_procedural_sky_descriptor()",
+                proceduralSkyGpuSource(context).source,
+            ),
+        );
+        emitReached("upstream/src/procedural_sky_update.cpp", () =>
+            lowerProceduralSkyUpdate(context),
+        );
+        emitReached("upstream/src/compute_texture_mipmaps.cpp", () =>
+            lowerComputeTextureMipmaps(context),
+        );
+        emitReached("upstream/src/compute_task_execution.cpp", () =>
+            lowerComputeTaskExecution(context),
+        );
+        emitReached("upstream/src/compute_frame_graph.cpp", () =>
+            lowerComputeFrameGraph(context),
+        );
+        emitReached("upstream/src/compute_dispatch.cpp", () =>
+            lowerComputeDispatch(context),
+        );
+        emitReached("upstream/src/managed_resources.cpp", () =>
+            lowerManagedResources(context),
+        );
+        emitReached("upstream/src/compute_uniform_arena.cpp", () =>
+            lowerComputeUniformArena(context),
+        );
+        emitReached("upstream/src/compute_uniform_writer.cpp", () =>
+            lowerComputeUniformWriter(context),
+        );
+        emitReached("upstream/src/compute_binding_decl.cpp", () =>
+            lowerComputeBindingDecl(context),
+        );
+        emitReached("upstream/src/compute_shader.cpp", () =>
+            lowerComputeShader(context),
+        );
+        emitReached("upstream/src/compute_bindings.cpp", () =>
+            lowerComputeBindings(context),
+        );
+        emitReached("upstream/src/compute_buffer_binding.cpp", () =>
+            lowerComputeBufferBinding(context),
+        );
+        emitReached("upstream/src/compute_binding_resolvers.cpp", () =>
+            lowerComputeBindingResolvers(context),
+        );
+        emitReached("upstream/src/compute_one_shot.cpp", () =>
+            lowerComputeOneShot(context),
+        );
+        emitReached("upstream/src/uniform_buffer.cpp", () =>
+            lowerUniformBuffer(context),
+        );
+        emitReached("upstream/src/storage_buffer.cpp", () =>
+            lowerStorageBuffer(
+                context,
+                features.includes("compute:storage-readback"),
+            ),
+        );
+        emitReached("upstream/src/storage_readback.cpp", () =>
+            lowerStorageReadback(context),
+        );
+        emitReached("upstream/src/camera_configurable_free.cpp", () =>
+            lowerConfigurableCameraControls(context),
+        );
+        emitReached("upstream/src/device_recovery.cpp", () =>
+            lowerDeviceRecovery(context),
+        );
+        emitReached("upstream/src/engine_dispose.cpp", () =>
+            lowerEngineDisposal(context),
+        );
+        emitReached("upstream/src/scene_core.cpp", () =>
             new SceneLowerer(context).lowerCore({
                 fog: features.includes("renderer:fog"),
                 clipPlane: features.includes("renderer:clip-plane"),
@@ -1203,139 +1251,66 @@ class GeneratedSourceWriter {
                 nodeMaterials: nodeVariantList.length > 0,
                 pbrSceneHooks: features.includes("loader:gltf"),
             }),
-            generated,
         );
         this.emitTextData(features, context, options, generated);
-        if (features.includes("frame-graph:resources")) {
-            this.writeSource(
-                "upstream/src/frame_graph_resources.cpp",
-                new RenderTargetLowerer(
-                    context,
-                    features.includes("frame-graph:surface-target"),
-                ).lower(),
-                generated,
-            );
-        }
-        if (features.includes("renderer:frame-graph")) {
-            this.writeSource(
-                "upstream/src/frame_graph_context.cpp",
-                new FrameGraphContextLowerer(context).lower(),
-                generated,
-            );
-        }
-
-        const reachesCameraFactory =
-            features.includes("camera:arc-rotate") ||
-            features.includes("camera:default") ||
-            features.includes("camera:free") ||
-            features.includes("camera:geospatial");
-        this.emitCameras(
-            reachesCameraFactory,
-            features,
-            context,
-            options,
-            generated,
+        emitReached("upstream/src/frame_graph_resources.cpp", () =>
+            new RenderTargetLowerer(
+                context,
+                features.includes("frame-graph:surface-target"),
+            ).lower(),
         );
-        if (features.includes("camera:default")) {
-            this.writeSource(
-                "upstream/src/camera_default.cpp",
-                new CameraLowerer(context).lowerDefaultFactory(
-                    options.nodeVisibility,
-                    options.animatedWorldBounds,
-                ),
-                generated,
-            );
-        }
-        if (features.includes("camera:orthographic")) {
-            this.writeSource(
-                "upstream/src/camera_orthographic.cpp",
-                new CameraLowerer(context).lowerOrthographic(),
-                generated,
-            );
-        }
-        if (features.includes("background:image-skybox")) {
-            this.writeSource(
-                "upstream/src/image_skybox.cpp",
-                new EnvironmentLowerer(context).lowerImageSkyboxAdapter(),
-                generated,
-            );
-        }
+        emitReached("upstream/src/frame_graph_context.cpp", () =>
+            new FrameGraphContextLowerer(context).lower(),
+        );
+
+        this.emitCameras(features, context, generated);
+        emitReached("upstream/src/camera_default.cpp", () =>
+            new CameraLowerer(context).lowerDefaultFactory(
+                options.nodeVisibility,
+            ),
+        );
+        emitReached("upstream/src/camera_orthographic.cpp", () =>
+            new CameraLowerer(context).lowerOrthographic(),
+        );
+        emitReached("upstream/src/image_skybox.cpp", () =>
+            new EnvironmentLowerer(context).lowerImageSkyboxAdapter(),
+        );
         this.emitEnvironment(features, context, generated);
-        this.emitLights(features, context, generated);
-        if (features.includes("light:hemispheric")) {
-            this.writeSource(
-                "upstream/src/light_hemispheric.cpp",
-                new LightLowerer(context).lowerFactory(),
-                generated,
-            );
-        }
-        if (features.includes("light:directional")) {
-            this.writeSource(
-                "upstream/src/light_directional.cpp",
-                new LightLowerer(context).lowerDirectionalFactory(),
-                generated,
-            );
-        }
-        if (
-            features.includes("light:point") ||
-            features.includes("loader:babylon")
-        ) {
-            this.writeSource(
-                "upstream/src/light_point.cpp",
-                new LightLowerer(context).lowerPointFactory(),
-                generated,
-            );
-        }
-        if (features.includes("light:spot")) {
-            this.writeSource(
-                "upstream/src/light_spot.cpp",
-                new LightLowerer(context).lowerSpotFactory(),
-                generated,
-            );
-        }
-        if (features.includes("light:clustered")) {
-            this.writeSource(
-                "upstream/src/clustered_light.cpp",
-                lowerClusteredLights(context),
-                generated,
-                "upstream/include/bblite/upstream/clustered_light.hpp",
-            );
-        }
+        this.emitLights(context, generated);
+        emitReached("upstream/src/light_hemispheric.cpp", () =>
+            new LightLowerer(context).lowerFactory(),
+        );
+        emitReached("upstream/src/light_directional.cpp", () =>
+            new LightLowerer(context).lowerDirectionalFactory(),
+        );
+        emitReached("upstream/src/light_point.cpp", () =>
+            new LightLowerer(context).lowerPointFactory(),
+        );
+        emitReached("upstream/src/light_spot.cpp", () =>
+            new LightLowerer(context).lowerSpotFactory(),
+        );
+        emitReached(
+            "upstream/src/clustered_light.cpp",
+            () => lowerClusteredLights(context),
+            "upstream/include/bblite/upstream/clustered_light.hpp",
+        );
         this.emitAnimationGroups(features, context, generated);
         this.emitAnimationProperty(features, context, options, generated);
-        if (features.includes("mesh:vat")) {
-            this.writeSource(
-                "upstream/src/vat.cpp",
-                new VatLowerer(context).lower({
-                    instances: features.includes("mesh:vat-instances"),
-                }),
-                generated,
-            );
-        }
-        if (features.includes("mesh:skeleton")) {
-            this.writeSource(
-                "upstream/src/skeleton.cpp",
-                new SkeletonLowerer(context).lower(),
-                generated,
-            );
-        }
-        this.emitLoaderGltf(
-            features,
-            context,
-            generated,
-            nodeGeometryViewList,
-            options,
+        emitReached("upstream/src/vat.cpp", () =>
+            new VatLowerer(context).lower({
+                instances: features.includes("mesh:vat-instances"),
+            }),
         );
-        if (features.includes("loader:babylon")) {
-            this.writeSource(
-                "upstream/src/babylon_loader.cpp",
-                new BabylonLowerer(context).lowerLoaderAdapter(
-                    options.standardLightLists,
-                    features.includes("mesh:clone"),
-                ),
-                generated,
-            );
-        }
+        emitReached("upstream/src/skeleton.cpp", () =>
+            new SkeletonLowerer(context).lower(),
+        );
+        this.emitLoaderGltf(features, context, generated, options);
+        emitReached("upstream/src/babylon_loader.cpp", () =>
+            new BabylonLowerer(context).lowerLoaderAdapter(
+                options.standardLightLists,
+                features.includes("camera:free"),
+            ),
+        );
         // Every WGSL module this run emits, whichever renderer produced it.
         const composedShaders: ComposedShader[] = (
             options.computePrograms ?? []
@@ -1364,6 +1339,23 @@ class GeneratedSourceWriter {
                 },
             );
         }
+        // The retained-UI draw module, one file with three entry points: the
+        // textured fragment's stem carries it. Every consumer of the UI
+        // recorder draws through it -- a scene's documents and a Window's.
+        if (
+            features.includes("ui:rml") ||
+            features.includes("platform:window")
+        ) {
+            composedShaders.push({
+                output: "upstream/shaders/ui-texture.frag.native.wgsl",
+                data: uiDrawWgsl(),
+                entryPoint: "fs_texture",
+                alsoStages: [
+                    { stem: "ui-color.frag", entryPoint: "fs_color" },
+                    { stem: "ui.vert", entryPoint: "vs" },
+                ],
+            });
+        }
         if (
             features.includes("text:renderable") ||
             features.includes("renderer:text")
@@ -1373,11 +1365,16 @@ class GeneratedSourceWriter {
                 "upstream/include/bblite/upstream_text_gpu.hpp",
                 new TextGpuLowerer(context).header(),
             );
-            if (features.includes("text:renderable"))
+            if (features.includes("text:renderable")) {
                 this.tree.write(
                     "upstream/include/bblite/upstream/camera_change_key.hpp",
                     cameraChangeKeyHeader(context),
                 );
+                this.tree.write(
+                    "upstream/include/bblite/upstream_text_renderable.hpp",
+                    new TextLowerer(context).renderableHeader(),
+                );
+            }
             if (features.includes("renderer:text"))
                 this.tree.write(
                     "upstream/include/bblite/upstream_text_renderer.hpp",
@@ -1401,39 +1398,27 @@ class GeneratedSourceWriter {
                     });
                 }
         }
-        // The Dawn backend's utility shaders, split from the pinned modules
-        // once for whichever drivers reach them.
-        let dawnUtilityMemo: DawnUtilityShaders | undefined;
-        const utilityShaders = (): DawnUtilityShaders =>
-            (dawnUtilityMemo ??= dawnUtilityShaders(transmission));
+        // The pin's utility modules, each deployed whole under its stem pair.
+        const deployUtility = (module: PinnedUtilityModule): void => {
+            const shader = wholeModuleShader(
+                module.stem,
+                module.wgsl,
+                context.provenance(module.modulePath, module.symbolName),
+            );
+            if (composedShaders.some((entry) => entry.output === shader.output))
+                return;
+            composedShaders.push(shader);
+            generated.push({
+                modulePath: module.modulePath,
+                symbolName: module.symbolName,
+            });
+        };
         // The pinned mip generator's blit, deployed once however many
         // drivers reach it: the scene renderer for every scene, and the
         // sprite renderer for an atlas the pinned loader gave a chain.
-        const deployMipBlit = (): void => {
-            const vertex = "upstream/shaders/mip-blit.vert.native.wgsl";
-            if (composedShaders.some((entry) => entry.output === vertex)) {
-                return;
-            }
-            composedShaders.push(
-                { output: vertex, data: utilityShaders().mipBlitVertex },
-                {
-                    output: "upstream/shaders/mip-blit.frag.native.wgsl",
-                    data: utilityShaders().mipBlitFragment,
-                },
-            );
-            generated.push({
-                modulePath: "src/texture/generate-mipmaps.ts",
-                symbolName: "BLIT_SHADER",
-            });
-        };
+        const deployMipBlit = (): void => deployUtility(pinnedMipBlitModule());
         if (features.includes("compute:texture-mipmaps")) deployMipBlit();
-        this.emitEffectWrapper(
-            features,
-            context,
-            options,
-            composedShaders,
-            generated,
-        );
+        this.emitEffectWrapper(context, options, composedShaders, generated);
         this.emitLoaderSplat(
             features,
             context,
@@ -1442,16 +1427,14 @@ class GeneratedSourceWriter {
             composedShaders,
         );
         this.emitSpriteAtlasHeader(features, context);
-        if (features.includes("sprite:animation")) {
-            this.writeSource(
-                "upstream/src/sprite_animation.cpp",
+        emitReached(
+            "upstream/src/sprite_animation.cpp",
+            () =>
                 new SpriteAnimationLowerer(context).lowerSpriteAnimation(
                     features.includes("sprite:billboard"),
                 ),
-                generated,
-                "upstream/include/bblite/upstream/sprite_animation.hpp",
-            );
-        }
+            "upstream/include/bblite/upstream/sprite_animation.hpp",
+        );
         this.emitSprite2d(
             features,
             context,
@@ -1467,13 +1450,7 @@ class GeneratedSourceWriter {
         // and registration calls, so a scene that builds a set and never
         // draws one would otherwise emit a file the table does not declare
         // and refuse generation. No corpus scene does that today.
-        this.emitParticleNode(
-            features,
-            context,
-            nodeParticles,
-            options,
-            generated,
-        );
+        this.emitParticleNode(context, nodeParticles, options, generated);
         this.emitSpriteBillboard(
             features,
             context,
@@ -1490,10 +1467,10 @@ class GeneratedSourceWriter {
             generated,
             transmission,
             composedShaders,
-            utilityShaders,
+            deployUtility,
             deployMipBlit,
         );
-        this.emitRendererGeometryOutput(features, context, generated);
+        this.emitRendererGeometryOutput(context, generated);
         this.emitRendererPostProcess(
             features,
             options,
@@ -1502,65 +1479,27 @@ class GeneratedSourceWriter {
             composedShaders,
         );
         const factories = new FactoryLowerer(context);
-        if (features.includes("material:standard")) {
-            this.writeSource(
-                "upstream/src/material_standard.cpp",
-                factories.lowerStandardMaterialFactory(),
-                generated,
-            );
-        }
-        if (features.includes("material:pbr")) {
-            this.writeSource(
-                "upstream/src/material_pbr.cpp",
-                factories.lowerPbrMaterialFactory(),
-                generated,
-            );
-        }
-        if (features.includes("material:local-cubemap")) {
-            this.writeSource(
-                "upstream/src/local_cubemap.cpp",
-                lowerLocalCubemap(context),
-                generated,
-            );
-        }
-        if (features.includes("material:grid")) {
-            this.writeSource(
-                "upstream/src/material_grid.cpp",
-                factories.lowerGridMaterialFactory(),
-                generated,
-            );
-        }
-        if (
-            features.includes("texture:file") ||
-            features.includes("loader:babylon")
-        ) {
-            this.writeSource(
-                "upstream/src/texture_file.cpp",
-                factories.lowerFileTextureFactory(),
-                generated,
-            );
-        }
-        if (features.includes("texture:pixels")) {
-            this.writeSource(
-                "upstream/src/texture_pixels.cpp",
-                factories.lowerPixelsTextureFactory(),
-                generated,
-            );
-        }
-        if (features.includes("material:shader")) {
-            this.writeSource(
-                "upstream/src/material_shader.cpp",
-                factories.lowerShaderMaterialFactory(),
-                generated,
-            );
-        }
-        if (features.includes("material:node")) {
-            this.writeSource(
-                "upstream/src/material_node.cpp",
-                factories.lowerNodeMaterialFactory(),
-                generated,
-            );
-        }
+        emitReached("upstream/src/material_standard.cpp", () =>
+            factories.lowerStandardMaterialFactory(),
+        );
+        emitReached("upstream/src/material_pbr.cpp", () =>
+            factories.lowerPbrMaterialFactory(),
+        );
+        emitReached("upstream/src/local_cubemap.cpp", () =>
+            lowerLocalCubemap(context),
+        );
+        emitReached("upstream/src/texture_file.cpp", () =>
+            factories.lowerFileTextureFactory(),
+        );
+        emitReached("upstream/src/texture_pixels.cpp", () =>
+            factories.lowerPixelsTextureFactory(),
+        );
+        emitReached("upstream/src/material_shader.cpp", () =>
+            factories.lowerShaderMaterialFactory(),
+        );
+        emitReached("upstream/src/material_node.cpp", () =>
+            factories.lowerNodeMaterialFactory(),
+        );
         {
             const setters = {
                 diffuse: features.includes(
@@ -1596,33 +1535,22 @@ class GeneratedSourceWriter {
                 );
             }
         }
-        if (features.includes("texture:compressed")) {
-            this.writeSource(
-                "upstream/src/compressed_texture.cpp",
-                new CompressedTextureLowerer(context).lower(),
-                generated,
-                "upstream/include/bblite/upstream/compressed_texture.hpp",
-            );
-        }
-        if (features.includes("material:no-color-view")) {
-            this.writeSource(
-                "upstream/src/material_views.cpp",
-                factories.lowerNoColorMaterialViews(
-                    features.includes("shadow:esm"),
-                    nodeEsmCasters,
-                    nodePcfCasters,
-                ),
-                generated,
-            );
-        }
+        emitReached(
+            "upstream/src/compressed_texture.cpp",
+            () => new CompressedTextureLowerer(context).lower(),
+            "upstream/include/bblite/upstream/compressed_texture.hpp",
+        );
+        emitReached("upstream/src/material_views.cpp", () =>
+            factories.lowerNoColorMaterialViews(
+                features.includes("shadow:esm"),
+                nodeEsmCasters,
+                nodePcfCasters,
+            ),
+        );
         this.emitMeshFactories(features, factories, generated);
-        if (features.includes("mesh:lines")) {
-            this.writeSource(
-                "upstream/src/mesh_lines.cpp",
-                new LineLowerer(context).lowerLineSystem(),
-                generated,
-            );
-        }
+        emitReached("upstream/src/mesh_lines.cpp", () =>
+            new LineLowerer(context).lowerLineSystem(),
+        );
         // The rigid-body family. Everything emitted is `havok.ts`'s own
         // semantics; the solver behind it is the PAL's, which is the seam
         // the pin itself draws by taking `hknp` as a parameter.
@@ -1636,18 +1564,11 @@ class GeneratedSourceWriter {
                 ),
             );
         }
-        if (
-            features.includes("mesh:tube") ||
-            features.includes("mesh:extrude")
-        ) {
-            this.writeSource(
-                "upstream/src/mesh_tube.cpp",
-                new TubeLowerer(context).lowerTube(
-                    features.includes("mesh:extrude"),
-                ),
-                generated,
-            );
-        }
+        emitReached("upstream/src/mesh_tube.cpp", () =>
+            new TubeLowerer(context).lowerTube(
+                features.includes("mesh:extrude"),
+            ),
+        );
         // The audio engine's output graph is FOLDED at the reaching call
         // site rather than emitted here, because the shape is three
         // statements long. This is the other half of that: it emits
@@ -1673,28 +1594,27 @@ class GeneratedSourceWriter {
             composedShaders,
             generated,
         );
-        if (features.includes("navigation:recast")) {
-            this.writeSource(
-                "upstream/src/navigation.cpp",
+        emitReached(
+            "upstream/src/navigation.cpp",
+            () =>
                 new NavigationLowerer(context).lowerNavigation(
                     features.includes("navigation:tile-cache"),
                 ),
-                generated,
-                "upstream/include/bblite/upstream/navigation.hpp",
+            "upstream/include/bblite/upstream/navigation.hpp",
+        );
+        // The wrapper JavaScript that runs over Recast/Detour objects, as
+        // the templates the navigation PAL instantiates.
+        if (this.reaches("upstream/src/navigation.cpp")) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/navigation_library.hpp",
+                navigationLibraryHeader(
+                    features.includes("navigation:tile-cache"),
+                ),
             );
         }
-        if (features.includes("gizmo:utility-layer")) {
-            // One unit for the family: the layer, the two display gizmos
-            // and the pinned quaternion helpers they share. The four
-            // EDITING widgets are 28% of it and are emitted only for a
-            // scene that reaches one, which is why the lowerer is handed
-            // the feature list rather than assuming it.
-            this.writeSource(
-                "upstream/src/gizmo.cpp",
-                new GizmoLowerer(context, features).lower(),
-                generated,
-            );
-        }
+        emitReached("upstream/src/gizmo.cpp", () =>
+            new GizmoLowerer(context, features).lower(),
+        );
         // An interactive asset joins the feature at generation; a scene may
         // also reach it from source (`enableFlowGraphPointerPicking`) with
         // no interactive asset, in which case the bridge finds no receiver.
@@ -1709,14 +1629,12 @@ class GeneratedSourceWriter {
                 "A KHR_interactivity asset was parsed without reaching flow-graph:interactivity.",
             );
         }
-        if (features.includes("flow-graph:interactivity")) {
-            this.writeSource(
-                "upstream/src/flow_graph.cpp",
+        emitReached(
+            "upstream/src/flow_graph.cpp",
+            () =>
                 new FlowGraphLowerer(context, options.flowGraphs ?? []).lower(),
-                generated,
-                "upstream/include/bblite/upstream/flow_graph.hpp",
-            );
-        }
+            "upstream/include/bblite/upstream/flow_graph.hpp",
+        );
         this.emitPickingGpu(
             features,
             context,
@@ -1771,19 +1689,15 @@ class GeneratedSourceWriter {
             composedShaders,
         );
         this.emitComposedShaders(composedShaders);
-        this.writeSource(
-            "upstream/src/variant_data.cpp",
-            {
-                header: "",
-                source:
-                    this.variantHeaders
-                        .map((path) => `#include <${path}>\n`)
-                        .join("") + this.variantDefinitions.join("\n"),
-                modulePath: "src/cpp-definitions.ts",
-                symbolName: "CppDefinitions",
-            },
-            generated,
-        );
+        emitReached("upstream/src/variant_data.cpp", () => ({
+            header: "",
+            source:
+                this.variantHeaders
+                    .map((path) => `#include <${path}>\n`)
+                    .join("") + this.variantDefinitions.join("\n"),
+            modulePath: "src/cpp-definitions.ts",
+            symbolName: "CppDefinitions",
+        }));
 
         // The table in generated-sources.ts decides which sources a feature
         // set reaches, and the manifest and CMake feature list are built
@@ -1791,12 +1705,11 @@ class GeneratedSourceWriter {
         // what keeps them from drifting: a source emitted but not declared
         // never reaches the build, and one declared but not emitted fails
         // the configure with a missing file.
-        const declared = new Set(reachedGeneratedSources(features));
-        const missing = [...declared].filter(
+        const missing = [...reachedSources].filter(
             (source) => !this.emitted.has(source),
         );
         const undeclared = [...this.emitted].filter(
-            (source) => !declared.has(source),
+            (source) => !reachedSources.has(source),
         );
         this.validateDeclaredSources(missing, undeclared);
 
@@ -1840,6 +1753,31 @@ class GeneratedSourceWriter {
             modulePath: lowered.modulePath,
             symbolName: lowered.symbolName,
         });
+    }
+
+    /** Whether the generated-source table reaches one unit. */
+    private reaches(relativeSource: string): boolean {
+        return this.reachedSources.has(relativeSource);
+    }
+
+    /**
+     * Lower and write one unit when the generated-source table reaches it.
+     * The table is the one statement of which units a feature set reaches;
+     * every emitter states only how its unit is lowered.
+     */
+    private emitReached(
+        relativeSource: string,
+        lower: () => LoweredSource,
+        generated: Array<{ modulePath: string; symbolName: string }>,
+        relativeHeader?: string,
+    ): void {
+        if (this.reaches(relativeSource))
+            this.writeSource(
+                relativeSource,
+                lower(),
+                generated,
+                relativeHeader,
+            );
     }
 
     private emitRenderCapabilities(
@@ -1900,8 +1838,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // bundle too -- but every define is a CONJUNCTION of that reach with a
 // composed family, because the receiver fragment is composed per family
 // and a scene composing no variant of a family compiles none of its
-// shadow code even having reached a generator. The reach alone gates
-// nothing, so it has no define of its own.
+// shadow code even having reached a generator. The reach alone gates only
+// the generator records, through BBLITE_HAS_SHADOWS (feature-macros.ts).
 // The ESM generator's own half: four textures and a separable blur. A
 // CONJUNCTION for the same reason the define below is -- every site that
 // reads it is Standard-family code (the caster's own material view, the
@@ -1928,8 +1866,19 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // joins by appearing here.
 #define BBLITE_SHADOW_RECEIVERS \
     (BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS || BBLITE_NODE_SHADOWS)
-#define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
-#define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
+// The pin's background renderables, drawn from pinned_backgrounds.hpp's
+// arm table: the ground, the DDS, .env and solid skyboxes and the image
+// skybox a scene reached.
+#define BBLITE_PINNED_BACKGROUNDS ${(options.pinnedBackgrounds?.length ?? 0) > 0 ? 1 : 0}
+// The pin's TAA task: a composed post-process composite whose jitter,
+// history and scene-UBO blocks frame_graph_post_process.hpp carries.
+#define BBLITE_HAS_TAA ${
+                options.postProcessComposites.some(
+                    (composite) => composite.taa !== undefined,
+                )
+                    ? 1
+                    : 0
+            }
 
 // A Gaussian cloud whose packaged container carried spherical harmonics.
 // The pin's own fork is on the PARSE result (attachParsedSplat tests
@@ -1951,6 +1900,21 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // scene composes them, which also skips standard_variants.hpp.
 #define BBLITE_STANDARD_VARIANTS ${
                 (options.pinnedStandardVariants?.length ?? 0) > 0 ? 1 : 0
+            }
+// The Standard skeleton hook standard_variants.hpp carries, and the colour
+// alpha feature word renderer_plan.hpp carries: each is emitted exactly when
+// its define is 1.
+#define BBLITE_STANDARD_SKELETON ${
+                features.includes("material:standard-skeleton") &&
+                (options.pinnedStandardVariants?.length ?? 0) > 0
+                    ? 1
+                    : 0
+            }
+#define BBLITE_STANDARD_VERTEX_ALPHA ${
+                features.includes("renderer:scene") &&
+                features.includes("mesh:vertex-alpha")
+                    ? 1
+                    : 0
             }
 
 // The node graphs the pin's own emitter compiled for this scene. Zero
@@ -1995,10 +1959,13 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         generated: { modulePath: string; symbolName: string }[],
     ): void {
         if (features.includes("text:data")) {
-            const text = new TextLowerer(context);
+            this.tree.write(
+                "upstream/include/bblite/upstream_text_records.hpp",
+                textRecordsHeader(context),
+            );
             this.tree.write(
                 "upstream/include/bblite/upstream_text.hpp",
-                text.header(),
+                new TextLowerer(context).header(),
             );
             if (features.includes("text:layout")) {
                 this.tree.write(
@@ -2021,19 +1988,11 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     modulePath: "src/text/default-text-data.ts",
                     symbolName: "createDefaultTextData",
                     header: "#pragma once\n#include <bblite/text.hpp>\nnamespace bbl { TextData create_compiled_text_data(std::uint32_t index); }\n",
-                    source:
-                        "#include <bblite/upstream_text.hpp>\n#include <bblite/pal.hpp>\n" +
-                        (features.includes("text:layout")
-                            ? "#include <bblite/upstream_text_update.hpp>\n"
-                            : "") +
-                        "namespace bbl {\nTextData create_compiled_text_data(std::uint32_t index) {\n    switch (index) {\n" +
-                        (options.textData ?? [])
-                            .map(
-                                (row) =>
-                                    `    case ${row.id}: return ${text.dataExpression(row, (blob) => `bbl::pal::read_binary_file(bbl::asset_path(${cppStringLiteral(blob.assetOutput)}))`)};`,
-                            )
-                            .join("\n") +
-                        '\n    default: throw std::out_of_range("Compiled text data index");\n    }\n}\n}\n',
+                    source: compiledTextDataSource(
+                        context,
+                        options.textData ?? [],
+                        features.includes("text:layout"),
+                    ),
                 },
                 generated,
                 "upstream/include/bblite/upstream/text_data.hpp",
@@ -2042,59 +2001,42 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
     }
 
     private emitCameras(
-        reachesCameraFactory: boolean,
         features: string[],
         context: LoweringContext,
-        options: UpstreamEmitOptions,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (
-            reachesCameraFactory ||
-            features.includes("camera:view-projection")
-        ) {
-            const cameraLowerer = new CameraLowerer(
-                context,
-                features.includes("camera:world-matrix-version") ||
-                    features.includes("text:renderable") ||
-                    options.postProcessComposites.some(
-                        (composite) =>
-                            composite.intrinsic === "createTaaPostProcessTask",
-                    ),
-            );
-            this.writeSource(
-                "upstream/src/camera_arc_rotate.cpp",
-                cameraLowerer.lowerArcRotateFactory(
+        // One lowerer for the camera units, built on first use.
+        let cameraLowerer: CameraLowerer | undefined;
+        const cameras = (): CameraLowerer =>
+            (cameraLowerer ??= new CameraLowerer(context));
+        this.emitReached(
+            "upstream/src/camera_arc_rotate.cpp",
+            () =>
+                cameras().lowerArcRotateFactory(
                     features.includes("loader:gltf-cameras"),
                     features.includes("renderer:high-precision-matrix"),
                     features.includes("camera:geospatial"),
                 ),
-                generated,
-                "upstream/include/bblite/upstream/camera_math.hpp",
-            );
-            if (features.includes("camera:geospatial")) {
-                this.writeSource(
-                    "upstream/src/camera_geospatial.cpp",
-                    new GeospatialCameraLowerer(context).lower(),
-                    generated,
-                    "upstream/include/bblite/upstream/camera_geospatial.hpp",
-                );
-            }
-            if (reachesCameraFactory) {
-                this.writeSource(
-                    "upstream/src/camera_controls.cpp",
-                    cameraLowerer.lowerControls(),
-                    generated,
-                    "upstream/include/bblite/upstream/camera_controls.hpp",
-                );
-            }
-            if (features.includes("camera:free")) {
-                this.writeSource(
-                    "upstream/src/camera_free.cpp",
-                    cameraLowerer.lowerFreeFactory(),
-                    generated,
-                );
-            }
-        }
+            generated,
+            "upstream/include/bblite/upstream/camera_math.hpp",
+        );
+        this.emitReached(
+            "upstream/src/camera_geospatial.cpp",
+            () => new GeospatialCameraLowerer(context).lower(),
+            generated,
+            "upstream/include/bblite/upstream/camera_geospatial.hpp",
+        );
+        this.emitReached(
+            "upstream/src/camera_controls.cpp",
+            () => cameras().lowerControls(),
+            generated,
+            "upstream/include/bblite/upstream/camera_controls.hpp",
+        );
+        this.emitReached(
+            "upstream/src/camera_free.cpp",
+            () => cameras().lowerFreeFactory(),
+            generated,
+        );
     }
 
     private emitEnvironment(
@@ -2102,80 +2044,53 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (
-            features.includes("environment:env") ||
-            features.includes("environment:hdr") ||
-            features.includes("environment:dds") ||
-            features.includes("background:dds-environment")
-        ) {
-            const environment = new EnvironmentLowerer(context);
-            if (features.includes("environment:env")) {
-                this.writeSource(
-                    "upstream/src/env_parse.cpp",
-                    environment.lowerParser(),
-                    generated,
-                    "upstream/include/bblite/upstream/env_parse.hpp",
-                );
-            }
-            // One unit for both entry points into the pinned background
-            // builders: they share the world-bounds walk, `computeSceneSize`
-            // and the DDS header, so which functions it carries follows the
-            // features rather than upstream's own file boundary.
-            if (
-                features.includes("environment:env") ||
-                features.includes("background:dds-environment")
-            ) {
-                this.writeSource(
-                    "upstream/src/environment.cpp",
-                    environment.lowerLoaderAdapter({
-                        loadEnvironment: features.includes("environment:env"),
-                        ddsBackground: features.includes(
-                            "background:dds-environment",
-                        ),
-                    }),
-                    generated,
-                );
-            }
-            if (features.includes("environment:hdr")) {
-                this.writeSource(
-                    "upstream/src/environment_hdr.cpp",
-                    environment.lowerHdrLoaderAdapter(),
-                    generated,
-                );
-            }
-            if (features.includes("environment:dds")) {
-                this.writeSource(
-                    "upstream/src/environment_dds.cpp",
-                    environment.lowerDdsLoaderAdapter(),
-                    generated,
-                );
-            }
-        }
+        // One lowerer for the environment units, built on first use.
+        let environmentLowerer: EnvironmentLowerer | undefined;
+        const environment = (): EnvironmentLowerer =>
+            (environmentLowerer ??= new EnvironmentLowerer(context));
+        this.emitReached(
+            "upstream/src/env_parse.cpp",
+            () => environment().lowerParser(),
+            generated,
+            "upstream/include/bblite/upstream/env_parse.hpp",
+        );
+        // One unit for both entry points into the pinned background
+        // builders: they share the world-bounds walk, `computeSceneSize`
+        // and the DDS header, so which functions it carries follows the
+        // features rather than upstream's own file boundary.
+        this.emitReached(
+            "upstream/src/environment.cpp",
+            () =>
+                environment().lowerLoaderAdapter({
+                    loadEnvironment: features.includes("environment:env"),
+                    ddsBackground: features.includes(
+                        "background:dds-environment",
+                    ),
+                }),
+            generated,
+        );
+        this.emitReached(
+            "upstream/src/environment_hdr.cpp",
+            () => environment().lowerHdrLoaderAdapter(),
+            generated,
+        );
+        this.emitReached(
+            "upstream/src/environment_dds.cpp",
+            () => environment().lowerDdsLoaderAdapter(),
+            generated,
+        );
     }
 
     private emitLights(
-        features: string[],
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (
-            features.includes("light:hemispheric") ||
-            features.includes("light:directional") ||
-            features.includes("light:spot") ||
-            // The pinned point-light block writer also indexes the light's
-            // world matrix (`write_point_light` calls
-            // `local_matrix_from_direction`), so a point-only scene that
-            // composes variants needs the builder too.
-            features.includes("light:point")
-        ) {
-            const light = new LightLowerer(context);
-            this.writeSource(
-                "upstream/src/light_matrix.cpp",
-                light.lowerMatrix(),
-                generated,
-                "upstream/include/bblite/upstream/light_matrix.hpp",
-            );
-        }
+        this.emitReached(
+            "upstream/src/light_matrix.cpp",
+            () => new LightLowerer(context).lowerMatrix(),
+            generated,
+            "upstream/include/bblite/upstream/light_matrix.hpp",
+        );
     }
 
     private emitAnimationGroups(
@@ -2183,18 +2098,17 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("animation:gltf-groups")) {
-            this.writeSource(
-                "upstream/src/animation_group.cpp",
+        this.emitReached(
+            "upstream/src/animation_group.cpp",
+            () =>
                 new AnimationLowerer(context).lowerGroupOperations({
                     additive: features.includes("animation:gltf-additive"),
                     groupTime: features.includes("animation:gltf-group-time"),
                     groupSpeed: features.includes("animation:gltf-group-speed"),
                     groupMask: features.includes("animation:gltf-group-mask"),
                 }),
-                generated,
-            );
-        }
+            generated,
+        );
     }
 
     private emitAnimationProperty(
@@ -2203,9 +2117,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         options: UpstreamEmitOptions,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("animation:property")) {
-            this.writeSource(
-                "upstream/src/animation_property.cpp",
+        this.emitReached(
+            "upstream/src/animation_property.cpp",
+            () =>
                 new AnimationLowerer(context).lowerPropertyAnimation({
                     gltfLoaderAvailable: features.includes("loader:gltf"),
                     cameraVersions:
@@ -2221,19 +2135,17 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         "animation:managed-groups",
                     ),
                 }),
-                generated,
-            );
-        }
+            generated,
+        );
     }
 
     private emitLoaderGltf(
         features: string[],
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
-        nodeGeometryViewList: ReturnType<typeof nodeGeometryVariants>,
         options: UpstreamEmitOptions,
     ): void {
-        if (features.includes("loader:gltf")) {
+        if (this.reaches("upstream/src/gltf_loader.cpp")) {
             const gltf = new GltfLowerer(context);
             this.writeSource(
                 "upstream/src/gltf_glb_parser.cpp",
@@ -2244,7 +2156,6 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             this.writeSource(
                 "upstream/src/gltf_loader.cpp",
                 gltf.lowerLoaderAdapter({
-                    retainLocalNormals: nodeGeometryViewList.length > 0,
                     sourceTextureReads: features.includes(
                         "material:source-texture-read",
                     ),
@@ -2260,10 +2171,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         (options.pickingShaders?.deform?.length ?? 0) > 0,
                     pinnedSkeletonPalette:
                         options.pinnedSkeletonPalette ?? false,
-                    dynamicThinInstances: features.includes(
-                        "mesh:thin-instances-dynamic",
-                    ),
-                    meshClones: features.includes("mesh:clone"),
+                    nodeTransforms: features.includes("scene:node-transforms"),
                     nonTrianglePrimitives: options.nonTrianglePrimitives,
                     gaussianSplats: options.gaussianSplats,
                     compressedImages: options.compressedImages,
@@ -2273,7 +2181,6 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     nodeVisibility: options.gltfNodeVisibility,
                     interactivity: options.gltfInteractivity ?? false,
                     animationPointer: options.animationPointer,
-                    animatedWorldBounds: options.animatedWorldBounds,
                     animationPointerMaterials:
                         options.animationPointerMaterials,
                     selectedMaterialVariant: options.selectedMaterialVariant,
@@ -2402,13 +2309,12 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
     }
 
     private emitEffectWrapper(
-        features: string[],
         context: LoweringContext,
         options: UpstreamEmitOptions,
         composedShaders: ComposedShader[],
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("effect:wrapper")) {
+        if (this.reaches("upstream/src/effect_renderer.cpp")) {
             // One module per descriptor, both entry points in it: the pin
             // builds one shader module and names a stage in each half of
             // the pipeline descriptor. The text deploys ONCE, under the
@@ -2466,7 +2372,7 @@ ${wgsl}`,
         generated: { modulePath: string; symbolName: string }[],
         composedShaders: ComposedShader[],
     ): void {
-        if (features.includes("loader:splat")) {
+        if (this.reaches("upstream/src/splat_loader.cpp")) {
             const splats = new SplatLowerer(
                 context,
                 options.splatSh?.degree ?? 0,
@@ -2511,27 +2417,23 @@ ${wgsl}`,
                 }),
                 generated,
             );
-            if (options.splatSh) {
-                this.writeSource(
-                    "upstream/src/splat_harmonics.cpp",
-                    splats.lowerHarmonics(),
-                    generated,
-                    "upstream/include/bblite/upstream/splat_harmonics.hpp",
-                );
-            }
-            if (bakesTransform) {
-                this.writeSource(
-                    "upstream/src/splat_bake.cpp",
-                    splats.lowerBake(),
-                    generated,
-                    "upstream/include/bblite/upstream/splat_bake.hpp",
-                );
-            }
-            // The pin's own module, split at its two entry points. The
-            // stock provenance names the pipeline that ships the WGSL, not a
-            // composer -- nothing there composes; the SH arm names the
-            // builder that WROTE the module, because for a cloud carrying
-            // harmonics there is no literal to ship.
+            this.emitReached(
+                "upstream/src/splat_harmonics.cpp",
+                () => splats.lowerHarmonics(),
+                generated,
+                "upstream/include/bblite/upstream/splat_harmonics.hpp",
+            );
+            this.emitReached(
+                "upstream/src/splat_bake.cpp",
+                () => splats.lowerBake(),
+                generated,
+                "upstream/include/bblite/upstream/splat_bake.hpp",
+            );
+            // The pin's own module, deployed whole. The stock provenance
+            // names the pipeline that ships the WGSL, not a composer --
+            // nothing there composes; the SH arm names the builder that
+            // WROTE the module, because for a cloud carrying harmonics there
+            // is no literal to ship.
             const splatShaderModulePath = options.splatSh
                 ? "src/mesh/GaussianSplatting/gaussian-splatting-pipeline-sh.ts"
                 : "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts";
@@ -2542,20 +2444,14 @@ ${wgsl}`,
                 splatShaderModulePath,
                 splatShaderSymbol,
             );
-            const splatShader = options.splatSh
-                ? pinnedSplatShShader(options.splatSh)
-                : pinnedSplatShader(options.splatShaderModule);
             composedShaders.push(
-                {
-                    output: "upstream/shaders/splat.vert.native.wgsl",
-                    data: splatVertexWgsl(provenance, splatShader),
-                    family: "splat",
-                },
-                {
-                    output: "upstream/shaders/splat.frag.native.wgsl",
-                    data: splatFragmentWgsl(provenance, splatShader),
-                    family: "splat",
-                },
+                wholeModuleShader(
+                    "splat",
+                    options.splatSh
+                        ? pinnedSplatShShader(options.splatSh)
+                        : pinnedSplatShader(options.splatShaderModule),
+                    provenance,
+                ),
             );
             generated.push({
                 modulePath: splatShaderModulePath,
@@ -2598,7 +2494,7 @@ ${wgsl}`,
         deployMipBlit: () => void,
         composedShaders: ComposedShader[],
     ): void {
-        if (features.includes("sprite:2d")) {
+        if (this.reaches("upstream/src/sprite_2d.cpp")) {
             const sprites = new SpriteLowerer(context);
             // A pure-2D particle bridge in an exact Multiply mode draws
             // the pin's OWN custom fragment, so it enters the same composer
@@ -2643,83 +2539,60 @@ ${wgsl}`,
                 // A pure-2D scene has no renderer block to deploy it, so it
                 // deploys here; the renderer block below skips a second copy.
                 deployMipBlit();
-                const composeSpriteShader = (
-                    options: {
-                        uvScroll?: boolean;
-                        fragment?: string;
-                        extraTextures?: readonly string[];
-                        depthHosted?: boolean;
-                    } = {},
-                ) =>
-                    sprites.shaderSource(
-                        options.uvScroll ?? false,
-                        options.fragment,
-                        options.extraTextures ?? [],
-                        options.depthHosted ?? false,
-                    );
-                const shader = composeSpriteShader();
+                // Each program is the module the pin composes for a layer's
+                // permutation, deployed whole: both of its stages compile
+                // from it, so a custom program carries its own vertex stage
+                // and every stage of a pipeline shares one module's groups.
                 const provenance = context.provenance(
                     "src/sprite/sprite-pipeline.ts",
                     "makeSpriteWgsl",
                 );
-                const needsPureVertex =
-                    options.pureSpriteVertex !== false ||
-                    particlePrograms.plainSprite ||
-                    particlePrograms.sprite2dMultiply;
-                for (const permutation of spriteVertexPermutations({
-                    pure: needsPureVertex,
+                const customProvenance = context.provenance(
+                    "src/sprite/sprite-custom-shader.ts",
+                    "makeCustomSpriteWgsl",
+                );
+                const permutations = spritePermutations({
+                    pure:
+                        options.pureSpriteVertex !== false ||
+                        particlePrograms.plainSprite ||
+                        particlePrograms.sprite2dMultiply,
                     depthHosted: features.includes("sprite:2d-depth-host"),
                     uvScroll: features.includes("sprite:uv-scroll"),
-                })) {
-                    const permutationShader = composeSpriteShader({
+                });
+                for (const permutation of permutations) {
+                    const reached = {
+                        hasDepth: permutation.depthHosted,
                         uvScroll: permutation.uvScroll,
-                        depthHosted: permutation.depthHosted,
-                    });
-                    composedShaders.push({
-                        output: `upstream/shaders/${permutation.output}`,
-                        data: spriteVertexWgsl(provenance, permutationShader),
-                    });
+                    };
+                    // The stock program, only where a plain layer draws
+                    // with it: a scene whose every layer opts into a custom
+                    // shader compiles none.
+                    if (
+                        options.plainSpriteLayer ||
+                        particlePrograms.plainSprite
+                    ) {
+                        composedShaders.push(
+                            wholeModuleShader(
+                                spriteProgramStem(0, permutation),
+                                sprites.module(reached),
+                                provenance,
+                            ),
+                        );
+                    }
+                    // The pin composes one module per descriptor, from the
+                    // same prologue with the caller's body spliced in, so a
+                    // custom program is a module of its own per permutation.
+                    for (const [customIndex, custom] of customs.entries()) {
+                        composedShaders.push(
+                            wholeModuleShader(
+                                spriteProgramStem(customIndex + 1, permutation),
+                                sprites.module(reached, custom),
+                                customProvenance,
+                            ),
+                        );
+                    }
                 }
-                // The stock fragment, only where a plain layer draws with
-                // it: a custom layer keeps this vertex stage but brings its
-                // own fragment, so a scene whose every layer opts in would
-                // compile and deploy a stage nothing loads.
-                if (options.plainSpriteLayer || particlePrograms.plainSprite) {
-                    composedShaders.push({
-                        output: "upstream/shaders/sprite.frag.native.wgsl",
-                        data: spriteFragmentWgsl(provenance, shader),
-                    });
-                }
-                // The pin composes one module per descriptor, from the same
-                // prologue with the caller's body spliced in, so the custom
-                // program is a second file rather than an edit of the first
-                // — a renderer can hold both, and a plain layer draws the
-                // stock shader as it does when the fx hook is null.
-                for (const [customIndex, custom] of customs.entries()) {
-                    const customShader = composeSpriteShader({
-                        fragment: custom.fragment,
-                        extraTextures: custom.extraTextures,
-                    });
-                    const customProvenance = context.provenance(
-                        "src/sprite/sprite-custom-shader.ts",
-                        "makeCustomSpriteWgsl",
-                    );
-                    // Only the fragment: the pin composes the custom module
-                    // from the same prologue, so the vertex stage is the
-                    // stock text and a custom layer pairs the stock vertex
-                    // with this fragment. That also keeps the uv-scroll
-                    // vertex free to combine with it rather than needing a
-                    // fourth file for the pair.
-                    composedShaders.push({
-                        output:
-                            customIndex === 0
-                                ? "upstream/shaders/sprite_custom.frag.native.wgsl"
-                                : `upstream/shaders/sprite_custom_${customIndex + 1}.frag.native.wgsl`,
-                        data: spriteFragmentWgsl(
-                            customProvenance,
-                            customShader,
-                        ),
-                    });
+                if (customs.length > 0) {
                     generated.push({
                         modulePath: "src/sprite/sprite-custom-shader.ts",
                         symbolName: "makeCustomSpriteWgsl",
@@ -2727,21 +2600,19 @@ ${wgsl}`,
                 }
                 generated.push({
                     modulePath: "src/sprite/sprite-pipeline.ts",
-                    symbolName:
-                        "makeSpritePrologueWgsl,makeSpriteWgsl,buildSpriteLayerUbo",
+                    symbolName: "makeSpriteWgsl,buildSpriteLayerUbo",
                 });
             }
         }
     }
 
     private emitParticleNode(
-        features: string[],
         context: LoweringContext,
         nodeParticles: readonly NodeParticleSystemEmit[],
         options: UpstreamEmitOptions,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("particle:node")) {
+        if (this.reaches("upstream/src/node_particles.cpp")) {
             // The frozen bake and the two pinned functions that turn it into
             // the billboard family's own calls.
             this.writeSource(
@@ -2771,88 +2642,127 @@ ${wgsl}`,
             sprite2dMultiply: boolean;
         },
     ): void {
-        if (features.includes("sprite:billboard")) {
-            // The billboard vertex stage reads the scene block, so it takes
-            // the renderer's own copy of that WGSL rather than a second one.
-            const billboards = new BillboardLowerer(
-                context,
-                new RendererLowerer(context).compiledSceneUniformsWgsl(),
-            );
+        if (this.reaches("upstream/src/billboard_system.cpp")) {
+            const billboards = new BillboardLowerer(context);
             const customBillboard = options.spriteCustomShaders.find(
                 (entry) => entry.family === "billboard",
             );
+            // A billboard program binds the pin's per-pass scene block, so
+            // a scene whose composed families emit no header to carry the
+            // shared per-pass mirrors has them hoisted here, as a
+            // Standard-only scene hoists them into its own header.
+            const core = billboards.lowerCore();
+            const hoistsSharedMirrors =
+                (options.pinnedVariants ?? []).length === 0 &&
+                (options.pinnedStandardVariants ?? []).length === 0 &&
+                (options.nodeVariants ?? []).length === 0;
             this.writeSource(
                 "upstream/src/billboard_system.cpp",
-                billboards.lowerCore(),
+                hoistsSharedMirrors
+                    ? {
+                          ...core,
+                          header: `${core.header}${sharedPinnedMirrors(context, features)}`,
+                      }
+                    : core,
                 generated,
                 "upstream/include/bblite/upstream/billboard_system.hpp",
             );
-            const shader = billboards.shaderSource();
-            const provenance = context.provenance(
-                "src/sprite/billboard-pipeline.ts",
-                "makeBillboardWgsl",
-            );
-            // Unlike the 2D family, a billboard program is always a pair:
-            // the pin's composer exposes the view distance and the world
-            // position to a custom body, so each program's vertex stage
-            // travels with its fragment.
+            // Each program is the module the pin composes for a system,
+            // deployed whole: the pin's scene group at 0, the system's own
+            // at 1. `billboard_draw_plan` (pal_gpu_shared.hpp) names the
+            // same stems from a system's record.
+            const sceneWgsl = new RendererLowerer(
+                context,
+            ).compiledSceneUniformsWgsl();
             const pushBillboardProgram = (
-                name: string,
-                composed: ReturnType<typeof billboards.shaderSource>,
-                module?: { modulePath: string; symbolName: string },
+                stem: string,
+                wgsl: string,
+                module: { modulePath: string; symbolName: string },
             ): void => {
-                const own = module
-                    ? context.provenance(module.modulePath, module.symbolName)
-                    : provenance;
+                assertBillboardSceneBlock(stem, wgsl, sceneWgsl);
                 composedShaders.push(
-                    {
-                        output: `upstream/shaders/${name}.vert.native.wgsl`,
-                        data: billboardVertexWgsl(own, composed),
-                    },
-                    {
-                        output: `upstream/shaders/${name}.frag.native.wgsl`,
-                        data: billboardFragmentWgsl(own, composed),
-                    },
+                    wholeModuleShader(
+                        stem,
+                        wgsl,
+                        context.provenance(
+                            module.modulePath,
+                            module.symbolName,
+                        ),
+                    ),
                 );
-                if (module) generated.push(module);
+                if (
+                    !generated.some(
+                        (entry) => entry.symbolName === module.symbolName,
+                    )
+                )
+                    generated.push(module);
             };
-            // The stock pair, only where a plain system draws with it. Unlike
-            // the 2D family a custom billboard brings its own vertex stage
-            // too, so a scene whose every system opts in loads neither half.
+            const stock = {
+                modulePath: "src/sprite/billboard-pipeline.ts",
+                symbolName: "makeBillboardWgsl",
+            };
+            const axisLocked = features.includes(
+                "sprite:billboard-axis-locked",
+            );
+            const cutout = features.includes("sprite:billboard-cutout");
+            // The stock facing program, only where a plain system draws with
+            // it; the axis-locked and cutout arms where scene code reached
+            // them. A cutout system with alpha-to-coverage draws the
+            // transparent arm, which the pin's composer also emits for it.
             if (
                 options.plainBillboardSystem ||
                 particlePrograms.plainBillboard
             ) {
-                pushBillboardProgram("billboard", shader);
-            }
-            if (features.includes("sprite:billboard-cutout")) {
-                // The cutout arm discards below the cutoff and is otherwise
-                // the same stage, so like the second orientation it costs
-                // one file rather than a pair.
-                composedShaders.push({
-                    output: "upstream/shaders/billboard_cutout.frag.native.wgsl",
-                    data: billboardFragmentWgsl(
-                        provenance,
-                        billboards.shaderSource("facing", "cutout"),
-                    ),
-                });
-            }
-            // The billboard mirror of the 2D custom program, and the one
-            // place the two families differ: the pin's billboard composer
-            // exposes `viewDist` and the world position to a custom body, so
-            // its vertex stage writes two varyings the stock one does not and
-            // the pair travels together.
-            if (customBillboard) {
-                const shader = billboards.shaderSource(
-                    "facing",
-                    "transparent",
-                    customBillboard.fragment,
-                    customBillboard.extraTextures,
+                pushBillboardProgram(
+                    "billboard",
+                    billboards.module("facing", "transparent"),
+                    stock,
                 );
-                pushBillboardProgram("billboard_custom", shader, {
+            }
+            if (axisLocked) {
+                pushBillboardProgram(
+                    "billboard_axis_locked",
+                    billboards.module("axis-locked", "transparent"),
+                    stock,
+                );
+            }
+            if (cutout) {
+                pushBillboardProgram(
+                    "billboard_cutout",
+                    billboards.module("facing", "cutout"),
+                    stock,
+                );
+            }
+            if (axisLocked && cutout) {
+                pushBillboardProgram(
+                    "billboard_axis_locked_cutout",
+                    billboards.module("axis-locked", "cutout"),
+                    stock,
+                );
+            }
+            // The pin's custom composer takes the system's orientation, so
+            // each reached orientation has its own custom module.
+            if (customBillboard) {
+                const custom = {
                     modulePath: "src/sprite/billboard-custom-shader.ts",
                     symbolName: "makeCustomBillboardWgsl",
-                });
+                };
+                pushBillboardProgram(
+                    "billboard_custom",
+                    billboards.module("facing", "transparent", customBillboard),
+                    custom,
+                );
+                if (axisLocked) {
+                    pushBillboardProgram(
+                        "billboard_custom_axis_locked",
+                        billboards.module(
+                            "axis-locked",
+                            "transparent",
+                            customBillboard,
+                        ),
+                        custom,
+                    );
+                }
             }
             // The particle family's Multiply program, whose module the pin
             // writes itself. Mode 4 draws it and then the STOCK program over
@@ -2861,7 +2771,7 @@ ${wgsl}`,
             if (particlePrograms.billboardMultiply) {
                 pushBillboardProgram(
                     "billboard_particle_multiply",
-                    billboards.particleMultiplyShaderSource("facing"),
+                    billboards.particleMultiplyModule("facing"),
                     {
                         modulePath:
                             "src/particle/particle-billboard-renderable.ts",
@@ -2869,22 +2779,9 @@ ${wgsl}`,
                     },
                 );
             }
-            if (features.includes("sprite:billboard-axis-locked")) {
-                // The pin's composer swaps only the basis function; the
-                // fragment stage is the same text, so the second orientation
-                // costs one vertex stage rather than a pair.
-                composedShaders.push({
-                    output: "upstream/shaders/billboard_axis_locked.vert.native.wgsl",
-                    data: billboardVertexWgsl(
-                        provenance,
-                        billboards.shaderSource("axis-locked"),
-                    ),
-                });
-            }
             generated.push({
                 modulePath: "src/sprite/billboard-pipeline.ts",
-                symbolName:
-                    "makeBillboardWgsl,makeBillboardBasisWgsl,buildBillboardSystemUbo",
+                symbolName: "makeBillboardBasisWgsl,buildBillboardSystemUbo",
             });
         }
     }
@@ -2897,7 +2794,7 @@ ${wgsl}`,
         generated: { modulePath: string; symbolName: string }[],
         transmission: boolean,
         composedShaders: ComposedShader[],
-        utilityShaders: () => DawnUtilityShaders,
+        deployUtility: (module: PinnedUtilityModule) => void,
         deployMipBlit: () => void,
     ): void {
         if (features.includes("renderer:scene")) {
@@ -2917,8 +2814,6 @@ ${wgsl}`,
                     ),
                     fog: features.includes("renderer:fog"),
                     picking: features.includes("picking:gpu"),
-                    imageSkybox: features.includes("background:image-skybox"),
-                    solidSkybox: features.includes("background:solid-skybox"),
                     environmentRotation: options.imageBasedLighting,
                     gpuInstancing: options.gpuInstancing,
                     punctualLights: options.punctualLights,
@@ -2935,91 +2830,38 @@ ${wgsl}`,
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
-                    background:
-                        features.includes("background:ground") ||
-                        features.includes("background:skybox") ||
-                        features.includes("background:image-skybox") ||
-                        features.includes("background:solid-skybox"),
                     shaderPrograms: options.shaderPrograms,
                 }),
                 generated,
                 "upstream/include/bblite/upstream/renderer_plan.hpp",
             );
             const shaders = renderer.lowerShaders({
-                ground: features.includes("background:ground"),
-                skybox: features.includes("background:skybox"),
-                ddsEnvironment: features.includes("background:dds-environment"),
-                imageSkybox: features.includes("background:image-skybox"),
-                solidSkybox: features.includes("background:solid-skybox"),
                 transmission: transmission,
                 fog: features.includes("renderer:fog"),
                 shaderPrograms: options.shaderPrograms,
-                gridMaterial: features.includes("material:grid"),
                 idDiagnostics: options.idDiagnostics,
                 geometryOutputTasks: options.geometryOutputTasks,
                 frameGraph: features.includes("renderer:geometry-output"),
                 gpuDeformation: options.gpuDeformation,
                 morphStorage: options.morphStorage,
                 gpuInstancing: options.gpuInstancing,
-                clearcoat: options.clearcoat,
-                sheen: options.sheen,
-                iridescence: options.iridescence,
-                dispersion: options.dispersion,
             });
             // Every module `lowerShaders` returns is one this repository
             // authors or specializes -- the PBR vertex stage, the grid, the
             // blit -- so they take the default family. The pin's own
             // composed variants are pushed from their own sites below.
             composedShaders.push(...shaders);
-            // The Dawn backend's utility passes, deployed like every other
-            // pinned shader instead of living as C++ strings invisible to
-            // shader provenance: the mip-generator blit for every renderer
-            // scene, and the transmission grab + per-sample image
-            // processing wherever transmission compiles. SDL_GPU never
-            // loads these (its API owns mip generation and the blit, and
-            // its image processing rides the resolved-pixel pair above);
-            // the offline pipeline still compiles them like any deployed
-            // WGSL, which is what keeps them under the same provenance
-            // and drift checks.
-            const dawnUtility = utilityShaders();
+            this.emitPinnedBackgrounds(options, context, composedShaders);
+            // The pin's utility passes, deployed like every other pinned
+            // shader instead of living as C++ strings invisible to shader
+            // provenance: the mip-generator blit for every renderer scene
+            // (the Dawn mip generator; SDL_GPU's API owns mip generation),
+            // and the transmission grab and trailing image processing, in
+            // both of the pin's arms, wherever transmission compiles.
             deployMipBlit();
             if (transmission) {
-                composedShaders.push(
-                    {
-                        output: "upstream/shaders/transmission-grab.vert.native.wgsl",
-                        data: dawnUtility.grabVertex,
-                    },
-                    {
-                        output: "upstream/shaders/transmission-grab.frag.native.wgsl",
-                        data: dawnUtility.grabFragment,
-                    },
-                    {
-                        output: "upstream/shaders/transmission-grab-single.frag.native.wgsl",
-                        data: dawnUtility.grabFragmentSingle,
-                    },
-                    {
-                        output: "upstream/shaders/image-processing-samples.vert.native.wgsl",
-                        data: dawnUtility.imageProcessingVertex,
-                    },
-                    {
-                        output: "upstream/shaders/image-processing-samples.frag.native.wgsl",
-                        data: dawnUtility.imageProcessingFragment,
-                    },
-                    {
-                        output: "upstream/shaders/image-processing-samples-single.frag.native.wgsl",
-                        data: dawnUtility.imageProcessingFragmentSingle,
-                    },
-                );
-                generated.push(
-                    {
-                        modulePath: "src/frame-graph/transmission.ts",
-                        symbolName: "BLIT_MSAA_SHADER",
-                    },
-                    {
-                        modulePath: "src/frame-graph/image-processing-task.ts",
-                        symbolName: "ip",
-                    },
-                );
+                for (const module of pinnedTransmissionModules())
+                    deployUtility(module);
             }
             if (options.shaderPrograms.length > 0) {
                 this.tree.write(
@@ -3083,7 +2925,7 @@ ${wgsl}`,
                     },
                 );
             }
-        } else if (features.includes("camera:view-projection")) {
+        } else if (this.reaches("upstream/src/renderer_plan.cpp")) {
             // getViewProjectionMatrix is a public camera helper and can be
             // reached before a scene renderer. Its implementation already
             // lives in the generated render-plan math; emit that source and
@@ -3098,11 +2940,10 @@ ${wgsl}`,
     }
 
     private emitRendererGeometryOutput(
-        features: string[],
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("renderer:geometry-output")) {
+        if (this.reaches("upstream/src/frame_graph_geometry.cpp")) {
             this.writeSource(
                 "upstream/src/frame_graph_geometry.cpp",
                 new GeometryOutputLowerer(context).lowerTaskRecords(),
@@ -3130,7 +2971,7 @@ ${wgsl}`,
         generated: { modulePath: string; symbolName: string }[],
         composedShaders: ComposedShader[],
     ): void {
-        if (features.includes("renderer:post-process")) {
+        if (this.reaches("upstream/src/frame_graph_post_process.cpp")) {
             // One stage table over every kind of pass: the plain effects in
             // reach order, then each composite's own chain, then each
             // screen-space task's history copy and composite. A pass is a
@@ -3298,35 +3139,11 @@ ${composed.wgsl}`,
         factories: FactoryLowerer,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (
-            features.includes("mesh:box") ||
-            features.includes("mesh:from-data") ||
-            features.includes("mesh:update-positions") ||
-            features.includes("mesh:resize-geometry") ||
-            features.includes("mesh:ground") ||
-            features.includes("mesh:ground-heightmap") ||
-            features.includes("mesh:morph-targets") ||
-            features.includes("mesh:plane") ||
-            features.includes("mesh:sphere") ||
-            features.includes("mesh:thin-instance-colors") ||
-            features.includes("mesh:thin-instances") ||
-            features.includes("mesh:thin-instances-dynamic") ||
-            features.includes("mesh:thin-instance-gpu-culling") ||
-            features.includes("mesh:torus") ||
-            features.includes("mesh:torus-knot") ||
-            features.includes("mesh:disc") ||
-            features.includes("mesh:cylinder") ||
-            features.includes("mesh:polyhedron") ||
-            features.includes("mesh:ribbon") ||
-            features.includes("mesh:extrude") ||
-            features.includes("mesh:tube")
-        ) {
-            this.writeSource(
-                "upstream/src/mesh_factories.cpp",
-                factories.lowerMeshFactories(features),
-                generated,
-            );
-        }
+        this.emitReached(
+            "upstream/src/mesh_factories.cpp",
+            () => factories.lowerMeshFactories(features),
+            generated,
+        );
     }
 
     private emitPhysicsWorld(
@@ -3334,7 +3151,7 @@ ${composed.wgsl}`,
         context: LoweringContext,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (features.includes("physics:world")) {
+        if (this.reaches("upstream/src/physics.cpp")) {
             this.writeSource(
                 "upstream/src/physics.cpp",
                 new PhysicsLowerer(context).lowerPhysics({
@@ -3374,7 +3191,7 @@ ${composed.wgsl}`,
         nodePcfCasters: boolean,
         generated: { modulePath: string; symbolName: string }[],
     ): void {
-        if (reachesShadowGenerator(features)) {
+        if (this.reaches("upstream/src/shadow.cpp")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_shadow.hpp",
                 pinnedShadowHeader(context, features),
@@ -3454,7 +3271,7 @@ ${shadow.blurFragmentWgsl}`,
         options: UpstreamEmitOptions,
         composedShaders: ComposedShader[],
     ): void {
-        if (features.includes("picking:gpu")) {
+        if (this.reaches("upstream/src/picking.cpp")) {
             this.tree.write(
                 "upstream/include/bblite/upstream/picking_math.hpp",
                 new PickingLowerer(context).mathHeader(
@@ -3665,6 +3482,73 @@ ${shadow.blurFragmentWgsl}`,
         }
     }
 
+    /**
+     * The pin's background arms: each stage module deployed whole under its
+     * own stem, and the arm table with the lowered builders beside it. Two
+     * arms of one factory share their vertex module, which is the pin's
+     * same text.
+     */
+    private emitPinnedBackgrounds(
+        options: UpstreamEmitOptions,
+        context: LoweringContext,
+        composedShaders: ComposedShader[],
+    ): void {
+        const arms = options.pinnedBackgrounds ?? [];
+        if (arms.length === 0) return;
+        // Every arm binds the pin's scene group, whose block and lights
+        // mirrors a composed material family carries. A scene drawing a
+        // background with no composed family has no scene-block mirror.
+        if (
+            (options.pinnedVariants ?? []).length === 0 &&
+            (options.pinnedStandardVariants ?? []).length === 0 &&
+            (options.nodeVariants ?? []).length === 0
+        ) {
+            refuseGeneration(
+                arms[0]!.symbolName,
+                "A pinned background arm binds the pin's scene block, which " +
+                    "only a composed PBR, Standard or node material mirrors; " +
+                    "a scene drawing a background with none of them is not wired.",
+                options.featureSites,
+            );
+        }
+        const deployed = new Map<string, string>();
+        for (const arm of arms) {
+            const provenance = context.provenance(
+                arm.modulePath,
+                arm.symbolName,
+                "its own composed modules, executed at generation",
+            );
+            for (const [stage, module] of [
+                ["vertex", arm.vertex],
+                ["fragment", arm.fragment],
+            ] as const) {
+                const previous = deployed.get(module.stem);
+                if (previous !== undefined) {
+                    if (previous !== module.wgsl) {
+                        refuseGeneration(
+                            arm.symbolName,
+                            `Pinned ${arm.symbolName} composes two different ${module.stem} modules.`,
+                        );
+                    }
+                    continue;
+                }
+                deployed.set(module.stem, module.wgsl);
+                composedShaders.push(
+                    pinnedStageShader(
+                        module.stem,
+                        stage,
+                        module.wgsl,
+                        provenance,
+                    ),
+                );
+            }
+        }
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_backgrounds.hpp",
+            pinnedBackgroundsHeader(context, arms),
+        );
+    }
+
     private emitSharedVariantBindings(
         options: UpstreamEmitOptions,
         nodeVariantList: readonly NodeVariantManifestEntry[],
@@ -3673,7 +3557,8 @@ ${shadow.blurFragmentWgsl}`,
         if (
             (options.pinnedVariants ?? []).length > 0 ||
             (options.pinnedStandardVariants ?? []).length > 0 ||
-            nodeVariantList.length > 0
+            nodeVariantList.length > 0 ||
+            (options.pinnedBackgrounds ?? []).length > 0
         ) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_variant_bindings.hpp",
@@ -3725,17 +3610,21 @@ ${shadow.blurFragmentWgsl}`,
             // 144-byte block to that variant is a validation error. The
             // largest declared struct is mirrored; the base variants read
             // its prefix, which is laid out identically.
+            const meshMembers = (text: string): number =>
+                reflectWgslStruct(text, "MeshUniforms")?.members.length ?? 0;
             const widestStandardMesh = [
                 ...options.pinnedStandardVariants!,
-            ].sort((left, right) => {
-                const size = (text: string): number =>
-                    /struct MeshUniforms\s*\{([\s\S]*?)\}/.exec(text)?.[1]
-                        ?.length ?? 0;
-                return size(right.fragmentWgsl) - size(left.fragmentWgsl);
-            })[0]!.fragmentWgsl;
+            ].sort(
+                (left, right) =>
+                    meshMembers(right.fragmentWgsl) -
+                    meshMembers(left.fragmentWgsl),
+            )[0]!.fragmentWgsl;
             if (
                 (options.pinnedVariants ?? []).length > 0 &&
-                widestStandardMesh.includes("previousWorld")
+                reflectWgslStruct(
+                    widestStandardMesh,
+                    "MeshUniforms",
+                )?.members.some(({ name }) => name === "previousWorld")
             ) {
                 // The velocity arm rides a geometry-output task.
                 refuseGeneration(
@@ -3987,283 +3876,6 @@ ${shadow.blurFragmentWgsl}`,
     }
 }
 
-/**
- * The Dawn backend's utility WGSL, lifted from the pinned package's own
- * string literals instead of living as C++ strings invisible to shader
- * provenance: the mip generator's fullscreen blit
- * (`texture/generate-mipmaps.ts` BLIT_SHADER), the transmission
- * scene-colour grab (`frame-graph/transmission.ts` BLIT_MSAA_SHADER),
- * and the per-sample image processing
- * (`frame-graph/image-processing-task.ts` `common` + its two fragments).
- *
- * Two mechanical re-homings, each asserted so a pinned change fails
- * generation: the entry points take this repository's
- * mainVertex/mainFragment names (src/compile-shaders.ts keys the Tint
- * entry point on them), and each pinned module splits into one file per
- * stage so a stage never declares bindings it does not read (the compile
- * script cross-checks declared bindings against Tint's reflection). The
- * single-sample variants — reached under BBLITE_MSAA=1, where there is
- * one sample and nothing to average — substitute the plain-texture
- * binding and a plain load exactly as the pin's own non-MSAA arms do.
- */
-function pinnedTextSlice(
-    text: string,
-    what: string,
-    from: string,
-    to?: string,
-): string {
-    const start = text.indexOf(from);
-    if (start < 0) {
-        refuseGeneration(what, `Pinned ${what} no longer contains '${from}'.`);
-    }
-    if (to === undefined) return text.slice(start);
-    const end = text.indexOf(to, start);
-    if (end < 0) {
-        refuseGeneration(what, `Pinned ${what} no longer contains '${to}'.`);
-    }
-    return text.slice(start, end);
-}
-
-function renameEntryPoint(
-    stage: string,
-    what: string,
-    pinnedName: string,
-    nativeName: string,
-): string {
-    const marker = `fn ${pinnedName}(`;
-    if (!stage.includes(marker)) {
-        refuseGeneration(
-            what,
-            `Pinned ${what} no longer declares '${marker}'.`,
-        );
-    }
-    return stage.split(marker).join(`fn ${nativeName}(`);
-}
-
-export interface DawnUtilityShaders {
-    mipBlitVertex: string;
-    mipBlitFragment: string;
-    grabVertex: string;
-    grabFragment: string;
-    grabFragmentSingle: string;
-    imageProcessingVertex: string;
-    imageProcessingFragment: string;
-    imageProcessingFragmentSingle: string;
-}
-
-export function dawnUtilityShaders(transmission: boolean): DawnUtilityShaders {
-    // The mip generator's blit: bindings, varying struct, one stage each.
-    const mipBlit = extractPackagedTemplateLiteral(
-        readPinnedLibraryModule("texture/generate-mipmaps.js"),
-        "BLIT_SHADER",
-    );
-    const mipProvenance =
-        "// src/texture/generate-mipmaps.ts BLIT_SHADER, split per stage" +
-        " with native entry-point names.\n";
-    const mipStruct = pinnedTextSlice(
-        mipBlit,
-        "mip blit",
-        "struct V{",
-        "@vertex",
-    );
-    const mipBindings = pinnedTextSlice(
-        mipBlit,
-        "mip blit",
-        "@group(0)@binding(0)",
-        "struct V{",
-    );
-    const mipVertexStage = pinnedTextSlice(
-        mipBlit,
-        "mip blit",
-        "@vertex fn vs(",
-        "@fragment",
-    );
-    const mipFragmentStage = pinnedTextSlice(
-        mipBlit,
-        "mip blit",
-        "@fragment fn fs(",
-    );
-    const shaders: DawnUtilityShaders = {
-        mipBlitVertex:
-            mipProvenance +
-            mipStruct +
-            renameEntryPoint(
-                mipVertexStage,
-                "mip blit vertex",
-                "vs",
-                "mainVertex",
-            ),
-        mipBlitFragment:
-            mipProvenance +
-            mipBindings +
-            mipStruct +
-            renameEntryPoint(
-                mipFragmentStage,
-                "mip blit fragment",
-                "fs",
-                "mainFragment",
-            ),
-        grabVertex: "",
-        grabFragment: "",
-        grabFragmentSingle: "",
-        imageProcessingVertex: "",
-        imageProcessingFragment: "",
-        imageProcessingFragmentSingle: "",
-    };
-    if (!transmission) return shaders;
-
-    // The scene-colour grab: the pin's per-texel sample average with
-    // manual bilinear filtering, read straight from the multisampled
-    // attachment.
-    const grab = extractPackagedTemplateLiteral(
-        readPinnedLibraryModule("frame-graph/transmission.js"),
-        "BLIT_MSAA_SHADER",
-    );
-    const grabProvenance =
-        "// src/frame-graph/transmission.ts BLIT_MSAA_SHADER, split per" +
-        " stage with native entry-point names.\n";
-    const grabBinding = pinnedTextSlice(
-        grab,
-        "transmission grab",
-        "@group(0)@binding(0)var t:texture_multisampled_2d<f32>;",
-        "struct V{",
-    );
-    const grabStruct = pinnedTextSlice(
-        grab,
-        "transmission grab",
-        "struct V{",
-        "@vertex",
-    );
-    const grabVertexStage = pinnedTextSlice(
-        grab,
-        "transmission grab",
-        "@vertex fn vs(",
-        "fn l(",
-    );
-    const grabAverage = pinnedTextSlice(
-        grab,
-        "transmission grab",
-        "fn l(",
-        "@fragment",
-    );
-    const grabFragmentStage = pinnedTextSlice(
-        grab,
-        "transmission grab",
-        "@fragment fn fs(",
-    );
-    shaders.grabVertex =
-        grabProvenance +
-        grabStruct +
-        renameEntryPoint(
-            grabVertexStage,
-            "transmission grab vertex",
-            "vs",
-            "mainVertex",
-        );
-    const grabFragment = renameEntryPoint(
-        grabFragmentStage,
-        "transmission grab fragment",
-        "fs",
-        "mainFragment",
-    );
-    shaders.grabFragment =
-        grabProvenance + grabBinding + grabStruct + grabAverage + grabFragment;
-    // The single-sample arm (BBLITE_MSAA=1): one sample, nothing to
-    // average, so the binding is an ordinary texture and the fetch a
-    // plain load; the manual bilinear body is the same pinned text.
-    shaders.grabFragmentSingle =
-        grabProvenance +
-        "// Single-sample arm: the multisampled binding and the sample\n" +
-        "// average reduce to a plain texture and a plain load.\n" +
-        grabBinding.replace("texture_multisampled_2d<f32>", "texture_2d<f32>") +
-        grabStruct +
-        "fn l(p:vec2i)->vec4f{return textureLoad(t,p,0);}" +
-        grabFragment;
-
-    // Per-sample image processing: exposure, optional tonemap, gamma,
-    // contrast applied per MSAA sample, then averaged.
-    const {
-        module: imageProcessing,
-        common,
-        uniformStruct: ipStruct,
-        binding: ipBinding,
-        ip,
-    } = pinnedImageProcessingSource();
-    const ipProvenance =
-        "// src/frame-graph/image-processing-task.ts shader text, split" +
-        " per stage with native entry-point names.\n";
-    const ipVertexStage = pinnedTextSlice(
-        common,
-        "image processing",
-        "@vertex fn vs(",
-        "fn ip(",
-    );
-    const declarations = {
-        multisampled: "@group(0)@binding(1)var s:texture_multisampled_2d<f32>;",
-        single: "@group(0)@binding(1)var s:texture_2d<f32>;",
-    };
-    const imageProcessingModule = "src/frame-graph/image-processing-task.ts";
-    for (const declaration of Object.values(declarations)) {
-        if (!imageProcessing.includes(declaration)) {
-            refuseGeneration(
-                imageProcessingModule,
-                "Pinned image-processing texture declaration changed.",
-            );
-        }
-    }
-    const fragments = [
-        ...imageProcessing.matchAll(/`(@fragment fn fs[^`]*)`/g),
-    ].map((match) => match[1]!);
-    if (fragments.length !== 2) {
-        refuseGeneration(
-            imageProcessingModule,
-            "Pinned image-processing no longer carries exactly two " +
-                "fragment arms.",
-        );
-    }
-    const multisampledFragment = fragments.find((fragment) =>
-        fragment.includes("textureNumSamples"),
-    );
-    const singleFragment = fragments.find(
-        (fragment) => !fragment.includes("textureNumSamples"),
-    );
-    if (!multisampledFragment || !singleFragment) {
-        refuseGeneration(
-            imageProcessingModule,
-            "Pinned image-processing fragment arms changed shape.",
-        );
-    }
-    shaders.imageProcessingVertex =
-        ipProvenance +
-        renameEntryPoint(
-            ipVertexStage.trim() + "\n",
-            "image processing vertex",
-            "vs",
-            "mainVertex",
-        );
-    shaders.imageProcessingFragment =
-        ipProvenance +
-        `${ipStruct}\n${ipBinding}\n${ip}\n` +
-        `${declarations.multisampled}\n` +
-        renameEntryPoint(
-            multisampledFragment,
-            "image processing fragment",
-            "fs",
-            "mainFragment",
-        );
-    shaders.imageProcessingFragmentSingle =
-        ipProvenance +
-        `${ipStruct}\n${ipBinding}\n${ip}\n` +
-        `${declarations.single}\n` +
-        renameEntryPoint(
-            singleFragment,
-            "image processing single-sample fragment",
-            "fs",
-            "mainFragment",
-        );
-    return shaders;
-}
-
 export function emitUpstreamGenerated(
     outputRoot: string,
     features: string[],
@@ -4280,7 +3892,6 @@ export function emitUpstreamGenerated(
         postProcessShaders: [],
         postProcessComposites: [],
         gpuDeformation: false,
-        animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
         gaussianSplats: false,
@@ -4290,6 +3901,7 @@ export function emitUpstreamGenerated(
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,
+        transmission: false,
         materialSpecular: false,
         selectedMaterialVariant: "",
         standardLightLists: false,

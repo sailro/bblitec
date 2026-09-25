@@ -11,11 +11,4 @@
 
 ## Validation
 
-<!-- Record command verdicts and any check not run, with its reason. -->
-
-- `npm run simplify:verify` —
-- `npm test` —
-- `npm run scenes:process` —
-- `npm run scenes:parity` —
-- `npm run scene -- neutrality <baseline>` —
-- `npm run status:verify` —
+Record the verdict of each [validation](../docs/development.md#validation) command and any check not run, with its reason.

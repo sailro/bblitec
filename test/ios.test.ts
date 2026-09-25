@@ -413,6 +413,7 @@ test("iOS SDL entry accepts both generated main signatures and preserves a faili
             `/DBBLITE_IOS_ENTRY="${entry.replaceAll("\\", "/")}"`,
             `/Fo:${directory}/`,
             `/Fe:${executable}`,
+            "/Inative/include",
             `/external:I${join(nativeFixtureVcpkgRoot, "include")}`,
             "/external:W0",
             "native/src/pal_ios_main.cpp",

@@ -1,75 +1,156 @@
 /**
- * Shared backend and artifact conventions.
+ * Shared backend, pose and artifact conventions.
  *
  * Every scene subcommand selects its backend through `resolveBackend`,
- * names its per-backend artifacts through `backendFileToken`, and pairs
- * its capture files through the path helpers here. They live in one
- * module because each drifted when copied: the same backend was spelled
- * `gpu` in parity artifacts and `sdl_gpu` in capture artifacts, and a
- * reader and a writer disagreeing on one filename fails as "no capture".
+ * resolves its pose through `resolvePose`, names its per-backend artifacts
+ * through `backendFileToken`, and writes below one of the `ARTIFACT_ROOTS`.
+ * They live in one module because each drifted when copied: the same
+ * backend was spelled `gpu` in parity artifacts and `sdl_gpu` in capture
+ * artifacts, seek rules differed per command, and `clean --artifacts`
+ * deleted directories its own list forgot.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { selectedCompiledBackend } from "../build-options.js";
+import {
+    compiledSelection,
+    NATIVE_BACKENDS,
+    parseBackendName,
+    type NativeBackend,
+} from "./backends.js";
 import type { ParsedFlags } from "./flags.js";
 
-/**
- * Every backend a measured run can select. One list, because a command
- * that accepted a different set would be measuring something the others
- * cannot.
- */
-export const NATIVE_BACKENDS = ["sdl_gpu", "dawn"] as const;
-
-export type NativeBackend = (typeof NATIVE_BACKENDS)[number];
+// The backend names are this module's vocabulary; the tools import them
+// from here with the rest of it.
+export { NATIVE_BACKENDS, type NativeBackend };
 
 /**
- * A `--backend` value in canonical spelling. Values are `sdl_gpu|dawn`;
- * `gpu` is accepted as an input alias for `sdl_gpu` because that is the
- * token the parity artifacts carry.
+ * Every top-level entry under `artifacts/` a tool of this repository (or
+ * the audit tooling beside it) writes or reads, with its writer. The one
+ * list: writers name their directory through `artifactDirectory`, and
+ * `clean --artifacts` deletes only entries this table does not name. A
+ * name ending in `-` is a prefix family (`ios-vcpkg-min-<codecs>`).
+ * `test/artifact-roots.test.ts` greps the sources for `artifacts/<name>`
+ * and fails on a name missing here.
  */
+export const ARTIFACT_ROOTS = [
+    { name: ".scene-command.lock", owner: "dist lock (src/dist-lock.ts)" },
+    { name: "android", owner: "tools/android.ps1, android:sweep" },
+    { name: "android-vcpkg", owner: "tools/android.ps1 dependency install" },
+    { name: "api-coverage", owner: "npm run api -- report" },
+    { name: "bake-cache", owner: "generation bakes (src/bake-cache.ts)" },
+    { name: "capture", owner: "scene -- capture/diff" },
+    { name: "check", owner: "scene -- check" },
+    { name: "code-quality", owner: "npm run lint:cpp" },
+    { name: "generation-stamps", owner: "scene -- compile" },
+    { name: "ios", owner: "tools/ios.ps1" },
+    { name: "ios-vcpkg", owner: "tools/ios.ps1 dependency install" },
+    { name: "ios-vcpkg-min-", owner: "tools/ios.ps1 trimmed installs" },
+    { name: "memory", owner: "scene -- memory" },
+    {
+        name: "native-cache",
+        owner: "native ccache (native/compiler-cache.cmake)",
+    },
+    { name: "neutrality", owner: "generated-tree neutrality runs" },
+    { name: "parity", owner: "scene -- parity" },
+    { name: "parity-attribution", owner: "scene -- parity --attribute" },
+    { name: "parity-canvas", owner: "canvas-only parity lane" },
+    { name: "physics-constructor-inputs", owner: "physics-viewer generation" },
+    { name: "releases", owner: "demos:release, package:demo" },
+    { name: "scene149-reference", owner: "input of check scene149-transport" },
+    { name: "shader-cache", owner: "offline shader compilation" },
+    { name: "shipping", owner: "demos:release plans and logs" },
+    { name: "status", owner: "scene -- status --run" },
+    { name: "survey", owner: "scene -- survey" },
+    { name: "tools", owner: "pinned dependency builds" },
+    { name: "vcpkg-installed", owner: "shared vcpkg installs" },
+] as const;
+
+type ArtifactRootName = (typeof ARTIFACT_ROOTS)[number]["name"];
+
+/** Whether an `artifacts/` entry belongs to a tool (exact or prefix family). */
+export function isOwnedArtifact(entry: string): boolean {
+    return ARTIFACT_ROOTS.some((root) =>
+        root.name.endsWith("-")
+            ? entry.startsWith(root.name)
+            : entry === root.name,
+    );
+}
+
+/** `artifacts/<root>/<parts...>`, relative to the repository root. */
+export function artifactDirectory(
+    root: Exclude<ArtifactRootName, `${string}-`>,
+    ...parts: string[]
+): string {
+    return join("artifacts", root, ...parts);
+}
+
+/** A `--backend` value selecting one backend, in canonical spelling. */
 export function canonicalBackend(
     value: string,
     command: string,
 ): NativeBackend {
-    const canonical = value === "gpu" ? "sdl_gpu" : value;
-    if (!(NATIVE_BACKENDS as readonly string[]).includes(canonical)) {
-        throw new Error(
-            `${command}: --backend must be ${NATIVE_BACKENDS.join("|")} (got '${value}').`,
-        );
-    }
-    return canonical as NativeBackend;
+    return parseBackendName(value, `${command}: --backend`, false);
 }
 
 /**
- * The backend a run measures: an explicit `--backend` wins, the ambient
- * `BBLITE_GPU_BACKEND` variable is the fallback, SDL_GPU is the default.
- * An explicit flag that disagrees with the ambient variable says so,
- * because a run that silently ignored either one measures the wrong
+ * The ambient runtime selection. The native executable reads the variable
+ * itself and accepts exactly `sdl_gpu` or `dawn`, so any other value is
+ * refused here rather than coerced into a backend the run then measures
+ * with full confidence. Empty means unset, as it does natively.
+ */
+function ambientGpuBackend(): NativeBackend | undefined {
+    const ambient = process.env.BBLITE_GPU_BACKEND;
+    if (ambient === undefined || ambient === "") return undefined;
+    if (ambient === "sdl_gpu" || ambient === "dawn") return ambient;
+    throw new Error(
+        `BBLITE_GPU_BACKEND must be sdl_gpu or dawn (got '${ambient}').`,
+    );
+}
+
+/**
+ * The backend a single-backend run measures: an explicit `--backend` wins,
+ * the ambient `BBLITE_GPU_BACKEND` variable is the fallback, SDL_GPU is the
+ * default. An explicit flag that disagrees with the ambient variable says
+ * so, because a run that silently ignored either one measures the wrong
  * backend with full confidence.
  */
 export function resolveBackend(
     explicit: string | undefined,
     command: string,
 ): NativeBackend {
-    const ambient = process.env.BBLITE_GPU_BACKEND;
-    const ambientBackend =
-        ambient === undefined
-            ? undefined
-            : ambient === "dawn"
-              ? "dawn"
-              : "sdl_gpu";
+    const ambientBackend = ambientGpuBackend();
     if (explicit === undefined) {
         return ambientBackend ?? "sdl_gpu";
     }
     const canonical = canonicalBackend(explicit, command);
     if (ambientBackend !== undefined && ambientBackend !== canonical) {
         console.warn(
-            `--backend ${canonical} overrides ambient BBLITE_GPU_BACKEND=${ambient} for this run.`,
+            `--backend ${canonical} overrides ambient BBLITE_GPU_BACKEND=${ambientBackend} for this run.`,
         );
     }
     return canonical;
 }
 
-/** The optional `--backend` of a measuring command, canonicalized. */
+/**
+ * The backends a measuring command runs when it can run both: an explicit
+ * `--backend` (`both` included), else the ambient `BBLITE_GPU_BACKEND`,
+ * else every backend the development build compiles (`BBLITE_BACKEND`,
+ * both by default).
+ */
+export function measuredBackends(
+    explicit: string | undefined,
+    command: string,
+): NativeBackend[] {
+    const selection =
+        explicit !== undefined
+            ? parseBackendName(explicit, `${command}: --backend`, true)
+            : (ambientGpuBackend() ??
+              compiledSelection(selectedCompiledBackend()));
+    return selection === "both" ? [...NATIVE_BACKENDS] : [selection];
+}
+
+/** The optional `--backend` of a single-backend command, canonicalized. */
 export function optionalBackend(
     parsed: ParsedFlags,
     command: string,
@@ -78,6 +159,29 @@ export function optionalBackend(
     return explicit === undefined
         ? undefined
         : canonicalBackend(explicit, command);
+}
+
+/**
+ * The pose a scene tool renders and captures at: the explicit `--seek`,
+ * else the registry's `referenceTimeSeconds`, else none. `golden` says
+ * whether the committed golden holds that pose — an explicit seek equal to
+ * the registry's is the standard measurement written out — so every tool
+ * decides "comparable to the golden" by the same rule.
+ */
+export interface ScenePose {
+    seekSeconds: number | undefined;
+    golden: boolean;
+}
+
+export function resolvePose(
+    scene: { parity?: { referenceTimeSeconds?: number } | undefined },
+    explicitSeek: number | undefined,
+): ScenePose {
+    const registry = scene.parity?.referenceTimeSeconds;
+    return {
+        seekSeconds: explicitSeek ?? registry,
+        golden: explicitSeek === undefined || explicitSeek === registry,
+    };
 }
 
 /**
@@ -91,32 +195,18 @@ export function backendFileToken(backend: string): string {
 }
 
 /**
- * Point `BBLITE_GPU_BACKEND` at the resolved backend, for this process
- * and every native child it spawns. Deleting it for SDL_GPU matters as
- * much as setting it for Dawn: an ambient `dawn` would otherwise survive
- * into a run whose `--backend sdl_gpu` chose the other one.
- */
-export function applyGpuBackendEnvironment(backend: string): void {
-    if (backend === "dawn") {
-        process.env.BBLITE_GPU_BACKEND = "dawn";
-    } else {
-        delete process.env.BBLITE_GPU_BACKEND;
-    }
-}
-
-/**
  * Where `scene -- capture <id>` lands unless `--capture` (or an
  * `outputDirectory` option) points elsewhere. The browser half, the
- * native half, `scene -- diff`, `scene -- uniforms` and
- * `scene -- compose` all pair through this one directory.
+ * native half and every `scene -- diff` reading (the pairing,
+ * `--uniforms`, `--compose`) pair through this one directory.
  */
 export function defaultCaptureDirectory(sceneId: string): string {
-    return join("artifacts", "capture", sceneId);
+    return artifactDirectory("capture", sceneId);
 }
 
-/** Where `scene -- check <id>` and `scene -- observe <id>` land. */
+/** Where `scene -- check <id>` and its `--observe` half land. */
 export function defaultCheckDirectory(sceneId: string): string {
-    return join("artifacts", "check", sceneId);
+    return artifactDirectory("check", sceneId);
 }
 
 /**
@@ -212,6 +302,61 @@ export function readCaptureMeta(path: string): CaptureMeta | undefined {
 }
 
 /**
+ * Why a browser capture's provenance sidecar does NOT describe the
+ * evidence a reuse path wants, or `undefined` when it does. The one rule
+ * every browser-evidence reuse path applies (`diff`, `diff --compose`,
+ * `diff --uniforms`, `parity --geometry`), in the order the classes are
+ * cheapest to check:
+ *   - no sidecar (a pre-meta capture);
+ *   - a draw filter (`--skip-draw`): a filtered capture is an experiment,
+ *     not evidence;
+ *   - a different pose than requested (`seekSeconds`, `null` = no seek;
+ *     omit it to accept the capture's own pose);
+ *   - no module or pin provenance, another pin, or a scene module that has
+ *     since moved — `moduleSha256` recomputes the served module's digest at
+ *     the capture's own pose, so a scene-source or pinned-package change
+ *     refuses even when the pixels still look plausible.
+ */
+export function captureMetaStaleness(
+    meta: CaptureMeta | undefined,
+    want: {
+        seekSeconds?: number | null;
+        pin: string;
+        moduleSha256: (seekSeconds: number | undefined) => string;
+    },
+): string | undefined {
+    if (meta === undefined) {
+        return "carries no provenance sidecar";
+    }
+    if (meta.drawFilter !== undefined) {
+        return `was captured with a draw filter (--skip-draw ${meta.drawFilter})`;
+    }
+    if (
+        "seekSeconds" in want &&
+        meta.seekSeconds !== (want.seekSeconds ?? null)
+    ) {
+        return "was captured at a different seek";
+    }
+    if (meta.moduleSha256 === undefined) {
+        return "carries no scene-module provenance";
+    }
+    // Checked separately from the module digest because it moves
+    // separately; `CaptureMeta.pin` carries the reason.
+    if (meta.pin === undefined) {
+        return "carries no pinned-package provenance";
+    }
+    if (meta.pin !== want.pin) {
+        return `was captured through ${meta.pin}, not the current pin`;
+    }
+    if (
+        meta.moduleSha256 !== want.moduleSha256(meta.seekSeconds ?? undefined)
+    ) {
+        return "was captured from a different scene module (the scene source, pose, or pinned package moved)";
+    }
+    return undefined;
+}
+
+/**
  * Reads a seek-provenance sidecar back. `null` = captured with no seek;
  * `undefined` = no provenance (a pre-meta or unreadable capture), which
  * reads as unknown and forces a recapture.
@@ -268,8 +413,8 @@ export function captureSeekBracketDirectory(
 /**
  * The three poses `capture --seek-bracket` renders: the exact seek and
  * one frame to either side, so a residual can be judged against the
- * scale of one frame of motion instead of against intuition
- * (docs/debugging.md rung 6). Refuses a plan it cannot mean: a scene
+ * scale of one frame of motion instead of against intuition. Refuses a
+ * plan it cannot mean: a scene
  * with no seek has no motion to bracket, and a seek within one frame of
  * zero would clamp the minus arm to a different step than the plus arm.
  */

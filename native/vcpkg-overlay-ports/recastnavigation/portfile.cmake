@@ -1,25 +1,22 @@
 vcpkg_check_linkage(ONLY_STATIC_LIBRARY)
 
+# The series native/patches/manifest.json selects for this port, with each
+# patch's purpose and upstream state (native/patch-identity.cmake).
+include("${CMAKE_CURRENT_LIST_DIR}/../../patch-identity.cmake")
+bblite_patch_series(recastnavigation BBLITE_RECAST_PATCHES vcpkg)
+
 # The exact source the pinned @recast-navigation/wasm 0.43.x builds:
 # isaac-mason's recastnavigation fork at the commit its build.sh checks
 # out. The browser's navmesh triangulation, query and crowd behaviour
 # come from these sources compiled to WASM, so the native library links
-# the same commit with the compatibility and component-selection patches below.
+# the same commit with the compatibility and component-selection patches.
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO isaac-mason/recastnavigation
     REF 599fd0f023181c0a484df2a18cf1d75a3553852e
     SHA512 6e3a1ac837396eebbbd7cfb1fdd223433aaa498843278ebe8b01613c9a372f87a0b1bc7e7c9deaee63838657acf3b5c0248a90c06313f5a307d7782a59f61674
     HEAD_REF main
-    PATCHES
-        # The one libm call in the build pipeline. musl (the wasm's libc)
-        # computes cosf through double precision; ucrt need not, and a ULP
-        # between the two thresholds would flip a borderline-slope
-        # triangle's walkability. Measured equal on the current corpus —
-        # the patch pins the arithmetic so that stays true for any asset.
-        walkable-threshold-libm.patch
-        optional-components.patch
-        checked-allocations.patch
+    PATCHES ${BBLITE_RECAST_PATCHES}
 )
 
 # The wasm reference is emscripten's strict IEEE float; MSVC's default

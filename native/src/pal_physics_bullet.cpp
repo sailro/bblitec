@@ -16,6 +16,14 @@
  * they happen rather than restated here.
  */
 
+#include <bblite/features/has_physics_character.hpp>
+#include <bblite/features/has_physics_constraints.hpp>
+#include <bblite/features/has_physics_floating_origin.hpp>
+#include <bblite/features/has_physics_heightfield.hpp>
+#include <bblite/features/has_physics_queries.hpp>
+#include <bblite/features/has_physics_trigger.hpp>
+#include <bblite/features/physics_viewer.hpp>
+
 #include "bblite/pal_physics.hpp"
 #include "pal_handle_identity.hpp"
 #include "pal_physics_profile.hpp"
@@ -55,7 +63,7 @@
 #include <LinearMath/btAabbUtil2.h>
 #include <BulletCollision/CollisionShapes/btTriangleShape.h>
 #endif
-#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+#if BBLITE_PHYSICS_VIEWER
 #include <bblite/pal_physics_debug.hpp>
 #endif
 
@@ -145,7 +153,7 @@ struct ShapeMaterial {
 
 struct PhysicsShapeState {
     const std::uint32_t identity = next_handle_identity<PhysicsShapeState, 0x7fffffffu>();
-#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+#if BBLITE_PHYSICS_VIEWER
     PhysicsDebugShapeDescriptor debug_descriptor;
 #endif
     std::vector<PhysicsBodyState*> users;
@@ -1279,7 +1287,7 @@ btTransform translated_frame(btVector3 center) {
  */
 struct Segment {
     btVector3 center;
-    btScalar half_height;
+    btScalar half_height = 0;
 };
 
 Segment segment_from(std::array<double, 3> point_a, std::array<double, 3> point_b) {
@@ -1578,7 +1586,7 @@ void validate_container_children(const PhysicsShapeState& root, const PhysicsSha
 } // namespace
 
 void physics_world_step(PhysicsWorldHandle world, double seconds) {
-#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+#if BBLITE_PHYSICS_VIEWER
     require_runtime_execution("a physics step");
 #endif
     PhysicsWorldState& entry = world_at(world);
@@ -2309,7 +2317,7 @@ namespace {
 template <typename... Inputs>
 PhysicsShapeHandle record_debug_inputs(PhysicsShapeHandle handle, const char* type,
                                        const Inputs&... inputs) {
-#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+#if BBLITE_PHYSICS_VIEWER
     auto& descriptor = handle.ownership->debug_descriptor;
     descriptor.type = type;
     if constexpr (sizeof...(Inputs) > 0) {
@@ -2524,7 +2532,7 @@ PhysicsShapeHandle physics_shape_create_mesh(const std::vector<std::array<double
     entry.triangle_vertices = std::move(triangle_vertices);
     entry.triangle_indices = std::move(triangle_indices);
     entry.triangle_mesh = std::move(triangles);
-#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+#if BBLITE_PHYSICS_VIEWER
     handle.ownership->debug_descriptor.indices = indices;
 #endif
     return handle;
@@ -2573,7 +2581,7 @@ PhysicsShapeHandle physics_shape_create_heightfield(std::uint32_t samples_x,
         }
     auto shape = physics_shape_create_mesh(positions, indices);
     shape.ownership->heightfield = true;
-#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+#if BBLITE_PHYSICS_VIEWER
     shape.ownership->debug_descriptor = {};
 #endif
     return record_debug_inputs(shape, "HEIGHTFIELD", samples_x, samples_z, scale, heights);
@@ -2661,16 +2669,12 @@ void physics_shape_add_child(PhysicsShapeHandle container, PhysicsShapeHandle ch
     parent.children.push_back(child.ownership);
     ++member.container_parents;
     static_cast<btCompoundShape*>(parent.shape.get())->addChildShape(placement, instance);
-#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+#if BBLITE_PHYSICS_VIEWER
     record_debug_inputs(container, "CONTAINER", transform.position, transform.rotation, scale);
     parent.debug_descriptor.children.push_back(member.debug_descriptor);
 #endif
 }
-#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
-PhysicsDebugShapeDescriptor physics_shape_debug_descriptor(PhysicsShapeHandle handle) {
-    return shape_at(handle).debug_descriptor;
-}
-
+#if BBLITE_PHYSICS_VIEWER
 PhysicsDebugGeometry physics_body_debug_geometry(PhysicsBodyHandle handle) {
     const auto& body = body_at(handle);
     if (!body.shape)
@@ -2946,10 +2950,10 @@ double physics_shape_default_mass(PhysicsShapeHandle shape) {
         const double radius = static_cast<const btSphereShape&>(geometry).getRadius();
         volume = 4.0 / 3.0 * SIMD_PI * radius * radius * radius;
     } else if (geometry.getShapeType() == BOX_SHAPE_PROXYTYPE) {
-        volume = entry.authored_box_volume.value();
-        if (volume <= 0)
+        if (!entry.authored_box_volume || *entry.authored_box_volume <= 0)
             throw std::runtime_error(
                 "Default physics mass requires a positive authored box volume.");
+        volume = *entry.authored_box_volume;
     } else if (geometry.getShapeType() == CYLINDER_SHAPE_PROXYTYPE) {
         const auto& cylinder = static_cast<const btCylinderShape&>(geometry);
         const double radius = cylinder.getRadius();

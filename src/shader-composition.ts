@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { ShaderStageConstant } from "./shader-ir.js";
 
-export interface ShaderStageDeclaration {
+interface ShaderStageDeclaration {
     entryPoint: string;
     constants?: readonly ShaderStageConstant[];
 }

@@ -1,11 +1,13 @@
 #pragma once
 
+#include <bblite/features/physics_viewer.hpp>
+
 #include <stdexcept>
 #include <string>
 
 namespace bbl::pal {
 
-#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+#if BBLITE_PHYSICS_VIEWER
 inline thread_local bool extracting_constructor_inputs = false;
 inline void require_runtime_execution(const char* operation) {
     if (extracting_constructor_inputs) {

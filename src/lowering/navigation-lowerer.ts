@@ -19,111 +19,250 @@
  *   pin's merged stream on the nav asset), so the emitted merge passes
  *   the baked positions through, asserted against the pin's own
  *   multiply rows.
- * - `_createNavMeshFromMerged`'s dispatch: the tile-cache and tiled
- *   arms refuse by name (their record plumbing does not exist yet); the
- *   solo arm hands the merged geometry and the present-key config to
- *   the PAL, whose build replays `generateSoloNavMesh` — and the
- *   config defaults the PAL bakes are read from the installed
- *   `@recast-navigation/core` at its exact pinned version, not retyped.
- * - `createDebugNavMeshGeometry` and `raycast` pass through to the PAL
- *   arms that carry their pinned arithmetic; the shapes here assert the
- *   pin still spells them the way those arms do.
+ * - `_createNavMeshFromMerged`'s dispatch: the tiled arm refuses by
+ *   name; the solo and tile-cache arms hand the merged geometry to the
+ *   PAL, whose build replays the generator's library calls over a plan of
+ *   every number the generator computes -- lowered from the installed
+ *   packages by `navigation-build-plan.ts`, under the package versions it
+ *   came from.
+ * - `createDebugNavMeshGeometry` is lowered whole over the PAL's walk
+ *   (`navigation-library.ts`); `raycast` passes through to the PAL arm
+ *   that carries its library calls, and the shapes here assert the pin
+ *   still spells it the way that arm does.
  * - `getClosestPoint`, `createNavCrowd`, `addAgent` and
  *   `getAgentPosition` are the same shape one level up: the wrapper
  *   surface is the PAL's, and what the pinned module adds on top — the
- *   fixed ±1 half-extents, the three `?? N` agent-parameter defaults,
- *   the `{0,0,0}` an absent agent reads as — is emitted here.
+ *   three `?? N` agent-parameter defaults, the `{0,0,0}` an absent agent
+ *   reads as — is emitted here. The query every build arm ends with is the
+ *   wrapper's `NavMeshQuery`: its node pool and default search box are
+ *   read from the installed package with the build defaults, and the
+ *   pinned module's own explicit search box is proved to be that box.
  */
 import ts from "typescript";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { LoweredSource, LoweringContext } from "./context.js";
+import {
+    LoweredSource,
+    LoweringContext,
+    numericValue,
+    propertyName,
+    sharedPinnedContext,
+    unwrapExpression,
+    variableInitializer,
+} from "./context.js";
+import {
+    navigationBuildPlanDeclarations,
+    type NavigationBuildArm,
+    WRAPPER_CORE,
+    wrapperModule,
+    wrapperPackageVersion,
+} from "./navigation-build-plan.js";
+import { navigationDebugGeometryDefinition } from "./navigation-library.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { pinnedOptionFallback } from "./pinned-option-defaults.js";
+import { doubleLiteral } from "../cpp-literals.js";
+import { recordAt } from "../compiler/record-access.js";
+import { featureMacroInclude } from "../feature-macros.js";
+
+const NAVIGATION_MODULE = "src/navigation/navigation.ts";
 
 /**
- * `recastConfigDefaults` from the installed `@recast-navigation/core`,
- * pinned exact in package.json. The PAL bakes these numbers; reading
- * them from the package keeps them flowing from the pin rather than
- * living twice.
+ * `NavMeshQuery`'s own defaults, from the installed core package: the
+ * `params?.maxNodes ?? <n>` its constructor initializes the Detour query
+ * with; its `defaultQueryHalfExtents` field, the box every query that
+ * names none searches (`computePath`'s endpoints, a crowd agent's move
+ * target); and the corridor and straight-path capacities and straight-path
+ * options `computePath` runs with when, as the pinned module's call does,
+ * it is handed no options.
  */
-function pinnedRecastConfigDefaults(): ReadonlyMap<string, number> {
-    return wrapperNumericDefaults(
-        "recastConfigDefaults",
-        "@recast-navigation/core/dist/index.mjs",
+function pinnedNavMeshQueryDefaults(): {
+    maxNodes: number;
+    halfExtents: readonly [number, number, number];
+    maxPathPolys: number;
+    maxStraightPathPoints: number;
+    straightPathOptions: number;
+} {
+    const file = wrapperModule(WRAPPER_CORE);
+    const query = file.statements.find(
+        (statement): statement is ts.ClassDeclaration =>
+            ts.isClassDeclaration(statement) &&
+            statement.name?.text === "NavMeshQuery",
     );
+    const extents = query?.members.find(
+        (member): member is ts.PropertyDeclaration =>
+            ts.isPropertyDeclaration(member) &&
+            propertyName(member.name) === "defaultQueryHalfExtents",
+    )?.initializer;
+    const constructor = query?.members.find(ts.isConstructorDeclaration);
+    const method = (name: string): ts.MethodDeclaration | undefined =>
+        query?.members.find(
+            (member): member is ts.MethodDeclaration =>
+                ts.isMethodDeclaration(member) &&
+                propertyName(member.name) === name,
+        );
+    const computePath = method("computePath");
+    const findStraightPath = method("findStraightPath");
+    if (!extents || !constructor || !computePath || !findStraightPath) {
+        throw new Error(
+            `${WRAPPER_CORE} no longer declares NavMeshQuery with a ` +
+                "defaultQueryHalfExtents field, a constructor, computePath " +
+                "and findStraightPath.",
+        );
+    }
+    const context = sharedPinnedContext();
+    // The pinned module passes computePath no options, so its straight-path
+    // capacity is `undefined` and findStraightPath's own default applies.
+    const { declaration: pinnedComputePath } = context.functionDeclaration(
+        NAVIGATION_MODULE,
+        "computePath",
+    );
+    context.assertExpressionShape(
+        context.variableInitializer(pinnedComputePath, "res"),
+        "q.computePath(startSnap.point, endSnap.point)",
+        "The pinned computePath's query",
+    );
+    context.assertExpressionShape(
+        context.variableInitializer(computePath, "maxStraightPathPoints"),
+        "options?.maxStraightPathPoints",
+        "NavMeshQuery.computePath's straight-path capacity",
+    );
+    const fallback = (scope: ts.Node, local: string): number =>
+        numericValue(pinnedOptionFallback(context, scope, { local }), file);
+    const label = "NavMeshQuery.defaultQueryHalfExtents";
+    return {
+        maxNodes: numericValue(
+            pinnedOptionFallback(context, constructor, { member: "maxNodes" }),
+            file,
+        ),
+        halfExtents: vectorLanes(numericObject(extents, file, label), label),
+        maxPathPolys: fallback(computePath, "maxPathPolys"),
+        maxStraightPathPoints: fallback(
+            findStraightPath,
+            "maxStraightPathPoints",
+        ),
+        straightPathOptions: fallback(findStraightPath, "straightPathOptions"),
+    };
+}
+
+/** An `{ x, y, z }` record's three numbers, refusing any other key set. */
+function vectorLanes(
+    lanes: ReadonlyMap<string, number>,
+    label: string,
+): readonly [number, number, number] {
+    const [x, y, z] = (["x", "y", "z"] as const).map((axis) => lanes.get(axis));
+    if (
+        lanes.size !== 3 ||
+        x === undefined ||
+        y === undefined ||
+        z === undefined
+    ) {
+        throw new Error(`${label} is no longer an { x, y, z } of numbers.`);
+    }
+    return [x, y, z];
 }
 
 /**
- * `tileCacheGeneratorConfigDefaults`' own three, which live in the
- * generators package rather than core.
- *
- * It spreads `recastConfigDefaults` and then adds `tileSize`,
- * `expectedLayersPerTile` and `maxObstacles`; a spread carries no property
- * assignment, so what this reads is exactly the arm's own.
+ * The query every build arm ends by constructing, as the PAL takes it
+ * (`bbl::pal::NavQueryDefaults`), read from the installed core package and
+ * stamped with its version.
  */
-function pinnedTileCacheDefaults(): ReadonlyMap<string, number> {
-    return wrapperNumericDefaults(
-        "tileCacheGeneratorConfigDefaults",
-        "@recast-navigation/generators/dist/index.mjs",
-    );
+export function navigationQueryDefaultsDeclaration(): string {
+    const query = pinnedNavMeshQueryDefaults();
+    return `/**
+ * \`NavMeshQuery\`'s \`maxNodes\`, \`defaultQueryHalfExtents\` and the
+ * \`computePath\` capacities and options from
+ * @recast-navigation/core@${wrapperPackageVersion("@recast-navigation/core")}, read from the installed package.
+ */
+inline constexpr bbl::pal::NavQueryDefaults navigation_query_defaults{
+    .max_nodes = ${doubleLiteral(query.maxNodes)},
+    .half_extents = {${query.halfExtents.map(doubleLiteral).join(", ")}},
+    .max_path_polys = ${doubleLiteral(query.maxPathPolys)},
+    .max_straight_path_points = ${doubleLiteral(query.maxStraightPathPoints)},
+    .straight_path_options = ${doubleLiteral(query.straightPathOptions)},
+};`;
 }
+
+/**
+ * The PAL `NavAgentParams` byte field each `AgentParameters` flag lands
+ * in. Which of them the pinned `addAgent` defaults, and to what, is its
+ * own: `pinnedAgentParamDefaults` reads them.
+ */
+const AGENT_BYTE_FIELDS: ReadonlyMap<string, string> = new Map([
+    ["updateFlags", "update_flags"],
+    ["obstacleAvoidanceType", "obstacle_avoidance_type"],
+    ["queryFilterType", "query_filter_type"],
+]);
+
+let agentDefaults: readonly (readonly [string, string, number])[] | undefined;
 
 /**
  * The `AgentParameters` fields the pinned `addAgent` resolves with a
  * `?? <default>` before the wrapper's spread ever sees them: the pinned
- * name, the PAL field it lands in, and the number.
- *
- * One copy for both ends, the shape `pinned-material-defaults.ts`
- * already holds for the UBO writers' discarded fallbacks.
- * `intrinsics/navigation.ts` emits these numbers, and `lowerNavigation`
- * builds its pinned-expression assertion out of the same entries — so a
- * moved number fails generation instead of splitting the two sides.
+ * name, the PAL field it lands in, and the pin's number, read from each
+ * `<name>: params.<name> ?? <N>` property of its `agentParams` record.
+ * `intrinsics/navigation.ts` emits these numbers where a scene leaves
+ * the field out.
  */
-export const PINNED_AGENT_PARAM_DEFAULTS: readonly (readonly [
+export function pinnedAgentParamDefaults(): readonly (readonly [
     string,
     string,
     number,
-])[] = [
-    ["updateFlags", "update_flags", 7],
-    ["obstacleAvoidanceType", "obstacle_avoidance_type", 0],
-    ["queryFilterType", "query_filter_type", 0],
-];
+])[] {
+    if (agentDefaults) return agentDefaults;
+    const context: LoweringContext = sharedPinnedContext();
+    const { file, declaration } = context.functionDeclaration(
+        NAVIGATION_MODULE,
+        "addAgent",
+    );
+    const agentParams = context.objectInitializer(declaration, "agentParams");
+    const defaults: (readonly [string, string, number])[] = [];
+    for (const property of agentParams.properties) {
+        if (!ts.isPropertyAssignment(property)) continue;
+        const nullish = context.nullishDefault(property.initializer);
+        if (!nullish) continue;
+        const name = context.propertyName(property.name);
+        const path = context.propertyPath(nullish.left);
+        const field = name ? AGENT_BYTE_FIELDS.get(name) : undefined;
+        if (!name || path?.join(".") !== `params.${name}` || !field) {
+            context.contractError(
+                property,
+                "Expected addAgent to default only the agent parameter " +
+                    `bytes [${[...AGENT_BYTE_FIELDS.keys()].join(", ")}], ` +
+                    "each from its own params field.",
+            );
+        }
+        defaults.push([name, field, context.numericValue(nullish.right, file)]);
+    }
+    if (defaults.length !== AGENT_BYTE_FIELDS.size) {
+        context.contractError(
+            agentParams,
+            "Expected addAgent to default every agent parameter byte " +
+                `[${[...AGENT_BYTE_FIELDS.keys()].join(", ")}].`,
+        );
+    }
+    agentDefaults = defaults;
+    return defaults;
+}
 
 function wrapperNumericDefaults(
     variableName: string,
     moduleSpecifier: string,
 ): ReadonlyMap<string, number> {
-    const require = createRequire(import.meta.url);
-    const modulePath = require.resolve(moduleSpecifier);
-    const file = ts.createSourceFile(
-        modulePath,
-        readFileSync(modulePath, "utf8"),
-        ts.ScriptTarget.Latest,
-        true,
+    const file = wrapperModule(moduleSpecifier);
+    return numericObject(
+        variableInitializer(file, variableName),
+        file,
+        `${moduleSpecifier}'s ${variableName}`,
     );
-    let literal: ts.ObjectLiteralExpression | undefined;
-    const visit = (node: ts.Node): void => {
-        if (literal) {
-            return;
-        }
-        if (
-            ts.isVariableDeclaration(node) &&
-            ts.isIdentifier(node.name) &&
-            node.name.text === variableName &&
-            node.initializer &&
-            ts.isObjectLiteralExpression(node.initializer)
-        ) {
-            literal = node.initializer;
-            return;
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(file);
-    if (!literal) {
-        throw new Error(
-            `${moduleSpecifier} no longer declares ${variableName} as an ` +
-                "object literal.",
-        );
+}
+
+/** An object literal of plain numeric properties, by key. */
+function numericObject(
+    initializer: ts.Expression,
+    file: ts.SourceFile,
+    label: string,
+): ReadonlyMap<string, number> {
+    const literal = unwrapExpression(initializer);
+    if (!ts.isObjectLiteralExpression(literal)) {
+        throw new Error(`${label} is no longer an object literal.`);
     }
     const defaults = new Map<string, number>();
     for (const property of literal.properties) {
@@ -135,14 +274,14 @@ function wrapperNumericDefaults(
         }
         if (
             !ts.isPropertyAssignment(property) ||
-            !ts.isIdentifier(property.name) ||
-            !ts.isNumericLiteral(property.initializer)
+            !ts.isIdentifier(property.name)
         ) {
-            throw new Error(
-                `${variableName} no longer holds plain numeric defaults.`,
-            );
+            throw new Error(`${label} no longer holds plain numeric defaults.`);
         }
-        defaults.set(property.name.text, Number(property.initializer.text));
+        defaults.set(
+            property.name.text,
+            numericValue(property.initializer, file),
+        );
     }
     return defaults;
 }
@@ -157,62 +296,8 @@ export class NavigationLowerer {
      * rather than a run-time test of a fact already settled.
      */
     public lowerNavigation(tileCache: boolean): LoweredSource {
-        const modulePath = "src/navigation/navigation.ts";
+        const modulePath = NAVIGATION_MODULE;
         const symbolName = "createNavMesh";
-
-        // The PAL bakes `recastConfigDefaults`; this is the drift gate.
-        // A bumped @recast-navigation that moves a default fails
-        // generation here, naming the constant to move in
-        // pal_navigation_recast.cpp.
-        const bakedDefaults: readonly (readonly [string, number])[] = [
-            ["borderSize", 0],
-            ["tileSize", 0],
-            ["cs", 0.2],
-            ["ch", 0.2],
-            ["walkableSlopeAngle", 60],
-            ["walkableHeight", 2],
-            ["walkableClimb", 2],
-            ["walkableRadius", 0.5],
-            ["maxEdgeLen", 12],
-            ["maxSimplificationError", 1.3],
-            ["minRegionArea", 8],
-            ["mergeRegionArea", 20],
-            ["maxVertsPerPoly", 6],
-            ["detailSampleDist", 6],
-            ["detailSampleMaxError", 1],
-        ];
-        const packageDefaults = pinnedRecastConfigDefaults();
-        for (const [key, baked] of bakedDefaults) {
-            if (packageDefaults.get(key) !== baked) {
-                throw new Error(
-                    `@recast-navigation/core's recastConfigDefaults.${key} ` +
-                        `is ${packageDefaults.get(key)}, but ` +
-                        `pal_navigation_recast.cpp bakes ${baked}. Move ` +
-                        `the PAL constant with the package.`,
-                );
-            }
-        }
-        if (packageDefaults.size !== bakedDefaults.length) {
-            throw new Error(
-                "recastConfigDefaults grew a key the PAL does not bake.",
-            );
-        }
-
-        // The tile-cache arm's own default, gated the same way. Only one of
-        // that table's three reaches the PAL: `tileSize` and `maxObstacles`
-        // are what generation proves before the arm is chosen at all, so a
-        // default for either would answer a question already asked.
-        const tileCacheDefaults = pinnedTileCacheDefaults();
-        if (tileCacheDefaults.get("expectedLayersPerTile") !== 4) {
-            throw new Error(
-                "@recast-navigation/generators' " +
-                    "tileCacheGeneratorConfigDefaults." +
-                    "expectedLayersPerTile is " +
-                    `${tileCacheDefaults.get("expectedLayersPerTile")}, ` +
-                    "but pal_navigation_recast.cpp bakes 4. Move the PAL " +
-                    "constant with the package.",
-            );
-        }
 
         // _mergeMeshes: the world multiply rows and the winding reversal
         // the emitted merge folds. The pin's worldMatrix is applied as
@@ -354,7 +439,7 @@ export class NavigationLowerer {
             }
         }
 
-        // getClosestPoint: the fixed ±1 half-extents and the point read
+        // getClosestPoint: the pinned half-extents and the point read
         // straight off the result. The pin inspects no status here —
         // `findClosestPointWithin` is the arm that does — so the
         // emitted wrapper passes the PAL's point through the same way.
@@ -367,14 +452,30 @@ export class NavigationLowerer {
             "plugin._navMeshQuery.findClosestPoint(position, { halfExtents: _tmpHalfExtents })",
             "Closest-point query",
         );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(
-                this.context.sourceFile(modulePath),
-                "_tmpHalfExtents",
-            ),
-            "{ x: 1, y: 1, z: 1 }",
-            "Closest-point half extents",
+        // The pinned module names its own box, `_tmpHalfExtents`, at every
+        // query it makes; the PAL searches the one box the wrapper's query
+        // defaults to, which is only the pin's while the two agree.
+        const navigationFile = this.context.sourceFile(modulePath);
+        const pinnedBox = this.context.variableInitializer(
+            navigationFile,
+            "_tmpHalfExtents",
         );
+        const pinnedExtents = vectorLanes(
+            numericObject(pinnedBox, navigationFile, "_tmpHalfExtents"),
+            "_tmpHalfExtents",
+        );
+        const wrapperExtents = pinnedNavMeshQueryDefaults().halfExtents;
+        if (
+            pinnedExtents.some((lane, index) => lane !== wrapperExtents[index])
+        ) {
+            this.context.contractError(
+                pinnedBox,
+                `The pinned navigation queries search [${pinnedExtents.join(", ")}] ` +
+                    "but NavMeshQuery.defaultQueryHalfExtents is " +
+                    `[${wrapperExtents.join(", ")}], the one box the PAL ` +
+                    "searches.",
+            );
+        }
         for (const lane of ["x", "y", "z"] as const) {
             this.context.expectShapeCount(
                 closestPoint,
@@ -396,7 +497,9 @@ export class NavigationLowerer {
         );
 
         // addAgent: the three `?? N` defaults the pinned module resolves
-        // before the wrapper sees them, and the index it hands back.
+        // before the wrapper sees them -- read off these same sites by
+        // `pinnedAgentParamDefaults`, which refuses a shape it does not
+        // know -- and the index it hands back.
         const { declaration: addAgent } = this.context.functionDeclaration(
             modulePath,
             "addAgent",
@@ -405,17 +508,7 @@ export class NavigationLowerer {
             addAgent,
             "agentParams",
         );
-        // The shapes are built FROM the shared table rather than typed
-        // beside it, so the numbers the intrinsic emits and the numbers
-        // the pin resolves are one copy: moving a table entry changes
-        // the expression asserted here and fails against the pin.
-        for (const [name, , value] of PINNED_AGENT_PARAM_DEFAULTS) {
-            this.context.assertExpressionShape(
-                this.context.propertyInitializer(agentParams, name),
-                `params.${name} ?? ${value}`,
-                `Agent parameter '${name}'`,
-            );
-        }
+        pinnedAgentParamDefaults();
         this.context.assertExpressionShape(
             this.context.propertyInitializer(agentParams, "userData"),
             "0",
@@ -436,7 +529,7 @@ export class NavigationLowerer {
         );
         for (const key of wrapperNumericDefaults(
             "crowdAgentParamsDefaults",
-            "@recast-navigation/core/dist/index.mjs",
+            WRAPPER_CORE,
         ).keys()) {
             if (!suppliedAgentKeys.has(key)) {
                 throw new Error(
@@ -469,28 +562,6 @@ export class NavigationLowerer {
             "{ x: 0, y: 0, z: 0 }",
             "the absent-agent position fallback",
         );
-
-        // createDebugNavMeshGeometry: the PAL arm carries the detached
-        // rebuild; the pinned reversed storage (a, c, b) is the shape a
-        // drift would silently break, so it is pinned here through the
-        // store order.
-        const { declaration: debugGeometry } = this.context.functionDeclaration(
-            modulePath,
-            "createDebugNavMeshGeometry",
-        );
-        if (
-            !this.context.hasNode(
-                debugGeometry,
-                (node) =>
-                    ts.isPropertyAccessExpression(node) &&
-                    node.name.text === "getNavMeshPositionsAndIndices",
-            )
-        ) {
-            this.context.contractError(
-                debugGeometry,
-                "Expected the debug walk to read getNavMeshPositionsAndIndices.",
-            );
-        }
 
         // The obstacle surface belongs to the tile cache: a solo
         // build has no cache for it to act on, so a scene that did
@@ -566,14 +637,20 @@ void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
 `
             : "";
 
+        const arm: NavigationBuildArm = tileCache ? "tileCache" : "solo";
         return {
             modulePath,
             symbolName,
             header: pinnedHeader(
                 [
+                    "<bblite/js_data.hpp>",
                     "<bblite/pal_navigation.hpp>",
+                    "<bblite/pinned_records.hpp>",
                     "<bblite/runtime.hpp>",
                     "",
+                    "<cmath>",
+                    "<cstdint>",
+                    "<type_traits>",
                     "<vector>",
                 ],
                 `
@@ -584,6 +661,8 @@ void create_nav_mesh(
     const std::vector<MeshHandle>& meshes,
     const bbl::pal::NavMeshBuildParams& params);
 ${obstacleDeclarations}
+${navigationQueryDefaultsDeclaration()}
+${navigationBuildPlanDeclarations([arm])}
 bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
     bbl::pal::NavigationHandle plugin);
 struct NavRaycastResult {
@@ -622,6 +701,7 @@ Vec3d get_agent_position(
 `,
             ),
             source: `// ${this.context.provenance(modulePath, symbolName, "createNavigationPluginAsync, createDebugNavMeshGeometry, raycast")}
+#include <${featureMacroInclude("BBLITE_HAS_NAV_CROWD")}>
 #include <bblite/upstream/navigation.hpp>
 // The merge composes each caster's own world through the one emitted
 // composition every consumer reads, so a mesh that gained a transform-node
@@ -633,6 +713,7 @@ Vec3d get_agent_position(
 #include <cstddef>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace bbl::upstream {
 
@@ -643,18 +724,7 @@ bbl::pal::NavigationHandle create_navigation_plugin() {
 // src/scene/world-matrix-state.ts composeTrsLocalMatrix +
 // _mergeMeshes: the pin multiplies each mesh's CPU positions through
 // its worldMatrix and reverses the winding (i, i+2, i+1) over a running
-// vertex base. What differs here is only where that world already is,
-// which the geometry records as its vertex space.
-//
-// VertexSpace::world is the glTF loader's static arm: it baked the
-// mirrored node world into every position — measured on nav_test.glb,
-// each baked position equals the pin's stream value — so the rows are
-// the identity and the positions pass through, and a scene-code TRS on
-// top would need composing that world again, so it refuses.
-// VertexSpace::local keeps the transform on the record, exactly as the
-// pin keeps _cpuPositions local, so the rows are the composed TRS
-// above. VertexSpace::mirrored_local carries half a world and the node
-// matrix arrives per draw, so it refuses by name.
+// vertex base.
 void create_nav_mesh(
     Engine& engine,
     bbl::pal::NavigationHandle plugin,
@@ -666,7 +736,7 @@ void create_nav_mesh(
         if (handle.value >= engine.meshes.size()) {
             throw std::runtime_error("Invalid mesh handle for navmesh");
         }
-        const MeshRecord& mesh = engine.meshes[handle.value];
+        const MeshRecord& mesh = ${recordAt("engine.meshes", "handle")};
         if (mesh.geometry >= engine.geometries.size()) {
             throw std::runtime_error(
                 "Mesh '" + mesh.name +
@@ -674,51 +744,20 @@ void create_nav_mesh(
         }
         const ModelGeometry& geometry =
             engine.geometries[mesh.geometry];
-        if (geometry.vertex_space == VertexSpace::mirrored_local) {
-            throw std::runtime_error(
-                "createNavMesh is lowered for meshes whose vertices are "
-                "local or fully world-baked; mesh '" + mesh.name +
-                "' is animated or instanced, so its node matrix reaches "
-                "the draw rather than its geometry.");
-        }
-        const bool baked_world =
-            geometry.vertex_space == VertexSpace::world;
-        if (baked_world &&
-            (mesh.position.x != 0.0f || mesh.position.y != 0.0f ||
-             mesh.position.z != 0.0f ||
-             mesh.rotation.x != 0.0f || mesh.rotation.y != 0.0f ||
-             mesh.rotation.z != 0.0f ||
-             mesh.has_rotation_quaternion ||
-             mesh.scaling.x != 1.0f || mesh.scaling.y != 1.0f ||
-             mesh.scaling.z != 1.0f)) {
-            throw std::runtime_error(
-                "createNavMesh is lowered for imported meshes at their "
-                "loaded transform; mesh '" + mesh.name +
-                "' carries scene-code TRS on top of a baked world, "
-                "which the merge does not compose.");
-        }
         merged.positions.reserve(
             merged.positions.size() +
             geometry.vertices.size() * 3);
-        if (baked_world) {
-            for (const ModelVertex& vertex : geometry.vertices) {
-                merged.positions.push_back(vertex.position.x);
-                merged.positions.push_back(vertex.position.y);
-                merged.positions.push_back(vertex.position.z);
-            }
-        } else {
-            const std::array<float, 16> wm = upstream::mesh_world_matrix(engine, mesh);
-            for (const ModelVertex& vertex : geometry.vertices) {
-                const double x = vertex.position.x;
-                const double y = vertex.position.y;
-                const double z = vertex.position.z;
-                merged.positions.push_back(static_cast<float>(
-                    x * wm[0] + y * wm[4] + z * wm[8] + wm[12]));
-                merged.positions.push_back(static_cast<float>(
-                    x * wm[1] + y * wm[5] + z * wm[9] + wm[13]));
-                merged.positions.push_back(static_cast<float>(
-                    x * wm[2] + y * wm[6] + z * wm[10] + wm[14]));
-            }
+        const std::array<float, 16> wm = upstream::mesh_world_matrix(engine, mesh);
+        for (const ModelVertex& vertex : geometry.vertices) {
+            const double x = vertex.position.x;
+            const double y = vertex.position.y;
+            const double z = vertex.position.z;
+            merged.positions.push_back(static_cast<float>(
+                x * wm[0] + y * wm[4] + z * wm[8] + wm[12]));
+            merged.positions.push_back(static_cast<float>(
+                x * wm[1] + y * wm[5] + z * wm[9] + wm[13]));
+            merged.positions.push_back(static_cast<float>(
+                x * wm[2] + y * wm[6] + z * wm[10] + wm[14]));
         }
         merged.indices.reserve(
             merged.indices.size() + geometry.indices.size());
@@ -738,10 +777,15 @@ void create_nav_mesh(
     // and the arm it proved is the one emitted -- so a scene that builds a
     // cache carries no solo call, and one that does not carries neither
     // the tile-cache call nor the obstacle surface behind it.
-    bbl::pal::navigation_create_${
-        tileCache ? "tile_cache_nav_mesh" : "solo_nav_mesh"
-    }(
-        plugin, merged, params);
+    ${
+        tileCache
+            ? `bbl::pal::navigation_create_tile_cache_nav_mesh(
+        plugin, merged, tile_cache_nav_mesh_build(merged, params),
+        navigation_query_defaults);`
+            : `bbl::pal::navigation_create_solo_nav_mesh(
+        plugin, merged, solo_nav_mesh_build(merged, params),
+        navigation_query_defaults);`
+    }
 }
 
 /** A double the port carries, at the float width the seam takes. */
@@ -754,10 +798,7 @@ bbl::pal::NavVec3 nav_vec3(Vec3d value) {
 
 ${obstacleDefinitions}
 
-bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
-    bbl::pal::NavigationHandle plugin) {
-    return bbl::pal::navigation_debug_geometry(plugin);
-}
+${navigationDebugGeometryDefinition(this.context)}
 
 // raycast: the PAL answers the pinned hit window; the hit point is
 // the pinned lerp, in doubles as JavaScript computes it from the f32
@@ -789,7 +830,8 @@ NavRaycastResult nav_raycast(
 }
 
 // getClosestPoint: the PAL runs the wrapper's two-call query at the
-// pinned ±1 half-extents and the point is read straight off it. The pin
+// pinned half-extents, which generation proved are the wrapper's default
+// box, and the point is read straight off it. The pin
 // inspects no status — its own comment says a position with nothing
 // nearby returns an unspecified point — so the failure arm passes the
 // PAL's zeroed buffer through rather than inventing a signal the scene
@@ -809,7 +851,7 @@ Vec3d nav_closest_point(
 // findClosestPoint before handing them to the query, whose own
 // computePath then resolves a polygon for each again. Both steps are the
 // pin's, and the first is not redundant -- not because the half-extents
-// differ (both are the same +-1) but because findClosestPoint is
+// differ (generation proved both boxes the same) but because findClosestPoint is
 // findNearestPoly PLUS closestPointOnPoly, so it projects an endpoint
 // onto its polygon before the corridor search sees it. A failed query is
 // an EMPTY path here, which is what the pin returns when its own result

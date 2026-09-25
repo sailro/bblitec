@@ -48,6 +48,7 @@ import {
 } from "../compiler/assets.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const DATA_MODULE = "src/loader-splat/splat-data.ts";
 const SORT_MODULE = "src/loader-splat/splat-sort-core.ts";
@@ -190,20 +191,7 @@ export class SplatLowerer {
      * rather than repeated: a changed stride changes every offset below it.
      */
     private rowLength(): number {
-        return this.pinnedNumber(DATA_MODULE, "ROW_LENGTH");
-    }
-
-    /** A module-local numeric constant, read from its own declaration. */
-    private pinnedNumber(modulePath: string, name: string): number {
-        const file = this.context.sourceFile(modulePath);
-        const initializer = this.context.variableInitializer(file, name);
-        if (!ts.isNumericLiteral(initializer)) {
-            return this.context.contractError(
-                initializer,
-                `Expected ${name} to be a numeric literal.`,
-            );
-        }
-        return Number(initializer.text);
+        return this.context.pinnedNumber(DATA_MODULE, "ROW_LENGTH");
     }
 
     /**
@@ -702,7 +690,7 @@ ${body}
      * next bump.
      */
     private sortEpsilon(): string {
-        return String(this.pinnedNumber(SORT_MODULE_MESH, "SORT_EPS"));
+        return String(this.context.pinnedNumber(SORT_MODULE_MESH, "SORT_EPS"));
     }
 
     /**
@@ -812,11 +800,23 @@ ${body}
             );
         }
         // Exactly the statements that touch the block, in the pin's order.
-        const writes = update.body.statements.filter(
-            (statement) =>
-                ts.isExpressionStatement(statement) &&
-                statement.expression.getText(file).startsWith("cpu"),
-        );
+        // `cpu[k] = ...` and `cpu.set(...)`: a statement whose target is
+        // the mirror itself.
+        const writes = update.body.statements.filter((statement) => {
+            if (!ts.isExpressionStatement(statement)) return false;
+            const expression = statement.expression;
+            const target = ts.isBinaryExpression(expression)
+                ? expression.left
+                : ts.isCallExpression(expression)
+                  ? expression.expression
+                  : expression;
+            const owner =
+                ts.isElementAccessExpression(target) ||
+                ts.isPropertyAccessExpression(target)
+                    ? target.expression
+                    : target;
+            return ts.isIdentifier(owner) && owner.text === "cpu";
+        });
         // The SH hook writes the same seven plus the four eye-position
         // lanes its wider block carries; either count is the whole set of
         // statements that touch the mirror, so a pin that adds one refuses
@@ -851,6 +851,71 @@ ${body}
                 `std::copy(${source}.begin(), ${source}.end(), ` +
                 `${receiver}.begin() + static_cast<std::ptrdiff_t>(${offset}))`,
         });
+    }
+
+    /**
+     * The splat renderable's update hook opens with `const cam =
+     * scene.camera; if (!cam) return;`: a scene without an active camera
+     * writes no UBO, uploads no order and posts no sort that frame. Lowered
+     * as the predicate both backends' update runs first.
+     */
+    private lowerUpdateGuard(): string {
+        const file = this.context.sourceFile(this.pipelineModule);
+        const update = this.context.findNodes(
+            file,
+            (
+                node,
+            ): node is ts.VariableDeclaration & {
+                initializer: ts.ArrowFunction;
+            } =>
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === "update" &&
+                node.initializer !== undefined &&
+                ts.isArrowFunction(node.initializer),
+        )[0]?.initializer;
+        const statements =
+            update && ts.isBlock(update.body) ? update.body.statements : [];
+        const camera = statements[0];
+        const guard = statements[1];
+        if (
+            !camera ||
+            !ts.isVariableStatement(camera) ||
+            !this.context.expressionMatchesShape(
+                this.context.variableInitializer(camera, "cam"),
+                "scene.camera",
+            ) ||
+            !guard ||
+            !ts.isIfStatement(guard) ||
+            guard.elseStatement !== undefined ||
+            !ts.isBlock(guard.thenStatement) ||
+            guard.thenStatement.statements.length !== 1 ||
+            !ts.isReturnStatement(guard.thenStatement.statements[0]!) ||
+            guard.thenStatement.statements[0].expression !== undefined
+        ) {
+            return this.context.contractError(
+                update ?? file,
+                "Expected the splat update hook to read scene.camera and return without one.",
+            );
+        }
+        const returns = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                [
+                    "cam",
+                    {
+                        cpp: "camera",
+                        type: "opaque",
+                        absentCpp: "camera == nullptr",
+                    },
+                ],
+            ]),
+            calls: new Map(),
+        }).expression(guard.expression);
+        return `// ${this.context.provenance(this.pipelineModule, "buildGaussianSplattingRenderable")}
+/** Whether the splat update returns before its work: its scene has no camera. */
+inline bool splat_update_returns(const CameraRecord* camera) {
+    return ${returns};
+}`;
     }
 
     /**
@@ -1002,7 +1067,7 @@ ${body}
         });
         return `// ${this.context.provenance(SORT_MODULE_MESH, "createGaussianSplattingMesh.updateData")}
 js::ArrayBuffer splat_data(const Engine& engine, SplatMeshHandle splat) {
-    const auto& retained = engine.splat_meshes[splat.value].splats_data;
+    const auto& retained = ${recordAt("engine.splat_meshes", "splat")}.splats_data;
     if (!retained) {
         throw std::runtime_error("The splat source buffer was not retained by this scene.");
     }
@@ -1016,7 +1081,7 @@ void update_splat_data(
     if (!buffer.retains_storage()) {
         throw std::runtime_error("updateData requires retained ArrayBuffer storage; borrowed native vectors cannot outlive their producer.");
     }
-    SplatMeshRecord& mesh = engine.splat_meshes[splat.value];
+    SplatMeshRecord& mesh = ${recordAt("engine.splat_meshes", "splat")};
     upstream::SplatGeometry geometry = upstream::build_splat_geometry(
         std::span<const std::uint8_t>(buffer.data(), buffer.byte_length()));
     if (${numeric.expression(guard.expression)}) {
@@ -1106,7 +1171,7 @@ void update_splat_data(
     // four the stock one reads. They package to a sidecar named off the
     // row buffer, because the row file is upstream's own .splat layout.
     SplatMeshRecord& record =
-        scene.engine->splat_meshes[handle.value];
+        ${recordAt("scene.engine->splat_meshes", "handle")};
     record.sh_degree = upstream::splat_sh_degree;
     record.sh_textures = upstream::build_splat_sh_textures(
         pal::read_binary_file(path + "${SPLAT_HARMONICS_SUFFIX}"),
@@ -1282,7 +1347,7 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
     const SplatMeshHandle handle = load_splat(scene, path);
     // The one lane ${symbol} writes on the cloud it attached, observed by
     // running that loader at generation rather than restated here.
-    scene.engine->splat_meshes[handle.value].rotation =
+    ${recordAt("scene.engine->splat_meshes", "handle")}.rotation =
         Vec3{${this.context.floatLiteral(x)}, ${this.context.floatLiteral(
             y,
         )}, ${this.context.floatLiteral(z)}};
@@ -1405,12 +1470,20 @@ SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
         // its per-texture window and the scatter that fills it.
         const packing: ts.Statement[] = [];
         for (const statement of loop.statement.statements) {
-            if (
+            const initializer =
                 ts.isVariableStatement(statement) &&
-                (statement.declarationList.declarations[0]?.initializer
-                    ?.getText(file)
-                    .includes("device.createTexture") ??
-                    false)
+                statement.declarationList.declarations[0]?.initializer;
+            if (
+                initializer &&
+                this.context.hasNode(
+                    initializer,
+                    (node) =>
+                        ts.isCallExpression(node) &&
+                        this.context
+                            .propertyPath(node.expression)
+                            ?.slice(-2)
+                            .join(".") === "device.createTexture",
+                )
             ) {
                 break;
             }
@@ -1839,7 +1912,10 @@ ${writes.join("\n")}
     public lowerBake(): LoweredSource {
         const symbolName = "bakeTransformIntoVertices";
         const { file, declaration } = this.declaration(BAKE_MODULE, symbolName);
-        const bakeRowLength = this.pinnedNumber(BAKE_MODULE, "ROW_LENGTH");
+        const bakeRowLength = this.context.pinnedNumber(
+            BAKE_MODULE,
+            "ROW_LENGTH",
+        );
         if (bakeRowLength !== this.rowLength()) {
             this.context.contractError(
                 declaration,
@@ -1970,7 +2046,7 @@ namespace bbl {
 void bake_current_transform_into_vertices(
     Engine& engine,
     SplatMeshHandle splat) {
-    SplatMeshRecord& mesh = engine.splat_meshes[splat.value];
+    SplatMeshRecord& mesh = ${recordAt("engine.splat_meshes", "splat")};
     const js::ArrayBuffer original = splat_data(engine, splat);
     // \`mesh.worldMatrix\` — the same composition every other consumer of a
     // cloud's world reads, re-derived rather than cached.
@@ -1993,6 +2069,7 @@ void bake_current_transform_into_vertices(
         const bits = this.declaration(SORT_MODULE, "splatSortBucketBits");
         const sortDirty = this.lowerSortDirty();
         const uniformWriter = this.lowerUniformWriter();
+        const updateGuard = this.lowerUpdateGuard();
         const blockFloats = this.uniformBlockFloats();
         // The one parameter the two pipelines' update hooks disagree about.
         // Emitted only where the pin reads it: a stock cloud's hook never
@@ -2062,6 +2139,8 @@ void bake_current_transform_into_vertices(
                     "<vector>",
                 ],
                 `
+${updateGuard}
+
 /** Per-cloud scratch reused across sorts, sized once per upload. */
 struct SplatSortScratch {
     std::vector<float> depths;

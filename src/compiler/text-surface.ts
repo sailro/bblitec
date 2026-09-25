@@ -1,6 +1,5 @@
 import type { LoweringServices } from "./lowering-services.js";
 /** The text transform object retains its renderable; it is never a copied Vec3. */
-/** The text transform object retains its renderable; it is never a copied Vec3. */
 import ts from "typescript";
 import { pinnedHandleKind } from "./data-types.js";
 import type { Value } from "./types.js";
@@ -12,9 +11,25 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { babylonPackages } from "./symbols.js";
+import { sharedTextRecordModel } from "../lowering/text-records.js";
 
 export type TextTransform =
     "position" | "scaling" | "rotation" | "rotationQuaternion" | "positionPx";
+
+/** The pinned record a renderable's transform member holds. */
+const transformRecord = (name: Exclude<TextTransform, "positionPx">): string =>
+    name === "rotationQuaternion"
+        ? "ObservableQuat"
+        : name === "rotation"
+          ? "EulerProxy"
+          : "ObservableVec3";
+
+/** A text renderable's transform object, as the lowered record holds it. */
+const transformObject = (
+    owner: string,
+    name: Exclude<TextTransform, "positionPx">,
+): string =>
+    sharedTextRecordModel().memberRead(`(${owner})`, "TextRenderable", name);
 const transforms: readonly string[] = [
     "position",
     "scaling",
@@ -44,20 +59,19 @@ const textKinds = [
     "text-vector",
 ];
 
-interface TextSurfaceContext extends Pick<
+export interface TextSurfaceContext extends Pick<
     LoweringServices,
     | "checker"
     | "unwrap"
     | "compileValue"
-    | "lookupOptional"
+    | "bindings"
     | "probeEmission"
     | "allocateTemporaryCppName"
-    | "pinValueToTemporary"
     | "emit"
     | "expectKind"
     | "fail"
-    | "assertTextPipelineMutable"
-    | "isDefaultLibraryIdentifier"
+    | "admissions"
+    | "libraryGlobal"
     | "reachFeature"
     | "promoteTextData"
 > {}
@@ -128,7 +142,7 @@ export function readTextProperty(
             context.promoteTextData(site);
             return {
                 kind: "data",
-                cpp: `bbl::text_data_runs(${owner.cpp})`,
+                cpp: `(${owner.cpp})->runs`,
                 dataType: {
                     kind: "vector",
                     element: { kind: "handle", handle: "text-run" },
@@ -139,7 +153,7 @@ export function readTextProperty(
         if (name === "width" || name === "height")
             return {
                 kind: "number",
-                cpp: `(${owner.cpp})->payload->${name}`,
+                cpp: `(${owner.cpp})->${name}`,
                 dataType: { kind: "number" },
                 freshData: true,
             };
@@ -193,24 +207,30 @@ export function readTextProperty(
                 cpp: owner.cpp,
                 textTransform: name as TextTransform,
             };
+        const member = (): string =>
+            sharedTextRecordModel().memberRead(
+                `(${owner.cpp})`,
+                "TextRenderable",
+                name,
+            );
         if (name === "_data")
             return {
                 kind: "text-data",
-                cpp: `(${owner.cpp})->data`,
+                cpp: member(),
                 dataType: { kind: "handle", handle: "text-data" },
                 freshData: true,
             };
         if (name === "opacity" || name === "order" || name === "_version")
             return {
                 kind: "number",
-                cpp: `(${owner.cpp})->${name === "_version" ? "version" : name}`,
+                cpp: member(),
                 dataType: { kind: "number" },
                 freshData: true,
             };
         if (name === "ignoreDepth" || name === "isTransparent")
             return {
                 kind: "boolean",
-                cpp: `(${owner.cpp})->${name === "isTransparent" ? "is_transparent" : field(name)}`,
+                cpp: member(),
                 dataType: { kind: "boolean" },
                 freshData: true,
             };
@@ -230,9 +250,13 @@ export function readTextProperty(
         return {
             kind: "number",
             cpp:
-                transform === "rotation"
-                    ? `bbl::text_read_rotation(*(${owner.cpp}), ${axis})`
-                    : `(${owner.cpp})->${field(transform)}.${name}`,
+                transform === "positionPx"
+                    ? `(${owner.cpp})->${field(transform)}.${name}`
+                    : sharedTextRecordModel().memberRead(
+                          transformObject(owner.cpp, transform),
+                          transformRecord(transform),
+                          name,
+                      ),
             dataType: { kind: "number" },
             freshData: true,
         };
@@ -248,7 +272,7 @@ function possibleTextOwner(
     // Resolving a record member may execute its getter. Type classification
     // must precede the one admitted owner evaluation below.
     const known = ts.isIdentifier(node)
-        ? context.lookupOptional(node)
+        ? context.bindings.lookupOptional(node)
         : undefined;
     if (known && textKinds.includes(known.kind)) return true;
     const type = context.checker.getTypeAtLocation(node);
@@ -292,9 +316,7 @@ export function compileTextMutation(
     if (
         ts.isCallExpression(node) &&
         ts.isPropertyAccessExpression(node.expression) &&
-        ts.isIdentifier(node.expression.expression) &&
-        node.expression.expression.text === "Object" &&
-        context.isDefaultLibraryIdentifier(node.expression.expression) &&
+        context.libraryGlobal(node.expression.expression) === "Object" &&
         [
             "assign",
             "defineProperty",
@@ -315,7 +337,7 @@ export function compileTextMutation(
     ) {
         const vector = ownerValue(context, node.expression.expression);
         if (!vector || vector.kind !== "text-vector") return undefined;
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             vector,
             "text_owner",
             node.expression.expression,
@@ -338,9 +360,17 @@ export function compileTextMutation(
             });
             return cpp;
         });
+        const transform = owner.textTransform!;
+        if (transform === "positionPx")
+            context.fail(node, "Text layer positionPx.set is not represented.");
         return {
             kind: "void",
-            cpp: `bbl::text_set_${field(owner.textTransform!)}(*(${owner.cpp}), ${args.join(", ")})`,
+            cpp: sharedTextRecordModel().memberCall(
+                transformObject(owner.cpp, transform),
+                transformRecord(transform),
+                "set",
+                args,
+            ),
         };
     }
     const assignment = isAssignmentExpression(node) ? node : undefined;
@@ -360,7 +390,7 @@ export function compileTextMutation(
             left,
             "Computed text property writes are not represented.",
         );
-    const owner = context.pinValueToTemporary(
+    const owner = context.bindings.pinValueToTemporary(
         value,
         "text_owner",
         left.expression,
@@ -391,7 +421,7 @@ export function compileTextMutation(
         owner.kind === "text-renderable" &&
         (name === "ignoreDepth" || name === "order")
     )
-        context.assertTextPipelineMutable(left);
+        context.admissions.assertTextPipelineMutable(left);
     const boolean = name === "ignoreDepth" || name === "visible";
     const operator =
         assignment?.operatorToken.getText() ??
@@ -435,8 +465,17 @@ export function compileTextMutation(
     });
     context.emit(
         owner.kind === "text-vector"
-            ? `bbl::text_write_${field(transform!)}(*(${owner.cpp}), ${axis}, ${result});`
-            : `(${owner.cpp})->${field(name)} = ${result};`,
+            ? transform === "positionPx"
+                ? `bbl::text_write_position_px(*(${owner.cpp}), ${axis}, ${result});`
+                : `${sharedTextRecordModel().memberWrite(
+                      transformObject(owner.cpp, transform!),
+                      transformRecord(transform!),
+                      name,
+                      result,
+                  )};`
+            : owner.kind === "text-renderable"
+              ? `${sharedTextRecordModel().memberWrite(`(${owner.cpp})`, "TextRenderable", name, result)};`
+              : `(${owner.cpp})->${field(name)} = ${result};`,
     );
     return {
         kind: boolean ? "boolean" : "number",

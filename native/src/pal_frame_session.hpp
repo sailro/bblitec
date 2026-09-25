@@ -72,6 +72,63 @@ struct FrameSession {
         if (frame_options.benchmarking())
             report_benchmark(std::move(samples_ms), backend, driver);
     }
+    /** Whether this frame is the requested screenshot. */
+    [[nodiscard]] bool screenshot_due() const {
+        return frame >= frame_options.screenshot_frame && !captures.screenshot_saved &&
+               !frame_options.screenshot_path.empty();
+    }
+};
+
+/**
+ * The frame phases every standalone rendering context (the 2D, effect and
+ * frame-graph hosts) shares on both backends: the run loop, input, canvas
+ * size, clock, benchmark samples, the memory profile and the benchmark
+ * report. `Derived` owns its device and supplies `setup()`, `sdl_window()`,
+ * `acquire()`, `synchronize()`, `encode()`, `present()`, `backend_label` and
+ * `driver()`; it may replace `poll_events()`, `prepare_surface()`,
+ * `update()`, `discard_frame()` and `finish_run()`.
+ */
+template <typename Derived> class RendererRun : public FrameSession {
+public:
+    explicit RendererRun(Engine& target) : FrameSession(target) {}
+
+    /** Drive one renderer from setup until its session stops. */
+    static void run(Engine& engine) {
+        Derived renderer(engine);
+        renderer.setup();
+        while (conduct_frame(renderer) != FrameOutcome::stopped) {
+        }
+        renderer.finish_run();
+    }
+
+    FramePreparation prepare() {
+        derived().poll_events();
+        input_replay.dispatch(frame, derived().sdl_window(), engine);
+        sync_engine_canvas_size(derived().sdl_window(), engine);
+        return derived().prepare_surface();
+    }
+    FramePreparation update() {
+        static_cast<void>(advance_frame(engine, frame_clock, frame_options.frame_delta_ms));
+        begin_measurement();
+        return FramePreparation::ready;
+    }
+    void complete() {
+        FrameSession::complete([&] {
+            if (memory_profile_.due(frame))
+                memory_profile_.print(frame, engine, 0, 0, 0, 0);
+        });
+        derived().discard_frame();
+    }
+    void poll_events() { poll_platform_events(engine, running, frame_options.test_pass); }
+    /** A backend whose surface can be absent or resized checks it here. */
+    FramePreparation prepare_surface() { return FramePreparation::ready; }
+    /** Release per-frame state when a frame ends or is skipped. */
+    void discard_frame() {}
+    void finish_run() { report(Derived::backend_label, derived().driver()); }
+
+private:
+    Derived& derived() { return static_cast<Derived&>(*this); }
+    const MemoryProfile memory_profile_;
 };
 
 } // namespace bbl::pal

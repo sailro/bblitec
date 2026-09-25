@@ -11,7 +11,7 @@ export function compileStorageReadbackIntrinsic(
     if (name !== "readStorageBuffer") return undefined;
     context.expectArgumentCount(call, 1, 3);
     context.reachFeature("compute:storage-readback", call);
-    const buffer = context.pinValueToTemporary(
+    const buffer = context.bindings.pinValueToTemporary(
         context.compileValue(argumentAt(call, 0)),
         "readback_storage",
         call,
@@ -24,8 +24,11 @@ export function compileStorageReadbackIntrinsic(
         else {
             context.expectKind(value, "number", argument);
             args.push(
-                context.pinValueToTemporary(value, "readback_range", argument)
-                    .cpp,
+                context.bindings.pinValueToTemporary(
+                    value,
+                    "readback_range",
+                    argument,
+                ).cpp,
             );
         }
     }

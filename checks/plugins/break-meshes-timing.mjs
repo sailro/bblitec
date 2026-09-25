@@ -14,12 +14,39 @@ import {
     requireObservations,
 } from "./support.mjs";
 
+/**
+ * @import { PluginContext } from "../../dist/src/tooling/check-run.js"
+ */
+
+/**
+ * @typedef {{ seconds: number, now: number }} Sample one world step and its wall clock
+ * @typedef {{
+ *     sceneFixed: number,
+ *     worldFixed: number,
+ *     dynamicBodies: number,
+ *     samples: Sample[],
+ * }} BrowserTiming the observation's `timing` step `observed` record
+ * @typedef {{ steps: number, seconds: number, wallSeconds?: number, simulatedPerWallSecond?: number }} Timing
+ * @typedef {Timing & {
+ *     implementation: string,
+ *     fps: number | null,
+ *     dynamicBodies?: number,
+ *     movedBodies?: number,
+ * }} TimingResult
+ */
+
+/**
+ * @param {Sample[]} samples
+ * @returns {Timing}
+ */
 function summarize(samples) {
-    assert(samples.length > 30, "Insufficient physics steps");
+    const first = samples[0];
+    const last = samples.at(-1);
+    assert(samples.length > 30 && first && last, "Insufficient physics steps");
     const seconds = samples
         .slice(1)
         .reduce((sum, sample) => sum + sample.seconds, 0);
-    const wallSeconds = (samples.at(-1).now - samples[0].now) / 1000;
+    const wallSeconds = (last.now - first.now) / 1000;
     return {
         steps: samples.length - 1,
         seconds,
@@ -28,17 +55,29 @@ function summarize(samples) {
     };
 }
 
+/**
+ * @param {Sample[]} samples
+ * @returns {Timing}
+ */
 const controlledTime = (samples) => ({
     steps: samples.length,
     seconds: samples.reduce((sum, sample) => sum + sample.seconds, 0),
 });
 
+/** @param {PluginContext} context */
 export function check(context) {
     const { fps } = context.options;
+    assert(
+        fps === null || typeof fps === "number",
+        "options.fps is a number or null",
+    );
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
     const timing = observedStep(observations, "timing");
-    const observed = timing.extras.observed;
+    const observed = /** @type {BrowserTiming | undefined} */ (
+        timing.extras?.observed
+    );
+    assert(observed, "the timing step recorded no observed record");
     assert.equal(
         observed.sceneFixed,
         1000 / 60,
@@ -53,6 +92,7 @@ export function check(context) {
         fps === null
             ? observed.samples
             : observed.samples.slice(0, fps * 2 + 1);
+    /** @type {TimingResult} */
     const browser = {
         implementation: "browser",
         fps,
@@ -72,9 +112,13 @@ export function check(context) {
         );
     const results = [browser];
     for (const backend of context.backends) {
-        const phase = context.results[backend].run;
+        const phase = context.results[backend]?.run;
+        assert(phase, `${backend}: missing phase run`);
+        /** @type {Sample[]} */
         const samples = [];
+        /** @type {Map<string, string>} */
         const firstPositions = new Map();
+        /** @type {Map<string, string>} */
         const lastPositions = new Map();
         const started = Date.now();
         for (const line of phase.log.split(/\r?\n/)) {
@@ -83,6 +127,12 @@ export function check(context) {
             );
             if (!match) continue;
             const [, step, dt, body, position] = match;
+            assert(
+                step !== undefined &&
+                    dt !== undefined &&
+                    body !== undefined &&
+                    position !== undefined,
+            );
             // The trace carries no wall clock; the step index stands in for it
             // at the frame rate the run was paced to.
             if (+body === 0)
@@ -109,8 +159,10 @@ export function check(context) {
         );
         // The original world override also steps on frame zero; exclude that
         // priming frame when measuring the following two seconds.
+        /** @type {Sample[]} */
         const measured =
             fps === null ? samples.slice(120, -20) : samples.slice(1);
+        /** @type {TimingResult} */
         const native = {
             implementation: backend,
             fps,

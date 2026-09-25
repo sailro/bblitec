@@ -1,20 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { BabylonLowerer } from "../src/lowering/babylon-lowerer.js";
-import { lowerBabylonNodeTransforms } from "../src/lowering/babylon-node-transforms.js";
-import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
-import { LoweringContext } from "../src/lowering/context.js";
+import { lowerBabylonMeshConstruction } from "../src/lowering/babylon-mesh-construction.js";
 import { importPinnedModuleFetching } from "../src/pinned-shader-composer.js";
+import { runBabylonLoaderCheck } from "./babylon-loader-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
-import {
-    cppFunction,
-    nativeFixtureVcpkgRoot,
-    optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
-} from "./native-fixture.js";
+import { optionalNativeFixtureTools } from "./native-fixture.js";
 
 test("Babylon mesh and container transforms preserve source defaults and world composition", async (t) => {
     const native = optionalNativeFixtureTools();
@@ -91,48 +83,40 @@ test("Babylon mesh and container transforms preserve source defaults and world c
     } finally {
         imported.release();
     }
-    const context = new LoweringContext();
-    const loader = new BabylonLowerer(context).lowerLoaderAdapter().source;
-    const changed = cppFunction(
-        lowerBabylonNodeTransforms(
-            doctoredContext(
-                "src/loader-babylon/load-babylon.ts",
-                "md.scaling?.[2] ?? 1\n                    );",
-                "md.scaling?.[2] ?? 2\n                    );",
-            ),
+    const changed = lowerBabylonMeshConstruction(
+        doctoredContext(
+            "src/loader-babylon/load-babylon.ts",
+            "md.scaling?.[2] ?? 1\n                    );",
+            "md.scaling?.[2] ?? 2\n                    );",
         ),
-        "upstream::TrsLanes babylon_mesh_transform(",
-    ).replace("babylon_mesh_transform(", "changed_mesh_transform(");
+    ).replace("construct_babylon_meshes(", "construct_changed_transforms(");
     const directory = resolve("artifacts/test-babylon-node-transforms");
     mkdirSync(directory, { recursive: true });
-    writeFileSync(
-        join(directory, "world.hpp"),
-        pinnedWorldTransformHeader(context),
-    );
-    writeFileSync(join(directory, "inputs.json"), JSON.stringify(inputs));
+    writeFileSync(join(directory, "source.json"), JSON.stringify(document));
     writeFileSync(join(directory, "expected.json"), JSON.stringify(expected));
-    const source = join(directory, "check.cpp"),
-        executable = join(directory, "check.exe");
-    writeFileSync(
-        source,
-        `#include "world.hpp"
-#include <nlohmann/json.hpp>
-#include <cassert>
-#include <fstream>
-namespace bbl {
-using Json=nlohmann::json;
-${cppFunction(loader, "double double_at(")}
-${lowerBabylonNodeTransforms(context)}
-${changed}
-}
-int main() {
-    using namespace bbl;
-    Json inputs, expected;
-    std::ifstream("inputs.json") >> inputs;
+    // The loader constructs one node per source entry here (no entry
+    // splits into submeshes), so node k is document entry k.
+    runBabylonLoaderCheck(
+        native,
+        directory,
+        changed,
+        `    Json document, expected;
+    std::ifstream("source.json") >> document;
     std::ifstream("expected.json") >> expected;
-    for(std::size_t row=0;row<inputs.size();++row) for(const auto kind:{'m','c'}) {
-        const auto transform=kind=='m'?babylon_mesh_transform(inputs[row]):babylon_container_transform(inputs[row]);
-        const auto& want=expected.at(std::string(1,kind)+std::to_string(row));
+    const auto construct = [&](auto&& pass) {
+        Engine engine;
+        std::vector<BabylonHierarchyNode> nodes;
+        BabylonNodeMap node_map;
+        std::unordered_map<std::string,std::vector<std::size_t>> meshes_by_id;
+        std::vector<std::size_t> all_meshes;
+        pass(engine,document.at("meshes"),{},{},nodes,node_map,meshes_by_id,all_meshes);
+        return nodes;
+    };
+    const auto nodes = construct(construct_babylon_meshes);
+    assert(nodes.size()==expected.size());
+    for(std::size_t index=0;index<nodes.size();++index) {
+        const auto& transform=nodes[index].transform;
+        const auto& want=expected.at(document.at("meshes")[index].at("name").get<std::string>());
         assert(transform.position.x==want.at("position")[0].get<double>());
         assert(transform.position.y==want.at("position")[1].get<double>());
         assert(transform.position.z==want.at("position")[2].get<double>());
@@ -142,23 +126,7 @@ int main() {
             assert(std::abs(double(world[cell])-wanted)<=1e-6*std::max(1.0,std::abs(wanted)));
         }
     }
-    assert(changed_mesh_transform(Json::object()).scaling.z==2);
-}`,
+    const auto changed = construct(construct_changed_transforms);
+    assert(changed.at(0).transform.scaling.z==2 && changed.at(1).transform.scaling.z==1);`,
     );
-    runNativeFixtureCompiler(native, [
-        "/nologo",
-        "/std:c++20",
-        "/W4",
-        "/WX",
-        "/EHsc",
-        "/O2",
-        `/Fo:${directory}/`,
-        `/Fe:${executable}`,
-        "/I",
-        "native/include",
-        "/I",
-        join(nativeFixtureVcpkgRoot, "include"),
-        source,
-    ]);
-    execFileSync(executable, [], { cwd: directory, stdio: "pipe" });
 });

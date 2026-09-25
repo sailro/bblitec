@@ -39,9 +39,9 @@ export interface EngineOptionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
-            | "noteTemporalRecordBoundary"
+            | "admissions"
             | "symbols"
-            | "geometryOutputTasks"
+            | "sceneManifest"
             | "unwrap"
             | "propertyName"
             | "compileValue"
@@ -239,7 +239,7 @@ export function compileRenderTaskOptions(
         !signature.hasColor ||
         signature.depthFormat !== "depth24plus-stencil8"
     ) {
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             expression,
             "TAA source preparation requires the engine color format and depth24plus-stencil8 attachment",
             "always",
@@ -290,7 +290,7 @@ export function compileRenderTaskOptions(
         nameExpression
             ? context.compileStringLiteral(nameExpression)
             : "render-task",
-    )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? `${handleCppType("camera")}{}`}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, false, ${depth}, ${resolve.cpp}}`;
+    )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "std::nullopt"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? `${handleCppType("camera")}{}`}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, false, ${depth}, ${resolve.cpp}}`;
     if (!depthClear && !sharedTarget) return options;
     return `[&]() { auto options = ${options}; ${depthClear ? `options.depth_clear = ${context.compileBoolean(depthClear)};` : ""} ${sharedTarget ? `options.shared_target = ${context.compileBoolean(sharedTarget)};` : ""} return options; }()`;
 }
@@ -424,7 +424,7 @@ export function compileGeometryTaskOptions(
         );
     }
     const manifest: GeometryOutputTaskManifest = {
-        shaderIndex: context.geometryOutputTasks.length,
+        shaderIndex: context.sceneManifest.geometryOutputTasks.length,
         attachments,
         emitColor: target !== undefined,
     };
@@ -456,6 +456,10 @@ export function compileCopyTaskOptions(
         "Reached copy tasks support name, sourceTexture, targetTexture, resolveTexture, and viewport.",
     );
     const nameExpression = context.objectProperty(object, "name");
+    const name = nameExpression
+        ? context.compileStringLiteral(nameExpression)
+        : "copy-task";
+    context.sceneManifest.recordCopyTask(name);
     const sourceCpp = compileTextureReference(context, object, "sourceTexture");
     const targetExpression = context.objectProperty(object, "targetTexture");
     const resolveExpression = context.objectProperty(object, "resolveTexture");
@@ -483,11 +487,7 @@ export function compileCopyTaskOptions(
         const viewportObject = context.expectObjectLiteral(viewportExpression);
         viewport = `bbl::NormalizedViewport{${requiredObjectNumber(context, viewportObject, "x", "double")}, ${requiredObjectNumber(context, viewportObject, "y", "double")}, ${requiredObjectNumber(context, viewportObject, "width", "double")}, ${requiredObjectNumber(context, viewportObject, "height", "double")}}`;
     }
-    return `bbl::CopyTaskOptions{${context.cppString(
-        nameExpression
-            ? context.compileStringLiteral(nameExpression)
-            : "copy-task",
-    )}, ${sourceCpp}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${resolveTarget?.cpp ?? "bbl::RenderTargetHandle{}"}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
+    return `bbl::CopyTaskOptions{${context.cppString(name)}, ${sourceCpp}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${resolveTarget?.cpp ?? "bbl::RenderTargetHandle{}"}, ${viewportExpression ? "true" : "false"}, ${viewport}}`;
 }
 
 function compileGeometryTextureType(
@@ -604,7 +604,7 @@ export function compileTextureReference(
         !value.renderTargetSignature ||
         value.renderTargetSignature.samples !== 1
     ) {
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             expression,
             "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state",
             "always",

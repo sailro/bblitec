@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -14,16 +15,13 @@ export interface AnimationIntrinsicContext
         IntrinsicCallContext,
         Pick<
             LoweringServices,
-            | "isDefaultLibraryIdentifier"
-            | "compilePropertyAnimationClip"
-            | "compilePropertyAnimationGroupOptions"
-            | "compilePropertyAnimationTargets"
+            | "libraryGlobal"
+            | "intrinsicOptions"
             | "compileNumber"
             | "resolveStaticExpression"
-            | "lookup"
-            | "lookupOptional"
+            | "bindings"
             | "requirePresentationHost"
-            | "compileFrameCallback"
+            | "callbacks"
             | "requireCompatibleFrameConductor"
             | "requireEngine"
             | "expectSameEngine"
@@ -31,7 +29,7 @@ export interface AnimationIntrinsicContext
             | "expectObjectLiteral"
             | "objectProperty"
             | "propertyName"
-            | "compileAnimationGroupList"
+            | "handleCollections"
             | "symbols"
         > {}
 
@@ -102,7 +100,7 @@ function associateManagerEngine(
             "Animation manager and group/scene belong to different engines.",
         );
     }
-    manager.engineCpp ??= engineCpp;
+    writable(manager).engineCpp ??= engineCpp;
 }
 
 export function compileAnimationIntrinsic(
@@ -147,7 +145,7 @@ export function compileAnimationIntrinsic(
                 );
             if (onUpdate)
                 fields.push(
-                    `.on_update = ${context.compileFrameCallback(onUpdate, "timestamp", true)}`,
+                    `.on_update = ${context.callbacks.compileFrameCallback(onUpdate, "timestamp", true)}`,
                 );
             if (onUpdate && !engineExpression)
                 fields.push(".source_engine_present = false");
@@ -170,7 +168,7 @@ export function compileAnimationIntrinsic(
                 "animation-manager",
                 argumentAt(call, 0),
             );
-            const groups = context.compileAnimationGroupList(
+            const groups = context.handleCollections.compileAnimationGroupList(
                 argumentAt(call, 1),
             );
             associateManagerEngine(context, manager, groups.engineCpp, call);
@@ -210,11 +208,12 @@ export function compileAnimationIntrinsic(
 
         case "createPropertyAnimationClip": {
             context.expectArgumentCount(call, 2, 3);
-            const compiled = context.compilePropertyAnimationClip(
-                argumentAt(call, 0),
-                argumentAt(call, 1),
-                call.arguments[2],
-            );
+            const compiled =
+                context.intrinsicOptions.compilePropertyAnimationClip(
+                    argumentAt(call, 0),
+                    argumentAt(call, 1),
+                    call.arguments[2],
+                );
             context.reachFeature("animation:property", call);
             return {
                 kind: "animation-clip",
@@ -250,11 +249,12 @@ export function compileAnimationIntrinsic(
             let targetsCpp: string;
             let engine: string;
             if (target.kind === "data" || target.kind === "record") {
-                const compiled = context.compilePropertyAnimationTargets(
-                    target,
-                    paths,
-                    argumentAt(call, 1),
-                );
+                const compiled =
+                    context.intrinsicOptions.compilePropertyAnimationTargets(
+                        target,
+                        paths,
+                        argumentAt(call, 1),
+                    );
                 targetsCpp = compiled.cpp;
                 engine = compiled.engineCpp;
             } else {
@@ -265,15 +265,18 @@ export function compileAnimationIntrinsic(
                         () =>
                             `bbl::PropertyAnimationTarget{` +
                             `bbl::PropertyAnimationTargetKind::${targetKind}, ` +
-                            `${target.cpp}.value, {}}`,
+                            (targetKind === "mesh"
+                                ? `${target.cpp}, 0u, {}}`
+                                : `{}, ${target.cpp}.value, {}}`),
                     )
                     .join(", ")}}`;
                 context.expectSameEngine(manager, target, call);
             }
-            const options = context.compilePropertyAnimationGroupOptions(
-                call.arguments[3],
-                clip,
-            );
+            const options =
+                context.intrinsicOptions.compilePropertyAnimationGroupOptions(
+                    call.arguments[3],
+                    clip,
+                );
             // A manager created without options acquires its engine from
             // the first property target bound into it. The pin stores that
             // association on each manager-owned task; carrying it on the
@@ -357,8 +360,8 @@ export function compileAnimationIntrinsic(
                     `${manager.cpp}, ${engine}, ` +
                     `${fadeTarget(fromGroup)}, ` +
                     `${fadeTarget(toGroup)}, ` +
-                    `${context.compileNumber(duration)}, ` +
-                    `${toWeight ? context.compileNumber(toWeight) : "1.0f"})`,
+                    `${context.compileNumber(duration, "double")}, ` +
+                    `${toWeight ? context.compileNumber(toWeight, "double") : "1.0"})`,
             };
         }
 
@@ -371,7 +374,7 @@ export function compileAnimationIntrinsic(
             context.expectArgumentCount(call, 2, 2);
             const group = context.compileValue(argumentAt(call, 0));
             context.expectKind(group, "animation-group", argumentAt(call, 0));
-            const weight = context.compileNumber(argumentAt(call, 1));
+            const weight = context.compileNumber(argumentAt(call, 1), "double");
             if (group.animationGroupSource === "property") {
                 context.reachFeature("animation:property-blending", call);
                 return {
@@ -432,7 +435,7 @@ export function compileAnimationIntrinsic(
                     kind: "void",
                     cpp:
                         `bbl::set_animation_additive_from_frame(` +
-                        `${engine}, ${group.cpp}, 0.0f)`,
+                        `${engine}, ${group.cpp}, 0.0)`,
                 };
             }
             const options = context.expectObjectLiteral(optionsExpression);
@@ -481,7 +484,7 @@ export function compileAnimationIntrinsic(
                     cpp:
                         `bbl::set_animation_additive(` +
                         `${engine}, ${group.cpp}, ` +
-                        `${context.compileNumber(timeExpression)})`,
+                        `${context.compileNumber(timeExpression, "double")})`,
                 };
             }
             return {
@@ -491,8 +494,8 @@ export function compileAnimationIntrinsic(
                     `${engine}, ${group.cpp}, ` +
                     `${
                         frameExpression
-                            ? context.compileNumber(frameExpression)
-                            : "0.0f"
+                            ? context.compileNumber(frameExpression, "double")
+                            : "0.0"
                     })`,
             };
         }
@@ -662,7 +665,9 @@ export function compileAnimationIntrinsic(
             context.expectArgumentCount(call, 2, 3);
             const group = context.compileValue(argumentAt(call, 0));
             context.expectKind(group, "animation-group", argumentAt(call, 0));
-            const frame = context.compileNumber(argumentAt(call, 1));
+            // Both seekers divide the frame by the clip's rate in
+            // JavaScript numbers.
+            const frame = context.compileNumber(argumentAt(call, 1), "double");
             const engineArgument = call.arguments[2];
             if (engineArgument !== undefined) {
                 context.expectKind(

@@ -203,7 +203,6 @@ function scope(
     return {
         bindings,
         calls,
-        checkedBitwiseCoercions: true,
         booleanOr: true,
         expression(node, lowerer) {
             if (ts.isStringLiteralLike(node)) return stringLiteral(node.text);

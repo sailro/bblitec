@@ -20,6 +20,7 @@ test(
         runNativeFixtureCompiler(tools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_PHYSICS_VIEWER=1",
             "/W4",
             "/WX",
             "/EHsc",

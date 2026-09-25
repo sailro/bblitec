@@ -124,7 +124,8 @@ create_splat_pass(SDL_GPUDevice* device,
     pass.mesh = handle;
     pass.vertex_count = record.vertex_count;
 
-    const PinnedStageSlots slots = read_pinned_stage_slots("splat.vert");
+    PinnedStage vertex_stage = load_pinned_stage(device, "splat.vert", SDL_GPU_SHADERSTAGE_VERTEX);
+    const PinnedStageSlots& slots = vertex_stage.slots;
     if (slots.textures.size() != pass.textures.size() ||
         slots.storage_textures.size() != pass.storage_textures.size()) {
         gpu_error("splat.vert texture counts differ from the source payloads");
@@ -133,25 +134,22 @@ create_splat_pass(SDL_GPUDevice* device,
     if (pass.uniform_slot < 0) {
         gpu_error("splat.vert kept no uniform block for the splat UBO");
     }
-    auto vertex_shader = load_shader(device, "splat.vert", SDL_GPU_SHADERSTAGE_VERTEX,
-                                     static_cast<std::uint32_t>(slots.textures.size()),
-                                     static_cast<std::uint32_t>(slots.uniforms.size()), "vs", 0,
-                                     static_cast<std::uint32_t>(slots.storage_textures.size()));
+    auto& vertex_shader = vertex_stage.shader;
     // The fragment stage samples nothing: every data texture is read
     // in the vertex stage. Whether it declares the uniform block depends on
     // the scene -- the stock density is `exp(-dot(vq, vq)) * vc.a` over the
     // varyings alone, while a depth plugin reads the projection out of the
     // block -- so the sidecar decides, exactly as it does for a custom
     // sprite fragment.
-    const PinnedStageSlots fragment_slots = read_pinned_stage_slots("splat.frag");
+    PinnedStage fragment_stage =
+        load_pinned_stage(device, "splat.frag", SDL_GPU_SHADERSTAGE_FRAGMENT);
+    const PinnedStageSlots& fragment_slots = fragment_stage.slots;
     pass.fragment_uniform_slot = stage_uniform_slot(fragment_slots, "u");
     if (!fragment_slots.textures.empty() || !fragment_slots.storage_textures.empty()) {
         gpu_error("splat.frag kept a texture binding; the splat fragment stage "
                   "binds none");
     }
-    auto fragment_shader =
-        load_shader(device, "splat.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0,
-                    static_cast<std::uint32_t>(fragment_slots.uniforms.size()), "fs");
+    auto& fragment_shader = fragment_stage.shader;
 
     SDL_GPUVertexAttribute attributes[2]{};
     attributes[0] = SDL_GPUVertexAttribute{0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 0};
@@ -285,7 +283,10 @@ inline void sync_splat_data(SDL_GPUDevice* device, const SplatMeshRecord& record
  * backend, so only the order lands here.
  */
 inline void upload_splat_pass(SDL_GPUDevice* device, const Engine& engine, SplatPass& pass,
-                              const std::array<float, 16>& view) {
+                              const CameraRecord* camera, const std::array<float, 16>& view) {
+    // The renderable's own update returns before its work without a camera.
+    if (upstream::splat_update_returns(camera))
+        return;
     const SplatMeshRecord& record = handle_at(engine.splat_meshes, pass.mesh);
     sync_splat_data(device, record, pass);
 

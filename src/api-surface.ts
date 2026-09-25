@@ -3,8 +3,13 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import ts from "typescript";
 import { type UpstreamPin, sharedUpstreamStore } from "./upstream-source.js";
+import {
+    aliasTarget,
+    declaredSymbol,
+    resolvedSymbol,
+} from "./compiler/symbols.js";
 
-export interface ApiItem {
+interface ApiItem {
     id: string;
     owner: string;
     kind: string;
@@ -27,7 +32,7 @@ export function apiHash(text: string | Buffer): string {
 }
 
 /** Token boundaries and literal contents matter; comments and formatting do not. */
-export function declarationText(node: ts.Node): string {
+function declarationText(node: ts.Node): string {
     const printer = ts.createPrinter({ removeComments: true });
     const text = printer.printNode(
         ts.EmitHint.Unspecified,
@@ -149,15 +154,12 @@ export function extractApi(
     pin: UpstreamPin,
 ): ApiSurface {
     const checker = program.getTypeChecker();
-    const module = checker.getSymbolAtLocation(entry);
+    const module = declaredSymbol(checker, entry);
     if (!module)
         throw new Error(
             `API declaration entry is not a module: ${entry.fileName}`,
         );
-    const unalias = (symbol: ts.Symbol): ts.Symbol =>
-        symbol.flags & ts.SymbolFlags.Alias
-            ? checker.getAliasedSymbol(symbol)
-            : symbol;
+
     const roots = new Map<string, ts.Node[]>();
     const rootOf = new Map<ts.Node, string>();
     // The published package has a rolled declaration entry. Referenced external peer types
@@ -179,7 +181,7 @@ export function extractApi(
     }
     const exports: Record<string, string> = {};
     for (const symbol of checker.getExportsOfModule(module)) {
-        const target = unalias(symbol);
+        const target = aliasTarget(checker, symbol);
         const owner = target.declarations
             ?.map((node) => rootOf.get(node))
             .find((name) => name !== undefined);
@@ -203,13 +205,11 @@ export function extractApi(
                     : ts.isTypeQueryNode(child)
                       ? child.exprName
                       : child.expression;
-                const symbol = checker.getSymbolAtLocation(name);
-                if (symbol)
-                    for (const declaration of unalias(symbol).declarations ??
-                        []) {
-                        const owner = rootOf.get(declaration);
-                        if (owner) result.add(owner);
-                    }
+                for (const declaration of resolvedSymbol(checker, name)
+                    ?.declarations ?? []) {
+                    const owner = rootOf.get(declaration);
+                    if (owner) result.add(owner);
+                }
             }
             ts.forEachChild(child, visit);
         };

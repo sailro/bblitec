@@ -81,7 +81,7 @@ const UI_SCROLLBAR_PARTS = {
     corner: "Corner",
 } as const;
 
-export type UiScrollbarPart = keyof typeof UI_SCROLLBAR_PARTS;
+type UiScrollbarPart = keyof typeof UI_SCROLLBAR_PARTS;
 
 export function isUiScrollbarPart(value: unknown): value is UiScrollbarPart {
     return (
@@ -94,7 +94,7 @@ export function uiScrollbarPartCpp(part: UiScrollbarPart | undefined): string {
 }
 
 const UI_RANGE_PARTS = { thumb: "Thumb", track: "Track" } as const;
-export type UiRangePart = keyof typeof UI_RANGE_PARTS;
+type UiRangePart = keyof typeof UI_RANGE_PARTS;
 export function isUiRangePart(value: unknown): value is UiRangePart {
     return typeof value === "string" && Object.hasOwn(UI_RANGE_PARTS, value);
 }
@@ -173,14 +173,7 @@ export function uiMotionPreferenceCpp(value: boolean | undefined): string {
     return value === undefined ? "Any" : value ? "Reduce" : "NoPreference";
 }
 
-/** Legacy input spelling; normalized to a generic class rule immediately. */
-export interface NativeHostUiClassStyle {
-    className: string;
-    style: string;
-}
-
 export interface NativeHostUiStyleSource {
-    classStyles?: NativeHostUiClassStyle[];
     styleRules?: NativeHostUiStyleRule[];
 }
 
@@ -219,18 +212,9 @@ export function uiStyleSelector(rule: UiStyleSelectorShape): string {
     );
 }
 
-/** Preserve legacy public inputs while giving every consumer one rule shape. */
+/** A host UI's style rules, in authored order. */
 export function nativeHostUiStyleRules(
     source: NativeHostUiStyleSource,
 ): NativeHostUiStyleRule[] {
-    return [
-        ...(source.classStyles ?? []).map(
-            ({ className, style }): NativeHostUiStyleRule => ({
-                kind: "class",
-                primary: className,
-                style,
-            }),
-        ),
-        ...(source.styleRules ?? []),
-    ];
+    return source.styleRules ?? [];
 }

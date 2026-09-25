@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 
-import {
-    existsSync,
-    mkdirSync,
-    readFileSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
-import { dirname, resolve } from "node:path";
+// First, so the modules evaluated after it are compiled through the cache.
+import "./tooling/compile-cache.js";
+import { composePinnedBackgroundModules } from "./pinned-background-modules.js";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareAssetDecoders, type AssetDecoders } from "./asset-decoders.js";
 import {
@@ -15,7 +12,6 @@ import {
     CompileError,
     surveySource,
     compileSource,
-    renderFeaturesCmake,
 } from "./compiler.js";
 import {
     composeBillboardPickingShader,
@@ -30,14 +26,8 @@ import type {
     CompileOptions,
     CompileResult,
     CompiledNodeParticles,
-    Feature,
 } from "./compiler/types.js";
-import { reachedGeneratedSources } from "./generated-sources.js";
-import { writeJsonRecord } from "./validation-resume.js";
-import {
-    predeclaredShaderProgram,
-    shaderMaterialPrograms,
-} from "./shader-material-programs.js";
+import { writeJsonRecord } from "./tooling/records.js";
 import {
     emitUpstreamGenerated,
     readPinnedMaxLights,
@@ -51,6 +41,7 @@ import {
     featureActivationPath,
     featureActivationRows,
 } from "./feature-activation.js";
+import { featureMacroHeaders } from "./feature-macros.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { packageGltfLoadPlan } from "./gltf-load-plan.js";
@@ -79,30 +70,22 @@ import {
 } from "./executed-module-assets.js";
 import {
     findRepositoryRoot,
-    readUpstreamPin,
     repositoryRelativePath,
 } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { downloadCached } from "./asset-download-cache.js";
 import {
-    gltfHasImageBasedLight,
-    gltfNodeLights,
-} from "./pinned-material-arms.js";
-import {
     emitAssetSpecializations,
-    gltfHasCompressedImages,
-    gltfHasGaussianSplats,
+    gltfAssetDocuments,
 } from "./asset-specializer.js";
-import { parseGlbJson } from "./gltf-document.js";
 import {
-    type FlowGraphAssetPrograms,
-    parseFlowGraphs,
-} from "./pinned-flow-graph.js";
+    joinAssetFeatures,
+    sceneTransmission,
+    type ActivationPlan,
+} from "./asset-feature-join.js";
 import {
-    babylonLights,
     reachedDiffuseUv2,
     reachedStandardLightLists,
-    type BabylonLight,
 } from "./babylon-asset-features.js";
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
@@ -144,15 +127,44 @@ interface CliOptions {
     search?: string;
     initialSearch?: string;
     publicDir?: string;
+    publicUrl?: string;
     siteUrl?: string;
     environment: Record<string, string>;
     hostUi?: string;
     idDiagnostics: boolean;
 }
 
+/**
+ * Every option `parseArguments` accepts, with its value placeholder. The
+ * usage text is generated from this table, and a test holds the table and
+ * the parser's cases to the same set, so neither can grow alone.
+ */
+const TARGET_FLAGS = [
+    { flag: "--out", value: "<directory>" },
+    { flag: "--survey", value: "<census.json>" },
+] as const;
+const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
+    { flag: "--title", value: "<text>" },
+    { flag: "--width", value: "<pixels>" },
+    { flag: "--height", value: "<pixels>" },
+    { flag: "--search", value: "<query>" },
+    { flag: "--initial-search", value: "<query>" },
+    { flag: "--public-dir", value: "<directory>" },
+    { flag: "--public-url", value: "<url>" },
+    { flag: "--site-url", value: "<url>" },
+    { flag: "--env", value: "<NAME=value>" },
+    { flag: "--host-ui", value: "<json>" },
+    { flag: "--id-diagnostics" },
+];
+
 function usage(): never {
+    const spell = (option: { flag: string; value?: string }): string =>
+        option.value === undefined
+            ? option.flag
+            : `${option.flag} ${option.value}`;
     console.error(
-        "Usage: bblitec <entry.ts> (--out <directory> | --survey <census.json>) [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--public-dir <directory>] [--site-url <url>] [--env <NAME=value>] [--host-ui <json>] [--id-diagnostics]",
+        `Usage: bblitec <entry.ts> (${TARGET_FLAGS.map(spell).join(" | ")}) ` +
+            OPTION_FLAGS.map((option) => `[${spell(option)}]`).join(" "),
     );
     process.exit(2);
 }
@@ -179,6 +191,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     let search: string | undefined;
     let initialSearch: string | undefined;
     let publicDir: string | undefined;
+    let publicUrl: string | undefined;
     let siteUrl: string | undefined;
     const environment = new Map<string, string>();
     let hostUi: string | undefined;
@@ -231,6 +244,11 @@ function parseArguments(arguments_: string[]): CliOptions {
                 publicDir = value;
                 index += 1;
                 break;
+            case "--public-url":
+                if (!value) usage();
+                publicUrl = value;
+                index += 1;
+                break;
             case "--site-url":
                 if (!value) usage();
                 siteUrl = value;
@@ -272,6 +290,7 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(search ? { search } : {}),
         ...(initialSearch !== undefined ? { initialSearch } : {}),
         ...(publicDir ? { publicDir } : {}),
+        ...(publicUrl ? { publicUrl } : {}),
         ...(siteUrl ? { siteUrl } : {}),
         ...(hostUi ? { hostUi } : {}),
     };
@@ -319,6 +338,7 @@ async function materializeAsset(
     outputPath: string,
     assetPayloads: ReadonlyMap<string, string>,
     sourceTextureReads = false,
+    nodeTransforms = false,
     meshWalks: NonNullable<CompileResult["manifest"]["meshWalks"]> = [],
     decoders: AssetDecoders = {},
 ): Promise<MaterializedAssetFacts | undefined> {
@@ -332,10 +352,7 @@ async function materializeAsset(
             `Missing materialization payload for '${asset.source}'.`,
         );
     }
-    const source = materializedAssetSource(
-        inlineSource ?? asset.source,
-        inputPath,
-    );
+    const source = inlineSource ?? asset.source;
     const destination = resolve(outputPath, "assets", asset.output);
     mkdirSync(dirname(destination), { recursive: true });
 
@@ -397,7 +414,7 @@ async function materializeAsset(
                     decoders,
                 ),
                 source,
-                { cameras: asset.gltfCameras === true },
+                { cameras: asset.gltfCameras === true, nodeTransforms },
                 decoders,
             ),
         );
@@ -495,27 +512,52 @@ async function materializeAsset(
             : await packageGltfLoadPlan(
                   bytes,
                   source,
-                  { cameras: asset.gltfCameras === true },
+                  { cameras: asset.gltfCameras === true, nodeTransforms },
                   decoders,
               ),
     );
 }
 
-function materializedAssetSource(source: string, inputPath: string): string {
-    if (
-        !source.startsWith("/") ||
-        !inputPath
-            .replace(/\\/g, "/")
-            .includes("/corpus/babylon-lite/lab/lite/src/lite/")
-    ) {
-        return source;
-    }
-    const pin = readUpstreamPin();
-    return (
-        "https://raw.githubusercontent.com/" +
-        `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-        `/lab/public${source}`
-    );
+/**
+ * The manifest as the generated tree records it.
+ *
+ * The compiler reports the files it read by their resolved paths: its own
+ * readers resolve them and its diagnostics print them. The record names
+ * each one the way `inputs` already does -- relative to the repository
+ * root, forward slashes -- so a tree generated in another checkout or
+ * worktree records the same bytes. A file outside the repository keeps
+ * the relative path that reaches it from the root, or its absolute path
+ * where none exists (another drive). A name that is not an absolute path
+ * -- a host-UI companion's registry path, a virtual entry name -- is
+ * already machine-independent and is recorded as given.
+ */
+function recordedManifest(
+    manifest: CompileResult["manifest"],
+    repositoryRoot: string,
+): CompileResult["manifest"] {
+    const recordedPath = (path: string): string =>
+        isAbsolute(path) ? repositoryRelativePath(repositoryRoot, path) : path;
+    // A site is `file:line`; anything else is a named location.
+    const recordedSite = (site: string): string => {
+        const location = /^(.+):(\d+)$/.exec(site);
+        return location
+            ? `${recordedPath(location[1]!)}:${location[2]!}`
+            : site;
+    };
+    return {
+        ...manifest,
+        source: recordedPath(manifest.source),
+        featureSites: Object.fromEntries(
+            Object.entries(manifest.featureSites).map(([feature, site]) => [
+                feature,
+                recordedSite(site),
+            ]),
+        ),
+        sourceUnits: manifest.sourceUnits.map((unit) => ({
+            ...unit,
+            source: recordedPath(unit.source),
+        })),
+    };
 }
 
 /**
@@ -530,6 +572,7 @@ function materializedAssetSource(source: string, inputPath: string): string {
 async function bakeNodeParticleSystems(
     program: CompiledNodeParticles,
     assetPayloads: Map<string, string>,
+    compileOptions: CompileOptions,
 ): Promise<{
     systems: NodeParticleSystemEmit[];
     sprite2d: NodeParticleSprite2DEmit[];
@@ -539,6 +582,13 @@ async function bakeNodeParticleSystems(
 }> {
     const { bakeNodeParticles } = await import("./pinned-node-particle.js");
     const bake = await bakeNodeParticles(program);
+    // A graph texture the pin resolved against a root-relative
+    // `textureBaseUrl` names the deployment's public files, as a scene's own
+    // root-relative URL does.
+    const texturePlacement = {
+        entryFileName: compileOptions.fileName,
+        deployment: compileOptions,
+    };
     // Whether a set's blend takes `createParticleBlend`'s five modes (the
     // exact-blend builder, or the enabler over any builder) or the plain
     // builder's three-arm mapping.
@@ -561,6 +611,7 @@ async function bakeNodeParticleSystems(
                           : `data:${system.texture.mediaType || "image/png"};base64,${system.texture.bytes}`,
                       "texture",
                       assetPayloads,
+                      texturePlacement,
                   )
                 : undefined;
         const assigned = program.textures.find(
@@ -598,7 +649,7 @@ async function bakeNodeParticleSystems(
                 : texture.url;
         const asset = texture.sceneAssigned
             ? undefined
-            : assetRecord(source, "texture", assetPayloads);
+            : assetRecord(source, "texture", assetPayloads, texturePlacement);
         const assigned = program.textures.find(
             (texture) =>
                 texture.set === entry.set && texture.system === entry.system,
@@ -727,6 +778,7 @@ async function main(): Promise<void> {
             ? { initialSearch: options.initialSearch }
             : {}),
         ...(options.publicDir ? { publicDir: options.publicDir } : {}),
+        ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
         ...(options.siteUrl ? { siteUrl: options.siteUrl } : {}),
         ...(options.hostUi
             ? { nativeHostUi: readNativeHostUi(options.hostUi) }
@@ -745,7 +797,11 @@ async function main(): Promise<void> {
     // tree as the browser spends simulating, and the two overlap. It is
     // joined below, before the first consumer of what it produces.
     const bakingNodeParticles = result.nodeParticles
-        ? bakeNodeParticleSystems(result.nodeParticles, result.assetPayloads)
+        ? bakeNodeParticleSystems(
+              result.nodeParticles,
+              result.assetPayloads,
+              compileOptions,
+          )
         : undefined;
 
     mkdirSync(outputPath, { recursive: true });
@@ -778,6 +834,7 @@ async function main(): Promise<void> {
                 result.manifest.features.includes(
                     "material:source-texture-read",
                 ),
+                result.manifest.features.includes("scene:node-transforms"),
                 result.manifest.meshWalks,
                 decodersFor(asset),
             ),
@@ -857,15 +914,34 @@ async function main(): Promise<void> {
     );
     const splatSpzRotation = splatContainerRotations.get("spz");
     const splatSogRotation = splatContainerRotations.get("sog");
-    const specializationFeatures = emitAssetSpecializations(
+    // Each packaged glTF document, parsed once for the specializer and the
+    // join alike.
+    const gltfDocuments = gltfAssetDocuments(
         outputPath,
         result.manifest.assets,
     );
+    const specializationFeatures = emitAssetSpecializations(
+        outputPath,
+        result.manifest.assets,
+        gltfDocuments,
+    );
+    // Everything past this point reads the finished feature list: the join
+    // adds what the assets carry, re-projects the list, and decides the
+    // capabilities an asset and a scene call can both turn on.
+    const assetJoin = await joinAssetFeatures({
+        result,
+        outputPath,
+        documents: gltfDocuments,
+        specialization: specializationFeatures,
+        splatHarmonics: result.manifest.assets.find(
+            (_, index) =>
+                (materializedFacts[index]?.splatHarmonicDegree ?? 0) > 0,
+        ),
+    });
     // KHR_interactivity is the asset's feature, as the pinned loader's
-    // document predicate makes it: each interactive asset joins the
-    // feature in the per-asset join below, where its graphs are parsed
-    // through the pin; the adaptation the attach records is stated here.
-    const flowGraphs: FlowGraphAssetPrograms[] = [];
+    // document predicate makes it: the join parsed each interactive asset's
+    // graphs through the pin; the adaptation the attach records is stated
+    // here.
     if (specializationFeatures.interactivity) {
         result.manifest.adaptations.push({
             id: "flow-graph-attach-at-add",
@@ -939,7 +1015,7 @@ async function main(): Promise<void> {
         });
     }
     tree.keep("upstream/gltf-specialization.json");
-    if (specializationFeatures.imageBasedLighting) {
+    if (assetJoin.imageBasedLight) {
         const brdfAsset: CompileAsset = {
             source: "generated:pinned-ibl-brdf-lut",
             output: "gltf-ibl-brdf-lut.rgba16f",
@@ -999,6 +1075,7 @@ async function main(): Promise<void> {
                 result.manifest.features.includes(
                     "material:source-texture-read",
                 ),
+                result.manifest.features.includes("scene:node-transforms"),
                 result.manifest.meshWalks,
             );
         }
@@ -1009,143 +1086,17 @@ async function main(): Promise<void> {
             const custom = result.manifest.customShaderPrograms.find(
                 (program) => program.name === name,
             );
-            if (custom) {
-                return custom;
-            }
-            const predeclared = shaderMaterialPrograms.find(
-                (program) => program.name === name,
-            );
-            if (!predeclared) {
+            if (!custom) {
                 refuseGeneration(
                     "material:shader",
                     `Unknown shader variant '${name}'.`,
                     result.manifest.featureSites,
                 );
             }
-            return predeclaredShaderProgram(predeclared);
+            return custom;
         });
-    const reachedBabylonLights = babylonLights(
-        outputPath,
-        result.manifest.assets,
-    );
-    // An asset's own KHR_lights_punctual lights are the scene's lights: the
-    // pin's loader creates them exactly like scene code does, and every
-    // consumer keyed on the light features -- the composed arms, the pinned
-    // light writers, the generated-source table -- reads the one authority,
-    // so the kinds the assets reach join the manifest here.
-    // Which features the join added and the asset that carried each,
-    // recorded for the activation inventory: a feature already reached by
-    // scene source is deliberately not re-attributed to an asset.
-    const assetJoinedFeatures = new Map<string, string>();
-    let assetLightNodes: { count: number; asset: string } | undefined;
-    for (const asset of result.manifest.assets) {
-        if (asset.kind !== "gltf") continue;
-        const assetPath = resolve(outputPath, "assets", asset.output);
-        // Source registration determines the asset's active light kinds and
-        // count. Native admission also checks this count against its fixed UBO.
-        const nodeLights = gltfNodeLights(assetPath);
-        if (nodeLights.count > (assetLightNodes?.count ?? 0)) {
-            assetLightNodes = { count: nodeLights.count, asset: asset.output };
-        }
-        const assetFeatures = nodeLights.kinds.map(
-            (kind) => `light:${kind}` as Feature,
-        );
-        // EXT_lights_image_based installs the asset's own environment, which
-        // composes the same arms `environment:ibl` does.
-        if (gltfHasImageBasedLight(assetPath)) {
-            assetFeatures.push("environment:ibl");
-        }
-        // KHR_gaussian_splatting resolves to the pin's own splat row buffer
-        // at packaging, and the clouds the loader then builds draw through
-        // the generated splat pipeline -- which `loader:splat` is what
-        // selects. No scene API names the extension, so the asset joins the
-        // feature the way its punctual lights join `light:*`.
-        if (gltfHasGaussianSplats(assetPath)) {
-            assetFeatures.push("loader:splat");
-        }
-        // Packaged KHR_texture_basisu mip payloads reach the compressed reader.
-        if (gltfHasCompressedImages(assetPath)) {
-            assetFeatures.push("texture:compressed");
-        }
-        // The source applyAsset result owns activation, including an empty
-        // result when the extension creates no usable graph.
-        const document = parseGlbJson(assetPath);
-        const graphs = await parseFlowGraphs(asset.output, document);
-        if (graphs.length) {
-            flowGraphs.push({ asset: asset.output, graphs });
-            assetFeatures.push("flow-graph:interactivity");
-        }
-        for (const feature of assetFeatures) {
-            if (!result.manifest.features.includes(feature)) {
-                result.manifest.features.push(feature);
-                assetJoinedFeatures.set(feature, asset.output);
-            }
-        }
-    }
-    // A packaged splat container that parsed to a non-zero SH degree is
-    // what `attachParsedSplat` forks on, and no scene API names it -- so
-    // the asset joins the feature exactly as a glTF's own extensions do
-    // above. It selects the payload packer and the SH capability defines;
-    // `loader:splat` is already reached by the `loadSplat` call itself.
-    if (splatHarmonicDegree !== undefined) {
-        // The container that carried them, not merely the first splat asset:
-        // the facts are positional over the manifest's assets, so a scene
-        // holding a plain cloud beside one with harmonics still attributes
-        // the feature -- and names the parser below -- from the one that
-        // answered the degree.
-        const splatAsset =
-            result.manifest.assets[
-                materializedFacts.findIndex(
-                    (facts) => (facts?.splatHarmonicDegree ?? 0) > 0,
-                )
-            ];
-        result.manifest.features.push("loader:splat-sh");
-        assetJoinedFeatures.set(
-            "loader:splat-sh",
-            splatAsset?.output ?? "splat",
-        );
-        // Pushed HERE rather than in `compileAdaptations`, beside the two
-        // siblings below, because `loader:splat-sh` is an asset-joined
-        // feature: the compiler decides its adaptations from the entry AST
-        // and this one is not known until the pin has parsed the container
-        // and said the cloud carries harmonics. Gating it on the AST-side
-        // list recorded nothing at all -- scene 124's fidelity.json had no
-        // such entry -- which is the failure this placement fixes.
-        result.manifest.adaptations.push({
-            id: "splat-harmonics-sidecar",
-            category: "asset-materialization",
-            sourceSemantics:
-                // The parser that produced them, which is the container's
-                // answer rather than a fixed one: the compressed PLY, the
-                // SPZ and the SOG all reach the SH pipeline through this
-                // same fork. A container names its own parser in its row;
-                // anything else got here through the plain PLY loader.
-                ((splatAsset === undefined
-                    ? undefined
-                    : SPLAT_CONTAINERS.get(splatAsset.kind)?.parser) ??
-                    "convertCompressedPlyToParsedSplat") +
-                " returns the 32-byte rows " +
-                "beside a flat spherical-harmonic byte stream, and " +
-                "attachParsedSplat hands both to the SH pipeline in one call.",
-            nativeSemantics:
-                "The rows package to the interchange .splat buffer " +
-                "unchanged -- a .ply and a .splat of one cloud must still " +
-                "produce identical bytes -- so the harmonics package to a " +
-                "sidecar named off the row file, and the degree becomes a " +
-                "generation-time constant the loader, the payload packer " +
-                "and the deployed stages all read. The pin's run-time fork " +
-                "on parsed.shDegree is therefore taken at generation: a " +
-                "scene whose clouds disagree on degree refuses.",
-            risk: "low",
-            validation: [
-                "scene 124 parity against the browser golden on both backends",
-                "the browser's own compiled module is byte-identical to " +
-                    "buildShShaderSource(3)",
-            ],
-        });
-    }
-    // The SPZ container, recorded here for the same reason its sibling above
-    // is: `compileAdaptations` runs over the entry AST, and the VALUE this
+    // The SPZ container, recorded here rather than in the adaptation table:
+    // `compileAdaptations` runs over the entry AST, and the VALUE this
     // entry records -- the rotation the pinned loader wrote, which is the
     // whole point of executing it -- is not known until the container has
     // been fetched and it has run over it. The reach itself is AST-derived
@@ -1217,46 +1168,9 @@ async function main(): Promise<void> {
             ],
         });
     }
-    // A `.babylon` asset's own lights are the scene's lights the same way a
-    // glTF's KHR_lights_punctual lights are: the generated loader fills
-    // point LightRecords (`type: 0` is the only kind it accepts), and the
-    // pinned lights block consumes them through `write_pinned_light`, whose
-    // per-kind writers are emitted only for the light features the scene
-    // reaches. Joining `light:point` here is what routes the point writer
-    // (and the pinned light matrix it indexes) into the generated tree.
-    for (const asset of result.manifest.assets) {
-        if (asset.kind !== "babylon") continue;
-        const materialized = resolve(outputPath, "assets", asset.output);
-        if (!existsSync(materialized)) continue;
-        const document = JSON.parse(readFileSync(materialized, "utf8")) as {
-            lights?: BabylonLight[];
-        };
-        if (
-            (document.lights ?? []).some((light) => light.type === 0) &&
-            !result.manifest.features.includes("light:point")
-        ) {
-            result.manifest.features.push("light:point");
-            assetJoinedFeatures.set("light:point", asset.output);
-        }
-    }
-    if (assetJoinedFeatures.size > 0) {
-        // The features drive the generated-source table and the CMake
-        // projection, both rendered at compile time; re-render them from the
-        // same authorities so the joined features stay declared everywhere.
-        result.manifest.generatedSources = reachedGeneratedSources(
-            result.manifest.features,
-        );
-        result.cmake = renderFeaturesCmake(
-            result.manifest.features as Feature[],
-            result.manifest.runtimeSources,
-            result.manifest.generatedSources,
-            result.manifest.sourceUnits.map(({ path }) => path),
-        );
-    }
     const {
         lightKinds,
         toneMappingStates,
-        linearImageProcessing,
         gltfAssets,
         materialIndexBase,
         casterViewCount,
@@ -1273,31 +1187,18 @@ async function main(): Promise<void> {
     } = await composeScenePipeline({
         result,
         outputPath,
-        specializationFeatures,
+        assetJoin,
         tree,
     });
-    // Whether anything in this scene deforms on the GPU. Named once
-    // because two unrelated consumers ask it -- the pick pass's deform
-    // projection below and the emit options further down -- and the
-    // asset-or-scene-code disjunction is the whole answer either way.
-    const gpuDeformation =
-        specializationFeatures.gpuDeformation ||
-        result.manifest.features.includes("mesh:morph-targets") ||
-        // A scene-authored skeleton needs the same vertex layout: the
-        // joint and weight lanes the pin's own skinning stage reads live
-        // behind this define beside the morph deltas.
-        result.manifest.features.includes("mesh:skeleton");
-    // Scene-code morph targets join the storage arm: the pinned morph
-    // fragment (`morph-fragment-core`) reads its deltas and weights
-    // from storage buffers, and with the transcribed standard fragment
-    // retired there is no attribute-lane consumer left for them.
-    const morphStorage =
-        specializationFeatures.morphStorage ||
-        result.manifest.features.includes("mesh:morph-targets");
-    const gpuInstancing =
-        specializationFeatures.gpuInstancing ||
-        result.manifest.features.includes("mesh:thin-instances") ||
-        result.manifest.features.includes("mesh:thin-instances-dynamic");
+    // The plan the join decided, completed by the one capability the
+    // composition decides: whether the transmission renderer compiles.
+    const activationPlan: ActivationPlan = {
+        ...assetJoin.plan,
+        transmission: sceneTransmission(result.manifest.features, composedArms),
+    };
+    const gpuDeformation = activationPlan.gpuDeformation.value;
+    const morphStorage = activationPlan.morphStorage.value;
+    const gpuInstancing = activationPlan.gpuInstancing.value;
     // Named rather than inline so the activation inventory below records
     // the exact values the emitters consumed, not a restatement of them.
     // Which palette transport a skin takes: a build whose composed variants
@@ -1396,6 +1297,19 @@ async function main(): Promise<void> {
         splatSh === undefined && splatFragments.length > 0
             ? await composeSplatModule(splatFragments)
             : undefined;
+    // The pin's background renderables: each reached factory runs against
+    // the recording device and is drawn once, so the modules, layouts,
+    // states and buffer bindings the backends build from are its own.
+    const backgroundFeatures = result.manifest.features;
+    const pinnedBackgrounds = await composePinnedBackgroundModules({
+        ground: backgroundFeatures.includes("background:ground"),
+        skybox: backgroundFeatures.includes("background:skybox"),
+        ddsEnvironment: backgroundFeatures.includes(
+            "background:dds-environment",
+        ),
+        solidSkybox: backgroundFeatures.includes("background:solid-skybox"),
+        imageSkybox: backgroundFeatures.includes("background:image-skybox"),
+    });
     // A composite runs its own factory instead: which passes it records, over
     // which intermediates and at which sizes, is the factory's answer.
     const postProcessComposites = await Promise.all(
@@ -1467,8 +1381,7 @@ async function main(): Promise<void> {
     // corpus asset pairs them.
     if (
         specializationFeatures.pointOrLinePrimitives &&
-        (result.manifest.features.includes("renderer:transmission") ||
-            specializationFeatures.assetTransmission ||
+        (activationPlan.transmission.value ||
             result.manifest.geometryOutputTasks.length > 0)
     ) {
         refuseGeneration(
@@ -1502,7 +1415,9 @@ async function main(): Promise<void> {
         // pulled the owning feature in.
         featureSites: result.manifest.featureSites,
         sourceMeshWalks: (result.manifest.meshWalks?.length ?? 0) > 0,
-        ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
+        ...(assetJoin.assetLightNodes !== undefined
+            ? { assetLightNodes: assetJoin.assetLightNodes }
+            : {}),
         shaderPrograms,
         ...(result.manifest.computePrograms
             ? { computePrograms: result.manifest.computePrograms }
@@ -1519,7 +1434,6 @@ async function main(): Promise<void> {
             ? { nodeParticleRegistrations }
             : {}),
         gpuDeformation,
-        animatedWorldBounds: specializationFeatures.animatedWorldBounds,
         morphStorage,
         nonTrianglePrimitives: specializationFeatures.nonTrianglePrimitives,
         // No scene API reaches KHR_gaussian_splatting, so the asset alone
@@ -1529,26 +1443,23 @@ async function main(): Promise<void> {
         // the document, and only the asset says whether the loader reads
         // one.
         compressedImages: specializationFeatures.compressedImages,
-        // Both halves of the same lane: an asset's KHR_node_visibility
-        // materializes the cascade at load, and scene code writes the same
-        // per-mesh boolean directly. Either reaches the render-plan skip
-        // and the camera-bounds skip that read it.
-        nodeVisibility:
-            specializationFeatures.nodeVisibility ||
-            result.manifest.features.includes("mesh:visible"),
+        nodeVisibility: activationPlan.nodeVisibility.value,
         gltfNodeVisibility: specializationFeatures.nodeVisibility,
         gltfInteractivity: specializationFeatures.interactivity,
-        ...(flowGraphs.length > 0 ? { flowGraphs } : {}),
+        ...(assetJoin.flowGraphs.length > 0
+            ? { flowGraphs: assetJoin.flowGraphs }
+            : {}),
         spriteCustomShaders: result.manifest.spriteCustomShaders,
         effects: result.manifest.effects,
         ...(esmShadows.length > 0 ? { esmShadows } : {}),
         ...(splatShaderModule !== undefined ? { splatShaderModule } : {}),
         ...(splatSh !== undefined ? { splatSh } : {}),
+        ...(pinnedBackgrounds.length > 0 ? { pinnedBackgrounds } : {}),
         splatContainerRotations,
         pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,
-        standardLightLists: reachedStandardLightLists(reachedBabylonLights),
+        standardLightLists: reachedStandardLightLists(assetJoin.babylonLights),
         standardDiffuseUv2: reachedDiffuseUv2(
             outputPath,
             result.manifest.assets,
@@ -1557,6 +1468,7 @@ async function main(): Promise<void> {
         animationPointerMaterials:
             specializationFeatures.animationPointerMaterials,
         assetTransmission: specializationFeatures.assetTransmission,
+        transmission: activationPlan.transmission.value,
         materialSpecular: specializationFeatures.materialSpecular,
         // The one static `selectVariant` a scene reaches: the loader reads
         // the variant order and the per-primitive mappings out of the
@@ -1566,12 +1478,15 @@ async function main(): Promise<void> {
                 (asset) => asset.selectedVariant !== undefined,
             )?.selectedVariant ?? "",
         textureTransform: specializationFeatures.textureTransform,
-        imageBasedLighting: specializationFeatures.imageBasedLighting,
+        imageBasedLighting: assetJoin.imageBasedLight,
         gpuInstancing,
         gpuInstanceColors: result.manifest.features.includes(
             "mesh:thin-instance-colors",
         ),
-        punctualLights: specializationFeatures.punctualLights,
+        // The lights the asset's executed light plan registers, not the
+        // extension's declaration: a declared light no node instances
+        // creates nothing upstream.
+        punctualLights: assetJoin.assetLightNodes !== undefined,
         // The arms the composed set carries, read off the composition
         // itself: a glTF material's, a scene-code material's and a caster
         // view's variants all report through `pinnedVariantArms`, so what
@@ -1629,6 +1544,11 @@ ${imageCodecLines || '    ""'}
 )
 `,
     );
+    for (const [include, text] of featureMacroHeaders({
+        features: result.manifest.features,
+        imageCodecs,
+    }))
+        tree.write(`upstream/include/${include}`, text);
     // The reached-file list: the program's files (recorded by the
     // compiler) plus what this run read beside them -- the host-UI
     // companion and every asset materialized from a repository path. A
@@ -1667,16 +1587,14 @@ ${imageCodecLines || '    ""'}
             ],
         });
     result.manifest.inputs = [...new Set(result.manifest.inputs)].sort();
-    tree.write(
-        "manifest.json",
-        `${JSON.stringify(result.manifest, null, 2)}\n`,
-    );
+    const recorded = recordedManifest(result.manifest, repositoryRoot);
+    tree.write("manifest.json", `${JSON.stringify(recorded, null, 2)}\n`);
     tree.write(
         "fidelity.json",
         `${JSON.stringify(
             {
-                source: result.manifest.source,
-                adaptations: result.manifest.adaptations,
+                source: recorded.source,
+                adaptations: recorded.adaptations,
             },
             null,
             2,
@@ -1692,9 +1610,10 @@ ${imageCodecLines || '    ""'}
         `${JSON.stringify(
             featureActivationRows({
                 features: result.manifest.features,
-                featureSites: result.manifest.featureSites,
-                assetJoinedFeatures,
+                featureSites: recorded.featureSites,
+                assetJoinedFeatures: assetJoin.joined,
                 specialization: specializationFeatures,
+                activation: activationPlan,
                 emit: emitOptions,
                 imageCodecs,
                 gltfAssetNames: gltfAssets.map((asset) => asset.output),
@@ -1714,7 +1633,6 @@ ${imageCodecLines || '    ""'}
                     toneMappingStates,
                     mutableToneMappingEnabled:
                         result.manifest.mutableToneMappingEnabled,
-                    linearImageProcessing,
                 },
             }),
             null,

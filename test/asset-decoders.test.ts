@@ -48,10 +48,12 @@ test("decoder setup preserves application locations for packaging", () => {
 test("decoder setup refuses runtime selection and retained mutable overrides", () => {
     const imports =
         'import {setKtx2DecoderUrl,setDracoBaseUrl} from "@babylonjs/lite";';
+    const deployment = { publicUrl: "https://cdn.example.invalid/" };
     assert.throws(
         () =>
             compileSource(
                 imports + 'if(Math.random()>0.5)setDracoBaseUrl("/chosen/");',
+                deployment,
             ),
         /definite setup/,
     );
@@ -64,6 +66,7 @@ test("decoder setup refuses runtime selection and retained mutable overrides", (
         setKtx2DecoderUrl("/decoder.js",urls);
         urls.ZSTDDecoder.WasmModuleURL="/later.wasm";
     `,
+                deployment,
             ),
         /fresh object literals/,
     );

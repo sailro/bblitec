@@ -7,6 +7,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
 } from "./native-fixture.js";
 
 test("backdrop blur survives CSS lowering and vendor spelling", () => {
@@ -24,16 +25,17 @@ test("backdrop blur survives CSS lowering and vendor spelling", () => {
     assert.doesNotMatch(cpp, /brightness|webkit-backdrop/);
 });
 
-test("all UI GPU consumers preserve backdrop ordering", () => {
-    for (const [backend, files] of [
-        ["sdl", ["pal_sdl_gpu.cpp", "pal_sprite_ui_sdl.hpp"]],
-        ["dawn", ["pal_dawn.cpp", "pal_sprite_ui_dawn.hpp"]],
-    ] as const) {
-        for (const file of files) {
-            const source = readFileSync(`native/src/${file}`, "utf8");
-            assert.match(source, /for_each_ui_segment\(\s*frame,/);
-            assert.ok(source.includes(`render_ui_backdrop_${backend}(`));
-        }
+test("each backend's one UI compositor preserves backdrop ordering", () => {
+    for (const backend of ["sdl", "dawn"] as const) {
+        const compositor = readFileSync(
+            `native/src/pal_${backend === "sdl" ? "sdl_gpu" : "dawn"}_sprite_ui.hpp`,
+            "utf8",
+        );
+        assert.match(compositor, /for_each_ui_segment\(\s*frame,/);
+        assert.ok(compositor.includes(`render_ui_backdrop_${backend}(`));
+        const renderer = sceneBackendSource(backend);
+        assert.ok(renderer.includes(`render_sprite_ui_${backend}_frame(`));
+        assert.doesNotMatch(renderer, /for_each_ui_segment\(/);
     }
 });
 

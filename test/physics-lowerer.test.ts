@@ -254,7 +254,7 @@ test("shape parameters are translated from _buildShapeParams", () => {
     );
     assert.match(
         lowered.source,
-        /double sphere_radius[\s\S]*?return \(std::max<double>\(\{shape\.extents\.x, shape\.extents\.y, shape\.extents\.z\}\) \* 0\.5\);/,
+        /double sphere_radius[\s\S]*?return \(bbl::js::math_extreme<true>\(\{shape\.extents\.x, shape\.extents\.y, shape\.extents\.z\}\) \* 0\.5\);/,
     );
     assert.match(
         lowered.source,
@@ -406,21 +406,18 @@ test("a body's integrated pose writes the two fields the pin writes", () => {
     const writer = emittedBody("void write_node_pose(");
     assert.match(writer, /mesh\.position = position;/);
     assert.match(writer, /mesh\.rotation_quaternion = rotation;/);
-    assert.match(
-        writer,
-        /mark_mesh_runtime_transform\(engine, MeshHandle\{node\.value\}\);/,
-    );
+    assert.match(writer, /mark_mesh_dirty\(engine, handle\);/);
     assert.doesNotMatch(lowered.source, /mark_physics_mesh_dirty/);
 });
 
 test("a body follows either kind of pinned scene node", () => {
     // `createPhysicsBody` takes a `SceneNode` upstream, which is a mesh or
     // a bare transform node; this port keeps the two in separate arenas, so
-    // the body records which one its handle addresses and both syncs read
-    // the same two properties off either.
+    // the body holds whichever handle it follows and both syncs read the
+    // same two properties off either.
     assert.match(
         lowered.header,
-        /enum class PhysicsNodeKind : std::int32_t \{\n {4}mesh,\n {4}transform_node,\n\};/,
+        /using PhysicsNodeRef = std::variant<MeshHandle, TransformNodeHandle>;/,
     );
     assert.match(lowered.header, /PhysicsNodeRef node\{\};/);
     for (const record of ["TransformNodeRecord", "MeshRecord"]) {
@@ -567,7 +564,7 @@ test("a tree that reaches neither standalone module emits neither arm", () => {
             "void set_physics_gravity(PhysicsWorldHandle handle",
             reachingModules.source,
         ),
-        /if \(world\.fo\) \{[\s\S]*?get_or_create_region\(world, \*world_position\)[\s\S]*?\n {4}pal::physics_world_set_gravity\(world\.handle, values\);/,
+        /if \(world\.fo\) \{\n {8}fo_set_gravity\(world, values, world_position\);\n {8}return;\n {4}\}\n {4}pal::physics_world_set_gravity\(world\.handle, values\);/,
     );
 });
 
@@ -611,10 +608,7 @@ test("the region phases keep the pin's own order", () => {
     // re-based after its node sync would be stepped from the previous
     // region's frame, so the first edge is as observable as the last.
     assert.match(
-        emittedBody(
-            "void fo_step_world(PhysicsWorld& world, double dt)",
-            reachingModules.source,
-        ),
+        emittedBody("void fo_step_world(", reachingModules.source),
         /re_region_body\([\s\S]*?fo_sync_node_to_body\([\s\S]*?physics_world_step\([\s\S]*?fo_sync_body_to_node\([\s\S]*?gc_regions\(world\);/,
     );
     // `_getOrCreateRegion` seeds a new region from the CONTEXT's gravity
@@ -622,21 +616,18 @@ test("the region phases keep the pin's own order", () => {
     // defaults, which is what makes both PAL entry points reached.
     assert.match(
         emittedBody(
-            "[[nodiscard]] pal::PhysicsWorldHandle get_or_create_region(",
+            "std::shared_ptr<PhysicsRegion> get_or_create_region(",
             reachingModules.source,
         ),
-        /physics_world_create\(\);\n {4}pal::physics_world_set_gravity\(new_world, fo\.gravity\);\n[\s\S]*?physics_world_get_speed_limit\(world\.handle\);\n {4}pal::physics_world_set_speed_limit\(/,
+        /physics_world_create\(\);\n {4}pal::physics_world_set_gravity\(newWorld, world\.fo->gravity\);\n[\s\S]*?physics_world_get_speed_limit\(world\.handle\);\n {4}pal::physics_world_set_speed_limit\(/,
     );
 });
 
 test("a migrating body carries its velocity and the 20% margin", () => {
-    const body = emittedBody(
-        "void re_region_body(PhysicsWorld& world, PhysicsBody& body)",
-        reachingModules.source,
-    );
+    const body = emittedBody("void re_region_body(", reachingModules.source);
     // `const margin = fo.radius * 1.2` and the squared test it feeds: the
     // hysteresis is what stops a body on a boundary re-regioning every step.
-    assert.match(body, /const double margin = fo\.radius \* 1\.2;/);
+    assert.match(body, /const double margin = \(world\.fo->radius \* 1\.2\);/);
     // `HP_World_AddBody` does not carry velocity, so the pin reads both
     // vectors before the move and writes them back after it.
     assert.match(
@@ -651,11 +642,11 @@ test("the node keeps true world coordinates under floating origin", () => {
     // subtracts the camera's own offset -- is untouched.
     assert.match(
         emittedBody("void fo_sync_body_to_node(", reachingModules.source),
-        /transform\.position\[0\] \+ origin\.x,\n {12}transform\.position\[1\] \+ origin\.y,\n {12}transform\.position\[2\] \+ origin\.z,/,
+        /set_physics_node_position\(engine, body\.node, Vec3d\{\(static_cast<double>\(t\.position\[static_cast<std::size_t>\(0\.0\)\]\) \+ physics_region\(body\.region\)\.origin\.x\)/,
     );
     assert.match(
         emittedBody("void fo_sync_node_to_body(", reachingModules.source),
-        /pose\.position\.x - origin\.x,\n {13}pose\.position\.y - origin\.y,\n {13}pose\.position\.z - origin\.z/,
+        /pal::PhysicsTransform\{\{\(p\.x - physics_region\(body\.region\)\.origin\.x\), \(p\.y - physics_region\(body\.region\)\.origin\.y\), \(p\.z - physics_region\(body\.region\)\.origin\.z\)\}/,
     );
 });
 

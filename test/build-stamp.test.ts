@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import {
     mkdirSync,
     mkdtempSync,
@@ -14,8 +15,11 @@ import {
     buildStampHeaderPath,
     comparePayload,
     computeBuildStamp,
+    deployedPayloads,
+    executableDeployedShaderSuffixes,
     generatorWouldReconfigure,
     incompatibleCacheEntries,
+    payloadOrphans,
     readCacheConfiguration,
     sameCachePath,
 } from "../src/build-stamp.js";
@@ -87,6 +91,20 @@ test("digests the compiled inputs of a generated scene", (t) => {
     );
 });
 
+test("a same-size native edit inside one file-system clock tick moves the stamp", (t) => {
+    const root = scratchRepository();
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const generated = resolve(root, "generated/scene");
+    const source = resolve(root, "native/src/pal.cpp");
+    const tick = new Date();
+    utimesSync(source, tick, tick);
+    const first = computeBuildStamp(generated, root).stamp;
+    // The second write keeps the size and, as within one clock tick, the mtime.
+    writeFileSync(source, "int pal() { return 1; }\n");
+    utimesSync(source, tick, tick);
+    assert.notEqual(computeBuildStamp(generated, root).stamp, first);
+});
+
 test("application units and their shared headers participate in build identity", (t) => {
     const root = scratchRepository();
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -146,6 +164,35 @@ test("cache paths follow the host's case and separator rules", () => {
     );
 });
 
+test("an existing tool matches its short DOS spelling", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-short-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const directory = resolve(root, "Long Tool Directory Name");
+    mkdirSync(directory);
+    const tool = resolve(directory, "ninja.exe");
+    writeFileSync(tool, "");
+    if (process.platform !== "win32") {
+        assert.equal(sameCachePath(tool, tool), true);
+        return;
+    }
+    // cmd's %~s modifier prints the 8.3 spelling CMake writes back into
+    // CMAKE_MAKE_PROGRAM; volumes without 8.3 names return the long path.
+    const listing = spawnSync(
+        "cmd",
+        ["/d", "/s", "/c", `"for %I in ("${tool}") do @echo %~sI"`],
+        { encoding: "utf8", windowsVerbatimArguments: true },
+    );
+    assert.equal(listing.status, 0, listing.stderr);
+    const short = listing.stdout.trim();
+    assert.equal(sameCachePath(short, tool), true);
+    assert.deepEqual(
+        incompatibleCacheEntries({ CMAKE_MAKE_PROGRAM: short }, [
+            `-DCMAKE_MAKE_PROGRAM=${tool}`,
+        ]),
+        [],
+    );
+});
+
 test("keeps the stamp independent of the payload and of itself", (t) => {
     const root = scratchRepository();
     t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -177,29 +224,96 @@ test("compares a deployed payload against its generated source", (t) => {
     const deployed = resolve(root, "build/shaders");
     mkdirSync(source, { recursive: true });
     mkdirSync(deployed, { recursive: true });
+    const payload = { source, deployed, deploys: () => true };
     writeFileSync(resolve(source, "pbr.frag.dxil"), "DXBC-1");
     writeFileSync(resolve(deployed, "pbr.frag.dxil"), "DXBC-1");
-    assert.deepEqual(comparePayload(source, deployed), []);
+    assert.deepEqual(comparePayload(payload), []);
 
     // The build's own marker files are not payload.
     writeFileSync(resolve(deployed, ".snapshot-stamp"), "");
-    assert.deepEqual(comparePayload(source, deployed), []);
+    assert.deepEqual(comparePayload(payload), []);
 
     writeFileSync(resolve(deployed, "pbr.frag.dxil"), "DXBC-2");
-    assert.deepEqual(comparePayload(source, deployed), [
+    assert.deepEqual(comparePayload(payload), [
         { path: "pbr.frag.dxil", reason: "changed" },
     ]);
 
     rmSync(resolve(deployed, "pbr.frag.dxil"));
-    assert.deepEqual(comparePayload(source, deployed), [
+    assert.deepEqual(comparePayload(payload), [
         { path: "pbr.frag.dxil", reason: "missing" },
     ]);
 
     writeFileSync(resolve(source, "pbr.frag.dxil"), "DXBC-1");
     writeFileSync(resolve(deployed, "pbr.frag.dxil"), "DXBC-1");
     writeFileSync(resolve(deployed, "orphan.dxil"), "DXBC-0");
-    assert.deepEqual(comparePayload(source, deployed), [
+    assert.deepEqual(comparePayload(payload), [
         { path: "orphan.dxil", reason: "unexpected" },
+    ]);
+    assert.deepEqual(payloadOrphans(payload), ["orphan.dxil"]);
+});
+
+test("deploys the shader files the build's CMake cache records", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-payload-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const generated = resolve(root, "generated");
+    const build = resolve(root, "build");
+    const source = resolve(generated, "upstream/shaders");
+    mkdirSync(source, { recursive: true });
+    mkdirSync(resolve(build, "shaders"), { recursive: true });
+    const shaderPayload = () => {
+        const shaders = deployedPayloads(build, generated).find(
+            (payload) => payload.label === "shaders",
+        );
+        assert.ok(shaders);
+        return shaders;
+    };
+    // A tree without shaders configures no suffix list and needs none.
+    assert.deepEqual(comparePayload(shaderPayload()), []);
+    for (const name of [
+        "pbr.frag.native.wgsl",
+        "pbr.frag.dxil",
+        "pbr.frag.slots",
+        "pbr.frag.hlsl",
+        "composition.json",
+    ]) {
+        writeFileSync(resolve(source, name), name);
+    }
+    assert.throws(
+        () => comparePayload(shaderPayload()),
+        /No CMake cache with BBLITE_DEPLOYED_SHADER_SUFFIXES/,
+    );
+    writeFileSync(
+        resolve(build, "CMakeCache.txt"),
+        "BBLITE_BACKEND:STRING=DAWN\nBBLITE_DEPLOYED_SHADER_SUFFIXES:INTERNAL=\n",
+    );
+    assert.throws(
+        () => comparePayload(shaderPayload()),
+        /records no BBLITE_DEPLOYED_SHADER_SUFFIXES/,
+    );
+    writeFileSync(
+        resolve(build, "CMakeCache.txt"),
+        "BBLITE_BACKEND:STRING=DAWN\nBBLITE_DEPLOYED_SHADER_SUFFIXES:INTERNAL=.native.wgsl\n",
+    );
+    writeFileSync(
+        resolve(build, "shaders/pbr.frag.native.wgsl"),
+        "pbr.frag.native.wgsl",
+    );
+    assert.deepEqual(comparePayload(shaderPayload()), []);
+    // An SDL_GPU binary left beside a Dawn-only executable is an orphan.
+    writeFileSync(resolve(build, "shaders/pbr.frag.dxil"), "pbr.frag.dxil");
+    assert.deepEqual(payloadOrphans(shaderPayload()), ["pbr.frag.dxil"]);
+
+    // A multi-configuration generator keeps the cache one level up.
+    writeFileSync(
+        resolve(build, "CMakeCache.txt"),
+        "BBLITE_DEPLOYED_SHADER_SUFFIXES:INTERNAL=.dxil;.slots;.native.wgsl\n",
+    );
+    const release = resolve(build, "Release");
+    mkdirSync(release);
+    assert.deepEqual(executableDeployedShaderSuffixes(release), [
+        ".dxil",
+        ".slots",
+        ".native.wgsl",
     ]);
 });
 

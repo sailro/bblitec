@@ -7,7 +7,6 @@ import {
     buildRenderDiff,
     correspond,
     formatRenderDiff,
-    mirrorMatrixConvention,
     nativeFields,
     parseCppUniformStructs,
     pinnedBlockFields,
@@ -20,6 +19,13 @@ import {
     type TextureUpload,
     type UniformField,
 } from "../src/render-diff.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { withoutPinnedProvenance } from "../src/pinned-provenance.js";
+
+/** The line a whole deployed pinned module opens with, as the lowering writes it. */
+function deployedProvenance(modulePath: string, symbolName: string): string {
+    return `// ${new LoweringContext().provenance(modulePath, symbolName)}\n`;
+}
 
 const header = `
 struct PbrUniforms {
@@ -335,33 +341,15 @@ test("decodes pinned blocks into vec4 rows, flagging blocks no draw carries", ()
     assert.deepEqual(decoded.mesh[0]!.fields[3]!.values, [4, 5, 6, 1]);
 });
 
-test("applies the documented mirror map: negate column-major 1, 2, 3, 4, 8, 12", () => {
-    const matrix = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-    assert.deepEqual(
-        mirrorMatrixConvention(matrix),
-        [0, -1, -2, -3, -4, 5, 6, 7, -8, 9, 10, 11, -12, 13, 14, 15],
-    );
-    // The map is an involution: applying it twice is the identity, which
-    // is why matching mirrored-native against browser is the same
-    // correspondence the docs describe in the other direction.
-    assert.deepEqual(
-        mirrorMatrixConvention(mirrorMatrixConvention(matrix)),
-        matrix,
-    );
-});
-
-test("matches native bone palettes against rgba32float uploads, mirror map applied", () => {
+test("matches native bone palettes against rgba32float uploads as stored", () => {
     const nativeBone = [
         0.5, 0.1, -0.2, 0, 0.3, 0.9, 0.05, 0, -0.4, 0.2, 0.8, 0, 1.5, -2.5, 3.5,
         1,
     ];
-    // The browser's upload carries the mirrored form of ours; encode it
-    // as the raw rgba32float texel bytes the capture records.
-    const browserMatrix = mirrorMatrixConvention(nativeBone);
+    // Both sides hold the pin's palette; encode ours as the raw
+    // rgba32float texel bytes the capture records.
     const bytes = Buffer.alloc(64);
-    browserMatrix.forEach((value, index) =>
-        bytes.writeFloatLE(value, index * 4),
-    );
+    nativeBone.forEach((value, index) => bytes.writeFloatLE(value, index * 4));
     const uploads: TextureUpload[] = [
         {
             tex: 5,
@@ -549,6 +537,25 @@ test("matches shader arms by normalized content and opens the closest near miss"
     assert.equal(report.nearMiss?.line, 5);
     assert.deepEqual(report.nearMiss?.browserLines, ["  let arm = 2.0;", "}"]);
     assert.deepEqual(report.nearMiss?.nativeLines, ["  let arm = 3.0;", "}"]);
+});
+
+test("a deployed module drops exactly the provenance line the lowering writes", () => {
+    const module = "struct S { a : f32 }\n@fragment\nfn main() { }\n";
+    const provenance = deployedProvenance(
+        "src/sprite/billboard-pipeline.ts",
+        "makeBillboardWgsl",
+    );
+    assert.equal(withoutPinnedProvenance(provenance + module), module);
+    // Another opening comment is the module's own.
+    assert.equal(
+        withoutPinnedProvenance(`// billboard\n${module}`),
+        `// billboard\n${module}`,
+    );
+    // Only the opening line is the deployment's.
+    assert.equal(
+        withoutPinnedProvenance(module + provenance),
+        module + provenance,
+    );
 });
 
 test("two shaders sharing no line are not reported as a near miss", () => {
@@ -1265,14 +1272,18 @@ test("a standalone sprite-only capture pairs against the browser's sprite frame"
             JSON.stringify({ "pass.drawIndexed(6,4,0,0)": 12 }),
         );
         // The browser composes the sprite program; the deployed
-        // .native.wgsl twin is byte-equal, so the arm comparison pairs
-        // them instead of reporting a one-sided module.
+        // .native.wgsl twin is the same module under the provenance line
+        // the lowering opens it with, so the arm comparison pairs them
+        // instead of reporting a one-sided module.
         const spriteModule =
             "// sprite2d\n@fragment\nfn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\n";
         writeFileSync(join(capture, "shaders", "00-sprite.wgsl"), spriteModule);
         writeFileSync(
             join(generated, "upstream", "shaders", "sprite.frag.native.wgsl"),
-            spriteModule,
+            deployedProvenance(
+                "src/sprite/sprite-renderer.ts",
+                "makeSpriteWgsl",
+            ) + spriteModule,
         );
         const nativeCapture = join(capture, "native-gpu.json");
         writeFileSync(

@@ -14,10 +14,9 @@
  * function over its whole domain and emits the answers.
  */
 import ts from "typescript";
-import { LoweringContext } from "./lowering/context.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 
-export type PinnedLightMode = 0 | 1 | 2;
+type PinnedLightMode = 0 | 1 | 2;
 
 const pbrRenderableModule = "src/material/pbr/pbr-renderable.ts";
 
@@ -35,7 +34,7 @@ let anchored = false;
 
 function anchorPinnedLightMode(): void {
     if (anchored) return;
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     const file = context.sourceFile(pbrRenderableModule);
     const declarations = (
         root: ts.Node,
@@ -77,7 +76,7 @@ function anchorPinnedLightMode(): void {
     anchored = true;
 }
 
-export function pinnedPbrLightMode(
+function pinnedPbrLightMode(
     lightCount: number,
     receivesShadows: boolean,
 ): PinnedLightMode {

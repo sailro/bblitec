@@ -3,7 +3,6 @@ import {
     existsSync,
     lstatSync,
     mkdirSync,
-    readFileSync,
     readdirSync,
     renameSync,
     writeFileSync,
@@ -26,66 +25,20 @@ import { runConcurrently } from "./run-concurrently.js";
 import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import {
     installVcpkgManifest,
+    vcpkgInstallDirectory,
     type VcpkgManifestInstall,
 } from "./vcpkg-install.js";
-import { writeJsonRecord } from "./validation-resume.js";
+import { writeJsonRecord } from "./tooling/records.js";
 import { runLoggedProcess } from "./tooling/logged-process.js";
-
-export type ShippingPlatform = "win32" | "linux" | "darwin";
-
-export function shippingPlatform(
-    platform: NodeJS.Platform = process.platform,
-    arch: string = process.arch,
-): ShippingPlatform {
-    if (
-        (platform !== "win32" &&
-            platform !== "linux" &&
-            platform !== "darwin") ||
-        (arch !== "x64" && !(platform === "darwin" && arch === "arm64"))
-    ) {
-        throw new Error(
-            "Minimal demo shipping supports Windows/Linux x64 and macOS x64/arm64 hosts.",
-        );
-    }
-    return platform;
-}
-
-export interface ShippingFeatures {
-    features: string[];
-    codecs: string[];
-    runtime: string[];
-}
-
-export function readShippingFeatures(text: string): ShippingFeatures {
-    const values = new Map(
-        text
-            .trim()
-            .split(/\r?\n/)
-            .map((line) => {
-                const split = line.indexOf("=");
-                if (split < 0)
-                    throw new Error(
-                        "Malformed shipping profile; regenerate it.",
-                    );
-                return [line.slice(0, split), line.slice(split + 1)] as const;
-            }),
-    );
-    const list = (key: string): string[] => {
-        const value = values.get(key);
-        if (
-            value === undefined ||
-            (value !== "" && !/^[a-z0-9:-]+(?:;[a-z0-9:-]+)*$/.test(value))
-        ) {
-            throw new Error(`Invalid shipping profile ${key}.`);
-        }
-        return [...new Set(value === "" ? [] : value.split(";"))].sort();
-    };
-    return {
-        features: list("features"),
-        codecs: list("codecs"),
-        runtime: list("runtime"),
-    };
-}
+import {
+    packageDesktopDemo,
+    shippingPlatform,
+    type ShippingPlatform,
+} from "./package-demo.js";
+import {
+    writeShippingProfile,
+    type ShippingFeatures,
+} from "./shipping-profile.js";
 
 export function selectShippingScenes(
     selection: string | undefined,
@@ -143,7 +96,7 @@ export function shippingPlan(
             const codecs = [...reached.codecs].sort();
             // SDL_image's static registry pulls every enabled decoder into consumers.
             // Other manifest features may share an install only within this codec set.
-            const installedDirectory = resolve(
+            const installedDirectory = vcpkgInstallDirectory(
                 installRoot,
                 `shipping-demo-${codecs.join("-") || "core"}${suffix}`,
             );
@@ -315,37 +268,6 @@ export function packageSizeReport(
     ].join("\n");
 }
 
-function readPackageSize(path: string): PackageSize {
-    const value: unknown = JSON.parse(
-        readFileSync(path, "utf8").replace(/^\uFEFF/, ""),
-    );
-    if (
-        typeof value !== "object" ||
-        value === null ||
-        !("scene" in value) ||
-        typeof value.scene !== "string" ||
-        !("exeBytes" in value) ||
-        typeof value.exeBytes !== "number" ||
-        !("zipBytes" in value) ||
-        typeof value.zipBytes !== "number" ||
-        !("previousExeBytes" in value) ||
-        (typeof value.previousExeBytes !== "number" &&
-            value.previousExeBytes !== null) ||
-        !("previousZipBytes" in value) ||
-        (typeof value.previousZipBytes !== "number" &&
-            value.previousZipBytes !== null)
-    ) {
-        throw new Error(`Invalid package size receipt: ${path}`);
-    }
-    return {
-        scene: value.scene,
-        exeBytes: value.exeBytes,
-        zipBytes: value.zipBytes,
-        previousExeBytes: value.previousExeBytes,
-        previousZipBytes: value.previousZipBytes,
-    };
-}
-
 async function main(): Promise<void> {
     const flags = parseFlags(
         process.argv.slice(2),
@@ -367,7 +289,7 @@ async function main(): Promise<void> {
     );
     if (flags.flags.has("--help")) {
         console.log(
-            "npm run demos:release -- [--scene all|id,id] [--output directory] [--workers N] [--jobs N] [--plan]\nAndroid: --platform android --sdk directory --device serial [--abi arm64-v8a|x86_64] [--backend sdl_gpu|dawn].\niOS: --platform ios on macOS with DEVELOPER_DIR selecting Xcode/iOS SDK 16.4+. Produces unsigned, trimmed ARM64 iPhone/iPad SDL_GPU bundles; no device startup qualification.\nMobile packages run sequentially (--workers 1).\n--plan describes the packages without building or packaging.",
+            "npm run demos:release -- [--scene all|id,id] [--output directory] [--workers N] [--jobs N] [--plan]\nAndroid: --platform android --sdk directory --device serial [--abi arm64-v8a|x86_64] [--backend sdl_gpu|dawn].\niOS: --platform ios on macOS with DEVELOPER_DIR selecting Xcode/iOS SDK 16.4+. Produces unsigned, trimmed ARM64 iPhone/iPad SDL_GPU bundles; no device startup qualification.\nMobile packages run sequentially (--workers 1).\n--plan generates the selected scenes (skipped when current) and describes the packages without building dependencies or packaging.",
         );
         return;
     }
@@ -474,33 +396,28 @@ async function main(): Promise<void> {
         console.log(`${stage} ${id}: PASS`);
     };
     const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-    if (!flags.flags.has("--plan")) {
-        await runConcurrently(
-            selected,
-            workers,
-            (scene) => scene.id,
-            (scene) =>
-                run("generate", scene.id, process.execPath, [
-                    join(moduleDirectory, "scene-command.js"),
-                    "compile",
-                    scene.id,
-                ]),
-        );
-    }
-    const inputs: { scene: SceneDefinition; reached: ShippingFeatures }[] = [];
-    for (const scene of selected) {
-        const profilePath = join(logs, `${scene.id}.profile`);
-        await run("profile", scene.id, cmake, [
-            `-DBBLITE_GENERATED_DIR=${resolve(scene.output)}`,
-            `-DBBLITE_PROFILE_OUTPUT=${profilePath}`,
-            "-P",
-            resolve("tools/shipping-profile.cmake"),
-        ]);
-        inputs.push({
-            scene,
-            reached: readShippingFeatures(readFileSync(profilePath, "utf8")),
-        });
-    }
+    // The plan reads each scene's generated features, so --plan generates too:
+    // a current tree costs a stamp check, and a missing or stale one would
+    // describe packages the build would not make.
+    await runConcurrently(
+        selected,
+        workers,
+        (scene) => scene.id,
+        (scene) =>
+            run("generate", scene.id, process.execPath, [
+                join(moduleDirectory, "scene-command.js"),
+                "compile",
+                scene.id,
+            ]),
+    );
+    const inputs = selected.map((scene) => ({
+        scene,
+        reached: writeShippingProfile(
+            cmake,
+            scene.output,
+            join(logs, `${scene.id}.profile`),
+        ),
+    }));
     const plan = shippingPlan(
         root,
         inputs,
@@ -649,28 +566,36 @@ async function main(): Promise<void> {
                 candidate.id === scene.id &&
                 candidate.macArchitecture === "arm64",
         );
-        await run("package", scene.id, powershell, [
-            "-NoProfile",
-            "-File",
-            resolve("tools/package-demo.ps1"),
-            "-Scene",
-            scene.id,
-            "-BuildDirectory",
-            scene.buildDirectory,
-            ...(arm ? ["-Arm64BuildDirectory", arm.buildDirectory] : []),
-            "-ExpectBackend",
-            "SDL_GPU",
-            "-OutputRoot",
-            output,
-        ]);
-        receipts.push(
-            readPackageSize(
-                join(
-                    output,
-                    `bblitec-${scene.id}-sdl-gpu-${platform === "win32" ? "windows-x64" : platform === "darwin" ? "macos-universal" : "linux-x64"}.json`,
-                ),
-            ),
-        );
+        console.log(`package ${scene.id}: running`);
+        let exit = 1;
+        const log = join(logs, `package-${scene.id}.log`);
+        try {
+            const receipt = packageDesktopDemo({
+                scene: scene.id,
+                buildDirectory: scene.buildDirectory,
+                ...(arm ? { arm64BuildDirectory: arm.buildDirectory } : {}),
+                expectBackend: "SDL_GPU",
+                outputRoot: output,
+                cmake,
+                platform,
+                root,
+            });
+            writeJsonRecord(log, receipt);
+            receipts.push(receipt);
+            exit = 0;
+        } catch (error) {
+            writeFileSync(
+                log,
+                error instanceof Error
+                    ? (error.stack ?? error.message)
+                    : String(error),
+            );
+            throw error;
+        } finally {
+            results.push({ stage: "package", id: scene.id, exit, log });
+            writeJsonRecord(join(logs, "results.json"), results);
+        }
+        console.log(`package ${scene.id}: PASS`);
     }
     const report = packageSizeReport(receipts, platform);
     const reportPath = join(output, "SIZE-COMPARISON.md");

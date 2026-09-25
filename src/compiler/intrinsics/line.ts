@@ -44,8 +44,7 @@ export interface LineIntrinsicContext
             | "compileStringLiteral"
             | "cppString"
             | "requireDefaultEngine"
-            | "reachLineMaterial"
-            | "lineMaterialPermutation"
+            | "intrinsicOptions"
         > {}
 
 /** The options a reached `createLineMaterial` may name. */
@@ -81,7 +80,7 @@ export function compileLineIntrinsic(
 ): Value | undefined {
     switch (importedName) {
         case "createLineMaterial": {
-            context.recordSceneMaterialSlot();
+            context.sceneManifest.recordSceneMaterialSlot();
             context.expectArgumentCount(call, 0, 1);
             const engine = context.requireDefaultEngine(call);
             const options = call.arguments[0]
@@ -97,7 +96,10 @@ export function compileLineIntrinsic(
                 requireStaticName(context, options);
             }
             const flags = lineMaterialFlags(context, options);
-            const variant = context.reachLineMaterial(call, flags);
+            const variant = context.intrinsicOptions.reachLineMaterial(
+                call,
+                flags,
+            );
             reachLineFeatures(context, call);
             return {
                 kind: "material",
@@ -163,17 +165,21 @@ export function compileLineIntrinsic(
                     // the geometry rather than taking it as an option.
                     useVertexColor: colors !== undefined,
                 };
-                const variant = context.reachLineMaterial(options, flags);
+                const variant = context.intrinsicOptions.reachLineMaterial(
+                    options,
+                    flags,
+                );
                 variantName = variant.name;
                 materialCpp =
                     `bbl::create_shader_material(${engine.cpp}, ` +
                     `${variant.id}u)`;
-                context.recordSceneMaterialSlot();
+                context.sceneManifest.recordSceneMaterialSlot();
             }
-            const permutation = context.lineMaterialPermutation(
-                variantName,
-                supplied ?? options,
-            );
+            const permutation =
+                context.intrinsicOptions.lineMaterialPermutation(
+                    variantName,
+                    supplied ?? options,
+                );
             if (!permutation) {
                 context.fail(
                     supplied ?? options,
@@ -188,7 +194,7 @@ export function compileLineIntrinsic(
                     "createLineSystem requires material.useVertexColor to match the line color-buffer layout.",
                 );
             }
-            context.recordSceneMesh("from-data", {
+            context.sceneManifest.recordSceneMesh("from-data", {
                 hasUv2: false,
                 hasTangents: false,
                 hasColors: colors !== undefined,

@@ -1,3 +1,6 @@
+#include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/has_pbr_renderer.hpp>
+
 #include <bblite/pal_window_realm.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_animation_frame.hpp>
@@ -8,6 +11,7 @@
 #include "pal_platform_events.hpp"
 #include "pal_system_preferences.hpp"
 #include "pal_window.hpp"
+#include "pal_gpu_dispatch.hpp"
 #include "pal_file_io.hpp"
 #if BBLITE_HAS_PBR_RENDERER
 #include "pal_camera_controls.hpp"
@@ -150,6 +154,13 @@ struct WindowServices final : CanvasProvider {
         endpoints.push_back(endpoint->surface);
         return endpoint;
     }
+    void post_input(std::unique_ptr<ExternalEvent> event) {
+        {
+            std::lock_guard lock(mutex);
+            ++input_posted;
+        }
+        inbox->post(std::move(event));
+    }
     void stop() {
         {
             std::lock_guard lock(mutex);
@@ -171,6 +182,12 @@ struct WindowServices final : CanvasProvider {
     std::unique_ptr<DocumentSnapshot> pending;
     std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
     std::uint64_t requested = 0, completed = 0;
+    /** Document input the display posted, and how much of it the realm has
+     * handled. One input event's DOM transaction, including the events its
+     * native default posts (click, input, change, toggle), completes before
+     * the display handles the next event or presents, as a browser dispatches
+     * them within one task. Both are guarded by `mutex`. */
+    std::uint64_t input_posted = 0, input_handled = 0;
     std::shared_ptr<const LayoutSnapshot> layout;
     std::atomic<bool> screen_requested = false;
     std::atomic<bool> reload_requested = false;
@@ -251,7 +268,7 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
             names.events.push_back("input");
         native.click_callbacks.clear();
         native.event_callbacks.clear();
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
         if (!native.file_change_callbacks.empty() || native.file_input ||
             native.download_url.slot != invalid_handle) {
             throw std::runtime_error("Window realm file actions are not admitted.");
@@ -271,8 +288,10 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
     return snapshot;
 }
 
+/** `post_input` delivers a document input packet to the realm and counts it
+ * as input the display waits on (WindowServices::post_input). */
 void apply_document(Engine& engine, DocumentSnapshot snapshot,
-                    const std::shared_ptr<EventLoop::Inbox>& inbox) {
+                    const std::function<void(std::unique_ptr<ExternalEvent>)>& post_input) {
     if (snapshot.text_updates) {
         for (auto& update : *snapshot.text_updates)
             ui_set_text(engine, update.element, std::move(update.text));
@@ -287,16 +306,16 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
         auto& input = dom_input(engine);
         input.event_types = std::move(snapshot.dom_event_types);
         input.pointer_elements = std::move(snapshot.dom_pointer_elements);
-        input.batch_sink = [inbox](std::shared_ptr<DomEventBatch> batch) {
+        input.batch_sink = [post_input](std::shared_ptr<DomEventBatch> batch) {
             auto event = std::make_unique<WindowDomEvent>();
             event->batch = std::move(batch);
-            inbox->post(std::move(event));
+            post_input(std::move(event));
         };
-        input.pointer_sink = [inbox](const PlatformMouseEvent& payload) {
+        input.pointer_sink = [post_input](const PlatformMouseEvent& payload) {
             auto event = std::make_unique<WindowDomEvent>();
             event->batch = std::make_shared<DomEventBatch>();
             event->batch->add(payload);
-            inbox->post(std::move(event));
+            post_input(std::move(event));
         };
     }
     for (std::size_t index = 0; index < snapshot.listeners.size(); ++index) {
@@ -308,14 +327,14 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
                 "\" style=\"width:100%;height:100%;display:block;pointer-events:none;\"/>";
         }
         if (snapshot.listeners[index].click)
-            target.click_callbacks.push_back([inbox, element] {
+            target.click_callbacks.push_back([post_input, element] {
                 auto event = std::make_unique<WindowEvent>();
                 event->element = element;
                 event->type = "click";
-                inbox->post(std::move(event));
+                post_input(std::move(event));
             });
         for (const auto& name : snapshot.listeners[index].events) {
-            target.event_callbacks[name].push_back([inbox, &engine, element,
+            target.event_callbacks[name].push_back([post_input, &engine, element,
                                                     name](const PlatformMouseEvent& pointer) {
                 auto event = std::make_unique<WindowEvent>();
                 event->element = element;
@@ -336,7 +355,7 @@ void apply_document(Engine& engine, DocumentSnapshot snapshot,
                     } else
                         event->form_value = ui_get_form_value(engine, element);
                 }
-                inbox->post(std::move(event));
+                post_input(std::move(event));
             });
         }
     }
@@ -683,20 +702,16 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             &SDL_DestroyWindow);
         if (!window)
             throw std::runtime_error(SDL_GetError());
-        std::shared_ptr<WindowPresenter> presenter;
-        const bool dawn = use_dawn_backend();
-#if BBLITE_HAS_DAWN
-        if (dawn)
-            presenter = create_window_dawn_presenter(window.get());
-#endif
-#if BBLITE_HAS_SDL_GPU
-        if (!dawn)
-            presenter = create_window_sdl_presenter(window.get());
-#endif
+        const GpuBackend& backend = selected_gpu_backend();
+        const std::shared_ptr<WindowPresenter> presenter =
+            backend.create_window_presenter ? backend.create_window_presenter(window.get())
+                                            : nullptr;
         if (!presenter)
             throw std::runtime_error("Requested Window GPU backend is unavailable.");
         const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";
-        WindowFrameClock compositor_clock(cpu_profile);
+        // A frame budget or capture bounds the run: a clock that stops ticking fails it.
+        WindowFrameClock compositor_clock(cpu_profile, capture_frame_count != 0 ||
+                                                           frame_options.frame_budget() > 0);
         presenter->set_display_paced(compositor_clock.available());
         // Reload replaces realm-owned state while keeping the native window and device.
         const auto location = std::make_shared<WindowLocation>();
@@ -726,21 +741,26 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     ApplicationErrors errors(loop);
                     owner.errors = &errors;
                     realm.on_platform_event([services](std::unique_ptr<ExternalEvent> packet) {
-                        if (const auto* event = dynamic_cast<WindowDomEvent*>(packet.get())) {
-                            const auto notify = js::finally([&] {
+                        if (const auto* pointer = dynamic_cast<WindowPointerEvent*>(packet.get())) {
+                            EventLoop::current().dispatch_callback(
+                                [&] { dispatch_canvas_input(*pointer); });
+                            return;
+                        }
+                        // Every other packet is document input the display posted
+                        // and waits on: acknowledge it however its dispatch ends.
+                        const auto handled = js::finally([&] {
+                            {
                                 const std::lock_guard lock(services->mutex);
-                                services->wake.notify_all();
-                            });
+                                ++services->input_handled;
+                            }
+                            services->wake.notify_all();
+                        });
+                        if (const auto* event = dynamic_cast<WindowDomEvent*>(packet.get())) {
                             event->batch->dispatch(window_document_engine(),
                                                    [](auto& callback, const auto& payload) {
                                                        EventLoop::current().dispatch_callback(
                                                            [&] { callback(payload); });
                                                    });
-                            return;
-                        }
-                        if (const auto* pointer = dynamic_cast<WindowPointerEvent*>(packet.get())) {
-                            EventLoop::current().dispatch_callback(
-                                [&] { dispatch_canvas_input(*pointer); });
                             return;
                         }
                         const auto* event = dynamic_cast<WindowEvent*>(packet.get());
@@ -842,7 +862,10 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     revision = services->requested;
                 }
                 if (snapshot)
-                    apply_document(display, std::move(*snapshot), services->inbox);
+                    apply_document(display, std::move(*snapshot),
+                                   [services](std::unique_ptr<ExternalEvent> event) {
+                                       services->post_input(std::move(event));
+                                   });
                 update_ui_rml_runtime(*ui, width, height);
                 next_layout.width = width;
                 next_layout.height = height;
@@ -883,6 +906,24 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 services->wake.notify_all();
                 return true;
             };
+            // Waits until the realm has handled every document input packet
+            // posted so far. Source callbacks can synchronously request layout:
+            // serve those requests while waiting, without spending a
+            // presentation or repaint tick on the acknowledgement.
+            const auto await_input = [&] {
+                for (;;) {
+                    std::unique_lock lock(services->mutex);
+                    services->wake.wait(lock, [&] {
+                        return services->input_handled == services->input_posted || finished ||
+                               services->pending;
+                    });
+                    if (services->input_handled == services->input_posted || finished)
+                        return;
+                    lock.unlock();
+                    if (!update_layout())
+                        SDL_Delay(1);
+                }
+            };
             long presented = 0;
             const bool trace_window =
                 runtime_trace_enabled() || environment_variable("BBLITE_WINDOW_TRACE") == "1";
@@ -917,26 +958,20 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                         !is_replayed_ui_event(event))
                         continue;
                     if (auto batch = prepare_dom_platform_input(display, event)) {
+                        // The script's listeners decide the native default.
                         dispatch_dom_batch(display, batch);
-                        // Source callbacks can synchronously request layout. Service
-                        // those requests before the native default, without spending
-                        // a presentation or repaint tick on the acknowledgement.
-                        while (!batch->ready() && !finished) {
-                            std::unique_lock lock(services->mutex);
-                            services->wake.wait(lock, [&] {
-                                return batch->ready() || finished || services->pending;
-                            });
-                            const bool needs_layout = services->pending != nullptr;
-                            lock.unlock();
-                            if (needs_layout && !update_layout())
-                                SDL_Delay(1);
-                        }
+                        await_input();
                         if (finished)
                             break;
                         if (batch->default_prevented)
                             continue;
                     }
                     const bool reaches_canvas = handle_ui_rml_event(*ui, event);
+                    // The events the native default posted (a button's click, a
+                    // control's input and change) finish before the next event.
+                    await_input();
+                    if (finished)
+                        break;
                     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
                         pointer_capture = {};
                         pointer_buttons = 0;
@@ -1155,9 +1190,9 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                         std::cerr << trace.str();
                     }
                     ++presented;
-                    if (capture_frame_count
-                            ? capture
-                            : frame_options.max_frames > 0 && presented >= frame_options.max_frames)
+                    if (capture_frame_count ? capture
+                                            : frame_options.frame_budget() > 0 &&
+                                                  presented >= frame_options.frame_budget())
                         running = false;
                 }
                 if (compositor_clock.available()) {
@@ -1175,9 +1210,8 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 return 0;
             location->commit_reload();
         }
-    } catch (const std::exception& error) {
-        std::cerr << "Babylon Lite Window error: " << error.what() << '\n';
-        return 1;
+    } catch (...) {
+        return report_uncaught_error(std::current_exception());
     }
 }
 } // namespace bbl::pal

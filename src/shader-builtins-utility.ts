@@ -1,274 +1,111 @@
 /**
- * Utility WGSL. The image-processing function, its per-sample MSAA loop, and
- * the fog falloff are lifted from the pinned package's own string literals —
- * the same discipline as the background fragments. The blit stages, the
- * depth-only fragment, and the diagnostic id/cluster fragments are
- * project-owned tooling with no pinned counterpart and stay written here.
+ * Utility WGSL. The copy blit is the pin's copy-task shader, executed;
+ * the pin's own utility passes are deployed whole by
+ * `pinned-utility-passes.ts`. The depth-only fragment and the diagnostic
+ * id/cluster fragments are project-owned tooling with no pinned
+ * counterpart and stay written here.
  */
-import {
-    extractPackagedTemplateLiteral,
-    extractWgslFunction,
-    readPinnedLibraryModule,
-    splitWgslStatements,
-} from "./pinned-shader-composer.js";
-import { packagedWgsl } from "./pinned-wgsl-build.js";
+import ts from "typescript";
+import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
+import { PinnedShaderBuilders } from "./lowering/pinned-shader-builders.js";
+import { parseWgslStages, type ShaderModule } from "./shader-ir.js";
+import { emitWgslModule } from "./shader-wgsl-emitter.js";
+
+const copyTaskModule = "src/frame-graph/copy-to-texture-task.ts";
 
 /**
- * Indents a reconstructed stage body to sit inside the struct or function
- * this module wraps it in. Shared because every builtins module that
- * re-homes pinned text needs it.
+ * The pin's copy-task blit, executed: `copy-to-texture-task.ts`'s
+ * `VERTEX_WGSL` and the single-sample fragment `fragmentForSingle(lod)`
+ * builds at the task's default mip level, the level every reached copy
+ * samples (`lodLevel` is refused at the call). The pin compiles the two as
+ * one module; each native stage is that module's typed IR for the stage,
+ * the entry points renamed to the native `mainVertex`/`mainFragment`, the
+ * vertex stage declaring no binding it does not read, and the fragment's
+ * texture pair re-homed from the pin's group 0 to the fragment-resource
+ * group both backends bind it at (2).
  */
-export function indent(block: string, spaces: string): string {
-    return block
-        .split("\n")
-        .map((line) => (line.length > 0 ? `${spaces}${line}` : line))
-        .join("\n");
-}
-
-/** Re-indent a lifted statement list, one pinned statement per line. */
-export function formatStatements(body: string): string {
-    return splitWgslStatements(body)
-        .map((statement) => `    ${statement}`)
-        .join("\n");
-}
-
-/**
- * Applies a documented re-homing map to a lifted body, requiring every
- * entry to occur so a pinned rename fails generation instead of leaving a
- * dangling reference. The `missing` sink names the vanished token in the
- * caller's own pinned-contract voice.
- */
-export function rehomeText(
-    source: string,
-    replacements: ReadonlyArray<readonly [string, string]>,
-    missing: (from: string) => never,
-): string {
-    let text = source;
-    for (const [from, to] of replacements) {
-        if (!text.includes(from)) {
-            missing(from);
-        }
-        text = text.split(from).join(to);
+function pinnedCopyBlit(context: LoweringContext): {
+    vertex: ShaderModule;
+    fragment: ShaderModule;
+} {
+    const { file, declaration } = context.functionDeclaration(
+        copyTaskModule,
+        "createCopyToTextureTask",
+    );
+    // `lodLevel: config.lodLevel ?? <default>` on the task record.
+    const lodDefaults = context.findNodes(
+        declaration,
+        (node): node is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(node) &&
+            context.propertyName(node.name) === "lodLevel",
+    );
+    const fallback = lodDefaults[0]?.initializer;
+    if (
+        lodDefaults.length !== 1 ||
+        !fallback ||
+        !ts.isBinaryExpression(fallback) ||
+        fallback.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+    ) {
+        return context.contractError(
+            declaration,
+            "Pinned copy task no longer defaults lodLevel as `config.lodLevel ?? <level>`.",
+        );
     }
-    return text;
-}
-
-export function blitVertexWgsl(): string {
-    return `struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@vertex
-fn mainVertex(
-    @builtin(vertex_index) vertexIndex: u32,
-) -> VertexOutput {
-    let positions = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(3.0, -1.0),
-        vec2<f32>(-1.0, 3.0),
-    );
-    let uvs = array<vec2<f32>, 3>(
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(2.0, 1.0),
-        vec2<f32>(0.0, -1.0),
-    );
-    var output: VertexOutput;
-    output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
-    output.uv = uvs[vertexIndex];
-    return output;
-}
-`;
-}
-
-export function blitFragmentWgsl(): string {
-    return `@group(2) @binding(0) var sourceTexture: texture_2d<f32>;
-@group(2) @binding(1) var sourceSampler: sampler;
-
-struct FragmentInput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
-
-@fragment
-fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    return textureSampleLevel(
-        sourceTexture,
-        sourceSampler,
-        input.uv,
-        0.0,
-    );
-}
-`;
-}
-
-function utilityLiftError(what: string): never {
-    throw new Error(`Pinned Babylon Lite ${what} changed.`);
-}
-
-/** The shared re-homing loop, failing in this module's contract voice. */
-function rehome(
-    source: string,
-    replacements: ReadonlyArray<readonly [string, string]>,
-    what: string,
-): string {
-    return rehomeText(source, replacements, (from) =>
-        utilityLiftError(`${what} ('${from}' is gone)`),
-    );
-}
-
-interface PinnedImageProcessing {
-    /** The pin's own parameter block, byte for byte: `struct P{e,c,t,p}`. */
-    uniformStruct: string;
-    /** The pin's uniform declaration, re-addressed to fragment space 3. */
-    uniformBinding: string;
-    /** The pin's `ip()` — exposure, optional tonemap, gamma, contrast. */
-    ip: string;
-    /** The pin's per-sample fragment body, re-homed onto our bindings. */
-    multisampledBody: string;
-}
-
-/**
- * Lifts `frame-graph/image-processing-task.ts`'s shader text out of the
- * packaged module. `common` and the two fragments are function-local template
- * literals there, so they are read from the module text; `ip()` and the
- * parameter block are then the pin's own bytes. The PAL pushes the same 16
- * bytes upstream writes (`[exposure, contrast, toneMappingEnabled, 0]`), so
- * the pin's scalar struct lays out identically to the vec4 it replaces.
- */
-/** The pin's image-processing module, read once for both backends' lifts. */
-export interface PinnedImageProcessingSource {
-    /** The packaged module text, for the per-arm fragments beside `common`. */
-    module: string;
-    /** The shared `common` template: the parameter block, its binding, `ip()`. */
-    common: string;
-    /** The pin's own parameter block, byte for byte: `struct P{e,c,t,p}`. */
-    uniformStruct: string;
-    /** The pin's group-0 declaration of that block, as packaged. */
-    binding: string;
-    /** The pin's `ip()` — exposure, optional tonemap, gamma, contrast. */
-    ip: string;
-}
-
-export function pinnedImageProcessingSource(): PinnedImageProcessingSource {
-    const module = readPinnedLibraryModule(
-        "frame-graph/image-processing-task.js",
-    );
-    const common = extractPackagedTemplateLiteral(module, "common");
-    const uniformStruct = "struct P{e:f32,c:f32,t:f32,p:f32}";
-    if (!common.includes(uniformStruct)) {
-        utilityLiftError("image-processing parameter block");
+    const builders = new PinnedShaderBuilders(context);
+    const vertexText = builders.value(copyTaskModule, "VERTEX_WGSL");
+    if (typeof vertexText !== "string") {
+        return context.contractError(
+            declaration,
+            "Pinned copy task no longer declares its VERTEX_WGSL text.",
+        );
     }
-    const binding = packagedWgsl`@group(0)@binding(0)var<uniform> p:P;`;
-    if (!common.includes(binding)) {
-        utilityLiftError("image-processing parameter binding");
-    }
-    const ip = extractWgslFunction(common, "ip");
-    if (!ip.includes("1.590579")) {
-        utilityLiftError("image-processing tone-mapping calibration");
-    }
-    return { module, common, uniformStruct, binding, ip };
-}
-
-function pinnedImageProcessing(): PinnedImageProcessing {
-    const { module, uniformStruct, ip } = pinnedImageProcessingSource();
-    const multisampled = /`(@fragment fn fs[^`]*textureNumSamples[^`]*)`/.exec(
-        module,
+    const fragmentText = builders.evaluate(
+        copyTaskModule,
+        "fragmentForSingle",
+        new Map([["lod", context.numericValue(fallback.right, file)]]),
     );
-    if (!multisampled) {
-        utilityLiftError("image-processing multisampled fragment");
-    }
-    const entry = /\{([\s\S]*)\}$/.exec(multisampled[1]!);
-    if (!entry) {
-        utilityLiftError("image-processing multisampled entry point");
-    }
-    const multisampledBody = rehome(
-        entry[1]!,
-        [
-            // The pin binds its source as `s` and reads its own position
-            // builtin `q`; natively the texture arrives through the storage
-            // slot declared below and the position through the shared blit
-            // varying block.
-            ["textureDimensions(s)", "textureDimensions(sourceTexture)"],
-            ["textureNumSamples(s)", "textureNumSamples(sourceTexture)"],
-            ["textureLoad(s,", "textureLoad(sourceTexture,"],
-            ["q.xy", "input.position.xy"],
-        ],
-        "image-processing multisampled fragment",
+    const stages = parseWgslStages(`${vertexText}${fragmentText}`);
+    const vertex = stages.find(
+        ({ entryPoint }) => entryPoint.stage === "vertex",
     );
+    const fragment = stages.find(
+        ({ entryPoint }) => entryPoint.stage === "fragment",
+    );
+    if (!vertex || !fragment) {
+        return context.contractError(
+            declaration,
+            "Pinned copy blit no longer declares one vertex and one fragment stage.",
+        );
+    }
+    const { bindings, ...vertexStage } = vertex;
+    if ((bindings ?? []).some(({ group }) => group !== 0)) {
+        return context.contractError(
+            declaration,
+            "Pinned copy blit binds outside group 0.",
+        );
+    }
     return {
-        uniformStruct,
-        uniformBinding: "@group(3)@binding(0)var<uniform> p:P;",
-        ip,
-        multisampledBody,
+        vertex: {
+            ...vertexStage,
+            entryPoint: { ...vertex.entryPoint, name: "mainVertex" },
+        },
+        fragment: {
+            ...fragment,
+            bindings: (fragment.bindings ?? []).map((binding) => ({
+                ...binding,
+                group: 2,
+            })),
+            entryPoint: { ...fragment.entryPoint, name: "mainFragment" },
+        },
     };
 }
 
-/** The blit varying block both image-processing entry points consume. */
-function imageProcessingFragmentInput(): string {
-    return `struct FragmentInput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};`;
+export function blitVertexWgsl(context = sharedPinnedContext()): string {
+    return `// ${context.provenance(copyTaskModule, "VERTEX_WGSL")}\n${emitWgslModule(pinnedCopyBlit(context).vertex)}`;
 }
 
-/**
- * The single-sample image-processing pass. The pin's non-multisampled
- * fragment `textureLoad`s an unfilterable source; SDL_GPU presents the
- * resolved frame through a texture-sampler pair instead, so the wrapper
- * samples the blit uv — which lands on exact texel centres — and everything
- * inside `ip()` is the pin's bytes.
- */
-export function imageProcessingFragmentWgsl(): string {
-    const pinned = pinnedImageProcessing();
-    return `@group(2) @binding(0) var sourceTexture: texture_2d<f32>;
-@group(2) @binding(1) var sourceSampler: sampler;
-
-${pinned.uniformStruct}
-${pinned.uniformBinding}
-
-${imageProcessingFragmentInput()}
-
-${pinned.ip}
-
-@fragment
-fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    return ip(textureSampleLevel(
-        sourceTexture,
-        sourceSampler,
-        input.uv,
-        0.0,
-    ));
-}
-`;
-}
-
-/**
- * The pinned `image-processing-task.ts` shape: `ip()` per MSAA sample,
- * averaged after the loop rather than before it. Because tone mapping and
- * gamma are concave, processing the resolved pixel once is brighter than
- * this exactly on raster edges. The loop body is the pin's own text.
- *
- * The source is bound as a fragment *storage* texture, not a sampler pair:
- * a `Texture2DMS` is `Load()`-ed and has no sampler, so SDL_GPU takes it
- * through `SDL_BindGPUFragmentStorageTextures`.
- */
-export function imageProcessingMultisampledFragmentWgsl(): string {
-    const pinned = pinnedImageProcessing();
-    return `@group(2) @binding(0) var sourceTexture: texture_multisampled_2d<f32>;
-
-${pinned.uniformStruct}
-${pinned.uniformBinding}
-
-${imageProcessingFragmentInput()}
-
-${pinned.ip}
-
-@fragment
-fn mainFragment(input: FragmentInput) -> @location(0) vec4<f32> {
-${formatStatements(pinned.multisampledBody)}
-}
-`;
+export function blitFragmentWgsl(context = sharedPinnedContext()): string {
+    return `// ${context.provenance(copyTaskModule, "fragmentForSingle")}\n${emitWgslModule(pinnedCopyBlit(context).fragment)}`;
 }
 
 export function depthOnlyFragmentWgsl(): string {
@@ -350,40 +187,4 @@ fn mainFragment(
     );
 }
 `;
-}
-
-/**
- * The pinned fog falloff (`shader/wgsl-fog.ts` `WGSL_FOG`), lifted from the
- * packaged module and shared by every native fragment that reads
- * `uniforms.fogInfos`: the standard material fragment and the cubemap skybox.
- *
- * The re-homing is a rename pair plus the uniform flattening: the pin's
- * `calcFogFactor`/`E_FOG` become `bblCalcFogFactor`/`bblFogE` — the names the
- * consuming fragments already call — and `scene.vFogInfos` reads the
- * consumers' own `uniforms.fogInfos` slot.
- *
- * The PBR fragment keeps its own copy in the renderer lowerer. That one
- * is not this text — it is the Tint-normalized dialect, naming
- * `FragmentUniforms` and spelling every literal `1.0f`, and it carries a
- * provenance comment tying it line for line to the pinned WGSL module it
- * was converted from. Regenerating it from here would break that diff.
- */
-export function fogFactorWgsl(): string {
-    const fog = extractPackagedTemplateLiteral(
-        readPinnedLibraryModule("shader/wgsl-fog.js"),
-        "WGSL_FOG",
-    );
-    const rehomed = rehome(
-        fog,
-        [
-            ["E_FOG", "bblFogE"],
-            ["calcFogFactor", "bblCalcFogFactor"],
-            ["scene.vFogInfos", "uniforms.fogInfos"],
-        ],
-        "fog factor (WGSL_FOG)",
-    );
-    if (rehomed.includes("scene.")) {
-        utilityLiftError("fog factor (unmapped scene member)");
-    }
-    return `${rehomed.trim()}\n`;
 }

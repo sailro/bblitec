@@ -31,7 +31,7 @@ export function lowerPbrTransmissionTransaction(
     const body = lowerPinnedBody(file, declaration.body!.statements, {
         bindings: new Map(),
         calls: new Map(),
-        statement(statement) {
+        statement(statement, _lowerer, indent) {
             if (
                 ts.isVariableStatement(statement) &&
                 statement.declarationList.declarations.length === 1 &&
@@ -47,9 +47,8 @@ export function lowerPbrTransmissionTransaction(
                 );
                 return [];
             }
-            return undefined;
-        },
-        returnValue(expression) {
+            if (!ts.isReturnStatement(statement)) return undefined;
+            const expression = statement.expression;
             if (
                 !expression ||
                 !ts.isArrayLiteralExpression(expression) ||
@@ -85,7 +84,15 @@ export function lowerPbrTransmissionTransaction(
                 );
                 return "js::Callback<void()>{[] {}}";
             });
-            return `PbrTransmissionTransaction{${callbacks.join(", ")}}`;
+            // Each callback is a named local moved into the pair; clang's
+            // analyzer loses a shared body built in place inside an aggregate
+            // that is then passed by value.
+            const [commit, rollback] = callbacks;
+            return [
+                `${indent}js::Callback<void()> commit = ${commit};`,
+                `${indent}js::Callback<void()> rollback = ${rollback};`,
+                `${indent}return PbrTransmissionTransaction{std::move(commit), std::move(rollback)};`,
+            ];
         },
     });
     return `// ${context.provenance(module, "_t")}

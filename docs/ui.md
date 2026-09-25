@@ -2,7 +2,7 @@
 
 Typed DOM/CSS/Canvas2D operations project into RmlUi. SDL_GPU and Dawn consume the same draw frame.
 
-## RmlUi ownership and integration gaps
+## RmlUi ownership
 
 | Area | Owner |
 | --- | --- |
@@ -14,34 +14,29 @@ Typed DOM/CSS/Canvas2D operations project into RmlUi. SDL_GPU and Dawn consume t
 The [pin](../upstream/rmlui.json) and maintained patches define the library surface.
 Check them before adding an implementation. Source rejection does not imply missing library support.
 
-Authored-tree queries work before rendering and while detached. A separate matcher also handles live
-RmlUi metadata, duplicating library capability. `Element::Matches` reparses each call; cached reuse
-needs performance and semantic verification. The easing/steps mapping is approximate.
-
 ## Integration
 
 - TypeScript owns live controls; reviewed `ui/*.json` companions describe static host chrome.
 - Worker applications select the Window host through reached Window APIs. Workers cannot use Window DOM.
 - DOM handles retain their document owner across aliases, containers, helpers and engine creation.
-- RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine. Notifications coalesce.
+- RAF runs on the owner repaint clock, returns cancellable IDs and needs no engine.
 - Error/unhandled-rejection listeners support removal, once and preventDefault before engine creation.
   Events borrow dispatch; names are Error, stack/location are absent. Rejectionhandled is unsupported.
 - Resolution and reduced-motion matchMedia queries retain identity/current matches and zero-argument change
   listeners. Wider queries, event payloads and removal refuse. ResizeObserver entries are unavailable.
-- Navigator exposes native identity, OS platform, processor count and language. Heap snapshots and client
-  hints are absent. Async graphics guards expose the existing Window service; adapter requests and
-  GPU API instrumentation are unsupported.
-- Location follows deployment. A query value the deployment answers is a constant: alone, beside native
-  operands in comparisons, arithmetic and logical chains, or as the receiver of a native string method; a
-  short-circuit it decides stays folded. A query read the fold cannot answer, such as a key computed at run
-  time, parses the deployment query natively. Conditions over browser values the deployment does not answer
-  refuse. Reload and location.search assignment complete the task/microtasks then
-  recreate realms, retaining durable storage and the current query. Other navigation refuses. Screen/viewport metrics use CSS
-  pixels at display scale.
+  Device-pixel-ratio-only backing-store resizes and MediaQueryList lifetime remain limited.
+- Navigator and graphics guards follow the [environment contract](fidelity.md#semantic-contract). Heap
+  snapshots, GPU adapter requests and GPU API instrumentation are unsupported.
+- Location follows deployment. A query value the deployment answers folds to a constant (alone, beside
+  native operands in comparisons, arithmetic and logical chains, or as a native string method receiver),
+  including short-circuits it decides; other reads, such as run-time keys, parse the deployment query
+  natively. Conditions over browser values the deployment does not answer refuse. Reload and
+  location.search assignment complete the task/microtasks, then recreate realms retaining durable storage
+  and the current query; other navigation refuses. Screen/viewport metrics use CSS pixels at display scale.
 - The Window service provides promise-backed clipboard text writes; reads/rich data are unsupported.
 
 Host multi-canvas companions retain canvases, dividers and labels. Canvas-only captures include every
-canvas at its page position. Build switches are in [development](development.md#native-builds).
+canvas at its page position.
 
 ## DOM and events
 
@@ -84,15 +79,19 @@ Beforeunload and page-history caching are unsupported; native pagehide has persi
 Attribute names use HTML ASCII casing. Removal updates retained/rendered state; text/markup replacement
 removes prior children. Plain text leaf updates retain projected text nodes and send changed strings
 across the Window mailbox; structural and special text changes rebuild projection.
-Source append arguments finish before insertion. Canvas backing dimensions are
-drawable pixels; client dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending layout.
+Source append arguments finish before insertion. Canvas backing dimensions are drawable pixels; client
+dimensions and bounding rectangles are CSS pixels. Rectangle reads flush pending layout.
 
 ### File transfer controls
 
-Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs snapshot bytes/name
-before change dispatch. File aliases retain snapshots; selections have a 256 MiB live cap and per-file
-limits. Completion may occur before click returns. Multiple files/directories, unsupported accept values,
-arbitrary source paths and file-input type transitions refuse.
+Save dialogs publish only accepted selections; cancellation publishes no file. Single-file inputs
+snapshot bytes/name before change dispatch. File aliases retain snapshots; selections have a 256 MiB
+live cap and per-file limits. Completion may occur before click returns. A file input's `onchange`
+property registers its change handler once; other event-handler properties refuse. FileReader reads a
+File or Blob as text inside `readAsText`, decoding by byte order mark (UTF-8 otherwise), with handlers
+assigned before the read. `showOpenFilePicker`, `showSaveFilePicker` and `showDirectoryPicker` are absent.
+Multiple files/directories, unsupported accept values, arbitrary source paths, file-input type
+transitions and other FileReader reads refuse.
 
 iOS uses UIKit Files with local storage and security-scoped imports; other platforms use SDL dialogs.
 [Publication semantics](fidelity.md#semantic-contract) differ between direct paths and file providers.
@@ -109,7 +108,9 @@ Supports backing dimensions, scale, full clear, fillRect, bounded paths/fill/str
 destination-rectangle canvas drawImage and bounded fillText. Offscreen pixels are premultiplied RGBA.
 Closed canvas producers can bake getImageData; mutable module/engine inputs refuse.
 
-Engine-less renderCanvas presents through Window/input/RAF. That primary canvas cannot also own a
+The primary canvas is the element the program passes to createEngine, found by the id it is looked up
+by (the host document's `renderCanvas` otherwise); a program that looks it up by several ids refuses.
+An engine-less primary canvas presents through Window/input/RAF under that id and cannot also own a
 source-created GPU engine. Partial clear, source-rectangle blits, general transforms/clipping/shaping
 and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 
@@ -134,8 +135,8 @@ and non-convex tessellation refuse. Opaque full redraws retire covered commands.
 | Lists | Unmarked block lists with default margins/indentation | Marker types, counters and images |
 
 Grid retains authored parents and structural selectors; source/style/inline order, responsive changes
-and child mutations update it. Container queries settle
-before synchronous measurements and report nonconverging layouts.
+and child mutations update it. Container queries settle before synchronous measurements and report
+nonconverging layouts.
 
 Custom properties preserve case, inherit and support var fallbacks; `--bbl-` is reserved. Quoted values
 and nested blocks retain declaration boundaries. Empty writes remove local declarations; cssText
@@ -153,7 +154,7 @@ Counters/images/typed attr fallbacks and adaptations requiring authored handles 
 styles admit color/opacity only.
 
 Horizontal range widgets support appearance:none and WebKit thumb/track styles, including state,
-size/margins/borders/gradients/shadows. Input behavior remains native. Vertical/tick/Firefox semantics
+size/margins/borders/gradients/shadows. Input behavior remains native. Vertical ranges and tick marks
 are unsupported; Gecko-only selector lists are rejected like Chromium's. Native scrollbars use 15/8
 CSS-pixel auto/thin widths; standard non-auto settings override vendor styles.
 
@@ -165,45 +166,24 @@ Normal line height uses the current font's metrics and inherits as a keyword; ex
 length values retain their respective inheritance rules.
 
 Fonts use DirectWrite on Windows and FreeType with CoreText, Fontconfig or Android system-font discovery
-on macOS/iOS, Linux and Android. Android resolves generic families through its font matcher and named families
-through its installed-font list; variable fonts select the nearest named weight. Color glyphs use CoreText
+on macOS/iOS, Linux and Android. Android resolves generic families through its font matcher and named
+families through its installed-font list; variable fonts select the nearest named weight. Color glyphs use CoreText
 on iOS (including Apple's `emjc` bitmaps) and Android's text renderer (including COLRv1).
 Android bundles Noto Sans Symbols 2 for monochrome text symbols. Other FreeType color fonts retain
 PNG decoding. Font coverage, baseline/line-height rounding, emoji/ZWJ shaping and rasterization can
 differ from Chromium. Relative transition units resolve at transition start.
 
-| Maintained RmlUi patch | Contract |
-| --- | --- |
-| `rmlui-css-box-model.patch` | Background painting, shadow bounds, shrink-to-fit and descendant bottom-margin collapse |
-| `rmlui-css-declarations.patch` | Quoted/nested declarations |
-| `rmlui-visibility.patch` | Visibility inheritance/transitions |
-| `rmlui-zero-track-grid.patch` | Native grid formatting |
-| `rmlui-zz-grid-column.patch` | Explicit column placement and intrinsic flexible spans |
-| `rmlui-zz-container-queries.patch` | Inline containment/max-width queries |
-| `rmlui-fragment-root.patch` | Fragment roots |
-| `rmlui-generated-content.patch` | Generated-box ownership |
-| `rmlui-selector-functions.patch` | Functional selectors/placeholder |
-| `rmlui-range-layout.patch` | Horizontal range layout |
-| `rmlui-overscroll-axes.patch` | Independent scroll axes |
-| `rmlui-scrollbar-gutter.patch` | Stable gutter |
-| `rmlui-flex-layout.patch` | Flex defaults/alignment |
-| `rmlui-solid-background-clip.patch` | Solid clipping |
-| `rmlui-textured-borders.patch` | Raster border slices |
-| `rmlui-premultiplied-rounding.patch` | Color rounding |
-| `rmlui-fractional-letter-spacing.patch` | Fractional advances |
-| `rmlui-line-leading.patch` | Font-derived normal line height and leading/textarea metrics |
-| `rmlui-object-fit.patch` | Image fitting |
-| `rmlui-overflow-wrap.patch` | Emergency wrapping |
-| `rmlui-transform-key-ownership.patch` | Transition key lifetime |
-| `rmlui-zzz-android-charconv.patch` | Locale-independent CSS number parsing with Android/macOS libc++ |
-| `rmlui-zzzz-percentage-radius.patch` | Border-box percentage radii, elliptical border geometry and shadow/outline radii |
+The maintained RmlUi patches are `native/patches/rmlui/NNNN-*.patch`, applied in number order.
+[`native/patches/manifest.json`](../native/patches/manifest.json) states the contract each adds
+(`purpose`) and its upstream state; each patch opens with its rationale.
 
 ## Rendering
 
-Both backends composite premultiplied UI at scene sample count. Canvas overlays precede DOM chrome.
+Each backend composites premultiplied UI through one compositor: scene drivers render each segment into a
+transparent layer at scene sample count; sprite and Window drivers blend into their single-sample targets.
+Canvas overlays precede DOM chrome.
 Backdrop blur snapshots preceding UI into FP16 scratch. Filters retain nested layers and ordered color
 adjustments, pixel blur and explicit-color drop-shadow chains. Canvas-only capture excludes UI filters.
-Rebuild patched libraries before validation.
 
 ## Limits
 

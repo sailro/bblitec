@@ -55,4 +55,68 @@ namespace bbl::js {
     return result;
 }
 
+/** The Encoding Standard's UTF-8 decode: an initial byte order mark is removed. */
+[[nodiscard]] inline std::string decode_utf8_removing_bom(std::string_view bytes) {
+    if (bytes.starts_with("\xef\xbb\xbf"))
+        bytes.remove_prefix(3);
+    return decode_utf8(bytes);
+}
+
+/** UTF-16 code units to UTF-8, a lone surrogate or odd trailing byte as U+FFFD. */
+[[nodiscard]] inline std::string decode_utf16(std::string_view bytes, bool big_endian) {
+    const auto unit = [&](std::size_t index) -> unsigned {
+        const unsigned first = static_cast<unsigned char>(bytes[index]);
+        const unsigned second = static_cast<unsigned char>(bytes[index + 1u]);
+        return big_endian ? (first << 8u) | second : (second << 8u) | first;
+    };
+    const auto append = [](std::string& out, unsigned code) {
+        if (code < 0x80u) {
+            out.push_back(static_cast<char>(code));
+        } else if (code < 0x800u) {
+            out.push_back(static_cast<char>(0xc0u | (code >> 6u)));
+            out.push_back(static_cast<char>(0x80u | (code & 0x3fu)));
+        } else if (code < 0x10000u) {
+            out.push_back(static_cast<char>(0xe0u | (code >> 12u)));
+            out.push_back(static_cast<char>(0x80u | ((code >> 6u) & 0x3fu)));
+            out.push_back(static_cast<char>(0x80u | (code & 0x3fu)));
+        } else {
+            out.push_back(static_cast<char>(0xf0u | (code >> 18u)));
+            out.push_back(static_cast<char>(0x80u | ((code >> 12u) & 0x3fu)));
+            out.push_back(static_cast<char>(0x80u | ((code >> 6u) & 0x3fu)));
+            out.push_back(static_cast<char>(0x80u | (code & 0x3fu)));
+        }
+    };
+    std::string result;
+    result.reserve(bytes.size());
+    std::size_t index = 0;
+    for (; index + 1u < bytes.size(); index += 2u) {
+        const unsigned code = unit(index);
+        if (code >= 0xd800u && code <= 0xdbffu && index + 3u < bytes.size()) {
+            const unsigned low = unit(index + 2u);
+            if (low >= 0xdc00u && low <= 0xdfffu) {
+                append(result, 0x10000u + ((code - 0xd800u) << 10u) + (low - 0xdc00u));
+                index += 2u;
+                continue;
+            }
+        }
+        append(result, code >= 0xd800u && code <= 0xdfffu ? 0xfffdu : code);
+    }
+    if (index < bytes.size())
+        append(result, 0xfffdu);
+    return result;
+}
+
+/**
+ * The Encoding Standard's decode with a UTF-8 fallback: a byte order mark
+ * selects UTF-8, UTF-16LE or UTF-16BE and is removed; anything else is UTF-8.
+ * `FileReader.readAsText` without an encoding decodes this way.
+ */
+[[nodiscard]] inline std::string decode_text(std::string_view bytes) {
+    if (bytes.starts_with("\xfe\xff"))
+        return decode_utf16(bytes.substr(2), true);
+    if (bytes.starts_with("\xff\xfe"))
+        return decode_utf16(bytes.substr(2), false);
+    return decode_utf8_removing_bom(bytes);
+}
+
 } // namespace bbl::js

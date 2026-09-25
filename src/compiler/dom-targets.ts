@@ -1,5 +1,4 @@
 import ts from "typescript";
-import { browserGlobalNamed } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { documentEngine } from "./window-events.js";
@@ -10,8 +9,7 @@ type Context = Pick<
     | "defaultEngine"
     | "requireDefaultEngine"
     | "unwrap"
-    | "lookupOptional"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "reachFeature"
     | "fail"
 >;
@@ -37,7 +35,7 @@ export function eventTargetCpp(
         return `bbl::dom_target_value(${engine}, bbl::DomEventTarget::node(${value.cpp}.value))`;
     let target = value.domEventTargetCpp;
     if (!target && ts.isExpression(node)) {
-        const global = browserGlobalNamed(context, node)?.text;
+        const global = context.libraryGlobal(node);
         if (global === "window" || global === "globalThis")
             target = "bbl::DomEventTarget::window()";
         if (global === "document") target = "bbl::DomEventTarget::document()";
@@ -66,9 +64,7 @@ export function compileDomInstanceOf(
 ): string | undefined {
     if (
         !ts.isBinaryExpression(expression) ||
-        expression.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword ||
-        !ts.isIdentifier(expression.right) ||
-        !context.isDefaultLibraryIdentifier(expression.right)
+        expression.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword
     )
         return undefined;
     const tags = new Map([
@@ -78,7 +74,7 @@ export function compileDomInstanceOf(
         ["HTMLButtonElement", "button"],
         ["HTMLCanvasElement", "canvas"],
     ]);
-    const tag = tags.get(expression.right.text);
+    const tag = tags.get(context.libraryGlobal(expression.right) ?? "");
     if (!tag) return undefined;
     const value = context.compileValue(expression.left);
     const type = value.dataType;

@@ -1,7 +1,10 @@
 #pragma once
 
+#include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/runtime.hpp>
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 #include <bblite/js_promise.hpp>
 #endif
 
@@ -22,7 +25,7 @@ namespace bbl {
 enum class UiDocumentPart { Html, Head, Body };
 UiElementHandle ui_document_root(Engine& engine, UiDocumentPart part);
 UiElementHandle ui_create_element(Engine& engine, std::string_view tag);
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 bool ui_image_complete(Engine&, UiElementHandle);
 double ui_image_natural_width(Engine&, UiElementHandle);
 double ui_image_natural_height(Engine&, UiElementHandle);
@@ -104,7 +107,7 @@ void ui_on_click(Engine& engine, UiElementHandle element, std::function<void()> 
 void ui_click(Engine& engine, UiElementHandle element, bool trusted = false);
 void ui_focus(Engine& engine, UiElementHandle element, bool visible = true);
 UiElementHandle ui_active_element(Engine& engine);
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
 void ui_set_download_url(Engine& engine, UiElementHandle element, ObjectUrlHandle url);
 void ui_set_download_name(Engine& engine, UiElementHandle element, std::string name);
 void ui_set_file_input(Engine& engine, UiElementHandle element);
@@ -115,7 +118,7 @@ void ui_on_event(Engine& engine, UiElementHandle element, std::string event,
                  std::function<void(const PlatformMouseEvent&)> callback);
 
 /** Bounded Canvas2D command IR used by retained UI canvas elements. */
-UiElementHandle ui_primary_canvas(Engine&);
+UiElementHandle ui_primary_canvas(Engine&, std::string_view id);
 void ui_canvas_set_width(Engine&, UiElementHandle, double);
 void ui_canvas_set_height(Engine&, UiElementHandle, double);
 double ui_canvas_width(Engine&, UiElementHandle);
@@ -166,7 +169,7 @@ struct UiRenderTexture {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::shared_ptr<const std::vector<std::uint8_t>> rgba;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     std::uint32_t external_canvas = invalid_handle;
 #endif
 };
@@ -298,11 +301,6 @@ inline void append_canvas_focus_outline(UiRenderFrame& frame) {
     frame.draws.push_back(
         UiRenderDraw{first_index, static_cast<std::uint32_t>(frame.indices.size()) - first_index, 0,
                      0, 0, frame.width, frame.height, false});
-}
-
-inline bool ui_frame_uses_texture(const UiRenderFrame& frame, std::uint64_t id) {
-    return std::any_of(frame.textures.begin(), frame.textures.end(),
-                       [id](const UiRenderTexture& texture) { return texture.id == id; });
 }
 
 /** Opaque RmlUi projection of an engine's retained UI tree. */

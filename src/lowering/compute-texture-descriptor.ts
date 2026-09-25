@@ -100,8 +100,6 @@ export function computeTextureDescriptorCpp(context: LoweringContext): string {
     const path = "src/resource/compute-storage-texture-view.ts";
     const validate = context.functionDeclaration(path, "validatePositive");
     const calls = pinnedNumericMathCalls();
-    // Extents have already passed the pin's positive-integer validation.
-    calls.set("Math.max", (args) => `std::max<double>({${args.join(", ")}})`);
     calls.set(
         "Number.isInteger",
         (args) =>

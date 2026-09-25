@@ -123,7 +123,6 @@ settings.luminance=0.7;const applied=await update(holder.environment);if(!applie
         "/Zs",
         "/DBBLITE_WORKERS=1",
         "/DBBLITE_OFFSCREEN_SURFACES=1",
-        "/DBBLITE_WINDOW_SURFACES=1",
         "/DBBLITE_HAS_UI=1",
         `/I${resolve("native/include")}`,
         `/I${directory}`,

@@ -109,6 +109,7 @@ int main(){
         "/permissive-",
         "/EHsc",
         "/MD",
+        "/DBBLITE_SHADOWS_CSM=1",
         `/Fo:${directory}/`,
         `/Fe:${exe}`,
         "/I",
@@ -178,8 +179,7 @@ for(const type of ['pcf','csm'])for(const hasData of [false,true])for(const reen
         exe = resolve(directory, "check.exe");
     writeFileSync(
         cpp,
-        `#define BBLITE_SHADOWS_CSM 1
-#include <bblite/runtime.hpp>
+        `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <nlohmann/json.hpp>
 #include <cassert>

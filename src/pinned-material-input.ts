@@ -64,7 +64,7 @@ import {
  * `alphaBlend === true || ((_alphaCutOff ?? 0) <= 0 && alpha < 1)`, so a MASK
  * material carries its cutoff and a BLEND material carries its alpha.
  */
-export interface PinnedMaterialSceneContext {
+interface PinnedMaterialSceneContext {
     /**
      * True when the scene renders linear because some material transmits.
      * Upstream this is a property of the material, but it is decided by the
@@ -171,7 +171,7 @@ function gltfAnimatedPointers(
  * OcclusionStrength sphere is an ordinary occlusion material whose composed
  * fragment reads no occlusion at all, purely because its strength animates.
  */
-export interface PinnedAnimatedExtensionTargets {
+interface PinnedAnimatedExtensionTargets {
     occlusionStrength?: boolean;
     transmission?: boolean;
     ior?: boolean;

@@ -13,11 +13,14 @@ import {
     cachedBakeSync,
     moduleIdentity,
     repositoryModuleClosure,
-    resolveRepositoryModuleFile,
     type BakeKey,
     type RepositoryModuleFile,
 } from "../bake-cache.js";
 import { canvasBakeBrowserArgs, pageBase64Script } from "../browser-harness.js";
+import {
+    commonJsModuleGraph,
+    type ClosureModule,
+} from "../executed-module-graph.js";
 import { doubleLiteral } from "../cpp-literals.js";
 import {
     loadTexture2DOptionFields,
@@ -35,15 +38,15 @@ import {
     babylonPackages,
     CompilerSymbols,
     isBabylonModule,
+    libraryGlobal,
+    resolvedSymbol,
 } from "./symbols.js";
-import { transpileCommonJs } from "../typescript-transpile.js";
 import type { Value } from "./types.js";
 import {
     tryResolveFunctionDeclaration,
     writesThroughTrackedRoot,
 } from "./user-functions.js";
 import { rootIdentifier, argumentAt } from "./syntax.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
 
 /** The two pinned factories a bounded browser texture function may reach. */
 const supportedFactories = [
@@ -122,9 +125,7 @@ export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
     return containsValueNode(node, (child) => {
         if (
             ts.isNewExpression(child) &&
-            ts.isIdentifier(child.expression) &&
-            child.expression.text === "OffscreenCanvas" &&
-            isDefaultLibraryIdentifier(checker, child.expression)
+            libraryGlobal(checker, child.expression) === "OffscreenCanvas"
         ) {
             return true;
         }
@@ -135,9 +136,8 @@ export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
             ts.isCallExpression(child) &&
             ts.isPropertyAccessExpression(child.expression) &&
             child.expression.name.text === "createElement" &&
-            ts.isIdentifier(child.expression.expression) &&
-            child.expression.expression.text === "document" &&
-            isDefaultLibraryIdentifier(checker, child.expression.expression) &&
+            libraryGlobal(checker, child.expression.expression) ===
+                "document" &&
             firstArgument !== undefined &&
             ts.isStringLiteral(firstArgument) &&
             firstArgument.text === "canvas"
@@ -145,12 +145,16 @@ export function ownsCanvas(node: ts.Node, checker: ts.TypeChecker): boolean {
     });
 }
 
-/** The module-scope `VariableDeclaration` an identifier names, if any. */
+/**
+ * Whether an identifier names a module-scope `VariableDeclaration`, its
+ * own module's or, through an import, another's: both are state that
+ * outlives one call.
+ */
 function namesModuleScopeBinding(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): boolean {
-    const symbol = checker.getSymbolAtLocation(identifier);
+    const symbol = resolvedSymbol(checker, identifier);
     return (symbol?.declarations ?? []).some(
         (declaration) =>
             ts.isVariableDeclaration(declaration) &&
@@ -303,12 +307,8 @@ function localFunctionDeclaration(
     identifier: ts.Identifier,
     sourceFile: ts.SourceFile,
 ): ts.FunctionDeclaration | "foreign" | undefined {
-    const symbol = checker.getSymbolAtLocation(identifier);
-    if (!symbol) return undefined;
-    const target =
-        (symbol.flags & ts.SymbolFlags.Alias) !== 0
-            ? checker.getAliasedSymbol(symbol)
-            : symbol;
+    const target = resolvedSymbol(checker, identifier);
+    if (!target) return undefined;
     for (const declaration of target.declarations ?? []) {
         // The browser executor deliberately owns functions whose bodies use
         // Canvas APIs the ordinary user-function lowerer refuses.
@@ -361,19 +361,12 @@ function returnShape(
 
 // ── Execution ────────────────────────────────────────────────────────────────
 
-export interface ClosureModule {
-    /** Repository-relative, forward-slashed: the module's identity. */
-    key: string;
-    javascript: string;
-    /** Specifier -> module key, for the page's CommonJS loader. */
-    resolved: Record<string, string>;
-}
-
 /**
- * The target module and every repository sibling it reaches, transpiled to
- * CommonJS. The entry additionally exposes the target under a fixed name,
- * which is how a non-exported local function is reached without editing
- * what the module exports.
+ * The target module and every repository sibling its emitted code requires,
+ * as CommonJS keyed by repository-relative path, plus the source closure the
+ * bake is keyed on. The entry additionally exposes the target under a fixed
+ * name, which is how a non-exported local function is reached without
+ * editing what the module exports.
  */
 export function closureModules(
     entryPath: string,
@@ -388,43 +381,14 @@ export function closureModules(
     | undefined {
     const files = repositoryModuleClosure([entryPath], repositoryRoot);
     if (!files) return undefined;
-    const modules: Record<string, ClosureModule> = {};
-    const keyOf = (path: string): string =>
-        repositoryRelativePath(repositoryRoot, path);
-    const entry = keyOf(entryPath);
-    if (entry.startsWith("..")) return undefined;
-    for (const { path, source: bytes } of files) {
-        const key = keyOf(path);
-        if (key.startsWith("..")) return undefined;
-        const source = bytes.toString("utf8");
-        const parsed = ts.createSourceFile(
-            path,
-            source,
-            ts.ScriptTarget.ES2022,
-            true,
-        );
-        const resolved: Record<string, string> = {};
-        for (const statement of parsed.statements) {
-            const specifier =
-                (ts.isImportDeclaration(statement) ||
-                    ts.isExportDeclaration(statement)) &&
-                statement.moduleSpecifier &&
-                ts.isStringLiteral(statement.moduleSpecifier)
-                    ? statement.moduleSpecifier.text
-                    : undefined;
-            if (!specifier || !specifier.startsWith(".")) continue;
-            const file = resolveRepositoryModuleFile(
-                resolve(dirname(path), specifier),
-            );
-            if (!file) return undefined;
-            resolved[specifier] = keyOf(file);
-        }
-        let javascript = transpileCommonJs(source, path);
-        if (key === entry) {
-            javascript += `\nexports.${browserTextureTargetExport} = ${entryFunction};\n`;
-        }
-        modules[key] = { key, javascript, resolved };
-    }
+    const built = commonJsModuleGraph(entryPath, (path) => {
+        const key = repositoryRelativePath(repositoryRoot, path);
+        return key.startsWith("..") ? undefined : key;
+    });
+    if ("refusal" in built) return undefined;
+    const { entry, modules } = built.graph;
+    modules[entry]!.javascript +=
+        `\nexports.${browserTextureTargetExport} = ${entryFunction};\n`;
     return { entry, modules, files };
 }
 
@@ -861,6 +825,7 @@ function runBrowserTextureFunctionInChromium(
             server,
             {
                 serverName: "browser texture bake server",
+                shared: true,
                 browserRequirement:
                     "Baking a scene function's browser-produced textures requires Chromium.",
                 browserArgs: ${JSON.stringify(canvasBakeBrowserArgs)},
@@ -907,7 +872,7 @@ interface BrowserTextureCallContext extends Pick<
     | "options"
     | "browserTextureFunctions"
     | "compileValue"
-    | "registerAsset"
+    | "assetRegistry"
     | "allocateTemporaryCppName"
     | "cppString"
     | "reachFeature"
@@ -1006,7 +971,7 @@ function bindBakedTexture(
     const label = `${shape.name}_texture_${index}`;
     const cppName = context.allocateTemporaryCppName(label);
     if (texture.factory === "createTexture2DFromPixels") {
-        const asset = context.registerAsset(
+        const asset = context.assetRegistry.registerAsset(
             `data:application/octet-stream;base64,${Buffer.from(
                 texture.pixels,
             ).toString("base64")}`,
@@ -1043,7 +1008,7 @@ function bindBakedTexture(
             },
         };
     }
-    const asset = context.registerAsset(
+    const asset = context.assetRegistry.registerAsset(
         `data:${texture.mediaType};base64,${Buffer.from(texture.image).toString(
             "base64",
         )}`,

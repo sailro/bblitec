@@ -1,6 +1,6 @@
 {
   "scene": "scene149",
-  "notes": "Node-geometry GPU transport: the native nodeGpu receipts of one canonical frame (BBLITE_NODE_GPU_CAPTURE=1) joined against the browser identity observation and instrumented buffer capture under artifacts/scene149-reference (identities.json, instrumented/buffers.json, instrumented/capture-meta.json) and the generated asset: raw attribute bytes, index sequences, texture/sampler sharing per material, per-view bindings, and world uploads exact to the word except signed zeros. The browser reference's producer is a node-material identity observer the repository does not carry; the directory is an input.",
+  "notes": "Node-geometry GPU transport: the native nodeGpu receipts of one canonical frame (BBLITE_NODE_GPU_CAPTURE=1) joined against the browser observation and the generated asset: raw attribute bytes, index sequences, texture/sampler sharing per material, per-view bindings, and world uploads exact to the word except signed zeros. The page runs checks/plugins/webgpu-recorder.init.js; the source hook hands it the scene's material map, which the observation step resolves to each node material's albedo texture, view, sampler and meshes by the recorder's identities, beside every buffer's bytes and the last two submissions' draws.",
   "base": "adhoc",
   "timeoutMs": 120000,
   "env": { "BBLITE_NODE_GPU_CAPTURE": "1" },
@@ -9,6 +9,23 @@
   ],
   "expect": [
     { "kind": "capture-path", "phase": "canonical", "path": "nodeGpu.draws.length", "equals": 855 },
-    { "kind": "plugin", "module": "checks/plugins/node-transport.mjs", "options": { "control": "scene149", "referenceDirectory": "artifacts/scene149-reference" } }
-  ]
+    { "kind": "plugin", "module": "checks/plugins/node-transport.mjs", "options": { "control": "scene149" } }
+  ],
+  "observe": {
+    "initScriptFile": "checks/plugins/webgpu-recorder.init.js",
+    "hooks": [
+      { "marker": "await registerScene(scene);", "position": "before", "inject": "window.__webgpuRecorder.source = { byMaterial };" }
+    ],
+    "steps": [
+      {
+        "id": "identity",
+        "screenshot": "none",
+        "state": false,
+        "actions": [
+          { "frames": 10 },
+          { "evaluate": "(() => { const recorder = window.__webgpuRecorder; const identity = recorder.identity; return { materials: [...recorder.source.byMaterial].map(([original, meshes]) => { const material = meshes[0].material; const albedo = material.inputs.albedo.texture; const authored = original.baseColorTexture ?? original.diffuseTexture; return { original: identity(original), material: identity(material), texture: identity(albedo.texture), view: identity(albedo.view), sampler: identity(albedo.sampler), sameSourceTexture: (authored ?? albedo) === albedo, sameOwner: meshes.every((mesh) => mesh.material === material), meshes: recorder.describeMeshes(meshes) }; }), observation: recorder.observation() }; })()", "as": "identity" }
+        ]
+      }
+    ]
+  }
 }

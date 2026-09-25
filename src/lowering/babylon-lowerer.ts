@@ -17,9 +17,15 @@ import { babylonLoaderCpp } from "./templates/babylon-loader-cpp.js";
 export class BabylonLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
+    /**
+     * `cameras` is whether the scene reached `camera:free`. The pin imports
+     * its camera parser only when `loadCamera` is not `false`, so a scene
+     * that loads every file with `loadCamera: false` compiles no parser and
+     * no camera selection.
+     */
     public lowerLoaderAdapter(
         lightMeshLists = false,
-        meshClones = false,
+        cameras = true,
     ): LoweredSource {
         const modulePath = "src/loader-babylon/load-babylon.ts";
         const symbolName = "loadBabylon";
@@ -85,7 +91,7 @@ export class BabylonLowerer {
             header: "",
             source: babylonLoaderCpp(
                 this.context.provenance(modulePath, symbolName),
-                lowerBabylonCamera(this.context),
+                cameras ? lowerBabylonCamera(this.context) : undefined,
                 {
                     bakeLocalMatrix: this.lowerLocalMatrixBake(),
                     materialProperties: lowerBabylonMaterialProperties(
@@ -101,12 +107,12 @@ export class BabylonLowerer {
                     sceneData: lowerBabylonSceneData(
                         this.context,
                         lightMeshLists,
+                        cameras,
                     ),
                     materialMaps: lowerBabylonMaterialMaps(this.context),
                     fileTextureLoad: `load_file_texture(engine, path, ${upload.sampler}, ${upload.invertY}, ${upload.srgb}, ${upload.premultiplyAlpha})`,
                 },
                 lightMeshLists,
-                meshClones,
             ),
         };
     }

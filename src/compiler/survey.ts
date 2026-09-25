@@ -17,15 +17,17 @@
  */
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
+import { declaredSymbol } from "./symbols.js";
 import { sourceLocation, syntaxKindName } from "../source-location.js";
+import { statementDeclaredNames } from "./syntax.js";
 
-export interface SurveySite {
+interface SurveySite {
     file: string;
     line: number;
     column: number;
 }
 
-export interface SurveyRefusal {
+interface SurveyRefusal {
     /** Where the refusal was raised, as `fail` reported it. */
     site: SurveySite;
     /** The refusal text without its location prefix. */
@@ -42,7 +44,7 @@ export interface SurveyRefusal {
     statements: number;
 }
 
-export interface SurveyClass {
+interface SurveyClass {
     class: string;
     sites: number;
     /** Sites among them that only name a binding another refusal took away. */
@@ -104,30 +106,10 @@ function enclosingFunctionName(statement: ts.Statement): string {
         : "<anonymous>";
 }
 
-function declaredNames(statement: ts.Statement): ts.Identifier[] {
-    const names: ts.Identifier[] = [];
-    const collect = (name: ts.BindingName): void => {
-        if (ts.isIdentifier(name)) names.push(name);
-        else
-            for (const element of name.elements)
-                if (ts.isBindingElement(element)) collect(element.name);
-    };
-    if (ts.isVariableStatement(statement)) {
-        for (const declaration of statement.declarationList.declarations)
-            collect(declaration.name);
-    } else if (
-        (ts.isFunctionDeclaration(statement) ||
-            ts.isClassDeclaration(statement) ||
-            ts.isEnumDeclaration(statement)) &&
-        statement.name
-    ) {
-        names.push(statement.name);
-    }
-    return names;
-}
-
 export class SurveyCollector {
+    /** @unjournaled The census counts refusals a rollback discards too. */
     private readonly realms = new Map<string, Attempt>();
+    /** @unjournaled The census counts refusals a rollback discards too. */
     private current: Attempt | undefined;
 
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
@@ -203,8 +185,8 @@ export class SurveyCollector {
         census.rolledBack.add(statement);
         // Every statement this refusal rolled back loses its declarations,
         // whichever caller reached the site first.
-        for (const name of declaredNames(statement)) {
-            const symbol = checker.getSymbolAtLocation(name);
+        for (const name of statementDeclaredNames(statement)) {
+            const symbol = declaredSymbol(checker, name);
             if (symbol && !attempt.declarations.has(symbol))
                 attempt.declarations.set(symbol, census.site);
         }
@@ -223,7 +205,7 @@ export class SurveyCollector {
             attempt.declarations.size === 0
         )
             return undefined;
-        const symbol = checker.getSymbolAtLocation(subject);
+        const symbol = declaredSymbol(checker, subject);
         return symbol ? attempt.declarations.get(symbol) : undefined;
     }
 

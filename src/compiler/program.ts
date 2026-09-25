@@ -1,37 +1,16 @@
-import { EmissionMap } from "./emission-transaction.js";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { isBabylonModule } from "./symbols.js";
-import { LoweringContext } from "../lowering/context.js";
+import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
+import { sharedPinnedContext } from "../lowering/context.js";
+import {
+    isLibraryTyping,
+    libraryTypingFile,
+} from "../typescript-library-files.js";
 import {
     findRepositoryRoot,
     repositoryRelativePath,
-    sharedUpstreamStore,
 } from "../upstream-source.js";
-
-let sharedSourceFiles: Map<string, ts.SourceFile> | undefined;
-
-function cachedSourceFile(
-    path: string,
-    load: () => ts.SourceFile | undefined,
-): ts.SourceFile | undefined {
-    sharedSourceFiles ??= new EmissionMap();
-    const key = resolve(path);
-    const cached = sharedSourceFiles.get(key);
-    if (cached) {
-        return cached;
-    }
-    const sourceFile = load();
-    if (sourceFile) {
-        sharedSourceFiles.set(key, sourceFile);
-    }
-    return sourceFile;
-}
-
-function canCacheSourceFile(path: string): boolean {
-    return resolve(path).includes(`${sep}node_modules${sep}`);
-}
 
 /**
  * The pinned members the published typings erase.
@@ -80,11 +59,11 @@ const erasedInternalMembers: readonly {
 /**
  * The restored declarations, appended to the typings once per process.
  *
- * `cachedSourceFile` keeps the composed typings for the life of the process,
+ * `libraryTypingFile` keeps the composed typings for the life of the process,
  * so this runs on the first compile alone.
  */
 function pinnedInternalDeclarations(): string {
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     return erasedInternalMembers
         .map((erased) => {
             const { file, declaration } = context.interfaceDeclaration(
@@ -184,13 +163,8 @@ export function createCompilerProgram(
     const repositoryRoot = findRepositoryRoot(
         dirname(fileURLToPath(import.meta.url)),
     );
-    const babylonTypes = resolve(
-        repositoryRoot,
-        "node_modules",
-        "@babylonjs",
-        "lite",
-        "index.d.ts",
-    );
+    const { babylon: babylonTypes, webGpu: webGpuTypes } =
+        compilerPackageTypings();
     const options: ts.CompilerOptions = {
         target: ts.ScriptTarget.ES2022,
         module: ts.ModuleKind.NodeNext,
@@ -262,8 +236,8 @@ export function createCompilerProgram(
                           onError,
                           shouldCreateNewSourceFile,
                       );
-            return canCacheSourceFile(path)
-                ? cachedSourceFile(path, load)
+            return isLibraryTyping(path)
+                ? libraryTypingFile(path, load)
                 : load();
         },
         resolveModuleNameLiterals: (
@@ -336,14 +310,6 @@ export function createCompilerProgram(
     };
     // Include the pin's WebGPU peer typings explicitly, including for entries
     // outside this checkout. Keep unrelated ambient packages excluded above.
-    const webGpuTypes = resolve(
-        repositoryRoot,
-        "node_modules",
-        "@webgpu",
-        "types",
-        "dist",
-        "index.d.ts",
-    );
     const program = ts.createProgram([rootName, webGpuTypes], options, host);
     const sourceFile = program.getSourceFile(rootName);
     if (!sourceFile) {

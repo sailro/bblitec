@@ -12,7 +12,7 @@ import {
 } from "./capture-suite-reference.js";
 import { pageBase64Script, runPageGlobal } from "./browser-harness.js";
 import { runGenerationChild } from "./compiler/generation-child.js";
-import { LoweringContext } from "./lowering/context.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 import {
     packBakedCsgMesh,
     recordingCsgEngine,
@@ -26,11 +26,11 @@ export const csg2BooleanNames = [
     "csg2Intersect",
     "csg2Add",
 ] as const;
-export type Csg2BooleanName = (typeof csg2BooleanNames)[number];
+type Csg2BooleanName = (typeof csg2BooleanNames)[number];
 let materialSlotCount: number | undefined;
 export function csg2MaterialSlotCount(): number {
     if (materialSlotCount === undefined) {
-        const context = new LoweringContext();
+        const context = sharedPinnedContext();
         const source = context.sourceFile("src/mesh/csg2.ts");
         materialSlotCount = context.numericValue(
             context.variableInitializer(source, "MATERIAL_ID_RESERVE_COUNT"),
@@ -51,13 +51,13 @@ export type Csg2SolidPlan =
           readonly right: Csg2SolidPlan;
       };
 
-export interface Csg2BakeRequest {
+interface Csg2BakeRequest {
     readonly plan: Csg2SolidPlan;
     readonly name: string;
     /** Absent selects the single-mesh factory. */
     readonly materialCount?: number;
 }
-export interface BakedCsg2Mesh {
+interface BakedCsg2Mesh {
     readonly name: string;
     readonly materialSlot?: number;
     readonly geometry: BakedCsgMesh;
@@ -221,6 +221,7 @@ export async function executeCsg2Bake(
     });
     return runPageGlobal(server, "__bakeCsg2", {
         serverName: "pinned CSG2 bake",
+        shared: true,
         browserRequirement:
             "Pinned CSG2 Manifold WASM requires Chrome or Edge.",
     });

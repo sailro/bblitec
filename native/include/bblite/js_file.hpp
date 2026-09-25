@@ -4,7 +4,10 @@
 // Blob and opaque handles live here; dialogs, selected-path reads, and atomic
 // writes stay behind pal.hpp. No source-supplied path enters this interface.
 
+#include <bblite/features/has_ui.hpp>
+
 #include <bblite/js_data.hpp>
+#include <bblite/js_encoding.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 
@@ -16,6 +19,7 @@
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -158,13 +162,10 @@ struct FileList {
     [[nodiscard]] std::size_t length() const noexcept { return first ? 1u : 0u; }
 };
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 [[nodiscard]] inline UiElementRecord& browser_file_ui_element(Engine& engine,
                                                               UiElementHandle handle) {
-    if (handle.value >= engine.ui_elements.size()) {
-        throw std::runtime_error("Native browser-file UI handle is out of range.");
-    }
-    return engine.ui_elements[handle.value];
+    return handle_at(engine.ui_elements, handle);
 }
 
 [[nodiscard]] inline FileList input_files(Engine& engine, UiElementHandle input) {
@@ -189,11 +190,74 @@ struct FileList {
     return *record;
 }
 
-/** File.text(): immediate in AOT, but still bounded and error-reporting. */
-[[nodiscard]] inline std::string file_text(const Engine& engine, const BrowserFileHandle& handle) {
+/** A selected File's bytes, as the snapshot holds them. */
+[[nodiscard]] inline std::string_view file_bytes(const Engine& engine,
+                                                 const BrowserFileHandle& handle) {
     const BrowserFileRecord& file = browser_file_record(engine, handle);
-    return std::string(file.bytes.begin(), file.bytes.end());
+    return {reinterpret_cast<const char*>(file.bytes.data()), file.bytes.size()};
 }
+
+/**
+ * File.text(): immediate in AOT, but still bounded and error-reporting. The
+ * bytes are UTF-8 decoded as Blob.text() does: a byte order mark is removed
+ * and an invalid sequence reads as U+FFFD.
+ */
+[[nodiscard]] inline std::string file_text(const Engine& engine, const BrowserFileHandle& handle) {
+    return decode_utf8_removing_bom(file_bytes(engine, handle));
+}
+
+/**
+ * `FileReader` over a File or Blob, reading as text. The read completes
+ * inside `readAsText`: the bytes are decoded as the Encoding Standard does
+ * without a label and `load` runs before the call returns, or `error` when
+ * the file can no longer be read. The compiler admits the handlers only
+ * when they are assigned before the read starts.
+ */
+class FileReader {
+    struct State {
+        Nullable<std::string> result;
+        Callback<void()> onload;
+        Callback<void()> onerror;
+        void gc_trace(const TraceVisitor& visitor) const {
+            visitor(onload);
+            visitor(onerror);
+        }
+    };
+
+public:
+    void set_onload(Callback<void()> handler) const { state_->onload = std::move(handler); }
+    void set_onerror(Callback<void()> handler) const { state_->onerror = std::move(handler); }
+    [[nodiscard]] Nullable<std::string> result() const { return state_->result; }
+
+    void read_as_text(const Engine& engine, const BrowserFileHandle& file) const {
+        std::optional<std::string_view> bytes;
+        try {
+            bytes = file_bytes(engine, file);
+        } catch (const std::runtime_error&) {
+            bytes.reset();
+        }
+        settle(bytes);
+    }
+    void read_as_text(const Blob& blob) const {
+        const auto& bytes = blob.bytes();
+        settle(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    }
+
+    void gc_trace(const TraceVisitor& visitor) const { visitor(state_); }
+
+private:
+    void settle(std::optional<std::string_view> bytes) const {
+        state_->result = bytes ? Nullable<std::string>(decode_text(*bytes))
+                               : Nullable<std::string>(std::nullopt);
+        // A handler may replace the reader's handlers; run the one this
+        // read selected.
+        Callback<void()> handler = bytes ? state_->onload : state_->onerror;
+        if (handler)
+            handler();
+    }
+
+    std::shared_ptr<State> state_ = make_gc_shared<State>();
+};
 
 inline void replace_browser_file(Engine& engine, BrowserFileHandle& destination,
                                  pal::SelectedFileSnapshot selected) {
@@ -364,7 +428,7 @@ inline bool append_mime_extensions(std::vector<std::string>& extensions, std::st
 
 } // namespace detail
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 /** Default action of a retained `<a href=objectUrl download=name>`. */
 inline void click_download_anchor(Engine& engine, UiElementHandle handle) {
     ObjectUrlHandle url{};

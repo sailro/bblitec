@@ -5,6 +5,7 @@ import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { lowerQuatFromRotationBasis } from "./pinned-mat4-decompose.js";
 import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const modulePath = "src/physics/havok-thin-instances.ts";
 
@@ -225,7 +226,7 @@ export function lowerPhysicsThinInstances(
     methodCalls.set(
         "flushThinInstances",
         (args) =>
-            `flush_thin_instances(*world.engine, MeshHandle{${args[0]}.value})`,
+            `flush_thin_instances(*world.engine, std::get<MeshHandle>(${args[0]}))`,
     );
     methodCalls.set(
         "raw.HP_Body_SetQTransform",
@@ -403,7 +404,7 @@ export function lowerPhysicsThinInstances(
                     ],
                     body: [
                         "{ _hkBody: handles[0], _shape: null, _preStep: false, _prestepType: PhysicsPrestepType.TELEPORT, _world: world, node, motionType }",
-                        "state.body = PhysicsBody{}; state.body.handle = state.handles.at(0); state.body.owner = owner; state.body.node = node; state.body.motion_type = motion_type;",
+                        "state.body = PhysicsBody{}; state.body.handle = state.handles.at(0); state.body.owner = owner; state.body.node = node; state.body.node_name = physics_node_name(*world.engine, node); state.body.motion_type = motion_type;",
                     ],
                 };
                 const entry = storage[local.name.text];
@@ -713,8 +714,9 @@ export function lowerPhysicsThinInstances(
         state: `struct ThinPhysicsState { PhysicsBody body; std::vector<pal::PhysicsBodyHandle> handles; pal::PhysicsTransform transform; std::array<double, 4> rotation; };`,
         helpers: `${quat}\n${transform}\n${compose}
 MeshRecord* thin_mesh(PhysicsWorld& world, PhysicsNodeRef node) {
-    if (node.kind != PhysicsNodeKind::mesh) return nullptr;
-    auto& mesh = world.engine->meshes.at(node.value);
+    const auto* handle = std::get_if<MeshHandle>(&node);
+    if (!handle) return nullptr;
+    auto& mesh = ${recordAt("world.engine->meshes", "*handle")};
     return mesh.thin_instanced ? &mesh : nullptr;
 }
 std::vector<float>& thin_matrices(PhysicsWorld& world, PhysicsNodeRef node) {

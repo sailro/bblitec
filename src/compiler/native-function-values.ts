@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { DataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { resolvedSymbol } from "./symbols.js";
 import type { Value } from "./types.js";
 
 type Context = Pick<
@@ -20,8 +21,9 @@ export function nativeFunctionValue(
     type: DataType<"function">,
     body: string,
 ): Value {
-    const declaration = context.checker.getSymbolAtLocation(
-        access.name,
+    const declaration = resolvedSymbol(
+        context.checker,
+        access,
     )?.valueDeclaration;
     if (!declaration)
         return context.fail(
@@ -41,15 +43,12 @@ export function nativeFunctionValue(
 }
 
 export function arrayFunctionValue(
-    context: Context &
-        Pick<LoweringServices, "isDefaultLibraryIdentifier" | "reachJson">,
+    context: Context & Pick<LoweringServices, "libraryGlobal" | "reachJson">,
     access: ts.PropertyAccessExpression,
 ): Value | undefined {
     if (
         access.name.text !== "isArray" ||
-        !ts.isIdentifier(access.expression) ||
-        access.expression.text !== "Array" ||
-        !context.isDefaultLibraryIdentifier(access.expression)
+        context.libraryGlobal(access.expression) !== "Array"
     )
         return undefined;
     context.reachJson();

@@ -3,45 +3,35 @@
 #include <bblite/upstream_text_renderer.hpp>
 
 namespace bbl::pal {
-struct DawnStandaloneTextOps : DawnTextResourceOps {
-    DawnTextRenderer& renderer;
-    WGPUTextureFormat format;
-    WGPUCommandEncoder encoder = nullptr;
-    WGPUTextureView target = nullptr;
-    DawnRenderPass owned_pass;
-    DawnStandaloneTextOps(DawnTextRenderer& renderer, WGPUTextureFormat format)
-        : DawnTextResourceOps(renderer.owner), renderer(renderer), format(format) {
-        renderer.ensure_layout();
-    }
-    TextPipelineBinding resolve_text_renderer_pipeline() {
-        auto binding = renderer.pipeline(text_pipeline_info(1, false, false, false), format,
-                                         WGPUTextureFormat_Undefined);
-        if (text_weight_installed)
-            binding.variant_pipeline =
-                renderer
-                    .pipeline(text_pipeline_info(1, false, false, false, true), format,
-                              WGPUTextureFormat_Undefined)
-                    .pipeline;
-        return binding;
-    }
-    std::shared_ptr<void> text_renderer_quad() { return renderer.quad; }
-    void begin_text_renderer_pass(const TextRendererState& renderer) {
-        WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-        attachment.view = target;
-        attachment.clearValue = {renderer.clear_value.r, renderer.clear_value.g,
-                                 renderer.clear_value.b, renderer.clear_value.a};
-        attachment.loadOp = renderer.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
-        attachment.storeOp = WGPUStoreOp_Store;
-        WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-        descriptor.colorAttachmentCount = 1;
-        descriptor.colorAttachments = &attachment;
-        owned_pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
-        pass = owned_pass.get();
-    }
-    void end_text_renderer_pass() {
-        wgpuRenderPassEncoderEnd(pass);
-        owned_pass.reset();
-        pass = nullptr;
-    }
-};
+
+/** Point the engine surface at this frame's Dawn device, size and format, then
+ *  run every registered text renderer's `_update`, the pin's closure. */
+inline void update_dawn_text_renderers(Engine& engine, DawnTextRenderer& text, double width,
+                                       double height) {
+    const auto& surface = bbl::text_surface(engine);
+    surface->device = text.device;
+    surface->canvas = {width, height};
+    surface->format = dawn_text_format_name(text.device->color_format);
+    const auto renderers = surface->rendering_contexts;
+    for (std::size_t index = 0; index < renderers.size(); ++index)
+        renderers[index]->update();
+}
+
+/** Record every registered text renderer's pass into `target` through its `_record`. */
+inline void record_dawn_text_renderers(Engine& engine, DawnTextRenderer& text,
+                                       WGPUCommandEncoder encoder, WGPUTextureView target) {
+    const auto& surface = bbl::text_surface(engine);
+    auto view = std::make_shared<DawnTextGpuView>();
+    view->target = target;
+    surface->sc_rt.color_view = std::move(view);
+    surface->current_encoder = text.command_encoder(encoder);
+    const auto clear = js::finally([&] {
+        surface->current_encoder.reset();
+        surface->sc_rt.color_view.reset();
+    });
+    const auto renderers = surface->rendering_contexts;
+    for (std::size_t index = 0; index < renderers.size(); ++index)
+        static_cast<void>(renderers[index]->record());
+}
+
 } // namespace bbl::pal

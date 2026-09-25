@@ -5,23 +5,21 @@ export interface MeshProfileTable {
     rowCount: number;
 }
 
-export function meshProfileBindingCpp(table: MeshProfileTable): string {
-    return `namespace {
-constexpr std::array<std::uint32_t, ${table.sceneRows.length}> scene_mesh_profile_rows{
-    ${table.sceneRows.map((row) => `${row}u`).join(", ")}
-};
-constexpr std::array<std::uint32_t, ${table.staticRows.length}> static_mesh_profile_rows{
-    ${table.staticRows.map((row) => `${row}u`).join(", ")}
-};
-}
-
-MeshHandle bind_scene_mesh_profile(Engine& engine, MeshHandle mesh, std::uint32_t profile) {
-    if (mesh.value >= engine.meshes.size() || profile >= scene_mesh_profile_rows.size()) {
-        throw std::runtime_error("A runtime mesh names no generated composition profile.");
-    }
-    engine.meshes[mesh.value].composition_feature_row = scene_mesh_profile_rows[profile];
-    return mesh;
-}
-
+/**
+ * The statements `create_engine` runs to hand the engine its composition
+ * rows (`MeshCompositionRows`), before the program stores any mesh.
+ */
+export function meshCompositionRowsCpp(table: MeshProfileTable): string {
+    const list = (rows: readonly number[]): string =>
+        rows.map((row) => `${row}u`).join(", ");
+    return `    engine.mesh_composition_rows.static_rows = {${list(table.staticRows)}};
+    engine.mesh_composition_rows.profile_rows = {${list(table.sceneRows)}};
+    engine.mesh_composition_rows.row_count = ${table.rowCount}u;
 `;
 }
+
+/** The profile announcement a runtime creation site makes before its factory stores the mesh. */
+export const meshProfileBeginCpp = `void begin_scene_mesh_profile(Engine& engine, std::uint32_t profile) {
+    store_next_mesh_with_profile(engine, profile);
+}
+`;

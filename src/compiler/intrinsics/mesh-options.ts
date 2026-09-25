@@ -35,7 +35,7 @@ export interface MeshOptionContext
             | "expectStaticArrayLiteral"
             | "objectProperty"
             | "compileNumber"
-            | "pinValueToTemporary"
+            | "bindings"
         > {}
 
 /**
@@ -69,7 +69,7 @@ export function compileBoxOptions(
     const number = (value: ts.Expression): string => {
         const cpp = context.compileNumber(value, precision);
         if (precision === "float") return cpp;
-        return context.pinValueToTemporary(
+        return context.bindings.pinValueToTemporary(
             { kind: "number", cpp },
             "box_dimension",
         ).cpp;
@@ -312,7 +312,7 @@ export function compileSphereOptions(
     const diameterZ = context.objectProperty(object, "diameterZ");
     // Doubles, because the pin halves them as JavaScript numbers before the
     // vertex chain rounds: `rx = diameterX / 2` off a float diameter is not
-    // `rx` off the pin's. See the mesh-builder contract in docs/fidelity.md.
+    // `rx` off the pin's.
     const compiledDiameter = diameter
         ? context.compileNumber(diameter, "double")
         : "1.0";

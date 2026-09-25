@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -9,6 +10,7 @@ import {
     type CameraDeferralContext,
     compileCameraDeferralOptions,
 } from "./gizmo.js";
+import { recordAt } from "../record-access.js";
 
 export interface SceneIntrinsicContext
     extends
@@ -16,31 +18,23 @@ export interface SceneIntrinsicContext
         CameraDeferralContext,
         Pick<
             LoweringServices,
-            | "compileDeviceRecoveryIntrinsic"
-            | "noteTemporalRecordBoundary"
-            | "noteTemporalCameraControl"
-            | "noteTextCameraControl"
-            | "noteMaterialColorRenderBoundary"
+            | "engineLifecycle"
+            | "admissions"
             | "compileNumber"
             | "compileColor3"
-            | "compileVec4"
+            | "evaluator"
             | "unwrap"
-            | "noteTemporalAdmissionFailure"
             | "expectObjectLiteral"
             | "objectProperty"
             | "expectSameEngine"
-            | "compileFrameCallback"
-            | "compileVoidCallback"
+            | "callbacks"
             | "captureManagedClosureLines"
             | "useNativeValue"
             | "compileStringLiteral"
             | "dataLowerer"
             | "emit"
-            | "markEngineStart"
-            | "compileAsyncEngineStart"
-            | "addSceneLight"
-            | "addDynamicSceneLight"
-            | "removeSceneLight"
+            | "asyncActivations"
+            | "sceneManifest"
             | "requireEngine"
             | "ensureDefaultRenderTask"
             | "compileSceneRegistration"
@@ -52,7 +46,10 @@ export function compileSceneIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
-    const recovery = context.compileDeviceRecoveryIntrinsic(importedName, call);
+    const recovery = context.engineLifecycle.compileDeviceRecoveryIntrinsic(
+        importedName,
+        call,
+    );
     if (recovery) return recovery;
     if (
         [
@@ -63,14 +60,22 @@ export function compileSceneIntrinsic(
             "addTaskAtStart",
         ].includes(importedName)
     ) {
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             call,
             `${importedName} after scene registration`,
         );
     }
     if (importedName === "rebuildSceneRenderables") {
-        context.noteTemporalRecordBoundary(call, importedName, "always");
-        context.noteMaterialColorRenderBoundary(call, importedName, true);
+        context.admissions.noteTemporalRecordBoundary(
+            call,
+            importedName,
+            "always",
+        );
+        context.admissions.noteMaterialColorRenderBoundary(
+            call,
+            importedName,
+            true,
+        );
     }
     switch (importedName) {
         case "addToScene": {
@@ -95,7 +100,7 @@ export function compileSceneIntrinsic(
             }
             context.expectSameEngine(scene, resource, call);
             if (resource.kind !== "camera" && resource.kind !== "light") {
-                context.noteMaterialColorRenderBoundary(
+                context.admissions.noteMaterialColorRenderBoundary(
                     call,
                     "adding material groups after registration",
                 );
@@ -106,13 +111,17 @@ export function compileSceneIntrinsic(
             // patched to the slot here.
             if (resource.kind === "light") {
                 if (resource.lightKind && resource.lightIdentity) {
-                    context.addSceneLight(scene, resource, resource.lightKind);
+                    context.sceneManifest.addSceneLight(
+                        scene,
+                        resource,
+                        resource.lightKind,
+                    );
                 } else {
                     // A light read from native data has the runtime handle
                     // but no single generation-time identity/kind. The
                     // pipeline therefore composes its dynamic light arms;
                     // the runtime add keeps the handle's actual kind/order.
-                    context.addDynamicSceneLight();
+                    context.sceneManifest.addDynamicSceneLight();
                 }
             }
             // A container's entity takes the pin's entity walk alone: its
@@ -151,7 +160,7 @@ export function compileSceneIntrinsic(
             }
             context.expectSameEngine(scene, resource, call);
             if (resource.kind === "light") {
-                context.removeSceneLight(scene, resource);
+                context.sceneManifest.removeSceneLight(scene, resource);
             }
             context.reachFeature("scene:remove", call);
             return {
@@ -170,7 +179,7 @@ export function compileSceneIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::on_before_render(${scene.cpp}, ` +
-                    `${context.compileFrameCallback(argumentAt(call, 1))})`,
+                    `${context.callbacks.compileFrameCallback(argumentAt(call, 1))})`,
             };
         }
 
@@ -182,7 +191,7 @@ export function compileSceneIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::on_scene_dispose(${scene.cpp}, ` +
-                    `${context.compileVoidCallback(argumentAt(call, 1))})`,
+                    `${context.callbacks.compileVoidCallback(argumentAt(call, 1))})`,
             };
         }
 
@@ -229,7 +238,7 @@ export function compileSceneIntrinsic(
                 "frame-graph-context",
                 argumentAt(call, 0),
             );
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 importedName,
                 "registration",
@@ -264,8 +273,8 @@ export function compileSceneIntrinsic(
             context.expectKind(camera, "camera", argumentAt(call, 0));
             context.expectKind(scene, "scene", sceneArgument);
             context.expectSameEngine(camera, scene, call);
-            context.noteTemporalCameraControl(call, configurable);
-            context.noteTextCameraControl(
+            context.admissions.noteTemporalCameraControl(call, configurable);
+            context.admissions.noteTextCameraControl(
                 call,
                 camera,
                 importedName === "attachControl",
@@ -316,28 +325,29 @@ export function compileSceneIntrinsic(
                 });
                 configuration = `bbl::ConfigurableFreeControlOptions{${fields.join(", ")}}`;
             }
-            // The scene is checked but not passed: both pinned hooks read it
-            // only to reach the canvas and the render loop. Install the
-            // native control immediately and preserve the pin's returned
-            // disposer, which disables controls and releases its callbacks.
+            // The scene is the render loop the pinned hooks push their
+            // per-frame update onto, and its `_update` decides the delta
+            // that update advances by. Install the native control
+            // immediately and preserve the pin's returned disposer, which
+            // disables controls and releases its callbacks.
             context.emit(
                 configurable
-                    ? `bbl::attach_configurable_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${configuration});`
+                    ? `bbl::attach_configurable_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp}, ${configuration});`
                     : importedName === "attachFreeControl"
-                      ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp});`
-                      : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp});`,
+                      ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp});`
+                      : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp}, ${scene.cpp});`,
             );
             const engine = context.requireEngine(camera, call);
             for (const { member, cpp } of deferrals) {
                 context.emit(
-                    `${engine}.cameras[${camera.cpp}.value].${member} = ${cpp};`,
+                    `${recordAt(`${engine}.cameras`, camera.cpp)}.${member} = ${cpp};`,
                 );
             }
             const cleanup = context.captureManagedClosureLines(() => {
                 context.useNativeValue(camera);
                 const owner = context.requireEngine(camera, call);
                 context.emit(
-                    `auto& record = ${owner}.cameras[${camera.cpp}.value];`,
+                    `auto& record = ${recordAt(`${owner}.cameras`, camera.cpp)};`,
                 );
                 context.emit(
                     "record.controls_enabled = false; record.should_handle_pointer_down = {}; record.external_drag_active = {}; record.external_pick_pending = {}; record.configurable_free_pointer = {}; record.configurable_free_update = {};",
@@ -351,7 +361,7 @@ export function compileSceneIntrinsic(
         }
 
         case "setEnvironmentRotation": {
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 "setEnvironmentRotation invalidates source-task caches beyond the retained key fields",
                 "always",
@@ -369,7 +379,7 @@ export function compileSceneIntrinsic(
                     "setEnvironmentRotation is currently lowered without a textured environment skybox; rotating one requires native skybox rotation support.",
                 );
             }
-            scene.sceneEnvironmentState!.rotationSet = true;
+            writable(scene.sceneEnvironmentState!).rotationSet = true;
             return {
                 kind: "void",
                 cpp:
@@ -437,7 +447,7 @@ export function compileSceneIntrinsic(
                 ) ||
                 !ts.isArrayLiteralExpression(context.unwrap(property("color")))
             ) {
-                context.noteTemporalAdmissionFailure(
+                context.admissions.noteTemporalAdmissionFailure(
                     argumentAt(call, 1),
                     "TAA requires setFog to receive a fresh inline config with an inline color array; " +
                         "named or aliased fog objects do not yet retain their identity and live fields.",
@@ -483,7 +493,7 @@ export function compileSceneIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::set_scene_clip_plane(${scene.cpp}, ` +
-                    `${context.compileVec4(argumentAt(call, 1))})`,
+                    `${context.evaluator.compileVec4(argumentAt(call, 1))})`,
             };
         }
 
@@ -491,7 +501,7 @@ export function compileSceneIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const scene = context.compileValue(argumentAt(call, 0));
             context.expectKind(scene, "scene", argumentAt(call, 0));
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 importedName,
                 "registration",
@@ -538,13 +548,17 @@ export function compileSceneIntrinsic(
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "engine", argumentAt(call, 0));
             context.reachFeature("backend:sdl", call);
-            const asynchronous = context.compileAsyncEngineStart(engine, call);
+            const asynchronous =
+                context.asyncActivations.compileAsyncEngineStart(engine, call);
             if (asynchronous) return asynchronous;
             // Upstream this returns to a continuation that runs alongside
             // the frames it just scheduled; here the call blocks, so the
             // statements after it are hoisted into the frame conductor's
             // deferred queue.
-            context.markEngineStart(engine.engineCpp ?? engine.cpp, call);
+            context.engineLifecycle.markEngineStart(
+                engine.engineCpp ?? engine.cpp,
+                call,
+            );
             return {
                 kind: "void",
                 cpp: `bbl::start_engine(${engine.cpp})`,

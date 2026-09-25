@@ -1,16 +1,15 @@
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
+import type { LibraryGlobal } from "./symbols.js";
 
 /** The default-library Promise constructor with one named arrow-executor parameter. */
 export function promiseExecutor(
     expression: ts.Expression,
-    isGlobal: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): { executor: ts.ArrowFunction; resolve: ts.Identifier } | undefined {
     if (
         !ts.isNewExpression(expression) ||
-        !ts.isIdentifier(expression.expression) ||
-        expression.expression.text !== "Promise" ||
-        !isGlobal(expression.expression) ||
+        libraryGlobal(expression.expression) !== "Promise" ||
         expression.arguments?.length !== 1
     )
         return undefined;

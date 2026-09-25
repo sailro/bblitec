@@ -1,6 +1,3 @@
-#define BBLITE_WORKERS 1
-#define BBLITE_OFFSCREEN_SURFACES 1
-#define BBLITE_HAS_DOM_INPUT 1
 #define main generated_main
 #include "../../artifacts/dom-input/program.hpp"
 #undef main

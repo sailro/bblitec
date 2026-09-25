@@ -1,6 +1,6 @@
 import type ts from "typescript";
 import type { LoweringServices } from "../lowering-services.js";
-import type { Value } from "../types.js";
+import { optionalPresentCpp, type Value } from "../types.js";
 import { isTypedArrayType, type DataType } from "../data-types.js";
 import { argumentAt } from "../syntax.js";
 import {
@@ -48,7 +48,7 @@ export function compileCreateStorageBuffer(
             sourceExpression,
             "createStorageBuffer requires an ArrayBuffer view or numeric byte length.",
         );
-    const source = context.pinValueToTemporary(
+    const source = context.bindings.pinValueToTemporary(
         data,
         "storage_source",
         sourceExpression,
@@ -97,12 +97,12 @@ export function compileCreateStorageBuffer(
     const writeOptions = (value: Value): void => {
         if (value.kind === "json-null" || value.kind === "void") return;
         if (value.kind === "data" && value.dataType?.kind === "optional") {
-            const owner = context.pinValueToTemporary(
+            const owner = context.bindings.pinValueToTemporary(
                 value,
                 "storage_options_owner",
                 optionsExpression,
             );
-            context.emit(`if (${owner.cpp}.has_value()) {`);
+            context.emit(`if (${optionalPresentCpp(owner.cpp)}) {`);
             writeOptions({
                 kind: "data",
                 cpp: `${owner.cpp}.value()`,
@@ -112,7 +112,7 @@ export function compileCreateStorageBuffer(
             return;
         }
         if (value.kind === "data" && value.dataType?.kind === "union") {
-            const owner = context.pinValueToTemporary(
+            const owner = context.bindings.pinValueToTemporary(
                 value,
                 "storage_options_union",
                 optionsExpression,

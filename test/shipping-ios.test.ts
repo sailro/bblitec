@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import {
-    mkdirSync,
-    mkdtempSync,
-    readFileSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -26,8 +20,11 @@ test("iOS publishing selects device SDL packaging without conflating Android or 
             ["--output", "artifacts/releases with spaces"],
         ]),
     );
+    assert.equal(
+        args[args.indexOf("-File") + 1],
+        resolve("tools/package-ios.ps1"),
+    );
     for (const [flag, expected] of [
-        ["-Platform", "ios"],
         ["-Scene", "tetris"],
         ["-Jobs", "3"],
         ["-OutputRoot", resolve("artifacts/releases with spaces")],
@@ -95,7 +92,11 @@ test(
         );
         t.after(() => rmSync(directory, { recursive: true, force: true }));
         const sdl = readFileSync("tools/build-sdl-min.ps1", "utf8");
-        const flags = cppSection(sdl, "$audioSetting =", "# Keep in lockstep");
+        const flags = cppSection(
+            sdl,
+            "$audioSetting =",
+            "# The version the overlay port pins",
+        );
         const options = cppSection(
             sdl,
             "$sdlOptions =",
@@ -108,8 +109,8 @@ test(
             script,
             `
 $ErrorActionPreference = 'Stop'
-foreach ($file in @('tools/package-ios.ps1', 'tools/package-demo.ps1', 'tools/package-output.psm1',
-    'tools/ios.ps1', 'tools/build-sdl-min.ps1', 'tools/build-rmlui.ps1', 'tools/build-labsound.ps1')) {
+foreach ($file in @('tools/package-ios.ps1', 'tools/ios.ps1', 'tools/build-sdl-min.ps1',
+    'tools/build-rmlui.ps1', 'tools/build-labsound.ps1')) {
     $tokens = $null; $errors = $null
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path '${resolve(".").replaceAll("'", "''")}' $file), [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw ($errors | Out-String) }
@@ -122,7 +123,7 @@ foreach ($IosSdk in @('', 'iphoneos')) {
             ${flags}
             ${options}
             foreach ($name in @('SDL_RENDER', 'SDL_RENDER_GPU', 'SDL_OPENGL', 'SDL_OPENGLES',
-                'SDL_VULKAN', 'SDL_HAPTIC', 'SDL_SENSOR', 'SDL_CAMERA', 'SDL_POWER', 'SDL_MISC', 'SDL_LOCALE', 'SDL_SHARED')) {
+                'SDL_VULKAN', 'SDL_HAPTIC', 'SDL_SENSOR', 'SDL_CAMERA', 'SDL_POWER', 'SDL_SHARED')) {
                 if ($sdlOptions[$name] -ne 'OFF') { throw "Untrimmed subsystem: $name" }
             }
             foreach ($name in @('SDL_GPU', 'SDL_METAL', 'SDL_VIDEO', 'SDL_STATIC')) {
@@ -338,44 +339,5 @@ ${binaryGuard}
             assert.notEqual(result.status, 0);
             assert.match(result.stderr, error);
         }
-    },
-);
-
-test(
-    "iOS publication retains a previous unsigned package without touching comparison baselines",
-    { skip: !tools.powershell },
-    (t) => {
-        const directory = mkdtempSync(
-            join(tmpdir(), "bblite-ios-shipping-publish-"),
-        );
-        t.after(() => rmSync(directory, { recursive: true, force: true }));
-        const script = join(directory, "publish.ps1");
-        mkdirSync(join(directory, "@previous"));
-        writeFileSync(join(directory, "@previous/keep.txt"), "baseline");
-        writeFileSync(
-            script,
-            `
-$ErrorActionPreference = 'Stop'
-Import-Module '${resolve("tools/package-output.psm1").replaceAll("'", "''")}' -Force
-$name = 'bblitec-tetris-sdl-gpu-ios-arm64'
-foreach ($content in @('first', 'second')) {
-    $plan = New-PackageOutput $PSScriptRoot $name
-    New-Item -ItemType Directory (Join-Path $plan.Staging $name) | Out-Null
-    Set-Content (Join-Path $plan.Staging "$name/app.txt") $content
-    Set-Content (Join-Path $plan.Staging "$name.zip") $content
-    Set-Content (Join-Path $plan.Staging "$name.json") $content
-    Publish-PackageOutput $plan
-}
-if ((Get-Content (Join-Path $plan.Previous "$name/app.txt")) -ne 'first') { throw 'Prior package lost' }
-if ((Get-Content (Join-Path $PSScriptRoot "$name/app.txt")) -ne 'second') { throw 'New package was not published' }
-if ((Get-Content (Join-Path $PSScriptRoot '@previous/keep.txt')) -ne 'baseline') { throw 'Comparison evidence changed' }
-`,
-        );
-        const result = spawnSync(
-            tools.powershell!,
-            ["-NoProfile", "-File", script],
-            { encoding: "utf8", windowsHide: true },
-        );
-        assert.equal(result.status, 0, result.stdout + result.stderr);
     },
 );

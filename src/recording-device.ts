@@ -40,24 +40,27 @@ export type DeviceMethod =
     | "createBindGroup"
     | "createCommandEncoder";
 
-export type QueueMethod =
+type QueueMethod =
     "writeBuffer" | "writeTexture" | "copyExternalImageToTexture" | "submit";
 
-export type EncoderMethod =
+type EncoderMethod =
     "beginRenderPass" | "beginComputePass" | "copyTextureToTexture" | "finish";
-export type ComputePassMethod =
+type ComputePassMethod =
     "setPipeline" | "setBindGroup" | "dispatchWorkgroups" | "end";
 
-export type RenderPassMethod =
+type RenderPassMethod =
     | "setPipeline"
     | "setBindGroup"
+    | "setVertexBuffer"
+    | "setIndexBuffer"
     | "draw"
+    | "drawIndexed"
     | "setViewport"
     | "setScissorRect"
     | "end";
 
 /** What one producer lets its pinned factory reach. */
-export interface RecordingContract {
+interface RecordingContract {
     /** Names the producer in every refusal. */
     readonly producer: string;
     readonly device: readonly DeviceMethod[];
@@ -72,7 +75,7 @@ export interface RecordingContract {
 }
 
 /** A WebGPU extent, in either of the two spellings the specification admits. */
-export type GpuExtent =
+type GpuExtent =
     | readonly number[]
     | {
           readonly width: number;
@@ -81,7 +84,7 @@ export type GpuExtent =
       };
 
 /** A WebGPU origin, in either of the two spellings the specification admits. */
-export type GpuOrigin =
+type GpuOrigin =
     | readonly number[]
     | { readonly x?: number; readonly y?: number; readonly z?: number };
 
@@ -98,7 +101,7 @@ export interface RecordedOrigin {
 }
 
 /** The texture descriptor members the recorder reads; a pin may pass more. */
-export interface RecordedTextureDescriptor {
+interface RecordedTextureDescriptor {
     readonly label?: string;
     readonly size: GpuExtent;
     readonly mipLevelCount?: number;
@@ -108,14 +111,14 @@ export interface RecordedTextureDescriptor {
     readonly usage: number;
 }
 
-export interface RecordedBufferDescriptor {
+interface RecordedBufferDescriptor {
     readonly label?: string;
     readonly size: number;
     readonly usage?: number;
     readonly mappedAtCreation?: boolean;
 }
 
-export interface RecordedViewDescriptor {
+interface RecordedViewDescriptor {
     readonly label?: string;
     readonly format?: string;
     readonly dimension?: string;
@@ -140,7 +143,7 @@ export interface DescriptorShapes {
     bindGroup: object;
 }
 
-export type RecordedKind =
+type RecordedKind =
     | "computePipeline"
     | "texture"
     | "textureView"
@@ -148,7 +151,7 @@ export type RecordedKind =
     | keyof DescriptorShapes;
 
 /** One `queue.writeTexture` or `queue.copyExternalImageToTexture` a texture received. */
-export type RecordedTextureUpload =
+type RecordedTextureUpload =
     | {
           readonly kind: "write";
           readonly mipLevel: number;
@@ -274,27 +277,27 @@ export class RecordedBuffer {
     }
 }
 
-export interface RecordedBufferWrite {
+interface RecordedBufferWrite {
     readonly buffer: RecordedBuffer;
     readonly offset: number;
     /** A copy taken at the call, since the pin reuses its scratch arrays. */
     readonly bytes: Uint8Array;
 }
 
-export interface RecordedTextureCopyLocation {
+interface RecordedTextureCopyLocation {
     readonly texture: RecordedTexture;
     readonly mipLevel: number;
     readonly origin: RecordedOrigin;
 }
 
-export interface RecordedTextureCopy {
+interface RecordedTextureCopy {
     readonly source: RecordedTextureCopyLocation;
     readonly destination: RecordedTextureCopyLocation;
     readonly size: RecordedExtent;
 }
 
 /** The render-pass descriptor members the recorder reads; a pin passes more. */
-export interface RecordedRenderPassDescriptor {
+interface RecordedRenderPassDescriptor {
     readonly label?: string;
     readonly colorAttachments: readonly {
         readonly view: RecordedTextureView;
@@ -313,10 +316,16 @@ export interface RecordedRenderPass<S extends DescriptorShapes> {
     }[];
     /** Each `draw` call's arguments, as passed. */
     readonly draws: (readonly number[])[];
+    /** The buffer each vertex slot was last set to. */
+    readonly vertexBuffers: Map<number, RecordedBuffer>;
+    /** The index buffer last set, with the format it was set with. */
+    indexBuffer?: { readonly buffer: RecordedBuffer; readonly format: string };
+    /** Each `drawIndexed` call's arguments, as passed. */
+    readonly indexedDraws: (readonly number[])[];
     ended: boolean;
 }
 
-export interface RecordedComputePipelineDescriptor {
+interface RecordedComputePipelineDescriptor {
     readonly layout: unknown;
     readonly compute: {
         readonly module: object;
@@ -348,7 +357,7 @@ export interface RecordedComputeDispatch<S extends DescriptorShapes> {
 }
 
 /** GPU calls in recording order, including transfers between reused textures. */
-export type RecordedTextureOperation<S extends DescriptorShapes> =
+type RecordedTextureOperation<S extends DescriptorShapes> =
     | {
           readonly kind: "upload";
           readonly texture: RecordedTexture;
@@ -400,7 +409,7 @@ export interface Recorder<S extends DescriptorShapes> {
     clear(): void;
 }
 
-export interface RecordingDevice<S extends DescriptorShapes> {
+interface RecordingDevice<S extends DescriptorShapes> {
     /** Hand this to the pinned factory as `engine._device`. */
     readonly device: RecordedDeviceMethods<S>;
     /**
@@ -612,8 +621,23 @@ export function createRecordingDevice<
                 }
                 pass.bindGroups.push({ index, group });
             },
+            setVertexBuffer: (slot: number, buffer: unknown) => {
+                pass.vertexBuffers.set(
+                    slot,
+                    recordedBuffer(buffer, `vertex slot ${slot}`),
+                );
+            },
+            setIndexBuffer: (buffer: unknown, format: string) => {
+                pass.indexBuffer = {
+                    buffer: recordedBuffer(buffer, "the index buffer"),
+                    format,
+                };
+            },
             draw: (...counts: number[]) => {
                 pass.draws.push(counts);
+            },
+            drawIndexed: (...counts: number[]) => {
+                pass.indexedDraws.push(counts);
             },
             setViewport: () => undefined,
             setScissorRect: () => undefined,
@@ -704,6 +728,8 @@ export function createRecordingDevice<
                         descriptor,
                         bindGroups: [],
                         draws: [],
+                        vertexBuffers: new Map(),
+                        indexedDraws: [],
                         ended: false,
                     };
                     renderPasses.push(pass);

@@ -5,6 +5,7 @@ import {
     LoweringContext,
     type LoweredSource,
     unwrapExpression,
+    sharedPinnedContext,
 } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
@@ -19,7 +20,7 @@ import {
 
 const path = "src/compute/compute-shader.ts";
 export function computeShaderDefaultEntryPoint(): string {
-    const context = new LoweringContext();
+    const context = sharedPinnedContext();
     const { declaration } = context.functionDeclaration(
         path,
         "createComputeShader",
@@ -201,7 +202,6 @@ function scope(
     return {
         bindings,
         calls,
-        checkedBitwiseCoercions: true,
         booleanOr: true,
         callShapes: new Map([
             ["Number.isInteger", "bool"],

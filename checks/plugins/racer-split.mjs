@@ -7,10 +7,19 @@
 import assert from "node:assert/strict";
 import { loadPng } from "./support.mjs";
 
+/**
+ * @import { PNG } from "pngjs"
+ * @import { PluginContext, PluginOutcome } from "../../dist/src/tooling/check-run.js"
+ */
+
 const HUD_ROWS = 80;
 const HINT_ROWS = 60;
 const DIVIDER = 4;
 
+/**
+ * @param {PNG} png
+ * @param {boolean} right
+ */
 function paneStatistics(png, right) {
     const start = right ? Math.ceil(png.width / 2) + DIVIDER : 0;
     const end = right ? png.width : Math.floor(png.width / 2) - DIVIDER;
@@ -22,11 +31,15 @@ function paneStatistics(png, right) {
         for (let x = start; x < end; x++) {
             const offset = (y * png.width + x) * 4;
             ++total;
-            if ([0, 1, 2].some((lane) => png.data[offset + lane] > 30)) ++lit;
+            if (
+                [0, 1, 2].some((lane) => png.data.readUInt8(offset + lane) > 30)
+            )
+                ++lit;
         }
     return { lit, total, share: lit / total };
 }
 
+/** @param {PNG} png */
 function halvesDifference(png) {
     const half = Math.floor(png.width / 2) - DIVIDER;
     let sum = 0;
@@ -37,17 +50,26 @@ function halvesDifference(png) {
             const right =
                 (y * png.width + x + Math.ceil(png.width / 2) + DIVIDER) * 4;
             for (let lane = 0; lane < 3; lane++)
-                sum += Math.abs(png.data[left + lane] - png.data[right + lane]);
+                sum += Math.abs(
+                    png.data.readUInt8(left + lane) -
+                        png.data.readUInt8(right + lane),
+                );
             count += 3;
         }
     return sum / count;
 }
 
+/**
+ * @param {PluginContext} context
+ * @returns {PluginOutcome}
+ */
 export function check(context) {
+    /** @type {Record<string, { leftLitShare: number, rightLitShare: number, halvesDifference: number }>} */
     const details = {};
     for (const backend of context.backends) {
-        const phase = context.results[backend].split;
+        const phase = context.results[backend]?.split;
         const where = `${backend}/split`;
+        assert(phase, `${where}: missing phase`);
         const png = loadPng(phase.image);
         const left = paneStatistics(png, false);
         const right = paneStatistics(png, true);
@@ -70,5 +92,5 @@ export function check(context) {
             halvesDifference: +difference.toFixed(3),
         };
     }
-    return details;
+    return { details };
 }

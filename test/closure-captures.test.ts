@@ -39,11 +39,68 @@ test("capture pruning preserves order and reference ownership", () => {
         });
     }
     capture.retainReferenced([`first += last; log("unused"); // unused`]);
-    assert.equal(capture.initializer, "std::tuple{first, std::ref(last)}");
+    const struct = capture.environmentStruct;
+    assert.equal(
+        capture.initializer,
+        `bblscene::${struct.name}{first, std::ref(last)}`,
+    );
     assert.deepEqual(capture.declarations, [
-        "auto& first = std::get<0>(environment);",
-        "auto& last = std::get<1>(environment).get();",
+        "auto& first = environment.capture0;",
+        "auto& last = environment.capture1.get();",
     ]);
+    // Without binding types the struct is a template over its members, and
+    // only owned members are traced.
+    assert.equal(struct.declaration, undefined);
+    assert.deepEqual(struct.lines, [
+        "template <typename T0, typename T1>",
+        `struct ${struct.name} {`,
+        "    T0 capture0;",
+        "    T1 capture1;",
+        "    void gc_trace([[maybe_unused]] const bbl::js::TraceVisitor& visitor) const {",
+        "        visitor(capture0);",
+        "    }",
+        "};",
+    ]);
+});
+
+test("typed captures name a concrete environment struct", () => {
+    const capture = new ClosureCaptures("environment", 2, false, (binding) =>
+        binding.name === "count" ? "double" : "bbl::Engine",
+    );
+    for (const [index, name] of ["count", "engine"].entries()) {
+        capture.use({
+            name,
+            sequence: index + 1,
+            borrowed: name === "engine",
+            allowReference: true,
+            entryLifetime: false,
+        });
+    }
+    capture.retainReferenced(["count += engine.frame;"]);
+    const struct = capture.environmentStruct;
+    assert.equal(struct.declaration, `struct ${struct.name};`);
+    assert.equal(capture.environmentType, `bblscene::${struct.name}`);
+    assert.deepEqual(struct.lines.slice(0, 4), [
+        `struct ${struct.name} {`,
+        "    std::decay_t<double> capture0;",
+        "    std::reference_wrapper<bbl::Engine> capture1;",
+        "    void gc_trace([[maybe_unused]] const bbl::js::TraceVisitor& visitor) const {",
+    ]);
+});
+
+test("a captured resource with one native type names a concrete environment", () => {
+    const result = compileSource(`
+        import { createEngine, createSceneContext, onBeforeRender, createGpuPicker, disposePicker } from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const picker = createGpuPicker(scene);
+        onBeforeRender(scene, () => { disposePicker(picker); });
+    `);
+    assert.match(
+        result.cpp,
+        /struct bbl_environment_\w+ \{\n {4}std::reference_wrapper<bbl::GpuPickerHandle> capture0;/,
+    );
+    assert.doesNotMatch(result.cpp, /template<typename Environment>/);
 });
 
 test("a projected record callback captures only the field its body reads", () => {
@@ -57,12 +114,14 @@ test("a projected record callback captures only the field its body reads", () =>
         onBeforeRender(scene, () => { if (state.used < 0) throw new Error("unused"); });
     `);
     const captures = [
-        ...result.cpp.matchAll(/auto& (\w+) = std::get<\d+>\([^\n]+/g),
+        ...result.cpp.matchAll(
+            /auto& (\w+) = v_bblite_environment_\d+\.[^\n]+/g,
+        ),
     ].map((match) => match[1]);
     assert.ok(captures.length > 0);
     for (const name of captures) assert.ok(!name?.includes("unused"));
     assert.doesNotMatch(
         result.cpp,
-        /\[\[maybe_unused\]\] auto& \w+ = std::get/,
+        /\[\[maybe_unused\]\] auto& \w+ = v_bblite_environment_/,
     );
 });

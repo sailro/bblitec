@@ -1,3 +1,7 @@
+Compute the walkable-slope thresholds through double-precision cos, as the
+pinned WASM's musl cosf does; ucrt's cosf may differ by an ULP and flip a
+borderline triangle's walkability.
+
 diff --git a/Recast/Source/Recast.cpp b/Recast/Source/Recast.cpp
 index d75a9f5..2abe732 100644
 --- a/Recast/Source/Recast.cpp

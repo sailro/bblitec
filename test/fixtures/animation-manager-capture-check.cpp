@@ -7,7 +7,7 @@
 
 namespace bbl {
 Engine create_engine(EngineOptions) { return {}; }
-void mark_mesh_runtime_transform(Engine&, MeshHandle) {}
+void mark_mesh_dirty(Engine&, MeshHandle) {}
 void start_engine(Engine& engine) {
     js::collect_cycles();
     assert(engine.animation_frame_once_callbacks.size() == 1);

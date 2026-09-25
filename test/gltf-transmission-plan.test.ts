@@ -4,10 +4,12 @@ import { resolve } from "node:path";
 import test from "node:test";
 import {
     emitAssetSpecializations,
+    gltfAssetDocuments,
     specializeGltf,
 } from "../src/asset-specializer.js";
 import {
     GLTF_TRANSMISSION_PLAN,
+    parseGlbJson,
     type JsonObject,
 } from "../src/gltf-document.js";
 import { packageGltfMeshPlan } from "../src/gltf-mesh-plan.js";
@@ -182,21 +184,32 @@ test("specialization reports unknown before source construction and requires its
     ];
     writeGlbFixture(path, document, binary);
     assert.equal(
-        specializeGltf(path, "asset.glb").features.transmissiveMaterial,
+        specializeGltf(parseGlbJson(path), "asset.glb").features
+            .transmissiveMaterial,
         null,
     );
     assert.throws(
-        () => emitAssetSpecializations(directory, assets),
+        () =>
+            emitAssetSpecializations(
+                directory,
+                assets,
+                gltfAssetDocuments(directory, assets),
+            ),
         /requires packaged source transmission selection/,
     );
     await packageGltfTransmissionPlan(document);
     writeGlbFixture(path, document, binary);
     assert.equal(
-        specializeGltf(path, "asset.glb").features.transmissiveMaterial,
+        specializeGltf(parseGlbJson(path), "asset.glb").features
+            .transmissiveMaterial,
         true,
     );
     assert.equal(
-        emitAssetSpecializations(directory, assets).assetTransmission,
+        emitAssetSpecializations(
+            directory,
+            assets,
+            gltfAssetDocuments(directory, assets),
+        ).assetTransmission,
         true,
     );
 });

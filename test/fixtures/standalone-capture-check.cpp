@@ -1,6 +1,3 @@
-#define BBLITE_HAS_TEXT_RENDERER 0
-#define BBLITE_HAS_UI 0
-#define BBLITE_HAS_SPRITE_RENDERER 1
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 #include "pal_sdl_gpu_commands.hpp"
@@ -226,7 +223,7 @@ Pass create_dawn_sprite_pass(WGPUDevice, WGPUQueue, int&, Engine&, SpriteRendere
     ++pass_creations;
     return {handle};
 }
-void run_sprite_renderer_before_update(Engine&, SpriteRendererHandle handle, double) {
+void begin_sprite_renderer_update(Engine&, SpriteRendererHandle handle, double) {
     updated_renderers.push_back(handle.value);
 }
 void sync_sprite_pass_layers(SDL_GPUDevice*, Engine&, Pass&, const std::vector<SDL_GPUTexture*>&) {}
@@ -271,6 +268,7 @@ struct Context {
     std::vector<Pass> passes;
     bool canvas_only = true, capture_ui = false;
     void discard_frame() {}
+#include "frame-session.hpp"
     Context() {
         engine.effect_renderers.emplace_back();
         engine.registered_effect_renderers.push_back(EffectRendererHandle{0});

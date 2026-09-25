@@ -15,7 +15,6 @@ export interface IntrinsicCallContext extends Pick<
     | "compileValue"
     | "expectKind"
     | "reachFeature"
-    | "recordSceneMaterialSlot"
+    | "sceneManifest"
     | "isRuntimeResourceConstruction"
-    | "recordSceneMesh"
 > {}

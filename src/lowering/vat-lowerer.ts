@@ -1,6 +1,9 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerGltfVatBinding } from "./gltf/vat-binding.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const VAT_MODULE = "src/vat/vat-baker.ts";
 
@@ -155,15 +158,12 @@ constexpr float kVatDefaultFrameRate = ${this.context.floatLiteral(
 
 ${lowerGltfVatBinding(this.context)}
 
-MeshRecord& vat_mesh(Engine& engine, std::uint32_t mesh) {
-    if (mesh >= engine.meshes.size()) {
-        throw std::runtime_error("VAT names no such mesh.");
-    }
-    return engine.meshes[mesh];
+MeshRecord& vat_mesh(Engine& engine, MeshHandle mesh) {
+    return ${recordAt("engine.meshes", "mesh")};
 }
 
 VatData& vat_data(Engine& engine, VatHandle handle) {
-    MeshRecord& record = vat_mesh(engine, handle.value);
+    MeshRecord& record = vat_mesh(engine, handle.mesh);
     if (!record.has_vat) {
         throw std::runtime_error("VatHandle names a mesh with no VAT.");
     }
@@ -195,7 +195,7 @@ VatBake bake_vat(
     Engine& engine,
     MeshHandle mesh,
     const std::vector<AnimationGroupHandle>& groups) {
-    MeshRecord& record = vat_mesh(engine, mesh.value);
+    MeshRecord& record = vat_mesh(engine, mesh);
     gltf_vat_require_skeleton(record.skinned && !record.has_vat, record.name);
     VatBakeRecord bake;
     // Every clip contributes a contiguous row block, clip 0 first, in the
@@ -209,7 +209,7 @@ VatBake bake_vat(
             throw std::runtime_error("bakeVat names no such clip.");
         }
         const AnimationGroupRecord& clip_record =
-            engine.animation_groups[group.value];
+            ${recordAt("engine.animation_groups", "group")};
         if (clip_record.asset >= engine.assets.size()) {
             throw std::runtime_error("bakeVat clip has no asset.");
         }
@@ -264,7 +264,7 @@ VatBake bake_vat(
         0.0f);
     std::size_t row = 0;
     for (std::size_t index = 0; index < groups.size(); ++index) {
-        const AnimationGroupRecord& clip_record = engine.animation_groups[groups[index].value];
+        const AnimationGroupRecord& clip_record = ${recordAt("engine.animation_groups", "groups[index]")};
         const AssetRecord& asset = engine.assets[clip_record.asset];
         const std::uint32_t frames = frames_per_clip[index];
         for (std::uint32_t frame = 0; frame < frames; ++frame) {
@@ -294,7 +294,7 @@ VatHandle attach_vat(
     if (baked.value >= engine.vat_bakes.size()) {
         throw std::runtime_error("attachVat names no such bake.");
     }
-    MeshRecord& record = vat_mesh(engine, mesh.value);
+    MeshRecord& record = vat_mesh(engine, mesh);
     if (!record.skinned) {
         throw std::runtime_error(
             "attachVat: mesh has no skeleton (bake first, attach before clearing it).");
@@ -306,8 +306,8 @@ VatHandle attach_vat(
     // palette upload. The pose pass skips the record from here.
     record.skinned = false;
     record.bone_matrices.clear();
-    const VatHandle handle{mesh.value};
-    const VatBakeRecord& bake = engine.vat_bakes[baked.value];
+    const VatHandle handle{mesh};
+    const VatBakeRecord& bake = ${recordAt("engine.vat_bakes", "baked")};
     const std::string selected = clip.empty() && !bake.clips.empty()
         ? bake.clips[0].name
         : clip;
@@ -345,61 +345,25 @@ void vat_update(
     vat.settings[4] = vat.time;
     vat.settings_version += 1;
 }
-${
-    options.instances
-        ? `
-void vat_set_instances(
-    Engine& engine,
-    VatHandle handle,
-    const std::vector<float>& params) {
-    VatData& vat = vat_data(engine, handle);
-    // Single clip per instance (4 floats: fromRow, toRow, offset, fps)
-    // expanded to the dual-clip layout (clip B == A, blend 0), so the one
-    // instanced shader variant renders it.
-    const std::size_t instances = params.size() / 4u;
-    vat.instance_params.assign(instances * 8u, 0.0f);
-    for (std::size_t index = 0; index < instances; ++index) {
-        const std::size_t source = index * 4u;
-        const std::size_t target = index * 8u;
-        vat.instance_params[target] = params[source];
-        vat.instance_params[target + 1] = params[source + 1];
-        vat.instance_params[target + 2] = params[source + 2];
-        vat.instance_params[target + 3] = params[source + 3];
-        vat.instance_params[target + 4] = params[source];
-        vat.instance_params[target + 5] = params[source + 1];
-        vat.instance_params[target + 6] = 0.0f;
-        vat.instance_params[target + 7] = params[source + 3];
-    }
-    // Always two texels per instance, and never fewer than two overall --
-    // the pin's own texture floor.
-    vat.instance_texels = static_cast<std::uint32_t>(
-        std::max<std::size_t>(2u, instances * 2u));
-    vat.instance_params.resize(
-        static_cast<std::size_t>(vat.instance_texels) * 4u, 0.0f);
-    vat.instance_version += 1;
-}
-`
-        : ""
-}
+${options.instances ? this.lowerSetInstances() : ""}
 VatClipRow vat_clip_row(
     Engine& engine,
     VatBake baked,
     const std::string& clip) {
     if (baked.value >= engine.vat_bakes.size()) return VatClipRow{};
     const VatClipRow* row =
-        vat_clip(engine.vat_bakes[baked.value], clip);
+        vat_clip(${recordAt("engine.vat_bakes", "baked")}, clip);
     return row ? *row : VatClipRow{};
 }
 
-void seek_vat(Engine& engine, float seconds) {
+void seek_vat(Engine& engine, double seconds) {
     // The frozen pose scene 218 renders under ?seekTime: the clip is
     // played at the exact baked frame round(t * 60) with fps 0, so the row
     // is static and the clock contributes nothing. VAT bakes that very
     // pose at full precision, which is what makes the frozen native frame
     // the frozen browser frame.
     const double frame = bbl::js::round_js(
-        static_cast<double>(seconds) *
-        static_cast<double>(kVatDefaultFrameRate));
+        seconds * static_cast<double>(kVatDefaultFrameRate));
     for (std::size_t mesh = 0; mesh < engine.meshes.size(); ++mesh) {
         MeshRecord& record = engine.meshes[mesh];
         if (!record.has_vat) continue;
@@ -436,6 +400,100 @@ void seek_vat(Engine& engine, float seconds) {
 } // namespace bbl
 `,
         };
+    }
+
+    /**
+     * `VatHandle.setInstances`, lowered from `attachVat`'s own handle
+     * literal: the single-clip rows expanded to the dual-clip layout, then
+     * `uploadInstances`' texel count. The texture write is the PAL's, so the
+     * record carries the rows, that count and a version the backends upload
+     * on.
+     */
+    private lowerSetInstances(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            VAT_MODULE,
+            "attachVat",
+        );
+        const handle = this.context.unwrapExpression(
+            this.context.variableInitializer(declaration, "handle"),
+        );
+        const setInstances = ts.isObjectLiteralExpression(handle)
+            ? handle.properties.find(
+                  (property): property is ts.MethodDeclaration =>
+                      ts.isMethodDeclaration(property) &&
+                      this.context.propertyName(property.name) ===
+                          "setInstances",
+              )
+            : undefined;
+        if (!setInstances?.body) {
+            return this.context.contractError(
+                handle,
+                "Expected the VatHandle literal to carry setInstances.",
+            );
+        }
+        const upload = this.context.unwrapExpression(
+            this.context.variableInitializer(declaration, "uploadInstances"),
+        );
+        const texels =
+            ts.isArrowFunction(upload) && ts.isBlock(upload.body)
+                ? upload.body.statements[0]
+                : undefined;
+        if (
+            !texels ||
+            !ts.isVariableStatement(texels) ||
+            texels.declarationList.declarations.length !== 1 ||
+            texels.declarationList.declarations[0]!.name.getText(file) !==
+                "texels"
+        ) {
+            return this.context.contractError(
+                upload,
+                "Expected uploadInstances to open with its texel count.",
+            );
+        }
+        const params = new Map([
+            ["params", { cpp: "params", type: "f32" as const }],
+        ]);
+        const texelCount = lowerPinnedBody(file, [texels], {
+            bindings: params,
+            calls: pinnedNumericMathCalls(),
+        });
+        const expand = lowerPinnedBody(file, setInstances.body.statements, {
+            bindings: new Map(params),
+            calls: new Map([
+                ...pinnedNumericMathCalls(),
+                [
+                    "uploadInstances",
+                    (args: readonly string[]) =>
+                        `vat_upload_instances(vat, ${args.join(", ")})`,
+                ],
+            ]),
+        });
+        return `
+namespace {
+
+// ${this.context.provenance(VAT_MODULE, "attachVat.uploadInstances")}
+void vat_upload_instances(
+    VatData& vat,
+    const std::vector<float>& params) {
+${texelCount}
+    vat.instance_texels = static_cast<std::uint32_t>(texels);
+    vat.instance_params.assign(params.begin(), params.end());
+    vat.instance_params.resize(
+        static_cast<std::size_t>(vat.instance_texels) * 4u, 0.0f);
+    vat.instance_version += 1;
+}
+
+} // namespace
+
+// ${this.context.provenance(VAT_MODULE, "attachVat.setInstances")}
+void vat_set_instances(
+    Engine& engine,
+    VatHandle handle,
+    const std::vector<float>& params) {
+    VatData& vat = vat_data(engine, handle);
+${expand}
+}
+`;
     }
 
     /**

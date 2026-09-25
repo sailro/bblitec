@@ -72,6 +72,36 @@ test("centralizes default-library identity and AST-driven upstream contracts", (
     );
 });
 
+test("reads checker symbols through the named readers in symbols.ts alone", () => {
+    // `declaredSymbol` (a name as written: identity, declarations, modules)
+    // and `resolvedSymbol`/`aliasTarget` (the declaration a use stands for)
+    // make each read say which it is; a raw read anywhere else decides it
+    // silently, and differently for an imported name.
+    const raw = [
+        "getSymbolAtLocation",
+        "getAliasedSymbol",
+        "getShorthandAssignmentValueSymbol",
+    ];
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            raw.some((member) => sourceFacts(path).members.has(member)),
+        ),
+        ["src/compiler/symbols.ts"],
+    );
+});
+
+test("pinned readers share one lowering context rather than building their own", () => {
+    // A `LoweringContext` holds nothing beyond its store: readers over the
+    // process's store use `sharedPinnedContext()`, and a lowering over a
+    // caller's store `pinnedContextOver(store)`; both live in context.ts.
+    assert.deepEqual(
+        sourcePaths.filter((path) =>
+            sourceFacts(path).constructs.has("LoweringContext"),
+        ),
+        ["src/lowering/context.ts"],
+    );
+});
+
 test("entry points acquire the dist lock and only its owner sets the nesting marker", () => {
     for (const path of [
         "src/cli.ts",
@@ -89,7 +119,6 @@ test("entry points acquire the dist lock and only its owner sets the nesting mar
 test("shared compiler helpers have one declaration owner", () => {
     for (const [name, path] of [
         ["pinnedLibraryRoot", "src/pinned-shader-composer.ts"],
-        ["formatStatements", "src/shader-builtins-utility.ts"],
         ["isTrsVectorName", "src/scene-node-transform-descriptor.ts"],
         ["emitHandleCollectionLoop", "src/compiler/handle-collections.ts"],
         ["isRecursiveImportedMeshWalk", "src/compiler/handle-collections.ts"],
@@ -144,26 +173,35 @@ test("the compiler delegates intrinsic families and feature lowering", () => {
     const compiler = sourceFacts("src/compiler.ts");
     assert.ok(compiler.calls.has("compileRegisteredIntrinsic"));
     assert.ok(compiler.calls.has("emitPropertyAssignment"));
-    assert.ok(compiler.calls.has("readProperty"));
+    assert.ok(
+        sourceFacts("src/compiler/properties.ts").calls.has("readProperty"),
+    );
     for (const name of [
         "StaticEvaluator",
         "UserFunctionLowerer",
         "StatementLowerer",
+        "PropertyAccessLowerer",
+        "IntrinsicOptions",
     ]) {
         assert.ok(compiler.constructs.has(name), name);
     }
+    // The option adapters delegate each intrinsic family's options.
+    const options = sourceFacts("src/compiler/intrinsic-options.ts");
     for (const module of [
-        "option-helpers",
         "intrinsics/mesh-options",
         "intrinsics/engine-options",
         "intrinsics/material-options",
         "intrinsics/asset-options",
         "shader-material",
         "property-animation",
+    ])
+        assert.ok(options.imports.has("./" + module + ".js"), module);
+    for (const module of [
+        "option-helpers",
         "adaptations",
         "assets",
         "output-projection",
-        "scene-materials",
+        "scene-manifest",
         "module-initializers",
         "sprite-atlas-record",
     ])
@@ -192,12 +230,11 @@ test("split lowerer barrels contain exports and families own their declarations"
     }
     for (const [name, path] of [
         ["GltfLowerer", "gltf/loader"],
-        ["lowerAnimationInterpolationCpp", "gltf/animation-interpolation"],
         ["lowerGltfDefaultSampler", "gltf/sampler-mapping"],
         ["lowerAccessorNormalizationCpp", "gltf/accessor-normalization"],
         ["lowerShPrescaleCpp", "gltf/sh-prescale"],
         ["lowerMatrixComposeCpp", "gltf/matrix-leaves"],
-        ["lowerMatrixNativeCpp", "gltf/matrix-leaves"],
+        ["lowerRootedWorldCpp", "gltf/matrix-leaves"],
         ["lowerGltfMaterialProperties", "gltf/material-properties"],
         ["lowerGltfFactorBake", "gltf/factor-bake"],
         ["MeshBuilderLowerer", "factory/mesh-builders"],

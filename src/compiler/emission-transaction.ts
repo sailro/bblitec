@@ -1,138 +1,97 @@
-type Undo = () => void;
+/**
+ * Speculative emission: a probe either commits or leaves no trace.
+ *
+ * Every piece of compiler state a probe may write lives in a journaled
+ * container -- `EmissionMap`, `EmissionSet`, `emissionArray`,
+ * `emissionRecord`, `EmissionWeakMap`, `EmissionWeakSet`, a `@journaled`
+ * accessor field, or a record written through `writable()`. The first write
+ * a transaction makes to one slot of one container saves that slot's
+ * original in the transaction's record of the container; later writes to
+ * the slot save nothing, an array slot past the array's length at the
+ * transaction's start saves nothing, and a container created inside the
+ * transaction records nothing for it. A commit folds each record into the
+ * enclosing transaction's record of the same container, which keeps its
+ * older originals; a rollback restores the records. What a transaction
+ * holds is bounded by the distinct slots it wrote, not by how often it wrote
+ * them. A plain object or array that is not written through one of these is
+ * not rolled back.
+ */
 
-const transactions: EmissionTransaction[] = [];
+/** Transactions opened and declined, originals saved, containers restored. */
+interface EmissionTransactionStatistics {
+    transactions: number;
+    rollbacks: number;
+    journaledSlots: number;
+    restoredContainers: number;
+}
+
+const statistics: EmissionTransactionStatistics = {
+    transactions: 0,
+    rollbacks: 0,
+    journaledSlots: 0,
+    restoredContainers: 0,
+};
+
+export function emissionTransactionStatistics(): EmissionTransactionStatistics {
+    return { ...statistics };
+}
+
+/** A container that wrote in a transaction and settles with it. */
+interface Participant {
+    /** Restore the closing transaction's record, or keep it for `enclosing`. */
+    settle(commit: boolean, enclosing: EmissionTransaction | undefined): void;
+}
+
+/** Open transactions, innermost last. */
+const open: EmissionTransaction[] = [];
 let nextTransaction = 1;
-const collectionBirths = new WeakMap<object, number>();
-const managedArrays = new WeakSet<object>();
 
-function journalCollection(collection: object, snapshot: () => Undo): void {
-    for (const transaction of transactions) {
-        if (collectionBirths.get(collection)! < transaction.id)
-            transaction.recordCollection(collection, snapshot);
-    }
+function innermost(): EmissionTransaction | undefined {
+    return open[open.length - 1];
 }
 
-/** AST nodes, checker types and symbols are immutable compiler inputs. */
-export function isCompilerInput(value: object): boolean {
-    return (
-        ("kind" in value &&
-            typeof value.kind === "number" &&
-            "pos" in value &&
-            typeof value.pos === "number" &&
-            "end" in value &&
-            typeof value.end === "number") ||
-        ("getFlags" in value && typeof value.getFlags === "function")
-    );
+/** The innermost open transaction's id; 0 outside every transaction. */
+function innermostId(): number {
+    return innermost()?.id ?? 0;
 }
 
-/** Restore existing objects in place so aliases retain their identities. */
+/**
+ * Whether a write to a container created during transaction `born` needs an
+ * original: only a transaction opened after the container existed can roll
+ * back to a state that still reaches it.
+ */
+function journaling(born: number): boolean {
+    return innermostId() > born;
+}
+
+/** A transaction: its participants settle when it commits or rolls back. */
 export class EmissionTransaction {
     public readonly id = nextTransaction++;
-    private readonly visited = new Set<object>();
-    private readonly undo: Undo[] = [];
-    private readonly changedCollections = new Set<object>();
+    private readonly participants: Participant[] = [];
     private closed = false;
 
-    public constructor(root: object, opaque: readonly object[] = []) {
-        for (const value of opaque) this.visited.add(value);
-        this.capture(root);
-        transactions.push(this);
+    public constructor() {
+        ++statistics.transactions;
+        open.push(this);
     }
 
-    public capture(value: unknown): void {
-        if (
-            value === null ||
-            typeof value !== "object" ||
-            this.visited.has(value) ||
-            isCompilerInput(value)
-        )
-            return;
-        this.visited.add(value);
-        if (
-            value instanceof EmissionMap ||
-            value instanceof EmissionSet ||
-            managedArrays.has(value)
-        )
-            return;
-        if (value instanceof WeakMap || value instanceof WeakSet) return;
-        if (Array.isArray(value)) {
-            const entries: unknown[] = value.slice();
-            this.undo.push(() => {
-                value.length = entries.length;
-                for (let index = 0; index < entries.length; ++index) {
-                    if (index in entries) value[index] = entries[index];
-                    else {
-                        // eslint-disable-next-line @typescript-eslint/no-array-delete -- Rollback must restore sparse holes without shifting indices.
-                        delete value[index];
-                    }
-                }
-            });
-            for (const entry of entries) this.capture(entry);
-            return;
-        } else if (value instanceof Map) {
-            const entries: [unknown, unknown][] = [...value.entries()];
-            this.undo.push(() => {
-                value.clear();
-                for (const [key, entry] of entries) value.set(key, entry);
-            });
-            for (const [key, entry] of entries) {
-                this.capture(key);
-                this.capture(entry);
-            }
-        } else if (value instanceof Set) {
-            const entries: unknown[] = [...value];
-            this.undo.push(() => {
-                value.clear();
-                for (const entry of entries) value.add(entry);
-            });
-            for (const entry of entries) this.capture(entry);
-        } else if (ArrayBuffer.isView(value)) {
-            const bytes = new Uint8Array(
-                value.buffer,
-                value.byteOffset,
-                value.byteLength,
-            );
-            const snapshot = bytes.slice();
-            this.undo.push(() => bytes.set(snapshot));
-            return;
-        } else if (value instanceof ArrayBuffer) {
-            const bytes = new Uint8Array(value),
-                snapshot = bytes.slice();
-            this.undo.push(() => bytes.set(snapshot));
-            return;
-        }
-        const descriptors = Object.getOwnPropertyDescriptors(value);
-        this.undo.push(() => {
-            for (const key of Reflect.ownKeys(value)) {
-                if (!Object.hasOwn(descriptors, key))
-                    Reflect.deleteProperty(value, key);
-            }
-            Object.defineProperties(value, descriptors);
-        });
-        for (const key of Reflect.ownKeys(value)) {
-            const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
-            if ("value" in descriptor) this.capture(descriptor.value);
-        }
-    }
-
-    public record(undo: Undo): void {
-        this.undo.push(undo);
-    }
-
-    public recordCollection(collection: object, snapshot: () => Undo): void {
-        if (this.changedCollections.has(collection)) return;
-        this.changedCollections.add(collection);
-        this.record(snapshot());
+    /** A container's first write in this transaction. */
+    public join(participant: Participant): void {
+        this.participants.push(participant);
     }
 
     public finish(commit: boolean): void {
-        if (this.closed || transactions.at(-1) !== this)
+        if (this.closed || innermost() !== this)
             throw new Error("Emission transactions must close in order.");
-        transactions.pop();
+        open.pop();
         this.closed = true;
-        if (!commit)
-            for (let index = this.undo.length - 1; index >= 0; --index)
-                this.undo[index]!();
+        const enclosing = innermost();
+        if (!commit) {
+            ++statistics.rollbacks;
+            statistics.restoredContainers += this.participants.length;
+        }
+        for (let index = this.participants.length - 1; index >= 0; --index)
+            this.participants[index]!.settle(commit, enclosing);
     }
 
     public run<T>(probe: () => T, answered: (result: T) => boolean): T {
@@ -147,286 +106,618 @@ export class EmissionTransaction {
     }
 }
 
-/** Strong collections journal writes and snapshot only values a probe reads. */
-export class EmissionMap<K, V> extends Map<K, V> {
-    public constructor(entries?: Iterable<readonly [K, V]> | null) {
-        super();
-        collectionBirths.set(this, transactions.at(-1)?.id ?? 0);
-        for (const [key, value] of entries ?? []) {
-            for (const transaction of transactions) {
-                transaction.capture(key);
-                transaction.capture(value);
-            }
-            super.set(key, value);
-        }
+/** What one open transaction saved of one container. */
+interface Originals {
+    transaction: EmissionTransaction;
+}
+
+/** One container's originals, one record per open transaction that wrote it, innermost last. */
+class Journal<R extends Originals> implements Participant {
+    private readonly records: R[] = [];
+
+    public constructor(
+        private readonly born: number,
+        private readonly create: (transaction: EmissionTransaction) => R,
+        private readonly restore: (record: R) => void,
+        /** Keep in `older` the originals it lacks from a committed `newer`. */
+        private readonly absorb: (older: R, newer: R) => void,
+    ) {}
+
+    /** The innermost transaction's record, created by its first write here. */
+    public current(): R | undefined {
+        const transaction = innermost();
+        if (transaction === undefined || transaction.id <= this.born)
+            return undefined;
+        const top = this.records[this.records.length - 1];
+        if (top !== undefined && top.transaction === transaction) return top;
+        const record = this.create(transaction);
+        this.records.push(record);
+        transaction.join(this);
+        return record;
     }
 
-    public override get(key: K): V | undefined {
-        const value = super.get(key);
-        for (const transaction of transactions) transaction.capture(value);
-        return value;
+    public settle(
+        commit: boolean,
+        enclosing: EmissionTransaction | undefined,
+    ): void {
+        const record = this.records.pop()!;
+        if (!commit) {
+            this.restore(record);
+            return;
+        }
+        // A container created inside the enclosing transaction needs no
+        // record there; outside every transaction nothing is kept.
+        if (enclosing === undefined || enclosing.id <= this.born) return;
+        const older = this.records[this.records.length - 1];
+        if (older !== undefined && older.transaction === enclosing) {
+            this.absorb(older, record);
+        } else {
+            record.transaction = enclosing;
+            this.records.push(record);
+            enclosing.join(this);
+        }
+    }
+}
+
+/** A slot's value at a transaction's start: present with a value, or absent. */
+type Original<V> = { readonly present: true; readonly value: V } | undefined;
+
+interface KeyedOriginals<K, V> extends Originals {
+    /** The originals of the keys written before `entries` was taken. */
+    readonly saved: Map<K, Original<V>>;
+    /**
+     * Every entry at the first removal: iteration order is output order, and
+     * a removed key cannot return to its place by key alone. Later writes
+     * save nothing.
+     */
+    entries: (readonly [K, V])[] | undefined;
+}
+
+function adoptMissing<K, V>(older: Map<K, V>, newer: ReadonlyMap<K, V>): void {
+    for (const [key, value] of newer)
+        if (!older.has(key)) older.set(key, value);
+}
+
+function absorbKeyed<K, V>(
+    older: KeyedOriginals<K, V>,
+    newer: KeyedOriginals<K, V>,
+): void {
+    if (older.entries !== undefined) return;
+    adoptMissing(older.saved, newer.saved);
+    older.entries = newer.entries;
+}
+
+function saveOriginal<K, V>(
+    saved: Map<K, Original<V>>,
+    key: K,
+    original: () => Original<V>,
+): void {
+    if (saved.has(key)) return;
+    saved.set(key, original());
+    ++statistics.journaledSlots;
+}
+
+/** A map whose writes are journaled by key. */
+export class EmissionMap<K, V> extends Map<K, V> {
+    readonly #born = innermostId();
+    #journal: Journal<KeyedOriginals<K, V>> | undefined;
+
+    public constructor(entries?: Iterable<readonly [K, V]> | null) {
+        super();
+        for (const [key, value] of entries ?? []) super.set(key, value);
+    }
+
+    #record(): KeyedOriginals<K, V> | undefined {
+        if (!journaling(this.#born)) return undefined;
+        this.#journal ??= new Journal<KeyedOriginals<K, V>>(
+            this.#born,
+            (transaction) => ({
+                transaction,
+                saved: new Map(),
+                entries: undefined,
+            }),
+            (record) => {
+                if (record.entries === undefined) {
+                    for (const [key, original] of record.saved) {
+                        if (original) super.set(key, original.value);
+                        else super.delete(key);
+                    }
+                    return;
+                }
+                super.clear();
+                for (const [key, value] of record.entries) {
+                    if (!record.saved.has(key)) super.set(key, value);
+                    else {
+                        const original = record.saved.get(key);
+                        if (original) super.set(key, original.value);
+                    }
+                }
+            },
+            absorbKeyed,
+        );
+        return this.#journal.current();
     }
 
     public override set(key: K, value: V): this {
-        for (const transaction of transactions) {
-            transaction.capture(key);
-            transaction.capture(value);
-            transaction.capture(super.get(key));
-        }
-        journalCollection(this, () => {
-            const entries = [...super.entries()];
-            return () => {
-                super.clear();
-                for (const [key, value] of entries) super.set(key, value);
-            };
-        });
+        if (!journaling(this.#born)) return super.set(key, value);
+        const present = super.has(key);
+        const previous = super.get(key);
+        if (present && Object.is(previous, value)) return this;
+        const record = this.#record();
+        if (record && record.entries === undefined)
+            saveOriginal(record.saved, key, () =>
+                // `has` answered presence; `get` returned the stored value.
+                present ? { present, value: previous as V } : undefined,
+            );
         return super.set(key, value);
     }
 
     public override delete(key: K): boolean {
-        if (super.has(key)) {
-            for (const transaction of transactions)
-                transaction.capture(super.get(key));
-            journalCollection(this, () => {
-                const entries = [...super.entries()];
-                return () => {
-                    super.clear();
-                    for (const [key, value] of entries) super.set(key, value);
-                };
-            });
-        }
+        if (!super.has(key)) return false;
+        this.#snapshot();
         return super.delete(key);
     }
 
     public override clear(): void {
-        for (const value of super.values())
-            for (const transaction of transactions) transaction.capture(value);
-        journalCollection(this, () => {
-            const entries = [...super.entries()];
-            return () => {
-                super.clear();
-                for (const [key, value] of entries) super.set(key, value);
-            };
-        });
+        if (this.size === 0) return;
+        this.#snapshot();
         super.clear();
     }
 
-    public override *entries(): MapIterator<[K, V]> {
-        for (const [key, value] of super.entries()) {
-            for (const transaction of transactions) {
-                transaction.capture(key);
-                transaction.capture(value);
-            }
-            yield [key, value];
+    #snapshot(): void {
+        const record = this.#record();
+        if (record && record.entries === undefined) {
+            record.entries = [...super.entries()];
+            ++statistics.journaledSlots;
         }
-    }
-    public override [Symbol.iterator](): MapIterator<[K, V]> {
-        return this.entries();
-    }
-    public override *keys(): MapIterator<K> {
-        for (const key of super.keys()) {
-            for (const transaction of transactions) transaction.capture(key);
-            yield key;
-        }
-    }
-    public override *values(): MapIterator<V> {
-        for (const value of super.values()) {
-            for (const transaction of transactions) transaction.capture(value);
-            yield value;
-        }
-    }
-    public override forEach(
-        callback: (value: V, key: K, map: Map<K, V>) => void,
-        thisArg?: unknown,
-    ): void {
-        for (const [key, value] of this.entries())
-            callback.call(thisArg, value, key, this);
     }
 }
 
+interface SetOriginals<T> extends Originals {
+    /** Values absent at the transaction's start, added before `entries`. */
+    readonly added: Set<T>;
+    entries: T[] | undefined;
+}
+
+/** A set whose writes are journaled by value, like `EmissionMap`. */
 export class EmissionSet<T> extends Set<T> {
+    readonly #born = innermostId();
+    #journal: Journal<SetOriginals<T>> | undefined;
+
     public constructor(values?: Iterable<T> | null) {
         super();
-        collectionBirths.set(this, transactions.at(-1)?.id ?? 0);
-        for (const value of values ?? []) {
-            for (const transaction of transactions) transaction.capture(value);
-            super.add(value);
-        }
+        for (const value of values ?? []) super.add(value);
+    }
+
+    #record(): SetOriginals<T> | undefined {
+        if (!journaling(this.#born)) return undefined;
+        this.#journal ??= new Journal<SetOriginals<T>>(
+            this.#born,
+            (transaction) => ({
+                transaction,
+                added: new Set(),
+                entries: undefined,
+            }),
+            (record) => {
+                if (record.entries === undefined) {
+                    for (const value of record.added) super.delete(value);
+                    return;
+                }
+                super.clear();
+                for (const value of record.entries)
+                    if (!record.added.has(value)) super.add(value);
+            },
+            (older, newer) => {
+                if (older.entries !== undefined) return;
+                for (const value of newer.added) older.added.add(value);
+                older.entries = newer.entries;
+            },
+        );
+        return this.#journal.current();
     }
 
     public override add(value: T): this {
-        for (const transaction of transactions) transaction.capture(value);
-        if (!super.has(value))
-            journalCollection(this, () => {
-                const values = [...super.values()];
-                return () => {
-                    super.clear();
-                    for (const value of values) super.add(value);
-                };
-            });
+        if (super.has(value)) return this;
+        const record = this.#record();
+        if (record && record.entries === undefined) {
+            record.added.add(value);
+            ++statistics.journaledSlots;
+        }
         return super.add(value);
     }
+
     public override delete(value: T): boolean {
-        if (super.has(value)) {
-            for (const transaction of transactions) transaction.capture(value);
-            journalCollection(this, () => {
-                const values = [...super.values()];
-                return () => {
-                    super.clear();
-                    for (const value of values) super.add(value);
-                };
-            });
-        }
+        if (!super.has(value)) return false;
+        this.#snapshot();
         return super.delete(value);
     }
+
     public override clear(): void {
-        for (const value of super.values())
-            for (const transaction of transactions) transaction.capture(value);
-        journalCollection(this, () => {
-            const values = [...super.values()];
-            return () => {
-                super.clear();
-                for (const value of values) super.add(value);
-            };
-        });
+        if (this.size === 0) return;
+        this.#snapshot();
         super.clear();
     }
-    public override *values(): SetIterator<T> {
-        for (const value of super.values()) {
-            for (const transaction of transactions) transaction.capture(value);
-            yield value;
+
+    #snapshot(): void {
+        const record = this.#record();
+        if (record && record.entries === undefined) {
+            record.entries = [...super.values()];
+            ++statistics.journaledSlots;
         }
-    }
-    public override keys(): SetIterator<T> {
-        return this.values();
-    }
-    public override [Symbol.iterator](): SetIterator<T> {
-        return this.values();
-    }
-    public override *entries(): SetIterator<[T, T]> {
-        for (const value of this.values()) yield [value, value];
-    }
-    public override forEach(
-        callback: (value: T, value2: T, set: Set<T>) => void,
-        thisArg?: unknown,
-    ): void {
-        for (const value of this.values())
-            callback.call(thisArg, value, value, this);
     }
 }
 
-/** Array index and length writes journal only the slots they change. */
-export function emissionArray<T>(values: T[] = []): T[] {
-    const createdIn = transactions.at(-1)?.id ?? 0;
-    for (const value of values)
-        for (const transaction of transactions) transaction.capture(value);
-    const beforeWrite = (key: PropertyKey): void => {
-        for (const transaction of transactions) {
-            if (createdIn >= transaction.id) continue;
-            const descriptor = Object.getOwnPropertyDescriptor(values, key);
-            const length = values.length;
-            if (descriptor && "value" in descriptor)
-                transaction.capture(descriptor.value);
-            transaction.record(() => {
-                if (descriptor) Object.defineProperty(values, key, descriptor);
-                else Reflect.deleteProperty(values, key);
-                values.length = length;
-            });
-        }
-    };
-    const proxy = new Proxy(values, {
-        get(target, key, receiver) {
-            const value: unknown = Reflect.get(target, key, receiver);
-            for (const transaction of transactions) transaction.capture(value);
-            return value;
-        },
-        set(target, key, value: unknown) {
-            for (const transaction of transactions) transaction.capture(value);
-            if (
-                key === "length" &&
-                typeof value === "number" &&
-                value < target.length
-            ) {
-                for (let index = value; index < target.length; ++index)
-                    beforeWrite(String(index));
-            }
-            beforeWrite(key);
-            return Reflect.set(target, key, value, target);
-        },
-        deleteProperty(target, key) {
-            beforeWrite(key);
-            return Reflect.deleteProperty(target, key);
-        },
-        defineProperty(target, key, descriptor) {
-            const length: unknown = descriptor.value;
-            if (
-                key === "length" &&
-                typeof length === "number" &&
-                length < target.length
-            ) {
-                for (let index = length; index < target.length; ++index)
-                    beforeWrite(String(index));
-            }
-            beforeWrite(key);
-            return Reflect.defineProperty(target, key, descriptor);
-        },
-    });
-    managedArrays.add(proxy);
-    return proxy;
+interface WeakOriginals<K extends WeakKey, V> extends Originals {
+    readonly saved: Map<K, Original<V>>;
 }
 
-/** Weak entries join active transactions without retaining their keys afterwards. */
+/** Weak entries journal their originals by key. */
 export class EmissionWeakMap<K extends WeakKey, V> extends WeakMap<K, V> {
-    public override get(key: K): V | undefined {
-        const value = super.get(key);
-        for (const transaction of transactions) transaction.capture(value);
-        return value;
+    readonly #born = innermostId();
+    #journal: Journal<WeakOriginals<K, V>> | undefined;
+
+    public constructor(entries?: Iterable<readonly [K, V]> | null) {
+        super();
+        for (const [key, value] of entries ?? []) super.set(key, value);
+    }
+
+    #save(key: K): void {
+        if (!journaling(this.#born)) return;
+        this.#journal ??= new Journal<WeakOriginals<K, V>>(
+            this.#born,
+            (transaction) => ({ transaction, saved: new Map() }),
+            (record) => {
+                for (const [key, original] of record.saved) {
+                    if (original) super.set(key, original.value);
+                    else super.delete(key);
+                }
+            },
+            (older, newer) => adoptMissing(older.saved, newer.saved),
+        );
+        const record = this.#journal.current();
+        if (record)
+            saveOriginal(record.saved, key, () =>
+                super.has(key)
+                    ? { present: true, value: super.get(key) as V }
+                    : undefined,
+            );
     }
 
     public override set(key: K, value: V): this {
-        const present = super.has(key),
-            previous = super.get(key);
-        for (const transaction of transactions) {
-            transaction.capture(value);
-            transaction.capture(previous);
-            transaction.record(() => {
-                if (present) super.set(key, previous!);
-                else super.delete(key);
-            });
-        }
+        if (!journaling(this.#born)) return super.set(key, value);
+        if (super.has(key) && Object.is(super.get(key), value)) return this;
+        this.#save(key);
         return super.set(key, value);
     }
 
     public override delete(key: K): boolean {
-        const present = super.has(key),
-            previous = super.get(key);
-        if (present)
-            for (const transaction of transactions) {
-                transaction.capture(previous);
-                transaction.record(() => {
-                    super.set(key, previous!);
-                });
-            }
+        if (!super.has(key)) return false;
+        this.#save(key);
         return super.delete(key);
     }
 }
 
+interface WeakSetOriginals<K extends WeakKey> extends Originals {
+    /** Whether each written key was present at the transaction's start. */
+    readonly saved: Map<K, boolean>;
+}
+
 export class EmissionWeakSet<K extends WeakKey> extends WeakSet<K> {
+    readonly #born = innermostId();
+    #journal: Journal<WeakSetOriginals<K>> | undefined;
+
+    public constructor(keys?: Iterable<K> | null) {
+        super();
+        for (const key of keys ?? []) super.add(key);
+    }
+
+    #save(key: K, present: boolean): void {
+        if (!journaling(this.#born)) return;
+        this.#journal ??= new Journal<WeakSetOriginals<K>>(
+            this.#born,
+            (transaction) => ({ transaction, saved: new Map() }),
+            (record) => {
+                for (const [key, present] of record.saved) {
+                    if (present) super.add(key);
+                    else super.delete(key);
+                }
+            },
+            (older, newer) => adoptMissing(older.saved, newer.saved),
+        );
+        const record = this.#journal.current();
+        if (record && !record.saved.has(key)) {
+            record.saved.set(key, present);
+            ++statistics.journaledSlots;
+        }
+    }
+
     public override add(key: K): this {
-        if (!super.has(key))
-            for (const transaction of transactions)
-                transaction.record(() => {
-                    super.delete(key);
-                });
+        if (super.has(key)) return this;
+        this.#save(key, false);
         return super.add(key);
     }
 
     public override delete(key: K): boolean {
-        if (super.has(key))
-            for (const transaction of transactions)
-                transaction.record(() => {
-                    super.add(key);
-                });
+        if (!super.has(key)) return false;
+        this.#save(key, true);
         return super.delete(key);
     }
+}
+
+interface ArrayOriginals extends Originals {
+    /** The length at the transaction's start; later slots need no original. */
+    readonly length: number;
+    /** The written slots below `length`, and any other written key. */
+    readonly saved: Map<PropertyKey, PropertyDescriptor | undefined>;
+}
+
+/** The array index `key` names, or undefined for another key. */
+function arrayIndex(key: PropertyKey): number | undefined {
+    if (typeof key !== "string") return undefined;
+    const index = Number(key);
+    return Number.isInteger(index) && index >= 0 && String(index) === key
+        ? index
+        : undefined;
+}
+
+/** Arrays journal only the slots below their starting length that a write changes. */
+export function emissionArray<T>(values: T[] = []): T[] {
+    const born = innermostId();
+    let journal: Journal<ArrayOriginals> | undefined;
+    const record = (): ArrayOriginals | undefined => {
+        if (!journaling(born)) return undefined;
+        journal ??= new Journal<ArrayOriginals>(
+            born,
+            (transaction) => ({
+                transaction,
+                length: values.length,
+                saved: new Map(),
+            }),
+            (original) => {
+                values.length = original.length;
+                for (const [key, descriptor] of original.saved) {
+                    if (descriptor)
+                        Reflect.defineProperty(values, key, descriptor);
+                    else Reflect.deleteProperty(values, key);
+                }
+            },
+            (older, newer) => {
+                for (const [key, descriptor] of newer.saved) {
+                    const index = arrayIndex(key);
+                    if (
+                        (index === undefined || index < older.length) &&
+                        !older.saved.has(key)
+                    )
+                        older.saved.set(key, descriptor);
+                }
+            },
+        );
+        return journal.current();
+    };
+    const save = (original: ArrayOriginals, key: PropertyKey): void => {
+        const index = arrayIndex(key);
+        if (
+            (index !== undefined && index >= original.length) ||
+            original.saved.has(key)
+        )
+            return;
+        original.saved.set(key, Reflect.getOwnPropertyDescriptor(values, key));
+        ++statistics.journaledSlots;
+    };
+    /** A shrinking length removes the slots between it and the old length. */
+    const write = (key: PropertyKey, length: unknown): void => {
+        const original = record();
+        if (!original) return;
+        if (key !== "length") {
+            save(original, key);
+            return;
+        }
+        if (typeof length === "number")
+            for (
+                let index = length;
+                index < Math.min(values.length, original.length);
+                ++index
+            )
+                save(original, String(index));
+    };
+    return registerContainer(
+        new Proxy(values, {
+            set(target, key, value: unknown) {
+                const current = Reflect.getOwnPropertyDescriptor(target, key);
+                if (
+                    !current ||
+                    !("value" in current) ||
+                    !Object.is(current.value, value)
+                )
+                    write(key, value);
+                return Reflect.set(target, key, value, target);
+            },
+            deleteProperty(target, key) {
+                if (Object.hasOwn(target, key)) write(key, undefined);
+                return Reflect.deleteProperty(target, key);
+            },
+            defineProperty(target, key, descriptor) {
+                write(key, descriptor.value);
+                return Reflect.defineProperty(target, key, descriptor);
+            },
+        }),
+    );
+}
+
+interface PropertyOriginals extends Originals {
+    readonly keys: readonly PropertyKey[];
+    readonly descriptors: readonly PropertyDescriptor[];
+}
+
+function sameDescriptor(
+    current: PropertyDescriptor,
+    captured: PropertyDescriptor,
+): boolean {
+    return (
+        current.enumerable === captured.enumerable &&
+        current.configurable === captured.configurable &&
+        ("value" in captured
+            ? current.writable === captured.writable &&
+              Object.is(current.value, captured.value)
+            : current.get === captured.get && current.set === captured.set)
+    );
+}
+
+/**
+ * Restore an object's own properties, key order included: iteration order is
+ * output order. Unchanged properties are left alone.
+ */
+function restoreProperties(target: object, original: PropertyOriginals): void {
+    const { keys, descriptors } = original;
+    const current = Reflect.ownKeys(target);
+    const reordered =
+        current.length !== keys.length ||
+        current.some((key, index) => key !== keys[index]);
+    if (reordered)
+        for (const key of current) Reflect.deleteProperty(target, key);
+    for (let index = 0; index < keys.length; ++index) {
+        const key = keys[index]!,
+            descriptor = descriptors[index]!;
+        if (
+            reordered ||
+            !sameDescriptor(
+                Reflect.getOwnPropertyDescriptor(target, key)!,
+                descriptor,
+            )
+        )
+            Reflect.defineProperty(target, key, descriptor);
+    }
+}
+
+/** Each record's snapshot journal: its whole property list, once per transaction. */
+const snapshots = new WeakMap<object, Journal<PropertyOriginals>>();
+
+function snapshotBeforeWrite(target: object, born: number): void {
+    if (!journaling(born)) return;
+    let journal = snapshots.get(target);
+    if (!journal) {
+        journal = new Journal<PropertyOriginals>(
+            born,
+            (transaction) => {
+                const keys = Reflect.ownKeys(target);
+                ++statistics.journaledSlots;
+                return {
+                    transaction,
+                    keys,
+                    descriptors: keys.map((key) =>
+                        Reflect.getOwnPropertyDescriptor(target, key)!,
+                    ),
+                };
+            },
+            (original) => restoreProperties(target, original),
+            () => {},
+        );
+        snapshots.set(target, journal);
+    }
+    journal.current();
+}
+
+/** Containers that journal their own writes; `writable()` refuses them. */
+const containers = new WeakSet<object>();
+
+function registerContainer<T extends object>(container: T): T {
+    containers.add(container);
+    return container;
+}
+
+/**
+ * A compiler record or array about to be written in place: journals its own
+ * properties once per transaction, then returns it writable. Compiler state
+ * types are readonly so every in-place write names this.
+ */
+export function writable<T extends object>(target: T): Mutable<T> {
+    if (open.length > 0) {
+        if (
+            containers.has(target) ||
+            target instanceof EmissionMap ||
+            target instanceof EmissionSet ||
+            target instanceof EmissionWeakMap ||
+            target instanceof EmissionWeakSet
+        )
+            throw new Error(
+                "writable() names a journaled container; write it directly.",
+            );
+        snapshotBeforeWrite(target, 0);
+    }
+    return target as Mutable<T>;
+}
+
+/** The writable view `writable()` returns. */
+export type Mutable<T> =
+    T extends ReadonlyArray<infer E> ? E[] : { -readonly [K in keyof T]: T[K] };
+
+/** A plain record whose writes are journaled: its properties, once per transaction. */
+export function emissionRecord<T extends object>(value: T): T {
+    const born = innermostId();
+    return registerContainer(
+        new Proxy(value, {
+            set(target, key, next: unknown) {
+                snapshotBeforeWrite(target, born);
+                return Reflect.set(target, key, next, target);
+            },
+            deleteProperty(target, key) {
+                snapshotBeforeWrite(target, born);
+                return Reflect.deleteProperty(target, key);
+            },
+            defineProperty(target, key, descriptor) {
+                snapshotBeforeWrite(target, born);
+                return Reflect.defineProperty(target, key, descriptor);
+            },
+        }),
+    );
+}
+
+interface FieldOriginals extends Originals {
+    /** Each written field's restoration, by its accessor. */
+    readonly saved: Map<object, () => void>;
+}
+
+/** Each instance's field journal, created by its first write in a transaction. */
+const fields = new WeakMap<object, Journal<FieldOriginals>>();
+
+/** Save a field's original before a write that changes it. */
+function saveField<This extends object, V>(
+    instance: This,
+    target: ClassAccessorDecoratorTarget<This, V>,
+    value: V,
+): void {
+    const previous = target.get.call(instance);
+    if (Object.is(previous, value)) return;
+    let journal = fields.get(instance);
+    if (!journal) {
+        journal = new Journal<FieldOriginals>(
+            0,
+            (transaction) => ({ transaction, saved: new Map() }),
+            (original) => {
+                for (const restore of original.saved.values()) restore();
+            },
+            (older, newer) => adoptMissing(older.saved, newer.saved),
+        );
+        fields.set(instance, journal);
+    }
+    const original = journal.current();
+    if (original && !original.saved.has(target)) {
+        original.saved.set(target, () => target.set.call(instance, previous));
+        ++statistics.journaledSlots;
+    }
+}
+
+/**
+ * A class field whose writes are journaled:
+ * `@journaled private accessor count = 0`.
+ */
+export function journaled<This extends object, V>(
+    target: ClassAccessorDecoratorTarget<This, V>,
+): ClassAccessorDecoratorResult<This, V> {
+    return {
+        set(this: This, value: V): void {
+            if (open.length > 0) saveField(this, target, value);
+            target.set.call(this, value);
+        },
+    };
 }

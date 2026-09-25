@@ -10,7 +10,7 @@ interface SpriteAtlasRecordContext extends Pick<
     | "dataValue"
     | "requireDefaultEngine"
     | "allocateTemporaryCppName"
-    | "registerNativeTemplate"
+    | "nativeEmission"
     | "reachJsData"
     | "reachImageDecode"
     | "reachFeature"
@@ -235,7 +235,7 @@ export function compileSpriteAtlasRecord(
         let helper = helpers.get(key);
         if (helper === undefined) {
             helper = context.allocateTemporaryCppName("sprite_atlas_record");
-            context.registerNativeTemplate(
+            context.nativeEmission.registerNativeTemplate(
                 helper,
                 [
                     `template <typename Texture>`,

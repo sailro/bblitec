@@ -22,8 +22,8 @@ const refusing = `
 class Base { value = 1; }
 let total = 0;
 function first(): void {
-    class Derived extends Base { }
-    total += new Derived().value;
+    class Derived extends Map<string, number> { }
+    total += new Derived().size + new Base().value;
     total += 1;
 }
 function second(): void {

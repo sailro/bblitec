@@ -12,12 +12,7 @@ export function lowerGltfWeightedAnimationPasses(
         module,
         "updateWeightedGltfAnimations",
     );
-    if (
-        context.numericValue(
-            ts.factory.createIdentifier("GLTF_NODES"),
-            file,
-        ) !== 1
-    )
+    if (context.pinnedNumber(file, "GLTF_NODES") !== 1)
         context.contractError(
             file,
             "Weighted node tuple slot changed; establish its native identity transport.",

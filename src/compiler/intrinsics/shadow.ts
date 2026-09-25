@@ -17,10 +17,10 @@ export interface ShadowIntrinsicContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
-            | "noteTemporalRecordBoundary"
+            | "admissions"
             | "compileNumber"
             | "compileBoolean"
-            | "compileF32ArrayCallback"
+            | "callbacks"
             | "allocateTemporaryCppName"
             | "emit"
             | "expectObjectLiteral"
@@ -29,11 +29,7 @@ export interface ShadowIntrinsicContext
             | "requireEngine"
             | "ensureDefaultRenderTask"
             | "fail"
-            | "recordShadowGenerator"
-            | "recordShadowCasters"
-            | "recordDynamicShadowCasters"
-            | "recordDynamicShadowCastersForUnknownGenerator"
-            | "esmGeneratorOrdinal"
+            | "sceneManifest"
         > {}
 
 /**
@@ -360,9 +356,10 @@ function compileShadowGeneratorFactory(
     if (spec.kind === "esm-directional") {
         // The row this generator's recorded resources sit at, which is
         // generation's answer rather than an option the scene passes.
-        resolved["esmIndex"] = `${context.esmGeneratorOrdinal()}u`;
+        resolved["esmIndex"] =
+            `${context.sceneManifest.esmGeneratorOrdinal()}u`;
     }
-    const index = context.recordShadowGenerator({
+    const index = context.sceneManifest.recordShadowGenerator({
         kind: spec.kind,
         // The generator may precede addToScene, but an unresolved slot must
         // never alias the valid first light. addSceneLight patches this
@@ -446,7 +443,7 @@ export function compileShadowIntrinsic(
                 "shadow-generator",
                 argumentAt(call, 0),
             );
-            const callback = context.compileF32ArrayCallback(
+            const callback = context.callbacks.compileF32ArrayCallback(
                 argumentAt(call, 1),
             );
             const disposer = context.allocateTemporaryCppName(
@@ -481,6 +478,7 @@ export function compileShadowIntrinsic(
                 "shadow-generator",
                 argumentAt(call, 0),
             );
+            context.reachFeature("shadow:morph-bounds", call);
             return {
                 kind: "void",
                 cpp:
@@ -542,9 +540,11 @@ export function compileShadowIntrinsic(
                 // itself be runtime-built (Break Meshes fills allPieces in a
                 // native loop), and later registrations filter that list.
                 if (generatorIndex === undefined) {
-                    context.recordDynamicShadowCastersForUnknownGenerator();
+                    context.sceneManifest.recordDynamicShadowCastersForUnknownGenerator();
                 } else {
-                    context.recordDynamicShadowCasters(generatorIndex);
+                    context.sceneManifest.recordDynamicShadowCasters(
+                        generatorIndex,
+                    );
                 }
                 context.reachFeature("material:no-color-view", call);
                 return {
@@ -580,11 +580,16 @@ export function compileShadowIntrinsic(
                 );
             }
             if (generatorIndex === undefined) {
-                context.recordDynamicShadowCastersForUnknownGenerator();
+                context.sceneManifest.recordDynamicShadowCastersForUnknownGenerator();
             } else {
-                context.recordShadowCasters(generatorIndex, casters);
+                context.sceneManifest.recordShadowCasters(
+                    generatorIndex,
+                    casters,
+                );
                 if (hasDynamicCaster) {
-                    context.recordDynamicShadowCasters(generatorIndex);
+                    context.sceneManifest.recordDynamicShadowCasters(
+                        generatorIndex,
+                    );
                 }
             }
             // The caster pass draws each mesh through its material's own
@@ -617,7 +622,7 @@ export function compileShadowIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const scene = context.compileValue(argumentAt(call, 0));
             context.expectKind(scene, "scene", argumentAt(call, 0));
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 importedName,
                 "registration",

@@ -89,13 +89,10 @@ ${characterControllerAdapter(defaultRotation, defaultScale, asleep.kind === ts.S
 export function characterCollisionObservableSource(
     context: LoweringContext,
 ): string {
-    const observable = context
-        .sourceFile(characterControllerModule)
-        .statements.find(
-            (node): node is ts.ClassDeclaration =>
-                ts.isClassDeclaration(node) &&
-                node.name?.text === "CharacterCollisionObservable",
-        )!;
+    const observable = context.classDeclaration(
+        characterControllerModule,
+        "CharacterCollisionObservable",
+    ).declaration;
     for (const [name, source] of [
         [
             "add",
@@ -298,7 +295,7 @@ ${
     js::Array<double> _angular_velocity(js::Ref<NativeBody> body) override { return array(pal::physics_body_get_angular_velocity(body->handle)); }
     js::Array<double> _linear_velocity(js::Ref<NativeBody> body) override { return array(pal::physics_body_get_linear_velocity(body->handle)); }
     void _apply_impulse(js::Ref<NativeBody> body, js::Array<double> position, js::Array<double> impulse) override { pal::physics_body_apply_impulse(body->handle, lanes<3>(position), lanes<3>(impulse)); }
-    void _set_node_position(double x, double y, double z) override { set_transform_node_position(*engine_, _node->value, {x,y,z}, true); }
+    void _set_node_position(double x, double y, double z) override { set_transform_node_position(*engine_, _node->value, {x,y,z}); }
     void _notify(js::Ref<CharacterCollisionEvent> event) override { onTriggerCollisionObservable.notify(*event); }
     js::Array<Query> _start_hits() override { return proximity_; }
     js::Array<Query> _cast_hits() override { return casts_; }

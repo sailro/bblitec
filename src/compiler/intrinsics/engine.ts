@@ -28,8 +28,7 @@ export interface EngineIntrinsicContext
         EngineOptionContext,
         Pick<
             LoweringServices,
-            | "noteTextSceneLifecycle"
-            | "noteTemporalRecordBoundary"
+            | "admissions"
             | "emit"
             | "emitDiscardedValue"
             | "fail"
@@ -38,23 +37,12 @@ export interface EngineIntrinsicContext
             | "requireEngine"
             | "allocateTemporaryCppName"
             | "compileEngineCreation"
-            | "compileRenderTargetOptions"
-            | "compileRenderTaskOptions"
-            | "compileGeometryTaskOptions"
-            | "compileCopyTaskOptions"
-            | "recordGeometryOutputTask"
-            | "recordPostProcessTask"
-            | "recordPostProcessComposite"
-            | "recordScreenSpaceTask"
-            | "postProcessTasks"
-            | "postProcessComposites"
-            | "screenSpaceTasks"
-            | "compileSceneDefaultRenderTask"
+            | "intrinsicOptions"
+            | "sceneManifest"
             | "expectObjectLiteral"
             | "objectProperty"
             | "propertyName"
-            | "compileFrameCallback"
-            | "compileVoidCallback"
+            | "callbacks"
         > {}
 
 function reachRenderer(
@@ -157,16 +145,17 @@ export function compileEngineIntrinsic(
             if (engine.kind !== "surface") {
                 context.expectKind(engine, "engine", argumentAt(call, 0));
             }
-            const defaultRenderTask = context.compileSceneDefaultRenderTask(
-                call.arguments[1],
-            );
+            const defaultRenderTask =
+                context.intrinsicOptions.compileSceneDefaultRenderTask(
+                    call.arguments[1],
+                );
             if (!defaultRenderTask)
-                context.noteTextSceneLifecycle(
+                context.admissions.noteTextSceneLifecycle(
                     call,
                     "Text requires the default scene render task; empty and custom text task execution is not represented.",
                 );
             if (defaultRenderTask)
-                context.noteTemporalRecordBoundary(
+                context.admissions.noteTemporalRecordBoundary(
                     call,
                     "implicit default scene passes",
                     "always",
@@ -225,7 +214,7 @@ export function compileEngineIntrinsic(
             });
             if (update) {
                 context.emit(
-                    `bbl::on_frame_graph_update(${nativeContext}, ${context.compileFrameCallback(update)});`,
+                    `bbl::on_frame_graph_update(${nativeContext}, ${context.callbacks.compileFrameCallback(update)});`,
                 );
             }
             return {
@@ -245,7 +234,7 @@ export function compileEngineIntrinsic(
         case "createRenderTarget": {
             context.expectArgumentCount(call, 1, 1);
             const engine = context.requireDefaultEngine(call);
-            const options = context.compileRenderTargetOptions(
+            const options = context.intrinsicOptions.compileRenderTargetOptions(
                 argumentAt(call, 0),
             );
             context.reachFeature("frame-graph:resources", call);
@@ -273,7 +262,7 @@ export function compileEngineIntrinsic(
             }
             const engine = context.compileValue(argumentAt(call, 0));
             context.expectKind(engine, "engine", argumentAt(call, 0));
-            const options = context.compileRenderTargetOptions(
+            const options = context.intrinsicOptions.compileRenderTargetOptions(
                 argumentAt(call, 1),
             );
             const surfaceSized =
@@ -336,7 +325,7 @@ export function compileEngineIntrinsic(
             context.reachFeature("engine:gpu-retirement", call);
             return {
                 kind: "data",
-                cpp: `bbl::on_render_target_texture_resize(${engine}, ${target.cpp}, ${context.compileVoidCallback(argumentAt(call, 1))})`,
+                cpp: `bbl::on_render_target_texture_resize(${engine}, ${target.cpp}, ${context.callbacks.compileVoidCallback(argumentAt(call, 1))})`,
                 dataType: { kind: "function", parameters: [], identity: true },
             };
         }
@@ -364,7 +353,7 @@ export function compileEngineIntrinsic(
             context.expectKind(engine, "engine", argumentAt(call, 1));
             context.expectKind(scene, "scene", argumentAt(call, 2));
             context.expectSameEngine(engine, scene, call);
-            const options = context.compileRenderTaskOptions(
+            const options = context.intrinsicOptions.compileRenderTaskOptions(
                 argumentAt(call, 0),
             );
             reachRenderer(context, call);
@@ -379,7 +368,7 @@ export function compileEngineIntrinsic(
         }
 
         case "createGeometryRendererTask": {
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 "geometry-output task preparation",
                 "always",
@@ -390,10 +379,11 @@ export function compileEngineIntrinsic(
             context.expectKind(engine, "engine", argumentAt(call, 1));
             context.expectKind(scene, "scene", argumentAt(call, 2));
             context.expectSameEngine(engine, scene, call);
-            const compiled = context.compileGeometryTaskOptions(
-                argumentAt(call, 0),
-            );
-            context.recordGeometryOutputTask(compiled.manifest);
+            const compiled =
+                context.intrinsicOptions.compileGeometryTaskOptions(
+                    argumentAt(call, 0),
+                );
+            context.sceneManifest.recordGeometryOutputTask(compiled.manifest);
             reachRenderer(context, call);
             return {
                 kind: "task",
@@ -407,7 +397,7 @@ export function compileEngineIntrinsic(
         }
 
         case "createCopyToTextureTask": {
-            context.noteTemporalRecordBoundary(
+            context.admissions.noteTemporalRecordBoundary(
                 call,
                 "copy task preparation",
                 "always",
@@ -418,7 +408,9 @@ export function compileEngineIntrinsic(
             context.expectKind(engine, "engine", argumentAt(call, 1));
             context.expectKind(scene, "scene", argumentAt(call, 2));
             context.expectSameEngine(engine, scene, call);
-            const options = context.compileCopyTaskOptions(argumentAt(call, 0));
+            const options = context.intrinsicOptions.compileCopyTaskOptions(
+                argumentAt(call, 0),
+            );
             reachRenderer(context, call);
             return {
                 kind: "task",
@@ -496,9 +488,9 @@ function compileScreenSpaceIntrinsic(
         context,
         importedName,
         argumentAt(call, 0),
-        context.screenSpaceTasks.length,
+        context.sceneManifest.screenSpaceTasks.length,
     );
-    context.recordScreenSpaceTask(compiled.manifest);
+    context.sceneManifest.recordScreenSpaceTask(compiled.manifest);
     return {
         kind: "task",
         cpp:
@@ -542,9 +534,9 @@ function compilePostProcessIntrinsic(
             context,
             importedName,
             argumentAt(call, 0),
-            context.postProcessComposites.length,
+            context.sceneManifest.postProcessComposites.length,
         );
-        context.recordPostProcessComposite(built.manifest, call);
+        context.sceneManifest.recordPostProcessComposite(built.manifest, call);
         for (const task of built.sourceTasks) {
             context.expectSameEngine(engine, task, call);
         }
@@ -561,9 +553,9 @@ function compilePostProcessIntrinsic(
         context,
         importedName,
         argumentAt(call, 0),
-        context.postProcessTasks.length,
+        context.sceneManifest.postProcessTasks.length,
     );
-    context.recordPostProcessTask(compiled.manifest);
+    context.sceneManifest.recordPostProcessTask(compiled.manifest);
     return {
         kind: "task",
         cpp: `bbl::create_post_process_task(${engine.cpp}, ${compiled.cpp})`,

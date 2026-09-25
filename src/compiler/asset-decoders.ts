@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { isGlobalUndefined } from "./symbols.js";
 import type { Value } from "./types.js";
 
 type Context = Pick<
@@ -9,9 +10,8 @@ type Context = Pick<
     | "compileValue"
     | "emitDiscardedValue"
     | "unwrap"
-    | "lookupIdentifierValue"
-    | "resolveBundledAsset"
-    | "setAssetDecoderConfiguration"
+    | "checker"
+    | "assetRegistry"
     | "fail"
 >;
 
@@ -35,10 +35,10 @@ export function compileAssetDecoderConfiguration(
     const url = constantUrl(argumentAt(call, 0));
     if (name === "setMeshoptBaseUrl") {
         const base = url.endsWith("/") ? url : `${url}/`;
-        context.setAssetDecoderConfiguration(
+        context.assetRegistry.setAssetDecoderConfiguration(
             {
                 meshopt: {
-                    javascript: context.resolveBundledAsset(
+                    javascript: context.assetRegistry.resolveBundledAsset(
                         `${base}meshopt_decoder.js`,
                     ),
                 },
@@ -49,13 +49,13 @@ export function compileAssetDecoderConfiguration(
     }
     if (name === "setDracoBaseUrl") {
         const base = url.endsWith("/") ? url : `${url}/`;
-        context.setAssetDecoderConfiguration(
+        context.assetRegistry.setAssetDecoderConfiguration(
             {
                 draco: {
-                    javascript: context.resolveBundledAsset(
+                    javascript: context.assetRegistry.resolveBundledAsset(
                         `${base}draco_decoder.js`,
                     ),
-                    wasm: context.resolveBundledAsset(
+                    wasm: context.assetRegistry.resolveBundledAsset(
                         `${base}draco_decoder.wasm`,
                     ),
                 },
@@ -69,11 +69,7 @@ export function compileAssetDecoderConfiguration(
     if (
         source &&
         source.kind !== ts.SyntaxKind.NullKeyword &&
-        !(
-            ts.isIdentifier(source) &&
-            source.text === "undefined" &&
-            !context.lookupIdentifierValue(source)
-        )
+        !isGlobalUndefined(context.checker, source)
     ) {
         const read = (
             expression: ts.Expression,
@@ -102,16 +98,18 @@ export function compileAssetDecoderConfiguration(
                 Object.fromEntries(
                     read(fields).map(([field, value]) => [
                         field,
-                        context.resolveBundledAsset(constantUrl(value)),
+                        context.assetRegistry.resolveBundledAsset(
+                            constantUrl(value),
+                        ),
                     ]),
                 ),
             ]),
         );
     }
-    context.setAssetDecoderConfiguration(
+    context.assetRegistry.setAssetDecoderConfiguration(
         {
             ktx2: {
-                javascript: context.resolveBundledAsset(url),
+                javascript: context.assetRegistry.resolveBundledAsset(url),
                 ...(wasmUrls ? { wasmUrls } : {}),
             },
         },

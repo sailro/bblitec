@@ -76,10 +76,17 @@ test("keeps the manifest order stable regardless of feature order", () => {
 
 test("is the only place a generated source is declared", () => {
     // The emitter is checked against this table at generation time; the
-    // compiler must not carry a second copy of the mapping.
-    const compiler = readFileSync("src/compiler.ts", "utf8");
-    assert.doesNotMatch(compiler, /generatedSources\.push/);
-    assert.match(compiler, /reachedGeneratedSources\(features\)/);
+    // compiler and the asset join both project a finished feature list
+    // through the one projection, and neither carries a second copy.
+    for (const path of ["src/compiler.ts", "src/asset-feature-join.ts"]) {
+        const source = readFileSync(path, "utf8");
+        assert.doesNotMatch(source, /generatedSources\.push/);
+        assert.match(source, /projectFeatures\(/);
+    }
+    assert.match(
+        readFileSync("src/compiler/output-projection.ts", "utf8"),
+        /reachedGeneratedSources\(features\)/,
+    );
 
     const upstream = readFileSync("src/upstream-lower.ts", "utf8");
     assert.match(

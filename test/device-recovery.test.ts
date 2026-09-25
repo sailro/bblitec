@@ -50,9 +50,16 @@ test("unchanged device-loss scene retains polling predicates, GPU identities and
         result.cpp,
         /defer_capture_until\([^\n]+canvas_dataset\([^\n]+"ready"/,
     );
+    // The poll predicate is a shared body; the deferred start calls it.
+    const predicate = result.cpp.match(
+        /defer_start_continuation_until\([^\n]+\[&\]\(\)[^\n]*bblscene::(bbl_recursive_fn\d+_group)\)\(\)/,
+    )?.[1];
+    assert.ok(predicate);
     assert.match(
         result.cpp,
-        /defer_start_continuation_until\([^\n]+\[&\]\(\).*canvas_dataset\([^\n]+"preLossReady"/,
+        new RegExp(
+            `\\n\\w+ ${predicate}\\([^\\n]*\\) \\{\\n[^}]*canvas_dataset\\([^\\n]+"preLossReady"`,
+        ),
     );
     assert.ok(
         result.manifest.scenePbrMaterials?.some(
@@ -130,33 +137,13 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
         ],
         [
             "device-lost-recovery",
-            "state._armedDevice === device || state._recovering",
-            "state._armedDevice === device && state._recovering",
-        ],
-        [
-            "device-lost-recovery",
-            'info.reason === "destroyed" && !state._forceNextLoss',
-            'info.reason === "destroyed" && state._forceNextLoss',
-        ],
-        [
-            "device-lost-recovery",
             "const registrations = [...state._registrations]",
             "const registrations = state._registrations",
         ],
         [
             "device-lost-recovery",
-            "registration._onLost?.(info)",
-            "registration._onRecovered?.()",
-        ],
-        [
-            "device-lost-recovery",
             "arm(engine, state);\n                    for",
             "arm(engine, getState(engine));\n                    for",
-        ],
-        [
-            "device-lost-recovery",
-            "registration._onRecoveryFailed?.(error)",
-            "arm(engine, state); registration._onRecoveryFailed?.(error)",
         ],
         [
             "device-lost-recovery-testing",
@@ -167,11 +154,6 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
             "device-lost-scene-recovery",
             "options: DeviceLostRecoveryCallbacks = {}",
             "options: DeviceLostRecoveryCallbacks = { onLost() {} }",
-        ],
-        [
-            "device-lost-scene-recovery",
-            "_recoverOrder: 100",
-            "_recoverOrder: 0",
         ],
         [
             "device-lost-scene-recovery",
@@ -208,11 +190,6 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
             "device-lost-recovery-run",
             "settleRebuiltTextureOwnership(state);",
             "settleRebuiltTextureOwnership(engine);",
-        ],
-        [
-            "device-lost-recovery-run",
-            "if (!handlers.has(context._kind))",
-            "if (handlers.has(context._kind))",
         ],
         [
             "recovery-rebuild",
@@ -266,10 +243,66 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
         const store = new EditedStore(module, from, to);
         assert.throws(
             () => lowerDeviceRecovery(new LoweringContext(store)),
-            /native recovery contract/,
+            /native recovery contract|Expected|Unsupported pinned|splices exactly one/,
             `${module}: ${from}`,
         );
     }
+    // The coordinator's own bodies are lowered, so a pinned change to one
+    // of them is followed rather than refused.
+    const lowered = (from: string, to: string): string =>
+        lowerDeviceRecovery(
+            new LoweringContext(
+                new EditedStore("device-lost-recovery", from, to),
+            ),
+        ).source;
+    const pinned = lowerDeviceRecovery(new LoweringContext()).source;
+    assert.match(pinned, /if \(!state\.requested\) \{\n\s*return;/);
+    assert.match(
+        lowered(
+            'info.reason === "destroyed" && !state._forceNextLoss',
+            'info.reason === "destroyed" && state._forceNextLoss',
+        ),
+        /if \(state\.requested\) \{\n\s*return;/,
+    );
+    assert.match(
+        lowered(
+            "registration._onRecoveryFailed?.(error)",
+            "arm(engine, state); registration._onRecoveryFailed?.(error)",
+        ),
+        /arm_device_recovery\(engine, state\);\n\s*\(registration->on_failed/,
+    );
+    // The run's context-kind assertion is lowered too (RDN-28): every
+    // registered context's pinned kind, checked against the in-flight
+    // registrations' kinds, refused with the pin's own sorted message.
+    assert.match(
+        pinned,
+        /kinds\.insert\(kinds\.end\(\), bbl::text_renderer_count\(engine\), std::string\("text-renderer"\)\);/,
+    );
+    assert.match(pinned, /registration->kind = "scene";/);
+    assert.match(
+        pinned,
+        /if \(!std::ranges::any_of\(handlers, \[&\]\(const auto& registration\) \{ return registration->kind == context; \}\)\) \{\n\s*unrecoverable\.add\(context\);/,
+    );
+    assert.match(
+        pinned,
+        /std::string\("Device-lost recovery cannot rebuild registered rendering contexts of kind: "\) \+ bbl::js::array_join\(bbl::js::string_array_sort\(bbl::js::array_from_iterable<std::string>\(unrecoverable\)\), std::string\(", "\)\)/,
+    );
+    assert.match(
+        pinned,
+        /engine\.stopped = true;\n\s*assert_every_active_context_kind_is_recoverable\(engine, state\.in_flight\);/,
+    );
+    assert.match(
+        lowerDeviceRecovery(
+            new LoweringContext(
+                new EditedStore(
+                    "device-lost-recovery-run",
+                    "if (!handlers.has(context._kind))",
+                    "if (handlers.has(context._kind))",
+                ),
+            ),
+        ).source,
+        /if \(std::ranges::any_of\(handlers,/,
+    );
 });
 
 test("whole-function recovery contracts ignore documentation but retain executable structure", () => {

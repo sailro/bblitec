@@ -9,7 +9,7 @@ export interface ComputeTaskIntrinsicContext
         IntrinsicCallContext,
         Pick<
             LoweringServices,
-            "fail" | "pinValueToTemporary" | "emit" | "allocateTemporaryCppName"
+            "fail" | "bindings" | "emit" | "allocateTemporaryCppName"
         > {}
 
 export function compileComputeTaskIntrinsic(
@@ -43,7 +43,7 @@ export function compileComputeTaskIntrinsic(
             if (value.kind === "tuple" && value.tupleElements) {
                 const entries = value.tupleElements.map((item) => {
                     context.expectKind(item, "compute-task", site);
-                    return context.pinValueToTemporary(
+                    return context.bindings.pinValueToTemporary(
                         item,
                         "submitted_compute_task",
                         site,
@@ -61,7 +61,7 @@ export function compileComputeTaskIntrinsic(
                         site,
                         "Compute submission requires a retained array of compute tasks.",
                     );
-                const array = context.pinValueToTemporary(
+                const array = context.bindings.pinValueToTemporary(
                     value,
                     "submitted_compute_tasks",
                     site,
@@ -81,7 +81,7 @@ export function compileComputeTaskIntrinsic(
                 promiseType: "bbl::js::PromiseVoid",
                 promiseResult: { kind: "void", cpp: "" },
             };
-        const task = context.pinValueToTemporary(
+        const task = context.bindings.pinValueToTemporary(
             value,
             "compute_membership_task",
             site,

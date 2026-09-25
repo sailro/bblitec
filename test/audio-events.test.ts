@@ -83,6 +83,10 @@ test("scheduled audio events retain callbacks through playback and release their
     runNativeFixtureCompiler(tools, [
         "/nologo",
         "/std:c++20",
+        "/DBBLITE_WORKERS=1",
+        "/DBBLITE_OFFSCREEN_SURFACES=1",
+        "/DBBLITE_HAS_AUDIO_BUFFER_SOURCE=1",
+        "/DBBLITE_HAS_AUDIO_OSCILLATOR=1",
         "/W4",
         "/WX",
         "/EHsc",

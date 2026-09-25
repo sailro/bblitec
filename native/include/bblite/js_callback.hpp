@@ -1,7 +1,9 @@
 #pragma once
 
+#include <bblite/features/workers.hpp>
+
 #include <bblite/js_gc.hpp>
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 #include <bblite/js_realm_state.hpp>
 #endif
 
@@ -28,6 +30,12 @@ template <typename Environment, typename Invoke> struct Closure {
     }
     void gc_trace(const TraceVisitor& visitor) const { visitor(environment); }
 };
+
+namespace gc {
+/** A closure owns traced edges only through its environment. */
+template <typename Environment, typename Invoke>
+struct Traceable<Closure<Environment, Invoke>> : Traceable<Environment> {};
+} // namespace gc
 
 template <typename Invoke, typename Signature> struct ClosureInvoker;
 
@@ -75,7 +83,7 @@ template <typename... Functions> [[nodiscard]] auto make_recursive_group(Functio
 }
 
 inline std::size_t next_callback_identity() {
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     return realm_state.callback_identity++;
 #else
     static std::size_t next = std::numeric_limits<std::size_t>::max() / 2;
@@ -108,7 +116,13 @@ template <typename R, typename... Args> class Callback<R(Args...)> {
             else
                 return true;
         }
-        void gc_trace(const TraceVisitor& visitor) const { visitor(function); }
+        /** Only a body that can own a traced edge describes one, so `make_gc_shared`
+         * registers exactly those. */
+        void gc_trace(const TraceVisitor& visitor) const
+            requires gc_traceable<F>
+        {
+            visitor(function);
+        }
     };
 
 public:

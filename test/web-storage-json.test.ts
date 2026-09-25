@@ -506,6 +506,46 @@ test(
 );
 
 test(
+    "typeof an absent value typed with null reads object, and with undefined reads undefined",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
+        function pick(flag: boolean): string | null { return flag ? "x" : null; }
+        function maybe(flag: boolean): string | undefined { return flag ? "x" : undefined; }
+        function either(flag: boolean): number | string | null { return flag ? 1 : null; }
+        const off = Date.now() < 0;
+        if (typeof pick(off) !== "object" || typeof pick(!off) !== "string")
+            throw new Error("null-typed");
+        if (typeof maybe(off) !== "undefined" || typeof maybe(!off) !== "string")
+            throw new Error("undefined-typed");
+        if (typeof either(off) !== "object" || typeof either(!off) !== "number")
+            throw new Error("null-typed union");
+    `);
+        assert.match(result.cpp, /"object"/);
+        const directory = resolve("artifacts/typeof-null-absence");
+        mkdirSync(directory, { recursive: true });
+        const source = join(directory, "check.cpp"),
+            executable = join(directory, "check.exe");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(nativeTools!, [
+            "/nologo",
+            "/std:c++20",
+            "/W4",
+            "/WX",
+            "/permissive-",
+            "/EHsc",
+            `/Fo:${directory}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            "native/include",
+            `/I${nativeFixtureVcpkgRoot}/include`,
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
+
+test(
     "JSON serialization preserves string enums at roots and in stored containers",
     { skip: !nativeTools },
     () => {

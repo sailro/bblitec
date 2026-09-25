@@ -3,6 +3,7 @@ import type { LoweringContext } from "./context.js";
 import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls, pinnedRoundCall } from "./pinned-operators.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 export const physicsHeightfieldModule = "src/physics/havok-heightfield.ts";
 
@@ -172,14 +173,13 @@ ${body}
 }
 PhysicsShape create_physics_heightfield_from_ground(PhysicsWorldHandle world, MeshHandle mesh) {
     const Engine& engine = *physics_world_record(world).engine;
-    const MeshRecord& record = engine.meshes.at(mesh.value);
+    const MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     std::vector<float> positions;
     if (record.geometry < engine.geometries.size()) {
         const auto& vertices = engine.geometries[record.geometry].vertices;
         positions.reserve(vertices.size() * 3);
         for (const auto& vertex : vertices) {
-            const auto& position = record.detached_imported_mesh ? vertex.local_position : vertex.position;
-            positions.insert(positions.end(), {position.x, position.y, position.z});
+            positions.insert(positions.end(), {vertex.position.x, vertex.position.y, vertex.position.z});
         }
     }
     const auto resolved = pinned_ground_heightfield(positions, mesh_world_matrix(engine, record));

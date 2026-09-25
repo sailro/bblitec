@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GizmoLowerer } from "../src/lowering/gizmo-lowerer.js";
 import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
@@ -11,6 +12,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
 } from "./native-fixture.js";
 
 test("editor proxy registers identity-preserving listeners and live drag predicates", () => {
@@ -164,11 +166,8 @@ test("overlay GPU picking uses the picker scene in both backends", () => {
     ).source;
     assert.match(source, /gpu_pickers\.back\(\)\.scene = scene.state/);
     assert.match(source, /void populate_pick_ray\(/);
-    for (const file of [
-        "native/src/pal_sdl_gpu.cpp",
-        "native/src/pal_dawn.cpp",
-    ]) {
-        const backend = readFileSync(file, "utf8");
+    for (const file of ["sdl", "dawn"] as const) {
+        const backend = sceneBackendSource(file);
         assert.match(
             backend,
             /picker_scene_index\(engine, picker, active_registered_scenes\)/,
@@ -178,7 +177,7 @@ test("overlay GPU picking uses the picker scene in both backends", () => {
 });
 
 test("cycling SDL picking depth discards the unused stencil attachment", () => {
-    const backend = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const backend = sceneBackendSource("sdl");
     const target = backend.match(
         /depth_target\.texture = state\.pick_targets\.depth;[\s\S]*?SDL_BeginGPURenderPass\(/,
     )?.[0];
@@ -198,16 +197,16 @@ test("cycling SDL picking depth discards the unused stencil attachment", () => {
 const nativeTools = optionalNativeFixtureTools();
 test(
     "borrowed pointer identity and camera deferral survive drag and release",
-    {
-        skip:
-            !nativeTools ||
-            !existsSync(
-                "generated/antigravity-racer/upstream/include/bblite/upstream/camera_controls.hpp",
-            ),
-    },
+    { skip: !nativeTools },
     () => {
         const output = resolve("artifacts/editor-pointer-check");
-        mkdirSync(output, { recursive: true });
+        const headers = join(output, "include/bblite/upstream");
+        mkdirSync(headers, { recursive: true });
+        const controls = new CameraLowerer(
+            new LoweringContext(),
+        ).lowerControls();
+        writeFileSync(join(headers, "camera_controls.hpp"), controls.header);
+        writeFileSync(join(output, "controls.cpp"), controls.source);
         const executable = join(output, "editor-pointer-check.exe");
         runNativeFixtureCompiler(nativeTools!, [
             "/nologo",
@@ -223,10 +222,11 @@ test(
             "/I",
             "native/src",
             "/I",
-            "generated/antigravity-racer/upstream/include",
+            join(output, "include"),
             "/I",
             join(nativeFixtureVcpkgRoot, "include"),
             "test/fixtures/js-callback/editor-pointer-check.cpp",
+            join(output, "controls.cpp"),
         ]);
         assert.match(
             execFileSync(executable, [], { encoding: "utf8" }),

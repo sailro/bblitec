@@ -1,14 +1,5 @@
 /** Aliased option objects for source-lowered glTF material handlers. */
-export const gltfMaterialValueRuntime = `double gltf_pbr_extremum(std::initializer_list<double> values, bool maximum) {
-    double result = maximum ? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity();
-    for (double value : values) {
-        if (std::isnan(value)) return value;
-        if ((maximum ? value > result : value < result) ||
-            (value == 0.0 && result == 0.0 && std::signbit(value) != maximum)) result = value;
-    }
-    return result;
-}
-class GltfPbrValue;
+export const gltfMaterialValueRuntime = `class GltfPbrValue;
 using GltfPbrArray = std::vector<GltfPbrValue>;
 struct GltfPbrObject;
 struct GltfPbrFloat32View {

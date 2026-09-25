@@ -115,8 +115,9 @@ export function verifyDeployedPayload(
         executableDirectory,
         generatedDirectory,
     ).filter((payload) => !overridden[payload.label]);
-    for (const { label, source, deployed } of payloads) {
-        const mismatches = comparePayload(source, deployed);
+    for (const payload of payloads) {
+        const { label, source } = payload;
+        const mismatches = comparePayload(payload);
         if (mismatches.length > 0) {
             const detail = mismatches
                 .slice(0, 5)
@@ -151,20 +152,34 @@ export function verifyBuildIdentity(
     }
 }
 
+interface NativeSpawnOptions {
+    /**
+     * Ambient variables scrubbed from the child's environment: a caller
+     * setting one explicitly (the capture drops `BBLITE_GPU_BACKEND` so an
+     * ambient one cannot silently pick the other backend).
+     */
+    dropVariables?: readonly string[];
+    /** Take stderr back as the result instead of streaming it. */
+    captureStderr?: boolean;
+    timeoutMs?: number;
+    arguments?: readonly string[];
+}
+
 /**
  * The one measured-run spawn: npm_* environment hygiene, the synchronous
- * child, and the exit contract. `dropVariables` scrubs ambient variables
- * a caller sets explicitly (the capture drops `BBLITE_GPU_BACKEND` so an
- * ambient one cannot silently pick the other backend).
+ * child, and the exit contract.
  */
 export function spawnNativeMeasured(
     executable: string,
     overrides: Record<string, string>,
-    dropVariables: readonly string[] = [],
-    captureStderr = false,
-    timeoutMs?: number,
-    arguments_: readonly string[] = [],
+    options: NativeSpawnOptions = {},
 ): string {
+    const {
+        dropVariables = [],
+        captureStderr = false,
+        timeoutMs,
+        arguments: arguments_ = [],
+    } = options;
     const inherited: Record<string, string> = {};
     for (const [name, value] of Object.entries(process.env)) {
         if (value === undefined) continue;
@@ -185,12 +200,12 @@ export function spawnNativeMeasured(
     const tail =
         captureStderr && result.stderr ? `\n${result.stderr.slice(-2000)}` : "";
     if (result.error) {
+        const timedOut =
+            timeoutMs !== undefined &&
+            (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
         throw new Error(
             `Native renderer did not complete: ${result.error.message}` +
-                (timeoutMs !== undefined &&
-                (result.error as NodeJS.ErrnoException).code === "ETIMEDOUT"
-                    ? ` (killed after ${timeoutMs} ms)`
-                    : "") +
+                (timedOut ? ` (killed after ${timeoutMs} ms)` : "") +
                 tail,
         );
     }
@@ -270,10 +285,11 @@ export interface MeasuredRunOptions {
     arguments?: readonly string[];
     /** Take stderr back as the returned log instead of streaming it. */
     captureLog?: boolean;
+    /** A spawn bound; absent, the run is unbounded (a Window-host run fails through its frame clock). */
     timeoutMs?: number;
 }
 
-export interface MeasuredRun {
+interface MeasuredRun {
     /** The run's stderr when `captureLog` was set; empty otherwise. */
     log: string;
     /** The build stamp the run reported, when it was asked to. */
@@ -375,18 +391,21 @@ export function runMeasured(
         mkdirSync(resolve(path, ".."), { recursive: true });
         rmSync(resolve(path), { force: true });
     }
-    const log = spawnNativeMeasured(
-        executable,
-        measuredRunEnvironment(options, stampPath),
-        [
+    const environment = measuredRunEnvironment(options, stampPath);
+    const log = spawnNativeMeasured(executable, environment, {
+        dropVariables: [
             "BBLITE_LOCATION_SEARCH",
             ...(options.backend !== undefined ? ["BBLITE_GPU_BACKEND"] : []),
             ...(options.dropVariables ?? []),
         ],
-        options.captureLog ?? false,
-        options.timeoutMs,
-        options.arguments ?? [],
-    );
+        captureStderr: options.captureLog ?? false,
+        ...(options.timeoutMs !== undefined
+            ? { timeoutMs: options.timeoutMs }
+            : {}),
+        ...(options.arguments !== undefined
+            ? { arguments: options.arguments }
+            : {}),
+    });
     if (options.generatedDirectory !== undefined && stampPath !== undefined) {
         verifyBuildIdentity(executable, options.generatedDirectory, stampPath);
     }

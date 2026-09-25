@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -6,8 +7,9 @@ import {
     staticVec3Value,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
-import type { Value } from "../types.js";
+import { presenceFlagCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { recordAt } from "../record-access.js";
 
 export interface CameraIntrinsicContext
     extends
@@ -142,10 +144,10 @@ export function noteCameraRecordWrite(
     if (!camera?.cameraProgram) return;
     const written = value ? staticNumberValue(context, value) : undefined;
     if (!simple || written === undefined) {
-        delete camera.cameraProgram;
+        delete writable(camera).cameraProgram;
         return;
     }
-    camera.cameraProgram.properties.push([property, written]);
+    writable(camera.cameraProgram.properties).push([property, written]);
 }
 
 export function compileCameraIntrinsic(
@@ -313,12 +315,14 @@ export function compileCameraIntrinsic(
             context.expectSameEngine(camera, scene, call);
             context.reachFeature("camera:geospatial", call);
             const engine = context.requireEngine(camera, call);
-            context.emit(`bbl::attach_control(${engine}, ${camera.cpp});`);
+            context.emit(
+                `bbl::attach_control(${engine}, ${camera.cpp}, ${scene.cpp});`,
+            );
             return {
                 kind: "data",
                 cpp:
                     `std::function<void()>{[&${engine}, camera = ${camera.cpp}]() { ` +
-                    `${engine}.cameras[camera.value].controls_enabled = false; }}`,
+                    `${recordAt(`${engine}.cameras`, "camera")}.controls_enabled = false; }}`,
                 dataType: { kind: "function", parameters: [] },
             };
         }
@@ -416,7 +420,7 @@ export function compileCameraIntrinsic(
             // the float-store rule is stated where it is ported.
             const position =
                 `bbl::upstream::camera_position(` +
-                `${engine}.cameras[${camera.cpp}.value])`;
+                `${recordAt(`${engine}.cameras`, camera.cpp)})`;
             const cppType = context.dataTypes.cppType(resultType);
             // Built through the data lowerer rather than braced here: the
             // reference-vs-value fork is stated in `structAggregate` alone,
@@ -443,7 +447,7 @@ export function compileCameraIntrinsic(
             const camera = context.compileValue(cameraExpression);
             context.expectKind(camera, "camera", cameraExpression);
             if (
-                camera.optionalFoundCpp !== undefined &&
+                presenceFlagCpp(camera) !== undefined &&
                 typeMayBeAbsent(context.checker, cameraExpression)
             ) {
                 context.fail(
@@ -471,7 +475,7 @@ export function compileCameraIntrinsic(
                     `([&]() { const double aspect = ${aspect}; ` +
                     `const auto matrix = ` +
                     `bbl::upstream::build_view_projection(` +
-                    `${engine}.cameras.at(${camera.cpp}.value), aspect); ` +
+                    `${recordAt(`${engine}.cameras`, camera.cpp)}, aspect); ` +
                     `return bbl::js::F32Array(` +
                     `matrix.begin(), matrix.end()); }());`,
             );

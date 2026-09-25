@@ -88,7 +88,7 @@ inline void append_solid_texture(SDL_GPUDevice* device,
 inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine,
                                      EffectWrapperHandle handle, SDL_GPUTextureFormat format,
                                      std::uint32_t samples) {
-    const EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
+    const EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     const upstream::EffectVariantEntry& entry = upstream::effect_variants.at(wrapper.variant);
     EffectPass pass{device};
     // What the compiled stage kept, from the sidecar the shader step wrote
@@ -96,10 +96,9 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
     // through. Counting the descriptor's own rows instead would over-count a
     // binding the caller's body never samples, and SDL_GPU takes both
     // samplers and uniform buffers by dense slot.
-    const PinnedStageSlots slots = read_pinned_stage_slots(std::string(entry.fragment_stem));
-    const std::uint32_t sampler_count = static_cast<std::uint32_t>(slots.textures.size());
-    const std::uint32_t uniform_count = static_cast<std::uint32_t>(slots.uniforms.size());
-    pass.has_uniform_block = !slots.uniforms.empty();
+    PinnedStage fragment =
+        load_pinned_stage(device, std::string(entry.fragment_stem), SDL_GPU_SHADERSTAGE_FRAGMENT);
+    pass.has_uniform_block = !fragment.slots.uniforms.empty();
     // The declared block's size, from the same variant table the Dawn
     // side sizes its buffer with.
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
@@ -112,19 +111,16 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
 
     // The vertex stage is the pin's own fullscreen triangle: no vertex
     // buffers, no samplers, no uniforms.
-    auto vertex = load_shader(device, std::string(entry.vertex_stem).c_str(),
-                              SDL_GPU_SHADERSTAGE_VERTEX, 0, 0, "effectFullscreenVertex");
-    auto fragment =
-        load_shader(device, std::string(entry.fragment_stem).c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-                    sampler_count, uniform_count, "effectFragment");
+    PinnedStage vertex =
+        load_pinned_stage(device, std::string(entry.vertex_stem), SDL_GPU_SHADERSTAGE_VERTEX);
 
     SDL_GPUColorTargetDescription color{};
     color.format = format;
     // `blend: options.blend` — the reached slice declares none, and a
     // descriptor that does refuses at generation.
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex.get();
-    info.fragment_shader = fragment.get();
+    info.vertex_shader = vertex.shader.get();
+    info.fragment_shader = fragment.shader.get();
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
@@ -136,8 +132,8 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
     info.target_info.color_target_descriptions = &color;
     info.target_info.has_depth_stencil_target = false;
     pass.pipeline = OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &info), {device}};
-    vertex.reset();
-    fragment.reset();
+    vertex.shader.reset();
+    fragment.shader.reset();
     if (!pass.pipeline)
         gpu_error("SDL_CreateGPUGraphicsPipeline effect");
 
@@ -145,7 +141,7 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
     // fragment names each binding, and a texture the body never samples does
     // not survive to the compiled stage. The lookup and its not-set
     // refusal are the shared `effect_texture_for_binding`.
-    for (const std::string& name : slots.textures) {
+    for (const std::string& name : fragment.slots.textures) {
         append_solid_texture(device, pass.textures, effect_texture_for_binding(wrapper, name));
     }
     return pass;
@@ -165,7 +161,7 @@ inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
                                const Engine& engine, const EffectPass& pass,
                                EffectWrapperHandle handle) {
     SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
-    const EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
+    const EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     if (pass.has_uniform_block && !wrapper.uniform_values.empty()) {
         // The symmetric size validation (pal_gpu_shared.hpp): a short
         // push leaves a stale tail behind the declared size.

@@ -1,9 +1,3 @@
-#define BBLITE_WORKERS 1
-#define BBLITE_OFFSCREEN_SURFACES 1
-#define BBLITE_HAS_DOM_INPUT 1
-#define BBLITE_HAS_SDL_GPU 1
-#define BBLITE_HAS_DAWN 0
-#define BBLITE_HAS_PBR_RENDERER 0
 #include "pal_ui_rml.cpp"
 #include "window-frame-clock-fixture.hpp"
 #include <cassert>
@@ -18,6 +12,7 @@ static SDL_Window* hidden_window(const char* title, int width, int height, SDL_W
 #undef WindowFrameClock
 #undef SDL_CreateWindow
 #include "pal_media_query.cpp"
+#include "window-frame-unit-fixture.hpp"
 
 namespace bbl {
 void set_canvas_dataset(Engine&, std::string, std::string) {

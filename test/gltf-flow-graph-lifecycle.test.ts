@@ -196,7 +196,8 @@ test("source lifecycle matches native publication, repeated attachment, scene cl
     writeFileSync(resolve(directory, "cases.json"), JSON.stringify(cases));
     writeFileSync(
         file,
-        `#include <bblite/js_callback.hpp>
+        `#include <bblite/checked_handles.hpp>
+#include <bblite/js_callback.hpp>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cassert>

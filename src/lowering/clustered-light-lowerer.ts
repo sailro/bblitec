@@ -16,34 +16,275 @@ import {
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
-import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import {
+    type PinnedBinding,
+    type PinnedRecordShape,
+} from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 export const clusteredModule = "src/light/clustered.ts";
-const spotModule = "src/light/clustered-spot-support.ts";
+export const clusteredSpotModule = "src/light/clustered-spot-support.ts";
 
-/** The pin's own `MAX_DATA_TEXTURE_WIDTH`, `CLUSTER_BATCH_SIZE` and friends. */
-export function clusteredConstants(context: LoweringContext): string {
-    const file = context.sourceFile(clusteredModule);
-    const constant = (name: string): number => {
-        const declared = context.moduleScopeConstant(file, name);
-        if (!declared) {
-            context.contractError(
-                file,
-                `Expected ${clusteredModule} to declare ${name}.`,
+/**
+ * The pin's own spot light members, as the native `ClusteredLight` spells
+ * them: `ClusteredPointLight`'s four and the two `ClusteredSpotLight` adds.
+ */
+const LIGHT_MEMBERS: ReadonlyMap<string, PinnedBinding["type"]> = new Map<
+    string,
+    PinnedBinding["type"]
+>([
+    ["position", "f64-buffer"],
+    ["diffuse", "f64-buffer"],
+    ["range", "scalar"],
+    ["intensity", "scalar"],
+    ["direction", "f64-buffer"],
+    ["angle", "scalar"],
+]);
+
+/**
+ * The member bindings of one light record: `<pinned>.position` and the
+ * rest, reached through `access` (`light.`, `spot->`). The native field
+ * names are the pin's, so the table carries only each member's storage.
+ */
+export function clusteredLightMembers(
+    pinned: string,
+    access: string,
+): [string, PinnedBinding][] {
+    return [...LIGHT_MEMBERS].map(([member, type]) => [
+        `${pinned}.${member}`,
+        { cpp: `${access}${member}`, type },
+    ]);
+}
+
+/**
+ * The pin's light record as the native `ClusteredLight` struct: a light a
+ * pinned body indexes or iterates reads its members through this, in the
+ * struct's own member order. The struct carries a spot's cone too, so a
+ * point light's literal -- which the pin's `ClusteredPointLight` declares
+ * without one -- leaves those lanes zeroed.
+ */
+export function clusteredLightShape(
+    context: LoweringContext,
+): PinnedRecordShape {
+    const point = new Set(
+        interfaceMembers(context, "ClusteredPointLight").map(
+            (member) => member.name,
+        ),
+    );
+    return {
+        cpp: "ClusteredLight",
+        members: [...LIGHT_MEMBERS].map(([name, type]) => ({
+            name,
+            read: (owner: string) =>
+                new Map<string, PinnedBinding>([
+                    ["", { cpp: `${owner}.${name}`, type }],
+                ]),
+            store: (value: string) => value,
+            ...(point.has(name)
+                ? {}
+                : { absent: type === "scalar" ? "0.0" : "{}" }),
+        })),
+    };
+}
+
+/** One member of a pinned clustered interface, own members after its bases'. */
+interface InterfaceMember {
+    readonly name: string;
+    readonly optional: boolean;
+    readonly type: ts.TypeNode;
+}
+
+function interfaceMembers(
+    context: LoweringContext,
+    name: string,
+): InterfaceMember[] {
+    const { file, declaration } = context.interfaceDeclaration(
+        clusteredModule,
+        name,
+    );
+    const inherited = (declaration.heritageClauses ?? [])
+        .flatMap((clause) => [...clause.types])
+        .flatMap((base) =>
+            ts.isIdentifier(base.expression)
+                ? interfaceMembers(context, base.expression.text)
+                : context.contractError(
+                      base,
+                      `Expected ${name} to extend a named interface.`,
+                  ),
+        );
+    const own = declaration.members.map((member): InterfaceMember => {
+        const memberName =
+            ts.isPropertySignature(member) && member.type
+                ? context.propertyName(member.name)
+                : undefined;
+        if (!ts.isPropertySignature(member) || !member.type || !memberName) {
+            return context.contractError(
+                member,
+                `Expected ${name} to declare typed properties only (${file.fileName}).`,
             );
         }
-        return context.numericValue(declared, file);
-    };
-    return `// ${context.provenance(clusteredModule, "constants")}
-// The pin's own cluster constants. A batch is one 32-bit mask word, which is
-// why the fragment's extractBits window is 32 wide.
-inline constexpr std::uint32_t kClusterBatchSize =
-    ${constant("CLUSTER_BATCH_SIZE")}u;
-inline constexpr std::uint32_t kMaxDataTextureWidth =
-    ${constant("MAX_DATA_TEXTURE_WIDTH")}u;
-inline constexpr std::uint32_t kEmptySliceFirst =
-    ${constant("EMPTY_SLICE_FIRST")}u;`;
+        return {
+            name: memberName,
+            optional: member.questionToken !== undefined,
+            type: member.type,
+        };
+    });
+    return [...inherited, ...own];
+}
+
+/** One option a clustered factory's options interface declares. */
+interface ClusteredOptionField {
+    readonly name: string;
+    readonly optional: boolean;
+    /** A JavaScript number, or a `[number, number, number]` tuple. */
+    readonly kind: "number" | "vec3";
+}
+
+/**
+ * A clustered factory's options, read off the pin's own interface (bases
+ * first): the factories and the scene call site share this one list, so
+ * an option the pin adds or renames moves both.
+ */
+export function clusteredOptionFields(
+    context: LoweringContext,
+    name: string,
+): ClusteredOptionField[] {
+    return interfaceMembers(context, name).map((member) => {
+        const type = member.type;
+        const vec3 =
+            ts.isTupleTypeNode(type) &&
+            type.elements.length === 3 &&
+            type.elements.every(
+                (element) => element.kind === ts.SyntaxKind.NumberKeyword,
+            );
+        if (vec3 && member.optional) {
+            context.contractError(
+                type,
+                `Expected ${name}'s tuple option '${member.name}' to be required.`,
+            );
+        }
+        if (!vec3 && type.kind !== ts.SyntaxKind.NumberKeyword) {
+            context.contractError(
+                type,
+                `Expected ${name}'s option '${member.name}' to be a number or a three-number tuple.`,
+            );
+        }
+        return {
+            name: member.name,
+            optional: member.optional,
+            kind: vec3 ? "vec3" : "number",
+        };
+    });
+}
+
+/**
+ * The native options struct a clustered factory takes, in the interface's
+ * own order: a tuple as the compiler's `Vec3d`, a number as a double, an
+ * optional one absent until the scene names it.
+ */
+export function clusteredOptionsStruct(
+    context: LoweringContext,
+    name: string,
+): string {
+    const fields = clusteredOptionFields(context, name).map(
+        (field) =>
+            `    ${
+                field.kind === "vec3"
+                    ? "Vec3d"
+                    : field.optional
+                      ? "std::optional<double>"
+                      : "double"
+            } ${field.name}{};`,
+    );
+    return `// ${context.provenance(clusteredModule, name)}
+struct ${name} {
+${fields.join("\n")}
+};`;
+}
+
+/**
+ * The bindings a factory body reads its `options` through: a tuple as the
+ * `[number, number, number]` the pin stores, a number as itself, and an
+ * optional one nullish until the scene named it, so the pin's own `??`
+ * default is what an absent one takes.
+ */
+export function clusteredOptionBindings(
+    context: LoweringContext,
+    name: string,
+    owner: string,
+): [string, PinnedBinding][] {
+    return clusteredOptionFields(context, name).flatMap(
+        (field): [string, PinnedBinding][] => {
+            const member = `${owner}.${field.name}`;
+            const binding: PinnedBinding =
+                field.kind === "vec3"
+                    ? {
+                          cpp: `std::array<double, 3>{${["x", "y", "z"]
+                              .map((lane) => `${member}.${lane}`)
+                              .join(", ")}}`,
+                          type: "f64-buffer",
+                      }
+                    : field.optional
+                      ? {
+                            cpp: `(*${member})`,
+                            type: "scalar",
+                            nullish: `!${member}.has_value()`,
+                        }
+                      : { cpp: member, type: "scalar" };
+            return [
+                [`${owner}.${field.name}`, binding],
+                [`${owner}?.${field.name}`, binding],
+            ];
+        },
+    );
+}
+
+/**
+ * A method the pin declares on the object literal `spotSupport._create`
+ * returns -- one nesting level past what `context.propertyFunction`
+ * resolves, a method of a literal built inside a method of a literal -- so
+ * it is located through `_create` and handed back for translation there.
+ */
+export function clusteredSpotMethod(
+    context: LoweringContext,
+    name: string,
+): { file: ts.SourceFile; method: ts.MethodDeclaration & { body: ts.Block } } {
+    const { file, declaration: create } = context.methodDeclaration(
+        clusteredSpotModule,
+        "spotSupport._create",
+    );
+    const methods = context.findNodes(
+        create,
+        (node): node is ts.MethodDeclaration & { body: ts.Block } =>
+            ts.isMethodDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === name &&
+            node.body !== undefined,
+    );
+    const method = methods[0];
+    if (methods.length !== 1 || !method) {
+        return context.contractError(
+            create,
+            `Expected spotSupport._create to build exactly one ${name} ` +
+                "method with a body.",
+        );
+    }
+    return { file, method };
+}
+
+/** A pinned method's parameter names, in order. */
+export function clusteredParameterNames(
+    context: LoweringContext,
+    method: ts.SignatureDeclarationBase,
+): string[] {
+    return method.parameters.map((parameter) =>
+        ts.isIdentifier(parameter.name)
+            ? parameter.name.text
+            : context.contractError(
+                  parameter,
+                  "Expected a plain pinned parameter name.",
+              ),
+    );
 }
 
 /**
@@ -56,12 +297,12 @@ inline constexpr std::uint32_t kEmptySliceFirst =
  * assumed.
  */
 export function clusteredSpotStride(context: LoweringContext): number {
-    const file = context.sourceFile(spotModule);
+    const file = context.sourceFile(clusteredSpotModule);
     const stride = context.namedPropertyInitializer(file, "_stride");
     if (stride === undefined) {
         context.contractError(
             file,
-            `Expected ${spotModule} to declare a _stride.`,
+            `Expected ${clusteredSpotModule} to declare a _stride.`,
         );
     }
     return context.numericValue(stride, file);
@@ -76,145 +317,54 @@ export function clusteredSpotStride(context: LoweringContext): number {
  * normalizes through a RECIPROCAL multiply with a zero/unit-length shortcut
  * (`len === 0 || len === 1 ? 1 : 1 / len`, matching Babylon.js), and the
  * cone stores `cos(clamp(angle, 0, PI) * 0.5)`. A point light in a spot
- * container writes `w = -1`, the sentinel the fragment tests. The method is
- * one nesting level past what `context.propertyFunction` resolves -- a
- * method of a literal built inside a method of a literal -- so it is
- * located through `_create` and translated from there.
+ * container writes `w = -1`, the sentinel the fragment tests.
  *
  * `clusteredSpotStride` anchors the stride that decides whether it runs at
  * all, so a pin that stopped writing a third texel fails generation rather
- * than leaving this dead. The `spot` parameter binds to the container's
- * light record, absent when the record is not a spot, which is the
- * `!spot` the pin's point-light arm tests.
+ * than leaving this dead. The parameters keep the pin's names and its
+ * interface's order -- the light data, the texel offset, and the spot
+ * record, absent for a point light, which is the `!spot` the pin's
+ * point-light arm tests.
  */
 export function clusteredConeWriter(context: LoweringContext): string {
     const stride = clusteredSpotStride(context);
-    const { file, declaration: create } = context.methodDeclaration(
-        spotModule,
-        "spotSupport._create",
-    );
-    const writers = context.findNodes(
-        create,
-        (node): node is ts.MethodDeclaration & { body: ts.Block } =>
-            ts.isMethodDeclaration(node) &&
-            ts.isIdentifier(node.name) &&
-            node.name.text === "_write" &&
-            node.body !== undefined,
-    );
-    const write = writers[0];
-    if (writers.length !== 1 || !write) {
+    const { file, method: write } = clusteredSpotMethod(context, "_write");
+    const [data, offset, spot] = clusteredParameterNames(context, write);
+    if (!data || !offset || !spot || write.parameters.length !== 3) {
         return context.contractError(
-            create,
-            "Expected spotSupport._create to build exactly one _write " +
-                "method with a body.",
-        );
-    }
-    const parameterNames = write.parameters.map((parameter) =>
-        ts.isIdentifier(parameter.name) ? parameter.name.text : "",
-    );
-    if (parameterNames.join(",") !== "data,offset,spot") {
-        context.contractError(
             write,
-            "Expected the pinned _write to take (data, offset, spot).",
+            "Expected the pinned _write to take the light data, the texel " +
+                "offset and the spot record.",
         );
     }
-
     const body = lowerPinnedBody(file, write.body.statements, {
         bindings: new Map<string, PinnedBinding>([
-            ["data", { cpp: "data", type: "f32" }],
-            ["offset", { cpp: "offset", type: "scalar" }],
+            [data, { cpp: data, type: "f32" }],
+            [offset, { cpp: offset, type: "scalar" }],
             [
-                "spot",
-                { cpp: "light", type: "scalar", absentCpp: "!light.spot" },
+                spot,
+                {
+                    cpp: `(*${spot})`,
+                    type: "opaque",
+                    absentCpp: `${spot} == nullptr`,
+                },
             ],
-            ["spot.direction", { cpp: "light.direction", type: "f64-buffer" }],
-            ["spot.angle", { cpp: "light.angle", type: "scalar" }],
+            ...clusteredLightMembers(spot, `${spot}->`),
             ["Math.PI", { cpp: "std::numbers::pi", type: "scalar" }],
         ]),
         calls: pinnedNumericMathCalls(),
         // `len === 0 || len === 1` joins two comparisons.
         booleanOr: true,
     });
-    return `// ${context.provenance(spotModule, "_write")}
+    return `// ${context.provenance(clusteredSpotModule, "_write")}
 // The pin's own spot stride is ${stride}: three texels per light, the third
 // carrying the cone this writes.
 inline void write_clustered_cone(
-    std::vector<float>& data,
-    double offset,
-    const ClusteredLight& light) {
+    std::vector<float>& ${data},
+    double ${offset},
+    const ClusteredLight* ${spot}) {
 ${body}
 }`;
-}
-
-/**
- * The slice mapping the per-frame `refresh` derives from the camera's
- * depth range: `logFarNear`, `sliceScale` and `sliceBias`, the three
- * statements every `getSliceIndex` and the params buffer read.
- *
- * They live inside the closure `buildClusteredLightGpuState` returns
- * rather than in a declaration of their own, so they are located by name,
- * asserted to be the consecutive statements the pin writes, and lowered in
- * that order -- which is what keeps a pin that moves to a different depth
- * partition from leaving this runtime binning lights under the old one.
- * The emitted locals keep the pin's names.
- */
-export function clusteredSliceMapping(
-    context: LoweringContext,
-    indent: string,
-): string {
-    const { file, declaration } = context.functionDeclaration(
-        clusteredModule,
-        "buildClusteredLightGpuState",
-    );
-    const named = (name: string): ts.VariableStatement => {
-        const found = context.findNodes(
-            declaration,
-            (node): node is ts.VariableStatement =>
-                ts.isVariableStatement(node) &&
-                node.declarationList.declarations.length === 1 &&
-                ts.isIdentifier(node.declarationList.declarations[0]!.name) &&
-                node.declarationList.declarations[0]!.name.text === name,
-        );
-        if (found.length !== 1 || !found[0]) {
-            return context.contractError(
-                declaration,
-                `Expected buildClusteredLightGpuState to declare '${name}' once.`,
-            );
-        }
-        return found[0];
-    };
-    const statements = ["logFarNear", "sliceScale", "sliceBias"].map(named);
-    const block = statements[0]!.parent;
-    if (!ts.isBlock(block)) {
-        context.contractError(
-            statements[0]!,
-            "Expected the slice mapping to be declared inside a block.",
-        );
-    }
-    const start = block.statements.indexOf(statements[0]!);
-    statements.forEach((statement, index) => {
-        if (block.statements[start + index] !== statement) {
-            context.contractError(
-                statement,
-                "Expected the slice mapping's three statements to be " +
-                    "consecutive.",
-            );
-        }
-    });
-
-    return lowerPinnedBody(
-        file,
-        statements,
-        {
-            bindings: new Map<string, PinnedBinding>([
-                ["farZ", { cpp: "far_plane", type: "scalar" }],
-                ["nearZ", { cpp: "near_plane", type: "scalar" }],
-                ["zSlices", { cpp: "slices", type: "scalar" }],
-            ]),
-            calls: pinnedNumericMathCalls(),
-        },
-        indent,
-    );
 }
 
 /**
@@ -309,7 +459,10 @@ const SCALAR_HELPERS: readonly ClusteredHelper[] = [
 ];
 
 /** Each helper's own C++ spelling, so a body may call its siblings. */
-function clusteredCalls(): Map<string, (args: readonly string[]) => string> {
+export function clusteredCalls(): Map<
+    string,
+    (args: readonly string[]) => string
+> {
     return new Map<string, (args: readonly string[]) => string>([
         ...pinnedNumericMathCalls(),
         ...SCALAR_HELPERS.map(

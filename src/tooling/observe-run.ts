@@ -1,5 +1,5 @@
 /**
- * `scene -- observe <id>`: the browser half of a declared check.
+ * `scene -- check <id> --observe`: the browser half of a declared check.
  *
  * Serves the scene's corpus source through the same harness the golden
  * capture uses — the pinned package, the registry host page and host UI,
@@ -32,7 +32,7 @@ import type { ObserveAction, ObserveSpec } from "./check-spec.js";
 import { writeReport } from "./reports.js";
 import { observationsPath } from "./check-run.js";
 
-export interface ObserveRunOptions {
+interface ObserveRunOptions {
     checkId: string;
     scene: SceneDefinition;
     spec: ObserveSpec;

@@ -23,7 +23,9 @@ import type { Feature } from "./compiler/types.js";
  * and each site that spelled the disjunction itself was a place they could
  * drift. Two already had. Consumers that need the list rather than the
  * predicate — the generated-source rule, whose own row is an ANY over
- * features — take it from here, so the containment is structural.
+ * features — take it from here, so the containment is structural. The
+ * `BBLITE_HAS_SHADOWS` macro, which compiles the generator records, keys on
+ * exactly this list (`feature-macros.ts`).
  */
 export const shadowGeneratorFeatures: readonly Feature[] = [
     "shadow:pcf",
@@ -64,7 +66,7 @@ export interface ShadowCapabilityInputs {
     nodePcfCasters?: number;
 }
 
-export interface ShadowCapabilities {
+interface ShadowCapabilities {
     /** That a shadow generator is reached at all, under either filter. */
     reached: boolean;
     /**

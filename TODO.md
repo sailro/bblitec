@@ -1,117 +1,95 @@
 # Unfinished work
 
-Open gaps only. [Features](docs/features.md) owns support; [fidelity](docs/fidelity.md) owns adaptations;
-[status](docs/status.md) owns measurements. Source paths identify the affected subsystem.
+Internal work, qualification, performance and refusal defects. Capability gaps are the Limits in
+[features](docs/features.md) and [UI](docs/ui.md); [audit](audit.md) tracks audit findings;
+[status](docs/status.md) owns measurements.
 
 ## Compiler
 
-- [ ] Complete native capture types for opaque engine values and borrowed aliases so remaining shared closure templates can move to their owning C++ units (`compiler.ts`, `closure-captures.ts`).
-- [ ] Classify remaining API implementation routes and member adapters; qualify untested overloads/forms through the [coverage workflow](docs/development.md#api-coverage).
-- [ ] Dynamic values: optional own-property presence, earlier class instances, erased record/array mutation (`data-types.ts`, `json-record-views.ts`, `user-functions.ts`, `js_json.hpp`).
-- [ ] Embedded NUL strings truncate at native value sinks (`cpp-literals.ts`, `data-sinks/scalars.ts`).
-- [ ] URLSearchParams: non-string constructors, append/delete/sort and iteration (`search-params.ts`).
-- [ ] Distinct null/undefined storage for destructuring/parameter defaults (`data-lowering.ts`, `js_data.hpp`).
-- [ ] Custom thenable resolution and ownership (`async.ts`).
-- [ ] Early-return getters (`compiler.ts`).
-- [ ] Promise.race heterogeneous results/spreads/iterables; wider constructor adoption/rejection values (`async.ts`).
-- [ ] Image network/responsive sources, load/error events and distinct DOMException values (`pal_ui_rml.cpp`).
-- [ ] Browser GPU requests, constructors/prototypes and diagnostics (`browser-erasure.ts`, `pal_window_realm.cpp`).
-- [ ] Dynamic typeof values in inferred string-literal fields (`data-sinks/structures.ts`).
-- [ ] Promise.all spreads/iterables, stored void/value-only arrays and changed recovery representations (`async.ts`).
-- [ ] Await inside catch/finally and broader abrupt cleanup completion (`async.ts`, `statements.ts`).
-- [ ] Recursive record/function initializers without matching owned layouts (`compiler.ts`, `data-types.ts`).
-- [ ] Transitive mutable dependencies in imported constant initializers (`module-initializers.ts`).
-- [ ] textContent/innerText compound writes with descendant-text reads (`ui-projection.ts`).
-- [ ] Transitions initiated by inline style writes (`pal_ui_rml.cpp`).
-- [ ] Reuse RmlUi for live selector metadata; preserve authored queries, generated nodes and input state (`ui_selector.hpp`, `ui_selector_match.hpp`).
-- [ ] Intrinsic grid spanning contributions, names/alternate placement, percentage tracks/heights, intrinsic functions and baseline/replaced-item alignment (`ui-grid.ts`).
-- [ ] Named/minimum/block/style/scroll-state container queries, relative units and containment types (`ui-projection.ts`).
-- [ ] List marker types, counters and images (`ui-projection.ts`, `pal_ui_defaults.hpp`).
-- [ ] Constructed radio/number/date controls and file-input type transitions (`ui-projection.ts`).
-- [ ] Vertical ranges, tick marks and Firefox control semantics (`pal_ui_range.hpp`).
-- [ ] Scroll edge handoff, bounce/navigation, both-edge/vertical/viewport gutters (RmlUi scroll patches).
-- [ ] Authored innerHTML query trees, interaction snapshots, :scope and computed selectors (`platform-calls.ts`).
-- [ ] Class inheritance/static blocks/static mutation; one member table for the class lowerers' nine name loops; Error cause/errors property reads (`classes.ts`, `native-functions.ts`, `error-values.ts`).
-- [ ] Generators/async iteration, Proxy, WeakRef and Symbol storage (`expressions.ts`, `statements.ts`, `data-types.ts`).
-- [ ] Object.assign on engine handles erases writes (`object-statics.ts`).
-- [ ] Shared lowering for logical assignment, dictionary property access and Array.from callbacks; derived identity and presence spellings marked at the leaf instead of compared against a second leaf; a string leaf given the number/boolean treatment so plain and data strings share one kind, and plain-string `=` through the string sink with the original expression (`data-lowering.ts`, `statements.ts`).
-- [ ] Consolidate library-global recognition and type/storage classification; bind a browser primitive the deployment answers as the native constant it materializes to and lower `devicePixelRatio` only natively, so the answered-equals-native rule lives in one place and a nested browser-operand chain folds once per node; fold conditional expressions over answered browser values like logical chains, so the deployment query bag can materialize at the value and pass to helpers; compile a module constant initialized with a constructor once instead of at each use; one owner for the nullable-union member rule, so the lone-member shortcut and the NonNullable intersection arm do not both state it (`expressions.ts`, `static-evaluator.ts`, `module-initializers.ts`, `data-types.ts`, `data-lowering.ts`, `compiler.ts`, `browser-erasure.ts`).
-- [ ] General exception completion across startEngine cleanup (`compiler.ts`).
-- [ ] WGSL IR support for helpers/constants/loops; remove rawSource and regex fallbacks (`shader-ir.ts`).
+- [ ] Stop the name-keyed native binding registry from keeping a shared-cell type a local's emitted declaration does not use (scene173's `navDebug`); body outlining declines such locals meanwhile (`compiler.ts` `describeNativeValue`, `body-outlining.ts`).
+- [ ] Build the engine-body analysis per queried module or cache its answers, so tetris and doom skip the program over every pinned source (about 0.9 s each; `engineCallMutatesArgument`).
+- [ ] One snake-case convention for pinned names (`cpp-literals.ts` `snakeCase`, `pinnedSnakeCase`).
+- [ ] Reuse `navigation-library.ts` `methodAccess` and `provenance` in `navigation-build-plan.ts`.
+- [ ] Spell C++ string literals with `stringLiteral`, not `JSON.stringify`, in the camera, character-kernel, device-recovery and pinned-numeric lowerers.
+- [ ] Read pinned WGSL constants one way (`pinned-material-vertex.ts` and `shader-builtins-utility.ts` read them through the shader builders with a hand type check).
+- [ ] Record `{type, constant}` per native binding instead of `constNativeBindings` and "const " prefixes on the first-wins `nativeBindingTypes` (`compiler.ts`, `statements.ts`, `body-outlining.ts`).
+- [ ] Find a closure's uncaptured names with one token pass (`unqualifiedIdentifiers`) instead of a regex per name, and build `environmentStruct` once per closure (`compiler.ts`).
+- [ ] Build one checked pinned program: text builds a second one (`pinned-typed-program.ts`) with its own library and `noUncheckedIndexedAccess`.
+- [ ] Converge the pinned record lowerers (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`) on one record and absence model, and emit the per-family structs of `sprite-y-sort-lowerer.ts`, `physics-floating-origin-lowerer.ts` and `clustered-light-runtime.ts` through `PinnedRecordModel`.
+- [ ] Share the base numeric lowerer's for/for-of/switch/try arms with its subclasses instead of their copies (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`).
+- [ ] Key pinned-lowerer bindings by declaration symbol, not comparison source text (`pinned-numeric-lowerer.ts` binding map).
+- [ ] Decide `||`/`&&` value semantics from operand types and drop the `booleanOr`/`booleanAnd` caller flags (`pinned-numeric-lowerer.ts`).
+- [ ] Resolve `Math.*` from `MATH_MEMBERS` by default in the pinned numeric lowerer instead of per-call math maps.
+- [ ] Outline large bodies from structured statements at emission instead of re-parsing emitted C++ (`body-outlining.ts`, `cpp-statements.ts`).
+- [ ] Decide handle-field traceability in C++ (`gc_traceable`) instead of restating it in `untracedHandleKinds` (`data-types/handles.ts`).
+- [ ] Lower `_createNavMeshFromMerged`'s guards through the numeric lowerer instead of reading them by name (`navigation-build-plan.ts`).
+- [ ] Lower the grid atlas whole through `PinnedRecordModel` instead of hooking `pivot`/`frames` by name (`pinned-grid-atlas.ts`).
+- [ ] Emit a local's slot-found flag only when a presence consumer reads it (`declarations.ts`, `data-lowering.ts` guarded element reads).
+- [ ] Register platform locals as capture bindings so closure capture needs no name scan (`compiler.ts` uncaptured-name check).
+- [ ] One pinned module loader for export augmentation (`pinned-shader-builders.ts` `pinnedModuleValue`, `pinned-shader-composer.ts` `importPinnedModuleWithExports`).
+- [ ] Spell pinned rounding through `pinnedRoundCall` in `pinned-csm.ts` and `splat-lowerer.ts`.
+- [ ] One `soleReturnedExpression` matcher in `engine-lifecycle.ts` and one `bindOptionalResource` in `declarations.ts`.
+- [ ] One JSON field-reader module for `patch-inventory.ts`, `api-surface.ts`, `tooling/generated-readers.ts`, `tooling/check-spec.ts` and `gltf-document.ts`.
+- [ ] Record camera-mutation lowering's TAA and text camera writes through `AdmissionRecorder` methods instead of writing its `untrackedTaaCameraWrites` and `textCameraMutation` fields from `compileCameraMutation` (`compiler.ts`, `admissions.ts`).
+- [ ] Canvas sizes folded at generation fix render-target sizes and particle initialization to `--width`/`--height` (`staticCanvasSize` in `compiler.ts`; `option-helpers.ts`); read the running canvas or refuse where it can differ.
+- [ ] Resolve a dictionary's map owner once for reads and writes (`equalityComparison` and `dictionaryEntryTarget` in `data-lowering.ts`).
+- [ ] One mapper path for `Array.from` iterable and `{ length }` sources (`compileArrayFromMapped` and `compileArrayFrom` in `data-lowering.ts`).
+- [ ] Lower `devicePixelRatio` in one place (`browser-erasure.ts`, `expressions.ts`, `canvas.ts`) and fold a nested browser-operand chain once per node.
+- [ ] Parse a runtime deployment query bag once per realm instead of once per emitting function (`deploymentSearchParamsValue` in `search-params.ts`).
+- [ ] Refuse two packaged sources that map to one output name (`hash` and the output name in `compiler/assets.ts`).
 
-## Assets and composition
+## UI
 
-- [ ] Share Chromium pages and transpiled graphs per generation (`browser-harness.ts`); and run a generation-time JSON pass in process instead of a child: `closureModules` (`browser-texture-function.ts`) already transpiles each module once to CommonJS with a require shim, so `executeModuleGraphCall` can evaluate that under `node:vm` at about a tenth of the child's cost with no data-URL inlining, decide type-only erasure from the emitted code rather than the source, and resolve siblings through the entry program's own resolutions (`program.ts` resolves CommonJS-style, so an extensionless sibling already resolves there) instead of a second file-system resolver (`module-json-sync.ts`, `executed-module-graph.ts`).
-- [ ] Replace handwritten voxel-save parsing with typed JSON (`js_voxel_file.hpp`).
-- [ ] Share plugin getCustomCode evaluation with PinnedShaderText (`material-plugin.ts`).
-- [ ] Refuse packaged-asset FNV name collisions (`compiler/assets.ts`).
-- [ ] Derive transmission activation from composed arms (`renderer-lowerer.ts`).
-- [ ] Remove obsolete assertPinnedShaderFormulas and its unused arm flags (`renderer-lowerer.ts`).
+- [ ] Match live style rules through RmlUi instead of `UiSelectorMatcher` (`ui_selector_match.hpp`; `pal_ui_rml.cpp`), keeping authored-tree queries, generated nodes and input state; measure `Element::Matches` reparsing before caching it.
+- [ ] Replace the private `--bbl-crosshair` bridge and its fixed 22 px bar markup (`ui-projection.ts`; `pal_ui_rml.cpp`) with general layered-background projection.
 
-## Runtime capabilities
+## Platform and runtime
 
-| Area | Open gaps |
-| --- | --- |
-| Engine | Render-function wrapping; shared Window/worker recovery; SDL Vulkan/Metal timestamp queries; additional lifecycle/diagnostic APIs |
-| Compute | f16 uniform writers; whole-array storage views on SDL Vulkan/Metal |
-| Cameras | Live orthographic plane writes, geospatial input, control restoration, mutable world-matrix aliases |
-| Hierarchy | Broader imported hierarchy cloning; descendant/child-mesh queries |
-| Morphs | Multiple/replaced/late targets and thin-instance combinations |
-| PBR/Standard | Textured environment rotation, live local probes, wider metallic-reflectance fields, post-registration lightmaps |
-| Node materials | Numeric/reflective inputs, later textures, strided/non-FLOAT/deformed imported geometry |
-| Plugins/shaders | Broader system matrices, uniform types/defines/priority and pipeline state |
-| Effects | Custom vertex/blend/layouts, per-binding uniform records, wider textures, update/dispose/unregister |
-| Sprites | Coverage gamma, handle APIs, atlas options and mixed transparent order |
-| Picking | Eight-influence/deformed-instance/VAT detail, filter/discard/ignore and wider hit records |
-| Splats | Multiple fragment sets and broader buffer-view methods |
-| Shadows | PCF normalBias/spot refresh, CSM stabilization/bias, dynamic receiveShadows, thin-instance qualification |
-| Geometry/instances | Imported geometry resizing; wider partial attribute updates; line topology/colors/dashes; dynamic draw counts |
-| VAT | Broader bake, storage/time setters and deformation queries |
-| Particles | Evaluators/local shapes, providers, snippets, flipped textures and mixed generation sets |
-| Navigation | Tiled builds without obstacles, reach radius, broader path/point/ray queries and disposal |
-| Physics | Springs/motors/retained constraints, wider heightfields, inertia orientation, observables, concave/compound queries |
-| Audio | Babylon sound/bus/spatial wrappers and master ramps; owned async main-bus metadata; options/statechange, event payloads/onended/AbortSignal, nullable buffers, closed-context graphs, media streams and PCM parity |
-| UI | Broader tags/drivers and Canvas2D clear/blit/transform/clip forms |
-| Text | Dynamic font options/color/run edits and mixed/custom scene layouts |
-| Post-process | Broader TAA/fog/transmission, task ordering/removal/disposal, resource views and samplers |
-| Flow graphs | Blocks beyond the admitted 18, accessors/context, BABYLON_flow_graph and cycles |
-| Textures | 3D creation, partial/runtime uploads and broader direct KTX2 paths |
-| Assets | Wider collectors; public albedo extensions/transforms/BasisU; animated/morphed GPU instances; Standard VAT |
-
-- [ ] ACTION prestep differs from Havok's deferred target/velocity (`pal_physics_bullet.cpp`).
-- [ ] Physics solver residuals require substep tracing at registry poses; preserve source and thresholds.
-- [ ] Bounding-box and scale gizmo drags lack native editing.
-
-## Worker and platform
-
-- [ ] Extend Android coverage and qualification, including emulator Offscreen rendering corruption ([remaining limits](docs/features.md#android)).
-- [ ] iOS: fractional render-density caps, wider lifecycle/interaction coverage and physical-device signing/qualification ([current boundary](docs/features.md#ios)).
-- [ ] Preserve runtime canvas dimensions in render targets and particle initialization, or refuse unsupported specialization.
-
-- [ ] Different rendering products across worker realms (`worker-modules.ts`).
-- [ ] ArrayBuffer/MessagePort transfer and Date/Map/Set/typed-view cloning (`workers.ts`, `pal_structured_clone.hpp`).
-- [ ] Wider worker listener options and worker-scope error/rejection dispatch (`workers.ts`).
-- [ ] ResizeObserver entries and worker draw-count transport (`pal_window_realm.cpp`).
-- [ ] Beforeunload lifecycle; AbortSignal, explicit pointer capture and coalesced events (`dom-listeners.ts`).
-- [ ] Explicit SharedArrayBuffer/Atomics contract (`expressions.ts`).
-- [ ] DPR-only backing-store resize and MediaQueryList lifetime (`pal_window_realm.cpp`, `pal_canvas.hpp`).
-- [ ] Native compression streams and broader MessageChannel/browser service calls (`platform-calls.ts`).
-- [ ] Shared file accept/MIME/extension descriptors (`browser-file.ts`, `js_file.hpp`, `js_voxel_file.hpp`).
+- [ ] Skip the per-frame velocity history when the mesh block has no velocity tail, and hand the composed world to the per-draw block (`pal_gpu_shared.cpp`).
+- [ ] One `handle_find` instead of a hand bounds check before `handle_at` in the light loops (`pal_gpu_shared.cpp`, `pal_gpu_scene_blocks.hpp`).
+- [ ] One runtime model for pinned records and application values: `pinned_records.hpp` restates `js::typed_array_set`, `array_pop_or_absent` and `MapGetResult` over `std::optional`/`std::shared_ptr`.
+- [ ] Dawn depth-only tasks bind no group 0 for morph storage, and SDL_GPU depth-only and ID-diagnostic draws never push the deformation block.
+- [ ] Include only the concern header a unit reads instead of the `pal_gpu_shared.hpp` umbrella chain.
+- [ ] Share one post-process program builder per backend between the scene and frame-graph drivers (`pal_*_scene_post_process.cpp`, `pal_*_frame_graph.cpp`).
+- [ ] Use `begin_dawn_surface_capture`/`finish_dawn_surface_capture` and one readback-map helper in the Dawn scene driver (`pal_dawn.cpp`, `pal_dawn_scene_targets.cpp`, `pal_dawn_scene_picking.cpp`).
+- [ ] Compact SPIR-V vertex inputs at build time in `tools/tint-sdl` and delete the runtime registry (`pal_spirv_vertex.hpp`, `pal_sdl_gpu_resources.hpp`).
+- [ ] Keep one engine rendering-context list whose entries carry their `_kind`, as the pin does (device recovery's per-registry counts).
+- [ ] Serve every pinned GPU writer through one WebGPU-shaped device, not a text-only one (`text_gpu.hpp`).
+- [ ] One `RecordLease<Table>` for the mesh-name and transform-node leases (`runtime.hpp`).
+- [ ] Write Dawn material and UV blocks once per frame or version change, not in every pass (`pal_dawn_scene_variants.cpp`).
+- [ ] Name SDL_GPU backend functions by their backend as the files are: `render_sprite_ui_sdl_frame`, `render_ui_backdrop_sdl` and siblings say `sdl` where they mean SDL_GPU (`native/src/pal_sdl_gpu_*`).
+- [ ] Adopt SDL's main-callback loop for interactive builds so the Win32 move/resize modal loop no longer stalls iteration (`pal_platform_events.hpp`).
+- [ ] One file-type descriptor table for `<input accept>` validation and native dialog filters (`browser-file.ts`, `js_file.hpp`, `js_voxel_file.hpp`).
 - [ ] Shared bounded I/O returning absent/error/value (`pal_storage.cpp`, `pal_file_io.hpp`, `pal_ui_form.hpp`, `pal.cpp`).
-- [ ] Direct ordered JsonValue parsing without intermediate JSON conversion (`js_json.hpp`).
-- [ ] Window updates during the Win32 move/resize modal loop (`pal_platform_events.hpp`).
+- [ ] Parse ordered `JsonValue` directly, without intermediate JSON conversion (`js_json.hpp`).
+- [ ] Reclaim retired shadow-generator records and map targets without compacting handles (`rebuild_scene_renderables` in `scene-lowerer.ts`).
 
-## Backend and performance
+## Qualification
 
-- [ ] Reduce Minecraft chunk-streaming CPU update spikes; separate meshing, lighting, water settling and allocation costs.
-- [ ] Scene290: sustain 100 FPS uncapped through impact and settling; Bullet stepping remains the bottleneck (`pal_physics_bullet.cpp`).
-- [ ] Compare compiled slots with PAL binding tables; consolidate duplicated layout caches.
-- [ ] Gate morph-shadow and light/camera gizmo emission on reach.
-- [ ] Reclaim retired shadow resources without compacting handles.
-- [ ] Remove private crosshair property and fixed line height (`pal_ui_rml.cpp`).
-- [ ] Additional attribute operators/nth-child of-lists; generated counters/images/typed attr/outline/gradient-text; broader placeholder styling.
-- [ ] Omitted/currentColor and non-pixel box shadows; viewport-limited shadow textures.
-- [ ] Linux Vulkan parity against browser references, including scene75/scene187 residuals.
-- [ ] macOS Metal/font parity and native Apple Silicon validation.
-- [ ] Retire SDL multisample/line patches after upstream controls pass; PNG gray-ramp patch self-retires.
-- [ ] Avoid full duplicated vertex rebakes/uploads for floating-origin transform-only changes (`pal_dawn.cpp`).
+- [ ] One captured-spawn variant beside `runChecked` for `package-demo.ts`, `package-output.ts`, `shipping-profile.ts` and `patch-inventory.ts`.
+- [ ] Move the scene180 uniform plugin onto `webgpu-recorder.init.js` and share one `observedState` helper in `checks/plugins/support.mjs`.
+- [ ] Read `test/native-fixture.ts` unit lists from the `pal_*_scene_all.cpp` includes and share one camera test fixture.
+- [ ] Give sliced PAL code standalone concern headers that harness fixtures include (`pinned-velocity-history` and the other `cppFunction` slices).
+- [ ] Prune `artifacts/native-cache` `headers/`, `sources/` and `pch/` by age in `clean`.
+- [ ] Compile each backend family file on its own in native lint (`src/code-quality.ts`): they build only inside `pal_{sdl_gpu,dawn}_scene_all.cpp`, so a missing include is hidden by the files before it.
+- [ ] Replace ts-prune in `lint:exports` with a checker-based scan: it misses exports reached through inferred types and `typeof import()`, and misnames `as const satisfies` exports.
+- [ ] Android: full registry through `android:sweep` on an emulator and a physical device; fix the emulator rendering corruption of `offscreen`.
+- [ ] iOS: qualify device bundles on hardware; extend lifecycle/interaction smoke coverage (`tools/ios-smoke.mjs`).
+- [ ] Linux/Vulkan: every registered scene within its thresholds against same-host browser references, including scene75 and scene187.
+- [ ] macOS/Metal: every registered scene within its thresholds against same-host browser references, fonts included, on an Apple Silicon host.
+
+## Performance
+
+- [ ] Cache which engine parameters a call mutates per pin instead of building a program per compile (`engineCallMutatesArgument`).
+- [ ] Decline method-call and element-read probes by type before speculating (tetris rolls back 77% of 3,895 transactions; `expressions.ts`).
+- [ ] Memoize reached-loop walks per root and flags (`resource-loops.ts` `walkReachedLoopNodes`, 13% of doom's generation).
+- [ ] Cache each value's captured bindings in `useNativeValue` and use a plain `Set` for its guard (17% of tetris's generation).
+- [ ] Send lowered modules through unit packing and outlining (scene1's `gltf_loader.cpp` is 283 KB, 7.8 s alone).
+- [ ] Make record layouts feature-independent so one shared PCH serves every scene (`runtime.hpp` includes 15 feature headers).
+- [ ] Run cold `bblite-tint` stage compiles in parallel (`compile-shaders.ts`).
+- [ ] `minecraft`: worst frame of a chunk-crossing sprint replay at most 16.7 ms (`BBLITE_FPS_PROFILE` maximum interval), with meshing, lighting, water settling and allocation attributed separately (`BBLITE_CPU_PROFILE`).
+- [ ] `scene290`: at least 100 FPS uncapped through impact and settling (`BBLITE_BENCHMARK_FRAMES=0`, `BBLITE_FPS_PROFILE`); Bullet stepping is the bottleneck (`pal_physics_bullet.cpp`).
+
+## Dependencies
+
+- [ ] Drop `sdl-multisample-read.patch` at the first SDL release after 3.4.16 (libsdl-org/SDL#15838 merged), and `png-grey-ramp-last-index.patch` once an SDL_image release builds the ramp over the last index; `d3d12-multisample-lines.patch` needs a new upstream proposal (libsdl-org/SDL#16183 closed unmerged). `native/patches/manifest.json` records each patch's upstream state.

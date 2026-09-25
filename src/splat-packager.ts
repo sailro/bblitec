@@ -37,7 +37,7 @@ import {
     screenshotCaptureBrowserArgs,
 } from "./browser-harness.js";
 import { javascriptModuleUrl } from "./data-url.js";
-import { LoweringContext } from "./lowering/context.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 import { transpileForBrowser } from "./typescript-transpile.js";
 import { ensurePinnedLoaderExecution } from "./pinned-material-input.js";
 import {
@@ -743,6 +743,7 @@ export async function packageSog(
                 SOG_PAGE_GLOBAL,
                 {
                     serverName: "SOG package server",
+                    shared: true,
                     browserRequirement:
                         "Packaging a SOG container requires Chrome or Edge.",
                     // The golden capture's flags, because this run reproduces
@@ -835,7 +836,7 @@ export async function extractGltfGaussianSplats(
     json: JsonRecord,
     binChunk: DataView,
     label: string,
-    context = new LoweringContext(),
+    context = sharedPinnedContext(),
     validate?: () => void,
 ): Promise<GltfGaussianSplat[] | undefined> {
     const recorded: RecordedAttach[] = [];

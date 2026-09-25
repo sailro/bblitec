@@ -9,8 +9,9 @@
 // params block binds. WebGPU needs no sampler beside a `textureLoad`, so
 // unlike the SDL side this one creates none.
 //
-// Every extent comes off the container, through the same `upload_region` the
-// SDL side uses -- the pin's own `writeDataTexture` rule, in one place.
+// Every extent comes off the container: the region and row layout each of
+// the pin's own `writeDataTexture` calls stated, which the SDL side uploads
+// the same way.
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/clustered_light.hpp>
@@ -33,7 +34,7 @@ struct DawnClusteredLights {
     DawnTextureView lights;
     DawnTextureView cells;
     DawnTextureView indices;
-    std::uint64_t uploaded_version = 0;
+    ClusteredUploads uploaded;
     bool created = false;
 };
 
@@ -78,34 +79,34 @@ inline void create_dawn_clustered(WGPUDevice device, const ClusteredLightContain
 }
 
 /**
- * Re-bin against this frame's own two matrices and write whatever moved.
+ * Run the pin's refresh for this frame's camera and target, and write what
+ * it wrote.
  *
- * `refresh_clustered_lights` bumps a version only when it rewrote a payload,
- * so a frame whose camera did not move costs one matrix comparison. The params
- * block is written on the same condition, because upstream writes it inside
- * the very branch that rebinned.
+ * The refresh returns before touching anything while its own dirty key
+ * holds, so a frame whose camera, target and lights did not move uploads
+ * nothing. The params block is written where upstream writes it: at
+ * creation and inside the branch that rebinned.
  */
-inline void upload_dawn_clustered(WGPUDevice device, WGPUQueue queue,
-                                  ClusteredLightContainer& container,
-                                  const std::array<float, 16>& view,
-                                  const std::array<float, 16>& projection, double near_plane,
-                                  double far_plane, DawnClusteredLights& gpu) {
+inline void upload_dawn_clustered(WGPUDevice device, WGPUQueue queue, Engine& engine,
+                                  ClusteredLightContainer& container, CameraHandle camera,
+                                  double target_width, double target_height,
+                                  DawnClusteredLights& gpu) {
     create_dawn_clustered(device, container, gpu);
     sync_clustered_payloads(
-        container, gpu.uploaded_version, view, projection, near_plane, far_plane,
+        engine, container, gpu.uploaded, camera, target_width, target_height,
         [&](const void* bytes, std::size_t size) {
             wgpuQueueWriteBuffer(queue, gpu.params, 0, bytes, size);
         },
-        [&](ClusteredTexture slot, const void* bytes, std::size_t size, std::uint32_t texel_bytes,
-            std::uint32_t width, std::uint32_t height) {
+        [&](ClusteredTexture slot, const void* bytes, std::size_t size,
+            const ClusteredTextureWrite& write) {
             WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
             destination.texture = slot == ClusteredTexture::lights  ? gpu.lights_texture
                                   : slot == ClusteredTexture::cells ? gpu.cells_texture
                                                                     : gpu.indices_texture;
             WGPUTexelCopyBufferLayout layout{};
-            layout.bytesPerRow = width * texel_bytes;
-            layout.rowsPerImage = height;
-            const WGPUExtent3D extent{width, height, 1};
+            layout.bytesPerRow = write.bytes_per_row;
+            layout.rowsPerImage = write.rows_per_image;
+            const WGPUExtent3D extent{write.width, write.height, 1};
             wgpuQueueWriteTexture(queue, &destination, bytes, size, &layout, &extent);
         });
 }

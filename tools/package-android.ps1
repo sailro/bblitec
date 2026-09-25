@@ -7,9 +7,11 @@ param(
     [int]$Jobs = 8,
     [string]$OutputRoot = 'artifacts/releases'
 )
+# Builds, installs and starts one Android package on -Device; staging, notices,
+# the archive, the receipt and publication are src/package-output.ts's, shared
+# with every platform.
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'bblite-tools.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'package-output.psm1') -Force
 $root = Get-RepositoryRoot
 $Backend = $Backend.ToUpperInvariant()
 if (-not $Device) { throw 'Android packaging requires -Device for its staged startup check.' }
@@ -20,8 +22,10 @@ $built = Join-Path $root "artifacts/android/$Scene/$variant"
 $configuration = Get-Content "$built/build.json" -Raw | ConvertFrom-Json
 if ($configuration.backend -ne $Backend) { throw 'The Android build backend does not match the requested package.' }
 $name = "bblitec-$Scene-$($Backend.ToLowerInvariant().Replace('_', '-'))-android-$($Abi.Replace('_', '-'))"
-$plan = New-PackageOutput (Resolve-RepositoryPath $OutputRoot) $name
-$directory = Join-Path $plan.Staging $name
+$outputRootPath = Resolve-RepositoryPath $OutputRoot
+$packageOutput = Join-Path $root 'dist/src/package-output.js'
+$staging = @(Invoke-Checked 'node' @($packageOutput, 'stage', '--root', $outputRootPath, '--name', $name))[-1]
+$directory = Join-Path $staging $name
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
 $apk = Join-Path $directory "$Scene.apk"
 Copy-Item "$built/bblite-$Scene-$Abi.apk" $apk
@@ -33,7 +37,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Staged Android APK installation failed.' }
 $smoke = Join-Path $built 'package-smoke'
 & node (Join-Path $root 'tools/android-smoke.mjs') --adb $adb --device $Device --apk $apk --app $applicationId --output $smoke --backend ($Backend.ToLowerInvariant())
 if ($LASTEXITCODE -ne 0) { throw "Staged Android startup failed; see $smoke." }
-$receipt = Get-Content (Join-Path $smoke 'report.json') -Raw | ConvertFrom-Json
+$smokeReport = Get-Content (Join-Path $smoke 'report.json') -Raw | ConvertFrom-Json
 @"
 $Scene — Android $Abi, $Backend/Vulkan
 
@@ -42,15 +46,13 @@ Application ID: $applicationId
 Debug-signed app with Release native code; not a store release.
 Assets, shaders and dependency notices are embedded in the APK.
 "@ | Set-Content (Join-Path $directory 'README.txt') -Encoding utf8
-$archive = Join-Path $plan.Staging "$name.zip"
-Compress-Archive -Path $directory -DestinationPath $archive
-@{
+$fields = Join-Path $staging 'receipt-fields.json'
+[ordered]@{
     scene = $Scene; platform = 'android'; abi = $Abi; applicationId = $applicationId
     minSdk = $configuration.minSdk
     buildType = 'debug'; nativeConfiguration = 'Release'; backend = $Backend
-    apkBytes = (Get-Item $apk).Length; apkSha256 = (Get-FileHash $apk -Algorithm SHA256).Hash
-    zipBytes = (Get-Item $archive).Length; zipSha256 = (Get-FileHash $archive -Algorithm SHA256).Hash
-    smoke = $receipt
-} | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $plan.Staging "$name.json") -Encoding utf8
-Publish-PackageOutput $plan
-Write-Host "Package: $(Join-Path $plan.Root "$name.zip")"
+    smoke = $smokeReport
+} | ConvertTo-Json -Depth 8 | Set-Content $fields -Encoding utf8
+$published = @(Invoke-Checked 'node' @($packageOutput, 'finish', '--root', $outputRootPath, '--name', $name,
+    '--staging', $staging, '--receipt', $fields, '--artifact', "apk=$apk"))[-1]
+Write-Host "Package: $published"

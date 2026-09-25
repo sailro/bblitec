@@ -1,13 +1,7 @@
 import { EmissionSet } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-// Shared option-lowering helpers.
-//
-// The option compilers agree on three small contracts: an options
-// object may only carry the properties the reached lowering reads, a
-// count lowers to a positive integer literal (or the engine's own
-// msaaSamples), and an optional flag folds to a static boolean. They
-// are declared once here so every per-domain option module states the
-// same rule instead of carrying its own copy.
+import type { BindingLookup } from "./binding-scopes.js";
+import type { ConditionLowerer } from "./conditions.js";
 // Shared option-lowering helpers.
 //
 // The option compilers agree on three small contracts: an options
@@ -27,6 +21,10 @@ import {
     mathMemberCall,
     mathUnaryFold,
 } from "./math-intrinsics.js";
+import {
+    foldNumericBinary,
+    foldNumericUnary,
+} from "../lowering/pinned-operators.js";
 
 export interface ObjectValidationContext extends Pick<
     LoweringServices,
@@ -53,20 +51,29 @@ export function validateObjectProperties(
     }
 }
 
+/** What the static folds read, as a lowering context carries it. */
 export interface PositiveIntegerContext
     extends
         Pick<
             LoweringServices,
-            | "resolveStaticExpression"
-            | "lookup"
-            | "lookupOptional"
-            | "isDefaultLibraryIdentifier"
-            | "fail"
+            "resolveStaticExpression" | "libraryGlobal" | "fail" | "bindings"
         >,
         Partial<Pick<LoweringServices, "staticCanvasSize">> {}
 
+/**
+ * The folds' own parameter: the same reads with the name lookups alone, so a
+ * caller may narrow them -- a resource loop hides its own index, and the
+ * static evaluator folds through its lookup closures.
+ */
+export interface StaticFoldContext extends Omit<
+    PositiveIntegerContext,
+    "bindings"
+> {
+    readonly bindings: BindingLookup;
+}
+
 export function compilePositiveInteger(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
 ): string {
     const unwrapped = context.resolveStaticExpression(expression);
@@ -74,9 +81,9 @@ export function compilePositiveInteger(
         ts.isPropertyAccessExpression(unwrapped) &&
         ts.isIdentifier(unwrapped.expression) &&
         unwrapped.name.text === "msaaSamples" &&
-        context.lookup(unwrapped.expression).kind === "engine"
+        context.bindings.lookup(unwrapped.expression).kind === "engine"
     ) {
-        const engine = context.lookup(unwrapped.expression);
+        const engine = context.bindings.lookup(unwrapped.expression);
         return engineSampleCountCpp(engine);
     }
     const value = compileStaticNumber(context, unwrapped, "A count");
@@ -92,9 +99,7 @@ export interface StaticBooleanContext extends Pick<
 > {}
 
 interface StaticNumberSelectionContext
-    extends
-        PositiveIntegerContext,
-        Pick<LoweringServices, "compileCondition"> {}
+    extends PositiveIntegerContext, Pick<LoweringServices, "conditions"> {}
 
 /**
  * A static number after following any statically settled conditional arms.
@@ -124,8 +129,11 @@ export function selectedStaticNumberValue(
  */
 interface StaticSelectionContext extends Pick<
     LoweringServices,
-    "compileCondition" | "resolveStaticExpression"
-> {}
+    "resolveStaticExpression"
+> {
+    /** The condition compiler the fold asks; a caller may probe it. */
+    readonly conditions: Pick<ConditionLowerer, "compileCondition">;
+}
 
 export function selectedStaticExpression(
     context: StaticSelectionContext,
@@ -133,7 +141,9 @@ export function selectedStaticExpression(
 ): ts.Expression | undefined {
     let selected = context.resolveStaticExpression(expression);
     while (ts.isConditionalExpression(selected)) {
-        const condition = context.compileCondition(selected.condition);
+        const condition = context.conditions.compileCondition(
+            selected.condition,
+        );
         if (condition !== "true" && condition !== "false") {
             return undefined;
         }
@@ -182,7 +192,7 @@ export function compileOptionalStaticBoolean(
  * refused rather than defaulted.
  */
 export function compileStaticNumber(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
     label: string,
 ): number {
@@ -274,16 +284,6 @@ export function staticJsonValue(
 }
 
 /**
- * A number the source computes from constants, evaluated here.
- *
- * `compileStaticNumber` folds a literal and a named constant; this folds the
- * arithmetic between them, which is how the corpus writes a camera angle
- * (`-Math.PI / 2`). The evaluation is JavaScript's own on doubles, so a
- * value that travels back out as a literal is the value the source had.
- * Returns undefined for anything that is not constant, so a caller can
- * refuse by name rather than substituting.
- */
-/**
  * The member name a `SomeEnum.MEMBER` argument names, by resolved import
  * symbol rather than by the identifier's spelling.
  *
@@ -314,8 +314,18 @@ export function pinnedEnumMemberName(
     return expression.name.text;
 }
 
+/**
+ * A number the source computes from constants, evaluated here.
+ *
+ * `compileStaticNumber` folds a literal and a named constant; this folds the
+ * arithmetic between them, which is how the corpus writes a camera angle
+ * (`-Math.PI / 2`). The evaluation is JavaScript's own on doubles, so a
+ * value that travels back out as a literal is the value the source had.
+ * Returns undefined for anything that is not constant, so a caller can
+ * refuse by name rather than substituting.
+ */
 export function staticNumberValue(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
 ): number | undefined {
     const node = context.resolveStaticExpression(expression);
@@ -328,29 +338,15 @@ export function staticNumberValue(
     }
     if (ts.isPrefixUnaryExpression(node)) {
         const operand = staticNumberValue(context, node.operand);
-        if (operand === undefined) return undefined;
-        if (node.operator === ts.SyntaxKind.MinusToken) return -operand;
-        if (node.operator === ts.SyntaxKind.PlusToken) return operand;
-        return undefined;
+        return operand === undefined
+            ? undefined
+            : foldNumericUnary(node.operator, operand);
     }
     if (ts.isBinaryExpression(node)) {
         const left = staticNumberValue(context, node.left);
         const right = staticNumberValue(context, node.right);
         if (left === undefined || right === undefined) return undefined;
-        switch (node.operatorToken.kind) {
-            case ts.SyntaxKind.PlusToken:
-                return left + right;
-            case ts.SyntaxKind.MinusToken:
-                return left - right;
-            case ts.SyntaxKind.AsteriskToken:
-                return left * right;
-            case ts.SyntaxKind.SlashToken:
-                return left / right;
-            case ts.SyntaxKind.PercentToken:
-                return left % right;
-            default:
-                return undefined;
-        }
+        return foldNumericBinary(node.operatorToken.kind, left, right);
     }
     // A canvas size is a compile-time constant to every caller of THIS
     // helper, and only to them: `staticNumberValue` never emits, so a
@@ -385,17 +381,15 @@ export function staticNumberValue(
         const element = target.elements[index];
         return element ? staticNumberValue(context, element) : undefined;
     }
-    const constant = mathMemberAccess(node, (identifier) =>
-        context.isDefaultLibraryIdentifier(identifier),
-    );
+    const libraryGlobal = (expression: ts.Expression): string | undefined =>
+        context.libraryGlobal(expression);
+    const constant = mathMemberAccess(node, libraryGlobal);
     if (constant) {
         // The constants `StaticEvaluator.compileNumber` folds when it emits
         // one of these as text; a Math CALL is folded by the arm below.
         return MATH_CONSTANTS.get(constant.name.text)?.value;
     }
-    const mathCall = mathMemberCall(node, (identifier) =>
-        context.isDefaultLibraryIdentifier(identifier),
-    );
+    const mathCall = mathMemberCall(node, libraryGlobal);
     if (mathCall) {
         const { name, call } = mathCall;
         if (call.arguments.length === 1) {
@@ -426,13 +420,12 @@ export function staticNumberValue(
         return undefined;
     }
     if (ts.isIdentifier(node)) {
-        if (context.isDefaultLibraryIdentifier(node)) {
-            if (node.text === "Infinity") return Infinity;
-            if (node.text === "NaN") return NaN;
-        }
+        const global = context.libraryGlobal(node);
+        if (global === "Infinity") return Infinity;
+        if (global === "NaN") return NaN;
         // A miss, not a failure: one caller is an optional probe, and an
         // identifier this scope has no binding for is simply not a constant.
-        const value = context.lookupOptional(node);
+        const value = context.bindings.lookupOptional(node);
         // Writable inline parameters have native storage. Their call-site
         // metadata is only the initial value, not a proof about later reads.
         return value?.parameterBinding ? undefined : value?.staticNumber;
@@ -440,14 +433,6 @@ export function staticNumberValue(
     return undefined;
 }
 
-/**
- * A static `{ x, y, z }` record, or undefined when any component is not a
- * constant.
- *
- * Two compile-time records read a vector this way -- a camera's target and a
- * node-particle emitter -- and both need the VALUE rather than the native
- * expression `compileVec3` emits.
- */
 /**
  * The two numbers an `[x, y]` literal or a current tuple snapshot states,
  * or undefined where the scene computes one.
@@ -458,7 +443,7 @@ export function staticNumberValue(
  * not the expression.
  */
 export function staticNumberPair(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
 ): readonly [number, number] | undefined {
     const node = context.resolveStaticExpression(expression);
@@ -479,11 +464,11 @@ export function staticNumberPair(
 
 /** Read the current tuple snapshot; native writes invalidate it through aliases. */
 export function staticTupleElements(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
 ): readonly Value[] | undefined {
     if (!ts.isIdentifier(expression)) return undefined;
-    const value = context.lookupOptional(expression);
+    const value = context.bindings.lookupOptional(expression);
     return (
         value?.tupleElements ??
         value?.staticElementsOwner?.staticElements ??
@@ -491,8 +476,16 @@ export function staticTupleElements(
     );
 }
 
+/**
+ * A static `{ x, y, z }` record, or undefined when any component is not a
+ * constant.
+ *
+ * Two compile-time records read a vector this way -- a camera's target and a
+ * node-particle emitter -- and both need the VALUE rather than the native
+ * expression `compileVec3` emits.
+ */
 export function staticVec3Value(
-    context: PositiveIntegerContext,
+    context: StaticFoldContext,
     expression: ts.Expression,
 ): readonly [number, number, number] | undefined {
     const node = context.resolveStaticExpression(expression);

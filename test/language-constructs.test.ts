@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -7,15 +6,75 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
-    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
-    runNativeFixtureCompiler,
+    runGeneratedProgram,
 } from "./native-fixture.js";
 
 // The generic TypeScript user-code surface: every source below runs its own
 // assertions in JavaScript first, then the generated C++ must build and run
 // them identically.
 const native = optionalNativeFixtureTools(false);
+
+check(
+    "switch-on-temporary-string",
+    `
+    function classify(prefix: string, tail: string): number {
+        switch (prefix + tail) {
+            case "ab": return 1;
+            case "abc": return 2;
+            default: return 0;
+        }
+    }
+    let total = 0;
+    for (const tail of ["b", "bc", "x"]) total = total * 10 + classify("a", tail);
+    if (total !== 120) throw new Error("switch on a concatenation " + total);
+`,
+);
+
+check(
+    "integer-loop-counters",
+    `
+    const values: number[] = [5, 7, 11, 13];
+    let text = "";
+    let total = 0;
+    for (let i = 0; i < values.length; i++) total += values[i]! * i;
+    for (let i = -3; i <= 3; i += 3) text += i + ",";
+    for (let i = 10; i > 0; i -= 4) text += (i / 4) + ";";
+    for (let i = 3; i >= 0; i--) {
+        if (i === 2) continue;
+        text += (i % 2) + (1 / (i - 1)) + "|";
+    }
+    for (let i = 1; i < 4; i++) for (let j = 1; j < 3; j++) total += i / j;
+    let captured = 0;
+    for (let i = 0; i < 3; i++) {
+        const read = () => i;
+        captured += read();
+    }
+    for (let i = 0; i < 5; i++) {
+        if (i === 1) i += 1;
+        total += i;
+    }
+    if (text !== "-3,0,3,2.5;1.5;0.5;1.5|Infinity|-1|") throw new Error("counted text " + text);
+    if (total !== 86 || captured !== 3) throw new Error("counted totals " + total + " " + captured);
+`,
+);
+
+check(
+    "string-collection-foreach",
+    `
+    const names = new Set<string>(["alpha", "beta"]);
+    const seen: string[] = [];
+    names.forEach(name => {
+        seen.push(name);
+        if (name === "alpha") names.delete("beta");
+    });
+    if (seen.join(",") !== "alpha") throw new Error("set forEach order " + seen.join(","));
+    const labels = new Map<string, string>([["a", "one"], ["b", "two"]]);
+    const pairs: string[] = [];
+    labels.forEach((value, key) => { pairs.push(key + "=" + value); });
+    if (pairs.join(",") !== "a=one,b=two") throw new Error("map forEach " + pairs.join(","));
+`,
+);
 
 check(
     "record-arrow-lexical-this",
@@ -799,32 +858,8 @@ async function executeGeneratedAssertions(
     await t.test(
         "generated C++ executes the same assertions",
         { skip: !native },
-        () => {
-            const directory = resolve("artifacts/language-constructs", name);
-            mkdirSync(directory, { recursive: true });
-            const cpp = join(directory, "check.cpp"),
-                exe = join(directory, "check.exe");
-            writeFileSync(cpp, source);
-            runNativeFixtureCompiler(native!, [
-                "/nologo",
-                "/std:c++20",
-                "/W4",
-                "/WX",
-                "/permissive-",
-                "/EHsc",
-                "/MD",
-                "/fp:precise",
-                "/utf-8",
-                "/I",
-                "native/include",
-                "/I",
-                join(nativeFixtureVcpkgRoot, "include"),
-                `/Fo:${directory}/`,
-                `/Fe:${exe}`,
-                cpp,
-            ]);
-            execFileSync(exe, { stdio: "pipe" });
-        },
+        () =>
+            runGeneratedProgram(native!, `language-constructs/${name}`, source),
     );
 }
 
@@ -854,6 +889,38 @@ function check(
         await executeGeneratedAssertions(t, name, result.cpp);
     });
 }
+
+// Hoisted typed-array tables store their elements converted at generation;
+// every element must read back as the value the runtime store produces.
+const hoistedTableValues = [
+    -0.1555, 0.4098, 0.1, 0.3333333333333333, 1e-7, -2.5, 1e21, 16777217,
+    33565870, 33565872, 33565874, 3.4028234663852886e38, 1.1754943508222875e-38,
+    1.401298464324817e-45, 65504.5, 0.30000000000000004, -98765.4321,
+    4294967296.5, -1.9, 300,
+];
+for (let seed = 12345; hoistedTableValues.length < 132;) {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    const mantissa = (seed / 2147483648) * 2 - 1;
+    hoistedTableValues.push(
+        Number((mantissa * 10 ** ((seed % 13) - 6)).toPrecision(9)),
+    );
+}
+check(
+    "hoisted-typed-array-tables-store-converted-elements",
+    `
+    const raw: number[] = [${hoistedTableValues.join(", ")}];
+    const floats = new Float32Array([${hoistedTableValues.join(", ")}]);
+    const words = new Uint32Array([${hoistedTableValues.join(", ")}]);
+    const bytes = new Int8Array([${hoistedTableValues.join(", ")}]);
+    const expectedWords = new Uint32Array(raw);
+    const expectedBytes = new Int8Array(raw);
+    for (let index = 0; index < raw.length; ++index) {
+        if (floats[index] !== Math.fround(raw[index]!)) throw new Error("float " + index);
+        if (words[index] !== expectedWords[index]) throw new Error("word " + index);
+        if (bytes[index] !== expectedBytes[index]) throw new Error("byte " + index);
+    }
+`,
+);
 
 check(
     "constant-tables-use-literals-outside-local-scopes",
@@ -1729,6 +1796,14 @@ check(
     if (spell(255) !== "ff:11111111:255" || (-10).toString(16) !== "-a" || (0.5).toString(2) !== "0.1") throw new Error("radix");
     function parse(s: string): number { return parseFloat(s) + Number.parseFloat(s) + parseInt(s, 10); }
     if (parse("1.5x") !== 4 || !Number.isNaN(parseFloat("x")) || parseFloat("  -2e1z") !== -20) throw new Error("parseFloat");
+    if ("\\u00a0\\u3000x\\u2028\\ufeff".trim() !== "x" || parseFloat("\\u00a0\\u2029 3.5") !== 3.5) throw new Error("JavaScript white space");
+    function num(s: string): number { return Number(s); }
+    if (num(" \\u00a012\\u3000") !== 12 || num("\\u2028") !== 0 || num("5.") !== 5 || num("-Infinity") !== -Infinity || parseInt("\\u00a0 42px") !== 42)
+        throw new Error("Number of decimal strings");
+    if (num("0x1F") !== 31 || num("0o17") !== 15 || num("0B101") !== 5 || num("0x20000000000001") !== 9007199254740992)
+        throw new Error("Number of radix strings");
+    for (const bad of ["inf", "-0x10", "0x", "1e", "1_0", "0x1p3", "Infinityx", "."])
+        if (!Number.isNaN(num(bad))) throw new Error("Number of " + bad);
     function truthy(n: number, s: string): number { return (Boolean(n) ? 1 : 0) + (Boolean(s) ? 2 : 0); }
     if (truthy(0, "x") !== 2 || truthy(3, "") !== 1) throw new Error("Boolean()");
     if (String(null) + String(undefined) !== "nullundefined") throw new Error("String of nullish");
@@ -2072,15 +2147,1158 @@ check(
 `,
 );
 
-test("private brand checks refuse explicitly", () => {
+check(
+    "class-inheritance-construction-order-and-super",
+    `
+    const log: string[] = [];
+    function note(entry: string): number {
+        log.push(entry);
+        return log.length;
+    }
+    class Base {
+        readonly order = note("base field");
+        protected count = 0;
+        #secret = 7;
+        constructor(public label: string) {
+            note("base body " + label);
+        }
+        get secret(): number {
+            return this.#secret;
+        }
+        set secret(value: number) {
+            this.#secret = value;
+        }
+        get doubled(): number {
+            return this.count * 2;
+        }
+        bump(step: number = 1): number {
+            this.count += step;
+            return this.count;
+        }
+        name(): string {
+            return "base";
+        }
+        who(): string {
+            return this.name() + "/" + this.label;
+        }
+    }
+    class Middle extends Base {
+        readonly middle = note("middle field");
+        constructor(label: string, public extra: number) {
+            const prefix = "m-";
+            note("middle before super");
+            super(prefix + label);
+            note("middle body " + this.extra);
+        }
+        override name(): string {
+            return "middle(" + super.name() + ")";
+        }
+        override bump(step: number = 1): number {
+            return super.bump(step * 10);
+        }
+        get doubled(): number {
+            return super.doubled + 1;
+        }
+    }
+    class Leaf extends Middle {
+        readonly leaf = note("leaf field");
+        override name(): string {
+            return "leaf:" + super.name();
+        }
+    }
+    const leaf = new Leaf("x", 5);
+    if (log.join("|") !== "middle before super|base field|base body m-x|middle field|middle body 5|leaf field")
+        throw new Error("construction order " + log.join("|"));
+    if (leaf.order !== 2 || leaf.middle !== 4 || leaf.leaf !== 6) throw new Error("field initializer values");
+    if (leaf.who() !== "leaf:middle(base)/m-x") throw new Error("virtual chain " + leaf.who());
+    if (leaf.bump() !== 10 || leaf.bump(2) !== 30) throw new Error("super bump");
+    if (leaf.doubled !== 61) throw new Error("super getter " + leaf.doubled);
+    leaf.secret = 11;
+    if (leaf.secret !== 11) throw new Error("inherited accessor pair");
+    if (leaf.extra !== 5 || leaf.label !== "m-x") throw new Error("parameter properties");
+    if (!(leaf instanceof Base) || !(leaf instanceof Middle) || !(leaf instanceof Leaf)) throw new Error("instanceof chain");
+    const base = new Base("b");
+    if (base instanceof Middle) throw new Error("base is not middle");
+    if (base.who() !== "base/b" || base.doubled !== 0) throw new Error("base methods");
+    class Plain extends Base {}
+    const plain = new Plain("p");
+    if (plain.who() !== "base/p" || plain.bump(3) !== 3) throw new Error("implicit constructor");
+`,
+);
+
+check(
+    "class-inheritance-generic-base",
+    `
+    class Box<T> {
+        constructor(readonly value: T) {}
+        get(): T {
+            return this.value;
+        }
+        pair(other: T): T[] {
+            return [this.value, other];
+        }
+    }
+    class NumberBox extends Box<number> {
+        doubled(): number {
+            return this.get() * 2;
+        }
+    }
+    class Labeled<T> extends Box<T> {
+        constructor(value: T, readonly label: string) {
+            super(value);
+        }
+    }
+    const box = new NumberBox(3);
+    if (box.get() + 1 !== 4 || box.doubled() !== 6 || box.pair(5).length !== 2) throw new Error("generic base");
+    const labeled = new Labeled<string>("v", "l");
+    if (labeled.get() + labeled.label !== "vl") throw new Error("generic chain");
+`,
+);
+
+check(
+    "class-hierarchy-virtual-dispatch-through-stored-references",
+    `
+    abstract class Shape {
+        constructor(readonly name: string) {}
+        abstract area(): number;
+        describe(): string {
+            return this.name + ":" + this.area();
+        }
+        get kind(): string {
+            return "shape";
+        }
+    }
+    class Square extends Shape {
+        constructor(readonly side: number) {
+            super("square");
+        }
+        area(): number {
+            return this.side * this.side;
+        }
+        get kind(): string {
+            return "square";
+        }
+    }
+    class Circle extends Shape {
+        radius: number;
+        constructor(radius: number) {
+            super("circle");
+            this.radius = radius;
+        }
+        area(): number {
+            return 3 * this.radius * this.radius;
+        }
+    }
+    class Unit extends Square {
+        constructor() {
+            super(1);
+        }
+        describe(): string {
+            return "unit/" + super.describe();
+        }
+    }
+    const shapes: Shape[] = [new Square(2), new Circle(1), new Unit()];
+    let total = 0;
+    const names: string[] = [];
+    for (const shape of shapes) {
+        total += shape.area();
+        names.push(shape.describe());
+        names.push(shape.kind);
+    }
+    if (total !== 4 + 3 + 1) throw new Error("total " + total);
+    if (names.join(",") !== "square:4,square,circle:3,shape,unit/square:1,square") throw new Error("names " + names.join(","));
+    let squares = 0;
+    for (const shape of shapes) {
+        if (shape instanceof Square) squares++;
+    }
+    if (squares !== 2) throw new Error("instanceof " + squares);
+    const areas = shapes.map((shape) => shape.area());
+    if (areas.join(",") !== "4,3,1") throw new Error("areas " + areas.join(","));
+`,
+);
+
+check(
+    "class-hierarchy-with-callbacks-and-containers",
+    `
+    abstract class Animal {
+        static population = 0;
+        protected energy = 10;
+        readonly listeners: Array<(animal: Animal) => void> = [];
+        constructor(readonly name: string) {
+            Animal.population++;
+        }
+        abstract speak(): string;
+        get tired(): boolean {
+            return this.energy < 5;
+        }
+        set boost(amount: number) {
+            this.energy += amount;
+        }
+        act(times: number): number {
+            for (let index = 0; index < times; index++) this.energy -= this.cost();
+            for (const listener of this.listeners) listener(this);
+            return this.energy;
+        }
+        protected cost(): number {
+            return 1;
+        }
+    }
+    class Dog extends Animal {
+        tricks: string[] = [];
+        speak(): string {
+            return this.name + " barks";
+        }
+        protected override cost(): number {
+            return 2;
+        }
+        set boost(amount: number) {
+            this.energy += amount * 2;
+        }
+    }
+    class Cat extends Animal {
+        lives = 9;
+        speak(): string {
+            return this.name + " meows x" + this.lives;
+        }
+        override get tired(): boolean {
+            return false;
+        }
+    }
+    class Kitten extends Cat {
+        override speak(): string {
+            return "tiny " + super.speak();
+        }
+    }
+    const zoo = new Map<string, Animal>();
+    const seen = new Set<Animal>();
+    const heard: string[] = [];
+    function adopt(animal: Animal): void {
+        zoo.set(animal.name, animal);
+        animal.listeners.push((who) => {
+            seen.add(who);
+            heard.push(who.speak());
+        });
+    }
+    adopt(new Dog("rex"));
+    adopt(new Cat("tom"));
+    adopt(new Kitten("kit"));
+    if (Animal.population !== 3) throw new Error("population " + Animal.population);
+    const energies: number[] = [];
+    zoo.forEach((animal) => {
+        energies.push(animal.act(3));
+    });
+    if (energies.join(",") !== "4,7,7") throw new Error("energies " + energies.join(","));
+    if (heard.join("|") !== "rex barks|tom meows x9|tiny kit meows x9") throw new Error("heard " + heard.join("|"));
+    if (seen.size !== 3) throw new Error("seen");
+    const tired = [...zoo.values()].filter((animal) => animal.tired).map((animal) => animal.name);
+    if (tired.join(",") !== "rex") throw new Error("tired " + tired.join(","));
+    for (const animal of zoo.values()) animal.boost = 3;
+    const after = [...zoo.values()].map((animal) => animal.act(0));
+    if (after.join(",") !== "10,10,10") throw new Error("boost " + after.join(","));
+    const cats = [...zoo.values()].filter((animal) => animal instanceof Cat).length;
+    if (cats !== 2) throw new Error("cats " + cats);
+    const rex = zoo.get("rex");
+    if (rex instanceof Dog) rex.tricks.push("sit");
+    const dog = zoo.get("rex");
+    if (!(dog instanceof Dog) || dog.tricks.length !== 1) throw new Error("narrowed subclass field");
+    const sorted = [...zoo.values()].sort((left, right) => left.speak().length - right.speak().length).map((animal) => animal.name);
+    if (sorted.join(",") !== "rex,tom,kit") throw new Error("sorted " + sorted.join(","));
+`,
+);
+
+check(
+    "class-setter-on-stored-instance",
+    `
+    class Part {
+        energy = 1;
+        set boost(amount: number) {
+            this.energy += amount;
+        }
+    }
+    const parts: Part[] = [new Part(), new Part()];
+    for (const part of parts) part.boost = 2;
+    if (parts[0]!.energy !== 3) throw new Error("setter");
+`,
+);
+
+check(
+    "class-static-fields-and-blocks",
+    `
+    const order: string[] = [];
+    class Counter {
+        static created = 0;
+        static readonly limit = 3;
+        static names: string[] = [];
+        static last = "";
+        static {
+            order.push("block " + Counter.created);
+            this.last = "init";
+        }
+        static tail = Counter.created + 10;
+        readonly id: number;
+        constructor(readonly name: string) {
+            Counter.created += 1;
+            this.id = Counter.created;
+            Counter.names.push(name);
+            Counter.last = name;
+        }
+        static reset(): void {
+            this.created = 0;
+            this.names = [];
+        }
+        static describe(): string {
+            return this.last + "#" + this.created + "/" + Counter.limit;
+        }
+        tag(): string {
+            return this.name + "@" + this.id + "of" + Counter.created;
+        }
+    }
+    order.push("after class");
+    if (order.join(",") !== "block 0,after class") throw new Error("static block order " + order.join(","));
+    if (Counter.tail !== 10 || Counter.last !== "init") throw new Error("static initializers");
+    const a = new Counter("a");
+    const b = new Counter("b");
+    if (Counter.created !== 2 || Counter.names.join(",") !== "a,b") throw new Error("shared statics");
+    if (a.tag() !== "a@1of2" || b.tag() !== "b@2of2") throw new Error("instance reads statics");
+    Counter.created++;
+    Counter.created *= 2;
+    if (Counter.describe() !== "b#6/3") throw new Error("static method this " + Counter.describe());
+    Counter.reset();
+    if (Counter.created !== 0 || Counter.names.length !== 0) throw new Error("static reset");
+    class Registry {
+        static count = 0;
+        static register(): number {
+            return ++this.count;
+        }
+    }
+    class Special extends Registry {
+        static label = "special";
+        static make(): string {
+            const seen = Special.count;
+            const next = Registry.register();
+            return this.label + seen + next;
+        }
+    }
+    Registry.register();
+    if (Special.count !== 1) throw new Error("inherited static read");
+    if (Special.make() !== "special12") throw new Error("inherited static method " + Special.count);
+    if (Registry.count !== 2) throw new Error("shared inherited storage");
+    function makeLocal(start: number): number {
+        class Local {
+            static value = start;
+            static { Local.value *= 2; }
+        }
+        Local.value += 1;
+        return Local.value;
+    }
+    if (makeLocal(3) !== 7 || makeLocal(5) !== 11) throw new Error("local class statics");
+`,
+);
+
+check(
+    "class-static-class-typed-fields",
+    `
+    class Settings {
+        static #instance: Settings | null = null;
+        volume = 5;
+        static get(): Settings {
+            if (Settings.#instance === null) Settings.#instance = new Settings();
+            return Settings.#instance;
+        }
+    }
+    Settings.get().volume = 7;
+    if (Settings.get().volume !== 7) throw new Error("singleton");
+    class Pool {
+        static items: number[] = [];
+        static take(): number {
+            return this.items.length > 0 ? this.items.pop()! : -1;
+        }
+    }
+    Pool.items.push(3, 4);
+    if (Pool.take() !== 4 || Pool.take() !== 3 || Pool.take() !== -1) throw new Error("pool");
+`,
+);
+
+check(
+    "class-private-brand-checks",
+    `
+    class Token {
+        #value: number;
+        static #issued = 0;
+        constructor(value: number) {
+            this.#value = value;
+            Token.#issued++;
+        }
+        static isToken(candidate: object): boolean {
+            return #value in candidate;
+        }
+        static isTokenClass(candidate: object): boolean {
+            return #issued in candidate;
+        }
+        equals(other: Token | Other): boolean {
+            return #value in other && other.#value === this.#value;
+        }
+    }
+    class Derived extends Token {}
+    class Other {
+        value = 1;
+    }
+    const token = new Token(3);
+    const derived = new Derived(3);
+    const other = new Other();
+    if (!Token.isToken(token) || !Token.isToken(derived) || Token.isToken(other)) throw new Error("instance brand");
+    if (!token.equals(derived) || token.equals(other)) throw new Error("brand narrowing");
+    const plain = { value: 1 };
+    if (Token.isToken(plain)) throw new Error("plain object brand");
+    if (!Token.isTokenClass(Token) || Token.isTokenClass(token)) throw new Error("static brand");
+    if (Token.isTokenClass(Derived)) throw new Error("static brand is not inherited");
+`,
+);
+
+check(
+    "class-static-block-at-module-evaluation",
+    `
+    let hits = 0;
+    class Counter {
+        static readonly base = 2;
+        static { hits = 5; }
+        value(): number { return hits; }
+    }
+    class Unused { static { hits += 1; } }
+    function main(): void {
+        if (new Counter().value() !== 6 || Counter.base + hits !== 8) throw new Error("static blocks " + hits);
+    }
+    main();
+`,
+);
+
+check(
+    "array-removal-yields-absent-on-empty-arrays",
+    `
+    const items: number[] = [];
+    if ((items.pop() ?? -1) !== -1) throw new Error("pop empty");
+    items.shift();
+    items.pop();
+    items.push(3, 4);
+    const last = items.pop();
+    if (last === undefined || last !== 4) throw new Error("pop value");
+    const first = items.shift();
+    if (first !== 3 || items.shift() !== undefined) throw new Error("shift value");
+    const words: string[] = ["a"];
+    const word = words.pop();
+    if (word !== "a" || words.pop() !== undefined) throw new Error("string pop");
+    const maybe: (number | null)[] = [null];
+    if (maybe.pop() !== null || maybe.pop() !== undefined) throw new Error("nullable pop");
+    class Node { constructor(readonly id: number) {} }
+    const nodes: Node[] = [new Node(1)];
+    const node = nodes.pop();
+    if (!node || node.id !== 1 || nodes.pop()) throw new Error("reference pop");
+    const stack = [5, 6];
+    let sum = 0;
+    let next = stack.pop();
+    while (next !== undefined) { sum += next; next = stack.pop(); }
+    if (sum !== 11) throw new Error("drain " + sum);
+    const seven = [7];
+    if (stack.length !== 0 || seven.pop()! !== 7) throw new Error("asserted pop");
+`,
+);
+
+check(
+    "evaluation-order-around-calls-that-write",
+    `
+    let count = 1;
+    function reg(): number {
+        count += 1;
+        return count;
+    }
+    function regInline(extra: number[]): number {
+        count += 1;
+        extra.push(count);
+        return count;
+    }
+    const s = "x" + count + reg();
+    if (s !== "x12") throw new Error("concatenation order " + s);
+    const t = count + regInline([]);
+    if (t !== 5) throw new Error("arithmetic order " + t);
+    const values = [count, reg()];
+    if (values[0] !== 3 || values[1] !== 4) throw new Error("array order " + values.join(","));
+    function pair(a: number, b: number): number {
+        return a * 10 + b;
+    }
+    if (pair(count, reg()) !== 45) throw new Error("argument order");
+    if (count === reg()) throw new Error("comparison order");
+    function build(): void {
+        const record = { before: count, after: reg() };
+        if (record.before !== 6 || record.after !== 7) throw new Error("record order " + record.before);
+    }
+    build();
+    class Box {
+        constructor(readonly first: number, readonly second: number) {}
+    }
+    const box = new Box(count, reg());
+    if (box.first !== 7 || box.second !== 8) throw new Error("constructor argument order");
+    const scaled = count * 2 - reg();
+    if (scaled !== 7) throw new Error("nested arithmetic order " + scaled);
+`,
+);
+
+check(
+    "evaluation-order-around-writes-before-reads",
+    `
+    let count = 1;
+    function reg(): number {
+        count += 1;
+        return count;
+    }
+    function show(a: number, b: number): string {
+        return a + ":" + b;
+    }
+    const first = show(reg(), count);
+    if (first !== "2:2") throw new Error("writer first " + first);
+    const joined = "x" + reg() + count;
+    if (joined !== "x33") throw new Error("concatenation writer first " + joined);
+    let n = 1;
+    const sum = n + (n = 5);
+    if (sum !== 6) throw new Error("assignment in the same expression " + sum);
+    class Counter {
+        value = 0;
+        bump(): number {
+            this.value += 1;
+            return this.value;
+        }
+    }
+    const counter = new Counter();
+    const before = show(counter.value, counter.bump());
+    if (before !== "0:1") throw new Error("reader before a method " + before);
+    const after = show(counter.bump(), counter.value);
+    if (after !== "2:2") throw new Error("method before a reader " + after);
+    function fill(): number {
+        const fresh: number[] = [];
+        fresh.push(count);
+        return fresh.length;
+    }
+    const values: number[] = [];
+    const both = show(values.length, fill());
+    if (both !== "0:1") throw new Error("a function writing only its own array " + both);
+`,
+);
+
+check(
+    "recursion-through-stored-instances",
+    `
+    class TreeNode {
+        children: TreeNode[] = [];
+        constructor(readonly value: number) {}
+        add(child: TreeNode): TreeNode {
+            this.children.push(child);
+            return this;
+        }
+        sum(): number {
+            let total = this.value;
+            for (const child of this.children) total += child.sum();
+            return total;
+        }
+    }
+    const root = new TreeNode(1);
+    const mid = new TreeNode(2);
+    mid.add(new TreeNode(3));
+    root.add(mid).add(new TreeNode(4));
+    if (root.sum() !== 10) throw new Error("sum " + root.sum());
+`,
+);
+
+check(
+    "recursion-through-a-stored-hierarchy",
+    `
+    abstract class Shape {
+        abstract area(): number;
+        describe(depth: number): string {
+            return "shape@" + depth;
+        }
+    }
+    class Square extends Shape {
+        constructor(readonly side: number) {
+            super();
+        }
+        area(): number {
+            return this.side * this.side;
+        }
+    }
+    class Group extends Shape {
+        readonly children: Shape[] = [];
+        add(shape: Shape): Group {
+            this.children.push(shape);
+            return this;
+        }
+        area(): number {
+            let total = 0;
+            for (const child of this.children) total += child.area();
+            return total;
+        }
+        override describe(depth: number): string {
+            const parts: string[] = [];
+            for (const child of this.children) parts.push(child.describe(depth + 1));
+            return "group@" + depth + "[" + parts.join(",") + "]";
+        }
+        count(): number {
+            return this.children.reduce((sum, child) => sum + (child instanceof Group ? child.count() : 1), 0);
+        }
+    }
+    const inner = new Group().add(new Square(1)).add(new Square(2));
+    const root = new Group().add(inner).add(new Square(3));
+    if (root.area() !== 14) throw new Error("composite area " + root.area());
+    if (root.describe(0) !== "group@0[group@1[shape@2,shape@2],shape@1]") throw new Error("describe " + root.describe(0));
+    if (root.count() !== 3) throw new Error("count " + root.count());
+    const shapes: Shape[] = [root, new Square(4)];
+    let total = 0;
+    for (const shape of shapes) total += shape.area();
+    if (total !== 30) throw new Error("total " + total);
+`,
+);
+
+check(
+    "mutual-recursion-through-stored-instances",
+    `
+    class Ping {
+        next: Pong | null = null;
+        constructor(readonly weight: number) {}
+        total(): number {
+            return this.weight + (this.next ? this.next.total() : 0);
+        }
+    }
+    class Pong {
+        next: Ping | null = null;
+        constructor(readonly weight: number) {}
+        total(): number {
+            return this.weight * 10 + (this.next ? this.next.total() : 0);
+        }
+    }
+    const pongs: Pong[] = [];
+    const chain: Ping[] = [];
+    const a = new Ping(1);
+    const b = new Pong(2);
+    const c = new Ping(3);
+    a.next = b;
+    b.next = c;
+    pongs.push(b);
+    chain.push(a, c);
+    if (a.total() !== 24) throw new Error("mutual " + a.total());
+    let sum = 0;
+    for (const ping of chain) sum += ping.total();
+    if (sum !== 27) throw new Error("sum " + sum);
+`,
+);
+
+check(
+    "callbacks-calling-abstract-methods",
+    `
+    abstract class Animal {
+        constructor(readonly name: string) {}
+        abstract speak(): string;
+    }
+    class Dog extends Animal { speak(): string { return this.name + " barks"; } }
+    class Cat extends Animal { speak(): string { return this.name + " meows"; } }
+    const zoo: Animal[] = [new Dog("rex"), new Cat("po")];
+    let total = 0;
+    for (const animal of zoo) total += animal.speak().length;
+    const sorted = [...zoo].sort((left, right) => left.speak().length - right.speak().length).map((animal) => animal.name);
+    if (sorted.join(",") !== "po,rex" || total !== 17) throw new Error("sorted " + sorted.join(",") + total);
+`,
+);
+
+check(
+    "map-foreach-invokes-stored-instance-callbacks",
+    `
+    class Animal {
+        readonly listeners: Array<(animal: Animal) => void> = [];
+        constructor(readonly name: string) {}
+        speak(): string { return this.name + " speaks"; }
+    }
+    const zoo = new Map<string, Animal>();
+    const heard: string[] = [];
+    function adopt(animal: Animal): void {
+        zoo.set(animal.name, animal);
+        animal.listeners.push((who) => {
+            heard.push(who.speak());
+        });
+    }
+    adopt(new Animal("rex"));
+    adopt(new Animal("tom"));
+    zoo.forEach((animal) => { for (const listener of animal.listeners) listener(animal); });
+    if (heard.join("|") !== "rex speaks|tom speaks") throw new Error("heard " + heard.join("|"));
+`,
+);
+
+check(
+    "record-and-tuple-members-hold-their-built-values",
+    `
+    let count = 0;
+    const holder = { value: 1 };
+    const record = { seen: count, field: holder.value, draw: Math.random() };
+    count = 5;
+    holder.value = 9;
+    if (record.seen !== 0) throw new Error("variable member " + record.seen);
+    if (record.field !== 1) throw new Error("property member " + record.field);
+    if (record.draw !== record.draw) throw new Error("draw member read twice");
+    function bump(): void { count += 1; }
+    const later = { seen: count };
+    bump();
+    if (later.seen !== 5) throw new Error("member across a call " + later.seen);
+    function inside(): void {
+        const snapshot = { seen: count };
+        count = 7;
+        if (snapshot.seen !== 6) throw new Error("function record " + snapshot.seen);
+    }
+    inside();
+    const nested = { inner: { seen: count } };
+    count = 8;
+    if (nested.inner.seen !== 7) throw new Error("nested member " + nested.inner.seen);
+    const list = [{ seen: count }];
+    count = 9;
+    if (list[0]!.seen !== 8) throw new Error("array element member " + list[0]!.seen);
+    const lanes = [count, Math.random()];
+    count = 10;
+    if (lanes[0] !== 9) throw new Error("tuple lane " + lanes[0]);
+    if (lanes[1] !== lanes[1]) throw new Error("tuple draw lane read twice");
+    let label = "a";
+    function tag(name: string): { name: string } { return { name }; }
+    const tagged = tag(label);
+    label = "b";
+    if (tagged.name !== "a") throw new Error("parameter member " + tagged.name);
+    function readAfterWrite(options: { seen: number }): number {
+        const first = options.seen;
+        count = 99;
+        return first + options.seen;
+    }
+    if (readAfterWrite({ seen: count }) !== 20) throw new Error("argument member read after the callee writes");
+    let title = "first";
+    const titled = { title };
+    const copied = title;
+    title = "second";
+    if (copied !== "first" || titled.title !== "first")
+        throw new Error("a record read does not make its source constant " + copied);
+`,
+);
+
+check(
+    "array-literal-receivers-take-mutating-methods",
+    `
+    const last = [7, 8].pop();
+    if (last !== 8) throw new Error("literal pop");
+    const first = [7, 8].shift();
+    if (first !== 7) throw new Error("literal shift");
+    const none = ([] as number[]).pop();
+    if (none !== undefined) throw new Error("empty literal pop");
+    let count = 1;
+    const drawn = [count, 5].pop()!;
+    if (drawn !== 5) throw new Error("asserted literal pop " + drawn);
+    count = 2;
+    const pushed = [1, 2].push(3);
+    if (pushed !== 3) throw new Error("literal push");
+    const removed = [1, 2, 3].splice(1, 1);
+    if (removed.length !== 1 || removed[0] !== 2) throw new Error("literal splice");
+    const reversed = [1, 2, 3].reverse();
+    if (reversed[0] !== 3) throw new Error("literal reverse");
+`,
+);
+
+check(
+    "absent values spell undefined or null in text",
+    `
+    enum Shape {
+        Box = 0,
+        Ball = 1,
+    }
+    enum Tone {
+        Soft = "soft",
+    }
+    interface Options {
+        label?: string;
+        size?: number;
+        wide?: boolean;
+    }
+    function describe(options: Options): string {
+        return options.label + ":" + options.size + ":" + options.wide;
+    }
+    function main(): void {
+        const items: number[] = [];
+        if ("last " + items.pop() !== "last undefined") throw new Error("absent number");
+        items.push(4);
+        if (\`value \${items.pop()}\` !== "value 4") throw new Error("present number in a template");
+        const flags: boolean[] = [];
+        if ("flag " + flags.shift() !== "flag undefined") throw new Error("absent boolean");
+        const lookup = new Map<string, number>([["a", 1]]);
+        if (\`\${lookup.get("a")}/\${lookup.get("b")}\` !== "1/undefined") throw new Error("map lookups");
+        let maybe: number | null = null;
+        if ("maybe " + maybe !== "maybe null") throw new Error("null number");
+        maybe = 2.5;
+        if ("maybe " + maybe !== "maybe 2.5") throw new Error("present nullable number");
+        if (describe({}) !== "undefined:undefined:undefined") throw new Error("absent fields " + describe({}));
+        if (describe({ label: "x", size: 3, wide: true }) !== "x:3:true") throw new Error("present fields");
+        const shapes: Shape[] = [];
+        shapes.push(Shape.Ball);
+        if ("shape " + shapes.pop() + shapes.pop() !== "shape 1undefined") throw new Error("enum");
+        const tones: Tone[] = [];
+        tones.push(Tone.Soft);
+        if ("tone " + tones.pop() + tones.pop() !== "tone softundefined") throw new Error("string enum");
+        const mixed: Array<number | string> = ["a"];
+        if (\`\${mixed.pop()}|\${mixed.pop()}\` !== "a|undefined") throw new Error("absent union");
+        let text = "sum";
+        text += items.pop();
+        if (text !== "sumundefined") throw new Error("append " + text);
+        if (String(items.pop()) !== "undefined") throw new Error("String of an absent value");
+        const pair: [number, number?] = [1];
+        if ("second " + pair[1] !== "second undefined") throw new Error("missing tuple lane");
+        const omitted: Options = {};
+        if (typeof omitted.size !== "undefined") throw new Error("typeof an omitted field");
+    }
+    main();
+`,
+);
+
+test("text refuses a value that may be either null or undefined", () => {
     assert.throws(
         () =>
             compileSource(`
-        class Tagged { #mark = 1; static has(value: object): boolean { return #mark in value; } }
-        if (!Tagged.has(new Tagged())) throw new Error("brand");
+        const values: Array<number | null | undefined> = [];
+        values.push(null);
+        const spelled = "value " + values[0];
     `),
-        /Private brand checks are outside the supported subset/,
+        /may be null or undefined is spelled only once one of them is ruled out/,
     );
+});
+
+check(
+    "strict null and undefined equality follows the operand's type",
+    `
+    interface Options {
+        label?: string;
+        size?: number | null;
+        onPick?: () => void;
+    }
+    function flags(options: Options): string {
+        const parts: string[] = [];
+        parts.push(options.label === null ? "n" : "-");
+        parts.push(options.label === undefined ? "u" : "-");
+        parts.push(options.label !== null ? "N" : "-");
+        parts.push(options.label !== undefined ? "U" : "-");
+        parts.push(options.label == null ? "nn" : "--");
+        parts.push(options.label != undefined ? "UU" : "--");
+        parts.push(options.onPick === null ? "fn" : "-");
+        parts.push(options.onPick === undefined ? "fu" : "-");
+        return parts.join("");
+    }
+    function main(): void {
+        const absent = flags({});
+        if (absent !== "-uN-nn---fu") throw new Error("absent field " + absent);
+        const present = flags({ label: "x", onPick: () => {} });
+        if (present !== "--NU--UU--") throw new Error("present field " + present);
+        const sizes: Array<number | null> = [];
+        sizes.push(null);
+        const first = sizes[0];
+        if (first !== null) throw new Error("stored null");
+        const lookup = new Map<string, number>();
+        const miss = lookup.get("a");
+        if (miss === null || miss !== undefined) throw new Error("map miss is undefined");
+        const items: number[] = [];
+        const popped = items.pop();
+        if (popped === null || popped !== undefined) throw new Error("pop of an empty array is undefined");
+        const omitted: Options = {};
+        if (omitted.label === null || omitted.label !== undefined) throw new Error("omitted field is undefined");
+        const walls = new Map<string, { w: number } | null>();
+        let built = 0;
+        function wall(name: string): { w: number } | null {
+            const cached = walls.get(name);
+            if (cached !== undefined) return cached;
+            built++;
+            const result = name === "missing" ? null : { w: name.length };
+            walls.set(name, result);
+            return result;
+        }
+        if (wall("missing") !== null || wall("missing") !== null || built !== 1) throw new Error("a stored null is found " + built);
+        const nullableSizes = new Map<string, number | null>([["none", null]]);
+        const none = nullableSizes.get("none");
+        const gone = nullableSizes.get("gone");
+        if (none !== null || none === undefined || gone !== undefined || gone === null) throw new Error("stored null and miss");
+        if ("a" + nullableSizes.get("none") + nullableSizes.get("gone") !== "anullundefined") throw new Error("lookup spelling");
+    }
+    main();
+`,
+);
+
+test("strict equality refuses a value that may be either null or undefined", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        const values: Array<number | null | undefined> = [];
+        values.push(null);
+        const isNull = values[0] === null;
+    `),
+        /may be null or undefined is compared strictly with null only once one of them is ruled out/,
+    );
+});
+
+check(
+    "enum members inside array and object literals",
+    `
+    enum Shape {
+        Box,
+        Ball,
+    }
+    enum Tone {
+        Soft = "soft",
+        Bold = "bold",
+    }
+    function main(): void {
+        const shapes: Shape[] = [Shape.Ball, Shape["Box"]];
+        if (shapes.length !== 2 || shapes[0] !== Shape.Ball || shapes[1] !== 0) throw new Error("numeric enum array literal");
+        const tones: Tone[] = [Tone.Bold, Tone["Soft"]];
+        if (tones.join(",") !== "bold,soft") throw new Error("string enum array literal " + tones.join(","));
+        const pair: [Shape, number] = [Shape.Ball, 2];
+        if (pair[0] + pair[1] !== 3) throw new Error("enum tuple lane");
+        const counts = [5, 7];
+        counts[Shape.Box] -= 1;
+        if (counts[Shape.Ball] !== 7 || counts[Shape.Box] !== 4) throw new Error("array indexed by an enum member");
+        const byShape: Record<string, Shape> = { ball: Shape.Ball };
+        if (byShape.ball !== 1) throw new Error("enum record member");
+    }
+    main();
+`,
+);
+
+check(
+    "strict null and undefined comparisons read whether the slot existed",
+    `
+    interface Attachment {
+        label: string;
+    }
+    interface Entry {
+        id: string;
+        attachment: Attachment | null;
+        note: string | null;
+    }
+    const catalog: Entry[] = [
+        { id: "a", attachment: null, note: null },
+        { id: "b", attachment: { label: "x" }, note: "n" },
+    ];
+    function find(id: string): Entry | undefined {
+        return catalog.find((entry) => entry.id === id);
+    }
+    function main(): void {
+        // Optional chain over a nullable field.
+        if (find("a")?.attachment !== null) throw new Error("present owner, null field");
+        if (find("a")?.attachment === undefined) throw new Error("present owner is not undefined");
+        if (find("missing")?.attachment !== undefined) throw new Error("missing owner");
+        if (find("missing")?.attachment === null) throw new Error("missing owner is not null");
+        if (find("b")?.attachment === null || find("b")?.attachment === undefined) throw new Error("present field");
+        const chained = find("a")?.attachment;
+        if (chained !== null || chained === undefined) throw new Error("bound chain");
+        if ("c" + find("a")?.note + find("missing")?.note + find("b")?.note !== "cnullundefinedn") throw new Error("chain spelling");
+        // pop/shift of nullable elements.
+        const maybe: (number | null)[] = [null];
+        if (maybe.pop() !== null) throw new Error("popped null");
+        if (maybe.pop() !== undefined) throw new Error("popped from empty");
+        const queue: Array<string | null> = [null, "q"];
+        const head = queue.shift();
+        if (head !== null || head === undefined) throw new Error("shifted null");
+        if (queue.shift() !== "q" || queue.shift() !== undefined) throw new Error("shifted rest");
+        let order = "";
+        const pops: (number | null)[] = [1, null];
+        if (pops.pop() === null) order += "n";
+        if (pops.pop() === 1) order += "1";
+        if (pops.pop() === undefined) order += "u";
+        if (order !== "n1u") throw new Error("two pops in turn " + order);
+        // Index into an array of nullable elements.
+        const sizes: Array<number | null> = [null, 3];
+        if (sizes[0] !== null || sizes[1] !== 3) throw new Error("stored elements");
+        let index = 5;
+        if (sizes[index] === null || sizes[index] !== undefined) throw new Error("past the end");
+        index = 0;
+        if ("s" + sizes[index] + sizes[index + 7] !== "snullundefined") throw new Error("element spelling");
+        const plain: number[] = [1];
+        if (plain[3] === null) throw new Error("past the end of a never-null array");
+    }
+    main();
+`,
+);
+
+check(
+    "array reads past the end spell undefined in text",
+    `
+    function main(): void {
+        const plain: number[] = [1, 2];
+        let index = 3;
+        if ("x" + plain[index] !== "xundefined") throw new Error("past the end in text " + plain[index]);
+        index = 1;
+        if (\`v\${plain[index]}\` !== "v2") throw new Error("in range in a template");
+        const words: string[] = ["a"];
+        let at = 4;
+        if ("w" + words[at] !== "wundefined") throw new Error("string element past the end");
+        const flags: boolean[] = [true];
+        if ("f" + flags[at] + flags[0] !== "fundefinedtrue") throw new Error("boolean element");
+        let text = "";
+        for (let i = 0; i < plain.length; i++) text += plain[i];
+        if (text !== "12") throw new Error("canonical loop " + text);
+        if (String(plain[index + 5]) !== "undefined") throw new Error("String() past the end");
+        const held = plain[index + 9];
+        plain.push(3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+        if ("h" + held !== "hundefined") throw new Error("a local keeps its missed slot " + held);
+        const heldWord = words[at];
+        words.push("b", "c", "d", "e");
+        if ("h" + heldWord !== "hundefined") throw new Error("a string local keeps its missed slot");
+        if ("h" + words[at] !== "he") throw new Error("the slot filled later");
+    }
+    main();
+`,
+);
+
+check(
+    "enum array reads past the end spell undefined in text",
+    `
+    enum Tone {
+        Soft = 1,
+        Loud = 2,
+    }
+    enum Name {
+        A = "a",
+    }
+    function main(): void {
+        const tones: Tone[] = [Tone.Soft, Tone.Loud];
+        const names: Name[] = [Name.A];
+        let at = 5;
+        if ("t" + tones[at] + tones[1] !== "tundefined2") throw new Error("numeric enum element past the end");
+        if (\`n\${names[at]}\${names[0]}\` !== "nundefineda") throw new Error("string enum element past the end");
+        at = 0;
+        if ("t" + tones[at] !== "t1") throw new Error("numeric enum element in range");
+    }
+    main();
+`,
+);
+
+test("engine calls that write their arguments keep operand order and object storage", async (t) => {
+    // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
+    // expected values follow their bodies (`v.x * (1 / len)`).
+    const result = compileSource(
+        `import { normalizeVec3ToRef, scaleVec3ToRef } from "@babylonjs/lite";
+        function show(a: number, b: number): string { return a + ":" + b; }
+        const v = { x: 3, y: 0, z: 4 };
+        const normalized = show(v.x, normalizeVec3ToRef(v, v).x);
+        if (normalized !== "3:" + 3 * (1 / 5)) throw new Error("engine argument write " + normalized);
+        const w = { x: 1, y: 2, z: 3 };
+        function grow(target: { x: number; y: number; z: number }): number {
+            scaleVec3ToRef(target, 2, target);
+            return target.z;
+        }
+        const grown = show(w.x, grow(w));
+        if (grown !== "1:6" || w.x !== 2) throw new Error("engine write through a function " + grown);`,
+        { fileName: "engine-argument-writes.ts" },
+    );
+    await executeGeneratedAssertions(t, "engine-argument-writes", result.cpp);
+});
+
+test("imported class static fields and blocks run when their module evaluates", async (t) => {
+    const directory = resolve("artifacts/class-static-state-module");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "counter.ts"),
+        `export class Counter {
+            static count = 0;
+            static readonly step = 2;
+            static { Counter.count = 10; }
+            static next(): number { this.count += Counter.step; return this.count; }
+        }
+        let evaluated = 0;
+        class Unused { static { evaluated += 1; } }
+        export function peek(): number { return Counter.count + evaluated * 100; }`,
+    );
+    const result = compileSource(
+        `import { Counter, peek } from "./counter.js";
+        if (Counter.next() !== 12 || peek() !== 112) throw new Error("imported statics " + peek());`,
+        { fileName: join(directory, "entry.ts") },
+    );
+    await executeGeneratedAssertions(
+        t,
+        "class-static-state-module",
+        result.cpp,
+    );
+});
+
+test("class inheritance and static state refuse what one record or struct cannot represent", () => {
+    const refusals: ReadonlyArray<readonly [string, RegExp]> = [
+        [
+            `class A { constructor(readonly x: number) {} }
+            class B extends A { constructor(flag: boolean) { if (flag) { super(1); } else { super(2); } } }
+            const b = new B(true); const unused = b.x;`,
+            /super\(\.\.\.\) is lowered as a top-level statement/,
+        ],
+        [
+            `class A { static count = 0; }
+            class B extends A {}
+            B.count++;`,
+            /Static field 'count' is inherited by class 'B'/,
+        ],
+        [
+            `class A { static count = 0; static bump(): void { this.count += 1; } }
+            class B extends A {}
+            B.bump();`,
+            /Static field 'count' is inherited by class 'B'/,
+        ],
+        [
+            `class Box<T> { constructor(readonly value: T) {} }
+            class NumberBox extends Box<number> {}
+            const boxes: Box<number>[] = [new NumberBox(1)];
+            const unused = boxes.length;`,
+            /is generic; a stored instance of a hierarchy needs one layout/,
+        ],
+        [
+            `abstract class A {}
+            class B extends A { tag = 1; }
+            class C extends A { tag = "x"; }
+            const all: A[] = [new B(), new C()];
+            const unused = all.length;`,
+            /Field 'tag' has a different native type in class 'C'/,
+        ],
+        [
+            `class Failure extends Error { constructor() { super("x"); } }
+            const failure = new Failure(); const unused = failure.message;`,
+            /extends 'Error', which is not a local class with a body/,
+        ],
+        [
+            `class A { #x = 1; readA(): number { return this.#x; } }
+            class B extends A { #x = 2; readB(): number { return this.#x; } }
+            const b = new B(); const unused = b.readA() + b.readB();`,
+            /Private name '#x' is declared by both 'A' and 'B'/,
+        ],
+        [
+            `class Leaf { constructor(readonly weight: number) {} }
+            class Holder {
+                other: Leaf | null = null;
+                read(): number { return this.other ? this.other.weight : -1; }
+            }
+            const holders: Holder[] = [];
+            const holder = new Holder();
+            holders.push(holder);
+            const leaf = new Leaf(5);
+            holder.other = leaf;
+            const unused = holder.read();`,
+            /Field 'other' of a shared class instance is not stored per instance/,
+        ],
+        [
+            `class A { value = 1; }
+            class B extends A { value!: number; }
+            const b = new B(); const unused = b.value;`,
+            /redeclares an inherited field without an initializer/,
+        ],
+        [
+            `class A { value = 1; }
+            class B extends A { read(): number { return super.value; } }
+            const b = new B(); const unused = b.read();`,
+            /'super\.value' reads a base class accessor/,
+        ],
+    ];
+    for (const [source, message] of refusals) {
+        assert.throws(() => compileSource(source), message);
+    }
 });
 
 test("promise rejection callbacks refuse parameters the rejection cannot supply", () => {

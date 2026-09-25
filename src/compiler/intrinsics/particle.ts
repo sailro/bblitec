@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 // The node-particle family records graph builds and source lifecycle calls.
 // Frozen systems execute the pin during generation, preserving V8-dependent
@@ -64,10 +65,10 @@ export interface ParticleIntrinsicContext
         StaticBooleanContext,
         Pick<
             LoweringServices,
-            | "reachedNodeParticles"
+            | "sceneManifest"
             | "requireDefaultEngine"
             | "compileStaticString"
-            | "lookupOptional"
+            | "bindings"
             | "reachJsRandom"
             | "expectObjectLiteral"
             | "objectProperty"
@@ -125,7 +126,7 @@ function graphSource(
     const args = (document.call?.arguments ?? []).map((argument, index) => {
         const unwrapped = context.unwrap(argument);
         const bound = ts.isIdentifier(unwrapped)
-            ? context.lookupOptional(unwrapped)
+            ? context.bindings.lookupOptional(unwrapped)
             : undefined;
         if (bound?.kind === "executed-url" && bound.executedUrl) {
             urlArguments.push({ index, ...bound.executedUrl });
@@ -144,7 +145,7 @@ function graphSource(
 
 /** Whether a live pure-2D binding already took this set. */
 function isLive(context: ParticleIntrinsicContext, set: number): boolean {
-    return context.reachedNodeParticles.sprite2d.some(
+    return context.sceneManifest.reachedNodeParticles.sprite2d.some(
         (binding) => binding.set === set && binding.live === true,
     );
 }
@@ -163,7 +164,7 @@ function staticArgumentJson(
     expression: ts.Expression,
 ): unknown {
     const node = context.unwrap(expression);
-    if (ts.isIdentifier(node) && node.text === "undefined") {
+    if (context.symbols.isGlobalUndefined(node)) {
         return undefined;
     }
     if (ts.isObjectLiteralExpression(node)) {
@@ -407,7 +408,7 @@ function isFrozen(
     set: number,
     system: number,
 ): boolean {
-    return context.reachedNodeParticles.billboards.some(
+    return context.sceneManifest.reachedNodeParticles.billboards.some(
         (frozen) => frozen.set === set && frozen.system === system,
     );
 }
@@ -451,7 +452,7 @@ export function compileParticleIntrinsic(
     switch (importedName) {
         case "withNodeParticleEmitterProvider": {
             context.expectArgumentCount(call, 1, 2);
-            context.reachedNodeParticles.nativeProvider = true;
+            context.sceneManifest.reachedNodeParticles.nativeProvider = true;
             if (context.isRuntimeResourceConstruction()) {
                 context.fail(
                     call,
@@ -459,7 +460,7 @@ export function compileParticleIntrinsic(
                 );
             }
             if (
-                context.reachedNodeParticles.steps.some(
+                context.sceneManifest.reachedNodeParticles.steps.some(
                     (step) => step.op === "random",
                 )
             ) {
@@ -568,7 +569,7 @@ export function compileParticleIntrinsic(
                         "withNodeParticleEmitterProvider"
                         ? context.compileValue(optionsArgument)
                         : ts.isIdentifier(providerCall)
-                          ? context.lookupOptional(providerCall)
+                          ? context.bindings.lookupOptional(providerCall)
                           : undefined;
                 provider = providerOptions?.nodeParticleProvider;
                 const options =
@@ -583,7 +584,7 @@ export function compileParticleIntrinsic(
                 );
             }
             if (
-                context.reachedNodeParticles.sets.some(
+                context.sceneManifest.reachedNodeParticles.sets.some(
                     (set) => !!set.native !== !!provider,
                 )
             ) {
@@ -608,7 +609,7 @@ export function compileParticleIntrinsic(
                         "arc-rotate construction.",
                 );
             }
-            context.reachedNodeParticles.sets.push({
+            context.sceneManifest.reachedNodeParticles.sets.push({
                 graph: graph.nodeParticleGraph!,
                 builder: builders[importedName]!,
                 emitter,
@@ -619,14 +620,14 @@ export function compileParticleIntrinsic(
             if (provider) {
                 context.reachJsRandom();
                 context.emit(
-                    `bbl::upstream::initialize_native_node_particle_set(${context.reachedNodeParticles.sets.length - 1}, ${provider.callbackCpp}, ${provider.initialMatrixCpp});`,
+                    `bbl::upstream::initialize_native_node_particle_set(${context.sceneManifest.reachedNodeParticles.sets.length - 1}, ${provider.callbackCpp}, ${provider.initialMatrixCpp});`,
                 );
             }
             return {
                 kind: "node-particle-set",
                 cpp: "",
                 nodeParticleSetIndex:
-                    context.reachedNodeParticles.sets.length - 1,
+                    context.sceneManifest.reachedNodeParticles.sets.length - 1,
                 engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
@@ -635,14 +636,14 @@ export function compileParticleIntrinsic(
         case "stopParticleSystem": {
             context.expectArgumentCount(call, 1, 1);
             const { set, system } = systemOf(context, call);
-            if (context.reachedNodeParticles.sets[set]?.native) {
+            if (context.sceneManifest.reachedNodeParticles.sets[set]?.native) {
                 return {
                     kind: "void",
                     cpp: `bbl::upstream::${importedName === "startParticleSystem" ? "start" : "stop"}_native_node_particle_system(${set}, ${system})`,
                 };
             }
             requireUnbaked(context, set, system, call);
-            context.reachedNodeParticles.steps.push({
+            context.sceneManifest.reachedNodeParticles.steps.push({
                 op: importedName === "startParticleSystem" ? "start" : "stop",
                 set,
                 system,
@@ -655,7 +656,7 @@ export function compileParticleIntrinsic(
             // billboard-free render paths read; no reached scene passes one.
             context.expectArgumentCount(call, 2, 2);
             const { set, system } = systemOf(context, call);
-            if (context.reachedNodeParticles.sets[set]?.native) {
+            if (context.sceneManifest.reachedNodeParticles.sets[set]?.native) {
                 return {
                     kind: "void",
                     cpp: `bbl::upstream::animate_native_node_particle_system(${set}, ${system}, ${context.compileNumber(argumentAt(call, 1), "double")})`,
@@ -667,7 +668,7 @@ export function compileParticleIntrinsic(
                 argumentAt(call, 1),
                 "animateParticleSystem's scaled ratio",
             );
-            context.reachedNodeParticles.steps.push({
+            context.sceneManifest.reachedNodeParticles.steps.push({
                 op: "animate",
                 set,
                 system,
@@ -679,14 +680,17 @@ export function compileParticleIntrinsic(
         case "createParticleBillboard": {
             context.expectArgumentCount(call, 1, 1);
             const { value, set, system } = systemOf(context, call);
-            if (context.reachedNodeParticles.sets[set]?.native) {
+            if (context.sceneManifest.reachedNodeParticles.sets[set]?.native) {
                 context.fail(
                     call,
                     "Provider-backed particle systems draw through registerNodeParticleSet; the explicit billboard bridge only carries frozen state.",
                 );
             }
             if (!isFrozen(context, set, system)) {
-                context.reachedNodeParticles.billboards.push({ set, system });
+                context.sceneManifest.reachedNodeParticles.billboards.push({
+                    set,
+                    system,
+                });
             }
             const engineCpp =
                 value.engineCpp ?? context.requireDefaultEngine(call);
@@ -715,10 +719,11 @@ export function compileParticleIntrinsic(
                 "billboard-system",
                 argumentAt(call, 1),
             );
-            const frozen = context.reachedNodeParticles.billboards.find(
-                (candidate) =>
-                    candidate.set === set && candidate.system === system,
-            );
+            const frozen =
+                context.sceneManifest.reachedNodeParticles.billboards.find(
+                    (candidate) =>
+                        candidate.set === set && candidate.system === system,
+                );
             if (!frozen) {
                 context.fail(
                     call,
@@ -737,7 +742,7 @@ export function compileParticleIntrinsic(
                         "carries one state.",
                 );
             }
-            frozen.synced = true;
+            writable(frozen).synced = true;
             const engineCpp =
                 billboard.engineCpp ?? context.requireDefaultEngine(call);
             context.emit(
@@ -765,11 +770,13 @@ export function compileParticleIntrinsic(
             const set = context.compileValue(argumentAt(call, 0));
             context.expectKind(set, "node-particle-set", argumentAt(call, 0));
             const request =
-                context.reachedNodeParticles.sets[set.nodeParticleSetIndex!]!;
+                context.sceneManifest.reachedNodeParticles.sets[
+                    set.nodeParticleSetIndex!
+                ]!;
             if (
                 request.native &&
                 (context.isRuntimeResourceConstruction() ||
-                    context.reachedNodeParticles.registrations.some(
+                    context.sceneManifest.reachedNodeParticles.registrations.some(
                         (entry) => entry.set === set.nodeParticleSetIndex,
                     ))
             ) {
@@ -778,7 +785,7 @@ export function compileParticleIntrinsic(
                     "Native particle blend modes must be enabled before registration and recurring frame callbacks; the enabler affects future billboards.",
                 );
             }
-            request.enableBlendModes = true;
+            writable(request).enableBlendModes = true;
             return set;
         }
 
@@ -807,7 +814,8 @@ export function compileParticleIntrinsic(
             }
             const index = set.nodeParticleSetIndex!;
             if (
-                context.reachedNodeParticles.sets[index]?.native &&
+                context.sceneManifest.reachedNodeParticles.sets[index]
+                    ?.native &&
                 context.isRuntimeResourceConstruction()
             ) {
                 context.fail(
@@ -816,7 +824,7 @@ export function compileParticleIntrinsic(
                 );
             }
             if (
-                context.reachedNodeParticles.registrations.some(
+                context.sceneManifest.reachedNodeParticles.registrations.some(
                     (entry) => entry.set === index,
                 )
             ) {
@@ -826,7 +834,7 @@ export function compileParticleIntrinsic(
                         "bake carries one state per system.",
                 );
             }
-            context.reachedNodeParticles.registrations.push({
+            context.sceneManifest.reachedNodeParticles.registrations.push({
                 set: index,
                 autoStart,
             });
@@ -842,7 +850,7 @@ export function compileParticleIntrinsic(
             context.emit(
                 "bbl::upstream::register_node_particle_set(" +
                     `${engineCpp}, ${scene.cpp}, ` +
-                    `${context.reachedNodeParticles.registrations.length - 1});`,
+                    `${context.sceneManifest.reachedNodeParticles.registrations.length - 1});`,
             );
             return { kind: "void", cpp: "" };
         }
@@ -859,14 +867,16 @@ export function compileParticleIntrinsic(
             const set = context.compileValue(argumentAt(call, 1));
             context.expectKind(set, "node-particle-set", argumentAt(call, 1));
             const index = set.nodeParticleSetIndex!;
-            if (context.reachedNodeParticles.sets[index]?.native) {
+            if (
+                context.sceneManifest.reachedNodeParticles.sets[index]?.native
+            ) {
                 context.fail(
                     call,
                     "Provider-backed particle systems draw through registerNodeParticleSet; the pure-2D provider bridge is not lowered.",
                 );
             }
             if (
-                context.reachedNodeParticles.sprite2d.some(
+                context.sceneManifest.reachedNodeParticles.sprite2d.some(
                     (entry) => entry.set === index,
                 )
             ) {
@@ -883,16 +893,17 @@ export function compileParticleIntrinsic(
             // draws are then the pinned generator's, which the browser
             // reference must install too.
             const live =
-                !context.reachedNodeParticles.steps.some(
+                !context.sceneManifest.reachedNodeParticles.steps.some(
                     (step) => "set" in step && step.set === index,
                 ) &&
-                !context.reachedNodeParticles.billboards.some(
+                !context.sceneManifest.reachedNodeParticles.billboards.some(
                     (frozen) => frozen.set === index,
                 );
             if (live) context.reachJsRandom();
-            const sheet = context.reachedNodeParticles.buffers.some(
-                (buffer) => buffer.set === index && buffer.sheet,
-            );
+            const sheet =
+                context.sceneManifest.reachedNodeParticles.buffers.some(
+                    (buffer) => buffer.set === index && buffer.sheet,
+                );
             if (live && sheet) {
                 context.fail(
                     call,
@@ -901,7 +912,7 @@ export function compileParticleIntrinsic(
             }
             if (
                 live &&
-                context.reachedNodeParticles.buffers.some(
+                context.sceneManifest.reachedNodeParticles.buffers.some(
                     (buffer) => buffer.set === index,
                 )
             ) {
@@ -910,7 +921,7 @@ export function compileParticleIntrinsic(
                     "A frozen particle buffer read cannot be combined with live particle simulation.",
                 );
             }
-            context.reachedNodeParticles.sprite2d.push({
+            context.sceneManifest.reachedNodeParticles.sprite2d.push({
                 set: index,
                 exact:
                     importedName === "registerNodeParticleSet2DWithBlendModes",
@@ -920,7 +931,8 @@ export function compileParticleIntrinsic(
             });
             context.reachFeature("sprite:2d", call);
             context.reachFeature("particle:node", call);
-            const request = context.reachedNodeParticles.sprite2d.length - 1;
+            const request =
+                context.sceneManifest.reachedNodeParticles.sprite2d.length - 1;
             context.emit(
                 "bbl::upstream::register_node_particle_set_2d(" +
                     `${renderer.engineCpp ?? context.requireDefaultEngine(call)}, ` +

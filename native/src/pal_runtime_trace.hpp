@@ -3,6 +3,9 @@
 // scene code and of any one demo.
 #pragma once
 
+#include <bblite/features/has_gizmos.hpp>
+#include <bblite/features/has_sprites.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 
@@ -51,9 +54,12 @@ struct CameraTraceState {
     Vec3d target{};
 };
 
-inline void trace_camera_state(const CameraRecord& camera, CameraTraceState& state, long frame) {
-    if (!runtime_trace_enabled())
+/** The pass camera's pose when it moved; a camera-less pass has none to report. */
+inline void trace_camera_state(const CameraRecord* pass_camera, CameraTraceState& state,
+                               long frame) {
+    if (!pass_camera || !runtime_trace_enabled())
         return;
+    const CameraRecord& camera = *pass_camera;
     constexpr double epsilon = 1e-7;
     const bool changed = !state.initialized || std::abs(camera.alpha - state.alpha) > epsilon ||
                          std::abs(camera.beta - state.beta) > epsilon ||
@@ -116,7 +122,7 @@ inline void trace_dynamic_frame(const Engine& engine, double delta_ms, long fram
         return;
 
     std::cerr << "[bblite trace] dynamic frame=" << frame << " delta-ms=" << delta_ms;
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::cerr << " billboard-systems=" << engine.billboard_systems.size();
     for (std::size_t index = 0; index < engine.billboard_systems.size(); ++index) {
         const BillboardSystemRecord& system = engine.billboard_systems[index];
@@ -142,7 +148,7 @@ inline void trace_dynamic_frame(const Engine& engine, double delta_ms, long fram
         std::cerr << " storage[" << index << "]={label=" << buffer.label
                   << ",version=" << buffer.version << ",bytes=" << buffer.bytes.size() << '}';
     }
-#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
+#if BBLITE_HAS_GIZMOS
     for (const auto& drag : engine.edit_gizmos) {
         if (!drag.dragging || drag.attached_node.value >= engine.meshes.size())
             continue;

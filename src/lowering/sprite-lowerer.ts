@@ -1,5 +1,6 @@
 import ts from "typescript";
-import { PinnedShaderText, ShaderTextBinding } from "./pinned-shader-text.js";
+import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
+import type { ShaderTextBinding } from "./pinned-shader-builders.js";
 import {
     blendFactoriesCpp,
     readPinnedBlendTable,
@@ -7,15 +8,34 @@ import {
 import { elementIndexText, LoweredSource, LoweringContext } from "./context.js";
 import {
     decodeAtlasImageCpp,
+    gridSpriteAtlasCpp,
     gridSpriteAtlasFramesCpp,
     pushAtlasHandleCpp,
 } from "./pinned-grid-atlas.js";
 import { assertFrameAtlasRule } from "./pinned-frame-atlas.js";
 import {
-    extraTextureBindingsWgsl,
-    extraTextureRecords,
-} from "../shader-builtins-sprite-fx.js";
-import { packagedWgsl } from "../pinned-wgsl-build.js";
+    type PinnedVertexAttribute,
+    pinnedVertexAttribute,
+    pinnedVertexAttributeRows,
+    vertexAttributeCpp,
+    vertexAttributeTableCpp,
+    vertexFormatFloats,
+} from "./pinned-vertex-attributes.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import {
+    absentBinding,
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { recordAt } from "../compiler/record-access.js";
+import {
+    ySortCoreCpp,
+    ySortEntryPointsCpp,
+    ySortHandleModule,
+    ySortModule,
+} from "./sprite-y-sort-lowerer.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -28,36 +48,19 @@ const uvScrollModule = "src/sprite/sprite-2d-uvscroll.ts";
 const customShaderModule = "src/sprite/sprite-custom-shader.ts";
 // Shared by both families: the fx block and its byte count.
 const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
-const ySortModule = "src/sprite/sprite-2d-y-sort.ts";
-const ySortHandleModule = "src/sprite/sprite-2d-handle-y-sort.ts";
+const pickSpriteModule = "src/sprite/picking/pick-sprite-2d.ts";
 
-/** The pinned WGSL, reconstructed for a reached 2D/depth/scroll permutation. */
-export interface SpriteShaderSource {
-    /** `Lr` struct body, one field per line, as the pin declares it. */
-    layerStructFields: string;
-    /** `I` struct body: the per-instance vertex attributes. */
-    instanceStructFields: string;
-    /** `O` struct body: the interpolants. */
-    varyingStructFields: string;
-    /** The `vs` body between its braces. */
-    vertexBody: string;
-    /** The `fs` body between its braces. */
-    fragmentBody: string;
-    /**
-     * `SpriteFx` struct body, present only for a custom-shader layer. The
-     * pin declares the block in the same builder that splices the caller's
-     * fragment in, because a body that never names `fx` still has it bound.
-     */
-    fxStructFields?: string | undefined;
-    /**
-     * The `<name>Tex` / `<name>Samp` pairs a custom shader's extra textures
-     * bind through, at this backend's own group, and empty when the body
-     * named none. Emitted by the pin's own builder, so the pair it writes
-     * per texture is the pin's.
-     */
-    extraTextureBindings: string;
+/** A reached sprite permutation: the depth host and uv-scroll opt-ins. */
+interface SpritePermutation {
+    hasDepth: boolean;
+    uvScroll: boolean;
 }
 
+/** A custom-shader program: the caller's fragment body and its extra textures. */
+interface SpriteCustomProgram {
+    fragment: string;
+    extraTextures: readonly string[];
+}
 /**
  * Lowers Babylon Lite's Sprite2D path.
  *
@@ -68,10 +71,10 @@ export interface SpriteShaderSource {
  * pin. Coverage gamma is still unreached and therefore not emitted.
  */
 export class SpriteLowerer {
-    private readonly shaderText: PinnedShaderText;
+    private readonly shaderText: PinnedShaderBuilders;
 
     public constructor(private readonly context: LoweringContext) {
-        this.shaderText = new PinnedShaderText(context);
+        this.shaderText = new PinnedShaderBuilders(context);
     }
 
     // -----------------------------------------------------------------
@@ -143,338 +146,11 @@ export class SpriteLowerer {
     }
 
     /**
-     * One row per pinned Y-sort body the emitted module restates, measured
-     * rather than guessed. `assertYSortInventory` reads them; a further body
-     * is a row here rather than a method.
-     */
-    private static readonly ySortInventory: ReadonlyArray<
-        readonly [string, readonly string[]]
-    > = [
-        ["keyAt", ["return statement"]],
-        ["allocateSerial", ["return statement"]],
-        [
-            "ensureStorage",
-            [
-                "variable statement",
-                "if statement",
-                "variable statement",
-                "if statement",
-            ],
-        ],
-        [
-            "syncCount",
-            ["expression statement", "if statement", "expression statement"],
-        ],
-        [
-            "comesBefore",
-            [
-                "variable statement",
-                "variable statement",
-                "if statement",
-                "if statement",
-                "return statement",
-            ],
-        ],
-        [
-            "ensureSorted",
-            [
-                "expression statement",
-                "if statement",
-                "variable statement",
-                "variable statement",
-                "for statement",
-                "variable statement",
-                "variable statement",
-                "for statement",
-                "if statement",
-                "for statement",
-                "expression statement",
-            ],
-        ],
-        ["markPackedDirty", ["if statement"]],
-        [
-            "observeDirty",
-            [
-                "variable statement",
-                "if statement",
-                "expression statement",
-                "variable statement",
-                "for statement",
-            ],
-        ],
-        [
-            "observeAdd",
-            [
-                "variable statement",
-                "if statement",
-                ...Array<string>(7).fill("expression statement"),
-            ],
-        ],
-        [
-            "observeRemove",
-            [
-                "variable statement",
-                "if statement",
-                "if statement",
-                ...Array<string>(6).fill("expression statement"),
-            ],
-        ],
-        [
-            "observeClear",
-            [
-                "variable statement",
-                "if statement",
-                ...Array<string>(8).fill("expression statement"),
-            ],
-        ],
-        ["packRange", ["variable statement", "for statement"]],
-        [
-            "uploadSorted",
-            [
-                "variable statement",
-                "if statement",
-                "if statement",
-                "expression statement",
-                "if statement",
-                "if statement",
-                "variable statement",
-                "variable statement",
-                "if statement",
-                ...Array<string>(5).fill("expression statement"),
-                "return statement",
-            ],
-        ],
-        [
-            "getDrawOrder",
-            [
-                "variable statement",
-                "if statement",
-                "expression statement",
-                "return statement",
-            ],
-        ],
-        [
-            "enableSprite2DYSort",
-            [
-                "if statement",
-                "variable statement",
-                "if statement",
-                "variable statement",
-                "if statement",
-                "variable statement",
-                "variable statement",
-                "for statement",
-                "expression statement",
-                "expression statement",
-                "expression statement",
-                "return statement",
-            ],
-        ],
-    ];
-
-    /**
-     * `sprite-2d-y-sort.ts`: the two things about the extension that are
-     * arithmetic rather than shape, read off the pin instead of typed here.
-     *
-     * The draw KEY is which instance lane the order is taken from plus the
-     * slot's bias, and the TIE is the insertion serial. Everything else the
-     * module does -- allocating the permutation, packing, mapping a logical
-     * dirty range through the inverse -- is bookkeeping around those two,
-     * and a bump that moved either would silently reorder every Y-sorted
-     * layer, so both are asserted where they are read.
-     */
-    private ySortContract(): number {
-        this.assertYSortInventory();
-        const { file, declaration } = this.context.functionDeclaration(
-            ySortModule,
-            "keyAt",
-        );
-        const returned = this.context.findNodes(
-            declaration,
-            ts.isReturnStatement,
-        )[0]?.expression;
-        if (
-            !returned ||
-            !ts.isBinaryExpression(returned) ||
-            returned.operatorToken.kind !== ts.SyntaxKind.PlusToken
-        ) {
-            return this.context.contractError(
-                declaration,
-                "Pinned Sprite2D Y-sort keyAt no longer adds a bias to a stored lane.",
-            );
-        }
-        const lane = this.elementIndexAddend(
-            this.context.unwrapExpression(returned.left),
-            "_instanceData",
-        );
-        if (
-            lane === undefined ||
-            this.elementAccessName(
-                this.context.unwrapExpression(returned.right),
-            ) !== "_biases"
-        ) {
-            return this.context.contractError(
-                declaration,
-                "Pinned Sprite2D Y-sort keyAt no longer reads _instanceData plus _biases.",
-            );
-        }
-        const comparator = this.context.functionDeclaration(
-            ySortModule,
-            "comesBefore",
-        );
-        const returns = this.context.findNodes(
-            comparator.declaration,
-            ts.isReturnStatement,
-        );
-        const tie = returns[returns.length - 1]?.expression;
-        if (
-            !tie ||
-            !ts.isBinaryExpression(tie) ||
-            tie.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
-            this.elementAccessName(tie.left) !== "_serials" ||
-            this.elementAccessName(tie.right) !== "_serials"
-        ) {
-            return this.context.contractError(
-                comparator.declaration,
-                "Pinned Sprite2D Y-sort no longer breaks equal keys by ascending insertion serial.",
-            );
-        }
-        if (
-            !this.context.hasNode(
-                comparator.declaration,
-                (node) =>
-                    ts.isElementAccessExpression(node) &&
-                    this.elementAccessName(node) === "_keys",
-            )
-        ) {
-            return this.context.contractError(
-                comparator.declaration,
-                "Pinned Sprite2D Y-sort no longer orders by the cached key.",
-            );
-        }
-        // The handle companion is the one entry point scene code reaches
-        // the bias through; it resolving the slot rather than taking one is
-        // why a removal cannot leave a scene biasing another sprite.
-        const handleSetter = this.context.functionDeclaration(
-            ySortHandleModule,
-            "setSprite2DYSortHandleBias",
-        );
-        if (
-            !this.context.hasNode(
-                handleSetter.declaration,
-                (node) =>
-                    ts.isCallExpression(node) &&
-                    ts.isIdentifier(node.expression) &&
-                    node.expression.text === "getSprite2DHandleIndex",
-            )
-        ) {
-            this.context.contractError(
-                handleSetter.declaration,
-                "Pinned setSprite2DYSortHandleBias no longer resolves the handle's current slot.",
-            );
-        }
-        if (lane !== 1) {
-            // The emitted key reads the lane the pin names, but the writer
-            // that PUTS positionPx.y there spells its own offset, so the
-            // two have to agree or a Y-sorted layer would order by whatever
-            // lane 1 now holds without anything saying so.
-            this.context.contractError(
-                file,
-                `Pinned Sprite2D Y-sort orders by instance lane ${lane}, ` +
-                    "which is not the lane write_sprite_instance stores " +
-                    "positionPx.y into.",
-            );
-        }
-        return lane;
-    }
-
-    /**
-     * Every pinned Y-sort body this module restates, by statement kind.
-     *
-     * The two expression anchors above pin the draw key and its tie, which
-     * is what decides ORDER. They say nothing about the rest of the module,
-     * and the rest of the module is restated in C++ rather than lowered
-     * from its AST -- a mirror, which `docs/fidelity.md` records as the
-     * weaker form precisely because it can silently omit an arm where a
-     * lowering refuses one it cannot express. A bump that adds a branch to
-     * `syncCount`'s grow/shrink arms, to `uploadSorted`'s dirty-range
-     * mapping, or to the enabler's guards would reorder every Y-sorted
-     * layer with generation staying green.
-     *
-     * So the inventory is the third anchor, the same technique
-     * `physics-lowerer.ts` applies to the bodies it restates whole: an
-     * added, removed or reordered statement fails generation by name
-     * instead. It is a count of shapes, not of behaviour -- it cannot see a
-     * changed expression inside a statement, which is what the two anchors
-     * above are for.
-     */
-    private assertYSortInventory(): void {
-        for (const [symbolName, kinds] of SpriteLowerer.ySortInventory) {
-            const { declaration } = this.context.functionDeclaration(
-                ySortModule,
-                symbolName,
-            );
-            this.context.assertStatementInventory(
-                declaration,
-                declaration.body!.statements,
-                symbolName,
-                "the emitted Y-sort module restates a body",
-                kinds,
-            );
-        }
-    }
-
-    /**
-     * The `_name` an `x._name[i]` element access reads, if it is one.
-     *
-     * The pinned source spells every one of these with a non-null assertion
-     * (`state._serials[left]!`), so the expression is unwrapped first.
-     */
-    private elementAccessName(node: ts.Node): string | undefined {
-        const unwrapped = ts.isExpression(node)
-            ? this.context.unwrapExpression(node)
-            : node;
-        return ts.isElementAccessExpression(unwrapped) &&
-            ts.isPropertyAccessExpression(unwrapped.expression)
-            ? unwrapped.expression.name.text
-            : undefined;
-    }
-
-    /**
-     * The literal added to the row base in an `x._name[i * stride + N]`
-     * read: the lane the expression addresses.
-     */
-    private elementIndexAddend(
-        node: ts.Node,
-        name: string,
-    ): number | undefined {
-        if (
-            !ts.isElementAccessExpression(node) ||
-            this.elementAccessName(node) !== name
-        ) {
-            return undefined;
-        }
-        const argument = this.context.unwrapExpression(node.argumentExpression);
-        if (
-            !ts.isBinaryExpression(argument) ||
-            argument.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
-            !ts.isNumericLiteral(argument.right)
-        ) {
-            return undefined;
-        }
-        return this.context.numericValue(argument.right, node.getSourceFile());
-    }
-
-    /**
      * `sprite-2d-uvscroll.ts` ensureWide: the row the pin stashes for the
      * widened layout, read rather than typed. Its offset is the narrow
      * stride, which is the one part the pin computes at run time.
      */
-    private uvScrollAttribute(instanceFloats: number): {
-        location: number;
-        offsetBytes: number;
-        floatCount: number;
-    } {
+    private uvScrollAttribute(instanceFloats: number): PinnedVertexAttribute {
         const { declaration } = this.context.functionDeclaration(
             uvScrollModule,
             "ensureWide",
@@ -509,13 +185,6 @@ export class SpriteLowerer {
             this.context.propertyInitializer(literal, "format"),
             file,
         );
-        const match = /^float32(?:x([234]))?$/.exec(format);
-        if (!match) {
-            this.context.contractError(
-                literal,
-                `Unsupported uvScroll attribute format '${format}'.`,
-            );
-        }
         // The pin writes the offset as `oldStride * 4`, which is the narrow
         // stride in bytes -- so it is asserted rather than read.
         this.context.assertExpressionShape(
@@ -531,120 +200,31 @@ export class SpriteLowerer {
         return {
             location,
             offsetBytes: instanceFloats * 4,
-            floatCount: match[1] === undefined ? 1 : Number(match[1]),
+            floatCount: vertexFormatFloats(this.context, format, literal),
         };
     }
 
     /**
      * `sprite-pipeline.ts`: the pure-2D per-instance vertex attributes at
-     * the pin's own byte offsets. The offsets are the module's named
-     * constants and the rows are `instanceAttributes`' base literal (the
-     * depth and uv-scroll rows append behind opt-ins the pure-2D slice
-     * never takes), so a moved slot or widened format fails generation
-     * instead of drifting inside two hand-written PAL tables.
+     * the pin's own byte offsets. The rows are `instanceAttributes`' base
+     * literal (the depth and uv-scroll rows append behind opt-ins the
+     * pure-2D slice never takes).
      */
-    private instanceAttributeRows(instanceFloats: number): Array<{
-        location: number;
-        offsetBytes: number;
-        floatCount: number;
-    }> {
-        const file = this.context.sourceFile(pipelineModule);
-        const array = this.context.unwrapExpression(
-            this.context.variableInitializer(file, "instanceAttributes"),
+    private instanceAttributeRows(
+        instanceFloats: number,
+    ): PinnedVertexAttribute[] {
+        return pinnedVertexAttributeRows(
+            this.context,
+            this.context.variableInitializer(
+                this.context.sourceFile(pipelineModule),
+                "instanceAttributes",
+            ),
+            instanceFloats,
         );
-        if (!ts.isArrayLiteralExpression(array)) {
-            return this.context.contractError(
-                array,
-                "Expected the pinned instanceAttributes array literal.",
-            );
-        }
-        const rows = array.elements.map((element) => {
-            const literal = this.context.unwrapExpression(element);
-            if (!ts.isObjectLiteralExpression(literal)) {
-                return this.context.contractError(
-                    literal,
-                    "Expected a pinned sprite attribute object literal.",
-                );
-            }
-            let location: number | undefined;
-            let offsetBytes: number | undefined;
-            let floatCount: number | undefined;
-            for (const property of literal.properties) {
-                if (!ts.isPropertyAssignment(property)) continue;
-                const name = this.context.propertyName(property.name);
-                if (name === "shaderLocation") {
-                    location = this.context.numericValue(
-                        property.initializer,
-                        file,
-                    );
-                } else if (name === "offset") {
-                    const reference = this.context.unwrapExpression(
-                        property.initializer,
-                    );
-                    if (!ts.isIdentifier(reference)) {
-                        return this.context.contractError(
-                            reference,
-                            "Expected a named sprite offset constant.",
-                        );
-                    }
-                    offsetBytes = this.context.numericValue(
-                        this.context.variableInitializer(file, reference.text),
-                        file,
-                    );
-                } else if (name === "format") {
-                    const format = this.context.unwrapExpression(
-                        property.initializer,
-                    );
-                    if (!ts.isStringLiteral(format)) {
-                        return this.context.contractError(
-                            format,
-                            "Expected a sprite attribute format string.",
-                        );
-                    }
-                    const match = /^float32(?:x([234]))?$/.exec(format.text);
-                    if (!match) {
-                        return this.context.contractError(
-                            format,
-                            `Unsupported sprite attribute format '${format.text}'.`,
-                        );
-                    }
-                    floatCount = match[1] === undefined ? 1 : Number(match[1]);
-                }
-            }
-            if (
-                location === undefined ||
-                offsetBytes === undefined ||
-                floatCount === undefined
-            ) {
-                return this.context.contractError(
-                    literal,
-                    "Pinned sprite attribute misses shaderLocation, offset or format.",
-                );
-            }
-            return { location, offsetBytes, floatCount };
-        });
-        // The base rows must tile the pure-2D stride exactly: the last
-        // attribute ends where PURE_2D_INSTANCE_FLOATS_PER_SPRITE says the
-        // instance does, or the two pinned modules disagree.
-        const lastEnd = rows.reduce(
-            (max, row) => Math.max(max, row.offsetBytes + row.floatCount * 4),
-            0,
-        );
-        if (lastEnd !== instanceFloats * 4) {
-            this.context.contractError(
-                array,
-                `Pinned sprite attributes end at ${lastEnd} bytes, expected ${instanceFloats * 4}.`,
-            );
-        }
-        return rows;
     }
 
     /** The optional depth row appended by `buildSpritePipeline`. */
-    private depthAttribute(): {
-        location: number;
-        offsetBytes: number;
-        floatCount: number;
-    } {
+    private depthAttribute(): PinnedVertexAttribute {
         const file = this.context.sourceFile(pipelineModule);
         const push = this.context.findNodes(
             file,
@@ -661,41 +241,14 @@ export class SpriteLowerer {
                 "Pinned sprite pipeline no longer appends one depth attribute.",
             );
         }
-        const literal = this.context.unwrapExpression(push.arguments[0]!);
-        if (!ts.isObjectLiteralExpression(literal)) {
+        const row = pinnedVertexAttribute(this.context, push.arguments[0]!);
+        if (row.floatCount !== 1) {
             return this.context.contractError(
-                literal,
-                "Expected the pinned sprite depth attribute literal.",
+                push,
+                `Pinned sprite depth attribute carries ${row.floatCount} floats, expected one.`,
             );
         }
-        const location = this.context.numericValue(
-            this.context.propertyInitializer(literal, "shaderLocation"),
-            file,
-        );
-        const offset = this.context.unwrapExpression(
-            this.context.propertyInitializer(literal, "offset"),
-        );
-        if (!ts.isIdentifier(offset)) {
-            return this.context.contractError(
-                offset,
-                "Expected the named sprite depth offset constant.",
-            );
-        }
-        const offsetBytes = this.context.numericValue(
-            this.context.variableInitializer(file, offset.text),
-            file,
-        );
-        const format = this.context.stringValue(
-            this.context.propertyInitializer(literal, "format"),
-            file,
-        );
-        if (format !== "float32") {
-            return this.context.contractError(
-                literal,
-                `Pinned sprite depth attribute uses '${format}', expected float32.`,
-            );
-        }
-        return { location, offsetBytes, floatCount: 1 };
+        return row;
     }
 
     /** Scene-hosted bucket, growth, and hidden-update contracts. */
@@ -823,15 +376,7 @@ export class SpriteLowerer {
             [7, "vMax"],
             [8, "rotation"],
         ];
-        const writes = this.context.findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isElementAccessExpression(node.left) &&
-                ts.isIdentifier(node.left.expression) &&
-                node.left.expression.text === "data",
-        );
+        const writes = this.context.pinnedElementStores(declaration, "data");
         for (const [slot, source] of expected) {
             const write = writes.find(
                 (node) => elementIndexText(node.left) === `base + ${slot}`,
@@ -1071,62 +616,6 @@ export class SpriteLowerer {
         );
     }
 
-    /** `createGridSpriteAtlas` derives columns, rows, and each frame's UVs. */
-    private assertGridAtlas(): void {
-        const { declaration } = this.context.functionDeclaration(
-            atlasModule,
-            "createGridSpriteAtlas",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "cols"),
-            "options.columns ?? Math.max(1, Math.floor((texture.width - margin * 2 + spacing) / (cellW + spacing)))",
-            "createGridSpriteAtlas columns",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "rows"),
-            "options.rows ?? Math.max(1, Math.floor((texture.height - margin * 2 + spacing) / (cellH + spacing)))",
-            "createGridSpriteAtlas rows",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "x"),
-            "margin + c * (cellW + spacing)",
-            "createGridSpriteAtlas frame x",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "y"),
-            "margin + r * (cellH + spacing)",
-            "createGridSpriteAtlas frame y",
-        );
-        const push = this.context.findNodes(
-            declaration,
-            (node): node is ts.CallExpression =>
-                ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(node.expression) &&
-                node.expression.name.text === "push",
-        )[0];
-        const frame = push
-            ? this.context.unwrapExpression(push.arguments[0]!)
-            : undefined;
-        if (!frame || !ts.isObjectLiteralExpression(frame)) {
-            this.context.contractError(
-                declaration,
-                "Pinned createGridSpriteAtlas no longer pushes frame literals.",
-            );
-        }
-        for (const [name, source] of [
-            ["uvMin", "[x / tw, y / th]"],
-            ["uvMax", "[(x + cellW) / tw, (y + cellH) / th]"],
-            ["sourceSizePx", "[cellW, cellH]"],
-            ["pivot", "[pivot[0], pivot[1]]"],
-        ] as const) {
-            this.context.assertExpressionShape(
-                this.context.propertyInitializer(frame, name),
-                source,
-                `createGridSpriteAtlas frame ${name}`,
-            );
-        }
-    }
-
     /** `resolveSpriteFrame` is a bounds check and nothing else. */
     private assertFrameResolution(): void {
         const { declaration } = this.context.functionDeclaration(
@@ -1197,74 +686,20 @@ export class SpriteLowerer {
     }
 
     /**
-     * The slot expressions a pinned writer fills, checked against the pin.
+     * `writeSpriteFxUbo`, translated from `custom-shader-core.ts`, and
+     * `SPRITE_FX_UBO_BYTES`, the size the block is bound as.
      *
-     * Both pinned writers this lowerer reads state their layout the same
-     * way — an assignment per float into a named array — so the walk is
-     * written once and each caller says which array and what it expects.
+     * The module is shared between the two families, so the writer is
+     * emitted once here and the billboard system reads it out of the same
+     * header, the way it already does for `resolveSpriteFrame`. The pin's
+     * trailing `writeBuffer` is the backend's upload, which each PAL makes
+     * with the block this fills; the caller's `Vec4` always carries four
+     * parameters, which is the pin's `params[i] ?? 0` over a full list.
      */
-    private assertSlotWrites(
-        declaration: ts.FunctionDeclaration,
-        symbolName: string,
-        arrayName: string,
-        expected: ReadonlyArray<[number, string]>,
-    ): void {
-        const writes = this.context.findNodes(
-            declaration,
-            (node): node is ts.BinaryExpression =>
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                ts.isElementAccessExpression(node.left) &&
-                ts.isIdentifier(node.left.expression) &&
-                node.left.expression.text === arrayName,
-        );
-        for (const [slot, source] of expected) {
-            const write = writes.find(
-                (node) => elementIndexText(node.left) === String(slot),
-            );
-            if (!write) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned ${symbolName} no longer writes float ${slot}.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                write.right,
-                source,
-                `${symbolName} float ${slot}`,
-            );
-        }
-    }
-
-    /**
-     * `writeSpriteFxUbo` fills eight floats in a fixed order, and
-     * `SPRITE_FX_UBO_BYTES` is what the block is bound as.
-     *
-     * The module is shared between the two families, so the check and the
-     * function it guards are stated once here and the billboard system
-     * reads them out of the same header, the way it already does for
-     * `resolveSpriteFrame`.
-     */
-    private assertFxUbo(): number {
+    private fxUboCpp(): { bytes: number; cpp: string } {
         const { declaration, file } = this.context.functionDeclaration(
             customShaderCoreModule,
             "writeSpriteFxUbo",
-        );
-        const expected: readonly string[] = [
-            "timeSeconds",
-            "0",
-            "0",
-            "0",
-            "params[0] ?? 0",
-            "params[1] ?? 0",
-            "params[2] ?? 0",
-            "params[3] ?? 0",
-        ];
-        this.assertSlotWrites(
-            declaration,
-            "writeSpriteFxUbo",
-            "scratch",
-            expected.map((source, slot) => [slot, source]),
         );
         const bytes = this.context.numericValue(
             this.context.variableInitializer(
@@ -1273,57 +708,83 @@ export class SpriteLowerer {
             ),
             file,
         );
-        if (bytes !== expected.length * 4) {
+        const stores = this.context.pinnedElementStores(
+            declaration,
+            "scratch",
+        ).length;
+        if (bytes !== stores * 4) {
             this.context.contractError(
                 declaration,
-                `Pinned SPRITE_FX_UBO_BYTES is ${bytes}, which is not the ${expected.length} floats written.`,
+                `Pinned SPRITE_FX_UBO_BYTES is ${bytes}, which is not the ${stores} floats written.`,
             );
         }
-        return bytes;
-    }
-
-    /** `buildSpriteLayerUbo` fills sixteen floats in a fixed order. */
-    private assertLayerUbo(): void {
-        const { declaration, file } = this.context.functionDeclaration(
-            pipelineModule,
-            "buildSpriteLayerUbo",
+        const parameters = ["device", "fxBuffer", "timeSeconds", "params"];
+        const pinned = declaration.parameters.map((parameter) =>
+            parameter.name.getText(file),
         );
-        const expected: ReadonlyArray<[number, string]> = [
-            [0, "layer.view.positionPx[0]"],
-            [1, "layer.view.positionPx[1]"],
-            [2, "layer.view.zoom"],
-            [3, "layer.view.rotation"],
-            [4, "screenWidth"],
-            [5, "screenHeight"],
-            [6, "layer.pivot[0]"],
-            [7, "layer.pivot[1]"],
-        ];
-        this.assertSlotWrites(
-            declaration,
-            "buildSpriteLayerUbo",
-            "ubo",
-            expected,
-        );
-        // Straight alpha scales only A; premultiplied scales RGB too. Only
-        // the straight arm is reached, and it has to be the `else`.
-        const branch = this.context.findNodes(
-            declaration,
-            (node): node is ts.IfStatement => ts.isIfStatement(node),
-        )[0];
         if (
-            !branch?.elseStatement ||
-            !this.context.hasNode(
-                branch.expression,
-                (node) =>
-                    ts.isPropertyAccessExpression(node) &&
-                    node.name.text === "_premultipliedOpacity",
-            )
+            pinned.length !== parameters.length + 1 ||
+            parameters.some((name, index) => pinned[index] !== name) ||
+            pinned[parameters.length] !== "scratch"
         ) {
             this.context.contractError(
                 declaration,
-                "Pinned buildSpriteLayerUbo no longer branches on premultiplied opacity.",
+                "Expected pinned writeSpriteFxUbo(device, fxBuffer, timeSeconds, params, scratch).",
             );
         }
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
+            bindings: new Map<string, PinnedBinding>([
+                ["timeSeconds", { cpp: "time_seconds", type: "scalar" }],
+                ["scratch", { cpp: "ubo", type: "f32" }],
+                ...(["x", "y", "z", "w"] as const).map(
+                    (lane, index): [string, PinnedBinding] => [
+                        `params[${index}]`,
+                        {
+                            cpp: `static_cast<double>(params.${lane})`,
+                            type: "scalar",
+                        },
+                    ],
+                ),
+            ]),
+            calls: new Map(),
+            statement: (statement) => {
+                if (
+                    ts.isExpressionStatement(statement) &&
+                    this.context.expressionMatchesShape(
+                        statement.expression,
+                        "device.queue.writeBuffer(fxBuffer, 0, scratch.buffer, scratch.byteOffset, SPRITE_FX_UBO_BYTES)",
+                    )
+                ) {
+                    return [];
+                }
+                return undefined;
+            },
+        });
+        return {
+            bytes,
+            cpp: `// ${this.context.provenance(customShaderCoreModule, "writeSpriteFxUbo")}
+inline void build_sprite_fx_ubo(
+    double time_seconds,
+    const Vec4& params,
+    std::array<float, sprite_fx_ubo_bytes / 4u>& ubo) {
+${body}
+}`,
+        };
+    }
+
+    /**
+     * `buildSpriteLayerUbo`, translated from `sprite-pipeline.ts`: the view,
+     * the screen size, the pivot and the opacity multiplier. The coverage
+     * gamma hook it calls last is installed only by
+     * `setSprite2DCoverageGamma`, which no reached layer takes, so its lanes
+     * keep the zeroes the caller's block starts with -- the pin's own
+     * zero-initialized scratch.
+     */
+    private layerUboCpp(): string {
+        const { file } = this.context.functionDeclaration(
+            pipelineModule,
+            "buildSpriteLayerUbo",
+        );
         const bytes = this.context.numericValue(
             this.context.variableInitializer(file, "LAYER_UBO_BYTES"),
             file,
@@ -1334,6 +795,326 @@ export class SpriteLowerer {
                 `Pinned sprite layer UBO is ${bytes} bytes, expected 64.`,
             );
         }
+        const scalar = (cpp: string): PinnedBinding => ({
+            cpp: `static_cast<double>(${cpp})`,
+            type: "scalar",
+        });
+        return lowerPinnedFunction(
+            this.context,
+            pipelineModule,
+            "buildSpriteLayerUbo",
+            [
+                {
+                    pinned: "layer",
+                    kind: "record",
+                    cpp: "layer",
+                    cppType: "Sprite2DLayerRecord",
+                    annotation: "Sprite2DLayer",
+                },
+                { pinned: "screenWidth", kind: "number", cpp: "screen_width" },
+                {
+                    pinned: "screenHeight",
+                    kind: "number",
+                    cpp: "screen_height",
+                },
+                {
+                    pinned: "ubo",
+                    kind: "f32Buffer",
+                    cpp: "ubo",
+                    cppType: `std::array<float, ${bytes / 4}>`,
+                    mutableRecord: true,
+                },
+            ],
+            {
+                cppName: "build_sprite_layer_ubo",
+                returns: "void",
+                inline: true,
+                memberBindings: new Map<string, PinnedBinding>([
+                    [
+                        "layer.view.positionPx[0]",
+                        scalar("layer.view.position_px.x"),
+                    ],
+                    [
+                        "layer.view.positionPx[1]",
+                        scalar("layer.view.position_px.y"),
+                    ],
+                    ["layer.view.zoom", scalar("layer.view.zoom")],
+                    ["layer.view.rotation", scalar("layer.view.rotation")],
+                    ["layer.pivot[0]", scalar("layer.pivot.x")],
+                    ["layer.pivot[1]", scalar("layer.pivot.y")],
+                    ["layer.opacity", scalar("layer.opacity")],
+                    [
+                        "layer.blendMode._premultipliedOpacity",
+                        {
+                            cpp: "layer.blend.premultiplied_opacity",
+                            type: "bool",
+                        },
+                    ],
+                    ["_getSpriteCoverageGammaHook()", absentBinding()],
+                ]),
+            },
+        );
+    }
+
+    /**
+     * `compareLayers`, the comparator `spriteRendererUpdate` sorts a
+     * renderer's layers by, translated from `sprite-renderer.ts`.
+     */
+    /**
+     * `spriteRendererUpdate`'s `if (rr.layers.length > 1) rr._layers.sort(
+     * compareLayers)`: the renderer's own list sorted IN PLACE once per frame,
+     * after its hooks ran and before anything reads it. JavaScript's sort is
+     * stable over the order the list was left in, so a tie after an order
+     * change resolves against the previous frame's order rather than the
+     * registration order; `std::stable_sort` over the record's own list is
+     * that. A reorder moves each backend's per-layer GPU records with it
+     * through `layers_version`, as the pin's `_layerGpu` map is keyed by layer.
+     */
+    private sortLayersCpp(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            rendererModule,
+            "spriteRendererUpdate",
+        );
+        const guards = this.context.findNodes(
+            declaration,
+            (node): node is ts.IfStatement =>
+                ts.isIfStatement(node) &&
+                this.context
+                    .findNodes(
+                        node.thenStatement,
+                        (call): call is ts.CallExpression =>
+                            ts.isCallExpression(call) &&
+                            call.expression.getText(file) === "rr._layers.sort",
+                    )
+                    .some(
+                        (call) =>
+                            call.arguments.length === 1 &&
+                            call.arguments[0]!.getText(file) ===
+                                "compareLayers",
+                    ),
+        );
+        const guard = guards[0];
+        if (guards.length !== 1 || !guard || guard.elseStatement) {
+            return this.context.contractError(
+                declaration,
+                "Expected spriteRendererUpdate to sort rr._layers in place by compareLayers under one guard.",
+            );
+        }
+        const condition = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                [
+                    "rr.layers.length",
+                    {
+                        cpp: "static_cast<double>(renderer.layers.size())",
+                        type: "scalar",
+                    },
+                ],
+            ]),
+            calls: new Map(),
+        }).expression(guard.expression);
+        return `/**
+ * ${this.context.provenance(rendererModule, "spriteRendererUpdate", "rr._layers.sort(compareLayers)")}
+ * The renderer's layer list sorted in place, stable over the order the last
+ * frame left it in; both backends and the capture then walk the list as it
+ * stands. A reorder bumps \`layers_version\`, which moves each backend's
+ * per-layer GPU records to the new positions without rebuilding them.
+ */
+inline void sort_sprite_renderer_layers(
+    const Engine& engine,
+    SpriteRendererRecord& renderer) {
+    if (${condition}) {
+        std::vector<Sprite2DLayerHandle> sorted = renderer.layers;
+        std::stable_sort(
+            sorted.begin(),
+            sorted.end(),
+            [&](Sprite2DLayerHandle left, Sprite2DLayerHandle right) {
+                return upstream::compare_sprite_layers(
+                           ${recordAt("engine.sprite_layers", "left")},
+                           ${recordAt("engine.sprite_layers", "right")}) < 0.0;
+            });
+        const bool moved = !std::equal(
+            sorted.begin(),
+            sorted.end(),
+            renderer.layers.begin(),
+            [](Sprite2DLayerHandle left, Sprite2DLayerHandle right) {
+                return left.value == right.value;
+            });
+        if (moved) {
+            renderer.layers = std::move(sorted);
+            renderer.layers_version += 1u;
+        }
+    }
+}`;
+    }
+
+    private compareLayersCpp(): string {
+        const layer = (name: string) => ({
+            pinned: name,
+            kind: "record" as const,
+            cpp: name,
+            cppType: "Sprite2DLayerRecord",
+            annotation: "Sprite2DLayer",
+        });
+        return lowerPinnedFunction(
+            this.context,
+            rendererModule,
+            "compareLayers",
+            [layer("a"), layer("b")],
+            {
+                cppName: "compare_sprite_layers",
+                returns: "double",
+                inline: true,
+                memberBindings: new Map<string, PinnedBinding>(
+                    ["a", "b"].map((name): [string, PinnedBinding] => [
+                        `${name}.order`,
+                        {
+                            cpp: `static_cast<double>(${name}.order)`,
+                            type: "scalar",
+                        },
+                    ]),
+                ),
+            },
+        );
+    }
+
+    /**
+     * `pickSprite2D`, translated from `sprite/picking/pick-sprite-2d.ts`.
+     *
+     * The pin walks sprite LAYER records; this port holds handles, so the
+     * record each one names is resolved where the pin reads `layers[li]`,
+     * and the handle is what the answer carries. The optional Y-sort hook
+     * is the engine's own, empty until a layer enables the extension -- the
+     * pin's `_getSprite2DYSortHook()?.drawOrder(layer)`.
+     */
+    private pickSprite2DCpp(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            pickSpriteModule,
+            "pickSprite2D",
+        );
+        const signature = declaration.parameters.map(
+            (parameter) =>
+                `${parameter.name.getText(file)}: ${parameter.type?.getText(file)}`,
+        );
+        const expected = [
+            "layers: ReadonlyArray<Sprite2DLayer>",
+            "xPx: number",
+            "yPx: number",
+        ];
+        if (signature.join(", ") !== expected.join(", ")) {
+            this.context.contractError(
+                declaration,
+                `Expected pinned pickSprite2D(${expected.join(", ")}).`,
+            );
+        }
+        const scalar = (cpp: string): PinnedBinding => ({
+            cpp: `static_cast<double>(${cpp})`,
+            type: "scalar",
+        });
+        const bindings = new Map<string, PinnedBinding>([
+            ["layers.length", scalar("layers.size()")],
+            ["xPx", { cpp: "x_px", type: "scalar" }],
+            ["yPx", { cpp: "y_px", type: "scalar" }],
+            ["layer.visible", { cpp: "layer.visible", type: "bool" }],
+            [
+                "layer._instanceData",
+                { cpp: "layer.instance_data", type: "f32" },
+            ],
+            [
+                "layer._instanceFloatsPerSprite",
+                scalar("layer.instance_floats_per_sprite"),
+            ],
+            ["layer.pivot[0]", scalar("layer.pivot.x")],
+            ["layer.pivot[1]", scalar("layer.pivot.y")],
+            ["layer.count", scalar("layer.count")],
+        ]);
+        const body = lowerPinnedBody(file, declaration.body!.statements, {
+            bindings,
+            calls: pinnedNumericMathCalls(),
+            booleanAnd: true,
+            statement: (statement, lowerer, indent) => {
+                if (!ts.isVariableStatement(statement)) return undefined;
+                const local = statement.declarationList.declarations[0]!;
+                const name = local.name.getText(file);
+                if (name === "layer") {
+                    const read = this.context.unwrapExpression(
+                        local.initializer!,
+                    );
+                    if (
+                        !ts.isElementAccessExpression(read) ||
+                        read.expression.getText(file) !== "layers"
+                    ) {
+                        return this.context.contractError(
+                            local,
+                            "Expected pickSprite2D to read its layer as layers[li].",
+                        );
+                    }
+                    return [
+                        `${indent}const Sprite2DLayerHandle layer_handle = ` +
+                            `layers[static_cast<std::size_t>(${lowerer.expression(read.argumentExpression)})];`,
+                        `${indent}const Sprite2DLayerRecord& layer = ` +
+                            `${recordAt("engine.sprite_layers", "layer_handle")};`,
+                    ];
+                }
+                if (name === "drawOrder") {
+                    this.context.assertExpressionShape(
+                        local.initializer!,
+                        "_getSprite2DYSortHook()?.drawOrder(layer)",
+                        "pickSprite2D draw order",
+                    );
+                    bindings.set("drawOrder", {
+                        cpp: "draw_order",
+                        type: "u32",
+                        absentCpp: "draw_order == nullptr",
+                    });
+                    return [
+                        `${indent}const std::uint32_t* draw_order = ` +
+                            "engine.sprite_y_sort_hook.draw_order ? " +
+                            "engine.sprite_y_sort_hook.draw_order(layer) : nullptr;",
+                    ];
+                }
+                return undefined;
+            },
+            returnValue: (expression, lowerer) => {
+                const returned = expression
+                    ? this.context.unwrapExpression(expression)
+                    : undefined;
+                if (returned?.kind === ts.SyntaxKind.NullKeyword) {
+                    return "std::nullopt";
+                }
+                if (
+                    !returned ||
+                    !ts.isObjectLiteralExpression(returned) ||
+                    returned.properties.length !== 4
+                ) {
+                    return this.context.contractError(
+                        expression ?? declaration,
+                        "Expected pickSprite2D to return null or its four-field hit.",
+                    );
+                }
+                this.context.assertExpressionShape(
+                    this.context.propertyInitializer(returned, "layer"),
+                    "layer",
+                    "pickSprite2D hit layer",
+                );
+                const member = (name: string): string =>
+                    lowerer.expression(
+                        this.context.propertyInitializer(returned, name),
+                    );
+                return (
+                    `Sprite2DPickResult{layer_handle, ` +
+                    `static_cast<std::uint32_t>(${member("spriteIndex")}), ` +
+                    `${member("u")}, ${member("v")}}`
+                );
+            },
+        });
+        return `// ${this.context.provenance(pickSpriteModule, "pickSprite2D")}
+[[nodiscard]] inline std::optional<Sprite2DPickResult> pick_sprite_2d(
+    const Engine& engine,
+    const std::vector<Sprite2DLayerHandle>& layers,
+    double x_px,
+    double y_px) {
+${body}
+}`;
     }
 
     /** The shared quad: four corners, six indices, one instanced draw. */
@@ -1381,93 +1162,46 @@ export class SpriteLowerer {
     // -----------------------------------------------------------------
 
     /**
-     * Reconstructs the shader the pin builds for the reached permutation
-     * selected depth/uv permutation by evaluating its
-     * own template rather than by transcribing the result. Anything the
-     * evaluator cannot fold is a contract failure, so a changed shader
-     * stops generation instead of silently keeping this copy.
+     * The module the pin hands WebGPU for a layer's permutation, built by
+     * evaluating its own builder: `makeSpriteWgsl`, or -- for a
+     * custom-shader layer -- `makeCustomSpriteWgsl`, which composes the
+     * caller's body with the same prologue, its extra textures and the fx
+     * block. It is deployed whole: each stage enters where the module
+     * declares it does, the compiler keeps what that entry point reads, and
+     * the compaction re-homes the pin's one group for SDL_GPU. Anything the
+     * evaluator cannot fold is a contract failure, so a changed builder
+     * stops generation.
      */
-    public shaderSource(
-        uvScroll = false,
-        customFragment?: string,
-        extraTextures: readonly string[] = [],
-        hasDepth = false,
-    ): SpriteShaderSource {
-        const permutation = new Map<string, ShaderTextBinding>([
-            ["hasDepth", hasDepth],
-            ["spriteGroupIndex", hasDepth ? "1" : "0"],
-            ["uvScroll", uvScroll],
+    public module(
+        permutation: SpritePermutation,
+        custom?: SpriteCustomProgram,
+    ): string {
+        // The pin's own call: `makeSpriteWgsl(hasDepth, hasDepth ? 1 : 0,
+        // uvScroll)`, the depth host's scene group taking group 0.
+        const parameters = new Map<string, ShaderTextBinding>([
+            ["hasDepth", permutation.hasDepth],
+            ["spriteGroupIndex", permutation.hasDepth ? "1" : "0"],
+            ["uvScroll", permutation.uvScroll],
         ]);
-        // A custom-shader layer keeps the engine's vertex stage and
-        // replaces only the fragment body, which the pin expresses by
-        // composing the same prologue with the caller's text -- so one
-        // builder yields both halves here.
-        const composed =
-            customFragment === undefined
-                ? undefined
-                : this.shaderText.evaluate(
-                      customShaderModule,
-                      "makeCustomSpriteWgsl",
-                      new Map<string, ShaderTextBinding>([
-                          ...permutation,
-                          ["extraTextures", extraTextureRecords(extraTextures)],
-                          ["fragment", customFragment],
-                      ]),
-                  );
-        const prologue =
-            composed ??
-            this.shaderText.evaluate(
-                pipelineModule,
-                "makeSpritePrologueWgsl",
-                permutation,
-            );
-        const full =
-            composed ??
-            this.shaderText.evaluate(
-                pipelineModule,
-                "makeSpriteWgsl",
-                permutation,
-            );
-        return {
-            layerStructFields: this.shaderText.braced(
-                prologue,
-                packagedWgsl`struct Lr {`,
-                "sprite layer uniform struct",
-            ),
-            instanceStructFields: this.shaderText.braced(
-                prologue,
-                packagedWgsl`struct I {`,
-                "sprite instance struct",
-            ),
-            varyingStructFields: this.shaderText.braced(
-                prologue,
-                packagedWgsl`struct O {`,
-                "sprite varying struct",
-            ),
-            vertexBody: this.shaderText.braced(
-                prologue,
-                packagedWgsl`fn vs(in: I) -> O {`,
-                "sprite vertex stage",
-            ),
-            fragmentBody: this.shaderText.braced(
-                full,
-                packagedWgsl`fn fs(in: O) -> @location(0) vec4f {`,
-                "sprite fragment stage",
-            ),
-            fxStructFields: composed
-                ? this.shaderText.braced(
-                      composed,
-                      packagedWgsl`struct SpriteFx {`,
-                      "sprite fx uniform struct",
-                  )
-                : undefined,
-            extraTextureBindings: extraTextureBindingsWgsl(
-                this.shaderText,
-                extraTextures,
-            ),
-        };
+        return custom === undefined
+            ? this.shaderText.evaluate(
+                  pipelineModule,
+                  "makeSpriteWgsl",
+                  parameters,
+              )
+            : this.shaderText.evaluate(
+                  customShaderModule,
+                  "makeCustomSpriteWgsl",
+                  new Map<string, ShaderTextBinding>([
+                      ...parameters,
+                      [
+                          "extraTextures",
+                          custom.extraTextures.map((name) => ({ name })),
+                      ],
+                      ["fragment", custom.fragment],
+                  ]),
+              );
     }
-
     // -----------------------------------------------------------------
     // Emission
     // -----------------------------------------------------------------
@@ -1478,7 +1212,6 @@ export class SpriteLowerer {
         // its enabler -- upstream registers its hook from inside that call
         // and leaves every other layer on the canonical logical order, so
         // the enabler is the whole opt-in and nothing else detects it.
-        const ySortKeyLane = ySort ? this.ySortContract() : 0;
         const blends = readPinnedBlendTable(
             this.context,
             blendModule,
@@ -1499,7 +1232,6 @@ export class SpriteLowerer {
         );
         const depthRow = this.depthAttribute();
         const uvScrollRow = this.uvScrollAttribute(layout.pureInstanceFloats);
-        this.assertGridAtlas();
         assertFrameAtlasRule(this.context);
         this.assertFrameResolution();
         this.assertAtlasLoader();
@@ -1509,15 +1241,14 @@ export class SpriteLowerer {
         this.assertUpdateArm();
         this.assertClearLayer();
         this.assertRendererMembership();
-        this.assertLayerUbo();
-        const fxUboBytes = this.assertFxUbo();
+        const fxUbo = this.fxUboCpp();
         this.assertQuad();
 
         // sprite-2d-y-sort.ts, emitted whole or not at all. Everything in
         // it is file-local but the three entry points scene code names, so
         // the always-loaded paths below reach it through the layer's own
         // state pointer and the engine's one lazily-installed hook.
-        const ySortSource = this.ySortSource(ySort, ySortKeyLane);
+        const ySortSource = this.ySortSource(ySort);
         const ySortEntryPoints = this.ySortEntryPoints(ySort);
 
         const provenance = this.context.provenance(
@@ -1540,12 +1271,26 @@ export class SpriteLowerer {
 
 // ${this.context.provenance(pipelineModule, "buildSpriteLayerUbo")}
 #include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <numeric>
+#include <optional>
 #include <stdexcept>
+#include <vector>
 
 namespace bbl::upstream {
+
+/**
+ * shared/sprite-atlas.ts#createGridSpriteAtlas, the one partition every grid
+ * loader shares: \`loadSpriteAtlas\`, the particle bridges and scene code's
+ * own calls over a file, pixel or render texture. It lives in the shared
+ * header because it is the shared atlas module's.
+ */
+${gridSpriteAtlasCpp(this.context)}
 
 /**
  * sprite-pipeline.ts: the pure-2D per-instance vertex attributes at the
@@ -1585,41 +1330,21 @@ inline std::uint32_t resolve_sprite_frame(
  * The clock is seconds since the layer's first frame, which the caller
  * accumulates; a body that never names it still has the block bound.
  */
-inline constexpr std::size_t sprite_fx_ubo_bytes = ${fxUboBytes}u;
+inline constexpr std::size_t sprite_fx_ubo_bytes = ${fxUbo.bytes}u;
 
-inline void build_sprite_fx_ubo(
-    float time_seconds,
-    const Vec4& params,
-    std::array<float, sprite_fx_ubo_bytes / 4u>& ubo) {
-    ubo[0] = time_seconds;
-    ubo[1] = 0.0f;
-    ubo[2] = 0.0f;
-    ubo[3] = 0.0f;
-    ubo[4] = params.x;
-    ubo[5] = params.y;
-    ubo[6] = params.z;
-    ubo[7] = params.w;
-}
+${fxUbo.cpp}
 
-inline constexpr std::array<SpriteInstanceAttribute, ${attributeRows.length}>
-    sprite_instance_attributes{{
-${attributeRows
-    .map(
-        (row) =>
-            `        {${row.location}u, ${row.offsetBytes}u, ${row.floatCount}u},`,
-    )
-    .join("\n")}
-    }};
+${vertexAttributeTableCpp("SpriteInstanceAttribute", "sprite_instance_attributes", attributeRows)}
 
 // sprite-pipeline.ts: appended when \`hasDepth\` selects the scene-hosted
 // layout. Slot 13 is one float at shader location 6.
 inline constexpr SpriteInstanceAttribute sprite_depth_attribute{
-    ${depthRow.location}u, ${depthRow.offsetBytes}u, ${depthRow.floatCount}u};
+    ${vertexAttributeCpp(depthRow)}};
 
 // sprite-2d-uvscroll.ts ensureWide: the uvOffset attribute the widened
 // layout adds, at the byte offset the narrow stride ends on.
 inline constexpr SpriteInstanceAttribute sprite_uvscroll_attribute{
-    ${uvScrollRow.location}u, ${uvScrollRow.offsetBytes}u, ${uvScrollRow.floatCount}u};
+    ${vertexAttributeCpp(uvScrollRow)}};
 
 inline constexpr std::uint32_t sprite_uvscroll_stride_bytes =
     ${(layout.pureInstanceFloats + this.uvScrollExtraFloats()) * 4}u;
@@ -1631,41 +1356,13 @@ inline constexpr std::uint32_t sprite_depth_instance_stride_bytes =
     ${layout.depthInstanceFloats * 4}u;
 
 /**
- * The sixteen floats of the per-layer UBO, in the pinned order:
- *   [0..1] viewPos.xy  [2] viewScale  [3] viewRot
- *   [4..5] screenSize.xy  [6..7] pivot.xy
- *   [8..11] opacityMul.rgba  [12..15] aa (coverage gamma, unreached)
- *
- * Premultiplied sources scale RGB and A together for a correct fade;
- * straight alpha scales only A, because the blend stage already uses
- * source alpha as the colour factor.
+ * The per-layer UBO: [0..1] viewPos.xy  [2] viewScale  [3] viewRot
+ *   [4..5] screenSize.xy  [6..7] pivot.xy  [8..11] opacityMul.rgba
+ *   [12..15] aa (coverage gamma, unreached).
  */
-inline void build_sprite_layer_ubo(
-    const Sprite2DLayerRecord& layer,
-    float screen_width,
-    float screen_height,
-    std::array<float, 16>& ubo) {
-    ubo[0] = layer.view.position_px.x;
-    ubo[1] = layer.view.position_px.y;
-    ubo[2] = layer.view.zoom;
-    ubo[3] = layer.view.rotation;
-    ubo[4] = screen_width;
-    ubo[5] = screen_height;
-    ubo[6] = layer.pivot.x;
-    ubo[7] = layer.pivot.y;
-    const float opacity = layer.opacity;
-    if (layer.blend.premultiplied_opacity) {
-        ubo[8] = opacity;
-        ubo[9] = opacity;
-        ubo[10] = opacity;
-        ubo[11] = opacity;
-    } else {
-        ubo[8] = 1.0f;
-        ubo[9] = 1.0f;
-        ubo[10] = 1.0f;
-        ubo[11] = opacity;
-    }
-}
+${this.layerUboCpp()}
+
+${this.compareLayersCpp()}
 
 } // namespace bbl::upstream
 
@@ -1677,6 +1374,9 @@ namespace bbl {
  * blend is the pin's opaque replacement, which is blending disabled.
  */
 ${blendFactoriesCpp(blends, "sprite", "sprite-blend.ts")}
+${this.sortLayersCpp()}
+
+${this.pickSprite2DCpp()}
 } // namespace bbl
 `,
             source: `// ${provenance}
@@ -1746,36 +1446,6 @@ void grow_sprite_capacity(
     layer.dirty_sprite_end = layer.count;
 }
 
-void populate_grid_sprite_atlas_frames(
-    SpriteAtlasRecord& atlas,
-    const GridSpriteAtlasOptions& options) {
-    const double cell_w = options.cell_width_px;
-    const double cell_h = options.cell_height_px;
-    const double margin = options.margin_px;
-    const double spacing = options.spacing_px;
-    const double tw = static_cast<double>(atlas.width);
-    const double th = static_cast<double>(atlas.height);
-    const double columns = options.has_columns
-        ? options.columns
-        : std::max(1.0, std::floor(
-              (tw - margin * 2.0 + spacing) / (cell_w + spacing)));
-    const double rows = options.has_rows
-        ? options.rows
-        : std::max(1.0, std::floor(
-              (th - margin * 2.0 + spacing) / (cell_h + spacing)));
-    for (double r = 0.0; r < rows; r += 1.0) {
-        for (double c = 0.0; c < columns; c += 1.0) {
-            const double x = margin + c * (cell_w + spacing);
-            const double y = margin + r * (cell_h + spacing);
-            atlas.frames.push_back(SpriteFrame{
-                Vec2{static_cast<float>(x / tw), static_cast<float>(y / th)},
-                Vec2{static_cast<float>((x + cell_w) / tw), static_cast<float>((y + cell_h) / th)},
-                Vec2{static_cast<float>(cell_w), static_cast<float>(cell_h)},
-                options.pivot});
-        }
-    }
-}
-
 } // namespace
 
 // sprite-2d.ts _setSprite2DCount / _markSprite2DDirty: the pin exports these
@@ -1832,7 +1502,7 @@ void set_sprite_2d_shader_params(
     Engine& engine,
     Sprite2DLayerHandle layer_handle,
     Vec4 params) {
-    engine.sprite_layers[layer_handle.value].shader_params = params;
+    ${recordAt("engine.sprite_layers", "layer_handle")}.shader_params = params;
 }
 
 // setSprite2DUvOffset: the two floats sit right after the base layout, and
@@ -1843,7 +1513,7 @@ void set_sprite_2d_uv_offset(
     double index,
     Vec2 uv_offset) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     if (index < 0.0 ||
         index >= static_cast<double>(layer.count)) {
         throw std::runtime_error(
@@ -1876,7 +1546,6 @@ SpriteAtlasHandle load_sprite_atlas(
             "loadSpriteAtlas: gridSize required.");
     }
 ${decodeAtlasImageCpp()}
-    atlas.premultiplied_alpha = options.premultiplied_alpha;
     if (options.premultiply_on_load) {
         // createImageBitmap({ premultiplyAlpha: "premultiply" }).
         pal::DecodedImage premultiplied{
@@ -1899,10 +1568,9 @@ ${decodeAtlasImageCpp()}
     atlas.sampler.max_anisotropy = 1.0f;
     atlas.sampler.max_lod = 0.0f;
 
-    // createGridSpriteAtlas: row-major frames over a uniform grid.
     const double cell_w = static_cast<double>(options.grid_width_px);
     const double cell_h = static_cast<double>(options.grid_height_px);
-${gridSpriteAtlasFramesCpp(this.context)}
+${gridSpriteAtlasFramesCpp("options.premultiplied_alpha")}
 
 ${pushAtlasHandleCpp()}
 }
@@ -1934,10 +1602,9 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     atlas.rgba = std::move(image.rgba);
     atlas.width = static_cast<std::uint32_t>(image.width);
     atlas.height = static_cast<std::uint32_t>(image.height);
-    atlas.premultiplied_alpha = options.premultiplied_alpha;
     atlas.mip_maps = texture.data.sampler.max_lod > 0.0f;
     atlas.sampler = texture.data.sampler;
-    populate_grid_sprite_atlas_frames(atlas, options);
+    upstream::create_grid_sprite_atlas_frames(atlas, options);
 ${pushAtlasHandleCpp()}
 }
 
@@ -1949,10 +1616,9 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     atlas.rgba.assign(texture.rgba.begin(), texture.rgba.end());
     atlas.width = texture.width;
     atlas.height = texture.height;
-    atlas.premultiplied_alpha = options.premultiplied_alpha;
     atlas.mip_maps = texture.sampler.max_lod > 0.0f;
     atlas.sampler = texture.sampler;
-    populate_grid_sprite_atlas_frames(atlas, options);
+    upstream::create_grid_sprite_atlas_frames(atlas, options);
 ${pushAtlasHandleCpp()}
 }
 
@@ -1961,11 +1627,10 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     SpriteRenderTextureHandle texture,
     GridSpriteAtlasOptions options) {
     const SpriteRenderTextureRecord& source =
-        engine.sprite_render_textures[texture.value];
+        ${recordAt("engine.sprite_render_textures", "texture")};
     SpriteAtlasRecord atlas;
     atlas.width = source.width;
     atlas.height = source.height;
-    atlas.premultiplied_alpha = options.premultiplied_alpha;
     atlas.mip_maps = false;
     atlas.sampler.min_filter = TextureFilter::linear;
     atlas.sampler.mag_filter = TextureFilter::linear;
@@ -1975,7 +1640,7 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     atlas.sampler.max_lod = 0.0f;
     atlas.has_render_texture = true;
     atlas.render_texture = texture;
-    populate_grid_sprite_atlas_frames(atlas, options);
+    upstream::create_grid_sprite_atlas_frames(atlas, options);
 ${pushAtlasHandleCpp()}
 }
 
@@ -1995,7 +1660,7 @@ SpriteRenderTextureHandle create_sprite_render_texture(
 void dispose_sprite_render_texture(
     Engine& engine,
     SpriteRenderTextureHandle texture) {
-    engine.sprite_render_textures[texture.value].disposed = true;
+    ${recordAt("engine.sprite_render_textures", "texture")}.disposed = true;
 }
 
 void set_sprite_renderer_target(
@@ -2004,7 +1669,7 @@ void set_sprite_renderer_target(
     SpriteRenderTextureHandle target,
     bool has_target) {
     SpriteRendererRecord& record =
-        engine.sprite_renderers[renderer.value];
+        ${recordAt("engine.sprite_renderers", "renderer")};
     record.has_target = has_target;
     record.target = target;
 }
@@ -2036,9 +1701,8 @@ SpriteAtlasHandle create_sprite_atlas_from_frames(
             throw std::runtime_error(
                 "createSpriteAtlasFromFrames: frame has non-positive size.");
         }
-        const std::uint32_t stride = source.src_stride_bytes == 0u
-            ? source.width * 4u
-            : source.src_stride_bytes;
+        const std::uint32_t stride =
+            source.src_stride_bytes.value_or(source.width * 4u);
         const std::uint64_t row_end =
             static_cast<std::uint64_t>(source.src_x + source.width) * 4u;
         if (row_end > stride) {
@@ -2099,9 +1763,8 @@ SpriteAtlasHandle create_sprite_atlas_from_frames(
     atlas.frames.reserve(sources.size());
     for (std::size_t index = 0; index < sources.size(); ++index) {
         const SpriteAtlasFramePixelsView& source = sources[index];
-        const std::uint32_t stride = source.src_stride_bytes == 0u
-            ? source.width * 4u
-            : source.src_stride_bytes;
+        const std::uint32_t stride =
+            source.src_stride_bytes.value_or(source.width * 4u);
         const std::size_t row_bytes =
             static_cast<std::size_t>(source.width) * 4u;
         for (std::uint32_t row = 0; row < source.height; ++row) {
@@ -2177,7 +1840,7 @@ void add_depth_hosted_sprite_layer(
     Scene& scene,
     Sprite2DLayerHandle layer_handle) {
     const Sprite2DLayerRecord& layer =
-        scene.engine->sprite_layers[layer_handle.value];
+        ${recordAt("scene.engine->sprite_layers", "layer_handle")};
     if (layer.depth_mode == Sprite2DDepthMode::none) {
         throw std::runtime_error(
             "Depth-hosted sprites require depth != none.");
@@ -2192,7 +1855,7 @@ void set_sprite_2d_alpha_to_coverage(
     Sprite2DLayerHandle layer_handle,
     bool enabled) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     if (layer.alpha_to_coverage == enabled) return;
     layer.alpha_to_coverage = enabled;
     layer.pipeline_version += 1u;
@@ -2350,9 +2013,9 @@ double add_sprite_2d_index(
     Sprite2DLayerHandle layer_handle,
     Sprite2DProps props) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[layer.atlas.value];
+        ${recordAt("engine.sprite_atlases", "layer.atlas")};
     if (!props.has_position_px) {
         throw std::runtime_error(
             "addSprite2DIndex: positionPx required.");
@@ -2381,14 +2044,14 @@ void update_sprite_2d_index(
     double index_value,
     Sprite2DProps props) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     if (!(index_value >= 0.0) ||
         index_value >= static_cast<double>(layer.count)) {
         throw std::runtime_error(
             "updateSprite2DIndex: index out of range.");
     }
     const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[layer.atlas.value];
+        ${recordAt("engine.sprite_atlases", "layer.atlas")};
     const std::uint32_t index =
         static_cast<std::uint32_t>(index_value);
     write_sprite_instance(
@@ -2413,7 +2076,7 @@ double add_sprite_2d(
     Sprite2DProps props) {
     const double index = add_sprite_2d_index(engine, layer_handle, props);
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const std::uint32_t id = layer.next_sprite_id;
     if (id == invalid_handle) {
         throw std::runtime_error("addSprite2D: handle id space exhausted.");
@@ -2442,7 +2105,7 @@ bool sprite_2d_id_alive(
     Sprite2DLayerHandle layer_handle,
     std::uint32_t sprite_id) {
     const Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     return sprite_2d_slot_of(layer, sprite_id) < layer.count;
 }
 
@@ -2455,7 +2118,7 @@ void set_sprite_2d_frame_id(
     std::uint32_t sprite_id,
     double frame) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const std::uint32_t index =
         sprite_2d_slot_of(layer, sprite_id);
     if (index >= layer.count) {
@@ -2463,7 +2126,7 @@ void set_sprite_2d_frame_id(
             "setSprite2DFrameIndex: index out of range");
     }
     const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[layer.atlas.value];
+        ${recordAt("engine.sprite_atlases", "layer.atlas")};
     const SpriteFrame& atlas_frame =
         atlas.frames[upstream::resolve_sprite_frame(atlas, frame)];
     const std::size_t base =
@@ -2492,7 +2155,7 @@ void remove_sprite_2d_id(
     Sprite2DLayerHandle layer_handle,
     std::uint32_t sprite_id) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const std::uint32_t index = sprite_2d_slot_of(layer, sprite_id);
     // removeSprite2D: a handle already gone does nothing, which is what
     // lets an animation's own removeWhenFinished race a scene's own remove.
@@ -2554,7 +2217,7 @@ void clear_sprite_2d_layer(
     Engine& engine,
     Sprite2DLayerHandle layer_handle) {
     Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     // The pin's clear runs the handle hooks' own clear first, so a layer
     // emptied under live handles answers "gone" rather than naming a slot
     // it no longer has.
@@ -2589,7 +2252,7 @@ double sprite_2d_handle_index(
     Sprite2DLayerHandle layer_handle,
     std::uint32_t sprite_id) {
     const Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
+        ${recordAt("engine.sprite_layers", "layer_handle")};
     const std::uint32_t index = sprite_2d_slot_of(layer, sprite_id);
     if (index >= layer.count) {
         throw std::runtime_error(
@@ -2624,7 +2287,7 @@ SpriteRendererHandle create_sprite_renderer(
             throw std::runtime_error(
                 "SpriteRenderer received an unknown layer.");
         }
-        if (engine.sprite_layers[layer.value].depth_mode !=
+        if (${recordAt("engine.sprite_layers", "layer")}.depth_mode !=
             Sprite2DDepthMode::none) {
             throw std::runtime_error(
                 "SpriteRenderer requires layers with depth == none.");
@@ -2643,7 +2306,7 @@ void add_sprite_renderer_layer(
     SpriteRendererHandle renderer,
     Sprite2DLayerHandle layer) {
     SpriteRendererRecord& record =
-        engine.sprite_renderers[renderer.value];
+        ${recordAt("engine.sprite_renderers", "renderer")};
     if (record.disposed) {
         throw std::runtime_error(
             "SpriteRenderer has been disposed.");
@@ -2652,7 +2315,7 @@ void add_sprite_renderer_layer(
         throw std::runtime_error(
             "SpriteRenderer received an unknown layer.");
     }
-    if (engine.sprite_layers[layer.value].depth_mode !=
+    if (${recordAt("engine.sprite_layers", "layer")}.depth_mode !=
         Sprite2DDepthMode::none) {
         throw std::runtime_error(
             "SpriteRenderer requires layers with depth == none.");
@@ -2677,7 +2340,7 @@ bool remove_sprite_renderer_layer(
     SpriteRendererHandle renderer,
     Sprite2DLayerHandle layer) {
     SpriteRendererRecord& record =
-        engine.sprite_renderers[renderer.value];
+        ${recordAt("engine.sprite_renderers", "renderer")};
     std::vector<Sprite2DLayerHandle>& layers = record.layers;
     const auto found = std::find_if(
         layers.begin(),
@@ -2717,7 +2380,7 @@ void dispose_sprite_renderer(
     Engine& engine,
     SpriteRendererHandle renderer) {
     SpriteRendererRecord& record =
-        engine.sprite_renderers[renderer.value];
+        ${recordAt("engine.sprite_renderers", "renderer")};
     if (record.disposed) return;
     unregister_sprite_renderer(engine, renderer);
     record.disposed = true;
@@ -2739,7 +2402,7 @@ void sprite_renderer_before_update(
     Engine& engine,
     SpriteRendererHandle renderer,
     std::function<void(double)> callback) {
-    engine.sprite_renderers[renderer.value].before_update.push_back(
+    ${recordAt("engine.sprite_renderers", "renderer")}.before_update.push_back(
         std::move(callback));
 }
 
@@ -2748,387 +2411,16 @@ void sprite_renderer_before_update(
         };
     }
 
-    private ySortSource(ySort: boolean, ySortKeyLane: number): string {
+    private ySortSource(ySort: boolean): string {
         return ySort
             ? `
 // ── sprite-2d-y-sort.ts ─────────────────────────────────────────────────
-// The optional stable GPU-order permutation for a pure-2D layer. It never
-// reorders the layer's own instance rows: numeric slots, swap-remove and
-// stable handle ids all stay canonical, and what is permuted is the copy
-// the GPU reads. Upstream keeps this state private to its own module and
-// lets the always-loaded mutation, upload and pick paths reach it through
-// one lazily registered hook, which is why a scene that never enables a
-// layer compiles none of this and finds that hook empty.
-struct YSortState {
-    double default_bias = 0.0;
-    /** Draw slot -> logical slot, and its inverse. */
-    std::vector<std::uint32_t> permutation;
-    std::vector<std::uint32_t> inverse_permutation;
-    std::vector<std::uint32_t> merge_scratch;
-    /** Persistent insertion serial, ordering bias and cached key per slot. */
-    std::vector<double> serials;
-    std::vector<double> biases;
-    std::vector<double> keys;
-    /** The GPU-order rows the backends upload. */
-    std::vector<float> packed_instances;
-    std::uint32_t capacity = 0;
-    std::uint32_t packed_stride = 0;
-    std::uint32_t active_count = 0;
-    double next_serial = 0.0;
-    bool sort_dirty = true;
-    bool full_upload = true;
-    std::uint32_t dirty_min = 0;
-    std::uint32_t dirty_max = 0;
-};
-
-YSortState* y_sort_state(const Sprite2DLayerRecord& layer) {
-    return static_cast<YSortState*>(layer.y_sort.get());
-}
-
-double allocate_y_sort_serial(YSortState& state) {
-    const double serial = state.next_serial;
-    state.next_serial = serial + 1.0;
-    return serial;
-}
-
-/**
- * Object.is over two keys: the pin compares them with it rather than with
- * equality, so a key that did not move leaves the order alone and one that
- * moved between the two zeroes does not.
- */
-bool y_sort_same_key(double left, double right) {
-    if (std::isnan(left) || std::isnan(right)) {
-        return std::isnan(left) && std::isnan(right);
-    }
-    return left == right &&
-        std::signbit(left) == std::signbit(right);
-}
-
-// keyAt: the slot's own stored ordering lane plus its bias, summed at the
-// width the pin's F64 bias array gives it. Lane ${ySortKeyLane} is
-// positionPx.y, read off the pin rather than typed here.
-double y_sort_key_at(
-    const Sprite2DLayerRecord& layer,
-    const YSortState& state,
-    std::uint32_t index) {
-    const std::size_t base =
-        static_cast<std::size_t>(index) *
-        layer.instance_floats_per_sprite;
-    return static_cast<double>(
-               layer.instance_data[base + ${ySortKeyLane}u]) +
-        state.biases[index];
-}
-
-// ensureStorage: the metadata follows the layer's capacity, and the packed
-// buffer additionally follows its instance stride -- a UV-scroll widening
-// replaces that buffer once.
-void ensure_y_sort_storage(
-    const Sprite2DLayerRecord& layer,
-    YSortState& state) {
-    if (layer.capacity > state.capacity) {
-        state.permutation.resize(layer.capacity, 0u);
-        state.inverse_permutation.resize(layer.capacity, 0u);
-        state.merge_scratch.resize(layer.capacity, 0u);
-        state.serials.resize(layer.capacity, 0.0);
-        state.biases.resize(layer.capacity, 0.0);
-        state.keys.resize(layer.capacity, 0.0);
-        state.capacity = layer.capacity;
-        state.sort_dirty = true;
-        state.full_upload = true;
-    }
-    const std::size_t packed = static_cast<std::size_t>(layer.capacity) *
-        layer.instance_floats_per_sprite;
-    if (state.packed_instances.size() < packed ||
-        state.packed_stride != layer.instance_floats_per_sprite) {
-        state.packed_instances.assign(packed, 0.0f);
-        state.packed_stride = layer.instance_floats_per_sprite;
-        state.full_upload = true;
-    }
-}
-
-// syncCount: metadata follows the layer's live count, so a slot that
-// entered without being observed still gets its serial and default bias.
-void sync_y_sort_count(
-    const Sprite2DLayerRecord& layer,
-    YSortState& state) {
-    ensure_y_sort_storage(layer, state);
-    if (layer.count > state.active_count) {
-        for (std::uint32_t index = state.active_count;
-             index < layer.count;
-             ++index) {
-            state.biases[index] = state.default_bias;
-            state.serials[index] = allocate_y_sort_serial(state);
-            state.keys[index] = y_sort_key_at(layer, state, index);
-        }
-        state.sort_dirty = true;
-        state.full_upload = true;
-    } else if (layer.count < state.active_count) {
-        const auto retired_begin =
-            static_cast<std::ptrdiff_t>(layer.count);
-        const auto retired_end =
-            static_cast<std::ptrdiff_t>(state.active_count);
-        std::fill(
-            state.serials.begin() + retired_begin,
-            state.serials.begin() + retired_end,
-            0.0);
-        std::fill(
-            state.biases.begin() + retired_begin,
-            state.biases.begin() + retired_end,
-            0.0);
-        std::fill(
-            state.keys.begin() + retired_begin,
-            state.keys.begin() + retired_end,
-            0.0);
-        state.sort_dirty = true;
-        state.full_upload = true;
-    }
-    state.active_count = layer.count;
-}
-
-// comesBefore: ascending key, then ascending insertion serial. The serials
-// are unique, so the order is total and equal keys keep the order they
-// entered in even after unrelated removals moved their slots.
-bool y_sort_comes_before(
-    const YSortState& state,
-    std::uint32_t left,
-    std::uint32_t right) {
-    const double left_key = state.keys[left];
-    const double right_key = state.keys[right];
-    if (left_key < right_key) return true;
-    if (left_key > right_key) return false;
-    return state.serials[left] < state.serials[right];
-}
-
-// ensureSorted: a bottom-up stable merge over the cached keys.
-void ensure_y_sorted(
-    const Sprite2DLayerRecord& layer,
-    YSortState& state) {
-    sync_y_sort_count(layer, state);
-    if (!state.sort_dirty) return;
-    const std::uint32_t count = layer.count;
-    for (std::uint32_t index = 0u; index < count; ++index) {
-        state.permutation[index] = index;
-    }
-    std::vector<std::uint32_t>* source = &state.permutation;
-    std::vector<std::uint32_t>* target = &state.merge_scratch;
-    for (std::uint32_t width = 1u; width < count; width *= 2u) {
-        for (std::uint32_t start = 0u;
-             start < count;
-             start += width * 2u) {
-            const std::uint32_t middle = std::min(start + width, count);
-            const std::uint32_t end = std::min(start + width * 2u, count);
-            std::uint32_t left = start;
-            std::uint32_t right = middle;
-            for (std::uint32_t output = start; output < end; ++output) {
-                if (left < middle &&
-                    (right >= end ||
-                     y_sort_comes_before(
-                         state, (*source)[left], (*source)[right]))) {
-                    (*target)[output] = (*source)[left++];
-                } else {
-                    (*target)[output] = (*source)[right++];
-                }
-            }
-        }
-        std::swap(source, target);
-    }
-    if (source != &state.permutation) {
-        for (std::uint32_t index = 0u; index < count; ++index) {
-            state.permutation[index] = (*source)[index];
-        }
-    }
-    for (std::uint32_t draw_index = 0u; draw_index < count; ++draw_index) {
-        state.inverse_permutation[state.permutation[draw_index]] =
-            draw_index;
-    }
-    state.sort_dirty = false;
-}
-
-void mark_y_sort_packed_dirty(YSortState& state, std::uint32_t draw_index) {
-    if (state.dirty_min >= state.dirty_max) {
-        state.dirty_min = draw_index;
-        state.dirty_max = draw_index + 1u;
-    } else {
-        state.dirty_min = std::min(state.dirty_min, draw_index);
-        state.dirty_max = std::max(state.dirty_max, draw_index + 1u);
-    }
-}
-
-// observeDirty: a changed Y key invalidates the order; every other change
-// maps its logical slots through the inverse permutation into the packed
-// draw slots that have to be refreshed.
-void observe_y_sort_dirty(
-    Sprite2DLayerRecord& layer,
-    std::uint32_t lo,
-    std::uint32_t hi) {
-    YSortState* state = y_sort_state(layer);
-    if (!state) return;
-    sync_y_sort_count(layer, *state);
-    const std::uint32_t end = std::min(hi, layer.count);
-    for (std::uint32_t index = lo; index < end; ++index) {
-        const double key = y_sort_key_at(layer, *state, index);
-        if (!y_sort_same_key(key, state->keys[index])) {
-            state->keys[index] = key;
-            state->sort_dirty = true;
-            state->full_upload = true;
-        } else if (!state->full_upload) {
-            mark_y_sort_packed_dirty(
-                *state, state->inverse_permutation[index]);
-        }
-    }
-}
-
-void observe_y_sort_add(
-    Sprite2DLayerRecord& layer,
-    std::uint32_t index) {
-    YSortState* state = y_sort_state(layer);
-    if (!state) return;
-    ensure_y_sort_storage(layer, *state);
-    state->biases[index] = state->default_bias;
-    state->serials[index] = allocate_y_sort_serial(*state);
-    state->keys[index] = y_sort_key_at(layer, *state, index);
-    state->active_count = layer.count;
-    state->sort_dirty = true;
-    state->full_upload = true;
-}
-
-// observeRemove: the swap-remove moves the bias, serial and cached key with
-// the sprite the layer moved, which is what keeps an equal-key tie in its
-// original insertion order across an unrelated removal.
-void observe_y_sort_remove(
-    Sprite2DLayerRecord& layer,
-    std::uint32_t index,
-    std::uint32_t last) {
-    YSortState* state = y_sort_state(layer);
-    if (!state) return;
-    if (index != last) {
-        state->biases[index] = state->biases[last];
-        state->serials[index] = state->serials[last];
-        state->keys[index] = state->keys[last];
-    }
-    state->biases[last] = 0.0;
-    state->serials[last] = 0.0;
-    state->keys[last] = 0.0;
-    state->active_count = layer.count;
-    state->sort_dirty = true;
-    state->full_upload = true;
-}
-
-// observeClear: the active metadata goes, the allocation and the next
-// insertion serial stay.
-void observe_y_sort_clear(
-    Sprite2DLayerRecord& layer,
-    std::uint32_t previous_count) {
-    YSortState* state = y_sort_state(layer);
-    if (!state) return;
-    const auto end = static_cast<std::ptrdiff_t>(previous_count);
-    std::fill(state->biases.begin(), state->biases.begin() + end, 0.0);
-    std::fill(state->serials.begin(), state->serials.begin() + end, 0.0);
-    std::fill(state->keys.begin(), state->keys.begin() + end, 0.0);
-    state->active_count = 0u;
-    state->sort_dirty = true;
-    state->full_upload = true;
-    state->dirty_min = 0u;
-    state->dirty_max = 0u;
-}
-
-// packRange: copy the active records into the packed buffer in draw order,
-// lane by lane into reused storage.
-void pack_y_sort_range(
-    const Sprite2DLayerRecord& layer,
-    YSortState& state,
-    std::uint32_t lo,
-    std::uint32_t hi) {
-    const std::size_t stride = layer.instance_floats_per_sprite;
-    for (std::uint32_t draw_index = lo; draw_index < hi; ++draw_index) {
-        const std::size_t source_base =
-            static_cast<std::size_t>(state.permutation[draw_index]) *
-            stride;
-        const std::size_t target_base =
-            static_cast<std::size_t>(draw_index) * stride;
-        // The pin's own \`packRange\` writes lane by lane because JavaScript
-        // has nothing else; the values are the same either way, and two
-        // \`std::vector<float>\` subscripts the compiler cannot prove
-        // non-aliasing would not collapse to a move on their own. This is
-        // the innermost loop of the whole feature -- a full repack is what
-        // any key change forces, and a moving sprite changes its key every
-        // frame.
-        std::copy_n(
-            layer.instance_data.data() + source_base,
-            stride,
-            state.packed_instances.data() + target_base);
-    }
-}
-
-/**
- * uploadSorted's staging half.
- *
- * The port's shared derivation has already said which LOGICAL rows moved
- * for this copy, so what is left is the pin's own: sort when the order went
- * stale, and either repack everything or refresh just the draw slots the
- * inverse permutation maps those rows onto. A consumer handed the whole
- * active prefix -- a fresh GPU buffer, or a second pass whose stamp
- * predates the shared reset -- repacks in full, which is what the pin's
- * uploadedVersion of -1 does.
- */
-SpriteInstanceUpload stage_y_sort_upload(
-    Sprite2DLayerRecord& layer,
-    std::uint32_t dirty_begin,
-    std::uint32_t dirty_end) {
-    YSortState* state = y_sort_state(layer);
-    // A layer that never enabled the extension takes its own canonical
-    // rows back, which is uploadSorted returning undefined and letting
-    // the ordinary upload run.
-    if (!state) {
-        return {layer.instance_data.data(), dirty_begin, dirty_end};
-    }
-    ensure_y_sorted(layer, *state);
-    if (layer.count == 0u) {
-        state->full_upload = false;
-        state->dirty_min = 0u;
-        state->dirty_max = 0u;
-        return {state->packed_instances.data(), 0u, 0u};
-    }
-    std::uint32_t lo;
-    std::uint32_t hi;
-    if (state->full_upload ||
-        (dirty_begin == 0u && dirty_end >= layer.count)) {
-        lo = 0u;
-        hi = layer.count;
-    } else {
-        // The rows this copy was handed, mapped onto the draw slots that
-        // answer for them and folded into the packed range the mutations
-        // already widened.
-        const std::uint32_t end = std::min(dirty_end, layer.count);
-        for (std::uint32_t index = dirty_begin; index < end; ++index) {
-            mark_y_sort_packed_dirty(
-                *state, state->inverse_permutation[index]);
-        }
-        lo = state->dirty_min;
-        hi = std::min(state->dirty_max, layer.count);
-    }
-    if (hi > lo) {
-        pack_y_sort_range(layer, *state, lo, hi);
-    }
-    state->full_upload = false;
-    state->dirty_min = 0u;
-    state->dirty_max = 0u;
-    return {state->packed_instances.data(), lo, hi};
-}
-
-// getDrawOrder: the picker asks for this before walking a layer, and the
-// hook sorts the CPU permutation if a same-frame mutation left it stale
-// without packing or touching the GPU. The layer is const because picking
-// does not change it; the state behind its own pointer is not, which is
-// exactly the pin's arrangement -- the order is derived state, and reading
-// it is what settles it.
-const std::uint32_t* y_sort_draw_order(
-    const Sprite2DLayerRecord& layer) {
-    YSortState* state = y_sort_state(layer);
-    if (!state) return nullptr;
-    ensure_y_sorted(layer, *state);
-    return state->permutation.data();
-}
+// The optional stable GPU-order permutation for a pure-2D layer, lowered
+// from the pin. It never reorders the layer's own instance rows: numeric
+// slots, swap-remove and stable handle ids all stay canonical, and what is
+// permuted is the copy the GPU reads. A scene that never enables a layer
+// compiles none of this and finds the engine's hook empty.
+${ySortCoreCpp(this.context)}
 `
             : "";
     }
@@ -3136,59 +2428,8 @@ const std::uint32_t* y_sort_draw_order(
     private ySortEntryPoints(ySort: boolean): string {
         return ySort
             ? `
-// sprite-2d-y-sort.ts#enableSprite2DYSort. The support boundary is the
-// pin's: a depth-hosted layer resolves overlap by per-sprite z and
-// intervening geometry, which a CPU Y-order alone cannot describe.
-Sprite2DLayerHandle enable_sprite_2d_y_sort(
-    Engine& engine,
-    Sprite2DLayerHandle layer_handle,
-    double default_bias) {
-    Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
-    if (layer.depth_mode != Sprite2DDepthMode::none) {
-        throw std::runtime_error(
-            "enableSprite2DYSort requires a layer with depth == none.");
-    }
-    if (!std::isfinite(default_bias)) {
-        throw std::runtime_error(
-            "enableSprite2DYSort: defaultBias must be finite.");
-    }
-    // A valid repeated enable is idempotent and first-options-wins, so an
-    // installed state is returned unchanged rather than reseeded.
-    if (layer.y_sort) return layer_handle;
-    const auto state = std::make_shared<YSortState>();
-    state->default_bias = default_bias;
-    state->capacity = layer.capacity;
-    state->packed_stride = layer.instance_floats_per_sprite;
-    state->permutation.assign(layer.capacity, 0u);
-    state->inverse_permutation.assign(layer.capacity, 0u);
-    state->merge_scratch.assign(layer.capacity, 0u);
-    state->serials.assign(layer.capacity, 0.0);
-    state->biases.assign(layer.capacity, 0.0);
-    state->keys.assign(layer.capacity, 0.0);
-    state->packed_instances.assign(
-        static_cast<std::size_t>(layer.capacity) *
-            layer.instance_floats_per_sprite,
-        0.0f);
-    state->active_count = layer.count;
-    layer.y_sort = state;
-    // Enabling an already populated layer assigns serials in its current
-    // logical order, so what is on screen keeps the order it entered in.
-    for (std::uint32_t index = 0u; index < layer.count; ++index) {
-        state->biases[index] = default_bias;
-        state->serials[index] = allocate_y_sort_serial(*state);
-        state->keys[index] = y_sort_key_at(layer, *state, index);
-    }
-    // sprite-2d-y-sort-hook.ts: the one lazily registered hook, installed
-    // from inside the enabler exactly as upstream installs it.
-    engine.sprite_y_sort_hook.stage = stage_y_sort_upload;
-    engine.sprite_y_sort_hook.draw_order = y_sort_draw_order;
-    touch_sprite_instances(layer, 0u, layer.count);
-    // Upstream hands back the state object. What a scene reads off it is a
-    // live question about the layer the state is attached to, so the layer
-    // is what travels here and every read is keyed by it.
-    return layer_handle;
-}
+
+${ySortEntryPointsCpp(this.context)}
 
 /**
  * The state's own live \`enabled\`.
@@ -3204,42 +2445,7 @@ bool sprite_2d_y_sort_enabled(
     const Engine& engine,
     Sprite2DLayerHandle layer_handle) {
     return static_cast<bool>(
-        engine.sprite_layers[layer_handle.value].y_sort);
-}
-
-// sprite-2d-handle-y-sort.ts#setSprite2DYSortHandleBias: resolve the
-// handle's current logical slot, then set its finite ordering bias. Only
-// a bias that actually moves the key invalidates the order.
-void set_sprite_2d_y_sort_bias_id(
-    Engine& engine,
-    Sprite2DLayerHandle layer_handle,
-    std::uint32_t sprite_id,
-    double bias) {
-    Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
-    const std::uint32_t index = sprite_2d_slot_of(layer, sprite_id);
-    if (index >= layer.count) {
-        throw std::runtime_error(
-            "setSprite2DYSortHandleBias: the handle is not alive.");
-    }
-    YSortState* state = y_sort_state(layer);
-    if (!state) {
-        throw std::runtime_error(
-            "setSprite2DYSortBias: Y-sort is not enabled on this layer.");
-    }
-    if (!std::isfinite(bias)) {
-        throw std::runtime_error(
-            "setSprite2DYSortBias: bias must be finite.");
-    }
-    if (state->biases[index] == bias) return;
-    state->biases[index] = bias;
-    const double key = y_sort_key_at(layer, *state, index);
-    if (!y_sort_same_key(key, state->keys[index])) {
-        state->keys[index] = key;
-        state->sort_dirty = true;
-        state->full_upload = true;
-        touch_sprite_instances(layer, index, index + 1u);
-    }
+        ${recordAt("engine.sprite_layers", "layer_handle")}.y_sort);
 }
 `
             : "";

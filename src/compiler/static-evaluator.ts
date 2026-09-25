@@ -16,26 +16,30 @@ const OBJECT_IDENTITY_CALLS: ReadonlySet<string> = new Set([
 /** The argument an identity `Object.*` call evaluates to, when `expression` is one. */
 function objectIdentityCallArgument(
     expression: ts.Expression,
-    isLibrary: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): ts.Expression | undefined {
     if (
         !ts.isCallExpression(expression) ||
         expression.arguments.length !== 1 ||
         !ts.isPropertyAccessExpression(expression.expression) ||
-        !ts.isIdentifier(expression.expression.expression) ||
-        expression.expression.expression.text !== "Object" ||
         !OBJECT_IDENTITY_CALLS.has(expression.expression.name.text) ||
-        !isLibrary(expression.expression.expression)
+        libraryGlobal(expression.expression.expression) !== "Object"
     ) {
         return undefined;
     }
     return expression.arguments[0];
 }
-import { EmissionMap, EmissionSet } from "./emission-transaction.js";
+import { EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
-import type { Value } from "./types.js";
+import { isStringValue, presenceCpp, type Value } from "./types.js";
 import type { CompileError } from "./compile-error.js";
 import { numberConstant, numberConstantValue } from "./number-intrinsics.js";
+import {
+    declaredSymbol,
+    isGlobalUndefined,
+    libraryGlobal,
+    type LibraryGlobal,
+} from "./symbols.js";
 import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
 import {
     doubleLiteral as cppDoubleLiteral,
@@ -46,6 +50,9 @@ import {
     staticNumberValue,
 } from "./option-helpers.js";
 import { isJsonValue } from "./json-bridge.js";
+import { excludesObjectColour } from "./type-facts.js";
+import { conditionComparison } from "./comparisons.js";
+import type { EvaluationOrder } from "./evaluation-order.js";
 import {
     isAssignmentExpression,
     isUpdateExpression,
@@ -54,7 +61,11 @@ import {
     unwrapExpression,
     argumentAt,
 } from "./syntax.js";
-import { PINNED_ARITHMETIC_OPERATORS } from "../lowering/pinned-operators.js";
+import {
+    JS_BITWISE_FUNCTIONS,
+    PINNED_ARITHMETIC_OPERATORS,
+    jsBitwiseCall,
+} from "../lowering/pinned-operators.js";
 import {
     MATH_CONSTANTS,
     MATH_MEMBERS,
@@ -100,18 +111,6 @@ type NarrowOptional = (
  */
 type BindDataTuple = (value: Value, arity: number) => string;
 
-const bitwiseFunctions = new EmissionMap<ts.SyntaxKind, string>([
-    [ts.SyntaxKind.AmpersandToken, "bitwise_and"],
-    [ts.SyntaxKind.BarToken, "bitwise_or"],
-    [ts.SyntaxKind.CaretToken, "bitwise_xor"],
-    [ts.SyntaxKind.LessThanLessThanToken, "shift_left"],
-    [ts.SyntaxKind.GreaterThanGreaterThanToken, "shift_right"],
-    [
-        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
-        "shift_right_unsigned",
-    ],
-]);
-
 /**
  * A value a number sink accepts: a native number, and a parsed document,
  * which JavaScript coerces at the same sink rather than earlier.
@@ -136,9 +135,6 @@ export class StaticEvaluator {
         private readonly compileCondition: CompileCondition,
         private readonly evaluateBrowserValue: EvaluateBrowserValue,
         private readonly isBrowserOnlyExpression: IsBrowserOnlyExpression,
-        private readonly isDefaultLibraryIdentifier: (
-            identifier: ts.Identifier,
-        ) => boolean,
         private readonly narrowOptional: NarrowOptional,
         private readonly lookup: Lookup,
         private readonly lookupOptional: LookupOptional,
@@ -149,7 +145,37 @@ export class StaticEvaluator {
         private readonly pinnedWgslTemplate: (
             expression: ts.Expression,
         ) => ts.TemplateLiteral | undefined,
+        /** `DataLowerer.truthinessCondition`: a compiled value's truthiness. */
+        private readonly truthinessCondition: (
+            value: Value,
+        ) => string | undefined,
+        /** Reads a compiled number into a temporary where it stands. */
+        private readonly pinNumber: (cpp: string) => string,
+        private readonly evaluationOrder: EvaluationOrder,
     ) {}
+
+    /**
+     * The two operands of a numeric binary operator, compiled in order. The
+     * left one is read into a temporary first when the right one touches
+     * its storage, either one writing it (see `evaluation-order.ts`).
+     */
+    private numericOperands(
+        expression: ts.BinaryExpression,
+    ): readonly [string, string] {
+        const [pinLeft] = this.evaluationOrder.operandsToPin([
+            expression.left,
+            expression.right,
+        ]);
+        const left = this.compileNumber(expression.left, "double");
+        return [
+            pinLeft ? this.pinNumber(left) : left,
+            this.compileNumber(expression.right, "double"),
+        ];
+    }
+
+    /** See `libraryGlobal` (symbols.ts). */
+    private readonly libraryGlobal: LibraryGlobal = (expression) =>
+        libraryGlobal(this.checker, expression);
 
     /**
      * `precision` selects the native vector the components land in. The
@@ -312,17 +338,33 @@ export class StaticEvaluator {
                 .join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
-            return `bbl::Color3{${this.requiredObjectNumber(
-                unwrapped,
-                "r",
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "g",
-            )}, ${this.requiredObjectNumber(unwrapped, "b")}}`;
+            this.requireObjectColour(expression, unwrapped, ["r", "g", "b"]);
+            return `bbl::Color3{${["r", "g", "b"]
+                .map((channel) => this.requiredObjectNumber(unwrapped, channel))
+                .join(", ")}}`;
         }
+        this.fail(unwrapped, "Expected a Color3 array [r, g, b].");
+    }
+
+    /**
+     * The one colour-shape decision: an object of named channels is not a
+     * colour where the position's own type rules it out
+     * (`excludesObjectColour`, from the checker's contextual type at the
+     * use). Where the pin types a number tuple -- every RGB option and
+     * field, `baseColorFactor` -- the browser would read the object as
+     * undefined channels, so it refuses.
+     */
+    private requireObjectColour(
+        expression: ts.Expression,
+        object: ts.ObjectLiteralExpression,
+        channels: readonly string[],
+    ): void {
+        if (!excludesObjectColour(this.checker.getContextualType(expression)))
+            return;
+        const names = channels.join(", ");
         this.fail(
-            unwrapped,
-            "Expected a Color3 array [r, g, b] or object { r, g, b }.",
+            object,
+            `This colour is the pin's [${names}] number tuple; a { ${names} } object is not the pinned API.`,
         );
     }
 
@@ -352,16 +394,11 @@ export class StaticEvaluator {
                 .join(", ")}}`;
         }
         if (ts.isObjectLiteralExpression(unwrapped)) {
-            return `bbl::Color4{${this.requiredObjectNumber(
-                unwrapped,
-                "r",
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "g",
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "b",
-            )}, ${this.requiredObjectNumber(unwrapped, "a")}}`;
+            const channels = ["r", "g", "b", "a"];
+            this.requireObjectColour(expression, unwrapped, channels);
+            return `bbl::Color4{${channels
+                .map((channel) => this.requiredObjectNumber(unwrapped, channel))
+                .join(", ")}}`;
         }
         this.fail(
             unwrapped,
@@ -394,25 +431,13 @@ export class StaticEvaluator {
                 // time generation succeeds the guard is settled.
                 return "true";
             }
-            if (value.truthinessCpp) {
-                return value.truthinessCpp;
-            }
-            if (value.optionalFoundCpp) {
-                // A handle a search produced: upstream's `find` returns
-                // `undefined` when nothing matched, so the truthiness a
-                // scene tests is whether it did.
-                return value.optionalFoundCpp;
-            }
-            if (value.kind !== "boolean") {
-                this.fail(
-                    unwrapped,
-                    `Expected boolean, received ${value.kind}.`,
-                );
-            }
-            if (value.staticBoolean !== undefined) {
-                return value.staticBoolean ? "true" : "false";
-            }
-            return value.cpp;
+            // A boolean position reads its operand's JavaScript truthiness
+            // (`!!count`): a handle a search produced is truthy when found,
+            // and a boolean an unchecked element read produced is truthy
+            // when present AND true -- the one truthiness rule's answers.
+            const truthiness = this.truthinessCondition(value);
+            if (truthiness !== undefined) return truthiness;
+            this.fail(unwrapped, `Expected boolean, received ${value.kind}.`);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
@@ -535,12 +560,10 @@ export class StaticEvaluator {
                 ? cppFloatLiteral(value)
                 : cppDoubleLiteral(value);
         }
-        if (
-            ts.isIdentifier(unwrapped) &&
-            (unwrapped.text === "Infinity" || unwrapped.text === "NaN")
-        ) {
+        const numericGlobal = this.libraryGlobal(unwrapped);
+        if (numericGlobal === "Infinity" || numericGlobal === "NaN") {
             const type = precision === "float" ? "float" : "double";
-            return unwrapped.text === "Infinity"
+            return numericGlobal === "Infinity"
                 ? `std::numeric_limits<${type}>::infinity()`
                 : `std::numeric_limits<${type}>::quiet_NaN()`;
         }
@@ -587,10 +610,7 @@ export class StaticEvaluator {
             const operator =
                 unwrapped.operator === ts.SyntaxKind.MinusToken ? "-" : "+";
             const operand = this.resolveValue(unwrapped.operand);
-            if (
-                operand.kind === "string" ||
-                (operand.kind === "data" && operand.dataType?.kind === "string")
-            ) {
+            if (isStringValue(operand)) {
                 this.onJsData();
                 const converted = `bbl::js::number_from_string(${operand.cpp})`;
                 return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;
@@ -652,10 +672,8 @@ export class StaticEvaluator {
             }
             if (unwrapped.operatorToken.kind === ts.SyntaxKind.PercentToken) {
                 // JavaScript % keeps the dividend sign, exactly like fmod.
-                const compiled = `std::fmod(${this.compileNumber(
-                    unwrapped.left,
-                    "double",
-                )}, ${this.compileNumber(unwrapped.right, "double")})`;
+                const [left, right] = this.numericOperands(unwrapped);
+                const compiled = `std::fmod(${left}, ${right})`;
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
                     : compiled;
@@ -664,22 +682,19 @@ export class StaticEvaluator {
                 unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.AsteriskAsteriskToken
             ) {
-                const compiled = `std::pow(${this.compileNumber(
-                    unwrapped.left,
-                    "double",
-                )}, ${this.compileNumber(unwrapped.right, "double")})`;
+                const [left, right] = this.numericOperands(unwrapped);
+                const compiled = `std::pow(${left}, ${right})`;
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
                     : compiled;
             }
-            const bitwiseFunction = bitwiseFunctions.get(
-                unwrapped.operatorToken.kind,
-            );
-            if (bitwiseFunction) {
-                const compiled = `bbl::js::${bitwiseFunction}(${this.compileNumber(
-                    unwrapped.left,
-                    "double",
-                )}, ${this.compileNumber(unwrapped.right, "double")})`;
+            if (JS_BITWISE_FUNCTIONS.has(unwrapped.operatorToken.kind)) {
+                const [left, right] = this.numericOperands(unwrapped);
+                const compiled = jsBitwiseCall(
+                    unwrapped.operatorToken.kind,
+                    left,
+                    right,
+                )!;
                 this.onJsData();
                 return precision === "float"
                     ? `static_cast<float>(${compiled})`
@@ -694,10 +709,8 @@ export class StaticEvaluator {
                     "Unsupported operator in numeric expression.",
                 );
             }
-            const compiled = `(${this.compileNumber(
-                unwrapped.left,
-                "double",
-            )} ${operator} ${this.compileNumber(unwrapped.right, "double")})`;
+            const [left, right] = this.numericOperands(unwrapped);
+            const compiled = `(${left} ${operator} ${right})`;
             return precision === "float"
                 ? `static_cast<float>(${compiled})`
                 : compiled;
@@ -705,14 +718,8 @@ export class StaticEvaluator {
         // The constants a float sink has a single-precision spelling for
         // are spelled that way; every other `Math` constant reads at
         // double width through the property arm below.
-        const mathConstant = mathMemberAccess(
-            unwrapped,
-            this.isDefaultLibraryIdentifier,
-        );
-        const numericConstant = numberConstant(
-            unwrapped,
-            this.isDefaultLibraryIdentifier,
-        );
+        const mathConstant = mathMemberAccess(unwrapped, this.libraryGlobal);
+        const numericConstant = numberConstant(unwrapped, this.libraryGlobal);
         if (numericConstant !== undefined) {
             const cpp = numberConstantValue(numericConstant).cpp;
             return precision === "float" ? `static_cast<float>(${cpp})` : cpp;
@@ -724,10 +731,7 @@ export class StaticEvaluator {
                 ? constant.floatCpp
                 : cppDoubleLiteral(constant.value);
         }
-        const mathCall = mathMemberCall(
-            unwrapped,
-            this.isDefaultLibraryIdentifier,
-        );
+        const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
         const sqrt =
             mathCall?.name === "sqrt" ? MATH_MEMBERS.get("sqrt") : undefined;
         if (mathCall && sqrt && mathCall.call.arguments.length === 1) {
@@ -887,14 +891,7 @@ export class StaticEvaluator {
         const unwrapped = this.unwrap(expression);
         return (
             ts.isBinaryExpression(unwrapped) &&
-            [
-                ts.SyntaxKind.EqualsEqualsEqualsToken,
-                ts.SyntaxKind.ExclamationEqualsEqualsToken,
-                ts.SyntaxKind.LessThanToken,
-                ts.SyntaxKind.LessThanEqualsToken,
-                ts.SyntaxKind.GreaterThanToken,
-                ts.SyntaxKind.GreaterThanEqualsToken,
-            ].includes(unwrapped.operatorToken.kind)
+            conditionComparison(this.checker, unwrapped) !== undefined
         );
     }
 
@@ -908,18 +905,11 @@ export class StaticEvaluator {
         ) {
             return false;
         }
-        const mathConstant = mathMemberAccess(
-            unwrapped,
-            this.isDefaultLibraryIdentifier,
-        );
-        const mathCall = mathMemberCall(
-            unwrapped,
-            this.isDefaultLibraryIdentifier,
-        );
+        const mathConstant = mathMemberAccess(unwrapped, this.libraryGlobal);
+        const mathCall = mathMemberCall(unwrapped, this.libraryGlobal);
         return (
             ts.isNumericLiteral(unwrapped) ||
-            (ts.isIdentifier(unwrapped) &&
-                (unwrapped.text === "Infinity" || unwrapped.text === "NaN")) ||
+            ["Infinity", "NaN"].includes(this.libraryGlobal(unwrapped) ?? "") ||
             (ts.isPrefixUnaryExpression(unwrapped) &&
                 (unwrapped.operator === ts.SyntaxKind.PlusToken ||
                     unwrapped.operator === ts.SyntaxKind.MinusToken ||
@@ -1003,7 +993,9 @@ export class StaticEvaluator {
                     // The two members the fold reads, handed over
                     // explicitly because this evaluator keeps its
                     // condition compiler private.
-                    compileCondition: (node) => this.compileCondition(node),
+                    conditions: {
+                        compileCondition: (node) => this.compileCondition(node),
+                    },
                     resolveStaticExpression: (node) =>
                         this.resolveStaticExpression(node),
                 },
@@ -1120,11 +1112,7 @@ export class StaticEvaluator {
             if (value.kind === "json-null") {
                 return expression.right;
             }
-            if (
-                isJsonValue(value) ||
-                value.optionalFoundCpp !== undefined ||
-                (value.kind === "data" && value.dataType?.kind === "optional")
-            ) {
+            if (isJsonValue(value) || presenceCpp(value) !== undefined) {
                 return undefined;
             }
             return expression.left;
@@ -1154,9 +1142,7 @@ export class StaticEvaluator {
                 }
                 if (
                     isJsonValue(property) ||
-                    property.optionalFoundCpp !== undefined ||
-                    (property.kind === "data" &&
-                        property.dataType?.kind === "optional")
+                    presenceCpp(property) !== undefined
                 ) {
                     return undefined;
                 }
@@ -1256,7 +1242,7 @@ export class StaticEvaluator {
      */
     private isWrittenThrough(declaration: ts.VariableDeclaration): boolean {
         const symbol = ts.isIdentifier(declaration.name)
-            ? this.checker.getSymbolAtLocation(declaration.name)
+            ? declaredSymbol(this.checker, declaration.name)
             : undefined;
         if (symbol === undefined) {
             return true;
@@ -1267,7 +1253,7 @@ export class StaticEvaluator {
         }
         const namesBinding = (node: ts.Node): boolean =>
             ts.isIdentifier(node) &&
-            this.checker.getSymbolAtLocation(node) === symbol;
+            declaredSymbol(this.checker, node) === symbol;
         const throughBinding = (node: ts.Node): boolean =>
             (ts.isPropertyAccessExpression(node) ||
                 ts.isElementAccessExpression(node)) &&
@@ -1362,7 +1348,7 @@ export class StaticEvaluator {
         expression: ts.Expression,
         length: number,
         resolved?: Value,
-    ): Value[] | undefined {
+    ): readonly Value[] | undefined {
         // An identifier binds, or resolves through a module-level
         // initializer; an element or property access reaches an entry of
         // a static table, which is how an indexed color table feeds a
@@ -1483,12 +1469,15 @@ export class StaticEvaluator {
     public staticNumberValue(expression: ts.Expression): number | undefined {
         return staticNumberValue(
             {
-                isDefaultLibraryIdentifier: this.isDefaultLibraryIdentifier,
+                libraryGlobal: this.libraryGlobal,
                 resolveStaticExpression: (value: ts.Expression) =>
                     this.resolveStaticExpression(value),
-                lookup: (identifier: ts.Identifier) => this.lookup(identifier),
-                lookupOptional: (identifier: ts.Identifier) =>
-                    this.lookupOptional(identifier),
+                bindings: {
+                    lookup: (identifier: ts.Identifier) =>
+                        this.lookup(identifier),
+                    lookupOptional: (identifier: ts.Identifier) =>
+                        this.lookupOptional(identifier),
+                },
                 fail: (node: ts.Node, message: string): never =>
                     this.fail(node, message),
             },
@@ -1499,12 +1488,7 @@ export class StaticEvaluator {
     public staticTextValue(expression: ts.Expression): string | undefined {
         const unwrapped = this.resolveStaticExpression(expression);
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return "null";
-        if (
-            ts.isIdentifier(unwrapped) &&
-            unwrapped.text === "undefined" &&
-            !this.lookupOptional(unwrapped)
-        )
-            return "undefined";
+        if (isGlobalUndefined(this.checker, unwrapped)) return "undefined";
         if (
             ts.isStringLiteral(unwrapped) ||
             ts.isNoSubstitutionTemplateLiteral(unwrapped)
@@ -1623,7 +1607,7 @@ export class StaticEvaluator {
             // argument exactly as the tag above is over its template.
             const frozen = objectIdentityCallArgument(
                 current,
-                this.isDefaultLibraryIdentifier,
+                this.libraryGlobal,
             );
             if (frozen) {
                 current = frozen;

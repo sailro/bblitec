@@ -1,13 +1,19 @@
 // SDL implementation of the platform abstraction layer: image decode, and
 // the engine entry point that dispatches to a GPU backend.
+#include <bblite/features/device_recovery.hpp>
+#include <bblite/features/has_audio.hpp>
+#include <bblite/features/has_gamepad.hpp>
+#include <bblite/features/has_ui.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
+#include <bblite/text_gpu.hpp>
 #include <bblite/pal.hpp>
-#include <bblite/pal_gpu.hpp>
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 #include <bblite/pal_async_engine.hpp>
 #endif
-#if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
+#if BBLITE_HAS_AUDIO
 #include <bblite/pal_audio.hpp>
 #endif
 
@@ -22,10 +28,11 @@
 
 #include <SDL3/SDL.h>
 #include "pal_window.hpp"
+#include "pal_gpu_dispatch.hpp"
 
 namespace bbl {
 
-#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
+#if BBLITE_HAS_GAMEPAD
 struct PlatformGamepadState {
     struct Gamepad {
         explicit Gamepad(GamepadHandle value) : handle(value), buttons(17), axes(4) {
@@ -218,7 +225,7 @@ namespace {
 enum class RendererKind { scene, sprites, canvas, effects, frame_graph, text };
 
 RendererKind renderer_kind(const Engine& engine) {
-    if (!engine.registered_text_renderers.empty())
+    if (bbl::has_text_renderers(engine))
         return RendererKind::text;
     if (!engine.registered_scenes.empty())
         return RendererKind::scene;
@@ -231,7 +238,7 @@ RendererKind renderer_kind(const Engine& engine) {
     if (bbl::has_sprite_renderers(engine)) {
         return RendererKind::sprites;
     }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (engine.primary_canvas.value < engine.ui_elements.size()) {
         return RendererKind::canvas;
     }
@@ -257,41 +264,34 @@ const char* renderer_name(RendererKind kind) {
     return "A scene";
 }
 
-// Each entry point is a real function when its backend and its renderer
-// are both compiled in, and `pal_gpu.hpp`'s inline stub returning false
-// otherwise -- so "did this build compile it" is the only question these
-// return values answer.
-#if !defined(BBLITE_WORKERS) || !BBLITE_WORKERS
-bool run_sdl_gpu(Engine& engine, RendererKind kind) {
-    switch (kind) {
-    case RendererKind::sprites:
-    case RendererKind::text:
-    case RendererKind::canvas:
-        return pal::run_sprite_gpu_engine(engine);
-    case RendererKind::effects:
-        return pal::run_effect_gpu_engine(engine);
-    case RendererKind::frame_graph:
-        return pal::run_frame_graph_gpu_engine(engine);
-    case RendererKind::scene:
-        break;
-    }
-    return pal::run_gpu_engine(engine);
+[[noreturn]] void refuse_uncompiled_renderer(RendererKind kind, const pal::GpuBackend& backend) {
+    throw std::runtime_error(std::string(renderer_name(kind)) + " is not compiled for the " +
+                             std::string(backend.name) + " backend.");
 }
 
-bool run_dawn(Engine& engine, RendererKind kind) {
+#if !BBLITE_WORKERS
+void run_renderer(Engine& engine, RendererKind kind, const pal::GpuBackend& backend) {
+    void (*context)(Engine&) = nullptr;
     switch (kind) {
     case RendererKind::sprites:
     case RendererKind::text:
     case RendererKind::canvas:
-        return pal::run_sprite_dawn_engine(engine);
-    case RendererKind::effects:
-        return pal::run_effect_dawn_engine(engine);
-    case RendererKind::frame_graph:
-        return pal::run_frame_graph_dawn_engine(engine);
-    case RendererKind::scene:
+        context = backend.run_2d;
         break;
+    case RendererKind::effects:
+        context = backend.run_effects;
+        break;
+    case RendererKind::frame_graph:
+        context = backend.run_frame_graph;
+        break;
+    case RendererKind::scene:
+        if (!backend.run_scene || !backend.run_scene(engine))
+            refuse_uncompiled_renderer(kind, backend);
+        return;
     }
-    return pal::run_dawn_engine(engine);
+    if (!context)
+        refuse_uncompiled_renderer(kind, backend);
+    context(engine);
 }
 #else
 js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
@@ -303,19 +303,16 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
                 throw std::runtime_error(std::string(renderer_name(kind)) +
                                          " does not yet support realm animation tasks.");
             engine->renderer_restart_requested = false;
-            const bool dawn = pal::use_dawn_backend();
-#if defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
-            auto driver = dawn ? pal::run_dawn_engine(*engine) : pal::run_gpu_engine(*engine);
-#else
-            static_cast<void>(dawn);
-            auto driver = pal::run_dawn_engine(*engine);
-#endif
+            const pal::GpuBackend& backend = pal::selected_gpu_backend();
+            if (!backend.run_scene)
+                refuse_uncompiled_renderer(kind, backend);
+            auto driver = backend.run_scene(*engine);
             driver.ready().observe(
                 [ready](const js::PromiseVoid&) { ready.resolve(js::PromiseVoid{}); },
                 [](std::exception_ptr) {}); // The finished result owns the error path below.
             driver.start();
             if (!(co_await driver.finished()))
-                throw std::runtime_error("The selected realm rendering backend is not compiled.");
+                refuse_uncompiled_renderer(kind, backend);
             if (!engine->renderer_restart_requested)
                 break;
         }
@@ -336,12 +333,12 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
 
 void pal::run_engine(Engine& engine) {
     require_runtime_execution("renderer or input execution");
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     static_cast<void>(engine);
     throw std::logic_error("A Worker-enabled application must use asynchronous engine startup.");
 #else
     SdlWindowRun window_run;
-#if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
+#if BBLITE_HAS_AUDIO
     // Finish this engine's audio before releasing its window services.
     struct AudioRunEnd {
         Engine& engine;
@@ -358,26 +355,21 @@ void pal::run_engine(Engine& engine) {
                 throw std::runtime_error(
                     "Offscreen presentation currently supports scene renderers only.");
             }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
             throw std::runtime_error(
                 "Offscreen presentation does not yet support a retained UI runtime.");
 #endif
         }
         engine.renderer_restart_requested = false;
         try {
-            const bool ran =
-                pal::use_dawn_backend() ? run_dawn(engine, kind) : run_sdl_gpu(engine, kind);
-            if (!ran) {
-                throw std::runtime_error(std::string(renderer_name(kind)) +
-                                         " is not compiled for the selected GPU backend.");
-            }
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+            run_renderer(engine, kind, pal::selected_gpu_backend());
+#if BBLITE_DEVICE_RECOVERY
             if (engine.device_recovery && engine.device_recovery->requested)
                 begin_device_recovery(engine);
 #endif
         } catch (const std::exception& error) {
             static_cast<void>(error);
-#if defined(BBLITE_DEVICE_RECOVERY) && BBLITE_DEVICE_RECOVERY
+#if BBLITE_DEVICE_RECOVERY
             if (dynamic_cast<const GpuTransportError*>(&error))
                 report_gpu_error(engine, error.what());
             if (engine.device_recovery && engine.device_recovery->recovering)
@@ -391,7 +383,7 @@ void pal::run_engine(Engine& engine) {
 #endif
 }
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
 js::Promise<js::PromiseVoid> pal::start_realm_engine(std::shared_ptr<Engine> engine) {
     if (engine->device_disposed)
         throw std::runtime_error("Cannot start an engine with a disposed GPU device.");

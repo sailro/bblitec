@@ -1,3 +1,6 @@
+#include <bblite/features/offscreen_surfaces.hpp>
+#include <bblite/features/physics_viewer.hpp>
+
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 
@@ -270,7 +273,7 @@ Engine create_engine(EngineOptions options) {
     engine.canvas_client_width = engine.options.width;
     engine.canvas_client_height = engine.options.height;
 #if defined(SDL_PLATFORM_IOS) && !BBLITE_OFFSCREEN_SURFACES
-#if defined(BBLITE_PHYSICS_VIEWER) && BBLITE_PHYSICS_VIEWER
+#if BBLITE_PHYSICS_VIEWER
     if (extracting_constructor_inputs)
         return engine;
 #endif

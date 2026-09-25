@@ -28,7 +28,7 @@ export const CPP_ELEMENT = {
     i64: "std::int64_t",
 } as const;
 
-export type CppElementWidth = keyof typeof CPP_ELEMENT;
+type CppElementWidth = keyof typeof CPP_ELEMENT;
 
 /** An owned buffer of one element width: the pin's typed array. */
 export function cppVector(element: string): string {

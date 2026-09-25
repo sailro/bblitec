@@ -37,19 +37,23 @@ test(
                 cppFunction(dawn, "inline void upload_dawn_splat_pass("),
             ].join("\n"),
         );
+        // Each backend's frame loop, lifted from the synchronization hook
+        // that runs it; `camera` is the scene's, null for a camera-less one.
         const frameLoops = ["sdl_gpu", "dawn"].map((backend) => {
             const pass = backend === "dawn" ? "DawnSplatPass" : "SplatPass";
             const source = cppFunction(
                 readFileSync(`native/src/pal_${backend}.cpp`, "utf8"),
-                "void synchronize()",
+                "void upload_splats(",
             );
             return `void frame_${backend}(Recorder& recorder, const Engine& engine, ${pass}& pass,
-            const std::array<float, 16>& frame_view) {
+            const std::array<float, 16>& frame_view, const CameraRecord* camera) {
             struct { Recorder* device; Recorder* queue; std::span<${pass}> splat_passes; } state{&recorder, &recorder, {&pass, 1}};
-            [[maybe_unused]] const auto frame_projection = frame_view;
-            [[maybe_unused]] const std::array<float, 4> frame_camera_position{};
-            [[maybe_unused]] const unsigned width = 1280;
-            [[maybe_unused]] const unsigned height = 720;
+            const struct {
+                std::array<float, 16> view, projection;
+                std::array<float, 4> camera_position;
+            } matrices{frame_view, frame_view, {}};
+            [[maybe_unused]] const std::uint32_t width = 1280;
+            [[maybe_unused]] const std::uint32_t height = 720;
             ${cppFunction(source, `for (${pass}& splat : state.splat_passes)`)}
         }`;
         });

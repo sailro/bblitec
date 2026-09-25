@@ -32,14 +32,13 @@ import {
     importPinnedModule,
     importPinnedModuleWithExports,
 } from "./pinned-shader-composer.js";
-import { LoweringContext } from "./lowering/context.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 import {
     createRecordingDevice,
     writtenFloats,
     type DescriptorShapes,
     type Recorder,
 } from "./recording-device.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
 
 /** One vertex input the composed module declares, at its own location. */
 export interface ComposedNodeAttribute {
@@ -55,7 +54,7 @@ export interface ComposedNodeAttribute {
  * `EnvironmentTextures` — the same specular cube and BRDF LUT the material
  * families sample — so the PAL resolves them against what it already holds.
  */
-export interface ComposedNodeEnvBindings {
+interface ComposedNodeEnvBindings {
     iblTexture: number;
     iblSampler: number;
     brdfLut: number;
@@ -71,7 +70,7 @@ export interface ComposedNodeEnvBindings {
  * pin allocates them after the node UBO and texture pairs, so neither PAL may
  * infer fixed slots for them.
  */
-export interface ComposedNodeMorphBindings {
+interface ComposedNodeMorphBindings {
     deltas: number;
     weights: number;
 }
@@ -149,7 +148,7 @@ export interface ComposedNodeMaterial {
  * stages read it are the composed module's own answers, reflected out of it
  * where the rows are emitted.
  */
-export interface ComposedNodeShadowBinding {
+interface ComposedNodeShadowBinding {
     lightIndex: number;
     texture: number;
     sampler: number;
@@ -158,7 +157,7 @@ export interface ComposedNodeShadowBinding {
 }
 
 /** The ESM caster module and the one binding it adds. */
-export type ComposedNodeCaster =
+type ComposedNodeCaster =
     | {
           kind: "esm";
           wgsl: string;
@@ -204,7 +203,7 @@ export interface ComposedNodeGeometryView {
     colorTargetCount: number;
 }
 
-export interface ComposeNodeMaterialOptions {
+interface ComposeNodeMaterialOptions {
     shadowLights?: readonly {
         lightIndex: number;
         shadowType: "esm" | "pcf" | "csm";
@@ -1011,7 +1010,7 @@ async function composeNodeEsmCaster(
         // the depth variant, so its declarations have to come with it.
         _envEmitter: material._envHelpers?.emitEnv,
     };
-    new LoweringContext(sharedUpstreamStore()).assertSuppliedOptions(
+    sharedPinnedContext().assertSuppliedOptions(
         "src/material/node/node-pipeline.ts",
         "CompileOpts",
         Object.keys(casterOptions),
@@ -1080,7 +1079,7 @@ async function composeNodePcfCaster(
         _alphaMode: undefined,
         _envEmitter: material._envHelpers?.emitEnv,
     };
-    new LoweringContext(sharedUpstreamStore()).assertSuppliedOptions(
+    sharedPinnedContext().assertSuppliedOptions(
         "src/material/node/node-pipeline.ts",
         "CompileOpts",
         Object.keys(casterOptions),

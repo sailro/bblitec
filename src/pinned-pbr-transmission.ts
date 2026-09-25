@@ -1,5 +1,9 @@
 import ts from "typescript";
-import { LoweringContext } from "./lowering/context.js";
+import {
+    LoweringContext,
+    unexportedDeclarationText,
+    sharedPinnedContext,
+} from "./lowering/context.js";
 import { pinnedModuleTextUrl } from "./pinned-shader-composer.js";
 import {
     transpileCommonJs,
@@ -13,7 +17,7 @@ export const transmissionRegistrationMarker =
 /** Record the source hook call without changing its registration or material writes. */
 export function recordingTransmissionSetter(
     kind: "transmission" | "dispersion",
-    context: LoweringContext = new LoweringContext(),
+    context: LoweringContext = sharedPinnedContext(),
 ): string {
     const module = `src/material/pbr/set-${kind}.ts`;
     const name =
@@ -88,12 +92,12 @@ export function pinnedPbrTransmissionSelection(
 ): TransmissionSelection {
     if (!context && selection) return selection;
     const module = "src/material/pbr/pbr-transmission-ext.ts";
-    const declaration = (context ?? new LoweringContext()).functionDeclaration(
+    const declaration = (context ?? sharedPinnedContext()).functionDeclaration(
         module,
         "registerPbrTransmission",
     ).declaration;
     const source = transpileCommonJs(
-        declaration.getText().replace(/^export\s+/, "") +
+        unexportedDeclarationText(declaration) +
             "\nreturn registerPbrTransmission;",
         module,
     );

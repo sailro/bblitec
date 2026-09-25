@@ -5,12 +5,14 @@ This page lists source/native contracts and substitutions. [Features](features.m
 
 ## Semantic contract
 
+Artifact paths are relative to `generated/<id>/`.
+
 | Artifact | Records |
 | --- | --- |
-| `manifest.json` | Reached graph, features, assets |
+| `manifest.json` | Reached graph, features (scene reach and asset joins), assets; repository-relative source paths |
 | `fidelity.json` | Adaptations and risks |
 | `upstream/provenance.json` | Pinned modules/symbols |
-| `upstream/feature-activation.json` | Reach sites and consumers |
+| `upstream/feature-activation.json` | Reach sites, asset joins, activation reasons and consumers |
 | `upstream/renderer-fidelity.json` | Renderer formats/invariants |
 | `upstream/shaders/composition.json` | Composed modules |
 | Reflection, native WGSL, `.slots` | Actual shader interfaces/bindings |
@@ -24,8 +26,10 @@ This page lists source/native contracts and substitutions. [Features](features.m
 | Strings/ICU | UTF-16 semantics over WTF-8 storage; host normalization/collation data |
 | Error | Identity, name, message and represented Error causes retained; AggregateError retains ordered errors. Cause/errors property reads are unadmitted; stack is undefined |
 | Weak collections | Keys retained strongly |
+| Retired meshes | A mesh that left its last scene keeps its record, with its last pose and bounds, while a mesh is parented under it or a shadow caster array, a physics body or an edit gizmo names it, and then gives its slot to a later mesh; touching it through a kept program reference afterwards throws "Native handle refers to a retired record", where JavaScript reaches the detached object |
 | Object immutability | freeze/seal/preventExtensions return the original value without enforcing immutability |
-| Storage/files | Host preferences, native URL tokens, synchronized picker completion |
+| Storage/files | Host preferences, native URL tokens, synchronized picker completion; FileReader loads inside readAsText |
+| Promises outside a realm | An await reads a constructed promise's settlement in place; one still pending ends the awaiting activation without its catch or finally blocks, resuming after the statement that discarded its promise; a later settlement throws, and an entry that awaits one exits with an error |
 | File publication | Direct destinations use atomic replacement; iOS stages a complete private snapshot and UIKit/file providers own export publication |
 | HTTP | WinHTTP/libcurl; system TLS, no cookie jar/CORS; buffered 32 MiB request/response cap |
 | HTTP timeout | Windows: 5 s without progress; libcurl: 5 s connect/30 s request |
@@ -33,21 +37,19 @@ This page lists source/native contracts and substitutions. [Features](features.m
 | Environment | Native platform/language/CPU data; onLine=true, secure Window context; no client hints/device-memory estimate |
 | Graphics guards | Async Window/worker realms expose existing host graphics identity; computation-only realms may lack it |
 | Compute limits | Dawn queries device limits; SDL_GPU has no numeric shader-resource queries and uses 256-byte uniform offsets |
-| Device recovery | Ordinary engine reconstruction retains CPU owners; shared worker/window recovery refuses |
 | Engine disposal | A Window engine invalidates its run and releases its GPU lease; the shared native transport remains available to other engines |
 | GPU task timing | Pinned frame-graph task snapshots use asynchronous hardware timestamp readback; [backend capability](backends.md#backend-comparison) determines availability |
-| iOS Simulator | Explicit Dawn/Metal target with SDL UIKit hosting; no emulation of an iPhone GPU's capabilities |
 | UI | RmlUi and retained Canvas2D; [compatibility limits](ui.md) |
+| Pointer offsets | offsetX/offsetY read clientX/clientY: exact for the full-window primary canvas, not target-relative for auxiliary canvases or UI elements |
 | Camera touch | One finger uses pointer rotation; two-finger span changes feed the existing wheel zoom accumulator |
+| Camera input | Pinned handlers take SDL relative motion as client-pixel deltas and SDL keyboard state as the held KeyboardEvent.code set |
 | Canvas touch | Primary contacts also drive mouse hooks; pinches on canvases with wheel listeners cancel dragging and emit wheel deltas |
 | Skinning | Eight loaded influences reduced to four |
 | Thin-instance culling | Admitted paths may use the pin's all-active fallback |
-| Splats | Synchronous render-thread sorting |
-| Physics/audio | Bullet/LabSound replace Havok/browser audio |
+| Splats | Synchronous render-thread sorting; draw/sort/picking share cloud identity |
 
 Live dataset readback and recovery hooks remain represented; write-only instrumentation can erase.
-Native drawCallCount includes transport draws. Native loops own canvas extent refresh;
-ResizeObserver installation/cancellation does not change that policy.
+Native drawCallCount includes transport draws.
 
 Uncaught ordinary callback exceptions reach the entry handler and exit with status 1. Realm tasks use
 the installed handler or rethrow. Local catches remain active. This differs from browser event-loop continuation.
@@ -57,17 +59,23 @@ the installed handler or rethrow. Local catches remain active. This differs from
 PBR/Standard, nodes, plugins, sprites and effects use their pinned composers/builders. Composition
 failure cannot select a substitute shader. Assertions around a transcription do not prove equivalence.
 
-Shared vertex transport uses baked worlds, fixed PAL bindings, four influences and a 64-matrix palette.
-Lifted skybox fog uses interpolated world position; HDR positionUVW is world position minus background
-center. SDL single-sample image processing samples texel centers. Single-sample transmission replaces
+Vertex buffers carry each geometry's source lanes, a glTF primitive without NORMAL carrying the smooth
+normals the pin generates for it; every family's mesh block carries `mesh.worldMatrix` (eye-relative
+under floating origin), with fixed PAL bindings and a 64-matrix palette. A Standard geometry task keeps
+each renderable's previous world and writes velocity disabled on its first frame, as the pin does; a
+skinned Standard mesh in a LINEAR_VELOCITY task refuses, having no previous bone texture.
+SDL single-sample image processing samples texel centers. Single-sample transmission replaces
 MSAA averaging with mip-zero loads while retaining the source bilinear filter.
 
 ### Numeric width
 
-JavaScript numbers remain double until source Float32 stores. Matrix order, layout and rounding are
+JavaScript numbers remain double until source Float32 stores; a `for` counter that starts at an integer,
+steps by an integer and is written and captured nowhere else counts in 64 bits and converts at each read.
+Matrix order, layout and rounding are
 part of the contract. Signed-zero byte differences can remain despite numeric equality. GLTF light
 scalars/colors use float storage, clamping oversized ranges; spot-angle math remains double until its
-uniform store. Imported cameras retain double fields and source Float32 matrices.
+uniform store. Imported cameras retain double fields and source Float32 matrices. A loaded glTF node's
+rotation, scaling and raw `matrix` are stored at float width where the pin holds JavaScript numbers.
 
 ### The reference pose
 
@@ -86,9 +94,14 @@ does not establish matching CSM bounds, instance coverage or sampler bindings.
 
 ### Background and environment
 
+Background arms (ground, DDS, .env, solid and image skyboxes) run their pinned factories at generation:
+the composed modules deploy whole, and the vertex layouts, rasterizer/depth/blend state, group-1
+layout and buffer bindings are what the factory built and drew. Geometry and mesh blocks are the
+pinned builders and writers, lowered and run over the scene's double-width sizes and root; the
+scene block is the pass's own.
 Cube orientation, mips, encoding, samplers and pass order follow the reached source. GLTF IBL retains
 Float32 harmonics, RGBD decoding and the 256-square RGBA16F BRDF bake. Local probes execute source
-validation/grid/UBO/copy planning; SDL stores large probe uniforms in a buffer.
+validation/grid/UBO/copy planning.
 
 ### glTF material inputs
 
@@ -99,7 +112,8 @@ Metallic-roughness texture-transform animation targets are not resolved by the p
 
 ### Deformation and instancing
 
-World, palette, vertex and instance-parent spaces must agree. GLTF mirroring is producer-specific.
+Vertices, palettes and instance matrices are the pin's; the vertex stage composes them under the mesh
+world. GLTF mirroring is producer-specific.
 Native Euler/quaternion storage differs from the pin's rotation proxy; mixed writes/sharing are bounded.
 
 ### Textures and compressed textures
@@ -108,17 +122,12 @@ Mips, encoding, orientation and samplers follow their source producer. invertY m
 Configured KTX2/Draco JS/WASM runs during packaging; resulting pixels/geometry enter native output.
 Decoder bytes key caches and local decoder files participate in input tracking.
 
-### Gaussian splats
-
-Draw/sort/picking share cloud identity. Updates preserve old buffer aliases and refresh textures before
-same-turn draws/picks. Borrowed buffers without an owner refuse.
-
 ### Animation and hierarchy
 
 Pinned parsing/target resolution controls acceptance and source write order, masks and weighted/additive
 mixing. Native adapters retain source Float32 stores and shared deformation resources. Material pointer
 writers retain double arrays and captured owners; replacing a wrapper does not retarget an old writer.
-CPU-only VAT seeks do not upload temporary poses. Property and glTF tracks remain separate.
+CPU-only VAT seeks do not upload temporary poses.
 
 ### Frame graph and post-process passes
 
@@ -153,36 +162,39 @@ can dispatch one frame earlier than the browser promise.
 | Prestep | TELEPORT keeps zero kinematic velocity; ACTION uses immediate swept pose instead of Havok's deferred target |
 | Timing | Variable frame delta capped at 100 ms; explicit fixed steps once per rendered frame, including initial zero engine delta |
 | Triangle meshes | Static BVH; dynamic GImpact with approximate inertia |
-| Heightfields | Static triangle BVH with measured source grid orientation/diagonal; rectangular grids refuse |
-| Containers | Source relative transforms; Bullet convex children/inertia; mixed child material/filter/trigger state refuses |
+| Heightfields | Static triangle BVH with measured source grid orientation/diagonal |
+| Containers | Source relative transforms; Bullet convex children/inertia |
 | Floating origin | Separate worlds; no cross-region collisions |
 | Queries | GJK/EPA and convex sweep; measured cylinder/box margins and closest-feature tie selection |
 | Character contacts | Body sets can agree while contact order, instants and points differ |
 
 Cylinder margin is `min(0.015, 0.1 * minimumHalfExtent)`; box margin is 0.015 capped by its smallest
-half-extent. Shape storage outlives native shapes. Zero/degenerate shapes and unsupported ownership
-combinations refuse. Per-step traces and rest/shape checks measure different properties.
+half-extent. Shape storage outlives native shapes. Per-step traces and rest/shape checks measure
+different properties.
 
 ## Text contract
 
-Static shaping/atlas packing runs at generation. Live text uses HarfBuzz and pinned layout/packing over
-the packaged repertoire. TextData retains identity; shared data owns group caches and captured styles.
-Disposal releases GPU leases while CPU data follows source lifetime. Deferred registration publishes
-only after successful construction. Arbitrary async builders refuse. Both backends use Slug WGSL.
+Live text lays out through the pin's lowered `layoutText` over the packaged repertoire, whose outlines are
+extracted and packed at generation. text-shaper, which the layout shapes with, is HarfBuzz: font scale,
+nominal glyph lookup and the shaping pass (`shapeInto`) are HarfBuzz's. TextData is the pin's record graph (runs, draw groups, style palette, slot
+allocator) updated by the pin's lowered bodies; it retains identity, and shared data owns group caches
+and captured styles. A text renderable is the pin's own record: its observable transforms, Euler proxy,
+world-matrix state, binding and scene attachment are the pin's classes and closures. Buffer, texture,
+bind-group and bundle creation, writes and draws are the pin's own calls on a WebGPU-shaped device;
+SDL_GPU keeps uniform buffers as CPU copies pushed at each draw. Disposal destroys GPU resources while CPU
+data follows source lifetime. Deferred registration publishes only after successful construction; the
+native scene queue calls a text builder without the engine and scene arguments, which the pin's builder
+does not read. Arbitrary async builders refuse. Both backends use Slug WGSL.
 
 ## Audio contract
 
 LabSound starts playback without a browser autoplay gate. Lifecycle promises settle after device
-transitions. Decode reads on the realm thread, rejects invalid bytes and retains attached ArrayBuffers.
-Output-device selection and browser recording streams are unavailable. Topology/scheduling agreement
-does not establish PCM fidelity; closed-context graph operations remain bounded.
+transitions. Decode reads on the realm thread and retains attached ArrayBuffers. Topology/scheduling
+agreement does not establish PCM fidelity.
 
 ## What is measured: the full page
 
-Parity includes canvas and reached UI. Canvas-only thresholds are additional gates, not replacements.
+Parity includes canvas and reached UI; canvas-only thresholds are additional gates, not replacements.
+Reports contain backend/build identity, full/foreground MAD, byte ratios, bias and spatial attribution;
+they locate residuals but establish neither their cause nor an acceptable precision floor.
 [Status](status.md) owns values; [debugging](debugging.md) owns commands and observation limits.
-
-## Parity reports
-
-Reports contain backend/build identity, full/foreground MAD, byte ratios, bias and spatial attribution.
-They locate residuals; they do not establish their cause or an acceptable precision floor.

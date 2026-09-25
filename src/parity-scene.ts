@@ -32,19 +32,36 @@ import {
     generateIdVisualization,
     imageDimensions,
 } from "./parity.js";
-import { type FlagSpec, flagNumber, parseFlags } from "./tooling/flags.js";
 import {
-    applyGpuBackendEnvironment,
+    type FlagSpec,
+    type ParsedFlags,
+    MEASURE_FLAGS,
+    flagNumber,
+    parseFlags,
+} from "./tooling/flags.js";
+import {
+    artifactDirectory,
     backendFileToken,
     optionalBackend,
     parityCanvasReportPath,
     parityNativeImagePath,
     parityReportPath,
     resolveBackend,
+    resolvePose,
+    type ScenePose,
 } from "./tooling/artifacts.js";
+import {
+    parseBackendName,
+    type BackendSelection,
+    type NativeBackend,
+} from "./tooling/backends.js";
+import { memoryTapeEntries, readMemoryTape } from "./tooling/check-spec.js";
+import {
+    readCompiledSceneManifest,
+    type CompiledSceneManifest,
+} from "./tooling/generated-readers.js";
 import { readReport, writeReport } from "./tooling/reports.js";
 import {
-    enableGpuDebug,
     resolveNativeExecutable,
     runMeasured,
     spawnNativeMeasured,
@@ -61,44 +78,14 @@ import {
  * the instrumented capture and the geometry diagnostics — so a seeded
  * scene renders the same particle set on all of them.
  */
-interface CompiledSceneManifest {
-    adaptations?: Array<{ id?: string }>;
-    features?: unknown;
-}
-
-function readCompiledSceneManifest(
-    scene: SceneDefinition,
-): CompiledSceneManifest | undefined {
-    const manifestPath = resolve(scene.output, "manifest.json");
-    if (!existsSync(manifestPath)) {
-        return undefined;
-    }
-    try {
-        const manifest: unknown = JSON.parse(
-            readFileSync(manifestPath, "utf8"),
-        );
-        if (typeof manifest !== "object" || manifest === null) {
-            return undefined;
-        }
-        return manifest;
-    } catch {
-        return undefined;
-    }
-}
-
-function manifestUsesSeededRandom(
-    manifest: CompiledSceneManifest | undefined,
-): boolean {
-    return (
-        Array.isArray(manifest?.adaptations) &&
-        manifest.adaptations.some(
-            (adaptation) => adaptation.id === "deterministic-seeded-random",
-        )
-    );
+function manifestUsesSeededRandom(manifest: CompiledSceneManifest): boolean {
+    return manifest.adaptations.includes("deterministic-seeded-random");
 }
 
 export function usesSeededRandom(scene: SceneDefinition): boolean {
-    return manifestUsesSeededRandom(readCompiledSceneManifest(scene));
+    return manifestUsesSeededRandom(
+        readCompiledSceneManifest(scene.output, scene.id),
+    );
 }
 
 /** Whether the compiled scene actually carries the retained native UI.
@@ -106,8 +93,9 @@ export function usesSeededRandom(scene: SceneDefinition): boolean {
  *  golden capture composed (`runParity` derives the same predicate from
  *  its already-read manifest at its `retainedUiCapture` binding). */
 export function usesRetainedUi(scene: SceneDefinition): boolean {
-    const features = readCompiledSceneManifest(scene)?.features;
-    return Array.isArray(features) && features.includes("ui:rml");
+    return readCompiledSceneManifest(scene.output, scene.id).features.includes(
+        "ui:rml",
+    );
 }
 
 /**
@@ -140,56 +128,83 @@ interface GltfSpecialization {
     renderItems: RenderItemSpecialization[];
 }
 
+/** The two elements `--without` can suppress natively. */
+type SuppressibleElement = "ground" | "background";
+
+/**
+ * The parity invocation, parsed and validated once, up front, before any
+ * child process or build-stamp check spends time on a flag combination
+ * that cannot mean anything. One command, four modes:
+ *   - the gate (default): golden against every measured backend, plus the
+ *     backend-against-backend differential when both run;
+ *   - `--runs N`: N native re-renders against run 1 and the golden;
+ *   - `--geometry`: each impostor copy task, browser against native;
+ *   - `--attribute`: the gate over the instrumented draw-id twin.
+ */
 export interface ParityArguments {
-    attribute?: true;
-    sceneId?: string;
-    executable?: string;
+    /** Explicit `--backend` (`both` accepted); absent, `measuredBackends`
+     *  decides (ambient `BBLITE_GPU_BACKEND`, else the compiled set). */
+    backend?: BackendSelection;
+    seekSeconds?: number;
+    /** `--without ground|background`: the native side re-rendered with
+     *  that element suppressed, against the unchanged golden. The element
+     *  whose removal makes the number worse is not the culprit. */
+    without?: SuppressibleElement;
+    /** A pre-rendered native image measured in place of a native run. */
     actual?: string;
+    attribute: boolean;
+    geometry: boolean;
+    /** `--runs N`: the run-to-run stability mode. */
+    runs?: number;
+    singleSample: boolean;
     recaptureReference: boolean;
     noFail: boolean;
-    differential: boolean;
-    gpuDebug: boolean;
-    /** Canonical explicit selection, `sdl_gpu|dawn`; ambient fallback
-     *  is applied later by `resolveBackend`. */
-    backend?: string;
-    seekSeconds?: number;
-    /** `--without ground|background`: re-run the native side with that
-     *  element suppressed, against the unchanged golden — the bisection
-     *  ordering experiment from docs/debugging.md, as a flag. */
-    without?: "ground" | "background";
 }
 
 /** The native switch `--without` drives for each suppressible element. */
 export function withoutVariable(
-    without: "ground" | "background",
+    without: SuppressibleElement,
 ): "BBLITE_GROUND" | "BBLITE_BACKGROUND" {
     return without === "ground" ? "BBLITE_GROUND" : "BBLITE_BACKGROUND";
 }
 
-/**
- * The strict parity argument parser, shared by `scene -- parity` and
- * `runSceneParity` so validation happens once, up front, before any child
- * process or build-stamp check spends time on a flag combination that
- * cannot mean anything.
- */
 /** The parity flags, shared with the dispatcher's usage text. */
 export const PARITY_FLAGS: FlagSpec = {
-    value: ["--exe", "--actual", "--backend", "--seek", "--without"],
+    value: [...MEASURE_FLAGS.value, "--without", "--actual", "--runs"],
     boolean: [
+        ...MEASURE_FLAGS.boolean,
         "--attribute",
+        "--geometry",
+        "--single-sample",
         "--recapture-reference",
         "--no-fail",
-        "--differential",
-        "--gpu-debug",
     ],
-    positionals: 1,
 };
 
-export function parseParityArguments(rest: string[]): ParityArguments {
-    const parsed = parseFlags(rest, PARITY_FLAGS, "parity");
-    const backend = optionalBackend(parsed, "parity");
-    const sceneId = parsed.positionals[0];
-    const executable = parsed.values.get("--exe");
+/** Refuse `present` flags beside `mode`, naming why they cannot compose. */
+function refuseBeside(
+    mode: string,
+    present: ReadonlyArray<readonly [string, boolean]>,
+    reason: string,
+): void {
+    const dropped = present.filter(([, set]) => set).map(([flag]) => flag);
+    if (dropped.length > 0) {
+        throw new Error(
+            `parity: ${mode} does not compose with ${dropped.join(", ")}: ${reason}`,
+        );
+    }
+}
+
+export function parseParityArguments(rest: readonly string[]): ParityArguments {
+    return parityArgumentsFrom(parseFlags(rest, PARITY_FLAGS, "parity"));
+}
+
+export function parityArgumentsFrom(parsed: ParsedFlags): ParityArguments {
+    const backendValue = parsed.values.get("--backend");
+    const backend =
+        backendValue === undefined
+            ? undefined
+            : parseBackendName(backendValue, "parity: --backend", true);
     const actual = parsed.values.get("--actual");
     const seekSeconds = flagNumber(parsed, "--seek", "parity");
     const withoutValue = parsed.values.get("--without");
@@ -202,78 +217,110 @@ export function parseParityArguments(rest: string[]): ParityArguments {
             `parity: --without must be ground|background (got '${withoutValue}').`,
         );
     }
-    const without = withoutValue;
+    const runsValue = parsed.values.get("--runs");
+    const runs = runsValue === undefined ? undefined : Number(runsValue);
+    if (runs !== undefined && (!Number.isInteger(runs) || runs < 2)) {
+        throw new Error(
+            `parity: --runs must be an integer >= 2 (got '${runsValue}').`,
+        );
+    }
     const result: ParityArguments = {
-        ...(parsed.flags.has("--attribute")
-            ? { attribute: true as const }
-            : {}),
-        ...(sceneId !== undefined ? { sceneId } : {}),
-        ...(executable !== undefined ? { executable } : {}),
-        ...(actual !== undefined ? { actual } : {}),
-        recaptureReference: parsed.flags.has("--recapture-reference"),
-        noFail: parsed.flags.has("--no-fail"),
-        differential: parsed.flags.has("--differential"),
-        gpuDebug: parsed.flags.has("--gpu-debug"),
         ...(backend !== undefined ? { backend } : {}),
         ...(seekSeconds !== undefined ? { seekSeconds } : {}),
-        ...(without !== undefined ? { without } : {}),
+        ...(withoutValue !== undefined ? { without: withoutValue } : {}),
+        ...(actual !== undefined ? { actual } : {}),
+        attribute: parsed.flags.has("--attribute"),
+        geometry: parsed.flags.has("--geometry"),
+        ...(runs !== undefined ? { runs } : {}),
+        singleSample: parsed.flags.has("--single-sample"),
+        recaptureReference: parsed.flags.has("--recapture-reference"),
+        noFail: parsed.flags.has("--no-fail"),
     };
-    if (result.differential) {
-        // A differential run spawns one process per backend and forwards
-        // only the differential flag, so every companion except
-        // --gpu-debug would be silently dropped — refuse instead.
-        if (result.recaptureReference) {
-            throw new Error(
-                "parity: --differential does not carry --recapture-reference. " +
-                    "Capture the new golden first with 'scene -- parity <id> --recapture-reference', " +
-                    "then run 'scene -- parity <id> --differential'.",
-            );
-        }
-        const dropped = [
-            ...(result.executable !== undefined ? ["--exe"] : []),
-            ...(result.actual !== undefined ? ["--actual"] : []),
-            ...(result.noFail ? ["--no-fail"] : []),
-            ...(result.backend !== undefined ? ["--backend"] : []),
-            ...(result.seekSeconds !== undefined ? ["--seek"] : []),
-            ...(result.without !== undefined ? ["--without"] : []),
-        ];
-        if (dropped.length > 0) {
-            throw new Error(
-                `parity: --differential measures both GPU backends and accepts --gpu-debug and --attribute beside it; drop ${dropped.join(", ")} or run a plain parity for them.`,
-            );
-        }
-    }
-    if (
-        result.attribute &&
-        (result.actual !== undefined ||
-            result.executable !== undefined ||
-            result.without !== undefined)
-    ) {
+    const modes = [
+        ["--runs", result.runs !== undefined],
+        ["--geometry", result.geometry],
+        ["--attribute", result.attribute],
+    ] as const;
+    const selected = modes.filter(([, set]) => set).map(([flag]) => flag);
+    if (selected.length > 1) {
         throw new Error(
-            "parity: --attribute captures an instrumented twin; --actual, --exe and --without cannot supply its attribution buffers.",
+            `parity: ${selected.join(" and ")} are separate modes; run them separately.`,
+        );
+    }
+    if (result.singleSample && result.runs === undefined) {
+        throw new Error(
+            "parity: --single-sample is a stability measurement; pass --runs N beside it.",
+        );
+    }
+    if (result.runs !== undefined) {
+        refuseBeside(
+            "--runs",
+            [
+                ["--without", result.without !== undefined],
+                ["--actual", result.actual !== undefined],
+                ["--recapture-reference", result.recaptureReference],
+                ["--no-fail", result.noFail],
+            ],
+            "the runs re-render the native side against the golden as it stands and gate nothing.",
+        );
+    }
+    if (result.geometry) {
+        refuseBeside(
+            "--geometry",
+            [
+                ["--without", result.without !== undefined],
+                ["--actual", result.actual !== undefined],
+                ["--no-fail", result.noFail],
+            ],
+            "the copy tasks are rendered and measured alone and gate nothing.",
+        );
+    }
+    if (result.attribute) {
+        refuseBeside(
+            "--attribute",
+            [
+                ["--without", result.without !== undefined],
+                ["--actual", result.actual !== undefined],
+            ],
+            "the instrumented twin must render the attribution buffers itself.",
         );
     }
     if (result.without !== undefined) {
         // The suppression flags are read by the native GPU frame options,
         // and the experiment is native-versus-unchanged-golden; each of
         // these companions would quietly measure something else.
-        if (result.actual !== undefined) {
-            throw new Error(
-                "parity: --actual supplies a pre-rendered image, so there is no native run for --without to suppress anything in.",
-            );
-        }
-        if (result.recaptureReference) {
-            throw new Error(
-                "parity: --without suppresses the element natively only; the golden keeps it. " +
-                    "Recapture a stale golden in a separate plain run first.",
-            );
-        }
+        refuseBeside(
+            "--without",
+            [
+                ["--actual", result.actual !== undefined],
+                ["--recapture-reference", result.recaptureReference],
+            ],
+            "the element is suppressed natively only and the golden keeps it; recapture a stale golden in a separate plain run.",
+        );
+    }
+    if (result.seekSeconds !== undefined) {
+        refuseBeside(
+            "--seek",
+            [["--recapture-reference", result.recaptureReference]],
+            "a seek is measured against its own browser capture at that pose, never the golden; recapture the golden in a plain run.",
+        );
+    }
+    if (
+        result.actual !== undefined &&
+        (result.backend === undefined || result.backend === "both")
+    ) {
+        throw new Error(
+            "parity: --actual measures one pre-rendered image; name its backend with --backend sdl_gpu|dawn.",
+        );
     }
     return result;
 }
 
 /** The frame loops print one `[mem][frame]` line every this many frames. */
 const memoryProfileFrames = 30;
+
+/** A memory run's length when neither `--frames` nor the demo's tape names one. */
+const defaultMemoryFrames = 6000;
 
 /** The memory flags, shared with the dispatcher's usage text. */
 export const MEMORY_FLAGS: FlagSpec = {
@@ -282,32 +329,49 @@ export const MEMORY_FLAGS: FlagSpec = {
         "--backend",
         "--replay",
         "--replay-file",
-        "--max-growth-mb",
+        "--max-slope-mb",
     ],
 };
 
-export interface MemoryArguments {
-    /** Frames to run; at least three samples, so the warm-up third has one. */
-    frames: number;
-    /** Working-set growth after warm-up that fails the run. */
-    maxGrowthMb: number;
+interface MemoryArguments {
+    /** `--frames`: the run length, over the tape's own (`MemoryTape.frames`). */
+    frames?: number;
+    /** Working-set trend after warm-up that fails the run, in MB per
+     *  1,000 frames. */
+    maxSlopeMb: number;
     backend?: string;
-    /** A BBLITE_INPUT_REPLAY tape, so a demo streams instead of idling. */
+    /** An explicit BBLITE_INPUT_REPLAY tape; absent, the scene's default
+     *  gameplay tape (`checks/memory/<id>.json`) when it declares one. */
     replay?: string;
 }
 
 export function parseMemoryArguments(rest: readonly string[]): MemoryArguments {
-    const parsed = parseFlags(rest, MEMORY_FLAGS, "memory");
-    const frames = flagNumber(parsed, "--frames", "memory") ?? 6000;
-    const minimumFrames = 3 * memoryProfileFrames;
+    return memoryArgumentsFrom(parseFlags(rest, MEMORY_FLAGS, "memory"));
+}
+
+/**
+ * Refuses a run too short to judge: at least a warm-up third and two
+ * samples per later third at one every `memoryProfileFrames` frames.
+ */
+function requireMemoryFrames(frames: number, source: string): number {
+    const minimumFrames = 9 * memoryProfileFrames;
     if (!Number.isInteger(frames) || frames < minimumFrames) {
         throw new Error(
-            `memory: --frames must be an integer >= ${minimumFrames} (three samples at one every ${memoryProfileFrames} frames; got '${parsed.values.get("--frames")}').`,
+            `memory: ${source} must be an integer >= ${minimumFrames} (a warm-up third and two samples per later third at one every ${memoryProfileFrames} frames; got '${frames}').`,
         );
     }
-    const maxGrowthMb = flagNumber(parsed, "--max-growth-mb", "memory") ?? 32;
-    if (maxGrowthMb < 0) {
-        throw new Error("memory: --max-growth-mb must be nonnegative.");
+    return frames;
+}
+
+export function memoryArgumentsFrom(parsed: ParsedFlags): MemoryArguments {
+    const requested = flagNumber(parsed, "--frames", "memory");
+    const frames =
+        requested === undefined
+            ? undefined
+            : requireMemoryFrames(requested, "--frames");
+    const maxSlopeMb = flagNumber(parsed, "--max-slope-mb", "memory") ?? 2;
+    if (maxSlopeMb < 0) {
+        throw new Error("memory: --max-slope-mb must be nonnegative.");
     }
     const backend = optionalBackend(parsed, "memory");
     const replayFile = parsed.values.get("--replay-file");
@@ -321,19 +385,31 @@ export function parseMemoryArguments(rest: readonly string[]): MemoryArguments {
             ? readFileSync(replayFile, "utf8").trim()
             : parsed.values.get("--replay");
     return {
-        frames,
-        maxGrowthMb,
+        ...(frames !== undefined ? { frames } : {}),
+        maxSlopeMb,
         ...(backend !== undefined ? { backend } : {}),
         ...(replay !== undefined ? { replay } : {}),
     };
 }
 
 /** One `[mem][frame]` sample used by the memory report. */
-export interface MemorySample {
+interface MemorySample {
+    /** The frame loop that printed it, numbered in start order: a process
+     *  running several engines (a Window host's canvases) prints one
+     *  ordered stream per engine. */
+    engine: number;
     frame: number;
     workingSetMb: number;
+    /** Occupied engine mesh records (the table less its free slots),
+     *  against the meshes the scene still draws. */
     meshRecords: number;
     sceneMeshes: number;
+    /** Occupied engine transform-node records. */
+    transformNodeRecords: number;
+    /** Occupied engine geometry records, against the ones still holding
+     *  vertices. */
+    geometryRecords: number;
+    liveGeometries: number;
     geometryMb: number;
     gcNodes: number;
     gcAllocations: number;
@@ -357,33 +433,49 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
                 ? undefined
                 : value;
         };
-        const frame = read("frame");
+        const count = (name: string): number | undefined => {
+            const value = read(name);
+            return value !== undefined && Number.isInteger(value)
+                ? value
+                : undefined;
+        };
+        const engine = count("engine");
+        const frame = count("frame");
         const workingSetMb = read("working_set_mb");
-        const meshRecords = read("mesh_records");
-        const sceneMeshes = read("scene_meshes");
+        const meshRecords = count("mesh_records");
+        const sceneMeshes = count("scene_meshes");
+        const transformNodeRecords = count("transform_node_records");
+        const geometryRecords = count("geometry_records");
+        const liveGeometries = count("live_geometries");
         const geometryMb = read("geometry_mb");
-        const gcNodes = read("gc_nodes");
-        const gcAllocations = read("gc_allocations");
+        const gcNodes = count("gc_nodes");
+        const gcAllocations = count("gc_allocations");
         if (
+            engine === undefined ||
+            engine === 0 ||
             frame === undefined ||
-            !Number.isInteger(frame) ||
             workingSetMb === undefined ||
             workingSetMb === 0 ||
             meshRecords === undefined ||
             sceneMeshes === undefined ||
+            transformNodeRecords === undefined ||
+            geometryRecords === undefined ||
+            liveGeometries === undefined ||
             geometryMb === undefined ||
             gcNodes === undefined ||
-            !Number.isInteger(gcNodes) ||
-            gcAllocations === undefined ||
-            !Number.isInteger(gcAllocations)
+            gcAllocations === undefined
         ) {
             continue;
         }
         samples.push({
+            engine,
             frame,
             workingSetMb,
             meshRecords,
             sceneMeshes,
+            transformNodeRecords,
+            geometryRecords,
+            liveGeometries,
             geometryMb,
             gcNodes,
             gcAllocations,
@@ -392,30 +484,138 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
     return samples;
 }
 
-export interface MemorySummary {
+/** One engine's samples, in the order it printed them. */
+interface MemoryStream {
+    engine: number;
+    samples: MemorySample[];
+}
+
+/** A run's samples as one stream per engine, in engine order. */
+export function memoryStreams(
+    samples: readonly MemorySample[],
+): MemoryStream[] {
+    const streams = new Map<number, MemorySample[]>();
+    for (const sample of samples) {
+        const stream = streams.get(sample.engine);
+        if (stream) stream.push(sample);
+        else streams.set(sample.engine, [sample]);
+    }
+    return [...streams.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([engine, stream]) => ({ engine, samples: stream }));
+}
+
+/**
+ * A counter across the post-warm-up window: its value where warm-up ends
+ * and at the last sample, and the floor (minimum) of each third of the
+ * window. A leak raises every floor; a sawtooth (garbage waiting for its
+ * collection, a mesh built then retired) leaves the floors where they were.
+ */
+interface MemoryCounterTrend {
+    settled: number;
+    last: number;
+    floors: [number, number, number];
+}
+
+interface MemorySummary {
     /** The sample that ends warm-up: a third of the way through the run. */
     settled: MemorySample;
     last: MemorySample;
     /** `last.workingSetMb - settled.workingSetMb`. */
     growthMb: number;
-    maxGrowthMb: number;
+    /** Theil–Sen working-set slope after warm-up, MB per 1,000 frames. */
+    slopeMbPer1000Frames: number;
+    /** The same slope over the later half of the post-warm-up samples. */
+    recentSlopeMbPer1000Frames: number;
+    maxSlopeMb: number;
+    /** Mesh records the scene does not draw (`mesh_records` minus `scene_meshes`). */
+    orphanMeshRecords: MemoryCounterTrend;
+    /** Geometry records without vertices (`geometry_records` minus `live_geometries`). */
+    orphanGeometryRecords: MemoryCounterTrend;
+    gcNodes: MemoryCounterTrend;
+    /** Why the run failed; empty when it passed. */
+    failures: string[];
     passed: boolean;
 }
 
+/** GC nodes must rise by at least this share of their first floor (and
+ *  `gcNodeRiseMinimum` nodes) across the window to count as a leak. */
+const gcNodeRiseShare = 0.01;
+const gcNodeRiseMinimum = 100;
+
+function counterTrend(
+    window: readonly MemorySample[],
+    value: (sample: MemorySample) => number,
+): MemoryCounterTrend {
+    const third = Math.floor(window.length / 3);
+    const floor = (from: number, to: number): number =>
+        Math.min(...window.slice(from, to).map(value));
+    return {
+        settled: value(window[0]!),
+        last: value(window[window.length - 1]!),
+        floors: [
+            floor(0, third),
+            floor(third, window.length - third),
+            floor(window.length - third, window.length),
+        ],
+    };
+}
+
 /**
- * Working-set growth after the warm-up third gates the run. Mesh records,
- * scene entries and GC counters are reported separately.
+ * The Theil–Sen working-set slope of frame-ordered samples, MB per 1,000
+ * frames: the median of every sample pair's slope. A single allocation step
+ * leaves the pairs on either side of it at zero, so only a rise most of the
+ * samples share moves the median.
+ */
+function slopePer1000Frames(samples: readonly MemorySample[]): number {
+    const slopes: number[] = [];
+    for (let later = 1; later < samples.length; later += 1) {
+        for (let earlier = 0; earlier < later; earlier += 1) {
+            slopes.push(
+                (samples[later]!.workingSetMb -
+                    samples[earlier]!.workingSetMb) /
+                    (samples[later]!.frame - samples[earlier]!.frame),
+            );
+        }
+    }
+    slopes.sort((left, right) => left - right);
+    const middle = Math.floor(slopes.length / 2);
+    const median =
+        slopes.length % 2 === 1
+            ? slopes[middle]!
+            : (slopes[middle - 1]! + slopes[middle]!) / 2;
+    return median * 1000;
+}
+
+/**
+ * The memory gate over the samples after the warm-up third. A run fails
+ * when any of these holds:
+ *   - the working set trends upward faster than `maxSlopeMb` per 1,000
+ *     frames both over the whole window and over its later half (Theil–Sen
+ *     slopes, so one allocation step does not decide, and a rise that
+ *     settles before the run ends -- content streaming in -- is not a
+ *     sustained trend);
+ *   - engine mesh records the scene does not draw (geometry records
+ *     without vertices) pile up: the last third's floor is above the
+ *     first third's. The line counts occupied records, so a record a
+ *     correct program retires leaves the count, and a leak that refills
+ *     retired slots still shows;
+ *   - GC nodes rise steadily: each third's floor above the previous one's,
+ *     by more than `gcNodeRiseShare` of the first floor.
  * Undefined when the run printed too few lines to judge (a loop without
- * the line, or a run shorter than three samples).
+ * the line, an unordered or truncated run, or fewer than two samples per
+ * post-warm-up third).
  */
 export function summarizeMemoryProfile(
     samples: readonly MemorySample[],
-    maxGrowthMb: number,
+    maxSlopeMb: number,
     requestedFrames?: number,
 ): MemorySummary | undefined {
-    if (samples.length < 3) return undefined;
-    const settled = samples[Math.ceil((samples.length - 1) / 3)]!;
-    const last = samples[samples.length - 1]!;
+    const settledIndex = Math.ceil((samples.length - 1) / 3);
+    const window = samples.slice(settledIndex);
+    if (window.length < 6) return undefined;
+    const settled = window[0]!;
+    const last = window[window.length - 1]!;
     if (
         (requestedFrames !== undefined &&
             last.frame < requestedFrames - memoryProfileFrames) ||
@@ -426,12 +626,57 @@ export function summarizeMemoryProfile(
     )
         return undefined;
     const growthMb = last.workingSetMb - settled.workingSetMb;
+    const slope = slopePer1000Frames(window);
+    const recentSlope = slopePer1000Frames(
+        window.slice(Math.floor(window.length / 2)),
+    );
+    const orphanMeshRecords = counterTrend(
+        window,
+        (sample) => sample.meshRecords - sample.sceneMeshes,
+    );
+    const orphanGeometryRecords = counterTrend(
+        window,
+        (sample) => sample.geometryRecords - sample.liveGeometries,
+    );
+    const gcNodes = counterTrend(window, (sample) => sample.gcNodes);
+    const failures: string[] = [];
+    if (slope > maxSlopeMb && recentSlope > maxSlopeMb) {
+        failures.push(
+            `working set trends +${slope.toFixed(2)} MB per 1,000 frames after warm-up and +${recentSlope.toFixed(2)} over its later half (> ${maxSlopeMb})`,
+        );
+    }
+    for (const [label, trend] of [
+        ["mesh records the scene no longer draws", orphanMeshRecords],
+        ["geometry records without vertices", orphanGeometryRecords],
+    ] as const) {
+        if (trend.floors[2] > trend.floors[0]) {
+            failures.push(
+                `${label} pile up: ${trend.settled} -> ${trend.last} (floors ${trend.floors.join(" / ")})`,
+            );
+        }
+    }
+    const [first, middle, final] = gcNodes.floors;
+    if (
+        first < middle &&
+        middle < final &&
+        final - first > Math.max(gcNodeRiseMinimum, first * gcNodeRiseShare)
+    ) {
+        failures.push(
+            `GC nodes rise steadily: floors ${gcNodes.floors.join(" / ")}`,
+        );
+    }
     return {
         settled,
         last,
         growthMb,
-        maxGrowthMb,
-        passed: growthMb <= maxGrowthMb,
+        slopeMbPer1000Frames: slope,
+        recentSlopeMbPer1000Frames: recentSlope,
+        maxSlopeMb,
+        orphanMeshRecords,
+        orphanGeometryRecords,
+        gcNodes,
+        failures,
+        passed: failures.length === 0,
     };
 }
 
@@ -442,26 +687,38 @@ export function formatMemorySummary(
     if (!summary) {
         return `${id}: unmeasured (missing, unordered or incomplete [mem][frame] samples)`;
     }
-    const { settled, last, growthMb, maxGrowthMb } = summary;
-    const verdict = summary.passed ? "ok" : `FAILED (> ${maxGrowthMb} MB)`;
-    const sign = growthMb >= 0 ? "+" : "";
-    return (
-        `${id}: ${verdict} -- working set ${sign}${growthMb.toFixed(1)} MB after warm-up ` +
-        `(${settled.workingSetMb.toFixed(1)} -> ${last.workingSetMb.toFixed(1)} MB, ` +
-        `frames ${settled.frame}..${last.frame}), geometry ${last.geometryMb.toFixed(1)} MB, ` +
-        `${last.meshRecords} mesh records, ${last.sceneMeshes} scene mesh entries, ` +
-        `GC nodes ${settled.gcNodes} -> ${last.gcNodes}, ` +
-        `${last.gcAllocations - settled.gcAllocations} GC allocations after warm-up`
-    );
+    const {
+        settled,
+        last,
+        growthMb,
+        slopeMbPer1000Frames,
+        recentSlopeMbPer1000Frames,
+    } = summary;
+    const signed = (value: number, digits: number): string =>
+        `${value >= 0 ? "+" : ""}${value.toFixed(digits)}`;
+    return [
+        `${id}: ${summary.passed ? "ok" : "FAILED"} -- working set ${signed(growthMb, 1)} MB after warm-up ` +
+            `(${settled.workingSetMb.toFixed(1)} -> ${last.workingSetMb.toFixed(1)} MB, ` +
+            `frames ${settled.frame}..${last.frame}; trend ${signed(slopeMbPer1000Frames, 2)} MB per 1,000 frames, ` +
+            `${signed(recentSlopeMbPer1000Frames, 2)} over the later half), ` +
+            `geometry ${last.geometryMb.toFixed(1)} MB, ` +
+            `${last.meshRecords} mesh records for ${last.sceneMeshes} scene mesh entries, ` +
+            `${last.transformNodeRecords} transform-node records, ` +
+            `${last.geometryRecords} geometry records for ${last.liveGeometries} live, ` +
+            `GC nodes ${settled.gcNodes} -> ${last.gcNodes}, ` +
+            `${last.gcAllocations - settled.gcAllocations} GC allocations after warm-up`,
+        ...summary.failures.map((failure) => `  FAILED: ${failure}`),
+    ].join("\n");
 }
 
 /**
  * `scene -- memory <id|all>`: run a scene for many frames at the fixed
- * capture delta with BBLITE_MEM_PROFILE=1 and judge whether its working
- * set settles after the warm-up third. `all` runs the registered
- * application demos, the sources closest to a real program's lifetime.
- * Idle by default; `--replay`/`--replay-file` hand the run an input
- * tape, which is how a streaming world keeps streaming.
+ * capture delta with BBLITE_MEM_PROFILE=1 and judge whether it settles
+ * after the warm-up third (`summarizeMemoryProfile`). `all` runs the
+ * registered application demos, the sources closest to a real program's
+ * lifetime. A demo with a default gameplay tape (`checks/memory/<id>.json`)
+ * plays it, because an idle program retires nothing; `--replay` or
+ * `--replay-file` hands the run another tape (`--replay -` idles).
  */
 export function runMemoryReport(
     idOrSource: string,
@@ -470,7 +727,6 @@ export function runMemoryReport(
     const selected =
         idOrSource === "all" ? applicationScenes : [resolveScene(idOrSource)];
     const backend = resolveBackend(memoryArguments.backend, "memory");
-    applyGpuBackendEnvironment(backend);
     let failures = 0;
     let unmeasured = 0;
     for (const scene of selected) {
@@ -481,33 +737,63 @@ export function runMemoryReport(
         const generatedDirectory = resolve(scene.output);
         verifyDeployedPayload(executable, generatedDirectory);
         const stampPath = resolve(
-            "artifacts",
-            "memory",
-            `${scene.id}-${backendFileToken(backend)}.build-stamp`,
+            artifactDirectory(
+                "memory",
+                `${scene.id}-${backendFileToken(backend)}.build-stamp`,
+            ),
         );
         mkdirSync(resolve(stampPath, ".."), { recursive: true });
         rmSync(stampPath, { force: true });
+        const defaultTape =
+            memoryArguments.replay === undefined
+                ? readMemoryTape(scene.id)
+                : undefined;
+        const frames =
+            memoryArguments.frames ??
+            (defaultTape?.frames !== undefined
+                ? requireMemoryFrames(
+                      defaultTape.frames,
+                      `${defaultTape.path} 'frames'`,
+                  )
+                : defaultMemoryFrames);
+        const replay =
+            memoryArguments.replay ??
+            (defaultTape
+                ? memoryTapeEntries(defaultTape, frames).join(",")
+                : undefined);
         const stderr = spawnNativeMeasured(
             executable,
             {
                 ...fixedCaptureEnvironment(),
-                BBLITE_BENCHMARK_FRAMES: String(memoryArguments.frames),
+                ...(backend === "dawn" ? { BBLITE_GPU_BACKEND: "dawn" } : {}),
+                BBLITE_BENCHMARK_FRAMES: String(frames),
                 BBLITE_MEM_PROFILE: "1",
                 BBLITE_BUILD_STAMP_OUT: stampPath,
-                ...(memoryArguments.replay !== undefined
-                    ? { BBLITE_INPUT_REPLAY: memoryArguments.replay }
+                ...(replay !== undefined
+                    ? { BBLITE_INPUT_REPLAY: replay }
                     : {}),
             },
-            [],
-            true,
+            { dropVariables: ["BBLITE_GPU_BACKEND"], captureStderr: true },
         );
         verifyBuildIdentity(executable, generatedDirectory, stampPath);
         const samples = parseMemoryProfile(stderr);
-        const summary = summarizeMemoryProfile(
-            samples,
-            memoryArguments.maxGrowthMb,
-            memoryArguments.frames,
-        );
+        // Each engine is judged on its own stream; a run is measured when
+        // it printed a stream and every stream is complete.
+        const engines = memoryStreams(samples).map((stream) => ({
+            engine: stream.engine,
+            summary: summarizeMemoryProfile(
+                stream.samples,
+                memoryArguments.maxSlopeMb,
+                frames,
+            ),
+        }));
+        const status =
+            engines.length === 0 ||
+            engines.some(({ summary }) => summary === undefined)
+                ? "unmeasured"
+                : engines.every(({ summary }) => summary?.passed)
+                  ? "passed"
+                  : "failed";
         const reportStem = stampPath.slice(0, -".build-stamp".length);
         writeFileSync(`${reportStem}.log`, stderr);
         writeReport(
@@ -519,51 +805,50 @@ export function runMemoryReport(
             },
             {
                 scene: scene.id,
-                requestedFrames: memoryArguments.frames,
-                maxGrowthMb: memoryArguments.maxGrowthMb,
+                requestedFrames: frames,
+                maxSlopeMb: memoryArguments.maxSlopeMb,
                 ...(memoryArguments.replay !== undefined
                     ? { replay: memoryArguments.replay }
                     : {}),
-                status:
-                    summary === undefined
-                        ? "unmeasured"
-                        : summary.passed
-                          ? "passed"
-                          : "failed",
+                ...(defaultTape !== undefined
+                    ? { tape: defaultTape.path }
+                    : {}),
+                status,
                 samples,
-                ...(summary !== undefined ? { summary } : {}),
+                engines: engines.map(({ engine, summary }) => ({
+                    engine,
+                    ...(summary !== undefined ? { summary } : {}),
+                })),
             },
         );
-        if (!summary) unmeasured += 1;
-        if (summary && !summary.passed) failures += 1;
-        console.log(formatMemorySummary(scene.id, summary));
+        if (status === "unmeasured") unmeasured += 1;
+        if (status === "failed") failures += 1;
+        const verdicts =
+            engines.length === 0
+                ? [formatMemorySummary(scene.id, undefined)]
+                : engines.map(({ engine, summary }) =>
+                      formatMemorySummary(
+                          engines.length > 1
+                              ? `${scene.id} engine ${engine}`
+                              : scene.id,
+                          summary,
+                      ),
+                  );
+        console.log(
+            `${verdicts.join("\n")}${
+                defaultTape !== undefined
+                    ? `\n  tape: ${defaultTape.path}`
+                    : replay === undefined
+                      ? "\n  tape: none (idle)"
+                      : ""
+            }`,
+        );
     }
     if (failures > 0 || unmeasured > 0) {
         throw new Error(
-            `memory: ${failures} run(s) grew past ${memoryArguments.maxGrowthMb} MB after warm-up; ${unmeasured} unmeasured run(s). See artifacts/memory/.`,
+            `memory: ${failures} run(s) failed the gate; ${unmeasured} unmeasured run(s). See artifacts/memory/.`,
         );
     }
-}
-
-export function runNative(
-    executable: string,
-    screenshot: string,
-    nativeEnvironment?: Record<string, string>,
-    idBufferPath?: string,
-    clusterBufferPath?: string,
-    generatedDirectory?: string,
-): void {
-    runMeasured(executable, {
-        ...(generatedDirectory !== undefined ? { generatedDirectory } : {}),
-        ...(nativeEnvironment !== undefined
-            ? { environment: nativeEnvironment }
-            : {}),
-        screenshot,
-        ...(idBufferPath !== undefined ? { idBuffer: idBufferPath } : {}),
-        ...(clusterBufferPath !== undefined
-            ? { clusterBuffer: clusterBufferPath }
-            : {}),
-    });
 }
 
 export function validateReferenceCapture(
@@ -580,13 +865,6 @@ export function validateReferenceCapture(
             `Curated reference is missing: ${reference}. Use --recapture-reference only for an intentional reference update.`,
         );
     }
-}
-
-/** Preserve an ad-hoc scene's source path when a parity operation fans out.
- * Its derived id is an output name, not a registry key that can resolve the
- * scene in the child operation. */
-export function paritySceneTarget(scene: SceneDefinition): string {
-    return isRegisteredScene(scene) ? scene.id : scene.source;
 }
 
 export function resolveParityThresholds(
@@ -618,49 +896,63 @@ function percentage(count: number, total: number): number {
     return total > 0 ? count / total : 0;
 }
 
-export async function runSceneParity(
-    inputArguments: string[],
-    sceneOverride?: SceneDefinition,
+/**
+ * Where a scene's parity artifacts land at a pose: the configured parity
+ * directory (the canvas-only lane's under `BBLITE_CAPTURE_UI=0`), and a
+ * `seek-<t>` subdirectory beneath it for a pose the golden does not hold —
+ * a seeked run is a diagnostic with its own browser reference, so it can
+ * never overwrite the registry-pose evidence or the committed golden.
+ */
+export function parityOutputDirectory(
+    scene: SceneDefinition & { parity: SceneParityDefinition },
+    pose: ScenePose,
+): string {
+    const base = captureUiEnabled()
+        ? resolve(scene.parity.outputDirectory)
+        : resolve(artifactDirectory("parity-canvas", scene.id));
+    return pose.golden ? base : resolve(base, `seek-${pose.seekSeconds}`);
+}
+
+/** One backend's run of the parity gate. */
+interface SceneParityRun {
+    backend: NativeBackend;
+    seekSeconds?: number;
+    without?: SuppressibleElement;
+    actual?: string;
+    attribute: boolean;
+    recaptureReference: boolean;
+    noFail: boolean;
+}
+
+async function runSceneParity(
+    scene: SceneDefinition,
+    run: SceneParityRun,
 ): Promise<void> {
-    const arguments_ = parseParityArguments(inputArguments);
-    if (arguments_.differential) {
-        throw new Error(
-            "Run the differential through 'scene -- parity <id> --differential'.",
-        );
-    }
-    if (arguments_.gpuDebug) enableGpuDebug();
-    if (arguments_.attribute && !sceneOverride) {
-        throw new Error(
-            "Build attribution through 'scene -- parity <id> --attribute'.",
-        );
-    }
-    if (arguments_.sceneId === undefined) {
-        throw new Error("parity requires a scene id or source path.");
-    }
-    const scene = sceneOverride ?? resolveScene(arguments_.sceneId);
     const config = scene.parity;
     if (!config)
         throw new Error(`Scene '${scene.id}' has no parity definition.`);
-    const backend = resolveBackend(arguments_.backend, "parity");
-    // The native child reads the backend from the environment, so the
-    // resolved selection is applied there once; the thresholds and the
-    // report labels take the value directly.
-    applyGpuBackendEnvironment(backend);
+    const { backend, without } = run;
     const captureUi = captureUiEnabled();
     const canvasOnly = !captureUi;
-    const outputDirectory = canvasOnly
-        ? resolve("artifacts", "parity-canvas", scene.id)
-        : resolve(config.outputDirectory);
-    const compiledManifest = readCompiledSceneManifest(scene);
+    const pose = resolvePose(scene, run.seekSeconds);
+    // A pose the golden does not hold is measured against a browser
+    // capture at that pose, in its own directory, and gates nothing.
+    const seekedPose = !pose.golden;
+    const outputDirectory = parityOutputDirectory(
+        { ...scene, parity: config },
+        pose,
+    );
+    const compiledManifest = readCompiledSceneManifest(scene.output, scene.id);
     const retainedUiCapture =
-        captureUi &&
-        Array.isArray(compiledManifest?.features) &&
-        compiledManifest.features.includes("ui:rml");
-    const reference = canvasOnly
-        ? resolve(outputDirectory, "browser-canvas.png")
-        : resolve(config.reference.path);
+        captureUi && compiledManifest.features.includes("ui:rml");
+    const reference =
+        canvasOnly || seekedPose
+            ? resolve(
+                  outputDirectory,
+                  canvasOnly ? "browser-canvas.png" : "browser.png",
+              )
+            : resolve(config.reference.path);
     mkdirSync(outputDirectory, { recursive: true });
-    const without = arguments_.without;
     // Backend-suffixed artifacts keep every backend's outputs side by
     // side in the scene's parity directory ("gpu" stays the SDL_GPU
     // suffix for continuity). A suppression run appends its element so
@@ -669,25 +961,14 @@ export async function runSceneParity(
         backendFileToken(backend) +
         (without !== undefined ? `-without-${without}` : "");
     const actual = resolve(
-        arguments_.actual ??
-            parityNativeImagePath(outputDirectory, artifactSuffix),
+        run.actual ?? parityNativeImagePath(outputDirectory, artifactSuffix),
     );
-    const seek = arguments_.seekSeconds;
-    if (
-        seek !== undefined &&
-        existsSync(reference) &&
-        !arguments_.recaptureReference
-    ) {
-        throw new Error(
-            `parity: --seek ${seek} against the existing golden compares two different poses, which measures nothing. ` +
-                "Add --recapture-reference to recapture the golden at this seek, or drop --seek to measure the registry pose.",
-        );
-    }
-    // A run with an element suppressed is an attribution measurement:
-    // its numbers are meant to move, so gating them against the registry
-    // thresholds would fail the attribution run for working.
+    const seek = run.seekSeconds;
+    // A run with an element suppressed, or at another pose, is an
+    // attribution measurement: its numbers are meant to move, so gating
+    // them against the registry thresholds would fail it for working.
     const thresholds =
-        canvasOnly || without !== undefined
+        canvasOnly || without !== undefined || seekedPose
             ? {
                   maxMad: undefined,
                   maxRegionMad: undefined,
@@ -720,7 +1001,8 @@ export async function runSceneParity(
         : undefined;
 
     const recaptureReference =
-        arguments_.recaptureReference || (canvasOnly && !existsSync(reference));
+        run.recaptureReference ||
+        ((canvasOnly || seekedPose) && !existsSync(reference));
     const browserReferenceFrame = goldenFixedFrame(scene, retainedUiCapture);
     validateReferenceCapture(scene, reference, recaptureReference);
     // What both browser captures share: the seeded-random stub, the
@@ -749,7 +1031,7 @@ export async function runSceneParity(
         reference,
         recaptureReference,
         undefined,
-        seek ?? config.referenceTimeSeconds,
+        pose.seekSeconds,
         config.referenceAnimationGroups,
         {
             ...sharedCaptureOptions,
@@ -758,14 +1040,10 @@ export async function runSceneParity(
                 : {}),
         },
     );
-    if (!arguments_.actual) {
-        runNative(
-            resolveNativeExecutable(
-                arguments_.executable,
-                scene.buildDirectory,
-            ),
-            actual,
-            {
+    if (run.actual === undefined) {
+        runMeasured(resolveNativeExecutable(undefined, scene.buildDirectory), {
+            generatedDirectory: resolve(scene.output),
+            environment: {
                 ...config.nativeEnvironment,
                 // The same pose on both sides: the browser capture above
                 // seeks through the harness, the native run through its
@@ -777,13 +1055,16 @@ export async function runSceneParity(
                     ? { [withoutVariable(without)]: "0" }
                     : {}),
             },
-            idBufferPath,
-            clusterBufferPath,
-            resolve(scene.output),
-        );
+            backend,
+            screenshot: actual,
+            ...(idBufferPath !== undefined ? { idBuffer: idBufferPath } : {}),
+            ...(clusterBufferPath !== undefined
+                ? { clusterBuffer: clusterBufferPath }
+                : {}),
+        });
     }
 
-    if (arguments_.attribute) {
+    if (run.attribute) {
         for (const buffer of [idBufferPath, clusterBufferPath]) {
             if (!buffer || !existsSync(buffer))
                 throw new Error(
@@ -927,9 +1208,8 @@ export async function runSceneParity(
     generateHotspotMap(actual, breakdown.hotspots, hotspotPath);
 
     // The canvas-only lane: a UI-dominated application gates the full
-    // page at the platform font-rasterization floor (docs/ui.md), which
-    // is loose enough for a genuine 3D regression of a few tenths MAD to
-    // hide under. A scene declaring `canvasThresholds` therefore also
+    // page at its glyph-rasterization residual, which is loose enough for
+    // a genuine 3D regression of a few tenths MAD to hide under. A scene declaring `canvasThresholds` therefore also
     // measures the `BBLITE_CAPTURE_UI=0` pair — the same references and
     // artifacts the manual attribution run writes under
     // `artifacts/parity-canvas/` — and gates it beside the composite
@@ -941,7 +1221,7 @@ export async function runSceneParity(
         captureUi &&
         without === undefined &&
         seek === undefined &&
-        arguments_.actual === undefined
+        run.actual === undefined
             ? config.canvasThresholds
             : undefined;
     let canvas:
@@ -957,7 +1237,9 @@ export async function runSceneParity(
           }
         | undefined;
     if (canvasThresholds) {
-        const canvasDirectory = resolve("artifacts", "parity-canvas", scene.id);
+        const canvasDirectory = resolve(
+            artifactDirectory("parity-canvas", scene.id),
+        );
         mkdirSync(canvasDirectory, { recursive: true });
         // The reference reproduces the attribution run exactly — the
         // companion DOM present but hidden, the canvas screenshot
@@ -971,7 +1253,7 @@ export async function runSceneParity(
             captureSuiteReference(
                 scene.source,
                 canvasReference,
-                arguments_.recaptureReference,
+                run.recaptureReference,
                 undefined,
                 config.referenceTimeSeconds,
                 config.referenceAnimationGroups,
@@ -984,17 +1266,15 @@ export async function runSceneParity(
             ),
         );
         const canvasActual = parityNativeImagePath(canvasDirectory, token);
-        runNative(
-            resolveNativeExecutable(
-                arguments_.executable,
-                scene.buildDirectory,
-            ),
-            canvasActual,
-            { ...config.nativeEnvironment, BBLITE_CAPTURE_UI: "0" },
-            undefined,
-            undefined,
-            resolve(scene.output),
-        );
+        runMeasured(resolveNativeExecutable(undefined, scene.buildDirectory), {
+            generatedDirectory: resolve(scene.output),
+            environment: {
+                ...config.nativeEnvironment,
+                BBLITE_CAPTURE_UI: "0",
+            },
+            backend,
+            screenshot: canvasActual,
+        });
         canvas = {
             full: compareImages(canvasActual, canvasReference),
             region: compareRegion(
@@ -1108,7 +1388,12 @@ export async function runSceneParity(
         console.log(
             `Suppressed natively: ${without} (${withoutVariable(without)}=0), measured against the unchanged golden. ` +
                 "This is the bisection ordering experiment, not a parity gate: compare its MAD to the full run's, " +
-                "and the element whose removal makes the number worse is not the culprit (docs/debugging.md).",
+                "and the element whose removal makes the number worse is not the culprit.",
+        );
+    } else if (seekedPose) {
+        console.log(
+            `Seeked pose (${pose.seekSeconds}s): measured against a browser capture at that pose in ${outputDirectory}; ` +
+                "diagnostic only, the golden and its thresholds describe the registry pose.",
         );
     } else if (thresholds.gate === "diagnostic-only") {
         console.warn(
@@ -1190,7 +1475,7 @@ export async function runSceneParity(
     }
     if (failures.length > 0) {
         const message = `Parity regression: ${failures.join(", ")}`;
-        if (arguments_.noFail) console.warn(message);
+        if (run.noFail) console.warn(message);
         else throw new Error(message);
     }
 }
@@ -1198,7 +1483,7 @@ export async function runSceneParity(
 /**
  * The reader slices of the two report families this module writes: the
  * per-backend parity report (`runSceneParity`) and the differential
- * merge (`runSceneParityDifferential`). The writers are single; these
+ * merge (`runParityBackends`). The writers are single; these
  * are the fields every reader consumes — the differential merge itself,
  * diagnose's verdict line, `verify-status`'s published-table check — so
  * a renamed field breaks one declaration instead of a scattered cast.
@@ -1214,40 +1499,51 @@ export interface DifferentialReportSummary {
     sdlGpuVersusDawn: { mad: number };
 }
 
-// Renders both GPU backends through the standard gates, then diffs
-// the two native images against each other — the project's decisive
-// diagnostic (backend agreement to one LSB puts a divergence on the
-// CPU side; disagreement puts it on the GPU side) — and writes the
-// combined report beside the per-backend ones.
-export async function runSceneParityDifferential(
-    sceneIdOrSource: string,
-    sceneOverride?: SceneDefinition,
+/**
+ * The parity gate over `backends`, in order, stopping at the first backend
+ * that fails its gate. With both backends and nothing suppressed or
+ * supplied, the two native images are then diffed against each other —
+ * the decisive diagnostic (backend agreement to one LSB puts a divergence
+ * on the CPU side; disagreement puts it on the GPU side) — and the merged
+ * report lands beside the per-backend ones. The browser reference is
+ * captured (or recaptured) by the first backend's run only.
+ */
+export async function runParityBackends(
+    scene: SceneDefinition,
+    backends: readonly NativeBackend[],
+    options: Omit<SceneParityRun, "backend">,
 ): Promise<void> {
-    const scene = sceneOverride ?? resolveScene(sceneIdOrSource);
     const config = scene.parity;
     if (!config) {
         throw new Error(`Scene '${scene.id}' has no parity definition.`);
     }
-    const outputDirectory = captureUiEnabled()
-        ? resolve(config.outputDirectory)
-        : resolve("artifacts", "parity-canvas", scene.id);
-    mkdirSync(outputDirectory, { recursive: true });
+    const pose = resolvePose(scene, options.seekSeconds);
+    for (const [index, backend] of backends.entries()) {
+        await runSceneParity(scene, {
+            ...options,
+            backend,
+            // A seeked pose is measured against its own browser capture,
+            // taken once per invocation at that pose.
+            recaptureReference:
+                index === 0 && (options.recaptureReference || !pose.golden),
+        });
+    }
+    if (
+        backends.length !== 2 ||
+        options.without !== undefined ||
+        options.actual !== undefined
+    ) {
+        return;
+    }
+    const outputDirectory = parityOutputDirectory(
+        { ...scene, parity: config },
+        pose,
+    );
     // Each backend run writes its own suffixed actual, so the two images
     // sit side by side without a copy step and neither run can overwrite
     // the other's.
     const sdlImage = parityNativeImagePath(outputDirectory, "gpu");
     const dawnImage = parityNativeImagePath(outputDirectory, "dawn");
-    const sceneTarget = paritySceneTarget(scene);
-    const captureArguments = [
-        sceneTarget,
-        ...(sceneOverride ? ["--attribute"] : []),
-    ];
-    await withEnvironment("BBLITE_GPU_BACKEND", undefined, () =>
-        runSceneParity(captureArguments, scene),
-    );
-    await withEnvironment("BBLITE_GPU_BACKEND", "dawn", () =>
-        runSceneParity(captureArguments, scene),
-    );
     const backendDelta = compareImages(sdlImage, dawnImage);
     const readBackendReport = (suffix: string): ParityReportSummary =>
         JSON.parse(
@@ -1292,57 +1588,24 @@ export async function runSceneParityDifferential(
 }
 
 // ---------------------------------------------------------------------------
-// `scene -- stability` — the run-to-run wobble check
+// `scene -- parity <id> --runs N` — the run-to-run wobble check
 //
 // Some scenes render differently from one run to the next with no code
 // change at all (`scene-neutrality.ts` lists the measured ones, per
-// backend). This command is that check on demand, with its one trap
-// built in: comparing runs only against each other hides a
-// stable-but-wrong image, so every run is also compared against the
-// golden and both columns always print.
+// backend). This mode is that check on demand, with its one trap built
+// in: comparing runs only against each other hides a stable-but-wrong
+// image, so every run is also compared against the golden and both
+// columns always print.
 // ---------------------------------------------------------------------------
 
-/** The stability flags, shared with the dispatcher's usage text. */
-export const STABILITY_FLAGS: FlagSpec = {
-    value: ["--runs", "--backend", "--seek"],
-    boolean: ["--single-sample", "--gpu-debug"],
-};
-
-export interface StabilityArguments {
+interface StabilityRun {
+    backend: NativeBackend;
     runs: number;
     singleSample: boolean;
-    gpuDebug: boolean;
-    backend?: string;
     /** Render every run at this pose instead of the registry's. At a
-     *  pose other than the registry's the golden columns are suppressed:
-     *  the golden holds the registry pose, so a cross-pose comparison
-     *  measures nothing (the same refusal `parity --seek` makes). */
+     *  pose the golden does not hold the golden columns are suppressed:
+     *  a cross-pose comparison measures nothing. */
     seekSeconds?: number;
-}
-
-export function parseStabilityArguments(
-    rest: readonly string[],
-): StabilityArguments {
-    const parsed = parseFlags(rest, STABILITY_FLAGS, "stability");
-    const seekSeconds = flagNumber(parsed, "--seek", "stability");
-    const runsValue = parsed.values.get("--runs");
-    let runs = 5;
-    if (runsValue !== undefined) {
-        runs = Number(runsValue);
-        if (!Number.isInteger(runs) || runs < 2) {
-            throw new Error(
-                `stability: --runs must be an integer >= 2 (got '${runsValue}').`,
-            );
-        }
-    }
-    const backend = optionalBackend(parsed, "stability");
-    return {
-        runs,
-        singleSample: parsed.flags.has("--single-sample"),
-        gpuDebug: parsed.flags.has("--gpu-debug"),
-        ...(backend !== undefined ? { backend } : {}),
-        ...(seekSeconds !== undefined ? { seekSeconds } : {}),
-    };
 }
 
 export interface StabilityRunComparison {
@@ -1424,7 +1687,7 @@ export function formatStabilityReport(
         if (singleSample) {
             lines.push(
                 "Golden column is context only under --single-sample: the goldens are multisampled, " +
-                    "so every scene reads worse against them at one sample (docs/debugging.md).",
+                    "so every scene reads worse against them at one sample.",
             );
         } else if (wobbling.length === 0 && first.vsGolden.maxDiff > 0) {
             lines.push(
@@ -1443,25 +1706,21 @@ export function formatStabilityReport(
  * against the golden.
  */
 export function runStabilityReport(
-    idOrSource: string,
-    stabilityArguments: StabilityArguments,
+    scene: SceneDefinition,
+    stabilityArguments: StabilityRun,
 ): void {
-    if (stabilityArguments.gpuDebug) enableGpuDebug();
-    const scene = resolveScene(idOrSource);
     const config = scene.parity;
     if (!config) {
         throw new Error(`Scene '${scene.id}' has no parity definition.`);
     }
-    const backend = resolveBackend(stabilityArguments.backend, "stability");
-    applyGpuBackendEnvironment(backend);
+    const { backend } = stabilityArguments;
     const reference = resolve(config.reference.path);
     // `--seek` at the registry pose is the standard measurement with the
     // pose written explicitly; any other pose suppresses the golden
     // columns — the golden holds the registry pose, so a cross-pose
-    // comparison measures nothing (parity refuses the same pair).
+    // comparison measures nothing.
     const seek = stabilityArguments.seekSeconds;
-    const goldenComparable =
-        seek === undefined || seek === config.referenceTimeSeconds;
+    const goldenComparable = resolvePose(scene, seek).golden;
     if (goldenComparable && !existsSync(reference)) {
         throw new Error(
             `Stability compares every run against the golden, and ${reference} does not exist. ` +
@@ -1497,10 +1756,9 @@ export function runStabilityReport(
         // The same invocation as a measured parity run — environment,
         // build-identity and payload gates included — so a wobble found
         // here is a wobble the matrix would see.
-        runNative(
-            executable,
-            image,
-            {
+        runMeasured(executable, {
+            generatedDirectory: resolve(scene.output),
+            environment: {
                 ...config.nativeEnvironment,
                 // The explicit pose wins over the registry-derived one,
                 // through the same variable the native clock reads.
@@ -1511,10 +1769,9 @@ export function runStabilityReport(
                     ? { BBLITE_MSAA: "1" }
                     : {}),
             },
-            undefined,
-            undefined,
-            resolve(scene.output),
-        );
+            backend,
+            screenshot: image,
+        });
         images.push(image);
         comparisons.push({
             run,

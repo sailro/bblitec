@@ -1,26 +1,26 @@
 /**
- * The one JSON report writer the scene tools share, and the reader that
- * pairs with it.
+ * The provenance every scene-tool report carries, written through the one
+ * atomic record writer (`records.ts`), and the reader that pairs with it.
  *
- * Every report carries the same provenance: which tool wrote it, for
- * which backend, from which generated tree, and when. Fields are added,
- * never renamed — existing readers parse by key — and every added field
- * is a string, because `scene -- neutrality` flattens the numeric leaves
- * of these reports and a numeric timestamp would register as a moved
- * cell. Payload keys win a collision so a report's own fields never
- * change.
+ * Every report records which tool wrote it, for which backend, from which
+ * generated tree, and when. Fields are added, never renamed — existing
+ * readers parse by key — and every added field is a string, because
+ * `scene -- neutrality` flattens the numeric leaves of these reports and a
+ * numeric timestamp would register as a moved cell. Payload keys win a
+ * collision so a report's own fields never change.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { computeBuildStamp } from "../build-stamp.js";
+import { writeJsonRecord } from "./records.js";
 
-export interface ReportMeta {
+interface ReportMeta {
     tool: string;
     backend?: string;
     generatedDirectory?: string;
 }
 
 /** The provenance every report written here carries. */
-export interface ReportProvenance {
+interface ReportProvenance {
     tool: string;
     backend?: string;
     generatedStamp?: string;
@@ -41,21 +41,16 @@ export function writeReport(
             return undefined;
         }
     })();
-    writeFileSync(
+    writeJsonRecord(
         path,
-        `${JSON.stringify(
-            {
-                tool: meta.tool,
-                ...(meta.backend !== undefined
-                    ? { backend: meta.backend }
-                    : {}),
-                ...(generatedStamp !== undefined ? { generatedStamp } : {}),
-                writtenAt: new Date().toISOString(),
-                ...payload,
-            },
-            null,
-            indent,
-        )}\n`,
+        {
+            tool: meta.tool,
+            ...(meta.backend !== undefined ? { backend: meta.backend } : {}),
+            ...(generatedStamp !== undefined ? { generatedStamp } : {}),
+            writtenAt: new Date().toISOString(),
+            ...payload,
+        },
+        indent,
     );
 }
 

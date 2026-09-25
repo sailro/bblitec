@@ -1,4 +1,4 @@
-export interface ConcurrentRunOptions {
+interface ConcurrentRunOptions {
     /** Positive verdict printed after a multi-item run. */
     completed?: string;
     /** Retry only failed items once, with no overlap between retries. */

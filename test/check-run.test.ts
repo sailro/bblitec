@@ -10,7 +10,11 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { runCheck } from "../src/tooling/check-run.js";
 import { getScene } from "../src/scene-registry.js";
-import { measuredStampPath, runMeasured } from "../src/tooling/native-run.js";
+import {
+    measuredStampPath,
+    runMeasured,
+    spawnNativeMeasured,
+} from "../src/tooling/native-run.js";
 
 // The check driver's report and plugin dispatch, over an offline check
 // (no phases) so no native run is spent; the native gate itself refuses
@@ -95,4 +99,32 @@ test("a measured run refuses a missing executable and names its stamp beside its
         resolve("out/native.json.build-stamp"),
     );
     assert.equal(measuredStampPath({}), undefined);
+});
+
+test("a measured run is bounded only by its caller; the Window clock fails a stalled one", () => {
+    // A fake renderer that never finishes, killed at the caller's bound.
+    const started = Date.now();
+    assert.throws(
+        () =>
+            spawnNativeMeasured(
+                process.execPath,
+                {},
+                {
+                    arguments: ["-e", "setTimeout(() => {}, 60000)"],
+                    timeoutMs: 1000,
+                },
+            ),
+        /Native renderer did not complete: .*\(killed after 1000 ms\)/,
+    );
+    assert.ok(Date.now() - started < 30_000);
+    // No tool timeout remains for Window-host scenes: a bounded run whose
+    // compositor clock stops fails natively (test/window-frame-clock.test.ts).
+    assert.doesNotMatch(
+        readFileSync("src/tooling/native-run.ts", "utf8"),
+        /platform:window/,
+    );
+    assert.match(
+        readFileSync("native/src/pal_window_realm.cpp", "utf8"),
+        /WindowFrameClock compositor_clock\(cpu_profile,\s*capture_frame_count != 0 \|\|\s*frame_options\.frame_budget\(\) > 0\)/,
+    );
 });

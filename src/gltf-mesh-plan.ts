@@ -7,7 +7,7 @@ import {
     GLTF_MESH_PLAN,
     type JsonObject,
 } from "./gltf-document.js";
-import { LoweringContext } from "./lowering/context.js";
+import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 import { gltfBaseMaterialConstruction } from "./lowering/gltf/material-construction.js";
 import { featureMethod } from "./lowering/gltf/shared.js";
 import { ensurePinnedLoaderExecution } from "./pinned-material-input.js";
@@ -33,8 +33,13 @@ import {
     readMeshSetup,
     type GltfMeshSetup,
     type RecordedMeshSetup,
-    type SourceWorldBounds,
 } from "./gltf-mesh-setup.js";
+import {
+    packageNodeHierarchy,
+    readNodeHierarchy,
+    type GltfNodeHierarchy,
+} from "./gltf-node-hierarchy.js";
+import { refuseGeneration } from "./generation-refusal.js";
 import {
     packageGltfLight,
     packagedGltfLights,
@@ -79,7 +84,63 @@ import {
     type SourceParse,
 } from "./gltf-animation-pointers.js";
 
+/** The pinned glTF feature modules whose run generation reads back. */
+export const gltfFeatureModules = {
+    skeleton: "src/loader-gltf/gltf-feature-skeleton.ts",
+    morph: "src/loader-gltf/gltf-feature-morph.ts",
+    animations: "src/loader-gltf/gltf-feature-animations.ts",
+    animationPointer: "src/loader-gltf/gltf-feature-animation-pointer.ts",
+    nodeVisibility: "src/loader-gltf/gltf-ext-node-visibility.ts",
+    textureTransform: "src/loader-gltf/gltf-ext-uv-transform.ts",
+    gpuInstancing: "src/loader-gltf/gltf-feature-gpu-instancing.ts",
+} as const;
+
+/**
+ * The `id` of the `GltfFeature` a pinned module exports by default: the
+ * identity a loader run reports for it.
+ */
+export function pinnedGltfFeatureId(
+    context: LoweringContext,
+    modulePath: string,
+): string {
+    const file = context.sourceFile(modulePath);
+    const exported = file.statements.find(
+        (statement): statement is ts.ExportAssignment =>
+            ts.isExportAssignment(statement) && !statement.isExportEquals,
+    );
+    if (!exported || !ts.isIdentifier(exported.expression))
+        context.contractError(
+            file,
+            `Expected ${modulePath} to export its glTF feature by name.`,
+        );
+    const feature = context.unwrapExpression(
+        context.variableInitializer(file, exported.expression.text),
+    );
+    if (!ts.isObjectLiteralExpression(feature))
+        context.contractError(
+            feature,
+            `Expected the glTF feature object of ${modulePath}.`,
+        );
+    const id = feature.properties.find(
+        (property) =>
+            ts.isPropertyAssignment(property) &&
+            context.propertyName(property.name) === "id",
+    );
+    if (!id || !ts.isPropertyAssignment(id))
+        context.contractError(
+            feature,
+            `Expected the glTF feature identity of ${modulePath}.`,
+        );
+    return context.stringValue(id.initializer, file);
+}
+
 export interface GltfMeshPlan extends GltfLightPlan, GltfCameraPlan {
+    /**
+     * The `id` of every feature the pinned loader ran for this document: the
+     * registry rows its triggers selected (`loadGltfFeatures`) and the enabled
+     * features appended after them, in the loader's order.
+     */
+    features: string[];
     animationBindings: GltfAnimationBindings | null;
     animation: GltfAnimationReceipt | null;
     ibl: GltfIblPlan;
@@ -108,6 +169,11 @@ export interface GltfMeshPlan extends GltfLightPlan, GltfCameraPlan {
         } & GltfMeshDeformation
     >;
     geometries: GltfMeshGeometry[];
+    /**
+     * The pin's node hierarchy, for a scene that writes SceneNode transforms
+     * (`GltfLoadFeatures.nodeTransforms`).
+     */
+    hierarchy?: GltfNodeHierarchy;
 }
 /** Actual material/geometry construction available before final animation packaging. */
 export type GltfConstructedMaterialPlan = Pick<
@@ -116,6 +182,11 @@ export type GltfConstructedMaterialPlan = Pick<
 >;
 export interface GltfLoadFeatures {
     cameras?: boolean;
+    /**
+     * Scene code writes SceneNode transforms, so the asset carries the
+     * pin's node hierarchy for the loader to build.
+     */
+    nodeTransforms?: boolean;
 }
 type CoreMaterial = object;
 type Material = object;
@@ -162,6 +233,7 @@ interface UploadContext {
     _nodeMap?: readonly (SceneNode | undefined)[];
 }
 interface MeshFeature {
+    id?: unknown;
     preParse?(json: JsonObject, bin: DataView): Promise<DataView | void>;
     applyMesh?(
         data: MeshData,
@@ -202,7 +274,6 @@ interface SourceLoader {
     __enableGltfCameras?(): void;
     __cameraMatrices?: SourceCameraMatrices;
     __getPunctualLight(json: JsonObject, index: number): object | undefined;
-    __worldBounds: SourceWorldBounds;
     __addToScene(scene: object, entity: object): void;
     __applyPreparedAssets(
         features: MeshFeature[],
@@ -326,7 +397,7 @@ async function recordingLoader(
     const pointerBridge = gltfPointerBridgeUrl() + `#loader-${loaderIdentity}`;
     const animation = gltfAnimationBindingsSourceUrl(context, pointerBridge);
     const skeleton = sourceModule(
-        "src/loader-gltf/gltf-feature-skeleton.ts",
+        gltfFeatureModules.skeleton,
         new Map([
             ["./gltf-animation.js", animation],
             [
@@ -336,7 +407,7 @@ async function recordingLoader(
         ]),
     );
     const morph = sourceModule(
-        "src/loader-gltf/gltf-feature-morph.ts",
+        gltfFeatureModules.morph,
         new Map([
             [
                 "../morph/create-morph-targets.js",
@@ -345,7 +416,7 @@ async function recordingLoader(
         ]),
     );
     const instances = sourceModule(
-        "src/loader-gltf/gltf-feature-gpu-instancing.ts",
+        gltfFeatureModules.gpuInstancing,
         new Map([
             [
                 "../mesh/thin-instance.js",
@@ -367,7 +438,7 @@ async function recordingLoader(
         ]),
     );
     const visibility = sourceModule(
-        "src/loader-gltf/gltf-ext-node-visibility.ts",
+        gltfFeatureModules.nodeVisibility,
         new Map([
             ["../scene/visibility.js", sourceModule("src/scene/visibility.ts")],
         ]),
@@ -446,7 +517,7 @@ async function recordingLoader(
     const ibl = gltfIblSourceUrls(context);
     const flowGraphs = gltfFlowGraphSourceUrl(context);
     const animations = sourceModule(
-        "src/loader-gltf/gltf-feature-animations.ts",
+        gltfFeatureModules.animations,
         new Map([["./gltf-animation.js", animation]]),
     );
     const registry = sourceModule(
@@ -566,30 +637,9 @@ async function recordingLoader(
             load,
             "Expected the source sequential pre-parse feature loop.",
         );
-    const pointerFile = context.sourceFile(
-        "src/loader-gltf/gltf-feature-animation-pointer.ts",
-    );
-    const pointerObject = context.unwrapExpression(
-        context.variableInitializer(pointerFile, "feature"),
-    );
-    if (!ts.isObjectLiteralExpression(pointerObject))
-        context.contractError(
-            pointerObject,
-            "Expected the animation pointer feature.",
-        );
-    const pointerId = pointerObject.properties.find(
-        (property) =>
-            ts.isPropertyAssignment(property) &&
-            context.propertyName(property.name) === "id",
-    );
-    if (!pointerId || !ts.isPropertyAssignment(pointerId))
-        context.contractError(
-            pointerObject,
-            "Expected the animation pointer feature identity.",
-        );
     const pointerPreparation = transpileForBrowser(
         `async function __prepareAnimationPointers(json, binChunk, discovered) {
-        const features = discovered.filter(feature => feature.id === ${JSON.stringify(context.stringValue(pointerId.initializer, pointerFile))});
+        const features = discovered.filter(feature => feature.id === ${JSON.stringify(pinnedGltfFeatureId(context, gltfFeatureModules.animationPointer))});
         if (!features.length) return;
         const pointer = await import(${JSON.stringify(pointers.feature)});
         if (features.length !== 1 || features[0] !== pointer.default) throw new Error("Unrepresented source pointer feature identity.");
@@ -628,7 +678,7 @@ async function recordingLoader(
     );
     // Core material records are opaque to extraction. Their actual assembler
     // and the replaced PBR constructor both execute in the generated loader.
-    const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport __visibilityFeature from ${JSON.stringify(visibility)};\nimport __lightFeature from ${JSON.stringify(lights)};\n${cameraImports}\nimport {getGltfPunctualLight as __getPunctualLight} from ${JSON.stringify(lightState)};\nimport * as __worldBounds from ${JSON.stringify(sourceModule("src/mesh/mesh-world-bounds.ts"))};\nimport {addToScene as __addToScene} from ${JSON.stringify(scene)};`;
+    const setupImports = `import __instanceFeature from ${JSON.stringify(instances)};\nimport __visibilityFeature from ${JSON.stringify(visibility)};\nimport __lightFeature from ${JSON.stringify(lights)};\n${cameraImports}\nimport {getGltfPunctualLight as __getPunctualLight} from ${JSON.stringify(lightState)};\nimport {addToScene as __addToScene} from ${JSON.stringify(scene)};`;
     const iblImports = `import __iblFeature from ${JSON.stringify(ibl.feature)};\nimport {resolveImage as __resolveIblImage} from ${JSON.stringify(ibl.assembly)};\nconst __iblShaders = ${JSON.stringify({ rgbdShader: ibl.rgbdShader, brdfShader: ibl.brdfShader })};\nimport __flowGraphFeature from ${JSON.stringify(flowGraphs)};\nimport * as __flowPathConverter from ${JSON.stringify(sourceModule("src/flow-graph/gltf/path-converter.ts"))};\nimport * as __animationBindingsSource from ${JSON.stringify(animation)};\nimport * as __animationPointerBridge from ${JSON.stringify(pointerBridge)};\nimport * as __animationControllerSource from ${JSON.stringify(gltfControllerBindingsSourceUrl(context))};\nimport __animationFeature from ${JSON.stringify(animations)};`;
     const loader = (await import(
         pinnedModuleTextUrl(
@@ -666,7 +716,6 @@ async function recordingLoader(
                 "__animationFeature",
                 ...cameraExports,
                 "__getPunctualLight",
-                "__worldBounds",
             ],
             new Map([
                 ["./gltf-feature-registry.js", registry],
@@ -683,16 +732,7 @@ async function recordingLoader(
 }
 
 /** Run complete pinned extraction and mesh upload with real bytes and recording GPU resources. */
-export async function gltfMeshPlan(
-    document: JsonObject,
-    bin: DataView,
-    context?: LoweringContext,
-    options: GltfLoadFeatures = {},
-): Promise<GltfMeshPlan> {
-    return (await recordMeshPlan(document, bin, context, options)).plan;
-}
-
-async function recordMeshPlan(
+export async function recordMeshPlan(
     document: JsonObject,
     bin: DataView,
     context: LoweringContext | undefined,
@@ -705,7 +745,7 @@ async function recordMeshPlan(
     if (!context && !pinnedLoaders.has(enabledCameras))
         pinnedLoaders.set(
             enabledCameras,
-            recordingLoader(new LoweringContext(), options),
+            recordingLoader(sharedPinnedContext(), options),
         );
     const loader = await (context
         ? recordingLoader(context, options)
@@ -715,6 +755,11 @@ async function recordMeshPlan(
     }>("loader-gltf/gltf-pbr-builder.js");
     const { features, parentMap, worldMatrixCache } =
         await loader.__prepareMeshes(document);
+    const featureIds = features.map((feature) => {
+        if (typeof feature.id !== "string")
+            throw new Error("A pinned glTF feature carries no string id.");
+        return feature.id;
+    });
     const pointerPreparation = await loader.__prepareAnimationPointers(
         document,
         bin,
@@ -1027,7 +1072,7 @@ async function recordMeshPlan(
                 geometry,
                 name: mesh.name,
                 flatNormal: mesh._flatNormal === true,
-                setup: packageMeshSetup(mesh, loader.__worldBounds, packer),
+                setup: packageMeshSetup(mesh, packer),
                 ...packageMeshDeformation(
                     mesh,
                     input._vertexCount,
@@ -1162,8 +1207,37 @@ async function recordMeshPlan(
                   )
                 : null;
         }
+        // A scene that writes SceneNode transforms moves the pin's nodes
+        // and everything beneath them, so the loader builds the pin's own
+        // hierarchy. What the native runtime poses or places from its own
+        // copy of the loaded nodes would not follow it, and refuses.
+        let hierarchy: GltfNodeHierarchy | undefined;
+        if (options.nodeTransforms === true) {
+            const refuse = (what: string): never =>
+                refuseGeneration(
+                    "scene:node-transforms",
+                    `A scene that writes SceneNode transforms loads a glTF ` +
+                        `asset with ${what}, which the native runtime ` +
+                        "places from its own loaded node worlds rather " +
+                        "than from the scene's node records.",
+                );
+            if (features.includes(loader.__animationFeature))
+                refuse("animations");
+            if (
+                plannedMeshes.some(
+                    (mesh) =>
+                        mesh.skin !== undefined || mesh.morph !== undefined,
+                )
+            )
+                refuse("skinned or morphed primitives");
+            if (sourceLights.length > 0) refuse("punctual lights");
+            if (sourceCameras.length > 0) refuse("cameras");
+            hierarchy = packageNodeHierarchy(root, nodeMap, packer);
+        }
         return {
             plan: {
+                ...(hierarchy ? { hierarchy } : {}),
+                features: featureIds,
                 cores,
                 materials,
                 baseColorDefinitions,
@@ -1199,6 +1273,10 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
     const sourceMaterialCount = asRecords(document.materials).length;
     if (
         !plan ||
+        !Array.isArray(plan.features) ||
+        !plan.features.every(
+            (id: unknown): id is string => typeof id === "string",
+        ) ||
         !Array.isArray(plan.cores) ||
         !plan.cores.every(
             (index: unknown): index is number =>
@@ -1321,6 +1399,16 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
             "Missing source animation base-color definition identities.",
         );
     return {
+        ...(plan.hierarchy === undefined
+            ? {}
+            : {
+                  hierarchy: readNodeHierarchy(
+                      plan.hierarchy,
+                      nodes.length,
+                      accessorCount,
+                  ),
+              }),
+        features: plan.features,
         cores: plan.cores,
         materials: plan.materials,
         baseColorDefinitions: plan.baseColorDefinitions,
@@ -1336,6 +1424,25 @@ export function packagedGltfMeshPlan(document: JsonObject): GltfMeshPlan {
         animation,
         meshes,
         geometries,
+    };
+}
+
+/**
+ * What the pinned loader's own run decided for a packaged document: the
+ * features it ran and the primitive topology it gave each planned mesh.
+ */
+interface PackagedGltfLoaderFacts {
+    features: ReadonlySet<string>;
+    topologies: readonly string[];
+}
+
+export function packagedGltfLoaderFacts(
+    document: JsonObject,
+): PackagedGltfLoaderFacts {
+    const plan = packagedGltfMeshPlan(document);
+    return {
+        features: new Set(plan.features),
+        topologies: plan.meshes.map((mesh) => mesh.setup.topology),
     };
 }
 

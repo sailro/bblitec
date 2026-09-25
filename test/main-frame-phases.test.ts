@@ -8,6 +8,8 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("main renderers acquire surfaces, restart changed scenes and grow task resources", (t) => {
@@ -21,12 +23,12 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
     }
     const directory = resolve("artifacts/test-main-frame-phases");
     mkdirSync(directory, { recursive: true });
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     writeFileSync(
         join(directory, "scene-restart.hpp"),
         [
-            "inline bool registered_scene_set_changed(",
-            "inline bool request_renderer_restart_if_scene_set_changed(",
+            "bool registered_scene_set_changed(",
+            "bool request_renderer_restart_if_scene_set_changed(",
         ]
             .map((signature) => cppFunction(shared, signature))
             .join("\n"),
@@ -38,14 +40,15 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
             "inline bool acquire_dawn_surface_texture",
         ).replace("DawnDevice& state", "DawnState& state"),
     );
-    for (const [backend, file] of [
-        ["Sdl", "pal_sdl_gpu.cpp"],
-        ["Dawn", "pal_dawn.cpp"],
+    for (const [backend, name] of [
+        ["Sdl", "sdl"],
+        ["Dawn", "dawn"],
     ] as const) {
-        const source = readFileSync(`native/src/${file}`, "utf8");
+        const source = sceneBackendSource(name);
         writeFileSync(
             join(directory, `${backend}Scene.hpp`),
             [
+                "Frame& current_frame()",
                 "void rebuild_task_draw_lists()",
                 "bool acquire()",
                 "FramePreparation update()",
@@ -58,6 +61,9 @@ test("main renderers acquire surfaces, restart changed scenes and grow task reso
     runNativeFixtureCompiler(tools, [
         "/nologo",
         "/std:c++20",
+        "/DBBLITE_HAS_UI=0",
+        "/DBBLITE_DEVICE_RECOVERY=0",
+        "/DBBLITE_OFFSCREEN_SURFACES=1",
         "/W4",
         "/WX",
         "/EHsc",

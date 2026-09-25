@@ -1,6 +1,6 @@
 import type ts from "typescript";
 import type { LoweringServices } from "../lowering-services.js";
-import type { Value } from "../types.js";
+import { optionalPresentCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { argumentAt } from "../syntax.js";
 import { isGpuBufferSourceType } from "./storage-buffer.js";
@@ -68,7 +68,7 @@ export function compileUniformBufferIntrinsic(
                 ? "Uniform buffer sources require numeric sizes or ArrayBuffer views."
                 : "Uniform buffer updates require ArrayBuffer views.",
         );
-    const source = context.pinValueToTemporary(
+    const source = context.bindings.pinValueToTemporary(
         value,
         "uniform_source",
         sourceExpression,
@@ -101,12 +101,12 @@ export function compileUniformBufferLabel(
         const write = (options: Value): void => {
             if (options.kind === "json-null" || options.kind === "void") return;
             if (options.dataType?.kind === "optional") {
-                const retained = context.pinValueToTemporary(
+                const retained = context.bindings.pinValueToTemporary(
                     options,
                     "uniform_options",
                     optionsExpression,
                 );
-                context.emit(`if (${retained.cpp}.has_value()) {`);
+                context.emit(`if (${optionalPresentCpp(retained.cpp)}) {`);
                 write({
                     kind: "data",
                     dataType: options.dataType.inner,

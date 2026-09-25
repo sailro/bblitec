@@ -15,7 +15,7 @@ function sharedGetter(
 ): string {
     const context = lowerer.context;
     const name = context.allocateTemporaryCppName("dynamic_view_getter");
-    const shared = context.registerSharedNativeFunction(
+    const shared = context.nativeEmission.registerSharedNativeFunction(
         name,
         [
             `struct ${name} {`,
@@ -71,7 +71,14 @@ export function compileJsonTupleView(
     });
     const result = {
         ...lowerer.leafValue(cpp, { kind: "json" }),
-        nativeCaptures: [context.registerNativeBinding(cpp)],
+        nativeCaptures: [
+            context.registerNativeBinding(
+                cpp,
+                false,
+                false,
+                "bbl::js::JsonValue",
+            ),
+        ],
     };
     views.set(elements, result);
     context.useNativeValue(result);
@@ -104,7 +111,7 @@ export function compileJsonRecordView(
     }
     // This path retains the original property table and mutable scalar cells.
     // Supplying a source expression here could instead construct a second record.
-    context.materializeEscapingValue(record, "dynamic_record");
+    context.bindings.materializeEscapingValue(record, "dynamic_record");
     const fields = Object.entries(properties).map(([name, value]) => {
         const nested =
             compileJsonRecordView(lowerer, value, node) ??
@@ -140,7 +147,14 @@ export function compileJsonRecordView(
     });
     const result = {
         ...lowerer.leafValue(cpp, { kind: "json" }),
-        nativeCaptures: [context.registerNativeBinding(cpp)],
+        nativeCaptures: [
+            context.registerNativeBinding(
+                cpp,
+                false,
+                false,
+                "bbl::js::JsonValue",
+            ),
+        ],
     };
     views.set(properties, result);
     context.useNativeValue(result);

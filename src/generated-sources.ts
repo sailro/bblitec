@@ -16,7 +16,7 @@
 import type { Feature } from "./compiler/types.js";
 import { shadowGeneratorFeatures } from "./shadow-capabilities.js";
 
-export interface GeneratedSourceRule {
+interface GeneratedSourceRule {
     source: string;
     /** Reached when ANY listed feature is present; empty means always. */
     features: readonly Feature[];
@@ -186,8 +186,11 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["environment:env"],
     },
     {
+        // Both entry points into the pinned background builders:
+        // `loadEnvironment`'s deferred builder and
+        // `addDdsEnvironmentBackground`, which reaches them without it.
         source: "upstream/src/environment.cpp",
-        features: ["environment:env"],
+        features: ["environment:env", "background:dds-environment"],
     },
     {
         source: "upstream/src/environment_hdr.cpp",
@@ -330,10 +333,6 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["texture:compressed"],
     },
     {
-        source: "upstream/src/material_grid.cpp",
-        features: ["material:grid"],
-    },
-    {
         source: "upstream/src/texture_file.cpp",
         features: ["texture:file", "loader:babylon"],
     },
@@ -360,6 +359,8 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     {
         source: "upstream/src/mesh_factories.cpp",
         features: [
+            // loadSkybox builds its cube with createBoxData.
+            "background:image-skybox",
             "mesh:box",
             "mesh:capsule",
             "mesh:cylinder",
@@ -444,7 +445,7 @@ export function reachedGeneratedSources(features: readonly string[]): string[] {
  * bring a generated file into existence — and a header whose reach drifts
  * from its includers fails in the native build with nothing pointing back.
  */
-export const sharedSpriteAtlasHeaderFeatures = [
+const sharedSpriteAtlasHeaderFeatures = [
     "sprite:2d",
     "sprite:billboard",
 ] as const;

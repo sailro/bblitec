@@ -32,10 +32,7 @@ export function pinnedRgbdHeader(context: LoweringContext): string {
             );
         }
     }
-    const shader = context.stringValue(
-        context.variableInitializer(file, "WGSL"),
-        file,
-    );
+    const shader = context.pinnedString(module, "WGSL");
     const kernel = parseWgslComputeModule(shader);
     const fail = (): never =>
         context.contractError(

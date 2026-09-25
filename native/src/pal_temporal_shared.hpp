@@ -1,6 +1,9 @@
 #pragma once
 
+#include <bblite/features/has_ui.hpp>
+
 #include <bblite/runtime.hpp>
+#include <bblite/text_gpu.hpp>
 #include <cstring>
 #include <stdexcept>
 #include <type_traits>
@@ -25,12 +28,11 @@ inline void validate_temporal_source(const Engine& engine, const FrameTaskRecord
             "Temporal source requires preparation for its clustered-light or transmission state.");
     }
     if (bbl::has_sprite_renderers(engine) || !engine.registered_effect_renderers.empty() ||
-        !engine.registered_frame_graph_contexts.empty() ||
-        !engine.registered_text_renderers.empty()) {
+        !engine.registered_frame_graph_contexts.empty() || bbl::has_text_renderers(engine)) {
         throw std::runtime_error(
             "Temporal submission requires preparation for the engine's registered renderer or UI contexts.");
     }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     if (!engine.ui_root_children.empty()) {
         throw std::runtime_error(
             "Temporal submission requires preparation for the engine's retained UI.");

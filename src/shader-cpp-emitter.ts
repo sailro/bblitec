@@ -1,8 +1,7 @@
 import { floatLiteral } from "./cpp-literals.js";
-import { pinnedMathSpelling } from "./lowering/pinned-operators.js";
 import { typeComponents, type ShaderExpression } from "./shader-ir.js";
 
-export interface ShaderCppScalar {
+interface ShaderCppScalar {
     cpp: string;
     constant?: boolean;
     /** This lane is a normalized byte, with this expression as its byte index. */
@@ -17,21 +16,10 @@ export function emitShaderCppExpression(
     bindings: ReadonlyMap<string, readonly ShaderCppScalar[]>,
     options: {
         tabulateUnorm8?: boolean;
-        /** Explicit CPU-bake adaptation: return zero unless length exceeds this f32 threshold. */
-        minimumNormalizeLength?: number;
     } = {},
 ): { components: string[]; declarations: string[] } {
     const declarations: string[] = [];
     const tables = new Map<string, string>();
-    if (
-        options.minimumNormalizeLength !== undefined &&
-        (!Number.isFinite(Math.fround(options.minimumNormalizeLength)) ||
-            options.minimumNormalizeLength < 0)
-    ) {
-        throw new Error(
-            "WGSL normalization threshold must be a nonnegative finite f32 value.",
-        );
-    }
     const abstract = (value: number, integer: boolean): ShaderCppScalar => {
         // Keep the bounded interpreter exact; wider abstract integers need a
         // BigInt path before they can be accepted (WGSL uses signed 64-bit).
@@ -112,6 +100,10 @@ export function emitShaderCppExpression(
             case "index":
                 throw new Error(
                     "C++ shader projection does not support indexed values.",
+                );
+            case "unary":
+                throw new Error(
+                    `C++ shader projection does not support unary '${node.operator}'.`,
                 );
             case "construct": {
                 if (node.type === "mat4x4<f32>")
@@ -195,10 +187,7 @@ export function emitShaderCppExpression(
                         `const float ${length} = std::sqrt(${squared});`,
                     );
                     return lanes.map((_, index) => ({
-                        cpp:
-                            options.minimumNormalizeLength === undefined
-                                ? `(${input}[${index}] / ${length})`
-                                : `(${length} > ${floatLiteral(options.minimumNormalizeLength)} ? ${input}[${index}] / ${length} : 0.0f)`,
+                        cpp: `(${input}[${index}] / ${length})`,
                     }));
                 }
                 const arities: Readonly<Record<string, number>> = {
@@ -230,8 +219,11 @@ export function emitShaderCppExpression(
                         }
                     }
                     args = args.map(materialize);
+                    // WGSL's own builtins over f32: the `<cmath>` and
+                    // `<algorithm>` overloads of the same name, not
+                    // JavaScript's `Math` (whose max/min differ on NaN).
                     const call = (values: readonly string[]): string =>
-                        `${pinnedMathSpelling(node.name)}(${values.join(", ")})`;
+                        `std::${node.name}(${values.join(", ")})`;
                     let cpp = call(args.map((a) => a.cpp));
                     // Hoist expensive unary byte-domain work, preserving C++ f32
                     // evaluation. Tables are deduplicated across vector lanes.

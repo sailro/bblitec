@@ -1,3 +1,10 @@
+# SDL comes from vcpkg unless a trimmed SDL artifact replaces it: a build
+# naming one (BBLITE_SDL_DIR), and every shipping profile
+# (tools/shipping-profile.cmake), which always builds against one.
+if(NOT BBLITE_SDL_DIR AND NOT BBLITE_SDL_TRIMMED AND NOT "sdl" IN_LIST VCPKG_MANIFEST_FEATURES)
+    list(APPEND VCPKG_MANIFEST_FEATURES "sdl")
+endif()
+
 # Image codecs reached by the scene's materialized assets: generation
 # writes the list into features.cmake, and a tree without one is not a
 # tree this file knows how to build.
@@ -7,10 +14,6 @@ if(NOT DEFINED BBLITE_IMAGE_CODECS)
         "${BBLITE_GENERATED_DIR}/features.cmake carries no BBLITE_IMAGE_CODECS "
         "list; regenerate the scene (scene -- compile <id>)."
     )
-endif()
-set(BBLITE_HAS_IMAGE_DECODER OFF)
-if(BBLITE_IMAGE_CODECS)
-    set(BBLITE_HAS_IMAGE_DECODER ON)
 endif()
 set(BBLITE_REQUIRED_IMAGE_CODECS ${BBLITE_IMAGE_CODECS})
 if(BBLITE_VISUAL_CAPTURE)

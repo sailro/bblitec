@@ -1,6 +1,7 @@
 #include <bblite/text_layout.hpp>
 #include <hb.h>
 #include <hb-ot.h>
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
@@ -33,70 +34,64 @@ std::shared_ptr<TextLayoutFont> create_text_layout_font(std::span<const std::uin
         throw std::runtime_error("HarfBuzz could not initialize the pinned font.");
     hb_ot_font_set_funcs(owner->font);
     hb_font_set_scale(owner->font, static_cast<int>(upem), static_cast<int>(upem));
-    hb_codepoint_t space = 0;
-    static_cast<void>(hb_font_get_nominal_glyph(owner->font, 32, &space));
     auto result = std::make_shared<TextLayoutFont>();
     result->backend = std::move(owner);
     result->units_per_em = upem;
-    result->space_glyph = space;
+    result->num_glyphs = glyphs;
     return result;
 }
 
-std::u32string text_codepoints(std::string_view text) {
-    std::u32string result;
-    for (std::size_t i = 0; i < text.size();) {
-        const auto first = static_cast<unsigned char>(text[i++]);
-        char32_t code = first;
-        unsigned continuation = 0;
-        if (first >= 0xc2 && first <= 0xdf) {
-            code &= 0x1f;
-            continuation = 1;
-        } else if (first >= 0xe0 && first <= 0xef) {
-            code &= 0x0f;
-            continuation = 2;
-        } else if (first >= 0xf0 && first <= 0xf4) {
-            code &= 0x07;
-            continuation = 3;
-        } else if (first >= 0x80)
-            throw std::runtime_error("Text input is not valid UTF-8.");
-        for (unsigned j = 0; j < continuation; ++j) {
-            if (i >= text.size() || (static_cast<unsigned char>(text[i]) & 0xc0) != 0x80)
-                throw std::runtime_error("Text input is not valid UTF-8.");
-            code = (code << 6) | (static_cast<unsigned char>(text[i++]) & 0x3f);
-        }
-        if ((continuation == 1 && code < 0x80) || (continuation == 2 && code < 0x800) ||
-            (continuation == 3 && code < 0x10000) || (code >= 0xd800 && code <= 0xdfff) ||
-            code > 0x10ffff)
-            throw std::runtime_error("Text input is not valid UTF-8.");
-        result.push_back(code);
-    }
-    return result;
+double text_glyph_id(const TextLayoutFont& font, double codepoint) {
+    if (!(codepoint >= 0 && codepoint <= 0x10ffff) ||
+        codepoint != static_cast<double>(static_cast<hb_codepoint_t>(codepoint)))
+        return 0;
+    auto& owner = *std::static_pointer_cast<Font>(font.backend);
+    hb_codepoint_t glyph = 0;
+    return hb_font_get_nominal_glyph(owner.font, static_cast<hb_codepoint_t>(codepoint), &glyph)
+               ? static_cast<double>(glyph)
+               : 0.0;
 }
 
-void text_shape(const TextLayoutFont& font, const std::u32string& input, TextShapeOutput& output) {
-    if (input.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+void text_shape(const TextLayoutFont& font, const TextShapeInput& input, TextShapeOutput& output) {
+    const auto count = input.codepoints.size();
+    if (count > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("Text input exceeds HarfBuzz size limits.");
     auto& owner = *std::static_pointer_cast<Font>(font.backend);
     hb_buffer_reset(owner.buffer);
     hb_buffer_set_cluster_level(owner.buffer, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
     hb_buffer_set_content_type(owner.buffer, HB_BUFFER_CONTENT_TYPE_UNICODE);
-    for (std::size_t i = 0; i < input.size(); ++i)
-        hb_buffer_add(owner.buffer, static_cast<hb_codepoint_t>(input[i]),
-                      static_cast<unsigned>(i));
+    for (std::size_t i = 0; i < count; ++i) {
+        const double cluster = input.clusters[i];
+        if (!(cluster >= 0 && cluster <= std::numeric_limits<unsigned>::max()))
+            throw std::runtime_error("Text shaping cluster exceeds HarfBuzz limits.");
+        hb_buffer_add(owner.buffer, static_cast<hb_codepoint_t>(input.codepoints[i]),
+                      static_cast<unsigned>(cluster));
+    }
     hb_buffer_guess_segment_properties(owner.buffer);
     hb_shape(owner.font, owner.buffer, nullptr, 0);
     if (!hb_buffer_allocation_successful(owner.buffer))
         throw std::runtime_error("HarfBuzz shaping allocation failed.");
-    unsigned count = 0;
-    const auto* infos = hb_buffer_get_glyph_infos(owner.buffer, &count);
+    unsigned shaped = 0;
+    const auto* infos = hb_buffer_get_glyph_infos(owner.buffer, &shaped);
     const auto* positions = hb_buffer_get_glyph_positions(owner.buffer, nullptr);
+    // A glyph's codepoint is the first input codepoint of its cluster.
+    const bool ordered = std::is_sorted(input.clusters.begin(), input.clusters.end());
+    const auto source = [&](unsigned cluster) -> double {
+        const auto value = static_cast<double>(cluster);
+        const auto found =
+            ordered ? std::lower_bound(input.clusters.begin(), input.clusters.end(), value)
+                    : std::find(input.clusters.begin(), input.clusters.end(), value);
+        if (found == input.clusters.end() || *found != value)
+            throw std::runtime_error("HarfBuzz returned a cluster outside the shaped input.");
+        return static_cast<double>(
+            input.codepoints[static_cast<std::size_t>(found - input.clusters.begin())]);
+    };
     output.infos.clear();
     output.positions.clear();
-    output.infos.reserve(count);
-    output.positions.reserve(count);
-    for (unsigned i = 0; i < count; ++i) {
-        output.infos.push_back({static_cast<double>(infos[i].codepoint),
-                                static_cast<double>(input.at(infos[i].cluster)),
+    output.infos.reserve(shaped);
+    output.positions.reserve(shaped);
+    for (unsigned i = 0; i < shaped; ++i) {
+        output.infos.push_back({static_cast<double>(infos[i].codepoint), source(infos[i].cluster),
                                 static_cast<double>(infos[i].cluster)});
         output.positions.push_back({static_cast<double>(positions[i].x_advance),
                                     static_cast<double>(positions[i].x_offset),

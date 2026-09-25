@@ -1,14 +1,29 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import {
+    dependencyPatchRecords,
     discoverClangTool,
     discoverDevelopmentTools,
     discoverWindowsBuildTools,
 } from "../src/development-tools.js";
+import { runPatchIdentity } from "../src/patch-inventory.js";
+import {
+    findTintTool,
+    tintToolMismatch,
+    tintToolSources,
+} from "../src/tint-tool.js";
+
+const host = discoverDevelopmentTools();
 
 function touch(path: string): void {
     mkdirSync(dirname(path), { recursive: true });
@@ -239,3 +254,151 @@ for (const platform of ["linux", "darwin"] as const)
         rmSync(dawnLibrary);
         assert.equal(discoverDevelopmentTools(options).dawnInstalled, false);
     });
+
+test(
+    "a pinned artifact whose patch record differs counts as not installed; an unrecorded one is reported",
+    { skip: !host.cmake },
+    (t) => {
+        const root = mkdtempSync(join(tmpdir(), "bblitec-patch-record-"));
+        t.after(() => rmSync(root, { recursive: true, force: true }));
+        const dawn = join(root, "artifacts/tools/dawn");
+        touch(join(dawn, "lib/cmake/Dawn/DawnConfig.cmake"));
+        touch(join(dawn, "lib/libwebgpu_dawn.so"));
+        const options = {
+            cwd: root,
+            platform: "linux" as const,
+            environment: { PATH: "", CMAKE_COMMAND: host.cmake! },
+        };
+        const record = (): { state: string; message: string | undefined } => {
+            const found = dependencyPatchRecords(
+                discoverDevelopmentTools(options),
+                "linux",
+            ).find((entry) => entry.library === "dawn");
+            assert.ok(found, "a built Dawn artifact carries a record state");
+            return { state: found.state.state, message: found.message };
+        };
+
+        // Artifacts built before records existed stay usable and are reported.
+        assert.equal(discoverDevelopmentTools(options).dawnInstalled, true);
+        assert.equal(record().state, "unrecorded");
+        assert.match(record().message ?? "", /records no patch set/);
+
+        // Linux Dawn applies no maintained patch: the record names the pin only.
+        const expected = runPatchIdentity(host.cmake!, "record", "dawn");
+        assert.match(expected, /set\(BBLITE_DAWN_PATCHES ""\)/);
+        const recordPath = join(dawn, "bblite-dawn-features.cmake");
+        writeFileSync(recordPath, expected);
+        assert.equal(record().state, "current");
+        assert.equal(record().message, undefined);
+
+        // A different patch set, source or variant set is stale: setup rebuilds it.
+        for (const [from, to] of [
+            [
+                'BBLITE_DAWN_PATCHES ""',
+                'BBLITE_DAWN_PATCHES "0001-android-surface-loss.patch=00"',
+            ],
+            [/BBLITE_DAWN_SOURCE "[0-9a-f]+"/, 'BBLITE_DAWN_SOURCE "0000"'],
+            ['BBLITE_DAWN_VARIANTS ""', 'BBLITE_DAWN_VARIANTS "android"'],
+        ] as const) {
+            writeFileSync(recordPath, expected.replace(from, to));
+            assert.equal(record().state, "stale");
+            assert.match(record().message ?? "", /setup rebuilds it/);
+        }
+    },
+);
+
+test("a checkout uses only the bblite-tint that records its own tool sources", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-tint-tool-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    for (const [path, content] of [
+        ["tools/build-tint.ps1", "build"],
+        ["upstream/tint.json", '{"commit":"a21a4a1c"}'],
+        ["tools/tint-sdl/main.cc", "int main() {}"],
+        ["tools/tint-sdl/CMakeLists.txt", "project(bblite_tint)"],
+    ] as const) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), content);
+    }
+    // A checkout without a patch manifest has no tint series to read.
+    const sources = Object.fromEntries(tintToolSources(root, undefined));
+    assert.deepEqual(Object.keys(sources).sort(), [
+        "tools/build-tint.ps1",
+        "tools/tint-sdl/CMakeLists.txt",
+        "tools/tint-sdl/main.cc",
+        "upstream/tint.json",
+    ]);
+    // One build per source identity: another checkout's beside this one's.
+    const build = (identity: string, recorded: Record<string, string>) => {
+        const tool = join(
+            root,
+            "artifacts/tools/tint",
+            identity,
+            "bblite-tint",
+        );
+        touch(tool);
+        writeFileSync(
+            join(dirname(tool), "provenance.json"),
+            JSON.stringify({ identity, sources: recorded }),
+        );
+        return tool;
+    };
+    const other = build("0000000000000000", {
+        ...sources,
+        "tools/tint-sdl/main.cc": "0".repeat(64),
+    });
+    assert.equal(findTintTool(root, undefined, "linux"), undefined);
+    assert.match(
+        tintToolMismatch(other, root, undefined) ?? "",
+        /tools\/tint-sdl\/main\.cc differs/,
+    );
+    const own = build("1111111111111111", sources);
+    assert.equal(findTintTool(root, undefined, "linux"), own);
+    assert.equal(tintToolMismatch(own, root, undefined), undefined);
+    const options = { cwd: root, platform: "linux" as const, environment: {} };
+    assert.equal(discoverDevelopmentTools(options).bbliteTint, own);
+    // An explicit tool stands for discovery; the compiler still verifies it.
+    assert.equal(
+        discoverDevelopmentTools({
+            ...options,
+            environment: { BBLITE_TINT_PATH: other },
+        }).bbliteTint,
+        other,
+    );
+    // Editing a source retires the build that recorded it.
+    writeFileSync(
+        join(root, "tools/tint-sdl/main.cc"),
+        "int main() { return 1; }",
+    );
+    assert.equal(findTintTool(root, undefined, "linux"), undefined);
+});
+
+test(
+    "bblite-tint's sources carry Dawn's tint series, which needs CMake to read",
+    { skip: !host.cmake },
+    () => {
+        const cmake = host.cmake!;
+        const root = resolve(".");
+        const manifest = JSON.parse(
+            readFileSync("native/patches/manifest.json", "utf8"),
+        ) as {
+            patches: { library: string; file: string; variants: string[] }[];
+        };
+        const selected = manifest.patches
+            .filter(
+                (patch) =>
+                    patch.library === "dawn" &&
+                    (patch.variants.includes("tint") ||
+                        patch.variants.includes("all")),
+            )
+            .map((patch) => patch.file);
+        assert.ok(selected.length > 0);
+        const patches = [...tintToolSources(root, cmake).keys()].filter(
+            (source) => source.startsWith("native/"),
+        );
+        assert.deepEqual(patches, selected);
+        assert.throws(
+            () => tintToolSources(root, undefined),
+            /needs CMake for Dawn's tint patch series/,
+        );
+    },
+);

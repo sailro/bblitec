@@ -3,6 +3,7 @@ import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { recordAt } from "../record-access.js";
 
 export interface LightIntrinsicContext
     extends
@@ -13,7 +14,7 @@ export interface LightIntrinsicContext
             | "compileNumber"
             | "requireDefaultEngine"
             | "requireEngine"
-            | "pinValueToTemporary"
+            | "bindings"
         > {}
 
 export function compileLightIntrinsic(
@@ -25,7 +26,7 @@ export function compileLightIntrinsic(
         case "setLightIntensity":
         case "setLightDiffuseColor": {
             context.expectArgumentCount(call, 2, 2);
-            const light = context.pinValueToTemporary(
+            const light = context.bindings.pinValueToTemporary(
                 context.compileValue(argumentAt(call, 0)),
                 "light_owner",
                 call,
@@ -38,7 +39,7 @@ export function compileLightIntrinsic(
             context.reachFeature("light:parameters", call);
             return {
                 kind: "void",
-                cpp: `bbl::${color ? "set_light_diffuse_color" : "set_light_intensity"}(${context.requireEngine(light, call)}.lights.at(${light.cpp}.value),${value})`,
+                cpp: `bbl::${color ? "set_light_diffuse_color" : "set_light_intensity"}(${recordAt(`${context.requireEngine(light, call)}.lights`, light.cpp)},${value})`,
             };
         }
         case "createHemisphericLight": {

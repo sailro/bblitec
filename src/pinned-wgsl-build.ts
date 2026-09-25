@@ -40,11 +40,11 @@ import { transpileCommonJs } from "./typescript-transpile.js";
 import { findRepositoryRoot } from "./upstream-source.js";
 
 /** Where the pinned script lives in this repository's corpus. */
-export const PINNED_WGSL_BUILD_SCRIPT =
+const PINNED_WGSL_BUILD_SCRIPT =
     "corpus/babylon-lite/scripts/wgsl-minify-plugin.ts";
 
 /** The pin's `transformTaggedWgsl`: built module text, or null when the module tags nothing. */
-export type TaggedWgslTransform = (
+type TaggedWgslTransform = (
     code: string,
     id: string,
 ) => { code: string } | null;

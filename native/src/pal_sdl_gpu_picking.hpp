@@ -10,21 +10,14 @@
 // picks at all: it has no triangles to intersect, and its own pass draws
 // the same splats it draws for the frame with the pick colour substituted.
 //
-// Two contracts are this port's rather than the pin's, and both come from
-// where the world transform lives:
-//
-//   * an ordinary mesh's vertices are baked to WORLD space here
-//     (`transformed_vertices`), while the pin keeps them local and multiplies
-//     by `mesh.worldMatrix` in the pick vertex stage. So the mesh block
-//     carries the IDENTITY for a baked mesh -- the same positions reach the
-//     shader either way. A thin-instanced or floating-origin mesh keeps
-//     local vertices precisely because its transform travels as a matrix,
-//     and neither is composed with picking by any reached scene, so both
-//     refuse rather than picking the wrong geometry.
-//   * the position stream is the renderer's interleaved `GpuVertex` buffer
-//     read at its own stride rather than a second position-only upload. The
-//     pin binds `gpu.positionBuffer`; these are the same numbers at a
-//     different pitch.
+// One contract is this port's rather than the pin's: the position stream is
+// the renderer's interleaved `GpuVertex` buffer read at its own stride
+// rather than a second position-only upload. The pin binds
+// `gpu.positionBuffer`; these are the same local numbers at a different
+// pitch, and the mesh block carries `mesh.worldMatrix` as the pin's does.
+
+#include <bblite/features/has_billboards.hpp>
+#include <bblite/features/has_detailed_picking.hpp>
 
 #include <bblite/runtime.hpp>
 
@@ -309,12 +302,9 @@ private:
             gpu_error("picking-billboard.vert kept neither the scene nor the "
                       "per-system block");
         }
-        auto vertex = load_shader(device_, vertex_stem, SDL_GPU_SHADERSTAGE_VERTEX, 0,
-                                  static_cast<std::uint32_t>(vertex_slots.uniforms.size()), "vs");
+        auto vertex = load_shader(device_, vertex_stem, SDL_GPU_SHADERSTAGE_VERTEX, vertex_slots);
         auto fragment =
-            load_shader(device_, fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT,
-                        static_cast<std::uint32_t>(fragment_slots.textures.size()),
-                        static_cast<std::uint32_t>(fragment_slots.uniforms.size()), "fs");
+            load_shader(device_, fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT, fragment_slots);
 
         // The pin's own six instance attributes, read out of the table the
         // billboard lowerer generated from the RENDER pipeline's offsets --

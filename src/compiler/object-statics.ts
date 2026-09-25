@@ -1,3 +1,4 @@
+import { writable } from "./emission-transaction.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { argumentAt } from "./syntax.js";
@@ -6,7 +7,7 @@ import { booleanValue, staticStringValue, type Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { compileEntryCollection } from "./collection-methods.js";
 
-export type ObjectStaticContext = Pick<
+type ObjectStaticContext = Pick<
     LoweringServices,
     | "compileValue"
     | "probeEmission"
@@ -18,13 +19,11 @@ export type ObjectStaticContext = Pick<
     | "allocateTemporaryCppName"
     | "emit"
     | "emitDiscardedValue"
-    | "pinValueToTemporary"
     | "isInRuntimeControlFlow"
-    | "invalidateRecordProperties"
-    | "lookupIdentifierValue"
+    | "bindings"
     | "resolveRecordValue"
     | "unwrap"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "fail"
 >;
 
@@ -206,12 +205,7 @@ export function compileObjectPrototypeCall(
     )
         return undefined;
     const owner = context.unwrap(prototype.expression);
-    if (
-        !ts.isIdentifier(owner) ||
-        owner.text !== "Object" ||
-        !context.isDefaultLibraryIdentifier(owner)
-    )
-        return undefined;
+    if (context.libraryGlobal(owner) !== "Object") return undefined;
     return compileObjectHasOwn(context, call);
 }
 
@@ -243,7 +237,10 @@ function compileObjectEntries(
             tupleElements: [
                 staticStringValue(key, (text) => context.cppString(text)),
                 value.cpp && value.kind !== "callback"
-                    ? context.pinValueToTemporary(value, "object_entry")
+                    ? context.bindings.pinValueToTemporary(
+                          value,
+                          "object_entry",
+                      )
                     : value,
             ],
         })),
@@ -353,7 +350,7 @@ function compileObjectAssign(
         }
         const properties = fresh
             ? { ...target.recordProperties }
-            : (target.recordProperties ??= {});
+            : (writable(target).recordProperties ??= {});
         for (const source of sources) {
             for (const [key, value] of sourcePairs(source)) {
                 const existing = properties[key];
@@ -374,14 +371,14 @@ function compileObjectAssign(
                         source,
                     );
                     context.emit(`${existing.cpp} = ${stored};`);
-                    properties[key] = {
+                    writable(properties)[key] = {
                         kind: scalarKind,
                         cpp: existing.cpp,
                         dataType: { kind: scalarKind },
                     };
                     continue;
                 }
-                properties[key] = value;
+                writable(properties)[key] = value;
             }
         }
         return fresh ? { ...target, recordProperties: properties } : target;
@@ -410,23 +407,23 @@ function compileObjectAssign(
         }
         // The stores changed fields whose generation snapshot lives on the
         // binding the target was read from, not only on this read of it.
-        context.invalidateRecordProperties(target);
+        context.bindings.invalidateRecordProperties(target);
         const bound = ts.isIdentifier(targetExpression)
-            ? context.lookupIdentifierValue(targetExpression)
+            ? context.bindings.lookupOptional(targetExpression)
             : undefined;
         if (bound) {
-            context.invalidateRecordProperties(bound);
+            context.bindings.invalidateRecordProperties(bound);
         }
         return target;
     }
-    // An engine handle has no data fields to store into. The statement
-    // erases exactly as the browser-instrumentation path erased every
-    // `Object.assign` before data targets were lowered; a tracked camera
-    // still refuses through the camera-mutation scan.
-    for (const source of sources) {
-        context.compileValue(source);
-    }
-    return { kind: "void", cpp: "" };
+    // Nothing else has stored fields to copy into: an engine handle's
+    // properties are setters with native effects, which a copy of plain
+    // properties would bypass. Browser-only targets never reach here; the
+    // instrumentation path erases those statements whole.
+    return context.fail(
+        call,
+        `Object.assign cannot write into a ${target.kind} value: only records, object literals and structs have plain properties to copy into.`,
+    );
 }
 
 /**

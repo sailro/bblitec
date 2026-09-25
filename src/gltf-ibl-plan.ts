@@ -23,7 +23,7 @@ import {
     type RecordedOrigin,
 } from "./recording-device.js";
 
-export interface GltfIblTextures {
+interface GltfIblTextures {
     width: number;
     mipCount: number;
     faces: Array<{ bufferView: number; mimeType: string }>;
@@ -31,7 +31,7 @@ export interface GltfIblTextures {
     lodScale: number;
     brdfWidth: number;
 }
-export type GltfIblWrite =
+type GltfIblWrite =
     | { kind: "textures"; index: number }
     | { kind: "rotation" | "exposure" | "contrast"; value: number }
     | { kind: "toneMappingEnabled"; value: boolean };
@@ -176,10 +176,9 @@ export function gltfIblSourceUrls(context: LoweringContext): {
     featureTransform.dispose();
     // Native RGBD arithmetic is generated from this shared shader. Different
     // addressing or kernels require a wider native texture adapter.
-    const rgbdFile = context.sourceFile("src/loader-env/rgbd-decode.ts");
-    const rgbdShader = context.stringValue(
-        context.variableInitializer(rgbdFile, "WGSL"),
-        rgbdFile,
+    const rgbdShader = context.pinnedString(
+        "src/loader-env/rgbd-decode.ts",
+        "WGSL",
     );
     return { feature, assembly, rgbdShader, brdfShader };
 }

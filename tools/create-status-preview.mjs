@@ -24,21 +24,17 @@ const output = new PNG({
 });
 for (let y = 0; y < output.height; y++) {
     for (let x = 0; x < output.width; x++) {
-        const sums = [0, 0, 0];
-        for (let dy = 0; dy < scale; dy++) {
-            for (let dx = 0; dx < scale; dx++) {
-                const source =
-                    ((y * scale + dy) * input.width + x * scale + dx) * 4;
-                for (let channel = 0; channel < 3; channel++) {
-                    sums[channel] += input.data[source + channel];
-                }
-            }
-        }
         const target = (y * output.width + x) * 4;
         for (let channel = 0; channel < 3; channel++) {
-            output.data[target + channel] = Math.round(
-                sums[channel] / (scale * scale),
-            );
+            let sum = 0;
+            for (let dy = 0; dy < scale; dy++) {
+                for (let dx = 0; dx < scale; dx++) {
+                    const source =
+                        ((y * scale + dy) * input.width + x * scale + dx) * 4;
+                    sum += input.data.readUInt8(source + channel);
+                }
+            }
+            output.data[target + channel] = Math.round(sum / (scale * scale));
         }
         // Capture RGB already represents the opaque window. Attachment alpha
         // must not make a documentation preview blend with its page again.

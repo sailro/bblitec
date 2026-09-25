@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "../context.js";
 import { lowerPinnedBody } from "../pinned-body-lowerer.js";
+import { recordAt } from "../../compiler/record-access.js";
 
 /** Source scene setup over prepared row buffers and the synchronous native upload. */
 export function lowerGltfGaussianSplatSetup(context: LoweringContext): string {
@@ -57,7 +58,7 @@ export function lowerGltfGaussianSplatSetup(context: LoweringContext): string {
                         "Unrepresented splat rotation member.",
                     );
                 return [
-                    `${indent}scene.engine->splat_meshes.at(mesh.value).rotation.${lane} = static_cast<float>(${lowerer.expression(expression.right)});`,
+                    `${indent}${recordAt("scene.engine->splat_meshes", "mesh")}.rotation.${lane} = static_cast<float>(${lowerer.expression(expression.right)});`,
                 ];
             }
             if (

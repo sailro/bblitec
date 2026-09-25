@@ -20,23 +20,9 @@ export interface RecordedMeshSetup {
     } | null;
 }
 
-export interface WorldBounds {
-    minX: number;
-    minY: number;
-    minZ: number;
-    maxX: number;
-    maxY: number;
-    maxZ: number;
-}
-export interface SourceWorldBounds {
-    emptyWorldAabb(): WorldBounds;
-    expandWorldAabbForMesh(bounds: WorldBounds, mesh: RecordedMeshSetup): void;
-}
-
 export interface GltfMeshSetup {
     world: number;
     bounds: number;
-    worldBounds: number;
     topology: string;
     clockwise: boolean;
     visible: boolean;
@@ -58,7 +44,6 @@ function topology(value: unknown): string {
 /** Transport source-owned placement, bounds and instance matrices. */
 export function packageMeshSetup(
     mesh: RecordedMeshSetup,
-    source: SourceWorldBounds,
     packer: GltfGeometryPacker,
 ): GltfMeshSetup {
     const primitive = mesh._primitive;
@@ -94,21 +79,11 @@ export function packageMeshSetup(
         mesh.boundMax.length !== 3
     )
         throw new Error("Invalid constructed glTF mesh placement.");
-    const worldBounds = source.emptyWorldAabb();
-    source.expandWorldAabbForMesh(worldBounds, mesh);
     const bounds = new Float32Array(6);
     bounds.set(mesh.boundMin);
     bounds.set(mesh.boundMax, 3);
-    const world = new Float32Array([
-        worldBounds.minX,
-        worldBounds.minY,
-        worldBounds.minZ,
-        worldBounds.maxX,
-        worldBounds.maxY,
-        worldBounds.maxZ,
-    ]);
     if (
-        [mesh.worldMatrix, bounds, world].some((values) =>
+        [mesh.worldMatrix, bounds].some((values) =>
             values.some((value) => !Number.isFinite(value)),
         )
     )
@@ -116,7 +91,6 @@ export function packageMeshSetup(
     const result: GltfMeshSetup = {
         world: packer.float32(mesh.worldMatrix, 4),
         bounds: packer.float32(bounds, 3),
-        worldBounds: packer.float32(world, 3),
         topology: primitiveTopology,
         clockwise: primitive?.frontFace === "cw",
         visible: mesh.visible !== false,
@@ -145,16 +119,13 @@ export function readMeshSetup(
 ): GltfMeshSetup {
     const setup = asObject(value);
     const world = asIndex(setup?.world),
-        bounds = asIndex(setup?.bounds),
-        worldBounds = asIndex(setup?.worldBounds);
+        bounds = asIndex(setup?.bounds);
     if (
         !setup ||
         world === undefined ||
         world >= accessorCount ||
         bounds === undefined ||
         bounds >= accessorCount ||
-        worldBounds === undefined ||
-        worldBounds >= accessorCount ||
         typeof setup.clockwise !== "boolean" ||
         typeof setup.visible !== "boolean"
     )
@@ -162,7 +133,6 @@ export function readMeshSetup(
     const result: GltfMeshSetup = {
         world,
         bounds,
-        worldBounds,
         topology: topology(setup.topology),
         clockwise: setup.clockwise,
         visible: setup.visible,

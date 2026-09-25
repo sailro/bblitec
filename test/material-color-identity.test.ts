@@ -164,8 +164,7 @@ test("compiled material colors retain source identity, double width, fallback an
         .join("\n");
     const legacy = cppFunction(
         compileSource(`import {createEngine,createStandardMaterial} from "@babylonjs/lite";
-        async function main(){const engine=await createEngine({});const material=createStandardMaterial();
-        material.diffuseColor={r:.2,g:.3,b:.4};
+        async function main(){const engine=await createEngine({});
         const channels:[number,number,number]=[.2,.3,.4];
         const tupleMaterial=createStandardMaterial();tupleMaterial.diffuseColor=channels;}`)
             .cpp,
@@ -174,14 +173,9 @@ test("compiled material colors retain source identity, double width, fallback an
         .replace("int main(", "int legacy_source_main(")
         .replace(
             "return 0;",
-            `v_engine.meshes.emplace_back(); v_engine.meshes[0].material = v_material;
-            v_engine.meshes.emplace_back(); v_engine.meshes[1].material = v_tupleMaterial;
+            `v_engine.meshes.emplace_back(); v_engine.meshes[0].material = v_tupleMaterial;
             bbl::Scene scene; scene.engine=&v_engine; scene.meshes.push_back(bbl::MeshHandle{0});
-            scene.meshes.push_back(bbl::MeshHandle{1});
             bbl::register_scene(scene);
-            assert(v_engine.materials[v_material.value].diffuse_color.r == .2f);
-            assert(v_engine.materials[v_material.value].diffuse_color.g == .3f);
-            assert(v_engine.materials[v_material.value].diffuse_color.b == .4f);
             assert(v_engine.materials[v_tupleMaterial.value].diffuse_color.r == .2f);
             assert(v_engine.materials[v_tupleMaterial.value].diffuse_color.g == .3f);
             assert(v_engine.materials[v_tupleMaterial.value].diffuse_color.b == .4f);
@@ -248,12 +242,10 @@ int main() {
     execFileSync(executable, [], { stdio: "pipe" });
 });
 
-test("numeric material reads refuse co-reached legacy color objects in either source order", () => {
+test("numeric material reads refuse a co-reached tuple color producer in either source order", () => {
     for (const statements of [
-        `const p=createPbrMaterial({baseColorFactor:{r:1,g:1,b:1,a:1}}); color(p);`,
-        `const p=createPbrMaterial({}); color(p); createPbrMaterial({baseColorFactor:{r:1,g:1,b:1,a:1}});`,
-        `const p=createStandardMaterial(); p.diffuseColor={r:1,g:1,b:1}; color(p);`,
         `const p=createStandardMaterial(); function channels():[number,number,number]{return [.1,.2,.3];}p.diffuseColor=channels();color(p);`,
+        `const p=createStandardMaterial(); color(p); function channels():[number,number,number]{return [.1,.2,.3];}p.diffuseColor=channels();`,
     ]) {
         assert.throws(
             () =>
@@ -264,6 +256,56 @@ test("numeric material reads refuse co-reached legacy color objects in either so
             /requires retained numeric-array producers/,
         );
     }
+});
+
+test("an object colour is admitted only where the position's type is an object", () => {
+    const prefix = `import {createEngine,createPbrMaterial,createStandardMaterial,createSceneContext,createHemisphericLight,setPbrEmissive,setPbrUnlit,setShadowOnly,setFog,registerScene} from "@babylonjs/lite";
+        async function main(){const engine=await createEngine({});const scene=createSceneContext(engine);`;
+    const rgba =
+        /This colour is the pin's \[r, g, b, a\] number tuple; a \{ r, g, b, a \} object is not the pinned API/;
+    const rgb =
+        /This colour is the pin's \[r, g, b\] number tuple; a \{ r, g, b \} object is not the pinned API/;
+    for (const [statements, refusal] of [
+        [`createPbrMaterial({baseColorFactor:{r:1,g:1,b:1,a:1}});`, rgba],
+        [
+            `const c={r:1,g:1,b:1,a:1};createPbrMaterial({baseColorFactor:c});`,
+            rgba,
+        ],
+        [`const p=createStandardMaterial();p.diffuseColor={r:1,g:1,b:1};`, rgb],
+        [
+            `const p=createStandardMaterial();registerScene(scene);p.diffuseColor={r:.2,g:.4,b:.6};`,
+            rgb,
+        ],
+        [
+            `const p=createStandardMaterial();p.emissiveColor={r:1,g:1,b:1};`,
+            rgb,
+        ],
+        [
+            `const light=createHemisphericLight();light.groundColor={r:1,g:1,b:1};`,
+            rgb,
+        ],
+        [`setPbrEmissive(createPbrMaterial({}),{r:1,g:0,b:0});`, rgb],
+        [`setPbrUnlit(createPbrMaterial({}),{r:1,g:0,b:0});`, rgb],
+        [`setShadowOnly(createPbrMaterial({}),{color:{r:1,g:0,b:0}});`, rgb],
+        [
+            `setFog(scene,{mode:1,density:.1,start:0,end:1,color:{r:1,g:1,b:1}});`,
+            rgb,
+        ],
+    ] as const) {
+        assert.throws(
+            () => compileSource(`${prefix}${statements}}`),
+            refusal,
+            statements,
+        );
+    }
+    assert.doesNotThrow(() =>
+        compileSource(
+            `${prefix}setPbrEmissive(createPbrMaterial({baseColorFactor:[1,1,1,1]}),[1,0,0]);` +
+                `setFog(scene,{mode:1,density:.1,start:0,end:1,color:[1,1,1]});` +
+                // The pin types a clear colour as a GPUColorDict object.
+                `scene.clearColor={r:0,g:0,b:0,a:1};}`,
+        ),
+    );
 });
 
 test("material-color transport refuses unsupported widths and later material-group snapshots", () => {
@@ -317,7 +359,7 @@ test("material-color transport refuses unsupported widths and later material-gro
     assert.doesNotThrow(() =>
         compileSource(
             writeOnly +
-                `registerScene(scene);p.diffuseColor={r:.2,g:.4,b:.6};}`,
+                `const channels:[number,number,number]=[.2,.4,.6];registerScene(scene);p.diffuseColor=channels;}`,
         ),
     );
     assert.doesNotThrow(() =>

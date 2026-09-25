@@ -17,7 +17,6 @@ import {
     pinnedStandardMaterialFeatures,
     pinnedStandardSupportBlock,
     pinnedStandardVariantManifestEntry,
-    registeredStandardExtensionIds,
 } from "../src/pinned-standard-variants.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -31,17 +30,25 @@ test("registers the pin's nine Standard material extensions", async () => {
     // registered unconditionally beside the eight `_detect` ones.
     // `stdSkeletonExt` is deliberately absent: upstream registers it only
     // through enableStandardSkeleton(), which no reached scene calls.
-    assert.deepEqual(await registeredStandardExtensionIds(), [
-        "0-std-uv-transform",
-        "normal-map",
-        "std-ambient",
-        "std-cube-reflection",
-        "std-emissive",
-        "std-lightmap",
-        "std-opacity",
-        "std-reflection",
-        "std-specular",
-    ]);
+    // Deriving any material's features registers them first.
+    await pinnedStandardMaterialFeatures({});
+    const flags = await importPinnedModule<{
+        _getStdExtsSorted: () => ReadonlyArray<{ _id: string }>;
+    }>("material/standard/standard-flags.js");
+    assert.deepEqual(
+        flags._getStdExtsSorted().map((ext) => ext._id),
+        [
+            "0-std-uv-transform",
+            "normal-map",
+            "std-ambient",
+            "std-cube-reflection",
+            "std-emissive",
+            "std-lightmap",
+            "std-opacity",
+            "std-reflection",
+            "std-specular",
+        ],
+    );
 });
 
 test("derives feature bits through the pin's own detect", async () => {
@@ -324,6 +331,29 @@ test("the geometry MRT arm is the pin's own rewrite", async () => {
         ),
         /Unknown geometry texture type 'NOT_A_TYPE'/,
     );
+});
+
+test("a skinned Standard mesh refuses a LINEAR_VELOCITY geometry task", async () => {
+    const meshBits = await importPinnedModule<{ MSH_HAS_SKELETON: number }>(
+        "material/mesh-features.js",
+    );
+    const skinned = (attachments: string[]) =>
+        composePinnedStandardVariant(
+            {},
+            {
+                meshFeatures: meshBits.MSH_HAS_SKELETON,
+                skeleton: true,
+                geometry: { attachments, emitColor: false },
+            },
+        );
+    // The composer's skeletal velocity arm samples the previous frame's
+    // bone texture, which neither backend keeps.
+    await assert.rejects(
+        skinned(["LINEAR_VELOCITY"]),
+        /previous frame's bone texture/,
+    );
+    const normal = await skinned(["WORLD_NORMAL"]);
+    assert.doesNotMatch(normal.vertexWgsl, /previousBoneSampler/);
 });
 
 test("composition is deterministic", async () => {

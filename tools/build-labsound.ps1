@@ -90,30 +90,14 @@ $output = Resolve-RepositoryPath $OutputDirectory
 $CMake = Find-CMake $CMake
 
 New-Item -ItemType Directory -Path $workspacePath, $output -Force | Out-Null
-Sync-PinnedCheckout $source $pin.repository $pin.commit "LabSound"
+$coreOnlyBuild = $CoreOnly -or ($minimalBuild -and -not $EnableCodecs)
+$variants = @(if ($coreOnlyBuild) { "core-only" })
+Sync-PatchedCheckout $source $pin.repository $pin.commit "LabSound" labsound $variants $CMake | Out-Null
 Sync-PinnedCheckout `
     $nyquist `
     $pin.dependencies.libnyquist.repository `
     $pin.dependencies.libnyquist.commit `
     "libnyquist"
-
-$coreOnlyBuild = $CoreOnly -or ($minimalBuild -and -not $EnableCodecs)
-$decoderPatch = Join-Path $root "tools\patches\labsound-lazy-decoders.patch"
-git -C $source apply --check $decoderPatch
-if ($LASTEXITCODE -ne 0) { throw "The maintained LabSound decoder patch no longer applies to the pin." }
-git -C $source apply $decoderPatch
-if ($LASTEXITCODE -ne 0) { throw "Unable to apply the maintained LabSound decoder patch." }
-if ($coreOnlyBuild) {
-    $corePatch = Join-Path $root "tools\patches\labsound-core-only.patch"
-    git -C $source apply --check $corePatch
-    if ($LASTEXITCODE -ne 0) {
-        throw "The maintained LabSound core-only patch no longer applies to the pin."
-    }
-    git -C $source apply $corePatch
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to apply the maintained LabSound core-only patch."
-    }
-}
 
 $configureArguments = @(
     "-S", $source,
@@ -190,13 +174,12 @@ if (-not $coreOnlyBuild) {
 
 $includeOut = Join-Path $output "include"
 $libOut = Join-Path $output "lib"
-New-Item -ItemType Directory -Path $includeOut, $libOut -Force | Out-Null
-Copy-Item -Recurse -Force (Join-Path $source "include\LabSound") $includeOut
+Copy-ArtifactItem (Join-Path $source "include\LabSound") (Join-Path $includeOut "LabSound")
 foreach ($name in $libraries.Keys) {
-    Copy-Item -Force $libraries[$name] (Join-Path $libOut $name)
+    Copy-ArtifactItem $libraries[$name] (Join-Path $libOut $name)
 }
-Copy-Item -Force (Join-Path $source "LICENSE") (Join-Path $output "LabSound-LICENSE.txt")
-Copy-Item -Force (Join-Path $source "COPYING") (Join-Path $output "LabSound-COPYING.txt")
+Copy-ArtifactItem (Join-Path $source "LICENSE") (Join-Path $output "LabSound-LICENSE.txt")
+Copy-ArtifactItem (Join-Path $source "COPYING") (Join-Path $output "LabSound-COPYING.txt")
 if ($coreOnlyBuild) {
     foreach ($obsolete in @(
         (Join-Path $libOut $nyquistName),
@@ -206,15 +189,21 @@ if ($coreOnlyBuild) {
         Remove-Item -LiteralPath $obsolete -Force -ErrorAction SilentlyContinue
     }
 } else {
-    Copy-Item -LiteralPath (Join-Path $nyquist "include\libnyquist") -Destination $includeOut -Recurse -Force
-    Copy-Item -Force (Join-Path $nyquist "LICENSE") (Join-Path $output "libnyquist-LICENSE.txt")
-    Copy-Item -Force (Join-Path $nyquist "COPYING") (Join-Path $output "libnyquist-COPYING.txt")
+    Copy-ArtifactItem (Join-Path $nyquist "include\libnyquist") (Join-Path $includeOut "libnyquist")
+    Copy-ArtifactItem (Join-Path $nyquist "LICENSE") (Join-Path $output "libnyquist-LICENSE.txt")
+    Copy-ArtifactItem (Join-Path $nyquist "COPYING") (Join-Path $output "libnyquist-COPYING.txt")
 }
 
 $minSizeSetting = if ($minimalBuild) { "ON" } else { "OFF" }
 $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
 $coreOnlySetting = if ($coreOnlyBuild) { "ON" } else { "OFF" }
-"set(BBLITE_LABSOUND_STATIC_RUNTIME $staticRuntimeSetting)`nset(BBLITE_LABSOUND_MINSIZE $minSizeSetting)`nset(BBLITE_LABSOUND_CORE_ONLY $coreOnlySetting)`n" |
-    Set-Content (Join-Path $output "bblite-labsound-features.cmake") -Encoding Ascii
+# Native configuration and development setup compare the patch record with the
+# pin and the manifest (native/patch-identity.cmake).
+$record = @(
+    "set(BBLITE_LABSOUND_STATIC_RUNTIME $staticRuntimeSetting)"
+    "set(BBLITE_LABSOUND_MINSIZE $minSizeSetting)"
+    "set(BBLITE_LABSOUND_CORE_ONLY $coreOnlySetting)"
+) + @(Get-PatchRecord labsound $variants $CMake)
+Set-ArtifactContent (Join-Path $output "bblite-labsound-features.cmake") (($record -join "`n") + "`n")
 
 Write-Host "LabSound installed to $output (commit $($pin.commit))."

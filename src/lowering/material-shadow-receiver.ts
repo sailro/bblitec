@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
@@ -47,7 +48,7 @@ export function materialShadowReceiverCpp(context: LoweringContext): string {
         [
             "scene.lights[i]!.shadowGenerator",
             {
-                cpp: "(handle_at(engine.lights, scene.lights[static_cast<std::size_t>(i)]).shadow_generator.value != invalid_handle)",
+                cpp: `(${recordAt("engine.lights", "scene.lights[static_cast<std::size_t>(i)]")}.shadow_generator.value != invalid_handle)`,
                 type: "bool",
             },
         ],

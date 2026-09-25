@@ -1,34 +1,7 @@
-# Builds the pinned RmlUi into artifacts/tools/rmlui.
-#
-# Same shape as build-labsound.ps1, build-tint.ps1 and build-dawn.ps1, and
-# for the same reason: vcpkg's rmlui port is neither at the revision the
-# backend-neutral UI recorder was validated against nor patched with the
-# maintained native/patches/rmlui-*.patch files, so the pin lives in
-# upstream/rmlui.json and the library is built once from it instead of
-# being re-fetched and re-built inside every UI scene's build tree.
-#
-# Three deliberate departures from RmlUi's own default build:
-#
-#   * **Static core only.** Static libraries, no samples, no Lua bindings,
-#     no precompiled headers, no RmlUi-injected compiler flags.
-#   * **FreeType and LunaSVG come from the consuming triplet.** rmlui_core
-#     records both targets as link interfaces, and every consuming configure
-#     resolves them from its own vcpkg install (the `ui` manifest feature --
-#     dynamic development triplet or the x64-windows-static mini triplet).
-#     This build compiles against that same prefix; -FreetypeRoot retains its
-#     historical name and defaults to the shared development install.
-#   * **Backends/RmlUi_Platform_SDL.{h,cpp} are installed beside the
-#     package.** RmlUi builds its Backends/ directory only under samples
-#     and tests and installs none of it, while the scene build compiles
-#     that translation unit directly (the file includes nothing else from
-#     Backends/). Carrying the pair keeps the artifact self-contained and
-#     the .cache checkout disposable.
-#
-# The artifact records what it was built from -- the pinned commit and
-# every patch with its SHA-256 -- in bblite-rmlui-features.cmake, and
-# native/CMakeLists.txt refuses an artifact whose record differs from the
-# current pin and patch directory: a stale artifact would ship UI
-# behaviour the development validation never saw.
+# Builds the pinned RmlUi (upstream/rmlui.json says why it is not vcpkg's
+# port) with its maintained patches into artifacts/tools/rmlui: static core
+# only, FreeType/LunaSVG from the consuming vcpkg prefix (-FreetypeRoot), and
+# the SDL platform backend RmlUi never installs carried beside the package.
 
 param(
     [string]$Workspace = "",
@@ -39,9 +12,6 @@ param(
     [ValidateSet('', 'iphoneos', 'iphonesimulator')][string]$IosSdk = '',
     [ValidateSet('', 'x86_64', 'arm64')][string]$IosArchitecture = '',
     [string]$FreetypeRoot = "",
-    # Only the -StaticRuntime artifact needs vcpkg, to install the
-    # static-triplet FreeType headers it compiles against (see below).
-    [string]$Vcpkg = $(if ($env:VCPKG_ROOT) { Join-Path $env:VCPKG_ROOT "vcpkg.exe" } else { "" }),
     [switch]$StaticRuntime,
     [switch]$MinSize,
     [switch]$EnableSvg,
@@ -51,7 +21,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 Import-Module (Join-Path $PSScriptRoot "bblite-tools.psm1") -Force
-Import-Module (Join-Path $PSScriptRoot "package-output.psm1") -Force
 $root = Get-RepositoryRoot
 if ($AndroidAbi -and ($StaticRuntime -or $MinSize -or $MacArchitecture)) { throw 'Android cannot be combined with desktop target options.' }
 if ($AndroidAbi -and -not $FreetypeRoot) { throw 'Android requires -FreetypeRoot at the matching Android vcpkg triplet.' }
@@ -89,54 +58,30 @@ if (-not $OutputDirectory) {
     if ($IosSdk) { $OutputDirectory += "-ios-$IosSdk-$IosArchitecture" }
 }
 if (-not $FreetypeRoot) {
-    $installedRoot = if ($env:BBLITE_VCPKG_INSTALLED_ROOT) {
-        $env:BBLITE_VCPKG_INSTALLED_ROOT
+    # One of the keyed vcpkg installs src/vcpkg-install.ts reconciles. The
+    # headers decide the linkage, not the consumer: vcpkg's dynamic freetype
+    # install patches public-macros.h to spell every FT_EXPORT as
+    # __declspec(dllimport), so an archive compiled against the development
+    # (x64-windows) headers references __imp_FT_* and can never link into the
+    # static shipping executable. The static artifact therefore compiles
+    # against a static-triplet install of the same manifest; the ui feature
+    # is what brings freetype in.
+    $hostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+    $triplet = if ($StaticRuntime) { "x64-windows-static" } elseif ($IsWindows) { "x64-windows" } elseif ($IsMacOS) { "$hostArch-osx" } else { "$hostArch-linux" }
+    $installArguments = if ($StaticRuntime) {
+        @("install", "--name", "shipping-static", "--triplet", $triplet,
+            "--features", $(if ($rmlSvgEnabled) { "ui,ui-svg" } else { "ui" }))
     } else {
-        Join-Path $root "artifacts\vcpkg-installed"
+        @("development")
     }
-    if ($StaticRuntime) {
-        # The headers decide the linkage, not the consumer: vcpkg's dynamic
-        # freetype install patches public-macros.h to spell every FT_EXPORT
-        # as __declspec(dllimport), so an archive compiled against the
-        # development (x64-windows) headers references __imp_FT_* and can
-        # never link into the static shipping executable. The static
-        # artifact therefore compiles against a static-triplet install of
-        # the same manifest, made once here and reused; the ui feature is
-        # what brings freetype in.
-        $staticRoot = Join-Path $installedRoot "shipping-static"
-        $FreetypeRoot = Join-Path $staticRoot "x64-windows-static"
-        $headers = Join-Path $FreetypeRoot "include\ft2build.h"
-        $manifestMoved = (Test-Path $headers) -and (
-            @("native\vcpkg.json", "native\vcpkg-configuration.json") |
-                Where-Object {
-                    (Get-Item (Join-Path $root $_)).LastWriteTimeUtc -gt
-                        (Get-Item $headers).LastWriteTimeUtc
-                }
-        ).Count -gt 0
-        $svgMissing = $rmlSvgEnabled -and -not (Test-Path (
-            Join-Path $FreetypeRoot "share\lunasvg\lunasvgConfig.cmake"))
-        if (-not (Test-Path $headers) -or $manifestMoved -or $svgMissing) {
-            if (-not $Vcpkg -or -not (Test-Path $Vcpkg)) {
-                throw "vcpkg was not found for the static FreeType install. Set VCPKG_ROOT (or pass -Vcpkg), or pass -FreetypeRoot at an x64-windows-static vcpkg install carrying freetype."
-            }
-            $vcpkgArguments = @(
-                "install"
-                "--x-manifest-root=$(Join-Path $root 'native')"
-                "--x-install-root=$staticRoot"
-                "--triplet=x64-windows-static"
-                "--x-feature=ui"
-            )
-            if ($rmlSvgEnabled) { $vcpkgArguments += "--x-feature=ui-svg" }
-            & $Vcpkg @vcpkgArguments
-            if ($LASTEXITCODE -ne 0) {
-                throw "vcpkg could not install the static-triplet manifest for the RmlUi static artifact."
-            }
-        }
-    } else {
-        $hostArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
-        $triplet = if ($IsWindows) { "x64-windows" } elseif ($IsMacOS) { "$hostArch-osx" } else { "$hostArch-linux" }
-        $FreetypeRoot = Join-Path $installedRoot "development-full/$triplet"
+    Push-Location $root
+    try {
+        $installed = @(& node (Join-Path $root "dist/src/vcpkg-install.js") @installArguments)
+        if ($LASTEXITCODE -ne 0) { throw "The vcpkg install for the RmlUi artifact failed ($LASTEXITCODE)." }
+    } finally {
+        Pop-Location
     }
+    $FreetypeRoot = Join-Path $installed[-1] $triplet
 }
 if (-not (Test-Path (Join-Path $FreetypeRoot "include\ft2build.h"))) {
     throw "FreeType headers were not found at $FreetypeRoot. Run 'npm run dev:setup' (which installs the development vcpkg manifest), or pass -FreetypeRoot at a vcpkg-installed tree carrying freetype."
@@ -163,40 +108,8 @@ $build = Join-Path $workspacePath "build"
 $output = Resolve-RepositoryPath $OutputDirectory
 $CMake = Find-CMake $CMake
 
-# The maintained patches are the files under native/patches, and the pin
-# names the same set: a patch added to one place and not the other is a
-# refusal here, not a silently different library. Name order is application
-# order; background clipping extends the earlier box-model patch.
-$patchDirectory = Join-Path $root "native\patches"
-$patches = @(Get-ChildItem $patchDirectory -Filter "rmlui-*.patch" -File | Sort-Object Name)
-if ($patches.Count -eq 0) {
-    throw "No rmlui-*.patch files were found under $patchDirectory."
-}
-$pinnedPatches = @($pin.patches | Sort-Object)
-$directoryPatches = @($patches | ForEach-Object { $_.Name })
-if (($pinnedPatches -join ";") -ne ($directoryPatches -join ";")) {
-    throw (
-        "upstream/rmlui.json names the patches [$($pinnedPatches -join ', ')] " +
-        "but native/patches holds [$($directoryPatches -join ', ')]; " +
-        "bring the two in step before building."
-    )
-}
-
 New-Item -ItemType Directory -Path $workspacePath, $output -Force | Out-Null
-Sync-PinnedCheckout $source $pin.repository $pin.commit "RmlUi"
-
-# The maintained patch-application script: applies each pinned patch, or
-# verifies it is already present, and fails on anything else. docs/ui.md
-# states what each patch corrects and the measurement behind it.
-foreach ($patch in $patches) {
-    & $CMake `
-        "-DRMLUI_SOURCE_DIR=$source" `
-        "-DRMLUI_PATCH=$($patch.FullName)" `
-        -P (Join-Path $root "native\apply-rmlui-patch.cmake")
-    if ($LASTEXITCODE -ne 0) {
-        throw "Unable to apply the pinned RmlUi patch $($patch.Name)."
-    }
-}
+$patches = @(Sync-PatchedCheckout $source $pin.repository $pin.commit "RmlUi" rmlui @() $CMake)
 
 $configureArguments = @(
     "-S", $source,
@@ -257,7 +170,7 @@ if (Test-Path $cachePath) {
         $cachedGenerator -ne "Ninja"
     }
     if (-not $generatorMatches) {
-        Assert-PackageChild $workspacePath $build
+        Assert-ContainedPath $workspacePath $build
         Remove-Item -LiteralPath $build -Recurse -Force
     }
 }
@@ -289,36 +202,25 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $backendsOut = Join-Path $output "Backends"
-New-Item -ItemType Directory -Path $backendsOut -Force | Out-Null
 foreach ($platformFile in @(
     "RmlUi_Platform_SDL.cpp",
     "RmlUi_Platform_SDL.h"
 )) {
-    Copy-Item -Force (Join-Path $source "Backends\$platformFile") $backendsOut
+    Copy-ArtifactItem (Join-Path $source "Backends\$platformFile") (Join-Path $backendsOut $platformFile)
 }
 # Both PALs include the SDL_GPU renderer backend's precompiled shader
 # header from the Backends tree; carry that directory with the pair.
-Copy-Item -Recurse -Force (Join-Path $source "Backends\RmlUi_SDL_GPU") `
-    (Join-Path $backendsOut "RmlUi_SDL_GPU")
-Copy-Item -Force (Join-Path $source "LICENSE.txt") (Join-Path $output "RmlUi-LICENSE.txt")
+Copy-ArtifactItem (Join-Path $source "Backends\RmlUi_SDL_GPU") (Join-Path $backendsOut "RmlUi_SDL_GPU")
+Copy-ArtifactItem (Join-Path $source "LICENSE.txt") (Join-Path $output "RmlUi-LICENSE.txt")
 
 # Native configuration reads this record and refuses the artifact when the
-# pin or a patch moved since it was built. The patch set is "name=sha256"
-# per file, in name order, as CMake recomputes it over native/patches.
+# pin or a patch moved since it was built (native/patch-identity.cmake).
 $minSizeSetting = if ($minimalBuild) { "ON" } else { "OFF" }
 $staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
-$patchRecord = @(
-    $patches | ForEach-Object {
-        $digest = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$($_.Name)=$digest"
-    }
-) -join ";"
-@(
+$record = @(
     "set(BBLITE_RMLUI_STATIC_RUNTIME $staticRuntimeSetting)"
     "set(BBLITE_RMLUI_MINSIZE $minSizeSetting)"
-    "set(BBLITE_RMLUI_COMMIT `"$($pin.commit)`")"
-    "set(BBLITE_RMLUI_PATCHES `"$patchRecord`")"
-) -join "`n" |
-    Set-Content (Join-Path $output "bblite-rmlui-features.cmake") -Encoding Ascii
+) + @(Get-PatchRecord rmlui @() $CMake)
+Set-ArtifactContent (Join-Path $output "bblite-rmlui-features.cmake") (($record -join "`n") + "`n")
 
 Write-Host "RmlUi installed to $output (commit $($pin.commit), $($patches.Count) patches)."

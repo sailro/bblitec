@@ -29,6 +29,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCallsWithHypot } from "./pinned-operators.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const CAMERA = "src/camera/geospatial-camera.ts";
 const LIMITS = "src/camera/geospatial-limits.ts";
@@ -819,7 +820,7 @@ void set_geospatial_orientation(
     if (handle.value >= engine.cameras.size()) {
         throw std::runtime_error("Invalid camera handle.");
     }
-    CameraRecord& camera = engine.cameras[handle.value];
+    CameraRecord& camera = ${recordAt("engine.cameras", "handle")};
 ${lowered.join("\n")}
     upstream::geospatial_apply_orientation(
         camera,

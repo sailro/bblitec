@@ -5,6 +5,7 @@ import test from "node:test";
 import { developmentTriplet } from "../src/build-options.js";
 import { discoverDevelopmentTools } from "../src/development-tools.js";
 import {
+    developmentVcpkgRoot,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -89,10 +90,7 @@ test("native numeric strings, concatenation and JSON match JavaScript across bin
             "test/fixtures/number-format-check.cpp",
         ]);
     } else {
-        const dependencies = resolve(
-            "artifacts/vcpkg-installed/development-full",
-            developmentTriplet(),
-        );
+        const dependencies = developmentVcpkgRoot(developmentTriplet());
         execFileSync(
             unixCompiler!,
             [

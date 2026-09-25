@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { test } from "node:test";
-import { writeJsonRecord } from "../src/validation-resume.js";
+import { writeJsonRecord } from "../src/tooling/records.js";
 
 test(
     "JSON record replacement tolerates a transient Windows reader",

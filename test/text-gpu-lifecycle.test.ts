@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
+import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
 import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
 import {
@@ -17,8 +18,10 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { doctoredContext } from "./doctored-store.js";
+import { webgpuFlagNamespaces } from "../src/webgpu-flags.js";
 
-// Real pinned function bodies with only device resources and pipeline resolution
+// Real pinned function bodies with only the device and pipeline resolution
 // replaced by recorders. No fixture reimplementation of resource state decisions.
 function pinnedFunctions(context: LoweringContext): string {
     const module = (path: string, names: string[]) =>
@@ -31,17 +34,6 @@ function pinnedFunctions(context: LoweringContext): string {
             )
             .join("\n");
     const renderable = "src/text/text-renderable.ts";
-    const update = context.functionDeclaration(
-        renderable,
-        "updateTextRenderable",
-    ).declaration;
-    const body = update.body!.statements;
-    const end = body.findIndex(
-        (s) =>
-            ts.isVariableStatement(s) &&
-            s.declarationList.declarations[0]?.name.getText() === "camera",
-    );
-    assert.ok(end > 0);
     return ts.transpileModule(
         [
             module("src/text/_gpu/text-style-gpu.ts", [
@@ -56,17 +48,18 @@ function pinnedFunctions(context: LoweringContext): string {
                 "uploadAll",
                 "ensureSharedAtlasGpu",
             ]),
+            module("src/resource/buffer-alignment.ts", ["align"]),
+            module("src/resource/empty-uniform-buffer.ts", [
+                "createEmptyUniformBuffer",
+            ]),
             module(renderable, [
                 "targetSig",
                 "ensureGpu",
                 "ensureInstanceCapacity",
+                "updateTextRenderable",
                 "drawTextRenderable",
             ]),
-            `function updateResources(r,engine,gpu,bindGroupLayout){${body
-                .slice(0, end)
-                .map((s) => s.getText())
-                .join("\n")}}`,
-            "return {ensureGpu,updateResources,drawTextRenderable,targetSig};",
+            "return {ensureGpu,updateTextRenderable,drawTextRenderable,targetSig};",
         ].join("\n"),
         { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText;
@@ -112,15 +105,22 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     }
     const context = new LoweringContext(),
         directory = resolve("artifacts/test-text-gpu-lifecycle");
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(
-        resolve(directory, "upstream_text.hpp"),
-        new TextLowerer(context).header(),
-    );
-    writeFileSync(
-        resolve(directory, "upstream_text_gpu.hpp"),
-        new TextGpuLowerer(context).header(),
-    );
+    mkdirSync(resolve(directory, "bblite"), { recursive: true });
+    for (const [name, header] of [
+        ["upstream_text_records", textRecordsHeader(context)],
+        ["upstream_text", new TextLowerer(context).header()],
+        ["upstream_text_gpu", new TextGpuLowerer(context).header()],
+        [
+            "upstream_text_renderable",
+            new TextLowerer(context).renderableHeader(),
+        ],
+    ] as const) {
+        writeFileSync(resolve(directory, "bblite", `${name}.hpp`), header);
+        writeFileSync(
+            resolve(directory, `${name}.hpp`),
+            `#include <bblite/${name}.hpp>\n`,
+        );
+    }
     const probe =
         "let total=0;for(let i=0;i<4;i++){if(i===1)continue;retain(i);total+=i;}retain(total);";
     writeFileSync(
@@ -301,9 +301,11 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     interface RenderableObservation {
         _data: typeof data;
         _gpu: GpuObservation | null;
+        opacity: number;
     }
-    const r: RenderableObservation = { _data: data, _gpu: null },
-        second: RenderableObservation = { _data: data, _gpu: null };
+    // `createTextRenderable`'s own opacity default.
+    const r: RenderableObservation = { _data: data, _gpu: null, opacity: 1 },
+        second: RenderableObservation = { _data: data, _gpu: null, opacity: 1 };
     const pipelines = {
             _pipeline: { id: 1001 },
             _variantPipeline: { id: 1002 },
@@ -322,14 +324,19 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     const instantiate = createJavaScriptFunction(
         "GPUBufferUsage",
         "GPUTextureUsage",
+        "BU",
         "TEXT_INSTANCE_BYTES",
         "TEXT_STYLE_BYTES",
         "TEXT_UBO_BYTES",
         "GLYPH_METADATA_BYTES",
         "TEX_WIDTH",
         "BYTES_PER_ROW",
-        "createEmptyUniformBuffer",
         "getOrCreateTextPipeline",
+        "getEffectiveAspectRatio",
+        "_cameraChangeKey",
+        "getViewProjectionMatrix",
+        "multiplyMat4IntoBuffer",
+        "_mvpScratch",
         pinnedFunctions(context),
     );
     interface PinnedFunctions {
@@ -341,12 +348,14 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
             samples: number,
             depth: string,
             depthWrite: boolean,
+            depthCompare: string,
         ): GpuObservation;
-        updateResources(
+        updateTextRenderable(
             r: RenderableObservation,
             owner: typeof engine,
             gpu: GpuObservation,
             layout: { id: number },
+            context: { targetWidth: number; targetHeight: number },
         ): void;
         drawTextRenderable(
             gpu: GpuObservation,
@@ -356,18 +365,25 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         ): number;
         targetSig(output: Partial<typeof target>): string;
     }
+    const unused = () => {
+        throw new Error("the fixture's context has no camera");
+    };
     const pin = instantiate(
-        { STORAGE: 1, COPY_DST: 2, VERTEX: 4 },
-        { TEXTURE_BINDING: 1, COPY_DST: 2, COPY_SRC: 4 },
+        webgpuFlagNamespaces.GPUBufferUsage,
+        webgpuFlagNamespaces.GPUTextureUsage,
+        webgpuFlagNamespaces.GPUBufferUsage,
         constants("src/text/text-data.ts", "TEXT_INSTANCE_BYTES"),
         constants("src/text/text-data.ts", "TEXT_STYLE_BYTES"),
         constants("src/text/text-renderable.ts", "TEXT_UBO_BYTES"),
         constants("src/text/glyph-storage.ts", "GLYPH_METADATA_FLOATS") * 4,
         constants("src/text/_gpu/text-textures.ts", "TEX_WIDTH"),
         constants("src/text/_gpu/text-textures.ts", "BYTES_PER_ROW"),
-        (e: typeof engine, size: number, label: string) =>
-            e._device.createBuffer({ label, size }),
         () => pipelines,
+        unused,
+        unused,
+        unused,
+        unused,
+        new Float32Array(16),
     ) as PinnedFunctions;
     let gpu!: GpuObservation;
     const ensure = () =>
@@ -379,8 +395,13 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
             4,
             target._depthStencilFormat,
             true,
+            "greater-equal",
         ));
-    const update = () => pin.updateResources(r, engine, gpu, layout);
+    const update = () =>
+        pin.updateTextRenderable(r, engine, gpu, layout, {
+            targetWidth: 1280,
+            targetHeight: 720,
+        });
     const pass = {
         setVertexBuffer: (slot: number, buffer: { id: number }) =>
             event("vertex", slot, buffer.id),
@@ -427,7 +448,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         getAlphaToCoverage(this: void, target: object): boolean;
     }>("render/alpha-to-coverage.js");
     act(
-        'ops.event("alpha",int(get_text_alpha_to_coverage(*r)),int(get_text_alpha_to_coverage(*second)));',
+        'ops.event("alpha",int(get_alpha_to_coverage(r)),int(get_alpha_to_coverage(second)));',
         () =>
             event(
                 "alpha",
@@ -436,7 +457,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
             ),
     );
     act(
-        'set_text_alpha_to_coverage(*r,true);set_text_alpha_to_coverage(*r,true);ops.event("alpha",int(get_text_alpha_to_coverage(*r)),int(get_text_alpha_to_coverage(*second)));',
+        'set_alpha_to_coverage(r,true);set_alpha_to_coverage(r,true);ops.event("alpha",int(get_alpha_to_coverage(r)),int(get_alpha_to_coverage(second)));',
         () => {
             alpha.setAlphaToCoverage(r, true);
             alpha.setAlphaToCoverage(r, true);
@@ -448,7 +469,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         },
     );
     act(
-        'set_text_alpha_to_coverage(*r,false);ops.event("alpha",int(get_text_alpha_to_coverage(*r)));',
+        'set_alpha_to_coverage(r,false);ops.event("alpha",int(get_alpha_to_coverage(r)));',
         () => {
             alpha.setAlphaToCoverage(r, false);
             event("alpha", +alpha.getAlphaToCoverage(r));
@@ -470,7 +491,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     assert.equal(writes.length, firstWriteCount, "steady state has no uploads");
     const originalGroup = data._groups[0]!._bindGroup;
     act(
-        "auto second_gpu=ensure_text_gpu(*second,device,target,pipelines,ops);update_text_resources(*second,*second_gpu,pipelines.layout,ops);record();",
+        "auto second_gpu=ensure_renderable(second);update_renderable(second,second_gpu);record();",
         () => {
             const other = pin.ensureGpu(
                 second,
@@ -480,8 +501,12 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
                 4,
                 target._depthStencilFormat,
                 true,
+                "greater-equal",
             );
-            pin.updateResources(second, engine, other, layout);
+            pin.updateTextRenderable(second, engine, other, layout, {
+                targetWidth: 1280,
+                targetHeight: 720,
+            });
             record();
         },
     );
@@ -491,7 +516,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         "shared data retains original group resource identities",
     );
     act(
-        "pipelines.pipeline=named(1005);ensure();update();draw();record();",
+        "device_a->pipelines.pipeline=device_b->pipelines.pipeline=named(1005);ensure();update();draw();record();",
         () => {
             pipelines._pipeline = { id: 1005 };
             ensure();
@@ -528,7 +553,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         record();
     });
     act(
-        "data->instance_count=9;data->version=4;data->style_count=3;data->style_version=2;payload->atlases[0].curves.used_texels=4097;payload->atlases[0].bands.used_texels=4098;payload->atlases[0].metadata.count=6;payload->atlases[0].version=2;update();record();",
+        "data->instance_count=9;data->version=4;data->style_count=3;data->style_version=2;atlas->curve_texels_used=4097;atlas->band_texels_used=4098;atlas->slot_count=6;atlas->version=2;update();record();",
         () => {
             data._instanceCount = 9;
             data._version = 4;
@@ -544,7 +569,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     );
     const oldGpu = r._gpu;
     act(
-        'device=&device_b;ops.fail="create:text-instance";try{ensure();return 12;}catch(const std::runtime_error&){}if(r->gpu!=gpu)return 13;record();',
+        'surface->device=device_b;ops.fail="create:text-instance";try{ensure();return 12;}catch(const std::runtime_error&){}if(r->gpu!=gpu)return 13;record();',
         () => {
             engine._device = deviceB;
             fail = "create:text-instance";
@@ -568,7 +593,10 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
             record();
         },
     );
-    act("ops.event(text_target_key({}));", () => event(pin.targetSig({})));
+    act(
+        "ops.event(text_renderable_detail::target_sig(TextTargetSignature{}));",
+        () => event(pin.targetSig({})),
+    );
     writeFileSync(resolve(directory, "actions.hpp"), actions.join("\n"));
     const exe = resolve(directory, "check.exe");
     runNativeFixtureCompiler(native, [
@@ -577,6 +605,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         "/EHsc",
         "/W4",
         "/WX",
+        "/DBBLITE_HAS_TEXT=1",
         `/I${resolve("native/include")}`,
         `/I${directory}`,
         resolve("test/fixtures/text-gpu-lifecycle-check.cpp"),
@@ -597,7 +626,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     );
 });
 
-test("resource adapters refuse changed device shapes and leave unknown statements to the shared lowerer", () => {
+test("a changed pinned GPU statement is a changed native statement, and unknown statements stay the shared lowerer's", () => {
     assert.throws(
         () => statementProbe("retain(1);", false),
         /Unsupported pinned call 'retain'/,
@@ -610,84 +639,57 @@ test("resource adapters refuse changed device shapes and leave unknown statement
         () => statementProbe("unknownOperation(1);"),
         /Unsupported pinned call 'unknownOperation'/,
     );
-    class ChangedContext extends LoweringContext {
-        private changed: ts.SourceFile | undefined;
-        constructor(
-            private readonly path: string,
-            private readonly before: string,
-            private readonly after: string,
-        ) {
-            super();
-        }
-        override sourceFile(path: string): ts.SourceFile {
-            const source = super.sourceFile(path);
-            if (path !== this.path) return source;
-            assert.ok(source.text.includes(this.before), this.before);
-            return (this.changed ??= ts.createSourceFile(
-                path,
-                source.text.replace(this.before, this.after),
-                ts.ScriptTarget.Latest,
-                true,
-            ));
-        }
-    }
     const module = "src/text/text-renderable.ts";
-    for (const [path, before, after, reason] of [
-        [
-            module,
-            "const data = r._data;",
-            "const data = r._data, extra = sideEffect();",
-            /additional bindings/,
-        ],
+    const lowered = (path: string, before: string, after: string): string =>
+        new TextGpuLowerer(doctoredContext(path, before, after)).header();
+    // A value the model cannot type refuses where the pin declares it.
+    assert.throws(
+        () =>
+            lowered(
+                module,
+                "const data = r._data;",
+                "const data = r._data, extra = sideEffect();",
+            ),
+        /text-renderable\.ts:\d+:\d+: Pinned type 'any' is unresolved/,
+    );
+    for (const [path, before, after, native] of [
         [
             module,
             "ensureStyleGpu(device, data, gpu)",
             "ensureStyleGpu(device, r._data, gpu)",
-            /style synchronization inputs/,
+            /ensure_style_gpu\(device, r->data, /,
         ],
         [
             module,
             "{ binding: 4, resource: { buffer: gpu._styleBuf } }",
             "{ binding: 4, resource: { buffer: gpu._instanceBuf } }",
-            /resource identities and binding order/,
+            /binding = 4\.0; record_\d+\.resource = [^;]*\(\[&\] \{ bbl::TextBufferBinding record_\d+\{\}; record_\d+\.buffer = gpu->instance_buf;/,
         ],
         [
             module,
             "pass.draw(6, g._slotCount, 0, g._slotStart)",
             "pass.draw(6, g._liveCount, 0, g._slotStart)",
-            /instanced draw ranges/,
+            /pass->draw\(6\.0, g->live_count, 0\.0, g->slot_start\);/,
         ],
         [
+            // The descriptor reaches the backend as the pin builds it; the
+            // backends create rgba32float atlases and refuse any other.
             "src/text/_gpu/text-textures.ts",
             'format: "rgba32float"',
             'format: "rgba16float"',
-            /atlas texture descriptor/,
+            /\.format = "rgba16float";/,
         ],
+        [module, "cap *= 2;", "cap *= 3;", /cap \*= 3\.0;/],
     ] as const)
-        assert.throws(
-            () =>
-                new TextGpuLowerer(
-                    new ChangedContext(path, before, after),
-                ).header(),
-            reason,
-        );
-    assert.throws(
-        () =>
-            new TextLowerer(
-                new ChangedContext(
-                    "src/render/alpha-to-coverage.ts",
-                    "_enabledTargets.add(target)",
-                    "_enabledTargets.delete(target)",
-                ),
-            ).header(),
-        /enabled membership/,
-    );
-    const changed = new TextGpuLowerer(
-        new ChangedContext(module, "cap *= 2;", "cap *= 3;"),
-    ).header();
+        assert.match(lowered(path, before, after), native, after);
     assert.match(
-        changed,
-        /cap \*= 3\.0;/,
-        "numeric growth continues to come from source rather than an asserted formula",
+        new TextLowerer(
+            doctoredContext(
+                "src/render/alpha-to-coverage.ts",
+                "_enabledTargets.add(target)",
+                "_enabledTargets.delete(target)",
+            ),
+        ).header(),
+        /if \(enabled\) \{[^]*weak_delete\(/,
     );
 });

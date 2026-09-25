@@ -7,6 +7,7 @@ import {
     GAUSSIAN_SPLATTING_EXTENSION,
     GAUSSIAN_SPLAT_DOCUMENT_KEY,
     GLTF_MESH_PLAN,
+    asIndex,
     asObject,
     asRecords,
     primitiveRecords,
@@ -24,40 +25,85 @@ import {
     selectedGltfTransmission,
 } from "./gltf-transmission-plan.js";
 import { packagedFlowGraphPrograms } from "./pinned-flow-graph.js";
+import {
+    gltfFeatureModules,
+    packagedGltfLoaderFacts,
+    pinnedGltfFeatureId,
+} from "./gltf-mesh-plan.js";
+import { pinnedContextOver } from "./lowering/context.js";
 
 interface GltfSpecialization {
     asset: string;
     extensionsUsed: string[];
-    staticModules: string[];
     renderItems: RenderItemSpecialization[];
     features: {
-        animations: boolean;
-        morphTargets: boolean;
-        maxMorphTargets: number;
-        skins: boolean;
         /** Joints in the largest skin, which the palette transport bounds. */
         maxSkinJoints: number;
-        nonTrianglePrimitives: boolean;
-        /**
-         * A primitive that reaches the pipeline as a non-triangle topology --
-         * points, lines or a line strip. A triangle strip is excluded because
-         * the loader expands one into the triangle list it describes, so what
-         * ships is a triangle list; it still sets `nonTrianglePrimitives`,
-         * which is upstream's own predicate for loading the primitive feature.
-         */
-        pointOrLinePrimitives: boolean;
         animationPointerMaterials: boolean;
         /** Null until asynchronous material construction has packaged its selection. */
         transmissiveMaterial: boolean | null;
         specularReflectance: boolean;
-        extras: boolean;
         eightInfluenceSkinning: boolean;
         /** The packaged document carries converted Gaussian-splat clouds. */
         gaussianSplats: boolean;
         /** Packaging transcoded this asset's KHR_texture_basisu images. */
         compressedImages: boolean;
-        /** Null until the source feature has published its surviving graphs. */
-        interactivity: boolean | null;
+    };
+    /** Null until packaging has recorded the pinned loader's run. */
+    loader: GltfLoaderSpecialization | null;
+}
+
+/**
+ * What the pinned loader's own run over the packaged document decided, read
+ * from the record packaging wrote (`GltfMeshPlan.features` and each planned
+ * mesh's topology) rather than from its triggers restated here.
+ */
+interface GltfLoaderSpecialization {
+    animations: boolean;
+    morphTargets: boolean;
+    skins: boolean;
+    /**
+     * A mesh the primitive feature gave a topology other than the triangle
+     * list; the generated loader carries topology handling only then.
+     */
+    nonTrianglePrimitives: boolean;
+    /**
+     * A mesh that reaches the pipeline as points, lines or a line strip. A
+     * triangle strip is excluded because the generated loader expands one
+     * into the triangle list it describes.
+     */
+    pointOrLinePrimitives: boolean;
+    nodeVisibility: boolean;
+    animationPointer: boolean;
+    textureTransform: boolean;
+    gpuInstancing: boolean;
+    /** The pin's interactivity feature kept at least one graph. */
+    interactivity: boolean;
+}
+
+function gltfLoaderSpecialization(
+    document: JsonRecord,
+    store: UpstreamSourceStore,
+): GltfLoaderSpecialization {
+    const facts = packagedGltfLoaderFacts(document);
+    const context = pinnedContextOver(store);
+    const ran = (module: string): boolean =>
+        facts.features.has(pinnedGltfFeatureId(context, module));
+    return {
+        animations: ran(gltfFeatureModules.animations),
+        morphTargets: ran(gltfFeatureModules.morph),
+        skins: ran(gltfFeatureModules.skeleton),
+        nonTrianglePrimitives: facts.topologies.some(
+            (topology) => topology !== "triangle-list",
+        ),
+        pointOrLinePrimitives: facts.topologies.some(
+            (topology) => !topology.startsWith("triangle-"),
+        ),
+        nodeVisibility: ran(gltfFeatureModules.nodeVisibility),
+        animationPointer: ran(gltfFeatureModules.animationPointer),
+        textureTransform: ran(gltfFeatureModules.textureTransform),
+        gpuInstancing: ran(gltfFeatureModules.gpuInstancing),
+        interactivity: packagedFlowGraphPrograms(document).length > 0,
     };
 }
 
@@ -85,14 +131,6 @@ export interface RenderItemSpecialization {
     doubleSided: boolean;
 }
 
-// Deliberately stricter than gltf-document's asNumber: every field read
-// through this is a glTF index, and an index is a non-negative integer.
-function asNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isInteger(value) && value >= 0
-        ? value
-        : undefined;
-}
-
 function renderItemSpecializations(
     document: JsonRecord,
     selectedVariant: number | undefined,
@@ -104,7 +142,7 @@ function renderItemSpecializations(
     const result: RenderItemSpecialization[] = [];
     let nextClusterId = 1;
     nodes.forEach((node, nodeIndex) => {
-        const meshIndex = asNumber(node.mesh);
+        const meshIndex = asIndex(node.mesh);
         if (meshIndex === undefined) return;
         const mesh = meshes[meshIndex];
         if (!mesh) return;
@@ -123,16 +161,16 @@ function renderItemSpecializations(
                     ? alphaModeValue
                     : "OPAQUE";
             const attributes = asObject(primitive.attributes);
-            const indexAccessor = asNumber(primitive.indices);
-            const positionAccessor = asNumber(attributes?.POSITION);
+            const indexAccessor = asIndex(primitive.indices);
+            const positionAccessor = asIndex(attributes?.POSITION);
             const elementAccessor =
                 indexAccessor === undefined ? positionAccessor : indexAccessor;
             const elementCount =
                 elementAccessor === undefined
                     ? 0
-                    : (asNumber(accessors[elementAccessor]?.count) ?? 0);
+                    : (asIndex(accessors[elementAccessor]?.count) ?? 0);
             const triangleCount =
-                (asNumber(primitive.mode) ?? 4) === 4
+                (asIndex(primitive.mode) ?? 4) === 4
                     ? Math.floor(elementCount / 3)
                     : 0;
             const trianglesPerCluster = 128;
@@ -165,26 +203,6 @@ function renderItemSpecializations(
         });
     });
     return result;
-}
-
-function hasExtras(document: JsonRecord): boolean {
-    const collections: unknown[] = [
-        document.asset,
-        document.nodes,
-        document.materials,
-        document.animations,
-        document.meshes,
-    ];
-    return (
-        collections
-            .flatMap((value): unknown[] =>
-                Array.isArray(value) ? value : [value],
-            )
-            .some((value) => asObject(value)?.extras !== undefined) ||
-        primitiveRecords(document).some(
-            (primitive) => primitive.extras !== undefined,
-        )
-    );
 }
 
 /**
@@ -262,12 +280,12 @@ function textureImageIndex(
     document: JsonRecord,
     textureIndex: unknown,
 ): number | undefined {
-    const index = asNumber(textureIndex);
+    const index = asIndex(textureIndex);
     if (index === undefined) return undefined;
     const texture = asRecords(document.textures)[index];
     if (!texture) return index;
     const webp = asObject(asObject(texture.extensions)?.["EXT_texture_webp"]);
-    return asNumber(webp?.source) ?? asNumber(texture.source) ?? index;
+    return asIndex(webp?.source) ?? asIndex(texture.source) ?? index;
 }
 
 /**
@@ -354,7 +372,7 @@ function refuseUnsupportedGltf(
         const metallicRoughness = asObject(
             asObject(material.pbrMetallicRoughness)?.metallicRoughnessTexture,
         );
-        const texCoord = asNumber(occlusion.texCoord) ?? 0;
+        const texCoord = asIndex(occlusion.texCoord) ?? 0;
         if (texCoord > 1) {
             refuseGeneration(
                 assetName,
@@ -375,7 +393,7 @@ function refuseUnsupportedGltf(
         if (
             texCoord === 1 &&
             metallicRoughness !== undefined &&
-            asNumber(occlusion.index) === asNumber(metallicRoughness.index) &&
+            asIndex(occlusion.index) === asIndex(metallicRoughness.index) &&
             asObject(occlusion.extensions)?.["KHR_texture_transform"] ===
                 undefined
         ) {
@@ -454,8 +472,8 @@ function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
         // literal, a prefix + literal, or a string constant) and document
         // PREDICATES (arrow functions or references to them — the skeleton
         // and morph rows, `hasGltfExtras`, …). Only the named rows belong in
-        // this map; predicate rows are the asset-feature half the
-        // specializer mirrors term by term elsewhere.
+        // this map; which rows a document triggered is read back from the
+        // packaged loader run (`gltfLoaderSpecialization`).
         if (ts.isStringLiteral(name)) {
             result.set(name.text, module);
             continue;
@@ -506,7 +524,8 @@ function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
 }
 
 export function specializeGltf(
-    path: string,
+    /** The packaged document, parsed once by `gltfAssetDocuments`. */
+    document: JsonRecord,
     assetName: string,
     /** The variant a scene's `selectVariant` chose on this asset, by name. */
     selectedVariantName?: string,
@@ -515,19 +534,13 @@ export function specializeGltf(
     // an isolated store (a test pointing at another tree) still passes one.
     store = sharedUpstreamStore(),
 ): GltfSpecialization {
-    const document = parseGlbJson(path);
     const selectedVariant = selectedVariantIndex(
         document,
         selectedVariantName,
         assetName,
     );
     const extensionsUsed = asStrings(document.extensionsUsed);
-    const modules = new Set<string>();
     const extensionModules = extensionModuleMap(store);
-    extensionsUsed.forEach((extension) => {
-        const module = extensionModules.get(extension);
-        if (module) modules.add(module);
-    });
 
     const primitives = primitiveRecords(document);
     const accessors = asRecords(document.accessors);
@@ -538,28 +551,6 @@ export function specializeGltf(
         extensionsUsed,
         extensionModules,
     );
-    const animations = asRecords(document.animations).length > 0;
-    const morphTargets = primitives.some(
-        (primitive) =>
-            Array.isArray(primitive.targets) && primitive.targets.length > 0,
-    );
-    const maxMorphTargets = primitives.reduce(
-        (count, primitive) =>
-            Array.isArray(primitive.targets)
-                ? Math.max(count, primitive.targets.length)
-                : count,
-        0,
-    );
-    // The pinned skeleton predicate, both conjuncts:
-    // `!!j.skins?.length && anyPrimitive(j, p.attributes?.JOINTS_0 !== void 0)`
-    // (gltf-feature-registry.ts). A skins array with no skinned primitive
-    // imports nothing upstream, so it must record nothing here either.
-    const skins =
-        asRecords(document.skins).length > 0 &&
-        primitives.some(
-            (primitive) =>
-                asObject(primitive.attributes)?.JOINTS_0 !== undefined,
-        );
     // Which palette transport can carry this asset is decided by its
     // largest skin. The composed skeleton variants read the pin's own
     // per-bone texture and cap nothing; the transcribed vertex stage's
@@ -583,26 +574,6 @@ export function specializeGltf(
             (name) =>
                 /^(?:JOINTS|WEIGHTS)_\d+$/.test(name) && !name.endsWith("_0"),
         ),
-    );
-    // `gltf-feature-registry.ts`'s own trigger for the lazy primitive
-    // feature, minus its negative-determinant half (which this port answers
-    // through `clockwise_front_face` instead): a mode other than TRIANGLES,
-    // on a primitive the Gaussian-splatting feature does not consume. Those
-    // are POINTS by definition and are drawn by a pipeline of their own, so
-    // upstream excludes them here and so must a port that keys a render path
-    // on the same question.
-    const exoticPrimitives = primitives.filter(
-        (primitive) =>
-            typeof primitive.mode === "number" &&
-            primitive.mode !== 4 &&
-            asObject(primitive.extensions)?.[GAUSSIAN_SPLATTING_EXTENSION] ===
-                undefined,
-    );
-    const nonTrianglePrimitives = exoticPrimitives.length > 0;
-    // A triangle strip is excluded because the loader expands one into the
-    // triangle list it describes, so what ships draws as a triangle list.
-    const pointOrLinePrimitives = exoticPrimitives.some(
-        (primitive) => primitive.mode !== 5,
     );
     // Babylon Lite splits KHR_animation_pointer across modules: the base one
     // resolves node targets, and material targets pull their own. A scene
@@ -646,44 +617,23 @@ export function specializeGltf(
             );
         },
     );
-    const extras = hasExtras(document);
-
-    if (animations) modules.add("./gltf-feature-animations.js");
-    if (morphTargets) modules.add("./gltf-feature-morph.js");
-    if (skins) modules.add("./gltf-feature-skeleton.js");
-    // gltf-feature-sparse.js is resolved away at packaging by running the
-    // pin's own preParse hook (compressed-geometry.ts), which materializes
-    // every sparse accessor into a tightly-packed bufferView and clears
-    // `.sparse` -- so the packaged document the loader ships against carries
-    // none, exactly as it carries no quantized accessor.
-    if (nonTrianglePrimitives) modules.add("./gltf-feature-primitive.js");
-    if (extras) modules.add("./gltf-feature-extras.js");
-
     return {
         asset: assetName,
         extensionsUsed,
-        staticModules: [...modules].sort(),
         renderItems: renderItemSpecializations(document, selectedVariant),
         features: {
-            animations,
-            morphTargets,
-            maxMorphTargets,
-            skins,
             maxSkinJoints,
-            nonTrianglePrimitives,
-            pointOrLinePrimitives,
             animationPointerMaterials,
             transmissiveMaterial,
             specularReflectance,
-            extras,
             eightInfluenceSkinning,
-            gaussianSplats: hasGaussianSplats(document),
-            compressedImages: hasCompressedImages(document),
-            interactivity:
-                GLTF_MESH_PLAN in document
-                    ? packagedFlowGraphPrograms(document).length > 0
-                    : null,
+            gaussianSplats: gltfHasGaussianSplats(document),
+            compressedImages: gltfHasCompressedImages(document),
         },
+        loader:
+            GLTF_MESH_PLAN in document
+                ? gltfLoaderSpecialization(document, store)
+                : null,
     };
 }
 
@@ -692,30 +642,16 @@ export function specializeGltf(
  *
  * `KHR_gaussian_splatting`'s conversion happens at generation, so what the
  * loader ships against is the row buffer rather than the extension — which
- * packaging drops. Both readers ask the rows for that reason.
+ * packaging drops. The specializer and the asset feature join both ask the
+ * rows for that reason: `loader:splat` selects the generated splat units,
+ * and only the runtime feature list can do that.
  */
-function hasGaussianSplats(document: JsonRecord): boolean {
+export function gltfHasGaussianSplats(document: JsonRecord): boolean {
     return asRecords(document[GAUSSIAN_SPLAT_DOCUMENT_KEY]).length > 0;
 }
 
-/**
- * The same question off a materialized asset, for the feature join.
- *
- * `loader:splat` selects the generated splat translation units, and only the
- * runtime feature list can do that — so an asset that carries clouds joins it
- * after materialization, exactly as an asset's own punctual lights join
- * `light:*`.
- */
-export function gltfHasGaussianSplats(path: string): boolean {
-    return hasGaussianSplats(parseGlbJson(path));
-}
-
 /** Packaged mip lists reach the compressed-texture reader after materialization. */
-export function gltfHasCompressedImages(path: string): boolean {
-    return hasCompressedImages(parseGlbJson(path));
-}
-
-function hasCompressedImages(document: JsonRecord): boolean {
+export function gltfHasCompressedImages(document: JsonRecord): boolean {
     return asRecords(document.images).some(
         (image) => image.mimeType === compressedTextureFormat.mimeType,
     );
@@ -723,8 +659,6 @@ function hasCompressedImages(document: JsonRecord): boolean {
 
 export interface AssetSpecializationFeatures {
     gpuDeformation: boolean;
-    /** Deformed primitives retain local vertices and a separate world box for framing. */
-    animatedWorldBounds: boolean;
     morphStorage: boolean;
     /**
      * Joints in the largest skin any reached asset carries. Compared at
@@ -740,10 +674,8 @@ export interface AssetSpecializationFeatures {
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
     materialSpecular: boolean;
-    imageBasedLighting: boolean;
     textureTransform: boolean;
     gpuInstancing: boolean;
-    punctualLights: boolean;
     /** Any asset carries JOINTS_1/WEIGHTS_1 the pin would skin and this port truncates. */
     eightInfluenceSkinning: boolean;
     /** Any asset carries transcoded KHR_texture_basisu images. */
@@ -762,15 +694,44 @@ export interface AssetSpecializationFeatures {
     interactivity: boolean;
 }
 
+/**
+ * Every packaged glTF document, parsed once for everything generation asks
+ * of it: the specializer and the asset feature join both read these.
+ */
+export function gltfAssetDocuments(
+    outputRoot: string,
+    assets: readonly CompileAsset[],
+): ReadonlyMap<string, JsonRecord> {
+    return new Map(
+        assets
+            .filter((asset) => asset.kind === "gltf")
+            .map((asset) => [
+                asset.output,
+                parseGlbJson(resolve(outputRoot, "assets", asset.output)),
+            ]),
+    );
+}
+
+/** The document `gltfAssetDocuments` parsed for a glTF asset. */
+export function gltfAssetDocument(
+    documents: ReadonlyMap<string, JsonRecord>,
+    asset: CompileAsset,
+): JsonRecord {
+    const document = documents.get(asset.output);
+    if (document === undefined)
+        throw new Error(`glTF asset '${asset.output}' was not parsed.`);
+    return document;
+}
+
 export function emitAssetSpecializations(
     outputRoot: string,
     assets: CompileAsset[],
+    documents: ReadonlyMap<string, JsonRecord>,
 ): AssetSpecializationFeatures {
     const gltfAssets = assets.filter((asset) => asset.kind === "gltf");
     if (gltfAssets.length === 0) {
         return {
             gpuDeformation: false,
-            animatedWorldBounds: false,
             morphStorage: false,
             maxSkinJoints: 0,
             nonTrianglePrimitives: false,
@@ -780,10 +741,8 @@ export function emitAssetSpecializations(
             animationPointerMaterials: false,
             assetTransmission: false,
             materialSpecular: false,
-            imageBasedLighting: false,
             textureTransform: false,
             gpuInstancing: false,
-            punctualLights: false,
             eightInfluenceSkinning: false,
             gaussianSplats: false,
             compressedImages: false,
@@ -794,20 +753,24 @@ export function emitAssetSpecializations(
     let nextClusterId = 1;
     const specializations = gltfAssets.map((asset) => {
         const specialization = specializeGltf(
-            resolve(outputRoot, "assets", asset.output),
+            gltfAssetDocument(documents, asset),
             asset.output,
             asset.selectedVariant,
         );
-        if (specialization.features.transmissiveMaterial === null)
+        const { transmissiveMaterial } = specialization.features;
+        const { loader } = specialization;
+        if (transmissiveMaterial === null)
             throw new Error(
                 `Asset '${asset.output}' requires packaged source transmission selection before specialization emission.`,
             );
-        if (specialization.features.interactivity === null)
+        if (loader === null)
             throw new Error(
-                `Asset '${asset.output}' requires packaged source interactivity selection before specialization emission.`,
+                `Asset '${asset.output}' requires the packaged pinned loader run before specialization emission.`,
             );
         return {
             ...specialization,
+            features: { ...specialization.features, transmissiveMaterial },
+            loader,
             renderItems: specialization.renderItems.map((item) => {
                 const clusterIdStart =
                     item.clusterCount > 0 ? nextClusterId : 0;
@@ -822,74 +785,60 @@ export function emitAssetSpecializations(
     });
     const output = resolve(outputRoot, "upstream/gltf-specialization.json");
     mkdirSync(dirname(output), { recursive: true });
-    writeFileSync(output, `${JSON.stringify(specializations, null, 2)}\n`);
-    const usesExtension = (extension: string): boolean =>
-        specializations.some((specialization) =>
-            specialization.extensionsUsed.includes(extension),
-        );
+    writeFileSync(
+        output,
+        `${JSON.stringify(specializations, null, 2)}
+`,
+    );
+    const anyAsset = (
+        fact: (specialization: (typeof specializations)[number]) => boolean,
+    ): boolean => specializations.some(fact);
+    // Initial skin/morph state needs the same local-vertex transport as
+    // animated nodes, even when no clip exists to update it afterward.
+    const deformed = anyAsset(
+        ({ loader }) =>
+            loader.animations || loader.skins || loader.morphTargets,
+    );
     return {
-        // Initial skin/morph state needs the same local-vertex transport as
-        // animated nodes, even when no clip exists to update it afterward.
-        gpuDeformation: specializations.some(
-            ({ features }) =>
-                features.animations || features.skins || features.morphTargets,
-        ),
-        animatedWorldBounds: specializations.some(
-            ({ features }) =>
-                features.animations || features.skins || features.morphTargets,
-        ),
+        gpuDeformation: deformed,
         // Babylon Lite has one morph mechanism -- the uncapped storage-buffer
         // path -- and the composed morph variants read it, so any morph
         // target at all compiles it in. The two-slot vertex-attribute slice
         // remains for the Standard family's transcribed stage.
-        morphStorage: specializations.some(
-            (specialization) => specialization.features.maxMorphTargets > 0,
-        ),
+        morphStorage: anyAsset(({ loader }) => loader.morphTargets),
         maxSkinJoints: specializations.reduce(
             (largest, specialization) =>
                 Math.max(largest, specialization.features.maxSkinJoints),
             0,
         ),
-        // Half of Babylon Lite's own predicate for the dynamically imported
-        // `gltf-feature-primitive.js` — the pinned registry tests
-        // `hasNegDetNode(j) || anyPrimitive(mode !== 4)`, and the
-        // negative-determinant half is unconditional inline code in the
-        // generated loader (`mirrored_x`), so only the mode half selects the
-        // module here. Off, the generated loader carries no topology handling
-        // at all, which is where upstream keeps it.
-        nonTrianglePrimitives: specializations.some(
-            (specialization) => specialization.features.nonTrianglePrimitives,
+        // Off, the generated loader carries no topology handling at all,
+        // which is where upstream keeps it. The negative-determinant half of
+        // the pinned primitive feature is unconditional inline code in the
+        // generated loader (`clockwise_front_face`).
+        nonTrianglePrimitives: anyAsset(
+            ({ loader }) => loader.nonTrianglePrimitives,
         ),
-        pointOrLinePrimitives: specializations.some(
-            (specialization) => specialization.features.pointOrLinePrimitives,
+        pointOrLinePrimitives: anyAsset(
+            ({ loader }) => loader.pointOrLinePrimitives,
         ),
-        nodeVisibility: usesExtension("KHR_node_visibility"),
-        animationPointer: usesExtension("KHR_animation_pointer"),
-        animationPointerMaterials: specializations.some(
-            (specialization) =>
-                specialization.features.animationPointerMaterials,
+        nodeVisibility: anyAsset(({ loader }) => loader.nodeVisibility),
+        animationPointer: anyAsset(({ loader }) => loader.animationPointer),
+        animationPointerMaterials: anyAsset(
+            ({ features }) => features.animationPointerMaterials,
         ),
-        assetTransmission: specializations.some(
-            (specialization) => specialization.features.transmissiveMaterial,
+        assetTransmission: anyAsset(
+            ({ features }) => features.transmissiveMaterial,
         ),
-        materialSpecular: specializations.some(
-            (specialization) => specialization.features.specularReflectance,
+        materialSpecular: anyAsset(
+            ({ features }) => features.specularReflectance,
         ),
-        imageBasedLighting: usesExtension("EXT_lights_image_based"),
-        textureTransform: usesExtension("KHR_texture_transform"),
-        gpuInstancing: usesExtension("EXT_mesh_gpu_instancing"),
-        punctualLights: usesExtension("KHR_lights_punctual"),
-        eightInfluenceSkinning: specializations.some(
-            (specialization) => specialization.features.eightInfluenceSkinning,
+        textureTransform: anyAsset(({ loader }) => loader.textureTransform),
+        gpuInstancing: anyAsset(({ loader }) => loader.gpuInstancing),
+        eightInfluenceSkinning: anyAsset(
+            ({ features }) => features.eightInfluenceSkinning,
         ),
-        compressedImages: specializations.some(
-            (specialization) => specialization.features.compressedImages,
-        ),
-        gaussianSplats: specializations.some(
-            (specialization) => specialization.features.gaussianSplats,
-        ),
-        interactivity: specializations.some(
-            (specialization) => specialization.features.interactivity,
-        ),
+        compressedImages: anyAsset(({ features }) => features.compressedImages),
+        gaussianSplats: anyAsset(({ features }) => features.gaussianSplats),
+        interactivity: anyAsset(({ loader }) => loader.interactivity),
     };
 }

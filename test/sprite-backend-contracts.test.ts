@@ -9,6 +9,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("sprite backend uploads preserve dirty rows, clocks, bindings and scene insertion order", (t) => {
@@ -19,14 +20,22 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
     }
     const read = (name: string) =>
         readFileSync(`native/src/${name}.hpp`, "utf8").replaceAll("\r\n", "\n");
-    const shared = read("pal_gpu_shared"),
+    const shared = sharedGpuSource(),
         sdl = read("pal_sdl_gpu_sprite"),
         dawn = read("pal_dawn_sprite");
     const sdlBillboard = read("pal_sdl_gpu_billboard"),
         dawnBillboard = read("pal_dawn_billboard");
     const directory = resolve("artifacts/sprite-backend-contracts");
     mkdirSync(directory, { recursive: true });
-    const core = new SpriteLowerer(new LoweringContext()).lowerCore().source;
+    const lowered = new SpriteLowerer(new LoweringContext()).lowerCore();
+    const core = lowered.source;
+    // The pin's in-place layer sort and the comparator it calls, from the
+    // generated header both backends and the capture read.
+    writeFileSync(
+        join(directory, "layer-sort.hpp"),
+        `namespace bbl::upstream {\n${cppFunction(lowered.header, "inline double compare_sprite_layers(")}\n}\n` +
+            `namespace bbl {\n${cppFunction(lowered.header, "inline void sort_sprite_renderer_layers(")}\n}\n`,
+    );
     writeFileSync(
         join(directory, "mutations.hpp"),
         [
@@ -48,10 +57,10 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
         "using DawnSpriteLayer = FixtureRecord<DawnSpriteLayerResources>;",
         cppRecord(sdlBillboard, "struct BillboardResources {"),
         "using BillboardPass = BillboardResources;",
+        cppRecord(dawnBillboard, "struct DawnBillboardScene {"),
         cppRecord(dawnBillboard, "struct DawnBillboardResources {"),
         "using DawnBillboardPass = DawnBillboardResources;",
-        cppRecord(sdlBillboard, "struct BillboardSceneUniforms {"),
-        cppRecord(dawnBillboard, "struct DawnBillboardSceneUniforms {"),
+
         cppRecord(sdl, "struct SpriteAtlasGpuResources {"),
         "using SpriteAtlasGpu = FixtureRecord<SpriteAtlasGpuResources>;",
         cppRecord(dawn, "struct DawnSpriteAtlasBindingResources {"),
@@ -63,22 +72,25 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
     ].join("\n");
     const functions = [
         ...[
-            "inline SpriteDirtyRange resolve_sprite_dirty_range(",
-            "inline void mark_sprite_dirty_range_consumed(",
-            "inline SpriteInstanceUpload resolve_sprite_instance_upload(",
-            "inline bool sprite_blend_equal(",
-            "inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(",
-            "inline bool sprite_scene_pipeline_compatible(",
-            "inline Vec3d frame_floating_origin_offset(",
-            "inline BillboardDrawPlan billboard_draw_plan(",
-            "inline bool billboard_needs_upload(",
-            "inline void stamp_billboard_upload(",
+            "SpriteDirtyRange resolve_sprite_dirty_range(",
+            "SpriteInstanceUpload resolve_sprite_instance_upload(",
+            "bool sprite_blend_equal(",
+            "SpriteLayerPipelinePlan sprite_layer_pipeline_plan(",
+            "bool sprite_scene_pipeline_compatible(",
+            "Vec3d frame_floating_origin_offset(",
+            "inline CameraRecord* scene_camera(",
+            "BillboardDrawPlan billboard_draw_plan(",
+            "bool billboard_needs_upload(",
+            "void stamp_billboard_upload(",
+            "std::string sprite_program_stem(",
         ].map((signature) => cppFunction(shared, signature)),
+        cppRecord(dawn, "struct DawnSpriteProgram {"),
         cppFunction(
             read("pal_sdl_gpu_shared"),
             "inline std::vector<SDL_GPUTextureSamplerBinding>\nselect_sprite_fragment_textures(",
         ),
         ...[
+            "inline PinnedStageSlots read_sprite_layer_slots(",
             "inline SpriteLayerGpu build_sprite_layer_gpu(",
             "inline void release_sprite_layer_resources([[maybe_unused]]",
             "inline void rebuild_sprite_layer_pipeline(",

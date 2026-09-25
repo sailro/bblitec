@@ -9,6 +9,13 @@
 import assert from "node:assert/strict";
 import { loadPng } from "./support.mjs";
 
+/**
+ * @import { PluginContext, PluginOutcome } from "../../dist/src/tooling/check-run.js"
+ */
+
+/** @typedef {ReturnType<typeof rectangle>} Box */
+
+/** @param {string} path */
 function rectangle(path) {
     const image = loadPng(path);
     let left = image.width,
@@ -19,9 +26,9 @@ function rectangle(path) {
         for (let x = 0; x < image.width; x++) {
             const i = (y * image.width + x) * 4;
             if (
-                image.data[i] > 200 &&
-                image.data[i + 1] > 120 &&
-                image.data[i + 2] < 120
+                image.data.readUInt8(i) > 200 &&
+                image.data.readUInt8(i + 1) > 120 &&
+                image.data.readUInt8(i + 2) < 120
             ) {
                 left = Math.min(left, x);
                 right = Math.max(right, x);
@@ -45,11 +52,17 @@ function rectangle(path) {
     };
 }
 
+/**
+ * @param {PluginContext} context
+ * @returns {PluginOutcome}
+ */
 export function check(context) {
+    /** @type {Record<string, Record<string, Box>>} */
     const details = {};
     for (const backend of context.backends) {
+        /** @type {Record<string, Box>} */
         const boxes = {};
-        for (const phase of Object.values(context.results[backend])) {
+        for (const phase of Object.values(context.results[backend] ?? {})) {
             const box = rectangle(phase.image);
             assert(
                 Math.abs(box.y - box.height / 2) < 1,
@@ -64,24 +77,29 @@ export function check(context) {
             );
             boxes[phase.id] = box;
         }
+        const { early, later, resize } = boxes;
         assert(
-            Math.abs(boxes.later.position - boxes.resize.position) < 0.01,
+            early && later && resize,
+            `${backend}: the early, later and resize phases are required`,
+        );
+        assert(
+            Math.abs(later.position - resize.position) < 0.01,
             `${backend}: resize changed the animation pose`,
         );
         if (context.options.mode === "frozen") {
             assert(
-                Math.abs(boxes.later.position - 2) < 0.01,
+                Math.abs(later.position - 2) < 0.01,
                 `${backend}: the frozen branch did not seek the source target`,
             );
         } else {
             assert(
-                boxes.later.position - boxes.early.position > 1,
+                later.position - early.position > 1,
                 `${backend}: the autonomous manager did not advance the target`,
             );
         }
         details[backend] = boxes;
         context.log(
-            `${backend}: early ${boxes.early.position.toFixed(3)} later ${boxes.later.position.toFixed(3)} resized ${boxes.resize.position.toFixed(3)} track units`,
+            `${backend}: early ${early.position.toFixed(3)} later ${later.position.toFixed(3)} resized ${resize.position.toFixed(3)} track units`,
         );
     }
     return { details };

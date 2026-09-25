@@ -9,6 +9,7 @@ import {
 import type { Value } from "../types.js";
 
 import { pickedMeshHandleCpp } from "../properties.js";
+import { resolvedSymbol } from "../symbols.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
 function expressionHandle(
@@ -40,7 +41,7 @@ function expressionHandle(
         const staticExpression =
             lowerer.context.resolveStaticExpression(unwrapped);
         const constInitializer = ts.isIdentifier(unwrapped)
-            ? lowerer.context.checker.getSymbolAtLocation(unwrapped)
+            ? resolvedSymbol(lowerer.context.checker, unwrapped)
                   ?.valueDeclaration
             : undefined;
         const atlasExpression =

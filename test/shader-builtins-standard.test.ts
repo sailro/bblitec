@@ -11,15 +11,18 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { fieldOffsets } from "../src/capture-uniforms.js";
+import { discoverDevelopmentTools } from "../src/development-tools.js";
+import { findPinnedTint } from "../src/tint-tool.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import {
     pinnedMaterialVertex,
-    pinnedPbrVertexTemplate,
+    pinnedPbrVertexOutputs,
 } from "../src/pinned-material-vertex.js";
 import {
     extractWgslFunction,
     importPinnedModule,
+    pinnedLibraryRoot,
 } from "../src/pinned-shader-composer.js";
 import { composePinnedPbrShader } from "./pinned-pbr-shader-fixture.js";
 import {
@@ -46,6 +49,7 @@ import {
     findRepositoryRoot,
     sharedUpstreamStore,
 } from "../src/upstream-source.js";
+import { sharedGpuSource } from "./native-fixture.js";
 
 const root = findRepositoryRoot();
 const store = sharedUpstreamStore();
@@ -91,6 +95,17 @@ class EditedContext extends LoweringContext {
                   true,
               )
             : super.sourceFile(module);
+    }
+    /** The executed half of the doctored pin: the packaged module run. */
+    public packagedModuleText(module: string): string | undefined {
+        if (module !== this.module) return undefined;
+        const packaged = readFileSync(
+            join(pinnedLibraryRoot(), store.packagedModulePath(module)),
+            "utf8",
+        );
+        const edited = this.edit(packaged);
+        assert.notEqual(edited, packaged, `edit missed packaged ${module}`);
+        return edited;
     }
 }
 
@@ -151,17 +166,15 @@ test("shared vertex projections preserve every PAL binding, varying and optional
                       },
                   ]
                 : []),
-            ...(instancing
-                ? [
-                      {
-                          name: "instanceUniforms",
-                          type: "InstanceUniforms",
-                          group: 1,
-                          binding: deformation ? 2 : 1,
-                          addressSpace: "uniform",
-                      },
-                  ]
-                : []),
+            // Every draw's mesh block, after the scene and deformation
+            // blocks: the pin's `mesh.world`.
+            {
+                name: "mesh",
+                type: "MeshUniforms",
+                group: 1,
+                binding: deformation ? 2 : 1,
+                addressSpace: "uniform",
+            },
         ]);
         const structure = (name: string) => {
             const found = module.structs.find((value) => value.name === name);
@@ -178,7 +191,6 @@ test("shared vertex projections preserve every PAL binding, varying and optional
                 1,
                 2,
                 3,
-                4,
                 5,
                 6,
                 ...(deformation
@@ -230,11 +242,10 @@ test("shared vertex projections preserve every PAL binding, varying and optional
                 parseWgslFunction(helper),
             );
         }
-        if (instancing)
-            assert.deepEqual(
-                fieldOffsets(structure("InstanceUniforms").members),
-                { offsets: [0], size: 64 },
-            );
+        assert.deepEqual(fieldOffsets(structure("MeshUniforms").members), {
+            offsets: [0],
+            size: 64,
+        });
         if (morphStorage) {
             assert.deepEqual(
                 fieldOffsets(structure("morphUniforms").members.slice(0, 4)),
@@ -251,23 +262,22 @@ test("shared vertex projections preserve every PAL binding, varying and optional
         );
         assert.ok(
             !module.entryPoint.statements.some((statement) =>
-                statementUsesPath(statement, (parts) =>
-                    [
-                        "mesh",
-                        "scene",
-                        "boneSampler",
-                        "joints1",
-                        "weights1",
-                    ].includes(parts[0]!),
+                statementUsesPath(
+                    statement,
+                    (parts) =>
+                        [
+                            "scene",
+                            "boneSampler",
+                            "joints1",
+                            "weights1",
+                        ].includes(parts[0]!) ||
+                        (parts[0] === "mesh" && parts[1] !== "world"),
                 ),
             ),
         );
         assert.match(source, new RegExp(store.pin.sourceVersion));
     }
-    const pal = readFileSync(
-        join(root, "native", "src", "pal_gpu_shared.hpp"),
-        "utf8",
-    );
+    const pal = sharedGpuSource();
     assert.match(
         pal,
         new RegExp(
@@ -303,7 +313,7 @@ test("the reusable PBR vertex template matches the executed pin before transport
         ): { _vertexTemplate: string };
     }>("material/pbr/pbr-template.js");
     for (const morph of [false, true]) {
-        const template = pinnedPbrVertexTemplate(
+        const template = pinnedPbrVertexOutputs(
             new LoweringContext(store),
             morph,
         );
@@ -482,6 +492,10 @@ function execute(
                     evaluate(expression.left),
                     evaluate(expression.right),
                 );
+            case "unary":
+                throw new Error(
+                    `Unhandled test unary operator ${expression.operator}`,
+                );
             case "construct": {
                 const values = expression.arguments.map(evaluate);
                 return expression.type === "mat4x4<f32>"
@@ -556,18 +570,17 @@ function execute(
                 if (scalar(evaluate(statement.condition)))
                     execute(statement.statements, scope, functions);
                 break;
-            case "for":
-                execute([statement.initializer], scope, functions);
-                for (
-                    let trips = 0;
-                    scalar(evaluate(statement.condition));
-                    ++trips
-                ) {
+            case "for": {
+                const { initializer, condition, update } = statement;
+                assert.ok(initializer && condition && update);
+                execute([initializer], scope, functions);
+                for (let trips = 0; scalar(evaluate(condition)); ++trips) {
                     assert.ok(trips < 1024);
                     execute(statement.statements, scope, functions);
-                    execute([statement.update], scope, functions);
+                    execute([update], scope, functions);
                 }
                 break;
+            }
             case "return":
                 return statement.value ? evaluate(statement.value) : undefined;
             default:
@@ -662,7 +675,6 @@ test("the executed pin and specialized stages agree on weighted positions and ma
             normal: [0, 1, 0],
             tangent: [1, 0, 0, -1],
             uv: [0.2, 0.8],
-            localPosition: [-2, 3, 4],
             uv2: [0.6, 0.1],
             color: [0.25, 0.5, 0.75, 1],
             joints: [3, 1, 0, 2],
@@ -683,7 +695,7 @@ test("the executed pin and specialized stages agree on weighted positions and ma
         const scope = new Map<string, Value>([
             ["input", input],
             ["uniforms", { viewProjection: world }],
-            ["instanceUniforms", { parentWorld: world }],
+            ["mesh", { world }],
             [
                 "deformation",
                 {
@@ -701,98 +713,102 @@ test("the executed pin and specialized stages agree on weighted positions and ma
             native.helper ? [parseWgslFunction(native.helper)] : [],
         );
         assert.ok(actual);
-        if (deformation && !instancing) {
-            for (const [enabled, flat] of [
-                [0, 0],
-                [1, 1],
-            ]) {
-                const gated = new Map(scope);
-                gated.set("deformation", {
-                    boneMatrices: bones,
-                    morphWeights: weights,
-                    options: [enabled!, flat!, 0, 0],
-                });
-                const result = execute(
-                    native.module.entryPoint.statements,
-                    gated,
-                    [parseWgslFunction(native.helper)],
-                );
-                assert.ok(result);
-                equalLanes(field(result, "normal"), input.normal!);
-                equalLanes(
-                    field(result, "worldPosition"),
-                    enabled ? field(actual, "worldPosition") : input.position!,
-                );
-                if (!enabled)
-                    equalLanes(field(result, "tangent"), input.tangent!);
-            }
-        }
-        const composed = await composePinnedPbrShader(
-            { _normalMode: "tangent", _hasMorph: deformation },
-            deformation
-                ? [
-                      skeleton.createSkeletonFragment(false),
-                      morph.createMorphFragment(),
-                  ]
-                : [],
-        );
-        const helper = deformation
-            ? extractWgslFunction(
-                  composed.vertexWgsl,
-                  "readMatrixFromRawSampler",
-              )
-            : "";
-        const original = parseWgslModule(
-            helper
-                ? composed.vertexWgsl.replace(helper, "")
-                : composed.vertexWgsl,
-            "vertex",
-        );
-        const originalScope = new Map<string, Value>(Object.entries(input));
-        originalScope.set("mesh", { world: identity });
-        originalScope.set("scene", { viewProjection: world });
-        originalScope.set("boneSampler", bones.flat());
-        originalScope.set("morph", {
-            count: targetCount,
-            vertexCount,
-            weights,
-        });
-        originalScope.set("morphDeltas", { d: deltas });
-        let expected = execute(
-            original.entryPoint.statements,
-            originalScope,
-            helper ? [parseWgslFunction(helper)] : [],
-        );
-        assert.ok(expected);
-        if (instancing) {
-            const instanceStage = await composePinnedPbrShader(
-                { _normalMode: "tangent" },
-                [thin.createThinInstanceFragment(false)],
+        /** The pin's composed stage for `fragments`, run over the input. */
+        const runPin = async (
+            hasMorph: boolean,
+            fragments: readonly unknown[],
+            meshWorld: Value[],
+        ): Promise<Value> => {
+            const composed = await composePinnedPbrShader(
+                { _normalMode: "tangent", _hasMorph: hasMorph },
+                fragments,
             );
-            const instanced = parseWgslModule(
-                instanceStage.vertexWgsl,
+            const helper = composed.vertexWgsl.includes(
+                "fn readMatrixFromRawSampler(",
+            )
+                ? extractWgslFunction(
+                      composed.vertexWgsl,
+                      "readMatrixFromRawSampler",
+                  )
+                : "";
+            const original = parseWgslModule(
+                helper
+                    ? composed.vertexWgsl.replace(helper, "")
+                    : composed.vertexWgsl,
                 "vertex",
             );
-            originalScope.set("position", field(expected, "worldPos"));
-            originalScope.set("mesh", { world });
+            const originalScope = new Map<string, Value>(Object.entries(input));
+            originalScope.set("mesh", { world: meshWorld });
+            originalScope.set("scene", { viewProjection: world });
+            originalScope.set("boneSampler", bones.flat());
+            originalScope.set("morph", {
+                count: targetCount,
+                vertexCount,
+                weights,
+            });
+            originalScope.set("morphDeltas", { d: deltas });
             for (let column = 0; column < 4; ++column)
                 originalScope.set(`world${column}`, instance[column]!);
-            expected = execute(instanced.entryPoint.statements, originalScope);
-            assert.ok(expected);
-        }
-        equalLanes(field(actual, "worldPosition"), field(expected, "worldPos"));
-        equalLanes(field(actual, "position"), field(expected, "clipPos"));
-        for (const name of ["uv", "localPosition", "uv2", "color"])
-            assert.deepEqual(field(actual, name), input[name]);
-        if (!instancing) {
-            equalLanes(field(actual, "normal"), field(expected, "worldNormal"));
-            equalLanes(
-                array(field(actual, "tangent")).slice(0, 3),
-                field(expected, "worldTangent"),
+            const result = execute(
+                original.entryPoint.statements,
+                originalScope,
+                helper ? [parseWgslFunction(helper)] : [],
             );
+            assert.ok(result);
+            return result;
+        };
+        const agree = (stage: Value, pin: Value): void => {
+            equalLanes(field(stage, "worldPosition"), field(pin, "worldPos"));
+            equalLanes(field(stage, "position"), field(pin, "clipPos"));
+            equalLanes(field(stage, "normal"), field(pin, "worldNormal"));
             equalLanes(
-                field(actual, "bitangent"),
-                field(expected, "worldBitangent"),
+                array(field(stage, "tangent")).slice(0, 3),
+                field(pin, "worldTangent"),
+            );
+            equalLanes(field(stage, "bitangent"), field(pin, "worldBitangent"));
+        };
+        // A pooled draw's world is the pin's `mesh.world*instanceWorld`,
+        // which the skinning arm then multiplies by the palette exactly as
+        // the pin multiplies `mesh.world`.
+        const instanced = array(binary("*", world, instance));
+        const expected = deformation
+            ? await runPin(
+                  true,
+                  [
+                      skeleton.createSkeletonFragment(false),
+                      morph.createMorphFragment(),
+                  ],
+                  instancing ? instanced : world,
+              )
+            : await runPin(
+                  false,
+                  instancing ? [thin.createThinInstanceFragment(false)] : [],
+                  world,
+              );
+        agree(actual, expected);
+        for (const name of ["uv", "uv2", "color"])
+            assert.deepEqual(field(actual, name), input[name]);
+        // The local position is the raw attribute, before any morph.
+        assert.deepEqual(field(actual, "localPosition"), input.position);
+        if (deformation) {
+            // A draw the deformation arm skips is the plain template's.
+            const gated = new Map(scope);
+            gated.set("deformation", {
+                boneMatrices: bones,
+                morphWeights: weights,
+                options: [0, 0, 0, 0],
+            });
+            const result = execute(native.module.entryPoint.statements, gated, [
+                parseWgslFunction(native.helper),
+            ]);
+            assert.ok(result);
+            agree(
+                result,
+                await runPin(
+                    false,
+                    instancing ? [thin.createThinInstanceFragment(false)] : [],
+                    world,
+                ),
             );
         }
     }
@@ -824,7 +840,7 @@ test("pin arithmetic changes flow through skinning, morphing, tangent frames and
             instanceModule,
             "mesh.world*instanceWorld",
             "instanceWorld*mesh.world",
-            /instanceWorld \* instanceUniforms\.parentWorld/,
+            /instanceWorld \* mesh\.world/,
         ],
     ] as const) {
         const projected = materialVertexWgsl(
@@ -852,8 +868,6 @@ test("pin arithmetic changes flow through skinning, morphing, tangent frames and
 test("renderer specialization forwards the pinned lowering context instead of enforcing transcript markers", () => {
     const context = changed(skeletonModule, "*weights[1]", "*weights[1]*0.375");
     const shaders = new RendererLowerer(context).lowerShaders({
-        ground: false,
-        skybox: false,
         shaderPrograms: [],
         idDiagnostics: false,
         geometryOutputTasks: [],
@@ -912,7 +926,7 @@ test("unrepresentable pin drift refuses rather than retaining a transcript or em
             templateModule,
             '_hasMorph ? "morphedPos" : "position"',
             '_hasMorph ? "morphedPos * 0.5" : "position"',
-            /morph template inputs|unbound input/,
+            /morph template inputs|unbound input|homogeneous position transport/,
         ],
         [
             templateModule,
@@ -964,7 +978,8 @@ test("pinned local renaming and WGSL formatting do not select shader behavior", 
 
 const tint =
     process.env["TINT_PATH"] ??
-    join(root, "artifacts", "tools", "tint", "tint.exe");
+    findPinnedTint(root, discoverDevelopmentTools().cmake) ??
+    "";
 test(
     "all shared vertex transports validate and compile with the installed pinned Tint",
     { skip: !existsSync(tint) },

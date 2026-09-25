@@ -7,10 +7,11 @@ import {
     readFileSync,
     readdirSync,
     rmSync,
+    symlinkSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import test from "node:test";
 import { computeBuildStamp } from "../src/build-stamp.js";
 import {
@@ -18,16 +19,29 @@ import {
     discoverWindowsBuildTools,
 } from "../src/development-tools.js";
 import { applicationScenes } from "../src/scene-registry.js";
+import type { CompiledNativeBackend } from "../src/tooling/backends.js";
+import {
+    desktopShaderSuffixes,
+    importedLibraries,
+    shippingPlatform,
+    validateDesktopBuilds,
+} from "../src/package-demo.js";
+import {
+    assertPackageChild,
+    newPackageOutput,
+    publishPackageOutput,
+} from "../src/package-output.js";
 import {
     packageSizeReport,
     preserveShippingPayload,
-    readShippingFeatures,
     selectShippingScenes,
     shippingConfigureArguments,
     shippingPlan,
-    shippingPlatform,
-    type ShippingFeatures,
 } from "../src/shipping-demos.js";
+import {
+    readShippingFeatures,
+    type ShippingFeatures,
+} from "../src/shipping-profile.js";
 
 const tools = discoverDevelopmentTools();
 const sample = applicationScenes[0]!;
@@ -37,28 +51,25 @@ test(
     "shipping selects host shader payloads and trims unreached SVG on both platforms",
     { skip: !tools.powershell },
     (t) => {
+        assert.deepEqual(desktopShaderSuffixes("SDL_GPU", "win32"), [
+            ".dxil",
+            ".slots",
+        ]);
+        assert.deepEqual(desktopShaderSuffixes("SDL_GPU", "linux"), [
+            ".spv",
+            ".slots",
+        ]);
+        assert.deepEqual(desktopShaderSuffixes("SDL_GPU", "darwin"), [
+            ".msl",
+            ".slots",
+        ]);
+        assert.deepEqual(desktopShaderSuffixes("DAWN", "win32"), [
+            ".native.wgsl",
+        ]);
         const directory = mkdtempSync(
             join(tmpdir(), "bblite-shipping-policy-"),
         );
         t.after(() => rmSync(directory, { recursive: true, force: true }));
-        const script = readFileSync("tools/package-demo.ps1", "utf8");
-        const start = script.indexOf("$shaderPatterns ="),
-            end = script.indexOf("if (-not $shaderFiles)", start);
-        assert.ok(start >= 0 && end > start);
-        const payload = script
-            .slice(start, end)
-            .replaceAll("$IsWindows", "$windowsHost")
-            .replaceAll("$IsMacOS", "$macHost");
-        for (const name of [
-            "a.vert.dxil",
-            "a.vert.spv",
-            "a.vert.msl",
-            "a.vert.slots",
-            "a.vert.native.wgsl",
-            "a.vert.hlsl",
-        ]) {
-            writeFileSync(join(directory, name), "");
-        }
         const rml = readFileSync("tools/build-rmlui.ps1", "utf8");
         const rmlStart = rml.indexOf("$minimalBuild ="),
             rmlEnd = rml.indexOf("$staticSuffix =", rmlStart);
@@ -68,17 +79,6 @@ test(
             probe,
             `
 $ErrorActionPreference = 'Stop'
-$shaderSource = $PSScriptRoot
-foreach ($case in @(
-    @{ Windows = $true; Backend = 'SDL_GPU'; Expected = 'a.vert.dxil,a.vert.slots' },
-    @{ Windows = $false; Backend = 'SDL_GPU'; Expected = 'a.vert.slots,a.vert.spv' },
-    @{ Windows = $false; Mac = $true; Backend = 'SDL_GPU'; Expected = 'a.vert.msl,a.vert.slots' },
-    @{ Windows = $true; Backend = 'DAWN'; Expected = 'a.vert.native.wgsl' }
-)) {
-    $windowsHost = $case.Windows; $macHost = $case.Mac; $backend = $case.Backend
-    ${payload}
-    if (($shaderFiles.Name | Sort-Object) -join ',' -ne $case.Expected) { throw 'Wrong shader payload' }
-}
 foreach ($StaticRuntime in @($false, $true)) {
     foreach ($MinSize in @($false, $true)) {
         foreach ($EnableSvg in @($false, $true)) {
@@ -98,7 +98,6 @@ foreach ($StaticRuntime in @($false, $true)) {
         assert.equal(result.status, 0, result.stdout + result.stderr);
     },
 );
-
 test("Linux shipping selects static host libraries and Vulkan-compatible native configuration", () => {
     assert.equal(shippingPlatform("linux", "x64"), "linux");
     assert.equal(shippingPlatform("win32", "x64"), "win32");
@@ -228,141 +227,162 @@ test("shipping selects all application registry entries and refuses paths or dup
     );
 });
 
-test(
-    "universal packaging rejects missing, mismatched and stale slices before merging",
-    { skip: !tools.powershell },
-    (t) => {
-        const root = mkdtempSync(join(tmpdir(), "bblite-universal-"));
-        t.after(() => rmSync(root, { recursive: true, force: true }));
-        for (const path of [
-            "native",
-            "upstream",
-            "generated/demo/upstream/shaders",
-            "generated/demo/assets",
-        ])
-            mkdirSync(join(root, path), { recursive: true });
-        writeFileSync(join(root, "native/vcpkg.json"), "{}");
-        writeFileSync(join(root, "upstream/babylon-lite.json"), "{}");
-        writeFileSync(
-            join(root, "generated/demo/features.cmake"),
-            'set(BBLITE_IMAGE_CODECS "")',
-        );
-        writeFileSync(
-            join(root, "generated/demo/assets/data.bin"),
-            "current asset",
-        );
-        writeFileSync(
-            join(root, "generated/demo/upstream/shaders/main.msl"),
-            "current shader",
-        );
-        const source = readFileSync("tools/package-demo.ps1", "utf8");
-        const end = source.indexOf("$backendToken =");
-        assert.ok(end > 0);
-        // Run the real input validation on fixture trees. Mock only host detection
-        // and lipo (actual Mach-O merging/signing is exercised on the Mac).
-        const script = source
-            .slice(0, end)
-            .replaceAll("$PSScriptRoot", "$env:BBLITE_TEST_TOOLS")
-            .replace(
-                "$root = Get-RepositoryRoot",
-                "$root = $env:BBLITE_TEST_ROOT",
-            )
-            .replaceAll("$IsMacOS", "$macHost")
-            .replaceAll("$IsWindows", "$windowsHost")
-            .replaceAll("$IsLinux", "$linuxHost")
-            .replace(
-                '$ErrorActionPreference = "Stop"',
-                `$ErrorActionPreference = "Stop"
-$macHost = $true; $windowsHost = $false; $linuxHost = $false
-function lipo { param([switch]$archs, [string]$Path) $global:LASTEXITCODE = 0; Get-Content -LiteralPath $Path }
-`,
-            );
-        const probe = join(root, "validate.ps1");
-        writeFileSync(probe, script);
-        const cache = (arch: string): string =>
-            Object.entries({
-                CMAKE_OSX_ARCHITECTURES: arch,
-                CMAKE_OSX_DEPLOYMENT_TARGET: "12.0",
-                BBLITE_BACKEND: "SDL_GPU",
-                BBLITE_MINSIZE: "ON",
-                BBLITE_AUDIO_CAPTURE: "OFF",
-                BBLITE_VISUAL_CAPTURE: "OFF",
-                VCPKG_TARGET_TRIPLET:
-                    arch === "arm64" ? "arm64-osx" : "x64-osx",
-                BBLITE_GENERATED_DIR: join(root, "generated/demo"),
-            })
-                .map(([key, value]) => `${key}:STRING=${value}`)
-                .join("\n");
-        const reset = (): void => {
-            for (const arch of ["x86_64", "arm64"]) {
-                const build = join(root, `native/${arch}`);
-                mkdirSync(join(build, "assets"), { recursive: true });
-                mkdirSync(join(build, "shaders"), { recursive: true });
-                writeFileSync(join(build, "CMakeCache.txt"), cache(arch));
-                writeFileSync(join(build, "bblite_native"), arch);
-                writeFileSync(join(build, "assets/data.bin"), "current asset");
-                writeFileSync(
-                    join(build, "shaders/main.msl"),
-                    "current shader",
-                );
-            }
-        };
-        const run = () =>
-            spawnSync(
-                tools.powershell!,
-                [
-                    "-NoProfile",
-                    "-File",
-                    probe,
-                    "-Scene",
-                    "demo",
-                    "-BuildDirectory",
-                    join(root, "native/x86_64"),
-                    "-Arm64BuildDirectory",
-                    join(root, "native/arm64"),
-                ],
-                {
-                    encoding: "utf8",
-                    windowsHide: true,
-                    env: {
-                        ...process.env,
-                        BBLITE_TEST_TOOLS: resolve("tools"),
-                        BBLITE_TEST_ROOT: root,
-                    },
-                },
-            );
-        reset();
-        const valid = run();
-        assert.equal(valid.status, 0, valid.stdout + valid.stderr);
-        for (const [path, value, message] of [
-            [
-                "CMakeCache.txt",
-                cache("arm64").replace("12.0", "13.0"),
-                /disagree on CMAKE_OSX_DEPLOYMENT_TARGET/,
-            ],
-            [
-                "CMakeCache.txt",
-                cache("x86_64"),
-                /Expected CMAKE_OSX_ARCHITECTURES=arm64/,
-            ],
-            ["bblite_native", "x86_64", /Expected a thin arm64/],
-            ["assets/data.bin", "old asset", /stale deployed payload/],
-            ["shaders/main.msl", "old shader", /stale deployed payload/],
-        ] as const) {
-            reset();
-            writeFileSync(join(root, "native/arm64", path), value);
-            const invalid = run();
-            assert.notEqual(invalid.status, 0);
-            assert.match(invalid.stderr, message);
+test("desktop packaging refuses a build that is not the exact mini shape, and stale or missing slices", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblite-desktop-builds-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const write = (path: string, content: string): void => {
+        mkdirSync(join(root, path, ".."), { recursive: true });
+        writeFileSync(join(root, path), content);
+    };
+    write("generated/demo/assets/data.bin", "current asset");
+    write("generated/demo/upstream/shaders/main.msl", "current shader");
+    write("generated/demo/upstream/shaders/main.dxil", "current dxil");
+    write("generated/demo/upstream/shaders/main.slots", "slots");
+    const cacheText = (values: Record<string, string>): string =>
+        Object.entries(values)
+            .map(([key, value]) => `${key}:STRING=${value}`)
+            .join("\n");
+    const mac = (arch: string): Record<string, string> => ({
+        CMAKE_OSX_ARCHITECTURES: arch,
+        CMAKE_OSX_DEPLOYMENT_TARGET: "12.0",
+        BBLITE_BACKEND: "SDL_GPU",
+        BBLITE_MINSIZE: "ON",
+        BBLITE_AUDIO_CAPTURE: "OFF",
+        BBLITE_VISUAL_CAPTURE: "OFF",
+        VCPKG_TARGET_TRIPLET: arch === "arm64" ? "arm64-osx" : "x64-osx",
+        BBLITE_GENERATED_DIR: join(root, "generated/demo"),
+        BBLITE_DEPLOYED_SHADER_SUFFIXES: ".msl;.slots",
+    });
+    const reset = (): void => {
+        for (const arch of ["x86_64", "arm64"]) {
+            write(`native/${arch}/CMakeCache.txt`, cacheText(mac(arch)));
+            write(`native/${arch}/bblite_native`, arch);
+            write(`native/${arch}/assets/data.bin`, "current asset");
+            write(`native/${arch}/shaders/main.msl`, "current shader");
+            write(`native/${arch}/shaders/main.slots`, "slots");
         }
+    };
+    // lipo reads a thin executable's architecture; the fixture's names it.
+    const validate = () =>
+        validateDesktopBuilds(
+            {
+                scene: "demo",
+                buildDirectory: "native/x86_64",
+                arm64BuildDirectory: "native/arm64",
+                outputRoot: "releases",
+                cmake: "cmake",
+                platform: "darwin",
+                root,
+            },
+            (executable) => readFileSync(executable, "utf8"),
+        );
+    reset();
+    assert.deepEqual(
+        validate().map((slice) => slice.buildDirectory),
+        [join(root, "native/x86_64"), join(root, "native/arm64")],
+    );
+    for (const [path, value, message] of [
+        [
+            "CMakeCache.txt",
+            cacheText({ ...mac("arm64"), CMAKE_OSX_DEPLOYMENT_TARGET: "13.0" }),
+            /disagree on CMAKE_OSX_DEPLOYMENT_TARGET/,
+        ],
+        [
+            "CMakeCache.txt",
+            cacheText(mac("x86_64")),
+            /Expected CMAKE_OSX_ARCHITECTURES=arm64/,
+        ],
+        ["bblite_native", "x86_64", /Expected a thin arm64/],
+        ["assets/data.bin", "old asset", /data\.bin \(changed\)/],
+        ["shaders/main.msl", "old shader", /main\.msl \(changed\)/],
+        ["shaders/orphan.msl", "left behind", /orphan\.msl \(unexpected\)/],
+    ] as const) {
         reset();
-        rmSync(join(root, "native/arm64/bblite_native"));
-        const missing = run();
-        assert.notEqual(missing.status, 0);
-        assert.match(missing.stderr, /Required shipping executable not found/);
-    },
-);
+        write(`native/arm64/${path}`, value);
+        assert.throws(validate, message);
+        rmSync(join(root, "native/arm64/shaders/orphan.msl"), { force: true });
+    }
+    reset();
+    rmSync(join(root, "native/arm64/bblite_native"));
+    assert.throws(validate, /Required shipping executable not found/);
 
+    // Windows: one static-CRT SDL_GPU or Dawn slice of the named scene.
+    const windows: Record<string, string> = {
+        BBLITE_BACKEND: "SDL_GPU",
+        BBLITE_MINSIZE: "ON",
+        VCPKG_TARGET_TRIPLET: "x64-windows-static",
+        CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreaded",
+        BBLITE_GENERATED_DIR: join(root, "generated/demo"),
+        BBLITE_DEPLOYED_SHADER_SUFFIXES: ".dxil;.slots",
+    };
+    write("native/win/bblite_native.exe", "exe");
+    write("native/win/assets/data.bin", "current asset");
+    write("native/win/shaders/main.dxil", "current dxil");
+    write("native/win/shaders/main.slots", "slots");
+    const validateWindows = (
+        values: Record<string, string>,
+        scene = "demo",
+        expectBackend?: CompiledNativeBackend,
+    ) => {
+        write("native/win/CMakeCache.txt", cacheText(values));
+        return validateDesktopBuilds({
+            scene,
+            buildDirectory: "native/win",
+            outputRoot: "releases",
+            cmake: "cmake",
+            platform: "win32",
+            root,
+            ...(expectBackend ? { expectBackend } : {}),
+        });
+    };
+    assert.equal(validateWindows(windows).length, 1);
+    for (const [values, message] of [
+        [{ ...windows, BBLITE_BACKEND: "BOTH" }, /requires a single backend/],
+        [{ ...windows, BBLITE_MINSIZE: "OFF" }, /BBLITE_MINSIZE=ON/],
+        [
+            { ...windows, VCPKG_TARGET_TRIPLET: "x64-windows" },
+            /VCPKG_TARGET_TRIPLET=x64-windows-static/,
+        ],
+        [
+            { ...windows, CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreadedDLL" },
+            /static MSVC runtime/,
+        ],
+        [
+            {
+                ...windows,
+                BBLITE_GENERATED_DIR: join(root, "generated/other"),
+            },
+            /was configured against/,
+        ],
+    ] as const)
+        assert.throws(() => validateWindows(values), message);
+    assert.throws(() => validateWindows(windows, "Demo"), /generated scene id/);
+    assert.throws(
+        () => validateWindows(windows, "demo", "DAWN"),
+        /BBLITE_BACKEND=SDL_GPU, not DAWN/,
+    );
+});
+
+test("desktop packages start before they are archived and name each import the toolchain provides", () => {
+    // The staged executable runs a few frames with GPU validation and an
+    // aborting SDL assertion handler, from its own directory, bounded.
+    const source = readFileSync("src/package-demo.ts", "utf8");
+    assert.match(source, /BBLITE_MAX_FRAMES: String\(smokeFrames\)/);
+    assert.match(source, /SDL_ASSERT: "abort"/);
+    assert.match(source, /cwd: packageDirectory/);
+    assert.match(source, /const smokeFrames = 5;/);
+    assert.match(source, /Output tail:/);
+    assert.ok(
+        source.indexOf("smokeRun(staged") <
+            source.indexOf("archivePackage(plan"),
+    );
+    // A PE import table lists the DLLs a binary loads.
+    assert.deepEqual(
+        importedLibraries(readFileSync(process.execPath)).length > 0,
+        process.platform === "win32",
+    );
+    assert.deepEqual(importedLibraries(Buffer.from("not a PE image")), []);
+});
 test("static installs share optional libraries only within the exact image-codec set", () => {
     const rows = [
         {
@@ -620,81 +640,180 @@ test("extracted dependency choices remain part of the native build stamp", (t) =
     );
 });
 
+test("package publication keeps failed staging and the comparison baseline separate from replacements", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblite-shipping-publication-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const name = "bblitec-demo-sdl-gpu-windows-x64";
+    mkdirSync(join(root, name), { recursive: true });
+    mkdirSync(join(root, "@previous"));
+    writeFileSync(join(root, name, "old.txt"), "old package");
+    writeFileSync(join(root, `${name}.zip`), "old zip");
+    writeFileSync(
+        join(root, "@previous", "baseline.zip"),
+        "comparison baseline",
+    );
+    const plan = newPackageOutput(root, name);
+    // An incomplete staging publishes nothing and keeps the prior package.
+    assert.throws(
+        () => publishPackageOutput(plan),
+        /Incomplete staged package/,
+    );
+    assert.equal(
+        readFileSync(join(root, name, "old.txt"), "utf8"),
+        "old package",
+    );
+    mkdirSync(join(plan.staging, name));
+    writeFileSync(join(plan.staging, name, "new.txt"), "new package");
+    writeFileSync(join(plan.staging, `${name}.zip`), "new zip");
+    writeFileSync(join(plan.staging, `${name}.json`), "{}");
+    writeFileSync(join(plan.staging, "smoke-output.txt"), "smoke log");
+    publishPackageOutput(plan);
+    assert.ok(!existsSync(join(root, ".staging")), "published staging kept");
+    assert.equal(
+        readFileSync(join(plan.previous, name, "old.txt"), "utf8"),
+        "old package",
+    );
+    assert.equal(
+        readFileSync(join(plan.previous, `${name}.zip`), "utf8"),
+        "old zip",
+    );
+    assert.equal(
+        readFileSync(join(root, name, "new.txt"), "utf8"),
+        "new package",
+    );
+    assert.deepEqual(readdirSync(join(root, "@previous")), ["baseline.zip"]);
+    for (const accepted of [
+        "bblitec-demo-sdl-gpu-linux-x64",
+        "bblitec-demo-sdl-gpu-macos-universal",
+        "bblitec-tetris-sdl-gpu-ios-arm64",
+        "bblitec-demo-dawn-android-x86-64",
+    ])
+        assert.equal(newPackageOutput(root, accepted).name, accepted);
+    for (const invalid of [
+        "../escape",
+        "bblitec-../escape-windows-x64",
+        "bblitec-demo-sdl-gpu-linux-universal",
+    ])
+        assert.throws(
+            () => newPackageOutput(root, invalid),
+            /Invalid package name/,
+        );
+    assert.throws(
+        () => assertPackageChild(root, join(root, "..", "outside")),
+        /escapes output root/,
+    );
+    const outside = join(root, "..", `${basename(root)}-external`);
+    mkdirSync(outside);
+    t.after(() => rmSync(outside, { recursive: true, force: true }));
+    mkdirSync(join(root, ".staging"), { recursive: true });
+    symlinkSync(outside, join(root, ".staging", "link"), "junction");
+    assert.throws(
+        () =>
+            assertPackageChild(root, join(root, ".staging", "link", "payload")),
+        /crosses a link or junction/,
+    );
+});
+
 test(
-    "package publication keeps failed staging and the comparison baseline separate from replacements",
-    { skip: !tools.powershell },
+    "the mobile scripts' staging, archive, receipt and publication run through one command",
+    { skip: !tools.cmake },
     (t) => {
-        const directory = mkdtempSync(
-            join(tmpdir(), "bblite-shipping-publication-"),
+        const root = mkdtempSync(join(tmpdir(), "bblite-mobile-publication-"));
+        t.after(() => rmSync(root, { recursive: true, force: true }));
+        const name = "bblitec-tetris-sdl-gpu-ios-arm64";
+        mkdirSync(join(root, "@previous"));
+        writeFileSync(join(root, "@previous", "keep.txt"), "baseline");
+        const command = (...args: string[]): string => {
+            const result = spawnSync(
+                process.execPath,
+                ["dist/src/package-output.js", ...args],
+                { encoding: "utf8", windowsHide: true },
+            );
+            assert.equal(result.status, 0, result.stdout + result.stderr);
+            return result.stdout.trim().split(/\r?\n/).at(-1)!;
+        };
+        for (const content of ["first", "second"]) {
+            const staging = command("stage", "--root", root, "--name", name);
+            const bundle = join(staging, name, "bblite-tetris.app");
+            mkdirSync(join(bundle, "shaders"), { recursive: true });
+            writeFileSync(join(bundle, "bblite_native"), content);
+            writeFileSync(join(bundle, "shaders", "a.msl"), "shader");
+            const fields = join(staging, "receipt-fields.json");
+            writeFileSync(
+                fields,
+                JSON.stringify({ scene: "tetris", platform: "ios" }),
+            );
+            assert.equal(
+                command(
+                    "finish",
+                    "--root",
+                    root,
+                    "--name",
+                    name,
+                    "--staging",
+                    staging,
+                    "--receipt",
+                    fields,
+                    "--artifact",
+                    `exe=${join(bundle, "bblite_native")}`,
+                    "--files",
+                    `bundle=${bundle}`,
+                ),
+                join(root, `${name}.zip`),
+            );
+        }
+        const receipt: unknown = JSON.parse(
+            readFileSync(join(root, `${name}.json`), "utf8"),
         );
-        t.after(() => rmSync(directory, { recursive: true, force: true }));
-        const script = join(directory, "check.ps1");
-        writeFileSync(
-            script,
-            `
-$ErrorActionPreference = 'Stop'
-Import-Module $env:BBLITE_TEST_PACKAGE_MODULE -Force
-$root = $env:BBLITE_TEST_PACKAGE_ROOT
-$name = 'bblitec-demo-sdl-gpu-windows-x64'
-New-Item -ItemType Directory -Path (Join-Path $root $name),(Join-Path $root '@previous') -Force | Out-Null
-Set-Content -LiteralPath (Join-Path $root "$name/old.txt") -Value 'old package'
-Set-Content -LiteralPath (Join-Path $root "$name.zip") -Value 'old zip'
-Set-Content -LiteralPath (Join-Path $root '@previous/baseline.zip') -Value 'comparison baseline'
-$plan = New-PackageOutput $root $name
-$failed = $false
-try { Publish-PackageOutput $plan } catch { $failed = $true }
-if (-not $failed -or -not (Test-Path -LiteralPath (Join-Path $root "$name/old.txt"))) { throw 'failed staging changed prior package' }
-New-Item -ItemType Directory -Path (Join-Path $plan.Staging $name) | Out-Null
-Set-Content -LiteralPath (Join-Path $plan.Staging "$name/new.txt") -Value 'new package'
-Set-Content -LiteralPath (Join-Path $plan.Staging "$name.zip") -Value 'new zip'
-Set-Content -LiteralPath (Join-Path $plan.Staging "$name.json") -Value '{}'
-Publish-PackageOutput $plan
-if ((Get-Content -LiteralPath (Join-Path $plan.Previous "$name/old.txt")) -ne 'old package') { throw 'prior package lost' }
-if ((Get-Content -LiteralPath (Join-Path $plan.Previous "$name.zip")) -ne 'old zip') { throw 'prior zip lost' }
-if ((Get-Content -LiteralPath (Join-Path $root "$name/new.txt")) -ne 'new package') { throw 'new package missing' }
-if ((Get-Content -LiteralPath (Join-Path $root '@previous/baseline.zip')) -ne 'comparison baseline') { throw 'baseline changed' }
-if (@(Get-ChildItem -LiteralPath (Join-Path $root '@previous')).Count -ne 1) { throw 'baseline acquired files' }
-$linuxPlan = New-PackageOutput $root 'bblitec-demo-sdl-gpu-linux-x64'
-if ($linuxPlan.Name -ne 'bblitec-demo-sdl-gpu-linux-x64') { throw 'Linux package name changed' }
-$macPlan = New-PackageOutput $root 'bblitec-demo-sdl-gpu-macos-universal'
-if ($macPlan.Name -ne 'bblitec-demo-sdl-gpu-macos-universal') { throw 'Universal package name changed' }
-foreach ($invalid in @('../escape', 'bblitec-../escape-windows-x64', 'bblitec-demo-sdl-gpu-linux-universal')) {
-    $rejected = $false
-    try { New-PackageOutput $root $invalid | Out-Null } catch { $rejected = $true }
-    if (-not $rejected) { throw 'unsafe name accepted' }
-}
-$rejected = $false
-try { Assert-PackageChild $root (Join-Path $root '../outside') } catch { $rejected = $true }
-if (-not $rejected) { throw 'escaping path accepted' }
-$outside = Join-Path $root 'external'
-New-Item -ItemType Directory -Path $outside | Out-Null
-$link = Join-Path $root '.staging/link'
-$linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
-New-Item -ItemType $linkType -Path $link -Target $outside | Out-Null
-$rejected = $false
-try { Assert-PackageChild $root (Join-Path $link 'payload') } catch { $rejected = $true }
-if (-not $rejected) { throw 'junction accepted' }
-`,
+        assert.ok(typeof receipt === "object" && receipt !== null);
+        assert.equal("scene" in receipt && receipt.scene, "tetris");
+        assert.equal("exeBytes" in receipt && receipt.exeBytes, 6);
+        assert.equal("bundleBytes" in receipt && receipt.bundleBytes, 12);
+        assert.ok("files" in receipt && Array.isArray(receipt.files));
+        assert.deepEqual(
+            receipt.files.map((file: unknown) =>
+                typeof file === "object" && file !== null && "path" in file
+                    ? file.path
+                    : undefined,
+            ),
+            ["bblite_native", "shaders/a.msl"],
         );
-        const result = spawnSync(
-            tools.powershell!,
-            ["-NoProfile", "-File", script],
-            {
-                encoding: "utf8",
-                windowsHide: true,
-                env: {
-                    ...process.env,
-                    BBLITE_TEST_PACKAGE_MODULE: resolve(
-                        "tools/package-output.psm1",
-                    ),
-                    BBLITE_TEST_PACKAGE_ROOT: directory,
-                },
-            },
+        assert.ok(
+            "zipBytes" in receipt && typeof receipt.zipBytes === "number",
         );
-        assert.equal(result.status, 0, result.stdout + result.stderr);
+        assert.match(
+            "exeSha256" in receipt ? String(receipt.exeSha256) : "",
+            /^[0-9A-F]{64}$/,
+        );
+        assert.equal(
+            readFileSync(
+                join(root, name, "bblite-tetris.app", "bblite_native"),
+                "utf8",
+            ),
+            "second",
+        );
+        const replaced = readdirSync(join(root, ".replaced"));
+        assert.equal(replaced.length, 1);
+        assert.equal(
+            readFileSync(
+                join(
+                    root,
+                    ".replaced",
+                    replaced[0]!,
+                    name,
+                    "bblite-tetris.app",
+                    "bblite_native",
+                ),
+                "utf8",
+            ),
+            "first",
+        );
+        assert.equal(
+            readFileSync(join(root, "@previous", "keep.txt"), "utf8"),
+            "baseline",
+        );
     },
 );
-
 test("size report exposes growth and shrinkage separately for executable and archive", () => {
     const report = packageSizeReport([
         {

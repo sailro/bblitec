@@ -1,0 +1,17 @@
+Expose the primitive-index feature on every device family whose Metal feature
+tables provide it (Apple7 and Mac2), not on Apple7 only.
+
+--- a/src/dawn/native/metal/PhysicalDeviceMTL.mm
++++ b/src/dawn/native/metal/PhysicalDeviceMTL.mm
+@@ -750,7 +750,9 @@
+     if ([*mDevice supportsFamily:MTLGPUFamilyApple7]) {
+         EnableFeature(Feature::ChromiumExperimentalSubgroupMatrix);
+-        // TODO(342172182): This may be available in more places?
+-        // (mwyrzykowski says "Apple7 and all Macs")
++    }
++    // Metal's feature tables expose Primitive ID on Apple7 and Mac2.
++    if ([*mDevice supportsFamily:MTLGPUFamilyApple7] ||
++        [*mDevice supportsFamily:MTLGPUFamilyMac2]) {
+         EnableFeature(Feature::PrimitiveIndex);
+     }
+ 

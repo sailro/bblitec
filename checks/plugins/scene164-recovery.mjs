@@ -13,6 +13,24 @@ import {
     requireObservations,
 } from "./support.mjs";
 
+/**
+ * @import { PluginContext, PluginOutcome } from "../../dist/src/tooling/check-run.js"
+ * @import { ObservedStep } from "./support.mjs"
+ */
+
+/**
+ * @typedef {{
+ *     dataset: Record<string, string | undefined>,
+ *     viewport: { width: number, height: number },
+ * }} RecoveryState the check's `observe.state` record
+ */
+
+/** @param {ObservedStep} step */
+function observedState(step) {
+    assert(step.state, `the observed step '${step.id}' recorded no state`);
+    return /** @type {RecoveryState} */ (step.state);
+}
+
 const FLAGS = [
     "deviceLost",
     "deviceRecovered",
@@ -25,6 +43,10 @@ const FLAGS = [
     "ready",
 ];
 
+/**
+ * @param {PluginContext} context
+ * @returns {PluginOutcome}
+ */
 export function check(context) {
     const observations = requireObservations(context);
     const before = observedStep(observations, "before");
@@ -32,14 +54,15 @@ export function check(context) {
     const resized = observedStep(observations, "resized");
     const input = observedStep(observations, "input");
     const disposed = observedStep(observations, "disposed");
+    const afterState = observedState(after);
     for (const flag of FLAGS)
-        assert.equal(after.state.dataset[flag], "true", `browser: ${flag}`);
+        assert.equal(afterState.dataset[flag], "true", `browser: ${flag}`);
     assert.ok(
-        Number(after.state.dataset.postRecoveryFrames) >= 20,
+        Number(afterState.dataset.postRecoveryFrames) >= 20,
         "browser: post-recovery frames",
     );
     assert.ok(
-        Number(after.state.dataset.drawCalls) > 0,
+        Number(afterState.dataset.drawCalls) > 0,
         "browser: draw calls after recovery",
     );
     const recoveryMad = compareImages(
@@ -48,7 +71,7 @@ export function check(context) {
     ).mad;
     assert.equal(recoveryMad, 0, "browser: the canvas changed across recovery");
     assert.deepEqual(
-        resized.state.viewport,
+        observedState(resized).viewport,
         { width: 960, height: 540 },
         "browser: resized viewport",
     );
@@ -57,10 +80,17 @@ export function check(context) {
         observedImage(context, input.image),
     ).mad;
     assert.ok(inputMad > 0.1, "browser: wheel input did not change the image");
-    assert.equal(disposed.state.dataset.disposed, "true", "browser: dispose");
+    assert.equal(
+        observedState(disposed).dataset.disposed,
+        "true",
+        "browser: dispose",
+    );
+    /** @type {{ browser: { recoveryMad: number, inputMad: number }, native: Record<string, unknown> }} */
     const details = { browser: { recoveryMad, inputMad }, native: {} };
     for (const backend of context.backends) {
-        const log = context.results[backend].recovery.log;
+        const recovery = context.results[backend]?.recovery;
+        assert(recovery, `${backend}: missing phase recovery`);
+        const log = recovery.log;
         for (const flag of FLAGS)
             assert.ok(
                 log.includes(`dataset ${flag}=true`),
@@ -102,14 +132,16 @@ export function check(context) {
         const alphas = [
             ...log.matchAll(/camera frame=\d+.* alpha=([0-9.]+)/g),
         ].map((match) => Number(match[1]));
+        const [initialAlpha] = alphas;
         assert.ok(
-            alphas.some((alpha) => Math.abs(alpha - alphas[0]) > 0.01),
+            initialAlpha !== undefined &&
+                alphas.some((alpha) => Math.abs(alpha - initialAlpha) > 0.01),
             `${backend}: the camera did not move`,
         );
         details.native[backend] = {
             generations,
             windows,
-            initialAlpha: alphas[0],
+            initialAlpha,
             finalAlpha: alphas.at(-1),
         };
     }

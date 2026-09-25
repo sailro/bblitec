@@ -7,16 +7,15 @@ import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
+import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
+import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
+import { textRecordModel } from "../src/lowering/text-records.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { lowerMeshMaterialSetter } from "../src/lowering/mesh-material-setter.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import {
-    materializePinnedText,
-    type CompiledTextData,
-    type TextBlob,
-} from "../src/pinned-text-data.js";
+import { materializePinnedText } from "../src/pinned-text-data.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
-import { resolveBundledAsset } from "../src/compiler/assets.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { stringLiteral } from "../src/cpp-literals.js";
 import {
     cppFunction,
@@ -79,12 +78,26 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
         return;
     }
     const directory = resolve("artifacts/test-text-runtime");
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(resolve(directory, "bblite"), { recursive: true });
     const context = new LoweringContext();
     writeFileSync(
-        resolve(directory, "upstream_text.hpp"),
-        new TextLowerer(context).header(),
+        resolve(directory, "bblite/upstream_text_records.hpp"),
+        textRecordsHeader(context),
     );
+    for (const [name, header] of [
+        ["upstream_text", new TextLowerer(context).header()],
+        ["upstream_text_gpu", new TextGpuLowerer(context).header()],
+        [
+            "upstream_text_renderable",
+            new TextLowerer(context).renderableHeader(),
+        ],
+    ] as const) {
+        writeFileSync(resolve(directory, "bblite", `${name}.hpp`), header);
+        writeFileSync(
+            resolve(directory, `${name}.hpp`),
+            `#include <bblite/${name}.hpp>\n`,
+        );
+    }
     const { createTextRenderable, disposeTextRenderable } =
         await importPinnedModule<{
             createTextRenderable(
@@ -207,6 +220,26 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
             renderable._version,
             ...renderable._worldMatrix(),
         );
+    // The compiler spells a transform write through the record model; so
+    // does this check.
+    const model = textRecordModel(context);
+    const records = {
+        position: "ObservableVec3",
+        scaling: "ObservableVec3",
+        rotationQuaternion: "ObservableQuat",
+        rotation: "EulerProxy",
+    } as const;
+    type Transform = keyof typeof records;
+    const lane = (transform: Transform, axis: string) =>
+        model.memberRead(
+            model.memberRead("r", "TextRenderable", transform),
+            records[transform],
+            axis,
+        );
+    const write = (transform: Transform, axis: string, value: string) =>
+        `${model.memberWrite(model.memberRead("r", "TextRenderable", transform), records[transform], axis, value)};`;
+    const bulk = (transform: Transform, ...args: string[]) =>
+        `${model.memberCall(model.memberRead("r", "TextRenderable", transform), records[transform], "set", args)};`;
     const actions: string[] = [];
     const act = (cpp: string, apply: () => void) => {
         actions.push(cpp, "record();");
@@ -214,31 +247,28 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
         record();
     };
     act("", () => {});
-    act("text_write_position(*r, 0, 0);", () => (renderable.position.x = 0));
-    act("text_set_position(*r, 0, 0, 0);", () =>
+    act(write("position", "x", "0"), () => (renderable.position.x = 0));
+    act(bulk("position", "0", "0", "0"), () =>
         renderable.position.set(0, 0, 0),
     );
     act(
-        "text_write_position(*r, 1, 2.123456789123);",
+        write("position", "y", "2.123456789123"),
         () => (renderable.position.y = 2.123456789123),
     );
-    act("text_set_scaling(*r, -.5, 1.2, 3.1);", () =>
+    act(bulk("scaling", "-.5", "1.2", "3.1"), () =>
         renderable.scaling.set(-0.5, 1.2, 3.1),
     );
-    act("text_set_rotation(*r, .1, 1.5707963267948966, -.3);", () =>
+    act(bulk("rotation", ".1", "1.5707963267948966", "-.3"), () =>
         renderable.rotation.set(0.1, Math.PI / 2, -0.3),
     );
-    act("text_write_rotation(*r, 0, .4);", () => (renderable.rotation.x = 0.4));
-    act("text_write_rotation(*r, 1, .6);", () => (renderable.rotation.y = 0.6));
+    act(write("rotation", "x", ".4"), () => (renderable.rotation.x = 0.4));
+    act(write("rotation", "y", ".6"), () => (renderable.rotation.y = 0.6));
     act(
-        "text_write_rotation_quaternion(*r, 2, .125);",
+        write("rotationQuaternion", "z", ".125"),
         () => (renderable.rotationQuaternion.z = 0.125),
     );
-    act(
-        "text_write_rotation(*r, 2, -.8);",
-        () => (renderable.rotation.z = -0.8),
-    );
-    act("text_set_rotation_quaternion(*r, .25, -.5, .75, 1);", () =>
+    act(write("rotation", "z", "-.8"), () => (renderable.rotation.z = -0.8));
+    act(bulk("rotationQuaternion", ".25", "-.5", ".75", "1"), () =>
         renderable.rotationQuaternion.set(0.25, -0.5, 0.75, 1),
     );
     act(
@@ -263,35 +293,16 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
                 },
             ),
         );
-    uniform("update_text_uniforms(*r, gpu, &camera, 800, 640, write);");
-    uniform("update_text_uniforms(*r, gpu, &camera, 800, 640, write);");
+    uniform("update(&camera, 800, 640);");
+    uniform("update(&camera, 800, 640);");
     camera.key = 7;
-    uniform(
-        "camera.change_key = 7; update_text_uniforms(*r, gpu, &camera, 800, 640, write);",
-    );
+    uniform("camera.change_key = 7; update(&camera, 800, 640);");
     camera.aspect = 0.75;
-    uniform(
-        "camera.effective_aspect = .75; update_text_uniforms(*r, gpu, &camera, 800, 640, write);",
-    );
-    uniform(
-        "update_text_uniforms(*r, gpu, nullptr, 400, 0, write);",
-        false,
-        400,
-        0,
-    );
-    act("text_write_position(*r, 2, -3);", () => (renderable.position.z = -3));
-    uniform(
-        "update_text_uniforms(*r, gpu, nullptr, 400, 0, write);",
-        false,
-        400,
-        0,
-    );
-    uniform(
-        "update_text_uniforms(*r, gpu, &camera, 400, 0, write);",
-        true,
-        400,
-        0,
-    );
+    uniform("camera.effective_aspect = .75; update(&camera, 800, 640);");
+    uniform("update(nullptr, 400, 0);", false, 400, 0);
+    act(write("position", "z", "-3"), () => (renderable.position.z = -3));
+    uniform("update(nullptr, 400, 0);", false, 400, 0);
+    uniform("update(&camera, 400, 0);", true, 400, 0);
     let destroyed = "";
     renderable._gpu = {
         _textU: { destroy: () => (destroyed += "u") },
@@ -312,41 +323,84 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
         resolve(directory, "expected-writes.bin"),
         Buffer.concat(writes),
     );
-    const cpp = `#include "upstream_text.hpp"
+    const cpp = `#include "upstream_text_renderable.hpp"
 #include <fstream>
 #include <stdexcept>
+using namespace bbl;
+/** A GPU object whose destroy() leaves its mark. */
+struct Marked final : TextGpuObject {
+    std::string* log = nullptr;
+    char mark = 0;
+    void destroy() override { *log += mark; }
+};
+/** The device the uniform tail writes through: each write's range and bytes. */
+struct UniformWrites final : TextGpuDevice {
+    std::ofstream& out;
+    TextGpuHandle target;
+    explicit UniformWrites(std::ofstream& output) : out(output) {}
+    void write_buffer(const TextGpuHandle& buffer, double offset, const js::ArrayBuffer& data,
+                      double data_offset, double size) override {
+        if (buffer != target) throw std::runtime_error("uniform target");
+        const std::uint32_t prefix[] = {static_cast<std::uint32_t>(offset),static_cast<std::uint32_t>(size)};
+        out.write(reinterpret_cast<const char*>(prefix),sizeof(prefix));
+        out.write(reinterpret_cast<const char*>(data.data()) + static_cast<std::size_t>(data_offset),
+                  static_cast<std::streamsize>(size));
+    }
+    TextGpuHandle create_buffer(const TextBufferDescriptor&) override { throw std::runtime_error("buffer"); }
+    TextGpuHandle create_texture(const TextTextureDescriptor&) override { throw std::runtime_error("texture"); }
+    TextGpuHandle create_bind_group(const TextBindGroupDescriptor&) override { throw std::runtime_error("group"); }
+    TextGpuEncoderHandle create_render_bundle_encoder(const TextRenderBundleEncoderDescriptor&) override { throw std::runtime_error("bundle"); }
+    void write_texture(const TextTexelCopyTextureInfo&, const js::ArrayBuffer&, const TextTexelCopyBufferLayout&, const TextExtent3D&) override { throw std::runtime_error("texture write"); }
+    TextPipelineSet text_pipeline(const std::string&, double, const std::optional<std::string>&, bool, const std::shared_ptr<const void>&, const std::string&) override { throw std::runtime_error("pipeline"); }
+    TextPipelineDeviceCacheHandle text_pipeline_cache() override { throw std::runtime_error("cache"); }
+};
 int main() {
-    using namespace bbl;
-    auto data = create_text_data({});
+    auto data = std::make_shared<TextDataState>();
     auto r = create_text_renderable(data);
     auto alias = r;
     auto other = create_text_renderable(data);
     if (alias != r || other == r || other->data != r->data) return 1;
     std::ofstream state("state.bin", std::ios::binary), writes("writes.bin", std::ios::binary);
     auto record = [&]() {
-        const double ex = text_read_rotation(*r,0), ey = text_read_rotation(*r,1), ez = text_read_rotation(*r,2);
-        const auto world = text_world_matrix(*r);
-        const double values[] = {r->position.x,r->position.y,r->position.z,
-            r->rotation_quaternion.x,r->rotation_quaternion.y,r->rotation_quaternion.z,r->rotation_quaternion.w,
-            r->quaternion_version,ex,ey,ez,r->scaling.x,r->scaling.y,r->scaling.z,r->opacity,r->order,
+        const double ex = ${lane("rotation", "x")}, ey = ${lane("rotation", "y")}, ez = ${lane("rotation", "z")};
+        const auto world = ${model.memberCall("r", "TextRenderable", "_worldMatrix", [])};
+        const double values[] = {${lane("position", "x")},${lane("position", "y")},${lane("position", "z")},
+            ${lane("rotationQuaternion", "x")},${lane("rotationQuaternion", "y")},${lane("rotationQuaternion", "z")},${lane("rotationQuaternion", "w")},
+            ${lane("rotationQuaternion", "version")},ex,ey,ez,${lane("scaling", "x")},${lane("scaling", "y")},${lane("scaling", "z")},r->opacity,r->order,
             double(r->ignore_depth),double(r->is_transparent),double(r->wm_dirty),r->version};
         state.write(reinterpret_cast<const char*>(values),sizeof(values));
-        for (float value: world) { const double wide=value; state.write(reinterpret_cast<const char*>(&wide),sizeof(wide)); }
+        for (std::size_t index = 0; index < world.size(); ++index) { const double wide=world.load(index); state.write(reinterpret_cast<const char*>(&wide),sizeof(wide)); }
     };
-    const std::array<float,16> vp{${Array.from(vp, (value) => `${Number.isInteger(value) ? value.toFixed(1) : value}f`).join(",")}};
-    TextCameraInput camera{vp,4,1.25};
-    TextGpuState gpu;
-    TextUniformWrite write = [&](std::size_t offset, std::span<const std::uint8_t> bytes) {
-        const std::uint32_t prefix[] = {static_cast<std::uint32_t>(offset),static_cast<std::uint32_t>(bytes.size())};
-        writes.write(reinterpret_cast<const char*>(prefix),sizeof(prefix));
-        writes.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
+    TextCameraInput camera{js::TypedArray<float>{${Array.from(vp, (value) => `${Number.isInteger(value) ? value.toFixed(1) : value}f`).join(",")}},4,1.25};
+    auto device = std::make_shared<UniformWrites>(writes);
+    auto surface = std::make_shared<TextSurface>();
+    surface->device = device;
+    // The renderable's GPU record as \`ensureGpu\` creates it.
+    auto gpu = std::make_shared<TextRenderableGpu>();
+    gpu->device = device;
+    gpu->text_u = std::make_shared<TextGpuObject>();
+    device->target = gpu->text_u;
+    gpu->style_buf = std::make_shared<TextGpuObject>();
+    gpu->style_buf->size = 32;
+    gpu->instance_cap = 8;
+    gpu->uploaded_data_version = gpu->uploaded_camera_version = gpu->uploaded_aspect = -1;
+    gpu->uploaded_opacity = std::numeric_limits<double>::quiet_NaN();
+    const auto update = [&](TextCameraInputPointer input, double width, double height) {
+        text_renderable_detail::update_text_renderable(r, surface, gpu, nullptr,
+                                                       TextDrawUpdateContext{input, width, height});
     };
     ${actions.join("\n    ")}
     std::string destroyed;
-    auto lease = std::make_shared<TextGpuState>();
-    lease->destroy_uniform = [&] { destroyed += "u"; };
-    lease->destroy_instances = [&] { destroyed += "i"; };
-    lease->destroy_styles = [&] { destroyed += "s"; };
+    const auto marked = [&](char mark) {
+        auto object = std::make_shared<Marked>();
+        object->log = &destroyed;
+        object->mark = mark;
+        return object;
+    };
+    auto lease = std::make_shared<TextRenderableGpu>();
+    lease->text_u = marked('u');
+    lease->instance_buf = marked('i');
+    lease->style_buf = marked('s');
     r->gpu = lease;
     dispose_text_renderable(r); dispose_text_renderable(r);
     if (destroyed != "uis" || r->gpu || r->data != data || other->data != data) return 2;
@@ -365,7 +419,9 @@ int main() {
         "/W4",
         "/WX",
         "/fp:strict",
+        "/DBBLITE_HAS_TEXT=1",
         `/I${resolve("native/include")}`,
+        `/I${directory}`,
         source,
         `/Fo${resolve(directory, "check.obj")}`,
         `/Fe${exe}`,
@@ -544,14 +600,22 @@ test("deferred scene registration observes snapshot order, identity guards, fail
 
     const context = new LoweringContext(),
         directory = resolve("artifacts/test-text-registration");
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(resolve(directory, "bblite"), { recursive: true });
+    writeFileSync(
+        resolve(directory, "bblite/upstream_text_records.hpp"),
+        textRecordsHeader(context),
+    );
     const source = new SceneLowerer(context).lowerCore({ text: true }).source;
     const ordinary = new SceneLowerer(context).lowerCore().source;
     assert.doesNotMatch(ordinary, /text_renderables|bblite\/text\.hpp/);
-    writeFileSync(
-        resolve(directory, "upstream_text.hpp"),
-        new TextLowerer(context).header(),
-    );
+    for (const [name, header] of [
+        ["upstream_text_gpu", new TextGpuLowerer(context).header()],
+        [
+            "upstream_text_renderable",
+            new TextLowerer(context).renderableHeader(),
+        ],
+    ] as const)
+        writeFileSync(resolve(directory, "bblite", `${name}.hpp`), header);
     const bodies = [
         "void require_scene_engine(",
         "std::uint32_t material_family_bit(",
@@ -563,10 +627,22 @@ test("deferred scene registration observes snapshot order, identity guards, fail
     ]
         .map((name) => cppFunction(source, name))
         .join("\n");
-    const cpp = `#include "upstream_text.hpp"
+    const cpp = `#include <bblite/upstream_text_renderable.hpp>
 namespace bbl {
 ${lowerMeshMaterialSetter(context)}
 ${bodies}
+}
+/** A GPU object whose destroy() leaves its mark. */
+struct Marked final : bbl::TextGpuObject {
+    std::string* log = nullptr;
+    char mark = 0;
+    void destroy() override { *log += mark; }
+};
+std::shared_ptr<Marked> marked(std::string& log, char mark) {
+    auto object = std::make_shared<Marked>();
+    object->log = &log;
+    object->mark = mark;
+    return object;
 }
 int main(){
     using namespace bbl;
@@ -609,7 +685,7 @@ int main(){
         if(std::string(error.what())!="synchronous throw")return 17;
     }
     if(rejected_order!=${stringLiteral(rejectedOrder)})return 18;
-    auto data=create_text_data({});
+    auto data=std::make_shared<TextDataState>();
     auto r=create_text_renderable(data);
     TextRenderableOptions options; options.order=-5;
     auto other=create_text_renderable(data,options);
@@ -618,10 +694,10 @@ int main(){
     unregister_scene(scene);register_scene(scene);
     if(scene.state->text_renderables!=std::vector<TextRenderable>{other,r,r}) return 8;
     std::string destroyed;
-    r->gpu=std::make_shared<TextGpuState>();
-    r->gpu->destroy_uniform=[&]{destroyed+="u";};
-    r->gpu->destroy_instances=[&]{destroyed+="i";};
-    r->gpu->destroy_styles=[&]{destroyed+="s";};
+    r->gpu=std::make_shared<TextRenderableGpu>();
+    r->gpu->text_u=marked(destroyed,'u');
+    r->gpu->instance_buf=marked(destroyed,'i');
+    r->gpu->style_buf=marked(destroyed,'s');
     dispose_scene(scene);dispose_scene(alias);
     if(destroyed!="uis" || !scene.state->text_renderables.empty() || !engine.registered_scenes.empty()) return 9;
     try { add_text_renderable(scene,r); return 11; } catch(const std::runtime_error&) {}
@@ -642,6 +718,7 @@ int main(){
         "/WX",
         "/DBBLITE_HAS_TEXT=1",
         `/I${resolve("native/include")}`,
+        `/I${directory}`,
         path,
         `/Fo${resolve(directory, "check.obj")}`,
         `/Fe${exe}`,
@@ -656,35 +733,23 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
         return;
     }
     const directory = resolve("artifacts/test-text-storage");
-    mkdirSync(directory, { recursive: true });
+    mkdirSync(resolve(directory, "bblite"), { recursive: true });
     const fontBytes = readAssetBytesSync(
-        resolveBundledAsset("/fonts/Roboto-Regular.ttf"),
+        `${pinnedLabPublicUrl()}fonts/Roboto-Regular.ttf`,
         resolve(directory, "source.ts"),
     );
     const layout = { fontSizePx: 180, text: "A2C" };
-    const baked = materializePinnedText(fontBytes, layout)!;
-    const chunks: Buffer[] = [];
-    const blob = (encoded: string): TextBlob => {
-        const bytes = Buffer.from(encoded, "base64"),
-            assetOutput = `${chunks.length}.bin`;
-        chunks.push(bytes);
-        writeFileSync(resolve(directory, assetOutput), bytes);
-        return { assetOutput, sha256: "", byteLength: bytes.length };
-    };
-    const row: CompiledTextData = {
-        ...baked,
-        id: 0,
-        font: { source: "fixture-font", assetOutput: "font", sha256: "" },
+    const records = textRecordModel(new LoweringContext());
+    const baked = materializePinnedText(
+        fontBytes,
         layout,
-        instances: { ...baked.instances, bytes: blob(baked.instances.bytes) },
-        styles: { ...baked.styles, bytes: blob(baked.styles.bytes) },
-        atlases: baked.atlases.map((atlas) => ({
-            ...atlas,
-            curves: { ...atlas.curves, bytes: blob(atlas.curves.bytes) },
-            bands: { ...atlas.bands, bytes: blob(atlas.bands.bytes) },
-            metadata: { ...atlas.metadata, bytes: blob(atlas.metadata.bytes) },
-        })),
-    };
+        records.transportSchema(),
+    )!.data!;
+    for (const [index, base64] of baked.buffers.entries())
+        writeFileSync(
+            resolve(directory, `${index}.bin`),
+            Buffer.from(base64, "base64"),
+        );
     interface PinData {
         width: number;
         height: number;
@@ -695,7 +760,14 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
         _dirtyEnd: number;
         _instanceCount: number;
         _styleCount: number;
-        _groups: Array<{ _bindGroup: object | null }>;
+        _instances: Float32Array;
+        _styles: Float32Array;
+        _groups: Array<{
+            _bindGroup: object | null;
+            _slotStart: number;
+            _slotCount: number;
+            _liveCount: number;
+        }>;
         _storage: {
             _curveSets: Map<string, { _atlas: { _gpu: object | null } }>;
         };
@@ -717,15 +789,28 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
         layout.fontSizePx,
         layout.text,
     );
-    assert.deepEqual(baked.versions, {
-        data: data._version,
-        style: data._styleVersion,
-        layout: data._layoutVersion,
-    });
-    assert.deepEqual(baked.dirtyRange, {
-        start: data._dirtyStart,
-        end: data._dirtyEnd,
-    });
+    const pinned = {
+        width: data.width,
+        height: data.height,
+        versions: [data._version, data._styleVersion, data._layoutVersion],
+        dirty: [data._dirtyStart, data._dirtyEnd],
+        instances: Buffer.from(
+            data._instances.buffer,
+            data._instances.byteOffset,
+            data._instanceCount * 12,
+        ),
+        styles: Buffer.from(
+            data._styles.buffer,
+            data._styles.byteOffset,
+            data._styles.byteLength,
+        ),
+        groups: data._groups.map((group) => [
+            group._slotStart,
+            group._slotCount,
+            group._liveCount,
+        ]),
+        atlases: data._storage._curveSets.size,
+    };
     let destroyed = "";
     for (const set of data._storage._curveSets.values())
         set._atlas._gpu = {
@@ -741,21 +826,11 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
     assert.equal(data._groups.length, 0);
     assert.equal(data._instanceCount, 0);
     assert.equal(data._styleCount, 0);
-    assert.equal(data._storage._curveSets.size, baked.atlases.length);
+    assert.equal(data._storage._curveSets.size, pinned.atlases);
     assert.equal(destroyed, "");
     pin.disposeDefaultTextData(data);
     pin.disposeDefaultTextData(data);
-    assert.equal(destroyed, "cbm".repeat(baked.atlases.length));
-    assert.equal(data.width, baked.width);
-    assert.equal(data.height, baked.height);
-    assert.deepEqual(
-        {
-            data: data._version,
-            style: data._styleVersion,
-            layout: data._layoutVersion,
-        },
-        baked.versions,
-    );
+    assert.equal(destroyed, "cbm".repeat(pinned.atlases));
     const text = await importPinnedModule<{
         createTextRenderable(
             this: void,
@@ -775,43 +850,60 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
     assert.ok(!Object.is(configured._worldMatrix()[12], -0));
     const context = new LoweringContext(),
         lowerer = new TextLowerer(context);
-    writeFileSync(resolve(directory, "upstream_text.hpp"), lowerer.header());
-    const expression = lowerer.dataExpression(
-        row,
-        (blob) => `read(${stringLiteral(blob.assetOutput)})`,
+    writeFileSync(
+        resolve(directory, "bblite/upstream_text_records.hpp"),
+        textRecordsHeader(context),
     );
-    const cpp = `#include "upstream_text.hpp"
+    for (const [name, header] of [
+        ["upstream_text_gpu", new TextGpuLowerer(context).header()],
+        ["upstream_text_renderable", lowerer.renderableHeader()],
+    ] as const)
+        writeFileSync(resolve(directory, "bblite", `${name}.hpp`), header);
+    // The pin's own DefaultTextData, rebuilt from its transported records.
+    const expression = records.transportCpp(
+        baked,
+        { kind: "record", name: "DefaultTextData" },
+        (index) => `js::ArrayBuffer(read("${index}.bin"))`,
+    );
+    const cpp = `#include <bblite/upstream_text_renderable.hpp>
 #include <fstream>
 #include <iterator>
 std::vector<std::uint8_t> read(const std::string& path){std::ifstream input(path,std::ios::binary);return {std::istreambuf_iterator<char>(input),{}};}
+/** A GPU object whose destroy() leaves its mark. */
+struct Marked final : bbl::TextGpuObject {
+    std::string* log = nullptr;
+    char mark = 0;
+    void destroy() override { *log += mark; }
+};
+std::shared_ptr<Marked> marked(std::string& log, char mark) {
+    auto object = std::make_shared<Marked>();
+    object->log = &log;
+    object->mark = mark;
+    return object;
+}
 int main(){
     using namespace bbl;
     auto first=${expression};auto second=${expression};auto alias=first;
     if(first==second || alias!=first) return 1;
-    if(first->payload->width!=${row.width} || first->payload->height!=${row.height} || first->version!=${row.versions.data} ||
-        first->style_version!=${row.versions.style} || first->layout_version!=${row.versions.layout} || first->dirty_start!=${row.dirtyRange.start} || first->dirty_end!=${row.dirtyRange.end})return 2;
-    const auto& payload=*first->payload;
-    if(payload.instances.capacity_bytes!=${row.instances.capacityBytes} || payload.instances.stride_bytes!=${row.instances.strideBytes} ||
-        payload.styles.capacity_bytes!=${row.styles.capacityBytes} || payload.styles.stride_bytes!=${row.styles.strideBytes}) return 3;
+    if(first->width!=${pinned.width} || first->height!=${pinned.height} || first->version!=${pinned.versions[0]} ||
+        first->style_version!=${pinned.versions[1]} || first->layout_version!=${pinned.versions[2]} || first->dirty_start!=${pinned.dirty[0]} || first->dirty_end!=${pinned.dirty[1]})return 2;
+    if(first->runs!=first->runs_ || first->storage->curve_sets.size()!=${pinned.atlases}) return 3;
     std::ofstream output("bytes.bin",std::ios::binary);
-    auto dump=[&](const auto& bytes){output.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));};
-    dump(payload.instances.bytes);dump(payload.styles.bytes);
-    for(const auto& atlas:payload.atlases){dump(atlas.curves.bytes);dump(atlas.bands.bytes);dump(atlas.metadata.bytes);}
-    ${row.atlases.map((atlas, index) => `if(payload.atlases[${index}].curves.width!=${atlas.curves.width} || payload.atlases[${index}].curves.height!=${atlas.curves.height} || payload.atlases[${index}].curves.used_texels!=${atlas.curves.usedTexels} || payload.atlases[${index}].metadata.capacity_bytes!=${atlas.metadata.capacityBytes} || payload.atlases[${index}].version!=${atlas.version}) return 4;`).join("\n")}
-    ${row.groups.map((group, index) => `if(first->groups[${index}].slot_start!=${group.slotStart} || first->groups[${index}].slot_count!=${group.slotCount} || first->groups[${index}].live_count!=${group.liveCount} || first->groups[${index}].atlas_index!=${group.atlasIndex}) return 5;`).join("\n")}
+    auto dump=[&](const auto& values,std::size_t count){output.write(reinterpret_cast<const char*>(values.buffer().data()+values.byte_offset()),static_cast<std::streamsize>(count));};
+    dump(first->instances,static_cast<std::size_t>(first->instance_count)*12);dump(first->styles,first->styles.byte_length());
+    ${pinned.groups.map(([start, count, live], index) => `if(first->groups[${index}]->slot_start!=${start} || first->groups[${index}]->slot_count!=${count} || first->groups[${index}]->live_count!=${live}) return 5;`).join("\n")}
     std::string destroyed;
-    for(auto& gpu:first->atlas_gpu){gpu=std::make_shared<TextAtlasGpuState>();gpu->destroy_curves=[&]{destroyed+="c";};gpu->destroy_bands=[&]{destroyed+="b";};gpu->destroy_metadata=[&]{destroyed+="m";};}
-    for(auto& group:first->groups)group.bind_group=std::make_shared<int>(1);
+    for(auto& entry:first->storage->curve_sets){auto gpu=std::make_shared<SharedAtlasGpu>();gpu->curve_tex=marked(destroyed,'c');gpu->band_tex=marked(destroyed,'b');gpu->meta_buf=marked(destroyed,'m');entry.second->atlas->gpu=gpu;}
+    for(auto& group:first->groups)group->bind_group=std::make_shared<TextGpuObject>();
     auto rendered=create_text_renderable(first);first.reset();
     dispose_text_data(alias);
-    if(!alias->groups.empty() || alias->instance_count || alias->style_count || !destroyed.empty() || alias->atlas_gpu.size()!=${row.atlases.length})return 6;
+    if(!alias->groups.empty() || alias->instance_count!=0 || alias->style_count!=0 || !destroyed.empty() || alias->storage->curve_sets.size()!=${pinned.atlases})return 6;
     dispose_default_text_data(alias);dispose_default_text_data(rendered->data);
-    if(destroyed!=${stringLiteral(destroyed)} || !alias->atlas_gpu.empty() || rendered->data->payload->width!=${data.width} ||
-        rendered->data->version!=${data._version} || rendered->data->style_version!=${data._styleVersion})return 7;
-    if(second->groups.empty() || !second->instance_count) return 8;
+    if(destroyed!=${stringLiteral(destroyed)} || alias->storage->curve_sets.size()!=0 || rendered->data->width!=${pinned.width})return 7;
+    if(second->groups.empty() || second->instance_count==0) return 8;
     TextRenderableOptions options;options.position=Vec3d{-0.0,0,0};options.scaling=Vec3d{1,1,1};options.rotation_quaternion=TextQuaternion{0,0,0,1};options.opacity=0;options.ignore_depth=true;options.order=0;
     auto r=create_text_renderable(second,options);
-    if(!std::signbit(r->position.x) || std::signbit(text_world_matrix(*r)[12]) || r->opacity || r->order || !r->ignore_depth)return 9;
+    if(!std::signbit(observable_vec3_get_x(r->position)) || std::signbit(r->world_matrix().load(12)) || r->opacity || r->order || !r->ignore_depth)return 9;
     return 0;
 }`;
     const source = resolve(directory, "check.cpp"),
@@ -823,7 +915,9 @@ int main(){
         "/EHsc",
         "/W4",
         "/WX",
+        "/DBBLITE_HAS_TEXT=1",
         `/I${resolve("native/include")}`,
+        `/I${directory}`,
         source,
         `/Fo${resolve(directory, "check.obj")}`,
         `/Fe${exe}`,
@@ -831,6 +925,6 @@ int main(){
     execFileSync(exe, [], { cwd: directory, stdio: "pipe" });
     assert.deepEqual(
         readFileSync(resolve(directory, "bytes.bin")),
-        Buffer.concat(chunks),
+        Buffer.concat([pinned.instances, pinned.styles]),
     );
 });

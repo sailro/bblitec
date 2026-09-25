@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <jni.h>
 #include <SDL3/SDL.h>
+#include <bblite/uncaught_error.hpp>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -9,7 +10,7 @@
 #include <streambuf>
 #include <string>
 #include "pal_generated_entry.hpp"
-#include "pal_gpu_backend.hpp"
+#include "pal_gpu_dispatch.hpp"
 
 #define main bblite_generated_main
 #include BBLITE_ANDROID_ENTRY
@@ -79,12 +80,13 @@ extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char** 
     const char* run_id = std::getenv("BBLITE_RUN_ID");
     int result = 1;
     try {
-        const bool dawn = bbl::pal::use_dawn_backend();
-        __android_log_print(ANDROID_LOG_INFO, "bblite", "GPU backend: %s run=%s",
-                            dawn ? "dawn" : "sdl_gpu", run_id ? run_id : "interactive");
+        const std::string_view backend = bbl::pal::selected_gpu_backend().name;
+        __android_log_print(ANDROID_LOG_INFO, "bblite", "GPU backend: %.*s run=%s",
+                            static_cast<int>(backend.size()), backend.data(),
+                            run_id ? run_id : "interactive");
         result = bbl::pal::run_generated_entry(bblite_generated_main, argc, argv);
-    } catch (const std::exception& error) {
-        std::cerr << "Babylon Lite native error: " << error.what() << '\n';
+    } catch (...) {
+        result = bbl::report_uncaught_error(std::current_exception());
     }
     std::cout.rdbuf(output);
     std::cerr.rdbuf(errors);

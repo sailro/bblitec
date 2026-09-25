@@ -21,12 +21,12 @@ interface AudioReceiverContext
         PropertyContext,
         Pick<
             LoweringServices,
-            | "lookupOptional"
+            | "bindings"
             | "resolveThisField"
             | "compileValue"
             | "unwrap"
             | "checker"
-            | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "emit"
         > {}
 
@@ -51,16 +51,14 @@ interface AudioCallContext
             | "allocateTemporaryCppName"
             | "registerNativeTemporary"
             | "cppString"
-            | "registerAsset"
+            | "assetRegistry"
             | "dataLowerer"
             | "options"
-            | "compileCondition"
+            | "conditions"
             | "compileStringLiteral"
             | "dataTypes"
-            | "hoistForwardCallbackBindings"
-            | "compilePlatformCallback"
-            | "platformEventCallbackIdentity"
-            | "pinValueToTemporary"
+            | "callbacks"
+            | "bindings"
             | "emitDiscardedValue"
         > {}
 
@@ -135,12 +133,7 @@ export function audioTypeof(
     expression: ts.Expression,
 ): "function" | "undefined" | undefined {
     const property = context.unwrap(expression);
-    if (
-        ts.isIdentifier(property) &&
-        property.text === "AudioContext" &&
-        context.isDefaultLibraryIdentifier(property)
-    )
-        return "function";
+    if (context.libraryGlobal(property) === "AudioContext") return "function";
     if (!ts.isPropertyAccessExpression(property)) return undefined;
     const receiver = resolveAudioReceiver(context, property.expression);
     if (receiver?.kind !== "audio-context") return undefined;
@@ -157,14 +150,12 @@ export function audioTypeof(
 
 /** Prototype aliases preserve the same absent optional host capabilities. */
 export function audioPrototypeValue(
-    context: Pick<LoweringServices, "isDefaultLibraryIdentifier">,
+    context: Pick<LoweringServices, "libraryGlobal">,
     expression: ts.PropertyAccessExpression,
 ): Value | undefined {
     if (
         expression.name.text !== "prototype" ||
-        !ts.isIdentifier(expression.expression) ||
-        expression.expression.text !== "AudioContext" ||
-        !context.isDefaultLibraryIdentifier(expression.expression)
+        context.libraryGlobal(expression.expression) !== "AudioContext"
     )
         return undefined;
     return {
@@ -182,18 +173,11 @@ export function audioPrototypeValue(
 export function compileAudioConstructor(
     context: Pick<
         LoweringServices,
-        | "isDefaultLibraryIdentifier"
-        | "reachFeature"
-        | "audioSessionCpp"
-        | "fail"
+        "libraryGlobal" | "reachFeature" | "audioSessionCpp" | "fail"
     >,
     expression: ts.NewExpression,
 ): Value | undefined {
-    if (
-        !ts.isIdentifier(expression.expression) ||
-        expression.expression.text !== "AudioContext" ||
-        !context.isDefaultLibraryIdentifier(expression.expression)
-    )
+    if (context.libraryGlobal(expression.expression) !== "AudioContext")
         return undefined;
     if (expression.arguments?.length)
         context.fail(
@@ -283,7 +267,7 @@ function resolveAudioReceiver(
         return AUDIO_KINDS.has(narrowed.kind) ? narrowed : undefined;
     };
     if (ts.isIdentifier(node)) {
-        const bound = context.lookupOptional(node);
+        const bound = context.bindings.lookupOptional(node);
         return bound && AUDIO_KINDS.has(bound.kind)
             ? bound
             : narrowedAudioData(bound);
@@ -519,7 +503,7 @@ export function compileAudioMethodCall(
                     );
                 const selected = { ...receiver };
                 delete selected.nativeBinding;
-                const target = context.pinValueToTemporary(
+                const target = context.bindings.pinValueToTemporary(
                     selected,
                     "audio_event_target",
                     callee.expression,
@@ -531,7 +515,10 @@ export function compileAudioMethodCall(
                         "Only scheduled audio source ended listeners are represented.",
                     );
                 const callback = argumentAt(call, 1);
-                context.hoistForwardCallbackBindings(callback, call.pos);
+                context.callbacks.hoistForwardCallbackBindings(
+                    callback,
+                    call.pos,
+                );
                 const removing = method === "removeEventListener";
                 const callbackType =
                     context.checker.getTypeAtLocation(callback);
@@ -547,16 +534,17 @@ export function compileAudioMethodCall(
                         delete value.nativeBinding;
                         const snapshot =
                             value.kind === "data"
-                                ? context.pinValueToTemporary(
+                                ? context.bindings.pinValueToTemporary(
                                       value,
                                       "audio_event_callback",
                                       callback,
                                   )
                                 : value;
-                        identity = context.platformEventCallbackIdentity(
-                            snapshot,
-                            callback,
-                        );
+                        identity =
+                            context.callbacks.platformEventCallbackIdentity(
+                                snapshot,
+                                callback,
+                            );
                     } else {
                         if (
                             callbackType
@@ -570,11 +558,12 @@ export function compileAudioMethodCall(
                                 callback,
                                 "Audio ended event payloads are not represented yet.",
                             );
-                        const compiled = context.compilePlatformCallback(
-                            callback,
-                            undefined,
-                            [],
-                        );
+                        const compiled =
+                            context.callbacks.compilePlatformCallback(
+                                callback,
+                                undefined,
+                                [],
+                            );
                         identity = compiled.identity;
                         listener = compiled.cpp;
                     }

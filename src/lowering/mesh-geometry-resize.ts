@@ -2,6 +2,7 @@ import ts from "typescript";
 import { type LoweringContext, unwrapExpression } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** Source ownership and invalidation over native retained geometry slots. */
 export function lowerMeshGeometryResize(context: LoweringContext): string {
@@ -91,13 +92,16 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
             bind(arg, arg);
         for (const owner of ["mesh", "first"]) {
             bind(owner, owner, "opaque", `${owner}.value == invalid_handle`);
-            bind(`${owner}._gpu`, `engine.meshes.at(${owner}.value).geometry`);
+            bind(
+                `${owner}._gpu`,
+                `${recordAt("engine.meshes", owner)}.geometry`,
+            );
             bind(
                 `${owner}._disposed`,
-                `engine.meshes.at(${owner}.value).retired`,
+                `${recordAt("engine.meshes", owner)}.retired`,
                 "bool",
             );
-            bind(`${owner}.name`, `engine.meshes.at(${owner}.value).name`);
+            bind(`${owner}.name`, `${recordAt("engine.meshes", owner)}.name`);
         }
         bind(
             "old._vbLayout",
@@ -128,7 +132,8 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
             ],
             [
                 "retainMeshGeometry",
-                () => "retain_replacement_geometry_bounds(engine,mesh)",
+                (args) =>
+                    `retain_replacement_geometry_bounds(engine,mesh,${args[2]}.size()>=3)`,
             ],
             [
                 "_markWorldMatrixDirty",
@@ -146,8 +151,7 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
             ],
             [
                 "retireMeshGeometryBuffers",
-                (args) =>
-                    `release_geometry_storage(engine.geometries.at(${args[1]}))`,
+                (args) => `release_unowned_geometry(engine,${args[1]})`,
             ],
             [
                 "resizeMeshGeometry",
@@ -241,7 +245,7 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
                     node.expression.left.getText(file) === "mesh._gpu"
                 )
                     return [
-                        `${indent}engine.meshes.at(mesh.value).geometry=${lowerer.expression(node.expression.right)};`,
+                        `${indent}${recordAt("engine.meshes", "mesh")}.geometry=${lowerer.expression(node.expression.right)};`,
                     ];
                 return undefined;
             },
@@ -259,8 +263,11 @@ ${lower("invalidateRenderBundles")}
 }
 // CPU attributes/bounds are retained by upload_mesh_geometry_data. Native GPU
 // generations own submitted buffers until topology rematching releases them.
-static void retain_replacement_geometry_bounds(Engine& engine, MeshHandle mesh) {
-    auto& record=engine.meshes.at(mesh.value);
+// retainMeshGeometry rewrites boundMin/boundMax from the new positions,
+// present when they fold a finite box.
+static void retain_replacement_geometry_bounds(Engine& engine, MeshHandle mesh, bool has_bounds) {
+    auto& record=${recordAt("engine.meshes", "mesh")};
+    record.has_bounds=has_bounds;
     record.has_bounds_min_override=false;
     record.has_bounds_max_override=false;
 }

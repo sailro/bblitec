@@ -1,13 +1,21 @@
 import { EmissionMap } from "./emission-transaction.js";
 import type { Feature } from "./types.js";
 import { reachesShadowGenerator } from "../shadow-capabilities.js";
+import { reachedGeneratedSources } from "../generated-sources.js";
 import {
     renderSourceUnits,
+    sceneDeclarations,
+    type UnitDeclaration,
     type ApplicationCpp,
     type NativeDefinition,
     type NativeFunctionDefinition,
     type DataPreamble,
 } from "./source-units.js";
+import {
+    outlineFunctionBody,
+    outlineFunctionDefinition,
+    type OutlinedSegment,
+} from "./body-outlining.js";
 
 /**
  * The output projection: the feature→sources authority and the renders
@@ -116,7 +124,6 @@ export const featureSources: Record<Feature, string[]> = {
     "material:tracking": [],
     "material:emissive": [],
     "material:no-color-view": [],
-    "material:grid": [],
     "material:node": [],
     "material:node-inputs": [],
     "material:shader": [],
@@ -202,6 +209,7 @@ export const featureSources: Record<Feature, string[]> = {
     "shadow:pcf-directional": [],
     "shadow:csm": [],
     "shadow:task": [],
+    "shadow:morph-bounds": [],
     "sprite:2d": [],
     "sprite:2d-depth-host": [],
     "sprite:2d-y-sort": [],
@@ -324,13 +332,102 @@ export const featureSources: Record<Feature, string[]> = {
 
 export const featureOrder = Object.keys(featureSources) as Feature[];
 
+/** A manifest feature name as the `Feature` it must be, refusing any other. */
+export function asFeatures(names: readonly string[]): Feature[] {
+    return names.map((name) => {
+        const feature = featureOrder.find((candidate) => candidate === name);
+        if (feature === undefined)
+            throw new Error(`Unknown runtime feature '${name}'.`);
+        return feature;
+    });
+}
+
+/**
+ * The features a reached feature brings with it, listed once for both
+ * places a feature enters the set: the compiler's reach and the asset join.
+ * Each implied feature is reached before the one that implies it, with the
+ * same site, and its own implications follow in turn.
+ */
+const featureImplications: Partial<Record<Feature, readonly Feature[]>> = {
+    "compute:task-execution": [
+        "compute:task",
+        "compute:dispatch",
+        "compute:shader",
+        "compute:bindings",
+    ],
+    "environment:procedural-sky": [
+        "environment:sky-atmosphere",
+        "environment:ibl",
+        "compute:texture-mipmaps",
+        "platform:packaged-fetch",
+    ],
+    "compute:texture-mipmaps": [
+        "compute:storage-texture",
+        "compute:task",
+        "compute:frame-graph",
+    ],
+    "compute:frame-graph": ["compute:task-execution"],
+    "compute:storage-readback": ["compute:storage-buffer"],
+    "compute:bindings": [
+        "compute:binding-decl",
+        "compute:shader",
+        "compute:storage-texture",
+        "compute:uniform-buffer",
+    ],
+    "compute:one-shot": ["compute:task"],
+    // A scene that writes SceneNode transforms loads each glTF asset with
+    // its node hierarchy, which the transform-node records carry.
+    "scene:node-transforms": ["mesh:transform-node"],
+};
+
+export function impliedFeatures(feature: Feature): readonly Feature[] {
+    return [
+        // Every raw Web Audio node and asset feature is implemented by the
+        // one engine PAL and is reachable only through one of its contexts,
+        // even when the creating call lives in a deferred platform callback
+        // lowered after another audio callback first reached a node family.
+        ...(feature.startsWith("audio:") && feature !== "audio:engine"
+            ? (["audio:engine"] as const)
+            : []),
+        ...(featureImplications[feature] ?? []),
+    ];
+}
+
+/**
+ * Everything a feature list selects in the native build, from the feature
+ * tables: the PAL translation units (two features can name the same unit,
+ * and CMake must list it once), the generated sources, and the
+ * `features.cmake` that lists both beside the application units. Whoever
+ * finishes a feature list -- the compiler, the asset join -- projects it
+ * through here, so a feature is declared the same way wherever it entered.
+ */
+export function projectFeatures(
+    features: readonly Feature[],
+    applicationSources: readonly string[],
+): { runtimeSources: string[]; generatedSources: string[]; cmake: string } {
+    const runtimeSources = [
+        ...new Set(features.flatMap((feature) => featureSources[feature])),
+    ];
+    const generatedSources = reachedGeneratedSources(features);
+    return {
+        runtimeSources,
+        generatedSources,
+        cmake: renderFeaturesCmake(
+            features,
+            runtimeSources,
+            generatedSources,
+            applicationSources,
+        ),
+    };
+}
+
 /**
  * The features.cmake render, a pure function of the three lists so a caller
  * that augments the manifest's features after compilation (the CLI joins the
  * assets' own KHR_lights_punctual kinds there) re-renders the same authority
  * instead of patching the string.
  */
-export function renderFeaturesCmake(
+function renderFeaturesCmake(
     features: readonly Feature[],
     runtimeSources: readonly string[],
     generatedSources: readonly string[],
@@ -391,6 +488,12 @@ export function constructorEntryBody(body: readonly string[]): string[] {
     );
 }
 
+/** Names for the functions outlined out of one application's bodies. */
+function outlinedNames(): () => string {
+    let next = 0;
+    return () => `bbl_outlined_${next++}`;
+}
+
 function markUnreferencedLocals(body: string[]): void {
     // Initialized locals, and the empty `std::optional<...>` storage a
     // materialized module predeclares for a nullable resource: a browser-only
@@ -445,18 +548,20 @@ interface MainCppProjection {
     jsRandomReached: boolean;
     audioSessionReached?: boolean;
     continuationStorageReached?: boolean;
+    /** A reached constructed promise can end a synchronous activation at its await. */
+    pendingActivations?: boolean;
     throwReached: boolean;
     postProcessCompositeCount: number;
     screenSpaceTaskCount: number;
     renderDataPreamble: () => DataPreamble;
     nativeFunctions: readonly NativeFunctionDefinition[];
     staticNativeDeclarations: readonly string[];
-    /** Whether the scene reaches the voxel save/load file boundary. */
-    voxelFileStorageReached: boolean;
     /** The emitted entry-body lines; the render marks unused locals in place. */
     body: string[];
     /** The admitted entry statements before the sole top-level startEngine. */
     physicsDebugConstructionBody?: readonly string[];
+    /** The native type of an emitted local, when the compiler registered one. */
+    bindingType: (name: string) => string | undefined;
 }
 
 export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
@@ -469,11 +574,56 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         postProcessCompositeCount,
         screenSpaceTaskCount,
         renderDataPreamble,
-        nativeFunctions,
         staticNativeDeclarations,
-        voxelFileStorageReached,
-        body,
     } = projection;
+    // The body is finished, so a local nothing referenced is now
+    // decidable — mark those, and only those.
+    markUnreferencedLocals(projection.body);
+    // A large entry body moves its statements to functions that other
+    // translation units compile; a worker realm's entry keeps its own.
+    const allocateName = outlinedNames();
+    const outlined = projection.workers
+        ? { lines: projection.body, segments: [] }
+        : outlineFunctionBody({
+              lines: projection.body,
+              parameters: projection.audioSessionReached
+                  ? [
+                        {
+                            name: "bbl_audio_session",
+                            type: "std::shared_ptr<bbl::pal::AudioSession>",
+                        },
+                    ]
+                  : [],
+              bindingType: projection.bindingType,
+              allocateName,
+          });
+    const body = outlined.lines;
+    const segmentsOf = (
+        source: string,
+        segments: readonly OutlinedSegment[],
+    ): NativeFunctionDefinition[] =>
+        segments.map((segment) => ({
+            kind: "function",
+            source,
+            prototype: segment.prototype,
+            lines: segment.lines,
+        }));
+    // So does a large function definition, into its own source's units.
+    const nativeFunctions: readonly NativeFunctionDefinition[] = [
+        ...projection.nativeFunctions.flatMap((fn) => {
+            if (fn.kind !== "function") return [fn];
+            const definition = outlineFunctionDefinition({
+                lines: fn.lines,
+                bindingType: projection.bindingType,
+                allocateName,
+            });
+            return [
+                { ...fn, lines: definition.lines },
+                ...segmentsOf(fn.source, definition.segments),
+            ];
+        }),
+        ...segmentsOf(projection.source, outlined.segments),
+    ];
     const nativeFunctionPrototypes = nativeFunctions.flatMap((fn) =>
         fn.prototype === undefined ? [] : [fn.prototype],
     );
@@ -490,6 +640,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
     const textInclude =
         features.includes("text:data") || features.includes("text:renderable")
             ? "#include <bblite/upstream_text.hpp>\n#include <bblite/upstream/text_data.hpp>\n" +
+              (features.includes("text:renderable")
+                  ? "#include <bblite/upstream_text_renderable.hpp>\n"
+                  : "") +
               (features.includes("text:layout")
                   ? "#include <bblite/upstream_text_update.hpp>\n"
                   : "") +
@@ -613,9 +766,6 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (features.includes("browser:file")
             ? "#include <bblite/js_file.hpp>\n"
-            : "") +
-        (voxelFileStorageReached
-            ? "#include <bblite/js_voxel_file.hpp>\n"
             : "");
     // A composite's factory is generated, so the scene calls it by a name
     // only its own generated header declares; a screen-space task's is the
@@ -636,7 +786,7 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
     const meshProfileFallback =
         projection.runtimeMeshProfiles && !features.includes("renderer:scene")
             ? `namespace bbl::upstream {
-inline MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_t) { return mesh; }
+inline void begin_scene_mesh_profile(Engine&, std::uint32_t) {}
 }`
             : "";
     if (meshProfileFallback) preambleSections.push(meshProfileFallback);
@@ -658,9 +808,6 @@ inline MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_
             ].join("\n"),
         );
     }
-    // The body is finished, so a local nothing referenced is now
-    // decidable — mark those, and only those.
-    markUnreferencedLocals(body);
     const preamble =
         preambleSections.length > 0
             ? `\n${preambleSections.join("\n\n")}\n`
@@ -692,7 +839,7 @@ inline MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_
         : projection.workers?.windowOptions
           ? `int main() {\n    return bbl::pal::run_window_application([]([[maybe_unused]] bbl::pal::WorkerRealm& realm) {\n${entryBody}\n    }, ${projection.workers.windowOptions});\n}\n`
           : projection.workers
-            ? `int main() {\n    try {\n        const bbl::js::RealmScope state;\n        bbl::pal::EventLoop loop;\n        bbl::pal::WorkerRealm realm(loop);\n        loop.run([&] {\n${entryBody}\n        });\n        return 0;\n    } catch (const std::exception& error) {\n        std::cerr << "Babylon Lite native error: " << error.what() << '\\n';\n        return 1;\n    }\n}\n`
+            ? `int main() {\n    try {\n        const bbl::js::RealmScope state;\n        bbl::pal::EventLoop loop;\n        bbl::pal::WorkerRealm realm(loop);\n        loop.run([&] {\n${entryBody}\n        });\n        return 0;\n    } catch (...) {\n        return bbl::report_uncaught_error(std::current_exception());\n    }\n}\n`
             : undefined;
     const includes = `// Generated by bblitec. Do not edit.
 #include <bblite/runtime.hpp>
@@ -723,8 +870,9 @@ ${(
     .filter(([feature]) => features.includes(feature))
     .map(([, header]) => `#include <bblite/${header}.hpp>\n`)
     .join("")}\
-${projection.continuationStorageReached ? "#include <bblite/continuation_storage.hpp>\n" : ""}#include <bblite/pal.hpp>
+${projection.continuationStorageReached ? "#include <bblite/continuation_storage.hpp>\n" : ""}${projection.pendingActivations ? "#include <bblite/js_synchronous_promise.hpp>\n" : ""}#include <bblite/pal.hpp>
 ${features.includes("input:dom") ? "#include <bblite/pal_dom_events.hpp>\n" : ""}${workerInclude}${textInclude}${jsDataInclude}${cameraMathInclude}${cameraGeospatialInclude}${cameraProjectionInclude}${clusteredInclude}${normalizeVec3Include}${lookDirectionInclude}${mat4InvertInclude}${spriteInclude}${billboardInclude}${spriteAnimationInclude}${nodeParticleInclude}${physicsInclude}${navigationInclude}${audioInclude}${imageInclude}${bakedMeshInclude}${uiInclude}${shadowInclude}${postProcessInclude}
+#include <bblite/uncaught_error.hpp>
 #include <cmath>
 #include <exception>
 #include <iostream>${throwReached ? "\n#include <stdexcept>" : ""}
@@ -746,16 +894,20 @@ ${features.includes("input:dom") ? "#include <bblite/pal_dom_events.hpp>\n" : ""
                     definition: fn.lines.join("\n"),
                 });
         }
-        const shared = [
-            ...staticNativeDeclarations.map(
-                (declaration) => `inline ${declaration}`,
-            ),
-            meshProfileFallback,
-            dataPreamble.shared,
-            "namespace bblscene {",
-            ...nativeFunctionPrototypes,
-            "}\n",
-        ].join("\n");
+        const shared: UnitDeclaration[] = [
+            ...staticNativeDeclarations.map((declaration) => ({
+                scene: false,
+                text: `inline ${declaration}`,
+            })),
+            ...(meshProfileFallback
+                ? [{ scene: false, text: meshProfileFallback }]
+                : []),
+            ...sceneDeclarations(dataPreamble.shared),
+            ...nativeFunctionPrototypes.map((prototype) => ({
+                scene: true,
+                text: prototype,
+            })),
+        ];
         return renderSourceUnits({
             source: projection.source,
             realm: workerNamespace,
@@ -801,9 +953,8 @@ ${
 }\
 ${projection.audioSessionReached ? "        auto bbl_audio_session = std::make_shared<bbl::pal::AudioSession>();\n" : ""}${seedRandom}${body.join("\n")}
         return 0;
-    } catch (const std::exception& error) {
-        std::cerr << "Babylon Lite native error: " << error.what() << '\\n';
-        return 1;
+    }${projection.pendingActivations ? ' catch (const bbl::js::PendingActivation&) {\n        std::cerr << "Babylon Lite native error: the entry awaited a constructed promise still pending, which the synchronous lowering cannot resume.\\n";\n        return 1;\n    }' : ""} catch (...) {
+        return bbl::report_uncaught_error(std::current_exception());
     }
 }
 `);

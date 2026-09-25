@@ -7,13 +7,13 @@ import {
     type JsonObject,
 } from "../src/gltf-document.js";
 import {
-    gltfMeshPlan,
     packageGltfMeshPlan,
     packagedGltfMeshPlan,
 } from "../src/gltf-mesh-plan.js";
 import type { LoweringContext } from "../src/lowering/context.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
+    gltfMeshPlan,
     meshPlanFixture,
     readPackedGltfAttribute,
 } from "./gltf-mesh-fixture.js";
@@ -56,11 +56,16 @@ function fixture(instanced = false) {
     };
 }
 
-async function packageFixture(input = fixture(), context?: LoweringContext) {
+async function packageFixture(
+    input = fixture(),
+    context?: LoweringContext,
+    nodeTransforms = false,
+) {
     const binary = await packageGltfMeshPlan(
         input.document,
         input.bin,
         context,
+        { nodeTransforms },
     );
     const mesh = packagedGltfMeshPlan(input.document).meshes[0]!;
     return {
@@ -79,10 +84,6 @@ test("mesh placement follows source hierarchy, local bounds and primitive windin
     assert.deepEqual(
         result.attribute(result.mesh.setup.bounds),
         [0, 0, 0, 1, 1, 0],
-    );
-    assert.deepEqual(
-        result.attribute(result.mesh.setup.worldBounds),
-        [-10, 20, 30, -8, 23, 30],
     );
     assert.deepEqual(
         result.attribute(result.mesh.setup.world).slice(12, 15),
@@ -107,8 +108,79 @@ test("mesh placement follows source hierarchy, local bounds and primitive windin
         ),
     );
     assert.deepEqual(
-        detached.attribute(detached.mesh.setup.worldBounds),
-        [0, 0, 0, 1, 1, 0],
+        detached.attribute(detached.mesh.setup.world),
+        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    );
+});
+
+test("a scene writing node transforms packages the pin's node hierarchy", async () => {
+    const plain = fixture();
+    await packageFixture(plain);
+    assert.equal(packagedGltfMeshPlan(plain.document).hierarchy, undefined);
+    // A transform-only node over a matrix node over the primitive's node.
+    const input = fixture();
+    input.document.nodes = [
+        {
+            name: "pivot",
+            translation: [10, 20, 30],
+            scale: [-2, 3, 1],
+            children: [1],
+        },
+        {
+            matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1],
+            children: [2],
+        },
+        { name: "leaf", mesh: 0, rotation: [0, 0.6, 0, 0.8] },
+    ];
+    input.document.scenes = [{ nodes: [0] }];
+    const result = await packageFixture(input, undefined, true);
+    const hierarchy = packagedGltfMeshPlan(result.document).hierarchy!;
+    // The synthetic root's own RH-to-LH TRS, then the scene's roots.
+    assert.deepEqual(hierarchy.root, {
+        translation: [0, 0, 0],
+        rotation: [0, 0, 0, 1],
+        scaling: [-1, 1, 1],
+    });
+    assert.deepEqual(hierarchy.rootChildren, [0]);
+    const [pivot, matrix, leaf] = hierarchy.nodes;
+    assert.deepEqual(
+        { ...pivot, matrix: undefined },
+        {
+            name: "pivot",
+            parent: -1,
+            translation: [10, 20, 30],
+            rotation: [0, 0, 0, 1],
+            scaling: [-2, 3, 1],
+            matrix: undefined,
+            locked: false,
+        },
+    );
+    // A matrix node keeps its raw local, locked against TRS writes, and the
+    // pin's `node_<index>` name for a node the file leaves unnamed.
+    assert.equal(matrix?.name, "node_1");
+    assert.equal(matrix?.parent, 0);
+    assert.equal(matrix?.locked, true);
+    assert.deepEqual(
+        result.attribute(matrix.matrix!),
+        [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1],
+    );
+    assert.equal(leaf?.parent, 1);
+    assert.deepEqual(leaf?.rotation, [0, 0.6, 0, 0.8]);
+    assert.equal(result.mesh.node, 2);
+});
+
+test("a node-carrying load refuses a light the runtime places from its loaded node world", async () => {
+    const lit = fixture();
+    lit.document.extensionsUsed = ["KHR_lights_punctual"];
+    lit.document.extensions = {
+        KHR_lights_punctual: { lights: [{ type: "point" }] },
+    };
+    asRecords(lit.document.nodes)[0]!.extensions = {
+        KHR_lights_punctual: { light: 0 },
+    };
+    await assert.rejects(
+        packageFixture(lit, undefined, true),
+        /punctual lights/,
     );
 });
 
@@ -125,18 +197,6 @@ test("source bounds calculations and constructors determine packaged boxes", asy
         changed.attribute(changed.mesh.setup.bounds),
         [0, 0, 0, 3, 1, 0],
     );
-    const expanded = await packageFixture(
-        fixture(),
-        doctoredContext(
-            "src/mesh/mesh-world-bounds.ts",
-            "transformedRadius += Math.abs(coefficient) * extent[column]!;",
-            "transformedRadius += Math.abs(coefficient) * extent[column]! * 2;",
-        ),
-    );
-    assert.deepEqual(
-        expanded.attribute(expanded.mesh.setup.worldBounds),
-        [-1.5, -0.5, 0, 0.5, 1.5, 0],
-    );
 });
 
 test("source instancing hook owns matrix data, placement bounds and activation", async () => {
@@ -145,10 +205,6 @@ test("source instancing hook owns matrix data, placement bounds and activation",
     assert.equal(
         original.attribute(original.mesh.setup.instances.matrices)[12],
         1,
-    );
-    assert.deepEqual(
-        original.attribute(original.mesh.setup.worldBounds),
-        [-14, 0, 0, -11, 3, 0],
     );
     const moved = await packageFixture(
         fixture(true),
@@ -159,10 +215,6 @@ test("source instancing hook owns matrix data, placement bounds and activation",
         ),
     );
     assert.equal(moved.attribute(moved.mesh.setup.instances!.matrices)[12], 6);
-    assert.deepEqual(
-        moved.attribute(moved.mesh.setup.worldBounds),
-        [-19, 0, 0, -16, 3, 0],
-    );
     const disabled = await packageFixture(
         fixture(true),
         doctoredContext(

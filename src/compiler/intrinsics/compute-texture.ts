@@ -27,7 +27,7 @@ export interface ComputeTextureIntrinsicContext
             | "compileNumber"
             | "compileBoolean"
             | "dataTypes"
-            | "pinValueToTemporary"
+            | "bindings"
         > {}
 
 export function compileComputeTextureIntrinsic(
@@ -47,7 +47,7 @@ export function compileComputeTextureIntrinsic(
             values = `{${resources.tupleElements
                 .map((value) => {
                     context.expectKind(value, "compute-storage-texture", site);
-                    return context.pinValueToTemporary(
+                    return context.bindings.pinValueToTemporary(
                         value,
                         "mipmap_texture",
                         site,
@@ -65,7 +65,7 @@ export function compileComputeTextureIntrinsic(
                     site,
                     "Mipmap tasks require a retained array of compute storage textures.",
                 );
-            const array = context.pinValueToTemporary(
+            const array = context.bindings.pinValueToTemporary(
                 resources,
                 "mipmap_textures",
                 site,

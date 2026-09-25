@@ -35,6 +35,7 @@ import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { characterVectorValue } from "./character-controller.js";
+import { vec3Record } from "./mesh.js";
 import { isDataTuple, tupleComponents } from "../data-types.js";
 import {
     pinnedEnumMemberName,
@@ -42,7 +43,7 @@ import {
     staticJsonValue,
     type ObjectValidationContext,
 } from "../option-helpers.js";
-import type { Value } from "../types.js";
+import { optionalPresentCpp, presenceCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     requiredObjectNumber,
@@ -64,22 +65,17 @@ export interface PhysicsIntrinsicContext
             | "compileBoolean"
             | "castNumber"
             | "vec3FromRecord"
-            | "materializeEscapingValue"
-            | "pinValueToTemporary"
-            | "readResolvedProperty"
-            | "bindDataTuple"
+            | "bindings"
+            | "propertyAccess"
             | "expectSameEngine"
             | "expectObjectLiteral"
-            | "compileFrameCallback"
-            | "compilePhysicsCollisionCallback"
-            | "compilePhysicsTriggerCallback"
+            | "callbacks"
             | "allocateTemporaryCppName"
             | "registerNativeBinding"
             | "emit"
             | "resolveStaticExpression"
-            | "reachPhysicsViewerMaterial"
-            | "recordRuntimeMeshProfile"
-            | "recordSceneMeshMaterial"
+            | "intrinsicOptions"
+            | "sceneManifest"
         > {}
 
 /**
@@ -201,7 +197,7 @@ function nullableShapeParameter(
                 "Optional physics geometry values must retain their numeric or vector type.",
             );
         }
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             value,
             "physics_optional_vector",
         );
@@ -214,7 +210,7 @@ function nullableShapeParameter(
             node!,
             "double",
         );
-        return `(${owner.cpp}.has_value() ? ${lane}{${vector}} : ${lane}{})`;
+        return `(${optionalPresentCpp(owner.cpp)} ? ${lane}{${vector}} : ${lane}{})`;
     }
     if (
         shape === "vec3" &&
@@ -222,7 +218,7 @@ function nullableShapeParameter(
         value.dataType?.kind === "struct" &&
         context.dataTypes.isReferenceStruct(value.dataType.name)
     ) {
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             value,
             "physics_optional_vector",
         );
@@ -269,7 +265,7 @@ function pinRayNumber(
     context: PhysicsIntrinsicContext,
     expression: ts.Expression,
 ): string {
-    return context.pinValueToTemporary(
+    return context.bindings.pinValueToTemporary(
         {
             kind: "number",
             cpp: context.compileNumber(expression, "double"),
@@ -338,7 +334,7 @@ function compileRayPointArgument(
         });
         return temporary;
     }
-    let value = context.materializeEscapingValue(
+    let value = context.bindings.materializeEscapingValue(
         context.compileValue(point),
         "ray_point",
         point,
@@ -346,7 +342,7 @@ function compileRayPointArgument(
     if (isDataTuple(value, 3)) {
         // Tuple copies retain their shared element storage, just as reference
         // structs retain their owner below; later alias writes stay visible.
-        const owner = context.bindDataTuple(value, 3, "ray_point");
+        const owner = context.bindings.bindDataTuple(value, 3, "ray_point");
         return `bbl::Vec3d{${tupleComponents(owner, 3, "double").join(", ")}}`;
     }
     if (value.kind === "tuple" && value.tupleElements?.length === 3) {
@@ -368,7 +364,11 @@ function compileRayPointArgument(
                 "Retained physics ray point objects require a native reference representation.",
             );
         }
-        value = context.pinValueToTemporary(value, "ray_point_owner", point);
+        value = context.bindings.pinValueToTemporary(
+            value,
+            "ray_point_owner",
+            point,
+        );
     }
     return context.vec3FromRecord(value, point, "double");
 }
@@ -391,7 +391,7 @@ function compileShapeParameters(
     );
     if (record.kind === "data" && record.dataType?.kind === "struct") {
         const type = record.dataType;
-        const owner = context.pinValueToTemporary(
+        const owner = context.bindings.pinValueToTemporary(
             record,
             "physics_shape_parameters",
         );
@@ -420,7 +420,7 @@ function compileShapeParameters(
                 }
                 const present = optionalReference
                     ? `static_cast<bool>(${cpp})`
-                    : `${cpp}.has_value()`;
+                    : optionalPresentCpp(cpp);
                 context.emit(
                     `if (${present}) throw std::runtime_error("Physics shape rotation is not lowered.");`,
                 );
@@ -525,18 +525,6 @@ export function physicsEventInfoValue(
     };
 }
 
-function vec3Record(cpp: string): Value {
-    return {
-        kind: "record",
-        cpp: "",
-        recordProperties: {
-            x: { kind: "number", cpp: `${cpp}.x` },
-            y: { kind: "number", cpp: `${cpp}.y` },
-            z: { kind: "number", cpp: `${cpp}.z` },
-        },
-    };
-}
-
 function compileImpulsePoint(
     context: PhysicsIntrinsicContext,
     expression: ts.Expression,
@@ -551,23 +539,15 @@ function compileImpulsePoint(
         unwrapped = unwrapped.expression;
     }
     if (ts.isConditionalExpression(unwrapped)) {
-        let absent = unwrapped.whenFalse;
-        while (ts.isParenthesizedExpression(absent)) {
-            absent = absent.expression;
-        }
-        if (!ts.isIdentifier(absent) || absent.text !== "undefined") {
+        const absent = unwrapped.whenFalse;
+        if (!context.symbols.isGlobalUndefined(absent)) {
             context.fail(
                 absent,
                 "An optional physics impulse point must use undefined for its absent arm.",
             );
         }
         const condition = context.compileValue(unwrapped.condition);
-        const present =
-            condition.optionalFoundCpp ??
-            (condition.kind === "data" &&
-            condition.dataType?.kind === "optional"
-                ? `${condition.cpp}.has_value()`
-                : undefined);
+        const present = presenceCpp(condition);
         if (!present) {
             context.fail(
                 unwrapped.condition,
@@ -945,7 +925,10 @@ function compileCreatePhysicsViewer(
         }
     }
     context.reachFeature("physics:viewer", call);
-    const variant = context.reachPhysicsViewerMaterial(call, color);
+    const variant = context.intrinsicOptions.reachPhysicsViewerMaterial(
+        call,
+        color,
+    );
     return {
         kind: "physics-viewer",
         cpp: `bbl::upstream::create_physics_viewer(${scene.cpp}, ${world.cpp}, ${variant.id}u)`,
@@ -974,13 +957,13 @@ function compileShowPhysicsBody(
             argumentAt(call, 0),
             "Physics viewer material must retain its construction-known variant.",
         );
-    const profile = context.recordSceneMesh("from-data", {
+    const profile = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
         hasColors: false,
     });
-    context.recordRuntimeMeshProfile(profile);
-    context.recordSceneMeshMaterial(profile, {
+    context.sceneManifest.recordRuntimeMeshProfile(profile);
+    context.sceneManifest.recordSceneMeshMaterial(profile, {
         pbrMaterial: null,
         nodeMaterial: null,
         standardMaterial: false,
@@ -1244,7 +1227,7 @@ function compileAddPhysicsShapeChildFromParent(
 ): Value | undefined {
     context.expectArgumentCount(call, 5, 5);
     const values = call.arguments.map((argument) =>
-        context.pinValueToTemporary(
+        context.bindings.pinValueToTemporary(
             context.compileValue(argument),
             "shape_child_arg",
             argument,
@@ -1369,7 +1352,7 @@ function compileOnPhysicsTrigger(
         cpp:
             `bbl::upstream::on_physics_trigger(` +
             `${world.cpp}, ` +
-            `${context.compilePhysicsTriggerCallback(argumentAt(call, 1))})`,
+            `${context.callbacks.compilePhysicsTriggerCallback(argumentAt(call, 1))})`,
     };
 }
 
@@ -1385,7 +1368,7 @@ function compileOnPhysicsAfterStep(
         cpp:
             `bbl::upstream::on_physics_after_step(` +
             `${world.cpp}, ` +
-            `${context.compileFrameCallback(argumentAt(call, 1))})`,
+            `${context.callbacks.compileFrameCallback(argumentAt(call, 1))})`,
     };
 }
 
@@ -1640,7 +1623,7 @@ function compileOnPhysicsCollision(
         kind: "void",
         cpp:
             `bbl::upstream::on_physics_collision(` +
-            `${world.cpp}, ${context.compilePhysicsCollisionCallback(argumentAt(call, 1))})`,
+            `${world.cpp}, ${context.callbacks.compilePhysicsCollisionCallback(argumentAt(call, 1))})`,
     };
 }
 
@@ -1652,7 +1635,10 @@ function compileShapeProximity(
     context.expectArgumentCount(call, 2, 2);
     const world = context.compileValue(argumentAt(call, 0));
     context.expectKind(world, "physics-world", argumentAt(call, 0));
-    const worldCpp = context.pinValueToTemporary(world, "query_world").cpp;
+    const worldCpp = context.bindings.pinValueToTemporary(
+        world,
+        "query_world",
+    ).cpp;
     const argument = context.unwrap(argumentAt(call, 1));
     if (!ts.isObjectLiteralExpression(argument)) {
         context.fail(
@@ -1690,7 +1676,8 @@ function compileShapeProximity(
             context.expectSameEngine(world, value, expression);
             fields.set(
                 name,
-                context.pinValueToTemporary(value, `query_${name}`).cpp,
+                context.bindings.pinValueToTemporary(value, `query_${name}`)
+                    .cpp,
             );
         } else if (name === "rotation") {
             const rotation = context.unwrap(expression);
@@ -1729,7 +1716,7 @@ function compileShapeProximity(
         } else if (name === "shouldHitTriggers") {
             fields.set(
                 name,
-                context.pinValueToTemporary(
+                context.bindings.pinValueToTemporary(
                     {
                         kind: "boolean",
                         cpp: context.compileBoolean(expression),
@@ -1845,7 +1832,10 @@ function compilePhysicsRaycast(
                     argument,
                     name!,
                 );
-                const field = context.readResolvedProperty(captured, access);
+                const field = context.propertyAccess.readResolvedProperty(
+                    captured,
+                    access,
+                );
                 if (!field)
                     context.fail(
                         argument,
@@ -1870,7 +1860,7 @@ function compilePhysicsRaycast(
                         ? context.compileBoolean(expression)
                         : context.compileNumber(expression, "double");
             }
-            const snapshot = context.pinValueToTemporary(
+            const snapshot = context.bindings.pinValueToTemporary(
                 { kind, cpp },
                 `ray_${name}`,
             ).cpp;

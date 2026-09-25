@@ -10,8 +10,8 @@ interface Context extends Pick<
     | "symbols"
     | "unwrap"
     | "knownValueWithoutEvaluation"
-    | "isDefaultLibraryIdentifier"
-    | "noteNodeGeometryMutation"
+    | "libraryGlobal"
+    | "admissions"
 > {}
 
 const transforms = new EmissionSet([
@@ -102,7 +102,7 @@ export function checkNodeGeometryMutation(
                     transforms.has(name) &&
                     unprovenMesh(left.expression))
             ) {
-                context.noteNodeGeometryMutation(node);
+                context.admissions.noteNodeGeometryMutation(node);
             }
         }
     }
@@ -116,14 +116,12 @@ export function checkNodeGeometryMutation(
         node.arguments[0] &&
         unprovenMesh(node.arguments[0])
     )
-        context.noteNodeGeometryMutation(node);
+        context.admissions.noteNodeGeometryMutation(node);
     if (!ts.isPropertyAccessExpression(callee)) return;
     if (callee.name.text === "set" && importedVector(callee.expression))
-        context.noteNodeGeometryMutation(node);
+        context.admissions.noteNodeGeometryMutation(node);
     if (
-        ts.isIdentifier(callee.expression) &&
-        callee.expression.text === "Object" &&
-        context.isDefaultLibraryIdentifier(callee.expression) &&
+        context.libraryGlobal(callee.expression) === "Object" &&
         [
             "assign",
             "defineProperty",
@@ -133,5 +131,5 @@ export function checkNodeGeometryMutation(
         node.arguments[0] &&
         (unprovenMesh(node.arguments[0]) || importedVector(node.arguments[0]))
     )
-        context.noteNodeGeometryMutation(node);
+        context.admissions.noteNodeGeometryMutation(node);
 }

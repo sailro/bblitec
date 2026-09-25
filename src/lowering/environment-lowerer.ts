@@ -7,6 +7,11 @@ import {
     lowerShPrescaleCpp,
 } from "./gltf-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
+import {
+    lowerWorldAabbHelpers,
+    worldAabbArrayCopies,
+} from "./world-bounds-lowerer.js";
+import { recordAt } from "../compiler/record-access.js";
 
 /** The DDS background composite, reached without the `.env` loader. */
 const DDS_BACKGROUND_MODULE = "src/material/pbr/background-dds-environment.ts";
@@ -106,7 +111,7 @@ namespace bbl {
 void load_image_skybox(
     Scene& scene,
     std::array<std::string, 6> face_paths,
-    float size) {
+    double size) {
     for (std::size_t face = 0; face < face_paths.size(); ++face) {
         scene.environment.image_skybox_faces[face].bytes =
             pal::read_binary_file(face_paths[face]);
@@ -385,8 +390,9 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
                     ts.isPropertyAssignment(node) &&
                     ts.isIdentifier(node.name) &&
                     node.name.text === "skipSkybox" &&
-                    /^skyboxIsDds \|\| skyboxIsEnv \|\| options\?\.skipSkybox$/.test(
-                        node.initializer.getText(file).trim(),
+                    this.context.expressionMatchesShape(
+                        node.initializer,
+                        "skyboxIsDds || skyboxIsEnv || options?.skipSkybox",
                     ),
             )
         ) {
@@ -414,6 +420,7 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
                     ? `${DDS_BACKGROUND_MODULE}#addDdsEnvironmentBackground`
                     : undefined,
             )}
+#include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 ${options.loadEnvironment ? "#include <bblite/upstream/env_parse.hpp>\n" : ""}#include <bblite/upstream/renderer_plan.hpp>
@@ -422,49 +429,37 @@ ${options.loadEnvironment ? "#include <bblite/upstream/env_parse.hpp>\n" : ""}#i
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace bbl {
 
 namespace {
 
-// src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh. Bounds remain local
-// and the pin takes them through the mesh's live float32 world matrix before
-// sizing the deferred environment. Keeping that transform is essential for
-// procedural meshes added after loadEnvironment (including invisible shadow
-// anchors), and the centre/abs-coefficient-radius arithmetic stays in the
-// JavaScript-number width the pin evaluates it at.
+${lowerWorldAabbHelpers(this.context, { emptyAccumulator: false })}
+
+// The pinned expansion over one mesh's local geometry box and its live
+// float32 world matrix, into the scene-size bounds. Keeping that transform
+// is essential for procedural meshes added after loadEnvironment
+// (including invisible shadow anchors).
 void expand_world_aabb_for_box(
     std::array<double, 3>& minimum,
     std::array<double, 3>& maximum,
     const Vec3& box_min,
     const Vec3& box_max,
-    const std::array<float, 16>& world) {
-    const std::array<double, 3> low{box_min.x, box_min.y, box_min.z};
-    const std::array<double, 3> high{box_max.x, box_max.y, box_max.z};
-    std::array<double, 3> center{};
-    std::array<double, 3> extent{};
-    for (int axis = 0; axis < 3; ++axis) {
-        center[axis] = (low[axis] + high[axis]) * 0.5;
-        extent[axis] = (high[axis] - low[axis]) * 0.5;
-    }
-    for (int row = 0; row < 3; ++row) {
-        double transformed_center = world[12 + row];
-        double transformed_radius = 0.0;
-        for (int column = 0; column < 3; ++column) {
-            const double coefficient = world[column * 4 + row];
-            transformed_center += coefficient * center[column];
-            transformed_radius +=
-                std::abs(coefficient) * extent[column];
-        }
-        minimum[row] = std::min(
-            minimum[row],
-            transformed_center - transformed_radius);
-        maximum[row] = std::max(
-            maximum[row],
-            transformed_center + transformed_radius);
-    }
+    const std::array<float, 16>& world,
+    const MeshRecord& record) {
+    WorldAabb acc{};
+${worldAabbArrayCopies(this.context, "minimum", "maximum").load}
+    WorldAabbMesh mesh;
+    mesh.bound_min = std::array<float, 3>{box_min.x, box_min.y, box_min.z};
+    mesh.bound_max = std::array<float, 3>{box_max.x, box_max.y, box_max.z};
+    mesh.world_matrix = world;
+    read_thin_instance_world_bounds(mesh, record);
+    expand_world_aabb_for_mesh(acc, mesh);
+${worldAabbArrayCopies(this.context, "minimum", "maximum").store}
 }
 
 std::uint32_t read_u32(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
@@ -526,7 +521,7 @@ void apply_scene_size(Scene& scene, double requested_skybox_size) {
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= scene.engine->meshes.size()) continue;
         const MeshRecord& mesh =
-            scene.engine->meshes[handle.value];
+            ${recordAt("scene.engine->meshes", "handle")};
         if (mesh.geometry >=
             scene.engine->geometries.size()) {
             continue;
@@ -540,13 +535,13 @@ void apply_scene_size(Scene& scene, double requested_skybox_size) {
             bounds_max,
             geometry.bounds_min,
             geometry.bounds_max,
-            world);
+            world,
+            mesh);
     }
-    scene.environment.ground_size = ${this.context.floatLiteral(sceneSize.groundDefault)};
-    scene.environment.skybox_size =
-        static_cast<float>(requested_skybox_size);
-    scene.environment.ground_position = Vec3{};
-    scene.environment.skybox_position = Vec3{};
+    scene.environment.ground_size = ${this.context.doubleLiteral(sceneSize.groundDefault)};
+    scene.environment.skybox_size = requested_skybox_size;
+    scene.environment.ground_position = Vec3d{};
+    scene.environment.skybox_position = Vec3d{};
     if (!std::isfinite(bounds_min[0])) return;
     const double dx = bounds_max[0] - bounds_min[0];
     const double dy = bounds_max[1] - bounds_min[1];
@@ -557,10 +552,10 @@ void apply_scene_size(Scene& scene, double requested_skybox_size) {
     double skybox_size = requested_skybox_size;
     if (
         scene.camera.value < scene.engine->cameras.size() &&
-        scene.engine->cameras[scene.camera.value].kind ==
+        ${recordAt("scene.engine->cameras", "scene.camera")}.kind ==
             CameraKind::arc_rotate) {
         const CameraRecord& camera =
-            scene.engine->cameras[scene.camera.value];
+            ${recordAt("scene.engine->cameras", "scene.camera")};
         if (
             camera.upper_radius_limit &&
             *camera.upper_radius_limit != 0.0) {
@@ -575,14 +570,12 @@ void apply_scene_size(Scene& scene, double requested_skybox_size) {
     }
     ground_size *= ${this.context.doubleLiteral(sceneSize.groundScale)};
     skybox_size *= ${this.context.doubleLiteral(sceneSize.skyboxScale)};
-    scene.environment.ground_size =
-        static_cast<float>(ground_size);
-    scene.environment.skybox_size =
-        static_cast<float>(skybox_size);
-    scene.environment.ground_position = Vec3{
-        static_cast<float>(bounds_min[0] + dx * ${this.context.doubleLiteral(sceneSize.rootHalf)}),
-        static_cast<float>(bounds_min[1] - ${this.context.doubleLiteral(sceneSize.rootDrop)}),
-        static_cast<float>(bounds_min[2] + dz * ${this.context.doubleLiteral(sceneSize.rootHalf)}),
+    scene.environment.ground_size = ground_size;
+    scene.environment.skybox_size = skybox_size;
+    scene.environment.ground_position = Vec3d{
+        bounds_min[0] + dx * ${this.context.doubleLiteral(sceneSize.rootHalf)},
+        bounds_min[1] - ${this.context.doubleLiteral(sceneSize.rootDrop)},
+        bounds_min[2] + dz * ${this.context.doubleLiteral(sceneSize.rootHalf)},
     };
     scene.environment.skybox_position =
         scene.environment.ground_position;
@@ -611,12 +604,10 @@ void add_dds_environment_background(
     scene.environment.has_ground = true;
     read_dds_skybox(scene.environment, options.skybox_url);
     scene.environment.enable_noise = options.enable_noise;
-    const float requested_skybox_size = options.skybox_size;
+    const double requested_skybox_size = options.skybox_size;
     scene.deferred_builders.emplace_back(
         [&scene, requested_skybox_size]() {
-            apply_scene_size(
-                scene,
-                static_cast<double>(requested_skybox_size));
+            apply_scene_size(scene, requested_skybox_size);
         }, SceneDeferredFailure::promise_rejection);
 }
 `
@@ -665,13 +656,11 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
     } else if (!options.skybox_url.empty()) {
         read_dds_skybox(scene.environment, options.skybox_url);
     }
-    const float requested_skybox_size =
-        options.skybox_size > 0.0f ? options.skybox_size : ${this.context.floatLiteral(sceneSize.skyboxDefault)};
+    const double requested_skybox_size =
+        options.skybox_size > 0.0 ? options.skybox_size : ${this.context.doubleLiteral(sceneSize.skyboxDefault)};
     scene.deferred_builders.emplace_back(
         [&scene, requested_skybox_size]() {
-            apply_scene_size(
-                scene,
-                static_cast<double>(requested_skybox_size));
+            apply_scene_size(scene, requested_skybox_size);
         }, SceneDeferredFailure::promise_rejection);
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
@@ -750,7 +739,11 @@ std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, Environme
             declaration,
             "computeSceneSize",
         );
-        return { sceneSizeCall: sceneSize.getText(file).replace(/\s+/g, " ") };
+        return {
+            sceneSizeCall: ts
+                .createPrinter({ removeComments: true })
+                .printNode(ts.EmitHint.Expression, sceneSize, file),
+        };
     }
 
     public lowerDdsLoaderAdapter(): LoweredSource {
@@ -1092,7 +1085,6 @@ ${spec.tail}}
         rootDrop: number;
     } {
         const sizeModule = "src/material/pbr/scene-size.ts";
-        const boundsModule = "src/mesh/mesh-world-bounds.ts";
         const { file, declaration } = this.context.functionDeclaration(
             sizeModule,
             "computeSceneSize",
@@ -1406,21 +1398,6 @@ ${spec.tail}}
             );
         }
         const rootDrop = this.context.numericValue(floor.right, file);
-        const { declaration: expand } = this.context.functionDeclaration(
-            boundsModule,
-            "expandWorldAabbForMesh",
-        );
-        for (const marker of [
-            "transformedCenter += coefficient * center[column]!",
-            "transformedRadius += Math.abs(coefficient) * extent[column]!",
-        ]) {
-            if (!expand.getText().includes(marker)) {
-                this.context.contractError(
-                    expand,
-                    `Expected the pinned OBB-to-AABB term '${marker}'.`,
-                );
-            }
-        }
         return {
             groundDefault,
             skyboxDefault,

@@ -9,11 +9,16 @@ export interface NativeDeclaration {
     readonly dependencies?: readonly string[];
 }
 
+/**
+ * A declaration without a source initializer is value-initialized: a scalar
+ * or record local the source assigns on every path before reading still
+ * never holds an indeterminate value.
+ */
 export function renderNativeDeclaration(
     declaration: NativeDeclaration,
 ): string {
     const prefix = `${declaration.attributes ?? ""}${declaration.type} ${declaration.name}`;
-    if (declaration.initialization === "default") return `${prefix};`;
+    if (declaration.initialization === "default") return `${prefix}{};`;
     if (declaration.initialization === "direct")
         return `${prefix}{${declaration.initializer}};`;
     return `${prefix} = ${declaration.initializer};`;

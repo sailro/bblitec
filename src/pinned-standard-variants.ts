@@ -70,16 +70,13 @@ import {
     reachCsmReceiverFactories,
     type ShadowLightSlot,
 } from "./pinned-shadow-slots.js";
-import { LoweringContext } from "./lowering/context.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
+import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./lowering/pinned-numeric-lowerer.js";
-import { pinnedNumericConstant } from "./lowering/pinned-numeric-constant.js";
 import { pinnedStandardMeshAlpha } from "./lowering/standard-mesh-alpha.js";
-export { pinnedNumericConstant } from "./lowering/pinned-numeric-constant.js";
 import {
     geometryAttachmentTypes,
     importPinnedModule,
@@ -101,35 +98,35 @@ const SKELETON_FRAGMENT_MODULE = "src/shader/fragments/skeleton-fragment.ts";
 
 /** The material fields the pin's Standard feature derivation reads. */
 export interface PinnedStandardMaterialInput {
-    diffuseTexture?: unknown;
-    diffuseCoordIndex?: number;
-    emissiveTexture?: unknown;
-    bumpTexture?: unknown;
-    specularTexture?: unknown;
-    specularCoordIndex?: number;
-    ambientTexture?: unknown;
-    ambientCoordIndex?: number;
-    lightmapTexture?: unknown;
-    lightmapCoordIndex?: number;
-    useLightmapAsShadowmap?: boolean;
-    opacityTexture?: unknown;
-    opacityFromRGB?: boolean;
-    reflectionTexture?: unknown;
-    reflectionCubeTexture?: unknown;
+    readonly diffuseTexture?: unknown;
+    readonly diffuseCoordIndex?: number;
+    readonly emissiveTexture?: unknown;
+    readonly bumpTexture?: unknown;
+    readonly specularTexture?: unknown;
+    readonly specularCoordIndex?: number;
+    readonly ambientTexture?: unknown;
+    readonly ambientCoordIndex?: number;
+    readonly lightmapTexture?: unknown;
+    readonly lightmapCoordIndex?: number;
+    readonly useLightmapAsShadowmap?: boolean;
+    readonly opacityTexture?: unknown;
+    readonly opacityFromRGB?: boolean;
+    readonly reflectionTexture?: unknown;
+    readonly reflectionCubeTexture?: unknown;
     /** The pin's default is `true` (`createStandardMaterial`); an absent
      *  value is normalized to it so `DOUBLE_SIDED` needs an explicit opt-in
      *  the way it does upstream. */
-    backFaceCulling?: boolean;
-    disableLighting?: boolean;
+    readonly backFaceCulling?: boolean;
+    readonly disableLighting?: boolean;
     /** Defaults to the pin's 1; below 1 adds `MATERIAL_ALPHA_BLEND`. */
-    alpha?: number;
+    readonly alpha?: number;
     /** `enableMaterialUvTransform(material)` marked this material, which is
      *  what `stdUvTransformExt._meshFeatures` reads. */
-    _hasUvTx?: boolean;
+    readonly _hasUvTx?: boolean;
     /** `material.plugins = [...]`: the compiler's own 1-based index for the
      *  list, which is the one the pin's Standard bridge baked and the one the
      *  material record carries. The bits come from that bake. */
-    pluginIndex?: number;
+    readonly pluginIndex?: number;
     [key: string]: unknown;
 }
 
@@ -316,17 +313,6 @@ async function standardExtensions(
     );
 }
 
-/** The std extension ids the pin has registered, in its own sorted order. */
-export async function registeredStandardExtensionIds(): Promise<
-    readonly string[]
-> {
-    await registerStandardExtensions();
-    const flags = await importPinnedModule<{
-        _getStdExtsSorted: () => readonly StdExtDescriptor[];
-    }>("material/standard/standard-flags.js");
-    return flags._getStdExtsSorted().map((ext) => ext._id);
-}
-
 /**
  * Derives a material's Standard feature bits the way the pin does.
  *
@@ -449,6 +435,7 @@ export async function composePinnedStandardVariant(
                 ESM_SHADOW_OUTPUT: number;
                 NO_COLOR_OUTPUT: number;
                 GEOMETRY_OUTPUT: number;
+                HAS_SKELETON: number;
             }>("material/standard/standard-flags.js"),
             importPinnedModule<{
                 MSH_HAS_SKELETON: number;
@@ -682,6 +669,21 @@ export async function composePinnedStandardVariant(
             (features & ~flags.MATERIAL_ALPHA_BLEND) |
             flags.GEOMETRY_OUTPUT |
             passFeatures;
+        // The composer's skeletal velocity arm (`hasSkeletonVelocity`)
+        // samples the previous frame's bone texture, which the pin's
+        // renderable keeps beside its previous world; neither backend keeps
+        // one.
+        if (
+            options.geometry.attachments.includes("LINEAR_VELOCITY") &&
+            (viewFeatures & flags.HAS_SKELETON) !== 0
+        ) {
+            refuseGeneration(
+                "renderer:geometry-output",
+                "A skinned Standard mesh in a LINEAR_VELOCITY geometry task " +
+                    "reads the previous frame's bone texture, which no " +
+                    "backend keeps.",
+            );
+        }
         const composed = geometry.composeStandardGeometryShader(
             viewFeatures,
             meshFeatures,
@@ -813,7 +815,7 @@ let instanceColorSlot: string | undefined;
  */
 function standardInstanceColorSlot(): string {
     if (instanceColorSlot !== undefined) return instanceColorSlot;
-    const context = new LoweringContext(sharedUpstreamStore());
+    const context = sharedPinnedContext();
     const modulePath = "src/material/standard/standard-renderable.ts";
     // Anchored at the function that owns the rewrite rather than at the
     // file, so an unrelated `BC` slot elsewhere in the module is not a
@@ -988,7 +990,7 @@ function lowerStandardFeatureDerivation(
     // module being lowered before failing.
     let flagModule = "src/material/standard/standard-flags.ts";
     const flagValue = (name: string): number =>
-        pinnedNumericConstant(context, flagModule, name);
+        context.pinnedNumber(flagModule, name);
     /** Whether a branch body is the pin's `return 0` early out. */
     const returnsZero = (branch: ts.Statement): boolean => {
         const only = ts.isBlock(branch)
@@ -2062,7 +2064,7 @@ const standardBuiltinBindings: readonly StandardBuiltinBinding[] = [
 export function standardBuiltinBindingNames(): ReadonlySet<string> {
     const bindings = [
         ...standardBuiltinBindings,
-        standardSkeletonBinding(new LoweringContext(sharedUpstreamStore())),
+        standardSkeletonBinding(sharedPinnedContext()),
     ];
     return new Set(
         bindings
@@ -2197,13 +2199,9 @@ export function pinnedStandardSupportBlock(
 ): CppModule {
     const cpp = new CppDefinitions();
     const flag = (name: string): number =>
-        pinnedNumericConstant(
-            context,
-            "src/material/standard/standard-flags.ts",
-            name,
-        );
+        context.pinnedNumber("src/material/standard/standard-flags.ts", name);
     const mesh = (name: string): number =>
-        pinnedNumericConstant(context, "src/material/mesh-features.ts", name);
+        context.pinnedNumber("src/material/mesh-features.ts", name);
     const skeletonModule =
         "src/material/standard/fragments/std-skeleton-fragment.ts";
     let skeletonBlock = "";
@@ -2248,11 +2246,9 @@ export function pinnedStandardSupportBlock(
                 return `static_cast<std::uint32_t>(${lowerer.expression(expression)})`;
             },
         });
-        // Defined only when on: both PALs read it as defined(...), so a
-        // 0 branch would read as on. The inventory row carries the off
-        // state.
+        // BBLITE_STANDARD_SKELETON, which gates the PALs' use of this
+        // block, is render_capabilities.hpp's.
         skeletonBlock = `
-#define BBLITE_STANDARD_SKELETON 1
 // ${context.provenance(skeletonModule, "stdSkeletonExt._meshFeatures")}
 inline std::uint32_t standard_skeleton_features(std::uint32_t mesh_features) {
 ${declaration.body.statements.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}

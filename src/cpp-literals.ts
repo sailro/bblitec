@@ -9,6 +9,10 @@
  * `1e+21.0f` — not C++.
  */
 export function floatLiteral(value: number): string {
+    // C++ rounds the decimal once, straight to float; JavaScript rounds the
+    // double. They differ only for a double exactly halfway between two
+    // floats, whose shortest decimal lies past the midpoint.
+    if (isFloat32Midpoint(value)) return float32Literal(value);
     // `String(-0)` is `"0"`, which loses the sign bit. Every emitter that
     // byte-preserves a block cares — a folded uniform whose default is
     // negative zero must upload negative zero.
@@ -16,44 +20,80 @@ export function floatLiteral(value: number): string {
     return text.includes(".") || /e/i.test(text) ? `${text}f` : `${text}.0f`;
 }
 
+const float32Bits = new Float32Array(1);
+const float32Word = new Uint32Array(float32Bits.buffer);
+
+/** The float32 adjacent to `value` (itself a float32) on the side of `toward`. */
+function adjacentFloat32(value: number, toward: number): number {
+    float32Bits[0] = value;
+    // Magnitude grows with the stored word for both signs, so the step
+    // direction depends on whether `toward` is further from zero.
+    const away = Math.abs(toward) > Math.abs(value);
+    float32Word[0] = float32Word[0]! + (away ? 1 : -1);
+    return float32Bits[0];
+}
+
+/** Whether `decimal` (a double) lies exactly halfway between two float32s. */
+function isFloat32Midpoint(decimal: number): boolean {
+    const nearest = Math.fround(decimal);
+    if (nearest === decimal || !Number.isFinite(nearest)) return false;
+    const other = adjacentFloat32(nearest, decimal);
+    return Math.abs(decimal - nearest) === Math.abs(other - decimal);
+}
+
 /**
- * A `float` literal that reads back as the same float32.
+ * A `float` literal that a C++ compiler reads back as `Math.fround(value)`,
+ * the float32 JavaScript stores for the number.
  *
  * `floatLiteral` spells the shortest decimal that round-trips as a
- * DOUBLE, which is right where the value is a JavaScript number whose
- * store rounds. A value read out of a `Float32Array` is already the
- * float32, so the shortest decimal that round-trips through
- * `Math.fround` names the identical float in about half the characters —
- * and a baked CSG solid emits hundreds of thousands of them.
+ * DOUBLE. A float32 needs at most nine significant digits, so the shortest
+ * decimal naming the stored float is about half the characters -- and a
+ * baked CSG solid emits hundreds of thousands of them.
+ *
+ * JavaScript rounds a decimal to a double and that double to a float32;
+ * a C++ `f` literal rounds the decimal once, straight to float. The two
+ * disagree only when the intermediate double is exactly a float32
+ * midpoint -- every other double lies strictly on the decimal's own side
+ * of every midpoint, because the midpoints are themselves doubles -- so a
+ * candidate whose double is a midpoint is passed over. The input rounds
+ * first for the same reason: a double that is itself a midpoint
+ * (`1 + 2 ** -24`) stores the even neighbour, while its own shortest
+ * decimal sits past the midpoint and would read back as the odd one.
  */
 export function float32Literal(value: number): string {
-    if (!Number.isFinite(value)) {
+    const stored = Math.fround(value);
+    if (!Number.isFinite(stored)) {
         throw new Error(
-            `A float32 literal needs a finite value, received ${value}.`,
+            `A float32 literal needs a finite value in the float32 range, received ${value}.`,
         );
     }
     // `toPrecision` drops the sign of negative zero, which `floatLiteral`
     // preserves deliberately; every other value keeps its sign through the
     // search below.
-    if (Object.is(value, -0)) return "-0.0f";
+    if (Object.is(stored, -0)) return "-0.0f";
+    const readsBack = (digits: number): boolean => {
+        const decimal = Number(stored.toPrecision(digits));
+        return Math.fround(decimal) === stored && !isFloat32Midpoint(decimal);
+    };
     // Binary search over the digit count rather than an ascending ladder:
-    // round-tripping is monotone in the count, and two thirds of a baked
-    // geometry stream needs eight or nine significant digits, so counting
-    // up from one spends five `toPrecision` calls per value to learn that.
-    // Measured over scene 90's 358,016 floats: 272 ms ascending against
-    // 137 ms here, byte-identical on every value.
+    // two thirds of a baked geometry stream needs eight or nine significant
+    // digits, so counting up from one spends five `toPrecision` calls per
+    // value to learn that. Measured over scene 90's 358,016 floats: 272 ms
+    // ascending against 137 ms here, byte-identical on every value. Nine
+    // digits always read back (their error is under a fifth of the float's
+    // half-spacing, so never at a midpoint), and the search only ever
+    // settles on a count it saw read back.
     let low = 1;
     let high = 9;
     while (low < high) {
         const middle = (low + high) >> 1;
-        if (Math.fround(Number(value.toPrecision(middle))) === value) {
+        if (readsBack(middle)) {
             high = middle;
         } else {
             low = middle + 1;
         }
     }
-    const shortened = Number(value.toPrecision(low));
-    return floatLiteral(Math.fround(shortened) === value ? shortened : value);
+    return floatLiteral(Number(stored.toPrecision(low)));
 }
 
 export function doubleLiteral(value: number): string {
@@ -90,7 +130,7 @@ const VALUES_PER_LINE = 64;
  * An empty stream has no array to bound -- a zero-length C array is not
  * C++ -- so it answers with the empty vector or span and declares nothing.
  */
-export type CppArrayTableRegistrar = (
+type CppArrayTableRegistrar = (
     symbol: string,
     elementType: string,
     elements: string[],
@@ -174,19 +214,27 @@ export const cppIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * Keep lone UTF-16 surrogates in the runtime's WTF-8 representation: C++
  * forbids surrogate universal-character names. Match escaped backslashes
  * separately so a source string containing literal "\\ud800" stays literal.
+ *
+ * A string holding U+0000 is spelled as a `std::string` sized by the
+ * literal itself: every native string sink reads a bare literal through
+ * `const char*`, which would stop at the first NUL.
  */
 export function stringLiteral(value: string): string {
-    return JSON.stringify(value)
+    const literal = JSON.stringify(value)
         .replace(
-            /\\\\|\\u(d[89a-f][0-9a-f]{2})/gi,
-            (escape: string, surrogate: string | undefined) => {
-                if (!surrogate) return escape;
-                const unit = Number.parseInt(surrogate, 16);
-                return [
-                    0xe0 | (unit >> 12),
-                    0x80 | ((unit >> 6) & 0x3f),
-                    0x80 | (unit & 0x3f),
-                ]
+            /\\\\|\\u(d[89a-f][0-9a-f]{2}|0000)/gi,
+            (escape: string, unitText: string | undefined) => {
+                if (!unitText) return escape;
+                const unit = Number.parseInt(unitText, 16);
+                const bytes =
+                    unit === 0
+                        ? [0]
+                        : [
+                              0xe0 | (unit >> 12),
+                              0x80 | ((unit >> 6) & 0x3f),
+                              0x80 | (unit & 0x3f),
+                          ];
+                return bytes
                     .map((byte) => `\\${byte.toString(8).padStart(3, "0")}`)
                     .join("");
             },
@@ -195,6 +243,9 @@ export function stringLiteral(value: string): string {
         .join("\\u2028")
         .split("\u2029")
         .join("\\u2029");
+    return value.includes("\u0000")
+        ? `std::string(${literal}, sizeof(${literal}) - 1)`
+        : literal;
 }
 
 /**
@@ -217,6 +268,19 @@ export function snakeCase(name: string): string {
     return name
         .replace(/^_+/, "")
         .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+        .toLowerCase();
+}
+
+/**
+ * A pinned member name as a native member: like {@link snakeCase}, and an
+ * acronym run splits before its last capital (`_slotStart` -> `slot_start`,
+ * `instancesU32` -> `instances_u32`, `GPUBuffer` -> `gpu_buffer`).
+ */
+export function pinnedSnakeCase(name: string): string {
+    return name
+        .replace(/^_+/, "")
+        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+        .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
         .toLowerCase();
 }
 

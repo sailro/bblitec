@@ -1,6 +1,5 @@
-import { LoweringContext } from "./lowering/context.js";
+import { sharedPinnedContext } from "./lowering/context.js";
 import { pinnedMaterialVertex } from "./pinned-material-vertex.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
 
 /** The palette capacity in the shared PAL's DeformationUniforms transport. */
 export const DEFORMATION_BONE_SLOTS = 64;
@@ -8,13 +7,14 @@ export const DEFORMATION_BONE_SLOTS = 64;
 /**
  * The shared diagnostic/depth/background stage. Colour materials use their
  * own composers; this stage projects the same pinned operations onto the
- * PAL's pre-transformed vertices, uniform palette and optional streams.
+ * PAL's local vertices, per-draw mesh world, uniform palette and optional
+ * streams.
  */
 export function materialVertexWgsl(
     gpuDeformation = false,
     gpuInstancing = false,
     morphStorage = false,
-    context = new LoweringContext(sharedUpstreamStore()),
+    context = sharedPinnedContext(),
 ): string {
     const projected = pinnedMaterialVertex(context, {
         deformation: gpuDeformation,
@@ -46,23 +46,18 @@ ${projected.morphStructs}
 }`
         : ""
 }
-${
-    gpuInstancing
-        ? `
-struct InstanceUniforms {
-    parentWorld: mat4x4<f32>,
+
+struct MeshUniforms {
+    world: mat4x4<f32>,
 }
-@group(1) @binding(${gpuDeformation ? 2 : 1}) var<uniform> instanceUniforms: InstanceUniforms;
-`
-        : ""
-}
+@group(1) @binding(${gpuDeformation ? 2 : 1}) var<uniform> mesh: MeshUniforms;
+
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) tangent: vec4<f32>,
     @location(3) uv: vec2<f32>,
-    @location(4) localPosition: vec3<f32>,
     @location(5) uv2: vec2<f32>,
     @location(6) color: vec4<f32>,
 ${

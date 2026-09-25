@@ -6,14 +6,76 @@ import {
     absentBinding,
     PinnedNumericLowerer,
     type PinnedBinding,
+    type PinnedCallSpelling,
+    type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const ARC = "src/camera/arc-rotate.ts";
 const CONTROLS = "src/camera/arc-rotate-controls.ts";
 const OBSERVABLE = "src/math/observable-vec3.ts";
 const axes = ["x", "y", "z"] as const;
 const scalarFields = ["alpha", "beta", "radius"] as const;
+
+/**
+ * The statements of a pinned DOM handler that have no native counterpart,
+ * which the camera controls elide. The platform layer hands the handlers
+ * relative pointer motion, so the closure's last client position
+ * (`lastX = e.clientX`) is not state here; SDL captures a pressed mouse
+ * itself (`canvas.setPointerCapture`); and no browser default exists to
+ * prevent (`e.preventDefault()`). Every other statement is lowered, so a
+ * handler that gained behaviour fails generation rather than vanishing.
+ */
+export function cameraPlatformStatement(
+    context: LoweringContext,
+    event: string,
+    lastPosition: readonly [string, string],
+): NonNullable<PinnedNumericScope["statement"]> {
+    const elided = [
+        `canvas.setPointerCapture(${event}.pointerId)`,
+        `canvas.releasePointerCapture(${event}.pointerId)`,
+        `${event}.preventDefault()`,
+        `${lastPosition[0]} = ${event}.clientX`,
+        `${lastPosition[1]} = ${event}.clientY`,
+    ];
+    return (statement) =>
+        ts.isExpressionStatement(statement) &&
+        elided.some((shape) =>
+            context.expressionMatchesShape(statement.expression, shape),
+        )
+            ? []
+            : undefined;
+}
+
+/**
+ * The pin's per-event pointer delta (`e.clientX - lastX`) is the relative
+ * motion the platform layer reports, so both differences bind to the
+ * handler's delta parameters.
+ */
+export function cameraPointerDeltaBindings(
+    event: string,
+    lastPosition: readonly [string, string],
+): [string, PinnedBinding][] {
+    return [
+        [
+            `${event}.clientX - ${lastPosition[0]}`,
+            { cpp: "delta_x", type: "scalar" },
+        ],
+        [
+            `${event}.clientY - ${lastPosition[1]}`,
+            { cpp: "delta_y", type: "scalar" },
+        ],
+    ];
+}
+
+/** The native state and hooks one pinned control handler is lowered over. */
+interface ControlAdapter {
+    bindings?: ReadonlyMap<string, PinnedBinding>;
+    calls?: ReadonlyMap<string, PinnedCallSpelling>;
+    statement?: PinnedNumericScope["statement"];
+    expression?: PinnedNumericScope["expression"];
+}
 
 /** Source setters are the only transform-version writers. Matrix reads cannot
  * recover writes that returned a value to its starting point before a draw. */
@@ -24,16 +86,16 @@ export class CameraMutationLowerer {
         file: ts.SourceFile,
         body: ts.Block,
         bindings: Map<string, PinnedBinding>,
-        calls: ReadonlyMap<
-            string,
-            (args: readonly string[]) => string
-        > = new Map(),
+        calls: ReadonlyMap<string, PinnedCallSpelling> = new Map(),
+        adapter: Pick<ControlAdapter, "statement" | "expression"> = {},
     ): string {
         return lowerPinnedBody(file, body.statements, {
             bindings,
             calls,
             booleanAnd: true,
             booleanOr: true,
+            ...(adapter.statement ? { statement: adapter.statement } : {}),
+            ...(adapter.expression ? { expression: adapter.expression } : {}),
         });
     }
 
@@ -318,7 +380,7 @@ ${bulkBody}
 
     /** Route writes in the actual pin body through its accessor, then reuse
      * numeric lowering for every condition, intermediate and store order. */
-    private controlBody(name: string): string {
+    private controlBody(name: string, adapter: ControlAdapter = {}): string {
         const file = this.context.sourceFile(CONTROLS);
         const declaration = this.context.findNodes(
             file,
@@ -424,6 +486,9 @@ ${bulkBody}
             "inertialPanningY",
             "inertia",
             "panningInertia",
+            "angularSensibility",
+            "panningSensibility",
+            "wheelPrecision",
         ]) {
             bindings.set(`camera.${property}`, {
                 cpp: `camera.${snakeCase(property)}`,
@@ -485,51 +550,27 @@ ${bulkBody}
                 type: "scalar",
             });
         }
+        for (const [source, binding] of adapter.bindings ?? [])
+            bindings.set(source, binding);
         return this.lower(
             translated,
             body.body,
             bindings,
             new Map([
-                ...["cos", "sin", "abs"].map(
-                    (name): [string, (args: readonly string[]) => string] => [
-                        `Math.${name}`,
-                        (args) => `std::${name}(${args.join(", ")})`,
-                    ],
-                ),
-                ...["min", "max"].map(
-                    (name): [string, (args: readonly string[]) => string] => [
-                        `Math.${name}`,
-                        (args) => {
-                            if (args.length !== 2)
-                                this.context.contractError(
-                                    declaration,
-                                    "Camera clamp requires two numeric operands.",
-                                );
-                            // JS propagates NaN from either operand and orders signed
-                            // zero. std::min/max alone preserve neither contract.
-                            return (
-                                `([](double a, double b) { if (std::isnan(a) || std::isnan(b)) return std::numeric_limits<double>::quiet_NaN(); ` +
-                                `if (a == b) return std::signbit(a) ? ${name === "min" ? "a : b" : "b : a"}; ` +
-                                `return std::${name}(a, b); })(${args.join(", ")})`
-                            );
-                        },
-                    ],
-                ),
-                ...scalarFields.map(
-                    (field): [string, (args: readonly string[]) => string] => [
-                        `write_${field}`,
-                        (args) =>
-                            `write_camera_scalar(camera, &CameraRecord::${field}, ${args.join(", ")})`,
-                    ],
-                ),
-                ...axes.map(
-                    (axis): [string, (args: readonly string[]) => string] => [
-                        `write_target_${axis}`,
-                        (args) =>
-                            `write_camera_vector_component(camera, &CameraRecord::target, &Vec3d::${axis}, ${args.join(", ")})`,
-                    ],
-                ),
+                ...pinnedNumericMathCalls(),
+                ...scalarFields.map((field): [string, PinnedCallSpelling] => [
+                    `write_${field}`,
+                    (args) =>
+                        `write_camera_scalar(camera, &CameraRecord::${field}, ${args.join(", ")})`,
+                ]),
+                ...axes.map((axis): [string, PinnedCallSpelling] => [
+                    `write_target_${axis}`,
+                    (args) =>
+                        `write_camera_vector_component(camera, &CameraRecord::target, &Vec3d::${axis}, ${args.join(", ")})`,
+                ]),
+                ...(adapter.calls ?? []),
             ]),
+            adapter,
         );
     }
 
@@ -538,5 +579,124 @@ ${bulkBody}
     }
     public inertia(): string {
         return this.controlBody("applyInertia");
+    }
+
+    /**
+     * The native side of attachControl's closure: the drag flags are the
+     * caller's pointer state, and the optional `AttachControlOptions`
+     * predicates are the record's deferral hooks (the scene intrinsic
+     * compiles each as a zero-argument predicate and refuses the other
+     * options, so the pointer mappings are absent).
+     */
+    private pointerAdapter(): ControlAdapter {
+        const hook = (member: string): string =>
+            `(camera.${member} && camera.${member}())`;
+        return {
+            bindings: new Map<string, PinnedBinding>([
+                ["isDragging", { cpp: "is_dragging", type: "bool" }],
+                ["isPanning", { cpp: "is_panning", type: "bool" }],
+                ["options?.pointerMappings", absentBinding()],
+                ...cameraPointerDeltaBindings("e", ["lastX", "lastY"]),
+            ]),
+            calls: new Map<string, PinnedCallSpelling>([
+                [
+                    "options?.isExternalDragActive?.()",
+                    () => hook("external_drag_active"),
+                ],
+                [
+                    "options?.isExternalPickPending?.()",
+                    () => hook("external_pick_pending"),
+                ],
+            ]),
+            statement: cameraPlatformStatement(this.context, "e", [
+                "lastX",
+                "lastY",
+            ]),
+        };
+    }
+
+    /**
+     * attachControl's onPointerDown. The DOM button and pointer type are the
+     * event's; the chosen `ArcRotatePointerAction` is a JavaScript string,
+     * held as the optional string view it is (`undefined` for a button
+     * that starts no gesture).
+     */
+    public pointerDown(): string {
+        const adapter = this.pointerAdapter();
+        const bindings = new Map(adapter.bindings);
+        // The event reaches the deferral predicate only as its argument; the
+        // native predicate takes none.
+        bindings.set("e", { cpp: "event", type: "opaque" });
+        bindings.set("e.button", { cpp: "button", type: "scalar" });
+        bindings.set('e.pointerType === "touch"', {
+            cpp: "touch",
+            type: "bool",
+        });
+        bindings.set("options?.shouldHandlePointerDown", {
+            cpp: "static_cast<bool>(camera.should_handle_pointer_down)",
+            type: "bool",
+        });
+        bindings.set("pointerAction", {
+            cpp: "(*pointer_action)",
+            type: "opaque",
+            absentCpp: "!pointer_action.has_value()",
+        });
+        const calls = new Map(adapter.calls);
+        calls.set(
+            "options.shouldHandlePointerDown",
+            () => "camera.should_handle_pointer_down()",
+        );
+        const platform = adapter.statement!;
+        return this.controlBody("onPointerDown", {
+            bindings,
+            calls,
+            statement: (statement, lowerer, indent) => {
+                const elided = platform(statement, lowerer, indent);
+                if (elided) return elided;
+                if (!ts.isVariableStatement(statement)) return undefined;
+                const [declaration] = statement.declarationList.declarations;
+                if (
+                    statement.declarationList.declarations.length !== 1 ||
+                    !declaration ||
+                    !ts.isIdentifier(declaration.name) ||
+                    declaration.name.text !== "pointerAction" ||
+                    !declaration.initializer
+                )
+                    return undefined;
+                return [
+                    `${indent}const std::optional<std::string_view> pointer_action = ${lowerer.expression(declaration.initializer)};`,
+                ];
+            },
+            expression: (node) =>
+                ts.isStringLiteral(node)
+                    ? `std::string_view{${JSON.stringify(node.text)}}`
+                    : ts.isIdentifier(node) && node.text === "undefined"
+                      ? "std::optional<std::string_view>{}"
+                      : undefined,
+        });
+    }
+
+    /** attachControl's onPointerMove, over the platform's relative motion. */
+    public pointerMove(): string {
+        const adapter = this.pointerAdapter();
+        const bindings = new Map(adapter.bindings);
+        bindings.set("activeTouches.size", {
+            cpp: "touch_count",
+            type: "scalar",
+        });
+        return this.controlBody("onPointerMove", { ...adapter, bindings });
+    }
+
+    /** attachControl's onPointerUp. */
+    public pointerUp(): string {
+        return this.controlBody("onPointerUp", this.pointerAdapter());
+    }
+
+    /** attachControl's onWheel, over the DOM `deltaY` the platform reports. */
+    public wheel(): string {
+        const adapter = this.pointerAdapter();
+        const bindings = new Map(adapter.bindings);
+        bindings.set("e.deltaY", { cpp: "delta_y", type: "scalar" });
+        return this.controlBody("onWheel", { ...adapter, bindings });
     }
 }

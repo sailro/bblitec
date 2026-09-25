@@ -275,7 +275,7 @@ function instrumentPointerWriters(
     );
 }
 
-export interface GltfPointerSourceUrls {
+interface GltfPointerSourceUrls {
     feature: string;
     converter: string;
     bridge: string;
@@ -721,7 +721,7 @@ export function packageAnimationReceipt(
 }
 
 /** Capture paths are found from the source objects after privateTexture has replaced wrappers. */
-export function pointerCaptureEncoder(
+function pointerCaptureEncoder(
     document: object,
     nodes: readonly (object | undefined)[],
     materials: readonly object[],

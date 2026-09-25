@@ -170,11 +170,7 @@ function assertReverseZProjectionRows(context: LoweringContext): void {
  * against a spelling typed here.
  */
 export function pinnedReverseDepthCompare(context: LoweringContext): string {
-    const file = context.sourceFile(renderTargetModule);
-    return context.stringValue(
-        context.variableInitializer(file, "REVERSE_DEPTH_COMPARE"),
-        file,
-    );
+    return context.pinnedString(renderTargetModule, "REVERSE_DEPTH_COMPARE");
 }
 
 /**

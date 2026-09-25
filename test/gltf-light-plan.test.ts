@@ -7,10 +7,10 @@ import {
     asObject,
     asRecords,
     GLTF_MESH_PLAN,
+    parseGlbJson,
     type JsonObject,
 } from "../src/gltf-document.js";
 import {
-    gltfMeshPlan,
     packageGltfMeshPlan,
     packagedGltfMeshPlan,
 } from "../src/gltf-mesh-plan.js";
@@ -20,6 +20,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { buildGlb } from "./glb-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 import {
+    gltfMeshPlan,
     meshPlanFixture,
     readPackedGltfAttribute,
 } from "./gltf-mesh-fixture.js";
@@ -108,7 +109,7 @@ test("source light constructors retain defaults, selected parents, baked worlds 
     mkdirSync(directory, { recursive: true });
     const file = resolve(directory, "lights.glb");
     writeFileSync(file, buildGlb(document, binary));
-    assert.deepEqual(gltfNodeLights(file), {
+    assert.deepEqual(gltfNodeLights(parseGlbJson(file)), {
         count: 4,
         kinds: ["point", "directional", "spot"],
     });

@@ -5,9 +5,8 @@ import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
     GltfLowerer,
-    lowerAnimationInterpolationCpp,
     lowerMatrixComposeCpp,
-    lowerMatrixNativeCpp,
+    lowerRootedWorldCpp,
     lowerShPrescaleCpp,
 } from "../src/lowering/gltf-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
@@ -57,154 +56,11 @@ function mutatedStore(
     return patched;
 }
 
-const evaluateModule = "src/animation/evaluate.ts";
 const parserModule = "src/loader-gltf/gltf-parser.ts";
 const multiplyModule = "src/math/multiply-mat4-into-buffer.ts";
 const composeModule = "src/math/compose-mat4-into-buffer.ts";
 const assemblyModule = "src/loader-gltf/ibl-env-assembly.ts";
 const loadEnvModule = "src/loader-env/load-env.ts";
-
-/** What the loader template carried by hand before the lowering. */
-const expectedAnimationInterpolation = `Vec4 normalize_quaternion(Vec4 value) {
-    // Pinned normalizeQuat4: double length over float32 components,
-    // a multiply by the inverse square root, one rounding at the
-    // Float32Array store, no epsilon, and the input kept verbatim on
-    // zero length.
-    const double x = value.x;
-    const double y = value.y;
-    const double z = value.z;
-    const double w = value.w;
-    const double length_squared =
-        x * x + y * y + z * z + w * w;
-    if (length_squared > 0.0) {
-        const double inverse =
-            1.0 / std::sqrt(length_squared);
-        return Vec4{
-            static_cast<float>(x * inverse),
-            static_cast<float>(y * inverse),
-            static_cast<float>(z * inverse),
-            static_cast<float>(w * inverse),
-        };
-    }
-    return value;
-}
-
-Vec4 interpolate_quaternion(Vec4 left, Vec4 right, double amount) {
-    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
-    // doubles and rounds once at the Float32Array store.
-    const double lx = left.x;
-    const double ly = left.y;
-    const double lz = left.z;
-    const double lw = left.w;
-    double rx = right.x;
-    double ry = right.y;
-    double rz = right.z;
-    double rw = right.w;
-    double dot = lx * rx + ly * ry + lz * rz + lw * rw;
-    if (dot < 0.0) {
-        rx = -rx;
-        ry = -ry;
-        rz = -rz;
-        rw = -rw;
-        dot = -dot;
-    }
-    if (dot > 0.9995) {
-        // The pinned near-parallel path stores the double lerp into a
-        // Float32Array scratch before normalizing it in place, so the
-        // components round to float32 between the two steps.
-        const Vec4 lerped{
-            static_cast<float>(lx + amount * (rx - lx)),
-            static_cast<float>(ly + amount * (ry - ly)),
-            static_cast<float>(lz + amount * (rz - lz)),
-            static_cast<float>(lw + amount * (rw - lw)),
-        };
-        return normalize_quaternion(lerped);
-    }
-    const double theta = std::acos(dot);
-    const double sin_theta = std::sin(theta);
-    const double left_weight =
-        std::sin((1.0 - amount) * theta) / sin_theta;
-    const double right_weight =
-        std::sin(amount * theta) / sin_theta;
-    return Vec4{
-        static_cast<float>(left_weight * lx + right_weight * rx),
-        static_cast<float>(left_weight * ly + right_weight * ry),
-        static_cast<float>(left_weight * lz + right_weight * rz),
-        static_cast<float>(left_weight * lw + right_weight * rw),
-    };
-}
-
-Vec4 cubic_quaternion(
-    Vec4 left,
-    Vec4 left_tangent,
-    Vec4 right,
-    Vec4 right_tangent,
-    double amount,
-    double span) {
-    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
-    // doubles and rounds once at the Float32Array store.
-    const double amount2 = amount * amount;
-    const double amount3 = amount2 * amount;
-    const double h00 = 2.0 * amount3 - 3.0 * amount2 + 1.0;
-    const double h10 = amount3 - 2.0 * amount2 + amount;
-    const double h01 = -2.0 * amount3 + 3.0 * amount2;
-    const double h11 = amount3 - amount2;
-    // The pinned evaluator scales tangents by the key delta before
-    // weighting, stores the Hermite sum into a Float32Array, and then
-    // normalizes the rounded components in place.
-    const Vec4 combined{
-        static_cast<float>(
-            h00 * left.x + h10 * (left_tangent.x * span) +
-            h01 * right.x + h11 * (right_tangent.x * span)),
-        static_cast<float>(
-            h00 * left.y + h10 * (left_tangent.y * span) +
-            h01 * right.y + h11 * (right_tangent.y * span)),
-        static_cast<float>(
-            h00 * left.z + h10 * (left_tangent.z * span) +
-            h01 * right.z + h11 * (right_tangent.z * span)),
-        static_cast<float>(
-            h00 * left.w + h10 * (left_tangent.w * span) +
-            h01 * right.w + h11 * (right_tangent.w * span)),
-    };
-    return normalize_quaternion(combined);
-}
-
-Vec3 cubic_vec3(
-    Vec3 left,
-    Vec3 left_tangent,
-    Vec3 right,
-    Vec3 right_tangent,
-    double amount,
-    double span) {
-    // Pinned sampler evaluation lifts float32 keyframes to JavaScript
-    // doubles and rounds once at the Float32Array store.
-    const double amount2 = amount * amount;
-    const double amount3 = amount2 * amount;
-    const double h00 = 2.0 * amount3 - 3.0 * amount2 + 1.0;
-    const double h10 = amount3 - 2.0 * amount2 + amount;
-    const double h01 = -2.0 * amount3 + 3.0 * amount2;
-    const double h11 = amount3 - amount2;
-    // The pinned evaluator scales tangents by the key delta before
-    // weighting and rounds once at the Float32Array store.
-    return Vec3{
-        static_cast<float>(
-            h00 * left.x + h10 * (left_tangent.x * span) +
-            h01 * right.x + h11 * (right_tangent.x * span)),
-        static_cast<float>(
-            h00 * left.y + h10 * (left_tangent.y * span) +
-            h01 * right.y + h11 * (right_tangent.y * span)),
-        static_cast<float>(
-            h00 * left.z + h10 * (left_tangent.z * span) +
-            h01 * right.z + h11 * (right_tangent.z * span)),
-    };
-}`;
-
-test("lowers the pinned interpolation functions byte-identically to the shipped loader text", () => {
-    assert.equal(
-        lowerAnimationInterpolationCpp(pinnedFile(evaluateModule)),
-        expectedAnimationInterpolation,
-    );
-});
 
 test("the emitted loader carries the complete source sampler evaluator", () => {
     const context = new LoweringContext(store);
@@ -212,105 +68,71 @@ test("the emitted loader carries the complete source sampler evaluator", () => {
     assert.ok(adapter.source.includes(lowerGltfAnimationEvaluator(context)));
 });
 
-test("a changed slerp threshold flows into the emitted bytes", () => {
-    const lowered = lowerAnimationInterpolationCpp(
-        mutatedFile(evaluateModule, "dot > 0.9995", "dot > 0.4995"),
-    );
-    assert.notEqual(lowered, expectedAnimationInterpolation);
-    assert.match(lowered, /if \(dot > 0\.4995\)/);
-});
-
-test("a changed Hermite coefficient flows into both cubic variants", () => {
-    const lowered = lowerAnimationInterpolationCpp(
-        mutatedFile(
-            evaluateModule,
-            "const h00 = 2 * f3 - 3 * f2 + 1;",
-            "const h00 = 2 * f3 - 3 * f2 + 7;",
-        ),
-    );
-    const occurrences =
-        lowered.split("const double h00 = 2.0 * amount3 - 3.0 * amount2 + 7.0;")
-            .length - 1;
-    assert.equal(occurrences, 2);
-});
-
-test("a math intrinsic without a lowering refuses generation", () => {
-    assert.throws(
-        () =>
-            lowerAnimationInterpolationCpp(
-                mutatedFile(evaluateModule, "Math.acos(dot)", "Math.atan(dot)"),
-            ),
-        /Math\.atan, which has no lowering/,
-    );
-});
-
-test("a moved tangent-triplet layout refuses generation", () => {
-    assert.throws(
-        () =>
-            lowerAnimationInterpolationCpp(
-                mutatedFile(
-                    evaluateModule,
-                    "output[k1 + c]!",
-                    "output[k1 + 2 * stride + c]!",
-                ),
-            ),
-        /triplet slot outside the pinned/,
-    );
-});
-
 const expectedShPrescale = `std::array<Color3, 9> pre_scale_harmonics(
     const std::array<Color3, 9>& polynomial) {
-    constexpr float c00xy = 0.3333338747897695f;
-    constexpr float c00z = 0.33333298856284405f;
-    constexpr float c1 = 1.4999984284682104f;
-    constexpr float c2 = 3.999982863580422f;
-    constexpr float c20zz = 1.3333326611423701f;
-    constexpr float c20xy = 0.6666653397393608f;
-    constexpr float c22 = 1.999991431790211f;
+    constexpr double c00xy = 0.3333338747897695;
+    constexpr double c00z = 0.33333298856284405;
+    constexpr double c1 = 1.4999984284682104;
+    constexpr double c2 = 3.999982863580422;
+    constexpr double c20zz = 1.3333326611423701;
+    constexpr double c20xy = 0.6666653397393608;
+    constexpr double c22 = 1.999991431790211;
     std::array<Color3, 9> result{};
     for (int channel = 0; channel < 3; ++channel) {
-        const float x =
+        const double x =
             color_channel(polynomial[0], channel);
-        const float y =
+        const double y =
             color_channel(polynomial[1], channel);
-        const float z =
+        const double z =
             color_channel(polynomial[2], channel);
-        const float xx =
+        const double xx =
             color_channel(polynomial[3], channel);
-        const float yy =
+        const double yy =
             color_channel(polynomial[4], channel);
-        const float zz =
+        const double zz =
             color_channel(polynomial[5], channel);
-        const float yz =
+        const double yz =
             color_channel(polynomial[6], channel);
-        const float zx =
+        const double zx =
             color_channel(polynomial[7], channel);
-        const float xy =
+        const double xy =
             color_channel(polynomial[8], channel);
         set_color_channel(
             result[0],
             channel,
-            (xx + yy) * c00xy + zz * c00z);
+            static_cast<float>((xx + yy) * c00xy + zz * c00z));
         set_color_channel(
-            result[1], channel, y * c1);
+            result[1],
+            channel,
+            static_cast<float>(y * c1));
         set_color_channel(
-            result[2], channel, z * c1);
+            result[2],
+            channel,
+            static_cast<float>(z * c1));
         set_color_channel(
-            result[3], channel, x * c1);
+            result[3],
+            channel,
+            static_cast<float>(x * c1));
         set_color_channel(
-            result[4], channel, xy * c2);
+            result[4],
+            channel,
+            static_cast<float>(xy * c2));
         set_color_channel(
-            result[5], channel, yz * c2);
+            result[5],
+            channel,
+            static_cast<float>(yz * c2));
         set_color_channel(
             result[6],
             channel,
-            zz * c20zz - (xx + yy) * c20xy);
+            static_cast<float>(zz * c20zz - (xx + yy) * c20xy));
         set_color_channel(
-            result[7], channel, zx * c2);
+            result[7],
+            channel,
+            static_cast<float>(zx * c2));
         set_color_channel(
             result[8],
             channel,
-            (xx - yy) * c22);
+            static_cast<float>((xx - yy) * c22));
     }
     return result;
 }`;
@@ -333,7 +155,7 @@ test("a changed SH band constant flows through both pinned copies", () => {
         mutatedFile(loadEnvModule, needle, replacement),
     );
     assert.notEqual(lowered, expectedShPrescale);
-    assert.match(lowered, /constexpr float c1 = 1\.25f;/);
+    assert.match(lowered, /constexpr double c1 = 1\.25;/);
 });
 
 test("SH prescale copies that diverge refuse generation", () => {
@@ -403,20 +225,11 @@ const expectedMatrixCompose = `Matrix trs_matrix(
     return result;
 }`;
 
-const expectedMatrixNative = `Matrix native_matrix(const Matrix& matrix) {
-    Matrix result{};
-    for (std::size_t column = 0; column < 4; ++column) {
-        for (std::size_t row = 0; row < 4; ++row) {
-            const float row_sign = row == 0 ? -1.0f : 1.0f;
-            const float column_sign =
-                column == 0 ? -1.0f : 1.0f;
-            result[column * 4 + row] =
-                matrix[column * 4 + row] *
-                row_sign *
-                column_sign;
-        }
-    }
-    return result;
+const expectedRootedWorld = `const Matrix gltf_rh_to_lh_root{
+    -1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+
+Matrix gltf_rooted_world(const Matrix& world) {
+    return upstream::matrix_product(gltf_rh_to_lh_root, world);
 }`;
 
 test("lowers the pinned matrix multiply through the shared translation", () => {
@@ -437,10 +250,10 @@ test("lowers the pinned TRS compose byte-identically to the shipped loader text"
     );
 });
 
-test("lowers the native change of basis byte-identically to the shipped loader text", () => {
+test("lowers the RH-to-LH root multiply byte-identically to the shipped loader text", () => {
     assert.equal(
-        lowerMatrixNativeCpp(pinnedFile(parserModule)),
-        expectedMatrixNative,
+        lowerRootedWorldCpp(pinnedFile(parserModule)),
+        expectedRootedWorld,
     );
 });
 
@@ -450,7 +263,7 @@ test("the emitted loader carries the source matrix helpers", () => {
     ).lowerLoaderAdapter();
     for (const segment of [
         lowerMatrixComposeCpp(pinnedFile(composeModule), true),
-        expectedMatrixNative,
+        expectedRootedWorld,
     ]) {
         assert.ok(
             adapter.source.includes(segment),
@@ -516,14 +329,17 @@ test("a moved RH-to-LH flip axis flows into the matrix adapter", () => {
         "new F32([-1, 0, 0, 0,  0, 1, 0, 0,",
         "new F32([1, 0, 0, 0,  0, -1, 0, 0,",
     );
-    const native = lowerMatrixNativeCpp(doctored);
-    assert.match(native, /row == 1 \? -1\.0f : 1\.0f;/);
+    const rooted = lowerRootedWorldCpp(doctored);
+    assert.match(
+        rooted,
+        /gltf_rh_to_lh_root\{\n {4}1\.0f, 0\.0f, 0\.0f, 0\.0f, 0\.0f, -1\.0f,/,
+    );
 });
 
 test("a root that stops flipping exactly one axis refuses", () => {
     assert.throws(
         () =>
-            lowerMatrixNativeCpp(
+            lowerRootedWorldCpp(
                 mutatedFile(
                     parserModule,
                     "F32([-1, 0, 0, 0,  0, 1,",

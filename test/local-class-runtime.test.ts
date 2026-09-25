@@ -193,25 +193,20 @@ test("stores a class an array element demands as a shared object", () => {
     // things generation owns -- the renderer and the workspace.
     assert.match(
         result.cpp,
-        /struct PartData \{\s*bool locked;\s*bbl::js::Tuple<3> _size;\s*bblscene::\w+ _position;\s*bblscene::Quat _quat;\s*bool _destroyed;\s*bbl::js::Set<bbl::js::Callback<void\(\)>> _changeHandlers;\s*friend void gc_trace_edges\(/,
+        /struct PartData \{\s*bool locked\{\};\s*bbl::js::Tuple<3> _size;\s*bblscene::\w+ _position;\s*bblscene::Quat _quat;\s*bool _destroyed\{\};\s*bbl::js::Set<bbl::js::Callback<void\(\)>> _changeHandlers;\s*friend void gc_trace_edges\(/,
     );
     const trace = result.cpp.match(
-        /friend void gc_trace_edges\(\[\[maybe_unused\]\] const PartData& record,[^]*?\n\s*\}/,
+        /friend void gc_trace_edges\(const PartData& record,[^]*?\n\s*\}/,
     )?.[0];
     assert.ok(trace);
-    for (const field of [
-        "locked",
-        "_size",
-        "_position",
-        "_quat",
-        "_destroyed",
-        "_changeHandlers",
-    ]) {
+    // Only the callback set can own a traced edge; scalars, the tuple and
+    // the edge-free vector records are released by reference counting.
+    assert.ok(trace.includes("visitor(record._changeHandlers);"));
+    for (const field of ["locked", "_size", "_position", "_quat", "_destroyed"])
         assert.ok(
-            trace.includes(`visitor(record.${field});`),
-            `${field} participates in managed ownership tracing`,
+            !trace.includes(`visitor(record.${field});`),
+            `${field} owns no traced edge`,
         );
-    }
     assert.match(result.cpp, /using Part = bbl::js::Ref<PartData>;/);
     assert.match(
         result.cpp,
@@ -580,20 +575,68 @@ test("refuses a stored class whose hoisted field differs per construction", () =
     );
 });
 
-test("refuses a stored class that would need dynamic dispatch", () => {
+test("stores a class hierarchy as one tagged struct and dispatches on the tag", () => {
+    const result = compileSource(`
+        abstract class Shape {
+            abstract area(): number;
+        }
+        class Square extends Shape {
+            side = 2;
+            area(): number { return this.side * this.side; }
+        }
+        class Circle extends Shape {
+            radius = 1;
+            area(): number { return 3 * this.radius * this.radius; }
+        }
+        const shapes: Shape[] = [new Square(), new Circle()];
+        let total = 0;
+        for (const shape of shapes) total += shape.area();
+        const unused = total;
+    `);
+
+    // One struct named after the root holds every class's fields and the
+    // tag; each construction records its class.
+    assert.match(
+        result.cpp,
+        /struct ShapeData \{\s*double side\{\};\s*double radius\{\};\s*int bbl_class_tag\{\};/,
+    );
+    assert.doesNotMatch(result.cpp, /struct (Square|Circle)Data/);
+    assert.match(result.cpp, /->bbl_class_tag = 0;[^]*->bbl_class_tag = 1;/);
+    assert.match(result.cpp, /if \(v_\w+->bbl_class_tag == 0\) \{/);
+});
+
+test("shares a callback that calls an abstract method", () => {
+    const result = compileSource(`
+        abstract class Animal {
+            constructor(readonly name: string) {}
+            abstract speak(): string;
+        }
+        class Dog extends Animal { speak(): string { return this.name + " barks"; } }
+        class Cat extends Animal { speak(): string { return this.name + " meows"; } }
+        const zoo: Animal[] = [new Dog("rex"), new Cat("po")];
+        const sorted = [...zoo].sort((left, right) => left.speak().length - right.speak().length);
+        const unused = sorted.length;
+    `);
+
+    // Every override has a body, so the comparator is one shared function
+    // taking both operands rather than a body inlined into the sort.
+    assert.match(
+        result.cpp,
+        /std::stable_sort\([^\n]*\n\s*auto&& \w+ = \w+sort_left\w*;\n\s*auto&& \w+ = \w+sort_right\w*;\n\s*\[\[maybe_unused\]\] const double \w+ = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{\}, bblscene::bbl_recursive_\w+\)/,
+    );
+});
+
+test("refuses an abstract stored class nothing concrete extends", () => {
     assert.throws(
         () =>
             compileSource(`
                 abstract class Shape {
                     abstract area(): number;
                 }
-                class Square extends Shape {
-                    area(): number { return 4; }
-                }
                 const shapes: Shape[] = [];
                 const unused = shapes.length;
             `),
-        /has no single native representation|extends another class/,
+        /Abstract class 'Shape' has no concrete class under it/,
     );
 });
 
@@ -813,10 +856,11 @@ test("adds one module-level callback once from two owners", () => {
     `);
 
     // Two constructions, two receivers, still the one handler `onTick`
-    // names -- a Set that saw both must hold a single member.
+    // names -- a Set that saw both must hold a single member. Both calls
+    // may run one shared registration body.
     const identities = callbackIdentities(result.cpp);
-    assert.equal(identities.length, 2);
-    assert.equal(identities[0], identities[1]);
+    assert.ok(identities.length >= 1);
+    assert.equal(new Set(identities).size, 1);
 });
 
 test("gives two instances of one class-field callback two identities", () => {

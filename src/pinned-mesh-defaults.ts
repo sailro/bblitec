@@ -16,72 +16,31 @@
  * scene can carry it.
  */
 import ts from "typescript";
-import { LoweringContext } from "./lowering/context.js";
-import { unwrapExpression } from "./lowering/context.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
-
-/** One reader per process; the pin cannot move under a generation. */
-let sharedContext: LoweringContext | undefined;
-
-function reader(): LoweringContext {
-    sharedContext ??= new LoweringContext(sharedUpstreamStore());
-    return sharedContext;
-}
+import { sharedPinnedContext } from "./lowering/context.js";
+import {
+    pinnedOptionFlag,
+    pinnedOptionNumber,
+} from "./lowering/pinned-option-defaults.js";
 
 /**
- * The right side of the `??` that resolves one option.
+ * One `const <local> = wrap(<options>.<local> ?? <number>)` fallback.
  *
- * A builder wraps that operator in whatever its own contract needs — `| 0`
- * for an integer, `Math.max(3, ...)` for a floor, a guard ternary that
- * rejects an out-of-range value — and none of those wrappers is the
- * DEFAULT. The default is what the read falls back to when the option is
- * absent, so the search is for the `??` itself wherever the builder put it.
- *
- * `a ?? b ?? c` parses as `(a ?? b) ?? c`, so the option's own read sits at
- * the bottom of the left spine and the default is the OUTERMOST right
- * operand — `diameterTop ?? diameter ?? 1` defaults to 1, not to
- * `diameter`. Taking the first `??` in pre-order is taking that outermost
- * one, which is why one pass answers for every builder.
+ * A builder wraps that operator in whatever its own contract needs, and the
+ * lowered body keeps the wrapper, so the read is the shared `wrapped`
+ * placement: `diameterTop ?? diameter ?? 1` defaults to 1, not to
+ * `diameter`.
  */
-function pinnedDefaultExpression(
-    modulePath: string,
-    factory: string,
-    local: string,
-): ts.Expression {
-    const context = reader();
-    const { declaration } = context.functionDeclaration(modulePath, factory);
-    const initializer = context.variableInitializer(declaration, local);
-    let found: ts.BinaryExpression | undefined;
-    const visit = (node: ts.Node): void => {
-        if (found) return;
-        if (
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-        ) {
-            found = node;
-            return;
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(initializer);
-    return found
-        ? unwrapExpression(found.right)
-        : context.contractError(
-              initializer,
-              `${modulePath}#${factory} resolves '${local}' without a '??'.`,
-          );
-}
-
-/** One `const <local> = <options>.<local> ?? <number>` fallback. */
 export function pinnedMeshOptionDefault(
     modulePath: string,
     factory: string,
     local: string,
 ): number {
-    return reader().numericValue(
-        pinnedDefaultExpression(modulePath, factory, local),
-        reader().sourceFile(modulePath),
+    const context = sharedPinnedContext();
+    const { file, declaration } = context.functionDeclaration(
+        modulePath,
+        factory,
     );
+    return pinnedOptionNumber(context, declaration, { wrapped: local }, file);
 }
 
 /**
@@ -103,7 +62,7 @@ export function pinnedMeshOptionLocals(
     modulePath: string,
     factory: string,
 ): readonly string[] {
-    const context = reader();
+    const context = sharedPinnedContext();
     const { declaration } = context.functionDeclaration(modulePath, factory);
     const options = declaration.parameters[0];
     if (!options || !ts.isIdentifier(options.name)) {
@@ -129,7 +88,7 @@ export function pinnedMeshOptionLocals(
             }
             // `a ?? b ?? c` parses as `(a ?? b) ?? c`, so the option's
             // own read sits at the BOTTOM of the left spine — the same
-            // model `pinnedDefaultExpression` states for finding the
+            // model the shared `wrapped` placement states for finding the
             // default at the top of it. Walking down keeps the two
             // readers agreeing about what counts as an option.
             let left = context.unwrapExpression(initializer.left);
@@ -163,14 +122,9 @@ export function pinnedMeshOptionFlag(
     factory: string,
     local: string,
 ): boolean {
-    const fallback = pinnedDefaultExpression(modulePath, factory, local);
-    if (fallback.kind === ts.SyntaxKind.TrueKeyword) return true;
-    if (fallback.kind === ts.SyntaxKind.FalseKeyword) return false;
-    return reader().contractError(
-        fallback,
-        `${modulePath}#${factory} resolves '${local}' to something this ` +
-            "port does not read as a flag.",
-    );
+    const context = sharedPinnedContext();
+    const { declaration } = context.functionDeclaration(modulePath, factory);
+    return pinnedOptionFlag(context, declaration, { wrapped: local });
 }
 
 /**
@@ -188,7 +142,7 @@ export function pinnedParameterFlag(
     functionName: string,
     parameter: string,
 ): boolean {
-    const context = reader();
+    const context = sharedPinnedContext();
     const { declaration } = context.functionDeclaration(
         modulePath,
         functionName,
@@ -245,7 +199,7 @@ export function transformNodeDefaults(): ReadonlyMap<
     number
 > {
     if (transformDefaults) return transformDefaults;
-    const context = reader();
+    const context = sharedPinnedContext();
     const { file, declaration } = context.functionDeclaration(
         transformNodeModule,
         transformNodeFactory,

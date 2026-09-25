@@ -41,7 +41,7 @@ import {
     type EngineOptionContext,
 } from "./engine-options.js";
 
-export interface CompiledPostProcessTask {
+interface CompiledPostProcessTask {
     cpp: string;
     manifest: PostProcessTaskManifest;
 }
@@ -158,7 +158,7 @@ export function compilePostProcessTaskOptions(
     };
 }
 
-export interface CompiledPostProcessComposite {
+interface CompiledPostProcessComposite {
     cpp: string;
     manifest: PostProcessCompositeManifest;
     sourceTasks: readonly Value[];
@@ -206,7 +206,7 @@ export function compilePostProcessCompositeOptions(
         !source.renderTargetSignature ||
         source.renderTargetSignature.samples !== 1
     ) {
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             sourceExpression,
             "TAA post-process sampling requires a proven single-sample source texture as required by the pinned GPU state",
             "always",

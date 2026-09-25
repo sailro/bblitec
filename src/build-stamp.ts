@@ -8,9 +8,10 @@
 //   * the compiled inputs (generated C++ plus the handwritten native
 //     sources) -- digested here and embedded in the executable, so a
 //     binary built from older sources reports a different stamp;
-//   * the deployed payload (shaders and assets copied beside the
-//     executable) -- compared file by file, because a failed shader step
-//     leaves the previous binaries in place next to a valid executable;
+//   * the deployed payload (the compiled renderers' shaders and the
+//     assets copied beside the executable) -- compared file by file,
+//     because a failed shader step leaves the previous binaries in place
+//     next to a valid executable;
 //   * the build configuration (the CMake cache values that select the
 //     backend, generator and toolchain) -- read from the build directory
 //     rather than embedded, so one generated tree can serve the release
@@ -21,9 +22,15 @@
 // drops a backend's translation units, and the same sources must digest
 // identically whichever backends are compiled in.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
-import { contentDigest } from "./validation-resume.js";
+import {
+    existsSync,
+    readFileSync,
+    readdirSync,
+    realpathSync,
+    statSync,
+} from "node:fs";
+import { relative, resolve } from "node:path";
+import { contentDigest, listFiles } from "./tooling/records.js";
 
 /** The generated header the executable embeds. */
 export const buildStampHeaderPath =
@@ -45,25 +52,11 @@ function digest(bytes: Buffer): string {
     return createHash("sha256").update(bytes).digest("hex");
 }
 
-function walkFiles(
-    root: string,
-    directory = root,
-    out: string[] = [],
-): string[] {
-    if (!existsSync(directory)) {
-        return out;
-    }
-    for (const entry of readdirSync(directory, {
-        withFileTypes: true,
-    })) {
-        const full = join(directory, entry.name);
-        if (entry.isDirectory()) {
-            walkFiles(root, full, out);
-        } else if (entry.isFile()) {
-            out.push(relative(root, full).replace(/\\/g, "/"));
-        }
-    }
-    return out;
+/** Every regular file under `root`, as `/`-separated relative paths. */
+function relativeFiles(root: string): string[] {
+    return listFiles(root).map((path) =>
+        relative(root, path).replaceAll("\\", "/"),
+    );
 }
 
 /**
@@ -74,7 +67,7 @@ function walkFiles(
  */
 function compiledGeneratedFiles(generatedDirectory: string): string[] {
     return (
-        walkFiles(generatedDirectory)
+        relativeFiles(generatedDirectory)
             .filter(
                 (path) =>
                     path === "main.cpp" ||
@@ -106,7 +99,7 @@ function nativeSourceFiles(repositoryRoot: string): string[] {
     const nativeRoot = resolve(repositoryRoot, "native");
     const tracked = nativeBuildFiles(repositoryRoot);
     for (const directory of ["src", "include"]) {
-        for (const path of walkFiles(resolve(nativeRoot, directory))) {
+        for (const path of relativeFiles(resolve(nativeRoot, directory))) {
             tracked.push(`${directory}/${path}`);
         }
     }
@@ -168,19 +161,56 @@ export function buildStampHeader(stamp: string): string {
 `;
 }
 
-export interface PayloadMismatch {
+interface PayloadMismatch {
     path: string;
     reason: "missing" | "changed" | "unexpected";
 }
 
 /**
- * Compare a deployed directory beside the executable against the
- * generated tree it was copied from. `copy_directory` runs post-build, so
- * a mismatch means the deployment never ran or its source changed after
- * the last build.
+ * The shader files the build that produced the executable in
+ * `executableDirectory` deploys, by name suffix: the list
+ * `native/CMakeLists.txt` derives from its compiled renderers and records
+ * as `BBLITE_DEPLOYED_SHADER_SUFFIXES`, read from the CMake cache -- the
+ * directory itself under Ninja, its parent under a multi-configuration
+ * generator.
  */
+export function executableDeployedShaderSuffixes(
+    executableDirectory: string,
+): readonly string[] {
+    for (const directory of [
+        executableDirectory,
+        resolve(executableDirectory, ".."),
+    ]) {
+        const suffixes =
+            readCacheConfiguration(directory)?.BBLITE_DEPLOYED_SHADER_SUFFIXES;
+        if (suffixes === undefined) continue;
+        const list = suffixes.split(";").filter((suffix) => suffix !== "");
+        if (list.length === 0) {
+            throw new Error(
+                `${directory}/CMakeCache.txt records no BBLITE_DEPLOYED_SHADER_SUFFIXES.`,
+            );
+        }
+        return list;
+    }
+    throw new Error(
+        `No CMake cache with BBLITE_DEPLOYED_SHADER_SUFFIXES beside ${executableDirectory}; ` +
+            "the deployed shader payload depends on the compiled backends. " +
+            "Build the scene with 'scene -- process' first.",
+    );
+}
+
+/** One directory a build deploys beside its executable. */
+interface DeployedPayload {
+    label: "shaders" | "assets";
+    source: string;
+    deployed: string;
+    /** Whether the build deploys this source file (a `/`-separated relative path). */
+    deploys: (path: string) => boolean;
+}
+
 /**
- * What a build deploys beside its executable, as source/destination pairs.
+ * What a build deploys beside its executable, as source/destination pairs:
+ * every generated asset, and the shader files its compiled renderers read.
  *
  * Two callers read it: the prune that removes what the generated tree no
  * longer has, and the guard that refuses to measure a stale one. They have to
@@ -189,45 +219,66 @@ export interface PayloadMismatch {
 export function deployedPayloads(
     executableDirectory: string,
     generatedDirectory: string,
-): Array<{ label: string; source: string; deployed: string }> {
+): DeployedPayload[] {
+    // Read on first use: a tree without shaders configures no suffix list.
+    let shaderSuffixes: readonly string[] | undefined;
     return [
         {
             label: "shaders",
             source: resolve(generatedDirectory, "upstream/shaders"),
             deployed: resolve(executableDirectory, "shaders"),
+            deploys: (path) =>
+                (shaderSuffixes ??=
+                    executableDeployedShaderSuffixes(executableDirectory)).some(
+                    (suffix) => path.endsWith(suffix),
+                ),
         },
         {
             label: "assets",
             source: resolve(generatedDirectory, "assets"),
             deployed: resolve(executableDirectory, "assets"),
+            deploys: () => true,
         },
     ];
 }
 
+/** The source files a payload deploys, as `/`-separated relative paths. */
+function expectedPayload({
+    source,
+    deploys,
+}: Pick<DeployedPayload, "source" | "deploys">): Set<string> {
+    return new Set(relativeFiles(source).filter(deploys));
+}
+
+/**
+ * Compare a deployed directory beside the executable against the
+ * generated tree it was copied from. The deploy runs post-build, so
+ * a mismatch means the deployment never ran or its source changed after
+ * the last build.
+ */
 export function comparePayload(
-    sourceDirectory: string,
-    deployedDirectory: string,
+    payload: Pick<DeployedPayload, "source" | "deployed" | "deploys">,
 ): PayloadMismatch[] {
     const mismatches: PayloadMismatch[] = [];
-    if (!existsSync(sourceDirectory)) {
+    if (!existsSync(payload.source)) {
         return mismatches;
     }
-    const expected = new Set(walkFiles(sourceDirectory));
+    const expected = expectedPayload(payload);
     for (const path of expected) {
-        const deployed = resolve(deployedDirectory, path);
+        const deployed = resolve(payload.deployed, path);
         if (!existsSync(deployed) || !statSync(deployed).isFile()) {
             mismatches.push({ path, reason: "missing" });
             continue;
         }
         if (
-            !readFileSync(resolve(sourceDirectory, path)).equals(
+            !readFileSync(resolve(payload.source, path)).equals(
                 readFileSync(deployed),
             )
         ) {
             mismatches.push({ path, reason: "changed" });
         }
     }
-    for (const path of orphansAgainst(expected, deployedDirectory)) {
+    for (const path of orphansAgainst(expected, payload.deployed)) {
         mismatches.push({ path, reason: "unexpected" });
     }
     return mismatches;
@@ -241,7 +292,7 @@ function orphansAgainst(
     deployedDirectory: string,
 ): string[] {
     const orphans: string[] = [];
-    for (const path of walkFiles(deployedDirectory)) {
+    for (const path of relativeFiles(deployedDirectory)) {
         // The build's own marker files (CMake stamps the shader snapshot
         // with `.snapshot-stamp`) are not payload.
         if (path.split("/").pop()?.startsWith(".")) {
@@ -262,16 +313,12 @@ function orphansAgainst(
  * keeps the full byte-compare through `comparePayload`.
  */
 export function payloadOrphans(
-    sourceDirectory: string,
-    deployedDirectory: string,
+    payload: Pick<DeployedPayload, "source" | "deployed" | "deploys">,
 ): string[] {
-    if (!existsSync(sourceDirectory)) {
+    if (!existsSync(payload.source)) {
         return [];
     }
-    return orphansAgainst(
-        new Set(walkFiles(sourceDirectory)),
-        deployedDirectory,
-    );
+    return orphansAgainst(expectedPayload(payload), payload.deployed);
 }
 
 /** The CMake cache entries that shape what a build directory produces. */
@@ -292,7 +339,7 @@ export function readCacheConfiguration(
     return values;
 }
 
-export interface IncompatibleCacheEntry {
+interface IncompatibleCacheEntry {
     cached?: string;
     name: string;
     requested?: string;
@@ -320,7 +367,12 @@ function requestedCacheConfiguration(
 
 export function cachePathKey(path: string): string {
     const absolute = resolve(path);
-    return process.platform === "win32" ? absolute.toLowerCase() : absolute;
+    // CMake's in-build regeneration rewrites tool paths in their short DOS
+    // spelling (C:/PROGRA~1/...); an existing file compares by its final path.
+    const canonical = existsSync(absolute)
+        ? realpathSync.native(absolute)
+        : absolute;
+    return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
 
 export function sameCachePath(left: string, right: string): boolean {

@@ -1,3 +1,5 @@
+import { textRecordsHeader } from "../src/lowering/text-data-update-lowerer.js";
+import { textRecordModel } from "../src/lowering/text-records.js";
 import { createJavaScriptFunction } from "../src/typescript-transpile.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -7,7 +9,7 @@ import test from "node:test";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
-import { resolveBundledAsset } from "../src/compiler/assets.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { stringLiteral } from "../src/cpp-literals.js";
 import { parseDataUrl } from "../src/data-url.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -24,13 +26,15 @@ import {
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
+
 const directory = resolve("artifacts/test-text-entities");
 mkdirSync(directory, { recursive: true });
 const fileName = resolve(directory, "source.ts");
 writeFileSync(
     resolve(directory, "Roboto-Regular.ttf"),
     readAssetBytesSync(
-        resolveBundledAsset("/fonts/Roboto-Regular.ttf"),
+        `${pinnedLabPublicUrl()}fonts/Roboto-Regular.ttf`,
         fileName,
     ),
 );
@@ -135,7 +139,7 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
     const font = createFontFromBuffer(
         Uint8Array.from(
             readAssetBytesSync(
-                resolveBundledAsset("/fonts/Roboto-Regular.ttf"),
+                `${pinnedLabPublicUrl()}fonts/Roboto-Regular.ttf`,
                 fileName,
             ),
         ).buffer,
@@ -174,10 +178,18 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
     const include = resolve(directory, "bblite");
     mkdirSync(resolve(include, "upstream"), { recursive: true });
     const lowerer = new TextLowerer(new LoweringContext());
+    writeFileSync(
+        resolve(include, "upstream_text_records.hpp"),
+        textRecordsHeader(new LoweringContext()),
+    );
     writeFileSync(resolve(include, "upstream_text.hpp"), lowerer.header());
     writeFileSync(
         resolve(include, "upstream_text_gpu.hpp"),
         new TextGpuLowerer(new LoweringContext()).header(),
+    );
+    writeFileSync(
+        resolve(include, "upstream_text_renderable.hpp"),
+        lowerer.renderableHeader(),
     );
     writeFileSync(
         resolve(include, "upstream_text_renderer.hpp"),
@@ -200,10 +212,11 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
                 parseDataUrl(data)!.bytes,
             );
     }
+    const records = textRecordModel(new LoweringContext());
     const constructor = result.manifest
         .textData!.map(
             (row) =>
-                `case ${row.id}:return ${lowerer.dataExpression(row, (blob) => `read_bytes(${stringLiteral(blob.assetOutput)})`)};`,
+                `case ${row.id}:return ${records.transportCpp(row.data!, { kind: "record", name: "DefaultTextData" }, (index) => `bbl::js::ArrayBuffer(read_bytes(${stringLiteral(row.buffers[index]!.assetOutput)}))`)};`,
         )
         .join("\n");
     writeFileSync(
@@ -230,6 +243,7 @@ int main(){if(bbl::upstream::text_pipeline_rows.size()!=5)return 2;return genera
         "/fp:strict",
         "/MD",
         "/O2",
+        "/DBBLITE_HAS_TEXT=1",
         `/I${resolve("native/include")}`,
         `/I${directory}`,
         resolve(directory, "check.cpp"),
@@ -331,12 +345,12 @@ test("text pipeline-affecting writes and internal data operations keep explicit 
             /requires a layer array/,
         ],
         [
-            `${setup} updateTextData(data,{update:"reset"});`,
-            /require replaceRun/,
+            `${setup} updateTextData(data,{update:"addRun",run:{curveSet:"x",glyphs:[],pixelsPerFontUnit:1}});`,
+            /literal glyph lists are not represented/,
         ],
         [
-            `${setup} const previous=data.runs[0]!;updateTextData(data,{update:"replaceRun",previous:previous,run:{...previous}});`,
-            /spread followed by defaultColor/,
+            `${setup} updateTextData(data,{update:"reset",storage:data.storage});`,
+            /'storage' is not represented/,
         ],
     ] as const)
         assert.throws(() => compile(body), diagnostic);
@@ -368,6 +382,7 @@ test("text owner classification preserves existing splat components and imported
     for (const id of [125, 269]) {
         const sourcePath = `corpus/babylon-lite/lab/lite/src/lite/scene${id}.ts`;
         const result = compileSource(readFileSync(sourcePath, "utf8"), {
+            ...labDeployment,
             fileName: sourcePath,
         });
         assert.ok(
@@ -391,6 +406,8 @@ test("exact text source projects unchanged shaders, observed descriptors and com
             "corpus/babylon-lite/lab/lite/src/lite/scene275.ts",
             "--out",
             output,
+            "--public-url",
+            pinnedLabPublicUrl(),
         ],
         { stdio: "pipe" },
     );
@@ -445,7 +462,7 @@ test("exact text source projects unchanged shaders, observed descriptors and com
         readFileSync(
             resolve(output, "upstream/include/bblite/upstream_text_gpu.hpp"),
             "utf8",
-        ).includes("ensure_text_gpu"),
+        ).includes("text-renderable.ts#ensureGpu"),
     );
     const dataSource = readFileSync(
         resolve(output, "upstream/src/text_data.cpp"),

@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const CREATE_MODULE = "src/skeleton/create-skeleton.ts";
 const UPDATE_MODULE = "src/skeleton/update-skeleton-bone-matrices.ts";
@@ -62,7 +63,7 @@ SceneSkeletonRecord& scene_skeleton_record(
         throw std::runtime_error(
             "SceneSkeletonHandle names no such skeleton.");
     }
-    return engine.scene_skeletons[skeleton.value];
+    return ${recordAt("engine.scene_skeletons", "skeleton")};
 }
 
 // The pin stores the caller's Float32Array as skeleton.boneMatrices and
@@ -87,9 +88,12 @@ void publish_scene_palette(
     Engine& engine,
     const SceneSkeletonRecord& skeleton) {
     for (const MeshHandle mesh : skeleton.meshes) {
-        if (mesh.value >= engine.meshes.size()) continue;
-        engine.meshes[mesh.value].bone_matrices = skeleton.bone_matrices;
-        ++engine.meshes[mesh.value].bone_matrices_version;
+        // A writer: a removed mesh keeps its slot while anything reads it,
+        // so a mesh whose slot a later one took has no reader left.
+        MeshRecord* record = current_mesh_record(engine, mesh);
+        if (!record) continue;
+        record->bone_matrices = skeleton.bone_matrices;
+        ++record->bone_matrices_version;
     }
 }
 
@@ -149,7 +153,7 @@ void attach_scene_skeleton(
     }
     SceneSkeletonRecord& record =
         scene_skeleton_record(engine, skeleton);
-    MeshRecord& mesh_record = engine.meshes[mesh.value];
+    MeshRecord& mesh_record = ${recordAt("engine.meshes", "mesh")};
     if (
         mesh_record.geometry == invalid_handle ||
         mesh_record.geometry >= engine.geometries.size()) {
@@ -184,12 +188,10 @@ void attach_scene_skeleton(
     // reads the joint and weight streams above. These three marks are
     // this port's spelling of that: deformation on, the palette carried
     // by the pin's own per-bone texture rather than the transcribed
-    // 64-matrix block, and the world composed at the draw rather than
-    // baked into the vertices.
+    // 64-matrix block, and the mesh skinned.
     mesh_record.gpu_deformation = true;
     mesh_record.pinned_bone_palette = true;
     mesh_record.skinned = true;
-    mesh_record.scene_skeleton = true;
     mesh_record.bone_matrices = record.bone_matrices;
     ++mesh_record.bone_matrices_version;
     ++mesh_record.transform_version;

@@ -3,12 +3,11 @@ import {
     postProcessComposite,
     postProcessEffect,
 } from "../post-process-effects.js";
-import { sharedUpstreamStore } from "../upstream-source.js";
-import { LoweringContext } from "./context.js";
+import { sharedPinnedContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 /** The composite's own scalar state used by one inline pass's writer. */
-export interface CompositeScalarAccessor {
+interface CompositeScalarAccessor {
     property: string;
     effect: string;
     slot: number;
@@ -16,12 +15,10 @@ export interface CompositeScalarAccessor {
     setter: string;
 }
 
-let frontendContext: LoweringContext | undefined;
-
 export function compositeScalarAccessors(
     intrinsic: string,
     properties: readonly string[],
-    context = (frontendContext ??= new LoweringContext(sharedUpstreamStore())),
+    context = sharedPinnedContext(),
 ): CompositeScalarAccessor[] {
     const composite = postProcessComposite(intrinsic);
     if (!composite?.inlinePasses) return [];

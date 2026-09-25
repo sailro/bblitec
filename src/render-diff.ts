@@ -17,6 +17,7 @@ import {
     uniformUsage,
     type WgslStruct,
 } from "./capture-uniforms.js";
+import { withoutPinnedProvenance } from "./pinned-provenance.js";
 
 /**
  * Pairing the browser's instrumented capture with the native one.
@@ -38,7 +39,7 @@ import {
  * appears nowhere on the browser side is the finding worth reading.
  *
  * The same pairing covers the capture's pinned material and mesh blocks
- * (rung 4b's two listings, diffed instead of read), and the shader half
+ * (the two block listings, diffed instead of read), and the shader half
  * gets its own comparison: the browser's composed modules hashed against
  * the generated arms, matched and one-sided sets named, and the closest
  * near miss opened at its first divergent line.
@@ -117,7 +118,7 @@ export interface ShaderArmReport {
 }
 
 /** One native bone-palette matrix looked up among the browser's float
- *  texture uploads, mirror map applied. */
+ *  texture uploads. */
 export interface PaletteCorrespondence {
     native: string;
     match: "exact" | "divergent";
@@ -131,10 +132,9 @@ export interface PaletteCorrespondence {
  * matrices as an Nx1 rgba32float texture — four texels per matrix — and
  * the instrumented capture keeps those texels' raw bytes; the native
  * capture carries the same matrices CPU-side in its `pinnedMeshBlocks`,
- * stored under the native mirror convention. Each native matrix is
- * pushed through the documented mirror map and looked up among the
+ * as the pin computes them. Each native matrix is looked up among the
  * uploaded ones, so the skinning comparison is a verdict rather than a
- * by-eye hexfloat diff with a sign-flip caveat.
+ * by-eye hexfloat diff.
  */
 export interface TexturePaletteReport {
     floatUploads: Array<{
@@ -495,9 +495,7 @@ function vec4Chunks(
  *
  * The capture builds these through the draw path's own writers
  * (`write_pbr_variant_material`, `pinned_mesh_block`) for every selector
- * row, CPU-side — variants the draw gate refuses included — and until now
- * rung 4b was a human diffing that listing against `scene -- uniforms` by
- * eye. Field names carry the block's identity plus a vec4 chunk range
+ * row, CPU-side — variants the draw gate refuses included. Field names carry the block's identity plus a vec4 chunk range
  * rather than per-field names: `correspond` matches by value, so
  * `variant<n>:<key> values[i..j]` is sufficient and honest, and the
  * variant's own field layout stays where it lives, in the generated
@@ -746,21 +744,6 @@ export interface TextureUpload {
     sample?: unknown;
 }
 
-/**
- * The documented mirror similarity map: negate column-major indexes 1,
- * 2, 3, 4, 8 and 12 — the `diag(-1, 1, 1)` conjugation that relates
- * every native matrix to the browser's (docs/debugging.md). Applying it
- * is what turns the "a sign-flipped lane is not a finding" counsel into
- * a mechanical match.
- */
-export function mirrorMatrixConvention(values: readonly number[]): number[] {
-    const mirrored = [...values];
-    for (const index of [1, 2, 3, 4, 8, 12]) {
-        if (index < mirrored.length) mirrored[index] = -mirrored[index]!;
-    }
-    return mirrored;
-}
-
 /** `undefined` when the capture predates `tex-uploads.json`; an
  *  unreadable file reads as an empty record rather than a crash. */
 export function readTextureUploads(
@@ -835,17 +818,16 @@ export function texturePaletteReport(
             if (seen.has(signature)) continue;
             seen.add(signature);
             const name = `pinned mesh[${block.meshIndex}] ${label}`;
-            const mirrored = mirrorMatrixConvention(matrix);
             let matched: UniformField | undefined;
             let nearest: UniformField | undefined;
             let nearestDelta = Number.POSITIVE_INFINITY;
             for (const candidate of candidates) {
-                if (candidate.values.length !== mirrored.length) continue;
-                if (agrees(mirrored, candidate.values, mirrored.length)) {
+                if (candidate.values.length !== matrix.length) continue;
+                if (agrees(matrix, candidate.values, matrix.length)) {
                     matched = candidate;
                     break;
                 }
-                const delta = maxDelta(mirrored, candidate.values);
+                const delta = maxDelta(matrix, candidate.values);
                 if (delta < nearestDelta) {
                     nearestDelta = delta;
                     nearest = candidate;
@@ -857,7 +839,7 @@ export function texturePaletteReport(
                           native: name,
                           match: "exact",
                           browser: matched.name,
-                          maxDelta: maxDelta(mirrored, matched.values),
+                          maxDelta: maxDelta(matrix, matched.values),
                       }
                     : {
                           native: name,
@@ -1122,7 +1104,7 @@ function nativeDrawShapes(capture: NativeCapture): Set<string> {
 /**
  * Per-line trailing whitespace stripped, trailing blank lines dropped.
  *
- * `scene -- compose` is the byte gate and collapses all whitespace before
+ * `scene -- diff --compose` is the byte gate and collapses all whitespace before
  * comparing; this normalization is deliberately tighter, because a
  * matched arm here is meant to be the same shader, not merely the same
  * tokens — measured against the corpus, the generated variants that have
@@ -1138,7 +1120,7 @@ export function normalizeShaderText(text: string): string {
 }
 
 /**
- * Where two texts stop agreeing: `scene -- compose`'s
+ * Where two texts stop agreeing: `scene -- diff --compose`'s
  * longest-common-prefix idiom, shared by the compose report and the
  * shader-arm near miss so the two cannot count lines differently.
  * `line` is the number of agreeing lines (0-based index of the first
@@ -1178,7 +1160,7 @@ function looksLikePbrFragment(text: string): boolean {
  * report matched groups, both one-sided sets, and the closest one-sided
  * pair's first divergent line — the manual hash/diff recipe as a report.
  *
- * The near miss borrows `scene -- compose`'s longest-common-prefix idiom:
+ * The near miss borrows `scene -- diff --compose`'s longest-common-prefix idiom:
  * the line where the closest pair stops agreeing names the arm. PBR
  * fragments are preferred as the browser half of that pair, because a
  * mismatched blit helper diverges at line one and names nothing.
@@ -1346,8 +1328,7 @@ export function buildRenderDiff(
         for (const field of nativeFields(block, layouts)) admit(field);
     }
     // The pinned material and mesh blocks ride the same pairing as every
-    // other native field — rung 4b's two listings, diffed here instead of
-    // by hand.
+    // other native field.
     const pinned = pinnedBlockFields(capture);
     const pinnedBlockList = [...pinned.material, ...pinned.mesh];
     for (const entry of pinnedBlockList) {
@@ -1465,7 +1446,9 @@ export function buildRenderDiff(
     // The arm comparison set: the composed pinned variants, which are what
     // the browser's own modules should be byte-for-byte, plus the deployed
     // .native.wgsl payload so a deployment that drifted from its source
-    // shows up as a split group instead of staying invisible.
+    // shows up as a split group instead of staying invisible. A deployed
+    // module is compared without the provenance line it opens with, which
+    // the browser's module has no counterpart of.
     const nativeArmTexts = new Map<string, string>();
     const variantDirectory = join(
         generatedDirectory,
@@ -1485,7 +1468,9 @@ export function buildRenderDiff(
         if (!name.endsWith(".native.wgsl")) continue;
         nativeArmTexts.set(
             `shaders/${name}`,
-            readFileSync(join(nativeShaderDirectory, name), "utf8"),
+            withoutPinnedProvenance(
+                readFileSync(join(nativeShaderDirectory, name), "utf8"),
+            ),
         );
     }
     // `pbrOrphans` rides beside the serialized arm sets, not inside them:
@@ -1521,7 +1506,7 @@ export function buildRenderDiff(
                 (arms.nearMiss
                     ? ` — nearest ${arms.nearMiss.native} diverges at line ${arms.nearMiss.line} (shader arms below)`
                     : "") +
-                `. A missing arm renders as a plausible bias, never as an error; 'scene -- compose ${sceneId}' names the feature that composes it.`,
+                `. A missing arm renders as a plausible bias, never as an error; 'scene -- diff ${sceneId} --compose' names the feature that composes it.`,
         );
     }
     if (divergent.length > 0) {
@@ -1559,9 +1544,9 @@ export function buildRenderDiff(
         ) ?? [];
     if (unmatchedPalettes.length > 0) {
         findings.push(
-            `${unmatchedPalettes.length} native bone-palette matrix(es) appear in no browser float-texture upload ` +
-                `(mirror map applied): ${unmatchedPalettes.map((entry) => entry.native).join(", ")}. ` +
-                "The two sides disagree on skinning state at this pose — BBLITE_DEFORMATION_DUMP prints the native palettes in full.",
+            `${unmatchedPalettes.length} native bone-palette matrix(es) appear in no browser float-texture upload: ` +
+                `${unmatchedPalettes.map((entry) => entry.native).join(", ")}. ` +
+                "The two sides disagree on skinning state at this pose.",
         );
     }
     if (findings.length === 0) {
@@ -1736,12 +1721,10 @@ export function formatRenderDiff(report: RenderDiffReport, limit = 30): string {
         }
         if (report.pinned.meshBlocks.length > 0) {
             lines.push(
-                "  Mesh worlds ride the native mirror convention (negate " +
-                    "column-major 1, 2, 3, 4, 8 and 12 — docs/debugging.md): " +
-                    "a sign-flipped lane against the browser's is that " +
-                    "documented difference, not a finding." +
+                "  Mesh worlds and bone palettes are the pin's own matrices: " +
+                    "a lane that differs from the browser's is a finding." +
                     (report.texturePalettes
-                        ? " Bone palettes are matched with that map applied, under 'Texture palettes' below."
+                        ? " Bone palettes are matched under 'Texture palettes' below."
                         : ""),
             );
         }
@@ -1753,8 +1736,8 @@ export function formatRenderDiff(report: RenderDiffReport, limit = 30): string {
         lines.push("");
         lines.push(
             "Texture palettes (browser skins upload bone matrices as rgba32float " +
-                "texels; each native palette matrix is looked up with the mirror " +
-                `map applied): ${palettes.floatUploads.length} float upload(s), ` +
+                "texels; each native palette matrix is looked up among them): " +
+                `${palettes.floatUploads.length} float upload(s), ` +
                 `${palettes.colorUploads} color texel upload(s), ` +
                 `${palettes.externalImages} external image(s) beside them`,
         );
@@ -1769,7 +1752,7 @@ export function formatRenderDiff(report: RenderDiffReport, limit = 30): string {
         for (const entry of palettes.palettes.slice(0, limit)) {
             lines.push(
                 entry.match === "exact"
-                    ? `  ${entry.native} == ${entry.browser}  (mirror applied, delta ${entry.maxDelta?.toExponential(3) ?? "0"})`
+                    ? `  ${entry.native} == ${entry.browser}  (delta ${entry.maxDelta?.toExponential(3) ?? "0"})`
                     : `  ${entry.native} matches NO uploaded matrix` +
                           (entry.browser
                               ? `  (nearest ${entry.browser}, delta ${entry.maxDelta?.toExponential(3)})`

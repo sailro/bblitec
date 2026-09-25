@@ -6,12 +6,13 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     cppFunction,
-    cppSection,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
 import { CompressedTextureLowerer } from "../src/lowering/compressed-texture-lowerer.js";
 import { writeKtx1 } from "../src/basis-transcode.js";
 import { packageKtx1 } from "../src/compressed-texture-package.js";
@@ -19,44 +20,41 @@ import { packageKtx1 } from "../src/compressed-texture-package.js";
 const nativeTools = optionalNativeFixtureTools(false);
 
 test(
-    "GPU picking maps CSS coordinates before bounds checks on both backends",
+    "GPU picking maps CSS coordinates before bounds checks",
     { skip: !nativeTools },
     () => {
-        const functions = ["sdl", "dawn"].map((backend) => {
-            const file = backend === "sdl" ? "pal_sdl_gpu.cpp" : "pal_dawn.cpp";
-            const source = readFileSync(`native/src/${file}`, "utf8");
-            const picker = cppFunction(
-                source,
-                `PickingInfo pick_${backend}_scene(`,
-            );
-            const mapping = cppSection(
-                picker,
-                "const double width =",
-                backend === "sdl"
-                    ? "    if (camera_record->viewport"
-                    : "    if (camera.viewport",
-            );
-            return `PickingInfo ${backend}(const Engine& engine, double x, double y) { ${mapping} return {true, x, y}; }`;
-        });
+        // Both backends take the pointer mapping from the one lowered
+        // `pickAsyncImpl` preamble (`prepare_gpu_pick` calls it).
+        const header = new PickingLowerer(new LoweringContext())
+            .mathHeader(false)
+            .replace("#pragma once\n", "");
         runCpp(
             "pick-client-coordinates",
             `
         #include <cassert>
         #include <cmath>
         #include <initializer_list>
-        struct Engine { struct { int width = 2404, height = 1080; } options; double canvas_client_width, canvas_client_height; };
-        struct PickingInfo { bool hit = false; double x = 0, y = 0; };
-        ${functions.join("\n")}
+        ${header}
+        struct Viewport { int x = 0, y = 0, width = 0, height = 0; };
+        struct Block { std::array<float, 16> view_projection{}; std::array<float, 2> fragment_coord{}; };
         int main() {
             for (const double density : {1.0, 1.25, 2.0, 2.4375, 3.0}) {
-                Engine engine{{}, 2404 / density, 1080 / density};
-                for (auto pick : {sdl, dawn}) {
-                    const auto result = pick(engine, 1700.25 / density, 700.5 / density);
-                    assert(result.hit && std::abs(result.x - 1700.25) < 1e-9 && std::abs(result.y - 700.5) < 1e-9);
-                    assert(!pick(engine, engine.canvas_client_width, 0).hit);
-                    assert(!pick(engine, 0, engine.canvas_client_height).hit);
-                    assert(!pick(engine, -1, 0).hit);
-                }
+                const double client_width = 2404 / density, client_height = 1080 / density;
+                bbl::upstream::PickPointer pointer;
+                const auto pick = [&](double x, double y) {
+                    Block block;
+                    return bbl::upstream::map_pick_pointer(
+                        [](double width, double height) {
+                            return Viewport{0, 0, static_cast<int>(width), static_cast<int>(height)};
+                        },
+                        [](double) { return std::array<float, 16>{}; },
+                        block, pointer, x, y, 2404.0, 1080.0, client_width, client_height);
+                };
+                assert(pick(1700.25 / density, 700.5 / density));
+                assert(std::abs(pointer.sample_x - 1700.25) < 1e-9 && std::abs(pointer.sample_y - 700.5) < 1e-9);
+                assert(!pick(client_width, 0));
+                assert(!pick(0, client_height));
+                assert(!pick(-1, 0));
             }
         }
     `,
@@ -68,14 +66,13 @@ test(
     "laid-out canvas panes retain physical bounds at any CSS density",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "canvas-pane-density",
             `
-        #define BBLITE_HAS_UI 1
         #include <bblite/runtime.hpp>
         #include <cassert>
-        namespace bbl::pal { ${cppFunction(source, "inline PixelViewport laid_out_canvas_pane(")} }
+        namespace bbl::pal { ${cppFunction(source, "PixelViewport laid_out_canvas_pane(")} }
         int main() {
             bbl::Engine engine;
             engine.options.width = 1200; engine.options.height = 800;
@@ -88,6 +85,7 @@ test(
             }
         }
     `,
+            ["/DBBLITE_HAS_UI=1"],
         );
     },
 );
@@ -224,7 +222,7 @@ test(
     "VAT synchronization retains unchanged payloads and retries failed uploads",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "vat-record-sync",
             `
@@ -276,7 +274,7 @@ test(
     "target planning resolves pane sizes, scaled chains and format inheritance before allocation",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "render-target-plan",
             `
@@ -287,10 +285,10 @@ test(
             std::optional<Pane> surface_canvas_pane(const Engine&, std::optional<UiElementHandle> canvas, unsigned, unsigned) {
                 return canvas ? std::optional<Pane>{{301,201}} : std::nullopt;
             }
-            ${cppFunction(source, "inline std::pair<std::uint32_t, std::uint32_t> surface_target_extent(")}
+            ${cppFunction(source, "std::pair<std::uint32_t, std::uint32_t> surface_target_extent(")}
             ${cppFunction(source, "inline std::uint32_t scaled_target_extent(")}
             ${cppFunction(source, "struct ScaledExtents {")};
-            ${cppFunction(source, "inline ScaledExtents scaled_target_extents(")}
+            ${cppFunction(source, "ScaledExtents scaled_target_extents(")}
             template<class Format> ${cppFunction(source, "struct RenderTargetPlan {")};
             template<class Format, class Convert> ${cppFunction(source, "std::vector<RenderTargetPlan<Format>> plan_render_targets(")}
         }
@@ -322,7 +320,7 @@ test(
 );
 
 test(
-    "clustered uploads use the pinned payload extents and publish a version only after success",
+    "clustered uploads cover the pinned writes and publish each count only after success",
     { skip: !nativeTools },
     () => {
         const source = readFileSync(
@@ -334,47 +332,64 @@ test(
             `
         #include <bblite/runtime.hpp>
         #include <cassert>
+        namespace bbl { struct ClusteredRefreshState { int runs = 0; }; }
         namespace bbl::upstream {
             int refreshes = 0;
-            void refresh_clustered_lights(ClusteredLightContainer&, const std::array<float,16>&,
-                const std::array<float,16>&, double near_plane, double far_plane) {
-                assert(near_plane == 0.1 && far_plane == 100); ++refreshes;
+            void refresh_clustered_lights(Engine&, ClusteredLightContainer& container,
+                ClusteredRefreshState& captured, CameraHandle camera,
+                double target_width, double target_height) {
+                assert(&captured == container.refresh.get() && camera.value == 7 &&
+                    target_width == 640 && target_height == 480);
+                ++captured.runs; ++refreshes;
             }
         }
         namespace bbl::pal {
             ${cppFunction(source, "enum class ClusteredTexture {")};
+            ${cppFunction(source, "struct ClusteredUploads {")};
             template<class Params, class Texture> ${cppFunction(source, "void sync_clustered_payloads(")}
         }
         int main() {
+            bbl::Engine engine;
             bbl::ClusteredLightContainer container;
-            container.data_texture_width = 4;
-            container.light_texels = 3; container.light_data.resize(12);
-            container.slice_count = 8; container.slice_rows = 2; container.slice_data.resize(32);
-            container.mask_texels = 2; container.mask_data.resize(2);
-            container.upload_version = 1;
-            std::uint64_t version = 0;
+            container.light_data.resize(12);
+            container.slice_data.resize(32);
+            container.mask_data.resize(2);
+            // One params write, and one pinned write per texture, each with the
+            // region its own writeDataTexture stated.
+            container.params_write = 1;
+            container.light_write = {3, 1, 48, 1, 1};
+            container.slice_write = {4, 2, 64, 2, 1};
+            container.mask_write = {2, 1, 8, 1, 1};
+            bbl::pal::ClusteredUploads uploaded;
             std::string events;
             bool fail = true;
             const auto sync = [&] {
-                bbl::pal::sync_clustered_payloads(container, version, {}, {}, 0.1, 100,
+                bbl::pal::sync_clustered_payloads(engine, container, uploaded, bbl::CameraHandle{7}, 640, 480,
                     [&](const void* bytes, std::size_t size) { assert(bytes == container.params.data() && size == 32); events += 'p'; },
                     [&](bbl::pal::ClusteredTexture slot, const void* bytes, std::size_t size,
-                        unsigned texel_bytes, unsigned width, unsigned height) {
+                        const bbl::ClusteredTextureWrite& write) {
                         using Slot = bbl::pal::ClusteredTexture;
                         if (slot == Slot::lights) {
-                            assert(bytes == container.light_data.data() && size == 48 && texel_bytes == 16 && width == 3 && height == 1); events += 'l';
+                            assert(bytes == container.light_data.data() && size == 48 && write.width == 3 && write.height == 1 && write.bytes_per_row == 48); events += 'l';
                         } else if (slot == Slot::cells) {
-                            assert(bytes == container.slice_data.data() && size == 128 && texel_bytes == 16 && width == 4 && height == 2); events += 'c';
+                            assert(bytes == container.slice_data.data() && size == 128 && write.width == 4 && write.height == 2 && write.bytes_per_row == 64); events += 'c';
                         } else {
-                            assert(bytes == container.mask_data.data() && size == 8 && texel_bytes == 4 && width == 2 && height == 1); events += 'i';
+                            assert(bytes == container.mask_data.data() && size == 8 && write.width == 2 && write.height == 1 && write.bytes_per_row == 8); events += 'i';
                             if (fail) throw std::runtime_error("upload");
                         }
                     });
             };
+            // No updater until the build returned its refresh state.
             try { sync(); assert(false); } catch (const std::runtime_error&) {}
-            assert(version == 0 && events == "plci");
-            fail = false; events.clear(); sync(); assert(version == 1 && events == "plci");
-            events.clear(); sync(); assert(events.empty() && bbl::upstream::refreshes == 3);
+            assert(bbl::upstream::refreshes == 0);
+            container.refresh = std::make_shared<bbl::ClusteredRefreshState>();
+            // What uploaded is published; the failed one retries alone.
+            assert(uploaded.params == 1 && uploaded.lights == 1 && uploaded.cells == 1 && uploaded.indices == 0 && events == "plci");
+            fail = false; events.clear(); sync(); assert(uploaded.indices == 1 && events == "i");
+            events.clear(); sync(); assert(events.empty() && bbl::upstream::refreshes == 2);
+            // A later write re-uploads only its own texture.
+            container.light_write.version = 2;
+            sync(); assert(events == "l");
         }
     `,
         );
@@ -385,11 +400,10 @@ test(
     "backdrop sizing and screen-space recording preserve allocation retries and pass order",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "effect-pass-plans",
             `
-        #define BBLITE_HAS_UI 1
         #include <bblite/runtime.hpp>
         #include "${resolve("native/src/pal_ui_backdrop.hpp").replaceAll("\\", "/")}"
         #include <cassert>
@@ -432,6 +446,7 @@ test(
             record(true); assert(events == "ihptsc");
         }
     `,
+            ["/DBBLITE_HAS_UI=1"],
         );
     },
 );
@@ -440,19 +455,17 @@ test(
     "pick contributor admission follows the picked scene, visibility and source filter",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         for (const floating of [0, 1]) {
             runCpp(
                 `pick-contributor-admission-${floating}`,
                 `
-            #define BBLITE_HAS_BILLBOARDS 1
-            #define BBLITE_HAS_SPLATS 1
             #define BBLITE_FLOATING_ORIGIN ${floating}
             #include <bblite/runtime.hpp>
             #include <cassert>
             namespace bbl::pal {
                 ${cppFunction(source, "inline bool billboard_pick_draws(")}
-                ${cppFunction(source, "inline void validate_pick_contributors(")}
+                ${cppFunction(source, "void validate_pick_contributors(")}
             }
             int main() {
                 bbl::Engine engine;
@@ -498,6 +511,7 @@ test(
                 }
             }
         `,
+                ["/DBBLITE_HAS_BILLBOARDS=1", "/DBBLITE_HAS_SPLATS=1"],
             );
         }
     },
@@ -507,7 +521,7 @@ test(
     "detailed picking refuses only thin instances admitted by geometry and filter gates",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         const renderer = readFileSync(
             "src/lowering/renderer-lowerer.ts",
             "utf8",
@@ -524,12 +538,11 @@ test(
             struct Item { MeshHandle mesh; };
             struct RenderPlan { std::vector<Item> items; };
             ${cppFunction(renderer, "bool pick_candidate(const MeshRecord& mesh) {")}
+            std::array<float,16> mesh_world_matrix(const Engine&, const MeshRecord&) { return {}; }
         }
         namespace bbl::pal {
             ${["struct PickMeshUniforms {", "struct PickRange {", "struct PickMeshCandidate {"].map((signature) => cppFunction(source, signature) + ";").join("\n")}
             ${cppFunction(source.slice(source.lastIndexOf(activeCount)), activeCount)}
-            std::array<float,16> shader_draw_world(const Engine&, const MeshRecord&) { return {}; }
-            std::array<float,16> instance_parent_draw_world(const MeshRecord&, const Scene&, const Engine&) { return {}; }
             template<class HasGeometry>
             ${cppFunction(source, "inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(")}
         }
@@ -562,6 +575,7 @@ test(
             assert(refused);
         }
     `,
+            ["/DBBLITE_HAS_PICKING=1"],
         );
     },
 );
@@ -574,7 +588,6 @@ test(
         runCpp(
             "text-scene-admission",
             `
-        #define BBLITE_HAS_TEXT 1
         #define BBLITE_FLOATING_ORIGIN 0
         #include <bblite/runtime.hpp>
         #include <cassert>
@@ -608,6 +621,7 @@ test(
             bbl::pal::validate_text_scene(scene);
         }
     `,
+            ["/DBBLITE_HAS_TEXT=1"],
         );
     },
 );
@@ -628,6 +642,7 @@ test(
             "temporal-pass-admission",
             `
         #include <bblite/runtime.hpp>
+        #include <bblite/text_gpu.hpp>
         #include <cassert>
         namespace bbl::upstream {
             ${cppFunction(renderer, "enum class RenderMaterialKind {")};
@@ -657,7 +672,7 @@ test(
                 }
                 assert(false);
             };
-            for (auto kind : {Kind::pbr, Kind::grid, Kind::shader, Kind::node}) {
+            for (auto kind : {Kind::pbr, Kind::shader, Kind::node}) {
                 draws.transparent.commands.push_back({{kind}});
                 refuses("material draw adapter"); draws.transparent.commands.clear();
             }
@@ -721,7 +736,8 @@ test(
         }
         int main() {
             assert(generated_record_main() == 0);
-            assert(retained_nodes == 2);
+            // The records hold a handle and scalars: no traced edge, no node.
+            assert(retained_nodes == 0);
             assert(bbl::js::managed_node_count() == 0);
         }
     `,
@@ -765,7 +781,11 @@ test(
     },
 );
 
-function runCpp(name: string, cpp: string): void {
+function runCpp(
+    name: string,
+    cpp: string,
+    definitions: readonly string[] = [],
+): void {
     assert.ok(nativeTools);
     const output = resolve("artifacts/audit-correctness", name);
     mkdirSync(output, { recursive: true });
@@ -779,6 +799,7 @@ function runCpp(name: string, cpp: string): void {
         "/WX",
         "/permissive-",
         "/EHsc",
+        ...definitions,
         `/Fo:${output}\\`,
         `/Fe:${executable}`,
         "/I",
@@ -795,7 +816,6 @@ test(
         runCpp(
             "checked-handles",
             `
-        #define BBLITE_CHECKED_HANDLES 1
         #include <bblite/runtime.hpp>
         #include <cassert>
         int main() {
@@ -818,6 +838,7 @@ test(
             }
         }
     `,
+            ["/DBBLITE_CHECKED_HANDLES=1"],
         );
     },
 );
@@ -982,7 +1003,6 @@ test(
         runCpp(
             "style-revision",
             `
-        #define BBLITE_HAS_UI 1
         #include <bblite/pal_ui.hpp>
         #include <cassert>
         ${uiTextMutationFixture(source)}
@@ -1028,6 +1048,7 @@ test(
             assert(engine.ui_style_revision == after_remove + 1);
         }
     `,
+            ["/DBBLITE_HAS_UI=1"],
         );
     },
 );
@@ -1059,8 +1080,6 @@ test(
         runCpp(
             "window-style-revision",
             `
-        #define BBLITE_HAS_UI 1
-        #define BBLITE_WORKERS 1
         #include <bblite/runtime.hpp>
         #include <bblite/pal_event_loop.hpp>
         #include <bblite/pal_dom_events.hpp>
@@ -1083,15 +1102,18 @@ test(
             source.ui_elements[0].tag = "div";
             source.ui_style_revision = 7;
             auto inbox = std::make_shared<pal::EventLoop::Inbox>();
-            pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+            const auto post = [inbox](std::unique_ptr<pal::ExternalEvent> event) {
+                inbox->post(std::move(event));
+            };
+            pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
             assert(target.ui_style_revision == 7);
             for (int i = 0; i < 100; ++i) {
                 source.ui_elements[0].text = std::to_string(i);
-                pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+                pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
                 assert(target.ui_style_revision == 7);
             }
             source.ui_style_revision = 8;
-            pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+            pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
             assert(target.ui_style_revision == 8);
             assert(target.ui_elements[0].text == "99");
             const auto text_since = source.ui_text_revision;
@@ -1100,7 +1122,7 @@ test(
             auto text_snapshot = pal::snapshot_document(source, text_since);
             assert(text_snapshot->text_updates && text_snapshot->text_updates->size() == 1);
             assert(text_snapshot->elements.empty() && text_snapshot->styles.empty());
-            pal::apply_document(target, std::move(*text_snapshot), inbox);
+            pal::apply_document(target, std::move(*text_snapshot), post);
             assert(target.ui_elements[0].text == "text-only update");
             assert(target.ui_style_revision == 8);
             assert(target.ui_text_revision == target_text_revision + 1);
@@ -1120,7 +1142,7 @@ test(
             }
             source.ui_elements[5].tag = "details";
             source.ui_elements[5].attributes["open"] = "";
-            pal::apply_document(target, std::move(*pal::snapshot_document(source)), inbox);
+            pal::apply_document(target, std::move(*pal::snapshot_document(source)), post);
             js::RealmScope realm;
             pal::EventLoop loop(inbox);
             unsigned delivered = 0;
@@ -1151,6 +1173,7 @@ test(
             assert(delivered == 4);
         }
     `,
+            ["/DBBLITE_HAS_UI=1", "/DBBLITE_WORKERS=1"],
         );
     },
 );
@@ -1242,13 +1265,19 @@ test(
             `
         #include <bblite/js_gc.hpp>
         #include <cassert>
+        struct Traced {
+            int value = 0;
+            void gc_trace(const bbl::js::TraceVisitor&) const {}
+        };
         int main() {
             using namespace bbl::js;
             const auto initial_nodes = managed_node_count();
             const auto initial_allocations = gc::registry.total_allocations;
             {
-                auto first = make_gc_shared<int>(1);
-                auto second = make_gc_shared<int>(2);
+                auto untraced = make_gc_shared<int>(0);
+                assert(*untraced == 0 && managed_node_count() == initial_nodes);
+                auto first = make_gc_shared<Traced>(Traced{1});
+                auto second = make_gc_shared<Traced>(Traced{2});
                 assert(managed_node_count() == initial_nodes + 2);
                 first.reset();
                 collect_cycles();

@@ -45,7 +45,7 @@ test("a lazily created gizmo held by a stored listener shares one cell", () => {
     // would leave the second click attaching a gizmo the first never built.
     assert.match(
         result.cpp,
-        /std::tuple\{[^}\n]*\bv_gizmo\b/,
+        /bblscene::bbl_environment_\w+\{[^}\n]*\bv_gizmo\b/,
         "the listener retains the cell rather than a copy of the handle",
     );
     assert.doesNotMatch(result.cpp, /std::ref\(v_gizmo\)/);
@@ -83,7 +83,7 @@ test("an uncaptured lazily created gizmo is a plain optional local", () => {
 
     assert.match(
         result.cpp,
-        /std::optional<bbl::CompositeGizmoHandle> v_gizmo;/,
+        /std::optional<bbl::CompositeGizmoHandle> v_gizmo\{\};/,
         "nothing stores the name, so it needs no shared cell",
     );
     assert.doesNotMatch(

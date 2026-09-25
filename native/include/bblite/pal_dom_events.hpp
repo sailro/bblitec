@@ -1,5 +1,8 @@
 #pragma once
 
+#include <bblite/features/has_ui.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 
@@ -89,7 +92,7 @@ public:
         dispatch(event, [](Callback& callback, const Event& value) { callback(value); });
     }
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     void gc_trace(const js::TraceVisitor& visitor) const {
         for (const auto& [identity, listeners] : listeners_) {
             (void)identity;
@@ -104,7 +107,7 @@ private:
             : callback(std::move(callback)), passive(passive) {}
         Callback callback;
         bool passive;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
         void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback); }
 #endif
     };
@@ -134,7 +137,6 @@ struct DomInput {
     std::set<std::uint32_t> pointer_elements;
     std::uint64_t revision = 0;
     std::function<void(const PlatformMouseEvent&)> pointer_sink;
-    std::function<void(const PlatformKeyboardEvent&)> keyboard_sink;
     std::function<void(std::shared_ptr<DomEventBatch>)> batch_sink;
     std::function<std::vector<DomEventTarget>(double, double)> hit_path;
     std::function<std::vector<DomEventTarget>()> focus_path;
@@ -147,7 +149,7 @@ struct DomInput {
     bool canvas_background = true;
     bool pending_resize = false;
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     void gc_trace(const js::TraceVisitor& visitor) const {
         pointer.gc_trace(visitor);
         keyboard.gc_trace(visitor);
@@ -171,7 +173,7 @@ inline void on_dom_pointer(Engine& engine, DomEventTarget target, std::string ty
                              input.pointer_elements.insert(target.element).second;
     if (new_type || new_element) {
         ++input.revision;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
         ++engine.ui_revision;
 #endif
     }
@@ -242,16 +244,6 @@ inline void dispatch_dom_pointer(Engine& engine, const PlatformMouseEvent& event
         engine.dom_input->pointer_sink(event);
     else
         engine.dom_input->pointer.dispatch(
-            event, [](auto& callback, const auto& payload) { callback(payload); }, &engine);
-}
-
-inline void dispatch_dom_keyboard(Engine& engine, const PlatformKeyboardEvent& event) {
-    if (!engine.dom_input)
-        return;
-    if (engine.dom_input->keyboard_sink)
-        engine.dom_input->keyboard_sink(event);
-    else
-        engine.dom_input->keyboard.dispatch(
             event, [](auto& callback, const auto& payload) { callback(payload); }, &engine);
 }
 
@@ -341,7 +333,7 @@ inline Engine& dom_target_owner(DomEventTargetValue value) {
     return *value.engine;
 }
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 inline bool dom_target_has_tag(DomEventTargetValue value, std::string_view tag) {
     if (value.target.kind == DomEventTargetKind::Canvas)
         return tag == "canvas";

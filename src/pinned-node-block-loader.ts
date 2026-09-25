@@ -1,13 +1,12 @@
 import ts from "typescript";
-import { LoweringContext } from "./lowering/context.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
+import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 import type { NodeMaterialBlockEmitter } from "./compiler/types.js";
 
 /** Resolve an exported block descriptor through its pinned lazy import. */
 export function pinnedNodeBlockDescriptor(
     name: string,
 ): NodeMaterialBlockEmitter {
-    const context: LoweringContext = new LoweringContext(sharedUpstreamStore());
+    const context: LoweringContext = sharedPinnedContext();
     const path = "src/material/node/node-blocks.ts";
     const file = context.sourceFile(path);
     const object = context.unwrapExpression(

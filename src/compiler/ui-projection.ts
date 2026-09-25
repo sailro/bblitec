@@ -1,10 +1,17 @@
-import { isStringValue, valueForKind } from "./types.js";
+import {
+    isStringValue,
+    optionalPresentCpp,
+    presenceFlagCpp,
+    valueForKind,
+} from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import {
     emissionArray,
     EmissionSet,
     EmissionMap,
     EmissionWeakMap,
+    journaled,
+    writable,
 } from "./emission-transaction.js";
 import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
@@ -57,10 +64,15 @@ import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
 import { registerUiImageAsset } from "./assets.js";
-import { browserGlobalNamed } from "./browser-erasure.js";
+import { primaryCanvasIds } from "./browser-erasure.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { declaredSymbol } from "./symbols.js";
 import { argumentAt } from "./syntax.js";
 import type { NativeHostUiElement, Value } from "./types.js";
+import {
+    dataTypeMayHoldUiElement,
+    typeMayMapToUiElement,
+} from "./ui-element-analysis.js";
 
 interface LoweredUiStyleRule extends UiStyleSelectorShape {
     // Preserve source selector and declaration metadata through native emission.
@@ -85,23 +97,29 @@ interface UiStaticMarkupNode {
     children: UiStaticMarkupNode[];
 }
 
+/** Compiler state: written in place only through `writable()`; its sets are journaled. */
 interface UiStaticElement {
-    tag: string;
+    readonly tag: string;
     /** Every exact class set the element can have at a projected boundary. */
-    classAlternatives: Set<string>[];
-    classMayMutateDynamically: boolean;
-    ids: Set<string>;
-    children: Set<number>;
-    markupChildren: UiStaticMarkupNode[];
+    readonly classAlternatives: readonly Set<string>[];
+    readonly classMayMutateDynamically: boolean;
+    readonly ids: Set<string>;
+    readonly children: Set<number>;
+    readonly markupChildren: readonly UiStaticMarkupNode[];
     /** Reachable complete inline declaration lists, not assignment history. */
-    styles: string[];
-    styleShapeKnown: boolean;
-    styleMayMutateDynamically: boolean;
-    mutableClasses: Set<string>;
-    classShapeKnown: boolean;
+    readonly styles: readonly string[];
+    readonly styleShapeKnown: boolean;
+    readonly styleMayMutateDynamically: boolean;
+    readonly mutableClasses: Set<string>;
+    readonly classShapeKnown: boolean;
     /** False when known child construction sites can occur a runtime number of times. */
-    childCardinalityKnown: boolean;
-    childShapeKnown: boolean;
+    readonly childCardinalityKnown: boolean;
+    readonly childShapeKnown: boolean;
+}
+
+/** What `uiElementValue` knows of the element an expression names. */
+interface UiElementMetadata {
+    tag: string | undefined;
 }
 
 interface UiPendingClassQuery {
@@ -124,19 +142,20 @@ interface UiUnknownAttributeMutation {
 
 interface UiProjectionContext extends Pick<
     LoweringServices,
+    | "activeThis"
     | "assets"
     | "assetPayloads"
-    | "lookupIdentifierValue"
     | "allocateTemporaryCppName"
     | "sourceFile"
+    | "sourceFiles"
     | "checker"
     | "compileBoolean"
-    | "compileCondition"
+    | "conditions"
     | "compileNumber"
     | "compilePlatformCall"
+    | "callbacks"
     | "compileStringLiteral"
     | "compileValue"
-    | "compileVoidCallback"
     | "cppString"
     | "dataLowerer"
     | "defaultEngine"
@@ -149,15 +168,14 @@ interface UiProjectionContext extends Pick<
     | "hasFeature"
     | "hasPresentationHost"
     | "isCanvasElement"
-    | "isDefaultLibraryIdentifier"
+    | "libraryGlobal"
     | "isInFrameCallback"
     | "isInRuntimeControlFlow"
-    | "lookupOptional"
+    | "bindings"
     | "options"
-    | "pinValueToTemporary"
     | "probeEmission"
     | "reachFeature"
-    | "registerAsset"
+    | "assetRegistry"
     | "reachJsData"
     | "requireDefaultEngine"
     | "requireEngine"
@@ -192,8 +210,7 @@ export class UiProjection {
         if (
             !ts.isPropertyAccessExpression(owner) ||
             !["documentElement", "head", "body"].includes(owner.name.text) ||
-            browserGlobalNamed(this.context, owner.expression)?.text !==
-                "document"
+            this.context.libraryGlobal(owner.expression) !== "document"
         )
             return undefined;
         return owner.name.text === "documentElement" ? "html" : owner.name.text;
@@ -271,51 +288,35 @@ export class UiProjection {
         if (root) return root;
         const owner = this.context.unwrap(expression);
         const asElement = (value: Value | undefined): Value | undefined => {
-            if (
-                this.context.hasPresentationHost() &&
-                value?.browserValue?.kind === "object" &&
-                value.browserValue.primaryCanvas
-            ) {
+            if (!value) return undefined;
+            if (this.presentsPrimaryCanvas(value)) {
                 return Object.assign(
-                    value,
+                    writable(value),
                     this.primaryPresentationCanvas(owner),
                 );
             }
-            const storedMetadata = value
-                ? (this.uiElementMetadataByDataStorage.get(value.cpp) ??
-                  (value.optionalStorageCpp
-                      ? this.uiElementMetadataByDataStorage.get(
-                            value.optionalStorageCpp,
-                        )
-                      : undefined))
-                : undefined;
-            const trackedTag = value
-                ? (value.uiTag ?? storedMetadata?.tag)
-                : undefined;
-            const trackedId = value
-                ? (value.uiStaticId ?? storedMetadata?.staticId)
-                : undefined;
+            const tracked = this.trackedUiElementMetadata(value);
             const withTrackedTag = (
                 element: Value<"ui-element">,
-            ): Value<"ui-element"> =>
-                (trackedTag !== undefined && element.uiTag === undefined) ||
-                (trackedId !== undefined && element.uiStaticId === undefined)
-                    ? {
+            ): Value<"ui-element"> => {
+                const uiTag =
+                    element.uiTag === undefined ? tracked.tag : undefined;
+                const uiStaticId =
+                    element.uiStaticId === undefined
+                        ? tracked.staticId
+                        : undefined;
+                return uiTag === undefined && uiStaticId === undefined
+                    ? element
+                    : {
                           ...element,
-                          ...(trackedTag === undefined ||
-                          element.uiTag !== undefined
-                              ? {}
-                              : { uiTag: trackedTag }),
-                          ...(trackedId === undefined ||
-                          element.uiStaticId !== undefined
-                              ? {}
-                              : { uiStaticId: trackedId }),
-                      }
-                    : element;
-            if (value?.kind === "ui-element") {
+                          ...(uiTag === undefined ? {} : { uiTag }),
+                          ...(uiStaticId === undefined ? {} : { uiStaticId }),
+                      };
+            };
+            if (value.kind === "ui-element") {
                 return withTrackedTag(value);
             }
-            if (value?.kind !== "data" || !value.dataType) {
+            if (value.kind !== "data" || !value.dataType) {
                 return undefined;
             }
             const narrowed = this.context.dataLowerer.narrowOptional(
@@ -335,7 +336,7 @@ export class UiProjection {
                     return undefined;
                 const selected = { ...narrowed };
                 delete selected.nativeBinding;
-                const snapshot = this.context.pinValueToTemporary(
+                const snapshot = this.context.bindings.pinValueToTemporary(
                     selected,
                     "event_target",
                     expression,
@@ -363,13 +364,13 @@ export class UiProjection {
                     cpp: `(*${value.cpp})`,
                     dataType: value.dataType.inner,
                     optionalFoundCpp:
-                        value.optionalFoundCpp ?? `${value.cpp}.has_value()`,
+                        presenceFlagCpp(value) ?? optionalPresentCpp(value.cpp),
                     engineCpp: value.engineCpp ?? this.documentEngine(owner),
                 }),
             );
         };
         if (ts.isIdentifier(owner)) {
-            return asElement(this.context.lookupOptional(owner));
+            return asElement(this.context.bindings.lookupOptional(owner));
         }
         if (
             ts.isPropertyAccessExpression(owner) &&
@@ -413,15 +414,13 @@ export class UiProjection {
             }
             if (
                 ts.isPropertyAccessExpression(callee) &&
-                (callee.name.text === "querySelector" ||
-                    callee.name.text === "closest" ||
-                    this.isNativeHostUiLookup(owner))
+                this.isUiElementLookup(owner, callee)
             ) {
                 const value = this.context.compilePlatformCall(owner);
                 return asElement(
                     value?.kind === "data" &&
                         value.dataType?.kind === "optional"
-                        ? this.context.pinValueToTemporary(
+                        ? this.context.bindings.pinValueToTemporary(
                               value,
                               "ui_lookup",
                               owner,
@@ -433,10 +432,83 @@ export class UiProjection {
         return undefined;
     }
 
+    /** Whether `uiElementValue` answers a UI element here, and its tag. */
     private uiElementMetadata(
         expression: ts.Expression,
-    ): { tag: string | undefined } | undefined {
-        let metadata: { tag: string | undefined } | undefined;
+    ): UiElementMetadata | undefined {
+        const analyzed = this.analyzedUiElementMetadata(expression);
+        return analyzed === "lower"
+            ? this.loweredUiElementMetadata(expression)
+            : analyzed;
+    }
+
+    /**
+     * `uiElementMetadata` without lowering where `uiElementValue`'s arm is
+     * decided before it lowers anything: a `this` field by its bound value,
+     * another member or element read by its checker type, a call by its
+     * method. "lower" everywhere else.
+     */
+    public analyzedUiElementMetadata(
+        expression: ts.Expression,
+    ): UiElementMetadata | undefined | "lower" {
+        // A document root selects its engine, which can refuse.
+        if (this.documentRootTag(expression)) return "lower";
+        const owner = this.context.unwrap(expression);
+        if (
+            ts.isPropertyAccessExpression(owner) &&
+            owner.expression.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+            const value =
+                this.context.activeThis()?.recordProperties?.[owner.name.text];
+            if (!value) return undefined;
+            if (this.presentsPrimaryCanvas(value)) return "lower";
+            if (value.kind === "ui-element")
+                return { tag: this.trackedUiElementMetadata(value).tag };
+            return value.kind === "data" &&
+                value.dataType &&
+                dataTypeMayHoldUiElement(value.dataType)
+                ? "lower"
+                : undefined;
+        }
+        if (
+            ts.isPropertyAccessExpression(owner) ||
+            ts.isElementAccessExpression(owner)
+        ) {
+            return typeMayMapToUiElement(
+                this.context.checker.getTypeAtLocation(owner),
+                this.context.checker,
+            )
+                ? "lower"
+                : undefined;
+        }
+        if (ts.isCallExpression(owner)) {
+            const callee = this.context.unwrap(owner.expression);
+            return ts.isPropertyAccessExpression(callee) &&
+                (callee.name.text === "getContext" ||
+                    this.isUiElementLookup(owner, callee))
+                ? "lower"
+                : undefined;
+        }
+        return "lower";
+    }
+
+    /** A call `uiElementValue` lowers through the platform call: a query, a closest ancestor, a host lookup. */
+    private isUiElementLookup(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): boolean {
+        return (
+            callee.name.text === "querySelector" ||
+            callee.name.text === "closest" ||
+            this.isNativeHostUiLookup(call)
+        );
+    }
+
+    /** `uiElementMetadata` by lowering the expression in a declined probe. */
+    public loweredUiElementMetadata(
+        expression: ts.Expression,
+    ): UiElementMetadata | undefined {
+        let metadata: UiElementMetadata | undefined;
         this.context.probeEmission(() => {
             const element = this.uiElementValue(expression);
             if (element?.kind === "ui-element")
@@ -444,6 +516,33 @@ export class UiProjection {
             return undefined;
         });
         return metadata;
+    }
+
+    /** A browser value naming the primary canvas, which a presentation host lowers to its element. */
+    private presentsPrimaryCanvas(value: Value): boolean {
+        return (
+            this.context.hasPresentationHost() &&
+            value.browserValue?.kind === "object" &&
+            !!value.browserValue.primaryCanvas
+        );
+    }
+
+    /** An element value's tag and construction identity, or what its data storage recorded. */
+    private trackedUiElementMetadata(value: Value): {
+        tag: string | undefined;
+        staticId: number | undefined;
+    } {
+        const stored =
+            this.uiElementMetadataByDataStorage.get(value.cpp) ??
+            (value.optionalStorageCpp
+                ? this.uiElementMetadataByDataStorage.get(
+                      value.optionalStorageCpp,
+                  )
+                : undefined);
+        return {
+            tag: value.uiTag ?? stored?.tag,
+            staticId: value.uiStaticId ?? stored?.staticId,
+        };
     }
 
     public uiCreatedElementTag(expression: ts.Expression): string | undefined {
@@ -491,9 +590,7 @@ export class UiProjection {
         if (
             ts.isPropertyAccessExpression(value) &&
             value.name.text === "activeElement" &&
-            ts.isIdentifier(value.expression) &&
-            value.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(value.expression)
+            this.context.libraryGlobal(value.expression) === "document"
         )
             return true;
         if (ts.isElementAccessExpression(value)) {
@@ -503,7 +600,10 @@ export class UiProjection {
             );
         }
         if (ts.isIdentifier(value)) {
-            return this.context.lookupOptional(value)?.kind === "ui-element";
+            return (
+                this.context.bindings.lookupOptional(value)?.kind ===
+                "ui-element"
+            );
         }
         if (ts.isPropertyAccessExpression(value)) {
             return this.uiElementMetadata(value) !== undefined;
@@ -519,17 +619,11 @@ export class UiProjection {
         const createsElement =
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "createElement" &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(callee.expression) &&
+            this.context.libraryGlobal(callee.expression) === "document" &&
             value.arguments[0] !== undefined &&
             (ts.isStringLiteral(value.arguments[0]) ||
                 ts.isNoSubstitutionTemplateLiteral(value.arguments[0]));
-        return (
-            createsElement ||
-            this.isNativeHostUiLookup(value) ||
-            this.isNativeUiHelperCall(value)
-        );
+        return createsElement || this.isNativeUiHelperCall(value);
     }
 
     public uiStringCpp(expression: ts.Expression, purpose: string): string {
@@ -541,10 +635,7 @@ export class UiProjection {
             this.context.compileValue(expression),
             expression,
         );
-        if (
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (isStringValue(value)) {
             return value.cpp;
         }
         this.context.fail(
@@ -643,10 +734,7 @@ export class UiProjection {
         if (value.kind === "number") {
             return `bbl::js::number_to_string(${value.cpp})`;
         }
-        if (
-            value.kind === "string" ||
-            (value.kind === "data" && value.dataType?.kind === "string")
-        ) {
+        if (isStringValue(value)) {
             return value.cpp;
         }
         this.context.fail(
@@ -741,10 +829,10 @@ export class UiProjection {
             unique.set(UiProjection.uiClassSetKey(stored), stored);
         }
         if (unique.size > 32) {
-            element.classShapeKnown = false;
+            writable(element).classShapeKnown = false;
             return;
         }
-        element.classAlternatives = [...unique.values()];
+        writable(element).classAlternatives = [...unique.values()];
     }
 
     public recordUiStaticAttribute(
@@ -770,7 +858,7 @@ export class UiProjection {
         if (!element) return;
         if (name === "class") {
             if (!candidates) {
-                element.classShapeKnown = false;
+                writable(element).classShapeKnown = false;
                 return;
             }
             const alternatives: Set<string>[] = [];
@@ -780,13 +868,13 @@ export class UiProjection {
                     if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(token)) {
                         classes.add(token);
                     } else {
-                        element.classShapeKnown = false;
+                        writable(element).classShapeKnown = false;
                     }
                 }
                 alternatives.push(classes);
             }
             const dynamic = this.uiStaticMutationIsDynamic();
-            if (dynamic) element.classMayMutateDynamically = true;
+            if (dynamic) writable(element).classMayMutateDynamically = true;
             this.setUiClassAlternatives(
                 element,
                 dynamic || element.classMayMutateDynamically
@@ -812,7 +900,7 @@ export class UiProjection {
         const element = this.uiStaticElement(value);
         if (!element) return;
         if (this.uiStaticMutationIsDynamic()) {
-            element.classMayMutateDynamically = true;
+            writable(element).classMayMutateDynamically = true;
         }
         element.mutableClasses.add(name);
         const alternatives: Set<string>[] = [...element.classAlternatives];
@@ -848,14 +936,14 @@ export class UiProjection {
         const wasKnown = element.styleShapeKnown;
         const currentMutationIsDynamic = this.uiStaticMutationIsDynamic();
         if (currentMutationIsDynamic) {
-            element.styleMayMutateDynamically = true;
+            writable(element).styleMayMutateDynamically = true;
         }
         const mayReplaceLater =
             currentMutationIsDynamic || element.styleMayMutateDynamically;
-        element.styles = mayReplaceLater
+        writable(element).styles = mayReplaceLater
             ? [...new EmissionSet([...element.styles, ...styles])]
             : [...new EmissionSet(styles)];
-        element.styleShapeKnown = mayReplaceLater ? wasKnown : true;
+        writable(element).styleShapeKnown = mayReplaceLater ? wasKnown : true;
     }
 
     public recordUiStaticStyle(value: Value, style: string): void {
@@ -868,9 +956,9 @@ export class UiProjection {
         const element = this.uiStaticElement(value);
         if (!element) return;
         if (this.uiStaticMutationIsDynamic()) {
-            element.styleMayMutateDynamically = true;
+            writable(element).styleMayMutateDynamically = true;
         }
-        element.styleShapeKnown = false;
+        writable(element).styleShapeKnown = false;
     }
 
     private static uiStyleWithProperty(
@@ -912,9 +1000,9 @@ export class UiProjection {
         );
         const currentMutationIsDynamic = this.uiStaticMutationIsDynamic();
         if (currentMutationIsDynamic) {
-            element.styleMayMutateDynamically = true;
+            writable(element).styleMayMutateDynamically = true;
         }
-        element.styles =
+        writable(element).styles =
             currentMutationIsDynamic || element.styleMayMutateDynamically
                 ? [...new EmissionSet([...element.styles, ...updated])]
                 : [...new EmissionSet(updated)];
@@ -924,16 +1012,16 @@ export class UiProjection {
         const parentElement = this.uiStaticElement(parent);
         if (!parentElement) return;
         if (child.uiStaticId === undefined) {
-            parentElement.childCardinalityKnown = false;
-            parentElement.childShapeKnown = false;
+            writable(parentElement).childCardinalityKnown = false;
+            writable(parentElement).childShapeKnown = false;
             return;
         }
         if (this.uiStaticMutationIsDynamic()) {
             parentElement.children.add(child.uiStaticId);
-            parentElement.childCardinalityKnown = false;
+            writable(parentElement).childCardinalityKnown = false;
             for (const element of this.uiStaticElements.values()) {
                 if (element.children.has(child.uiStaticId)) {
-                    element.childCardinalityKnown = false;
+                    writable(element).childCardinalityKnown = false;
                 }
             }
             return;
@@ -950,11 +1038,11 @@ export class UiProjection {
         const element = this.uiStaticElement(parent);
         if (!element) return;
         if (this.uiStaticMutationIsDynamic()) {
-            element.childCardinalityKnown = false;
+            writable(element).childCardinalityKnown = false;
             return;
         }
         element.children.clear();
-        element.markupChildren = [];
+        writable(element).markupChildren = [];
     }
 
     private uiStaticMutationIsDynamic(): boolean {
@@ -991,7 +1079,7 @@ export class UiProjection {
         const dynamic = this.uiStaticMutationIsDynamic();
         for (const parent of this.uiStaticElements.values()) {
             if (!parent.children.has(id)) continue;
-            if (dynamic) parent.childCardinalityKnown = false;
+            if (dynamic) writable(parent).childCardinalityKnown = false;
             else parent.children.delete(id);
         }
         if (dynamic) {
@@ -1010,7 +1098,7 @@ export class UiProjection {
     ): void {
         if (ownerId === undefined) return;
         const owner = this.uiStaticElements.get(ownerId);
-        if (owner) owner.markupChildren.push(...children);
+        if (owner) writable(owner.markupChildren).push(...children);
     }
 
     /**
@@ -1321,7 +1409,7 @@ export class UiProjection {
     private readonly uiDocumentRootIds = new EmissionMap<string, number>();
     private readonly uiConditionallyRemovedStyles = new EmissionSet<number>();
 
-    private uiElementIds = 0;
+    @journaled private accessor uiElementIds = 0;
 
     /**
      * Logical sizes that reached `scale()` calls map exactly onto a retained
@@ -1343,11 +1431,15 @@ export class UiProjection {
      */
     private readonly uiCanvasStaticSizes = new EmissionMap<
         number,
-        { width?: number; height?: number; pairs: Set<string> }
+        {
+            readonly width?: number;
+            readonly height?: number;
+            readonly pairs: Set<string>;
+        }
     >();
 
     /** Mints `uiCanvasId` for each created retained canvas element. */
-    public uiCanvasIds = 0;
+    @journaled public accessor uiCanvasIds = 0;
 
     private uiStyleRefusal(
         site: ts.Node | undefined,
@@ -1755,10 +1847,12 @@ export class UiProjection {
     ): boolean {
         let target = this.context.unwrap(expression);
         if (ts.isIdentifier(target)) {
-            const declaration =
-                this.context.checker.getSymbolAtLocation(
-                    target,
-                )?.valueDeclaration;
+            // The alias the read's own scope declares: its initializer is
+            // compiled here, so an import's is not one to follow.
+            const declaration = declaredSymbol(
+                this.context.checker,
+                target,
+            )?.valueDeclaration;
             if (
                 declaration &&
                 ts.isVariableDeclaration(declaration) &&
@@ -1971,7 +2065,8 @@ export class UiProjection {
         if (image === "none") return image;
         return renderUiBorderImage(
             image,
-            this.context.registerAsset(image.source, "texture").output,
+            this.context.assetRegistry.registerAsset(image.source, "texture")
+                .output,
         );
     }
 
@@ -2885,7 +2980,7 @@ export class UiProjection {
             if (!owner) return;
             const candidates = this.uiStringCandidates(candidate);
             if (!candidates) {
-                owner.styleShapeKnown = false;
+                writable(owner).styleShapeKnown = false;
                 return;
             }
             this.recordUiStaticStyles(
@@ -2898,7 +2993,7 @@ export class UiProjection {
         if (ts.isConditionalExpression(unwrapped)) {
             recordCandidates(unwrapped);
             return (
-                `(${this.context.compileCondition(unwrapped.condition)} ? ` +
+                `(${this.context.conditions.compileCondition(unwrapped.condition)} ? ` +
                 `${this.compileUiStyleString(unwrapped.whenTrue)} : ` +
                 `${this.compileUiStyleString(unwrapped.whenFalse)})`
             );
@@ -3435,7 +3530,7 @@ export class UiProjection {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isConditionalExpression(unwrapped)) {
             return (
-                `(${this.context.compileCondition(unwrapped.condition)} ? ` +
+                `(${this.context.conditions.compileCondition(unwrapped.condition)} ? ` +
                 `${this.compileUiMarkupString(unwrapped.whenTrue, ownerId)} : ` +
                 `${this.compileUiMarkupString(unwrapped.whenFalse, ownerId)})`
             );
@@ -3479,6 +3574,47 @@ export class UiProjection {
         return `bbl::js::concat(${parts.join(", ")})`;
     }
 
+    /**
+     * `input.onchange = handler` on a retained file input: the handler the
+     * change after a selection dispatches, as `addEventListener("change")`
+     * registers it. The attribute is one slot, so it is assigned once.
+     * Every other event-handler property refuses by name.
+     */
+    private emitUiEventHandlerProperty(
+        element: Value,
+        engine: string,
+        property: string,
+        assignment: ts.BinaryExpression,
+    ): void {
+        if (property !== "onchange" || !element.uiFileInput)
+            this.context.fail(
+                assignment.left,
+                `Native UI event handler property '${property}' is not lowered; register the handler with addEventListener.`,
+            );
+        if (element.uiFileChangeHandler)
+            this.context.fail(
+                assignment,
+                "A file input's onchange handler is assigned once; replacing it is not lowered.",
+            );
+        writable(element).uiFileChangeHandler = true;
+        this.context.callbacks.hoistForwardCallbackBindings(
+            assignment.right,
+            assignment.pos,
+        );
+        const handler = this.context.callbacks.compilePlatformCallback(
+            assignment.right,
+            undefined,
+            [],
+            undefined,
+            true,
+            false,
+        );
+        this.context.reachFeature("browser:file", assignment);
+        this.context.emit(
+            `bbl::ui_on_file_change(${engine}, ${element.cpp}, ${handler.cpp});`,
+        );
+    }
+
     public compileUiBrowserFileAttribute(
         element: Value,
         engine: string,
@@ -3520,7 +3656,7 @@ export class UiProjection {
                         `Retained native <input> type '${inputType}' is not represented; static text, password, range, checkbox, color and file inputs are supported, without changing a file input into another control.`,
                     );
                 }
-                element.uiFileInput = true;
+                writable(element).uiFileInput = true;
                 this.context.reachFeature("browser:file", site);
                 return `bbl::ui_set_file_input(${engine}, ${element.cpp})`;
             }
@@ -3585,7 +3721,7 @@ export class UiProjection {
                 ts.isFunctionExpression(expression.right))
         ) {
             this.context.emit(
-                `bbl::set_global_callback(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(globalLeft.name.text)}, ${this.context.compileVoidCallback(expression.right)});`,
+                `bbl::set_global_callback(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(globalLeft.name.text)}, ${this.context.callbacks.compileVoidCallback(expression.right)});`,
             );
             return true;
         }
@@ -3696,6 +3832,15 @@ export class UiProjection {
                 this.context.emit(`${browserFile};`);
                 return true;
             }
+            if (/^on[a-z]+$/.test(property)) {
+                this.emitUiEventHandlerProperty(
+                    directElement,
+                    engine,
+                    property,
+                    expression,
+                );
+                return true;
+            }
             if (
                 directElement.uiCanvas &&
                 !directElement.uiCanvasContext &&
@@ -3718,7 +3863,7 @@ export class UiProjection {
                     const sizes = this.uiCanvasStaticSizes.get(
                         directElement.uiCanvasId,
                     ) ?? { pairs: new EmissionSet<string>() };
-                    sizes[property] = staticSize;
+                    writable(sizes)[property] = staticSize;
                     if (
                         sizes.width !== undefined &&
                         sizes.height !== undefined
@@ -3941,7 +4086,7 @@ export class UiProjection {
         const nativeProperty = this.nativeUiStyleProperty(property);
         this.auditUiStylePropertyName(nativeProperty, site);
         const { nativeBinding, ...receiver } = element;
-        const styleElement = this.context.pinValueToTemporary(
+        const styleElement = this.context.bindings.pinValueToTemporary(
             receiver,
             "style_receiver",
         );
@@ -4002,15 +4147,26 @@ export class UiProjection {
         };
     }
 
+    /**
+     * The native document's primary canvas, created on first use under the
+     * id the program looks it up by, so a retained-UI `#id` rule or query
+     * finds the element the program means. One element carries one id.
+     */
     public primaryPresentationCanvas(node: ts.Node): Value {
         const engine = this.context.requirePresentationHost(node);
         if (!this.presentationCanvasValue) {
+            const ids = [...primaryCanvasIds(this.context)];
+            if (ids.length !== 1)
+                this.context.fail(
+                    node,
+                    `The native primary canvas carries one id; this program looks it up by ${ids.map((id) => JSON.stringify(id)).join(", ")}.`,
+                );
             this.context.reachFeature("ui:rml", node);
             this.context.reachFeature("backend:sdl", node);
             this.context.reachFeature("renderer:canvas", node);
             this.presentationCanvasValue = {
                 kind: "ui-element",
-                cpp: `bbl::ui_primary_canvas(${engine})`,
+                cpp: `bbl::ui_primary_canvas(${engine}, ${this.context.cppString(ids[0]!)})`,
                 engineCpp: engine,
                 uiTag: "canvas",
                 uiCanvas: true,
@@ -4022,9 +4178,9 @@ export class UiProjection {
         return this.presentationCanvasValue;
     }
 
-    public presentationCanvasValue: Value | undefined;
+    @journaled public accessor presentationCanvasValue: Value | undefined;
 
-    public primaryCanvasReadyGate = false;
+    @journaled public accessor primaryCanvasReadyGate = false;
 
     private readonly canvasDatasetReads = new EmissionWeakMap<
         ts.SourceFile,
@@ -4074,7 +4230,8 @@ export class UiProjection {
             : undefined;
     }
 
-    public nativeHostUiTagsCache: ReadonlyMap<string, string> | undefined;
+    @journaled public accessor nativeHostUiTagsCache:
+        ReadonlyMap<string, string> | undefined;
 
     public nativeHostUiTags(): ReadonlyMap<string, string> {
         if (this.nativeHostUiTagsCache) return this.nativeHostUiTagsCache;
@@ -4107,9 +4264,7 @@ export class UiProjection {
                     (callee.name.text === "querySelector" ||
                         callee.name.text === "querySelectorAll"))
             ) ||
-            !ts.isIdentifier(callee.expression) ||
-            callee.expression.text !== "document" ||
-            !this.context.isDefaultLibraryIdentifier(callee.expression) ||
+            this.context.libraryGlobal(callee.expression) !== "document" ||
             call.arguments.length !== 1
         ) {
             return false;
@@ -4125,7 +4280,7 @@ export class UiProjection {
             ts.isStringLiteral(id) || ts.isNoSubstitutionTemplateLiteral(id)
                 ? id.text
                 : ts.isIdentifier(id)
-                  ? this.context.lookupIdentifierValue(id)?.staticString
+                  ? this.context.bindings.lookupOptional(id)?.staticString
                   : undefined;
         return text !== undefined && this.nativeHostUiTags().has(text);
     }
@@ -4136,7 +4291,7 @@ export class UiProjection {
      * helpers deliberately do not qualify: live Canvas2D belongs to its own
      * bounded IR rather than the retained element tree.
      */
-    public isNativeUiHelperCall(call: ts.CallExpression): boolean {
+    private isNativeUiHelperCall(call: ts.CallExpression): boolean {
         const declaration =
             this.context.checker.getResolvedSignature(call)?.declaration;
         if (
@@ -4157,9 +4312,7 @@ export class UiProjection {
                 if (
                     ts.isPropertyAccessExpression(callee) &&
                     callee.name.text === "createElement" &&
-                    ts.isIdentifier(callee.expression) &&
-                    callee.expression.text === "document" &&
-                    this.context.isDefaultLibraryIdentifier(callee.expression)
+                    this.context.libraryGlobal(callee.expression) === "document"
                 ) {
                     const tag = node.arguments[0];
                     if (

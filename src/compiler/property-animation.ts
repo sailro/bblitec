@@ -34,21 +34,21 @@ export interface PropertyAnimationContext extends Pick<
     | "fail"
 > {}
 
-interface PropertyAnimationTargetContext extends Pick<
+export interface PropertyAnimationTargetContext extends Pick<
     LoweringServices,
     | "dataTypes"
     | "fail"
     | "allocateTemporaryCppName"
     | "captureManagedClosureLines"
     | "withRecordScopes"
-    | "compileRecordSetterValue"
+    | "classLowerer"
     | "callbackIdentity"
     | "requireDefaultEngine"
     | "emit"
     | "useNativeValue"
     | "registerNativeBinding"
     | "cppString"
-    | "materializeEscapingValue"
+    | "bindings"
 > {}
 
 /** Callback writers bound to the owner resolved when the group is created. */
@@ -171,7 +171,7 @@ export class PropertyAnimationTargetLowerer {
                         `Property animation path '${path}' requires a scalar track for a numeric data field.`,
                     );
                 }
-                const retained = context.materializeEscapingValue(
+                const retained = context.bindings.materializeEscapingValue(
                     owner,
                     "property_animation_owner",
                 );
@@ -206,7 +206,7 @@ export class PropertyAnimationTargetLowerer {
             );
             const closure = context.captureManagedClosureLines(() =>
                 context.withRecordScopes(owner, () =>
-                    context.compileRecordSetterValue(owner, setter, node, {
+                    context.classLowerer.compileSetter(owner, setter, node, {
                         kind: "number",
                         cpp: `static_cast<double>(${argument})`,
                         dataType: { kind: "number" },
@@ -215,7 +215,7 @@ export class PropertyAnimationTargetLowerer {
             );
             return (
                 `bbl::PropertyAnimationTarget{` +
-                `bbl::PropertyAnimationTargetKind::callback, ` +
+                `bbl::PropertyAnimationTargetKind::callback, {}, ` +
                 `${identity}u, ${renderClosure(closure, `float ${argument}`)}}`
             );
         });
@@ -240,13 +240,13 @@ export class PropertyAnimationTargetLowerer {
             context.emit(`${fieldCpp} = static_cast<double>(${argument});`);
         });
         return (
-            `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, 0u, ` +
+            `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, {}, 0u, ` +
             `${renderClosure(closure, `float ${argument}`)}, ${identityCpp}, ${context.cppString(property)}}`
         );
     }
 }
 
-export type PropertyAnimationTargetKind = "mesh" | "camera" | "record";
+type PropertyAnimationTargetKind = "mesh" | "camera" | "record";
 
 interface PropertyAnimationLane {
     /** The native `PropertyAnimationPath` enumerator this lane lowers to. */
@@ -463,7 +463,7 @@ export function compilePropertyAnimationClip(
                 ),
             )
             .filter((value): value is ts.Expression => value !== undefined)
-            .map((value) => context.compileNumber(value));
+            .map((value) => context.compileNumber(value, "double"));
         const distinct = [...new EmissionSet(trackFrameRates)];
         if (distinct.length > 1) {
             context.fail(
@@ -471,7 +471,7 @@ export function compilePropertyAnimationClip(
                 "Property animation tracks require one shared frame rate when clip options omit frameRate.",
             );
         }
-        frameRate = distinct[0] ?? "60.0f";
+        frameRate = distinct[0] ?? "60.0";
     }
     const targets = new EmissionSet<PropertyAnimationTargetKind>();
     const paths: string[] = [];
@@ -541,7 +541,7 @@ export function compilePropertyAnimationClip(
             "frameRate",
         );
         const trackFrameRate = trackFrameRateExpression
-            ? context.compileNumber(trackFrameRateExpression)
+            ? context.compileNumber(trackFrameRateExpression, "double")
             : frameRate;
         const keys = context.expectStaticArrayLiteral(keysExpression);
         if (keys.elements.length === 0) {
@@ -567,9 +567,12 @@ export function compilePropertyAnimationClip(
                     "Property animation keys require value and exactly one of time or frame.",
                 );
             }
+            // `createSampler` divides a frame key by the rate in
+            // JavaScript numbers and stores the time into its Float32Array
+            // `input`, rounding once.
             const time = timeExpression
                 ? context.compileNumber(timeExpression)
-                : `(${context.compileNumber(frameExpression!)} / ${trackFrameRate})`;
+                : `static_cast<float>(${context.compileNumber(frameExpression!, "double")} / ${trackFrameRate})`;
             const value = compilePropertyAnimationKeyValue(
                 context,
                 valueExpression,
@@ -597,7 +600,7 @@ function compilePropertyAnimationFrameRate(
 ): string {
     const options = context.expectObjectLiteral(expression);
     const frameRate = context.objectProperty(options, "frameRate");
-    return frameRate ? context.compileNumber(frameRate) : "60.0f";
+    return frameRate ? context.compileNumber(frameRate, "double") : "60.0";
 }
 
 function compilePropertyAnimationKeyValue(
@@ -640,7 +643,7 @@ export function compilePropertyAnimationGroupOptions(
             "Property animation clip duration is unavailable.",
         );
     if (!expression) {
-        return `bbl::PropertyAnimationGroupOptions{0.0f, ${duration}, 1.0f, true}`;
+        return `bbl::PropertyAnimationGroupOptions{0.0, ${duration}, 1.0, true}`;
     }
     const options = context.expectObjectLiteral(expression);
     const fromTime = context.objectProperty(options, "fromTime");
@@ -660,16 +663,16 @@ export function compilePropertyAnimationGroupOptions(
         );
     }
     const from = fromTime
-        ? context.compileNumber(fromTime)
+        ? context.compileNumber(fromTime, "double")
         : fromFrame
-          ? `(${context.compileNumber(fromFrame)} / ${frameRate})`
-          : "0.0f";
+          ? `(${context.compileNumber(fromFrame, "double")} / ${frameRate})`
+          : "0.0";
     const to = toTime
-        ? context.compileNumber(toTime)
+        ? context.compileNumber(toTime, "double")
         : toFrame
-          ? `(${context.compileNumber(toFrame)} / ${frameRate})`
+          ? `(${context.compileNumber(toFrame, "double")} / ${frameRate})`
           : duration;
     const speedRatio = context.objectProperty(options, "speedRatio");
     const loop = context.objectProperty(options, "loop");
-    return `bbl::PropertyAnimationGroupOptions{${from}, ${to}, ${speedRatio ? context.compileNumber(speedRatio) : "1.0f"}, ${loop ? context.compileBoolean(loop) : "true"}}`;
+    return `bbl::PropertyAnimationGroupOptions{${from}, ${to}, ${speedRatio ? context.compileNumber(speedRatio, "double") : "1.0"}, ${loop ? context.compileBoolean(loop) : "true"}}`;
 }

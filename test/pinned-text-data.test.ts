@@ -6,7 +6,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { readNativeHostUi } from "../src/native-host-ui.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
-import { resolveBundledAsset } from "../src/compiler/assets.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { sameCompiledValue } from "../src/compiler/types.js";
 import type { CompileManifest } from "../src/compiler/types.js";
 import { parseDataUrl } from "../src/data-url.js";
@@ -18,15 +18,56 @@ import {
     executePinnedText,
     materializePinnedText,
     textSha256,
+    type CompiledTextData,
     type StaticTextLayout,
     type TextBlob,
 } from "../src/pinned-text-data.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { textRecordModel } from "../src/lowering/text-records.js";
+import type {
+    Transported,
+    TransportedGraph,
+} from "../src/pinned-record-transport.js";
+
+const schema = textRecordModel(new LoweringContext()).transportSchema();
+
+/** The transported root record's fields. */
+function rootFields(
+    graph: TransportedGraph,
+): Readonly<Record<string, Transported>> {
+    const root = graph.root;
+    assert.ok(root !== null && typeof root === "object" && "ref" in root);
+    return graph.records[root.ref]!.fields;
+}
+
+/** A transported typed array's bytes, from the graph's own buffers. */
+function typedBytes(
+    value: Transported | undefined,
+    buffers: readonly Buffer[],
+): Buffer {
+    assert.ok(
+        value !== null &&
+            typeof value === "object" &&
+            value !== undefined &&
+            "typed" in value,
+    );
+    const width = value.typed === "u8" ? 1 : 4;
+    return buffers[value.buffer]!.subarray(
+        value.byteOffset,
+        value.byteOffset + value.length * width,
+    );
+}
+
+const graphBuffers = (graph: TransportedGraph): Buffer[] =>
+    graph.buffers.map((base64) => Buffer.from(base64, "base64"));
+
+const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 
 const output = resolve("artifacts/test-pinned-text-data");
 mkdirSync(output, { recursive: true });
 const fileName = resolve(output, "source.ts");
 const fontBytes = readAssetBytesSync(
-    resolveBundledAsset("/fonts/Roboto-Regular.ttf"),
+    `${pinnedLabPublicUrl()}fonts/Roboto-Regular.ttf`,
     fileName,
 );
 const fontPath = resolve(output, "Roboto-Regular.ttf");
@@ -53,13 +94,14 @@ test("static text materialization preserves every pinned initial byte, range and
     assert.ok(first && second);
     assert.equal(first.id, 0);
     assert.equal(second.id, 1);
-    assert.equal(first.width, 335.654296875);
-    assert.equal(first.height, 216);
+    assert.ok(first.data && second.data);
+    assert.equal(rootFields(first.data).width, 335.654296875);
+    assert.equal(rootFields(first.data).height, 216);
     assert.equal(
         first.font.sha256,
         "56a45233d29f11b4dfb86d248e921939d115778f87325e7ae8cc108383d6664d",
     );
-    assert.deepEqual(first.instances, second.instances);
+    assert.deepEqual(first.data, second.data);
     assert.equal(
         sameCompiledValue(
             { kind: "text-data", cpp: "first" },
@@ -88,37 +130,35 @@ test("static text materialization preserves every pinned initial byte, range and
         assert.equal(textSha256(bytes), blob.sha256);
         return bytes;
     };
-    const pin = await executePinnedText(fontBytes, first.layout);
-    assert.ok(pin);
-    assert.deepEqual(
-        raw(first.instances.bytes),
-        Buffer.from(pin.instances.bytes, "base64"),
+    // Every packaged buffer is the pin's own, byte for byte.
+    const pin = await executePinnedText(fontBytes, first.layout, schema);
+    assert.ok(pin?.data);
+    assert.equal(first.buffers.length, pin.data.buffers.length);
+    for (const [index, blob] of first.buffers.entries())
+        assert.deepEqual(
+            raw(blob),
+            Buffer.from(pin.data.buffers[index]!, "base64"),
+        );
+    assert.deepEqual(first.data.records, pin.data.records);
+    assert.deepEqual(first.data.containers, pin.data.containers);
+    // A generated draw group's key is its curve-set id, crossed as the string
+    // the native key is rebuilt from.
+    const groups = first.data.records.filter(
+        (record) => record.name === "TextDataDrawGroup",
     );
-    assert.deepEqual(
-        raw(first.styles.bytes),
-        Buffer.from(pin.styles.bytes, "base64"),
-    );
-    for (const [index, atlas] of first.atlases.entries()) {
-        const expected: NonNullable<
-            Awaited<ReturnType<typeof executePinnedText>>
-        >["atlases"][number] = pin.atlases[index]!;
-        assert.deepEqual(
-            raw(atlas.curves.bytes),
-            Buffer.from(expected.curves.bytes, "base64"),
-        );
-        assert.deepEqual(
-            raw(atlas.bands.bytes),
-            Buffer.from(expected.bands.bytes, "base64"),
-        );
-        assert.deepEqual(
-            raw(atlas.metadata.bytes),
-            Buffer.from(expected.metadata.bytes, "base64"),
-        );
-        assert.ok(atlas.curves.bytes.byteLength > atlas.curves.usedTexels * 16);
-        assert.ok(
-            atlas.metadata.capacityBytes >= atlas.metadata.bytes.byteLength,
-        );
+    assert.ok(groups.length > 0);
+    for (const group of groups) {
+        assert.equal(typeof group.fields._groupKey, "string");
+        assert.equal(group.fields._groupKey, group.fields._curveSetId);
     }
+    assert.match(
+        textRecordModel(new LoweringContext()).transportCpp(
+            first.data,
+            { kind: "record", name: "DefaultTextData" },
+            (index) => `buffer(${index})`,
+        ),
+        /group_key = bbl::TextGroupKey\(std::string\(/,
+    );
     assert.ok(
         first.provenance.modules.some((entry) =>
             entry.path.startsWith("_chunks/vendor/text-shaper"),
@@ -174,16 +214,21 @@ test("static options and complex text use actual pin layout and raw mixed instan
             undefined,
             layout.options,
         );
-        const actual = materializePinnedText(fontBytes, layout)!;
-        assert.equal(actual.width, expected.width);
-        assert.equal(actual.height, expected.height);
-        assert.equal(actual.instances.count, expected._instanceCount);
+        const actual = materializePinnedText(fontBytes, layout, schema)!.data!;
+        const fields = rootFields(actual);
+        assert.equal(fields.width, expected.width);
+        assert.equal(fields.height, expected.height);
+        assert.equal(fields._instanceCount, expected._instanceCount);
+        // The packed words cross as the instance buffer's raw bytes.
         assert.deepEqual(
-            Buffer.from(actual.instances.bytes, "base64"),
+            typedBytes(fields._instancesU32, graphBuffers(actual)).subarray(
+                0,
+                expected._instanceCount * 12,
+            ),
             Buffer.from(
                 expected._instancesU32.buffer,
                 expected._instancesU32.byteOffset,
-                actual.instances.count * actual.instances.strideBytes,
+                expected._instanceCount * 12,
             ),
         );
     }
@@ -200,30 +245,33 @@ test("static options and complex text use actual pin layout and raw mixed instan
 });
 
 test("static text arguments and font content participate in provenance", () => {
-    const first = materializePinnedText(fontBytes, {
-        fontSizePx: 40,
-        text: "A",
-    })!;
-    const changed = materializePinnedText(fontBytes, {
-        fontSizePx: 41,
-        text: "A",
-    })!;
+    const first = materializePinnedText(
+        fontBytes,
+        { fontSizePx: 40, text: "A" },
+        schema,
+    )!;
+    const changed = materializePinnedText(
+        fontBytes,
+        { fontSizePx: 41, text: "A" },
+        schema,
+    )!;
     assert.notEqual(
         first.provenance.argumentsSha256,
         changed.provenance.argumentsSha256,
     );
-    assert.notEqual(first.styles.bytes, changed.styles.bytes);
+    assert.notDeepEqual(first.data, changed.data);
     const paddedFont = new Uint8Array(fontBytes.length + 4);
     paddedFont.set(fontBytes);
-    const changedFont = materializePinnedText(paddedFont, {
-        fontSizePx: 40,
-        text: "A",
-    })!;
+    const changedFont = materializePinnedText(
+        paddedFont,
+        { fontSizePx: 40, text: "A" },
+        schema,
+    )!;
     assert.notEqual(
         first.provenance.argumentsSha256,
         changedFont.provenance.argumentsSha256,
     );
-    assert.equal(first.instances.bytes, changedFont.instances.bytes);
+    assert.deepEqual(first.data, changedFont.data);
     assert.throws(
         () => materializePinnedText(new Uint8Array(16)),
         /Pinned static font\/text data/,
@@ -253,23 +301,15 @@ test("ordinary CLI asset packaging writes the font and every referenced text blo
     const manifest = JSON.parse(
         readFileSync(resolve(generated, "manifest.json"), "utf8"),
     ) as CompileManifest;
-    const row = manifest.textData![0]!;
+    const row: CompiledTextData = manifest.textData![0]!;
     assert.equal(
         textSha256(
             readFileSync(resolve(generated, "assets", row.font.assetOutput)),
         ),
         row.font.sha256,
     );
-    const blobs = [
-        row.instances.bytes,
-        row.styles.bytes,
-        ...row.atlases.flatMap((atlas) => [
-            atlas.curves.bytes,
-            atlas.bands.bytes,
-            atlas.metadata.bytes,
-        ]),
-    ];
-    for (const blob of blobs) {
+    assert.ok(row.buffers.length > 0);
+    for (const blob of row.buffers) {
         const bytes = readFileSync(
             resolve(generated, "assets", blob.assetOutput),
         );
@@ -312,6 +352,7 @@ test("dynamic fonts, layout options and internal writes retain explicit source r
         assert.throws(() => compile(body), refusal);
     const source = "corpus/babylon-lite/lab/lite/src/lite/scene275.ts";
     const exact = compileSource(readFileSync(source, "utf8"), {
+        ...labDeployment,
         fileName: source,
     });
     assert.ok(exact.manifest.features.includes("text:renderable"));
@@ -323,18 +364,26 @@ test("runtime text values and updates retain live fonts and unchanged textarea c
         'const data=createDefaultTextData(font,40,String(Math.random()));updateDefaultTextData(data,"new text");',
     );
     assert(dynamic.manifest.features.includes("text:layout"));
-    assert(dynamic.manifest.textData![0]!.live!.glyphSlots.length > 100);
+    // A live row carries the font's packaged repertoire: every glyph.
+    const repertoire = dynamic.manifest.textData![0]!.repertoire!;
+    assert(
+        repertoire.storage.containers.some(
+            (container) =>
+                container.kind === "map" && container.entries.length > 100,
+        ),
+    );
     assert.match(dynamic.cpp, /create_live_text_data/);
     assert.match(dynamic.cpp, /update_default_text_data/);
     const later = compile(
         'const first=createDefaultTextData(font,40,"A");updateDefaultTextData(first,String(Math.random()));const later=createDefaultTextData(font,40,"B");',
     );
     assert(
-        later.manifest.textData!.every((row) => row.live),
+        later.manifest.textData!.every((row) => row.repertoire),
         "Later owners remain eligible for retained update helpers",
     );
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene181.ts";
     const result = compileSource(readFileSync(fileName, "utf8"), {
+        ...labDeployment,
         fileName,
         nativeHostUi: readNativeHostUi("ui/scene181-host.json"),
     });

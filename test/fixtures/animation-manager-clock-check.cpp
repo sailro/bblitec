@@ -7,7 +7,7 @@
 #include <vector>
 
 namespace bbl {
-void mark_mesh_runtime_transform(Engine&, MeshHandle) {}
+void mark_mesh_dirty(Engine&, MeshHandle) {}
 } // namespace bbl
 
 struct Observation {
@@ -30,7 +30,7 @@ int main() {
                                                      10.0f);
     const auto group = create_property_animation_group(
         manager, engine,
-        {{PropertyAnimationTargetKind::callback, 0u, [&](float next) { value = next; }}}, clip,
+        {{PropertyAnimationTargetKind::callback, {}, 0u, [&](float next) { value = next; }}}, clip,
         {0.0f, 1.0f, 1.0f, false});
     const auto frame = [&](double now) {
         const auto callbacks = std::move(engine.animation_frame_once_callbacks);
@@ -74,7 +74,7 @@ int main() {
         engine, {100.0, [&](double step) { observations.push_back({value, step}); }});
     create_property_animation_group(
         fixed, engine,
-        {{PropertyAnimationTargetKind::callback, 1u, [&](float next) { value = next; }}}, clip,
+        {{PropertyAnimationTargetKind::callback, {}, 1u, [&](float next) { value = next; }}}, clip,
         {0.0f, 1.0f, 1.0f, false});
     start_animation_manager(fixed, engine);
     frame(100.0);

@@ -15,12 +15,12 @@ export interface SkeletonIntrinsicContext
             | "emit"
             | "cppString"
             | "compileStringLiteral"
-            | "compileCondition"
+            | "conditions"
             | "compileNumber"
             | "compileForDataSink"
             | "requireEngine"
             | "expectSameEngine"
-            | "gltfAlreadyLoaded"
+            | "assetRegistry"
             | "fail"
         > {}
 
@@ -161,7 +161,7 @@ export function compileSkeletonIntrinsic(
             // the call creates nothing, so it emits no statement; what it
             // does is decide which loader is generated.
             context.expectArgumentCount(call, 0, 0);
-            if (context.gltfAlreadyLoaded()) {
+            if (context.assetRegistry.gltfAlreadyLoaded()) {
                 context.fail(
                     call,
                     "enableBoneControl installs the pin's builder hook, so " +
@@ -212,7 +212,9 @@ export function compileSkeletonIntrinsic(
             const bone = context.compileValue(argumentAt(call, 1));
             context.expectKind(bone, "bone", argumentAt(call, 1));
             context.expectSameEngine(skeleton, bone, call);
-            const visible = context.compileCondition(argumentAt(call, 2));
+            const visible = context.conditions.compileCondition(
+                argumentAt(call, 2),
+            );
             return {
                 kind: "void",
                 cpp:

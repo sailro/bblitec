@@ -5,6 +5,7 @@ import type {
     PinnedBinding,
     PinnedNumericLowerer,
 } from "../pinned-numeric-lowerer.js";
+import { recordAt } from "../../compiler/record-access.js";
 
 const featureModule = "src/loader-gltf/gltf-feature-interactivity.ts";
 const sceneModule = "src/flow-graph/scene-flow-graph.ts";
@@ -305,7 +306,7 @@ export function lowerGltfFlowGraphLifecycle(context: LoweringContext): string {
         [
             "container.flowGraphRuntimes",
             {
-                cpp: "scene.engine->assets.at(asset.value).flow_graph_runtimes",
+                cpp: `${recordAt("scene.engine->assets", "asset")}.flow_graph_runtimes`,
                 type: "opaque",
             },
         ],
@@ -408,7 +409,7 @@ export function lowerGltfFlowGraphLifecycle(context: LoweringContext): string {
                         "Flow runtime publication identity",
                     );
                     return [
-                        `${indent}published = &scene.engine->assets.at(asset.value).flow_graph_runtimes;`,
+                        `${indent}published = &${recordAt("scene.engine->assets", "asset")}.flow_graph_runtimes;`,
                     ];
                 }
                 if (
@@ -452,7 +453,7 @@ export function lowerGltfFlowGraphLifecycle(context: LoweringContext): string {
                         "Flow cleanup scene",
                     );
                     return [
-                        `${indent}register_flow_asset_cleanup(scene.engine->assets.at(asset.value), scene, [state, weak = std::weak_ptr<SceneState>(scene.state)] {`,
+                        `${indent}register_flow_asset_cleanup(${recordAt("scene.engine->assets", "asset")}, scene, [state, weak = std::weak_ptr<SceneState>(scene.state)] {`,
                         `${indent}    const auto shared = weak.lock(); if (!shared) return;`,
                         `${indent}    Scene scene = Scene::from_state(shared);`,
                         ...lowerer.statements(

@@ -35,7 +35,7 @@ struct PickRay {
 struct PickDetailReadback {
     /** `@builtin(primitive_index)` of the winning fragment, -1 on a miss. */
     double primitive_index = -1.0;
-    /** The interpolated vertex position, in the space the pass drew. */
+    /** The interpolated local vertex position the pick stage forwarded. */
     std::array<double, 3> point{};
     /**
      * The winning mesh's DRAW-TIME world, which upstream snapshots with
@@ -44,18 +44,6 @@ struct PickDetailReadback {
      * the pick and the read.
      */
     std::array<float, 16> world{};
-    /**
-     * Whether `point` arrived in WORLD space rather than the mesh's own.
-     *
-     * The pin's pick vertex stage forwards the raw local position, and so
-     * does this port's -- but an ordinary mesh's vertex buffer is baked to
-     * world here (`transformed_vertices`, the contract in
-     * `fidelity.md`'s picking section), so the varying comes back world-
-     * space and the continuation maps it back through `world` before the
-     * pin's rest-space solve. A mesh whose transform travels as a matrix
-     * instead needs no map, and clears this.
-     */
-    bool world_baked = false;
 };
 
 /**
@@ -81,6 +69,8 @@ struct PickingInfoState {
      */
     PickedNodeKind picked_kind = PickedNodeKind::none;
     std::uint32_t picked_index = invalid_handle;
+    /** The picked mesh handle's generation, so a reused slot is not the hit. */
+    std::uint32_t picked_generation = 0;
     /**
      * The read-back id's offset inside the range its candidate owns --
      * upstream's `pickId - r.base`, the local id it hands the resolving

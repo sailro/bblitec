@@ -19,7 +19,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 /** A registry scene's native environment base for every phase. */
-export type CheckEnvironmentBase = "registry" | "adhoc" | "fixed" | "none";
+type CheckEnvironmentBase = "registry" | "adhoc" | "fixed" | "none";
 
 export interface CheckPhase {
     id: string;
@@ -39,14 +39,14 @@ export interface CheckPhase {
 }
 
 /** A phase id, or `*` for every phase. */
-export type PhaseSelector = string;
+type PhaseSelector = string;
 
 /**
  * The image another image is compared against: another phase of the same
  * backend, the committed golden, or a browser observation step's
  * screenshot (`browser:<step>`).
  */
-export type ImageReference = string;
+type ImageReference = string;
 
 export type CheckExpectation =
     | {
@@ -161,7 +161,7 @@ export type ObserveAction =
     | { workerEvaluate: string; as?: string }
     | { waitFor: string; timeoutMs?: number };
 
-export interface ObserveStep {
+interface ObserveStep {
     id: string;
     actions?: ObserveAction[];
     /** Screenshot after the actions: the page (default), the canvas only, or none. */
@@ -180,7 +180,7 @@ export interface ObserveStep {
     notes?: string;
 }
 
-export interface ObserveHook {
+interface ObserveHook {
     /** A source line the scene must contain exactly once. */
     marker: string;
     /** Source injected before or after (default) the marker. */
@@ -258,9 +258,9 @@ export interface CheckSpec {
     notes?: string;
 }
 
-export const CHECKS_DIRECTORY = "checks";
+const CHECKS_DIRECTORY = "checks";
 
-export function checkSpecPath(checkId: string): string {
+function checkSpecPath(checkId: string): string {
     return resolve(CHECKS_DIRECTORY, `${checkId}.json`);
 }
 
@@ -997,6 +997,57 @@ export function parseCheckSpec(text: string, location: string): CheckSpec {
         }
     }
     return spec;
+}
+
+/** Where a demo's default memory tape lives, relative to the repository. */
+function memoryTapePath(sceneId: string): string {
+    return `${CHECKS_DIRECTORY}/memory/${sceneId}.json`;
+}
+
+/** A demo's default memory tape (`readMemoryTape`). */
+interface MemoryTape {
+    path: string;
+    /**
+     * The run length the demo needs: its warm-up third has to cover the
+     * frames over which the program's own content still grows (a streamed
+     * world reaching its peak loaded set), or the judged window measures
+     * that growth rather than the settled program. Absent, the default run.
+     */
+    frames?: number;
+    lead: string[];
+    cycle: string[];
+}
+
+/**
+ * The default gameplay tape `scene -- memory` plays for a demo, when
+ * `checks/memory/<id>.json` declares one: `{ notes, frames?, lead?, cycle }`
+ * in the phase tape grammar. An idle demo retires nothing, so a leak of
+ * retired records only shows under play.
+ */
+export function readMemoryTape(sceneId: string): MemoryTape | undefined {
+    const path = memoryTapePath(sceneId);
+    if (!existsSync(resolve(path))) return undefined;
+    const value: unknown = JSON.parse(readFileSync(resolve(path), "utf8"));
+    if (!isRecord(value)) fail(path, "must be an object");
+    refuseUnknown(value, ["notes", "frames", "lead", "cycle"], path);
+    requiredString(value, "notes", path);
+    const frames = optionalNumber(value, "frames", path);
+    if (frames !== undefined && (!Number.isInteger(frames) || frames <= 0)) {
+        fail(path, "'frames' must be a positive integer");
+    }
+    const lead = expandTape(optionalStringArray(value, "lead", path) ?? []);
+    const cycle = expandTape(optionalStringArray(value, "cycle", path) ?? []);
+    if (cycle.length === 0) {
+        fail(path, "'cycle' must name at least one tape entry");
+    }
+    return { path, ...(frames !== undefined ? { frames } : {}), lead, cycle };
+}
+
+/** A tape's entries for a run of `frames` frames: the lead, then the cycle repeated. */
+export function memoryTapeEntries(tape: MemoryTape, frames: number): string[] {
+    const entries = [...tape.lead];
+    while (entries.length < frames) entries.push(...tape.cycle);
+    return entries.slice(0, frames);
 }
 
 /** Read `checks/<id>.json`, or throw naming what is missing. */

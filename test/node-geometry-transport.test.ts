@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -9,6 +9,7 @@ import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { mirroredStructFromWgsl } from "../src/pinned-pbr-variant-cpp.js";
+import { reflectWgslStruct } from "../src/shader-ir.js";
 import {
     importPinnedModule,
     importPinnedModuleWithExports,
@@ -17,6 +18,8 @@ import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const tools = optionalNativeFixtureTools(false);
@@ -31,7 +34,7 @@ interface PinMesh {
 }
 
 test(
-    "node geometry binds raw lanes and the pin world independently of ordinary draw caches",
+    "node geometry binds raw lanes and the pin world through the one mesh block",
     { skip: !tools },
     async () => {
         const parser = await importPinnedModule<{
@@ -61,16 +64,17 @@ test(
         const nodePipeline = await importPinnedModuleWithExports<{
             buildMeshStruct(this: void): string;
         }>("material/node/node-pipeline.js", ["buildMeshStruct"]);
-        const meshBody = /struct MeshU\{([^}]*)\}/.exec(
+        const meshBody = reflectWgslStruct(
             nodePipeline.buildMeshStruct(),
-        )?.[1];
+            "MeshU",
+        )?.members;
         assert.ok(meshBody);
         const { MAX_LIGHTS } = await importPinnedModule<{ MAX_LIGHTS: number }>(
             "light/types.js",
         );
         const checks: string[] = [];
-        // Use the pin's actual parent walk, with nonuniform and negative scales.
-        // The native loader's matrix_product/native_matrix adapter is executed below.
+        // A loaded record carries the pin's node world as its parent world
+        // under an identity TRS; the block's world is that matrix, exactly.
         for (const sign of [1, -1]) {
             const parent = new Float32Array(16),
                 child = new Float32Array(16);
@@ -114,21 +118,19 @@ test(
                 new Map(),
             );
             checks.push(`{
-            const Matrix parent{${floats(parent)}}, child{${floats(child)}};
-            record.instance_parent_matrix = native_matrix(upstream::matrix_product(parent, child));
-            const auto block = node_mesh_block(scene, engine, 0, true);
+            record.parent_world = Matrix{${floats(expected)}};
+            const auto block = node_mesh_block(scene, engine, MeshHandle{0});
             same_matrix(block.world, Matrix{${floats(expected)}});
-            assert(node_mesh_block(scene, engine, 0).world == pinned_identity_world());
             NodeMeshBlockCache cache;
-            const auto ordinary = node_mesh_block_for(cache, scene, engine, 0, false).world;
-            same_matrix(node_mesh_block_for(cache, scene, engine, 0, true).world, block.world);
-            assert(node_mesh_block_for(cache, scene, engine, 0, false).world == ordinary);
+            same_matrix(node_mesh_block_for(cache, scene, engine, MeshHandle{0}).world, block.world);
             Scene next_scene;
-            record.instance_parent_matrix[12] += 3.0f;
-            const auto changed = node_mesh_block(scene, engine, 0, true).world;
+            (*record.parent_world)[12] += 3.0f;
+            const auto changed = node_mesh_block(scene, engine, MeshHandle{0}).world;
             assert(changed != block.world);
-            same_matrix(node_mesh_block_for(cache, next_scene, engine, 0, true).world, changed);
-            assert(node_mesh_block_for(cache, next_scene, engine, 0, false).world == ordinary);
+            // The cache is per scene pass: the same scene keeps its block,
+            // the next one composes the moved world.
+            same_matrix(node_mesh_block_for(cache, scene, engine, MeshHandle{0}).world, block.world);
+            same_matrix(node_mesh_block_for(cache, next_scene, engine, MeshHandle{0}).world, changed);
         }`);
         }
         const parentTrs = [1.2, -2.3, 0.4, 0.15, -0.25, 0.35, 2, 0.5, 1.7].map(
@@ -246,11 +248,9 @@ test(
             `${name}.position = {${floats(values.slice(0, 3))}}; ${name}.rotation = {${floats(values.slice(3, 6))}}; ${name}.scaling = {${floats(values.slice(6))}};`;
         const context = new LoweringContext();
         const render = new RendererLowerer(context).lowerRenderPlan({}).source;
-        const loader = new GltfLowerer(context).lowerLoaderAdapter({
-            retainLocalNormals: true,
-        }).source;
-        const pal = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
-        const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+        const loader = new GltfLowerer(context).lowerLoaderAdapter().source;
+        const pal = sharedGpuSource();
+        const dawn = sceneBackendSource("dawn");
         const output = resolve("artifacts/node-geometry-transport-check");
         mkdirSync(output, { recursive: true });
         writeFileSync(
@@ -265,8 +265,7 @@ test(
             executable = join(output, "check.exe");
         writeFileSync(
             fixture,
-            `#define BBLITE_HAS_PBR_RENDERER 1
-#define BBLITE_GPU_DEFORMATION 0
+            `#define BBLITE_GPU_DEFORMATION 0
 #define BBLITE_GPU_INSTANCING 0
 #define BBLITE_FLOATING_ORIGIN 0
 #define BBLITE_PBR_VARIANTS 0
@@ -282,12 +281,13 @@ ${mirroredStructFromWgsl("NodeMeshUniforms", meshBody, "pin node-pipeline buildM
 inline constexpr std::size_t pinned_max_lights = ${MAX_LIGHTS}u;
 ${cppFunction(render, "bool light_affects_mesh(")}
 ${[
-    "mesh_local_matrix(const MeshRecord&",
-    "transform_node_local_matrix(",
-    "transform_node_world(",
-    "mesh_world_matrix(",
+    "std::array<float, 16> mesh_local_matrix(const MeshRecord&",
+    "std::array<float, 16> transform_node_local_matrix(",
+    "std::array<float, 16> transform_node_world(",
+    "std::optional<std::array<float, 16>> mesh_root_world(",
+    "std::array<float, 16> mesh_world_matrix(",
 ]
-    .map((name) => cppFunction(render, `std::array<float, 16> ${name}`))
+    .map((name) => cppFunction(render, name))
     .join("\n")}
 }
 namespace bbl::pal {
@@ -300,50 +300,42 @@ ${[
     .map((name) => cppFunction(pal, name) + ";")
     .join("\n")}
 ${[
-    "std::array<float, 16> outer_draw_world(",
-    "std::array<float, 16> draw_world(",
-    "std::array<float, 16> scene_deformation_draw_world(",
-    "std::vector<GpuVertex> transformed_vertices(",
-    "std::array<float, 16> pinned_identity_world(",
-    "std::array<float, 16> pinned_x_mirrored_world(",
+    "std::array<float, 16> mesh_block_world(",
+    "std::vector<GpuVertex> mesh_gpu_vertices(",
     "PinnedVertexInput pinned_vertex_input(",
 ]
-    .map((name) => cppFunction(pal, `inline ${name}`))
+    .map((name) => cppFunction(pal, name))
     .join("\n")}
 template <typename Block>
 ${cppFunction(pal, "inline void pinned_mesh_light_selection(")}
-${cppFunction(pal, "inline upstream::NodeMeshUniforms node_mesh_block(")}
-${cppFunction(pal, "inline std::span<const std::uint32_t> node_source_indices(")}
+${cppFunction(pal, "upstream::NodeMeshUniforms node_mesh_block(")}
+${cppFunction(pal, "std::span<const std::uint32_t> node_source_indices(")}
 ${cppFunction(dawn, "struct NodeMeshBlockCache")} ;
 ${cppFunction(dawn, "const upstream::NodeMeshUniforms& node_mesh_block_for(")}
 }
 using namespace bbl;
 using namespace bbl::pal;
 using Matrix = std::array<float, 16>;
-${cppFunction(loader, "Matrix native_matrix(")}
 void same_matrix(const Matrix& actual, const Matrix& expected) {
-    // Exact f32 values; zero sign can differ across the root convention bridge.
-    for (std::size_t i = 0; i < 16; ++i) assert(actual[i] == expected[i]);
+    for (std::size_t i = 0; i < 16; ++i) assert(std::bit_cast<std::uint32_t>(actual[i]) == std::bit_cast<std::uint32_t>(expected[i]));
 }
 int main() {
     Engine engine; Scene scene;
     engine.meshes.resize(2); engine.geometries.emplace_back();
     auto& record = engine.meshes[0]; record.geometry = 0;
-    auto& geometry = engine.geometries[0]; geometry.vertex_space = VertexSpace::world;
-    geometry.vertices.resize(1); geometry.local_normals = {{-0.0f, 0.3f, 2.75f}};
+    auto& geometry = engine.geometries[0];
+    geometry.vertices.resize(1);
     auto& vertex = geometry.vertices[0];
-    vertex.local_position = {-1.25f, 2.75f, 0.6f};
-    vertex.position = {11.0f, 12.0f, 13.0f}; vertex.normal = {0.5f, 0.7f, 0.2f};
-    const auto packed = transformed_vertices(engine, geometry, record);
+    // The pin uploads the file's lanes untouched, signed zero included.
+    vertex.position = {-1.25f, 2.75f, 0.6f}; vertex.normal = {-0.0f, 0.3f, 2.75f};
+    const auto packed = mesh_gpu_vertices(geometry, record);
     for (const auto name : {"position", "normal"}) {
-        const auto input = pinned_vertex_input(name, true, true);
+        const auto input = pinned_vertex_input(name);
         const void* expected = std::string_view(name) == "position"
-            ? static_cast<const void*>(&vertex.local_position) : &geometry.local_normals[0];
+            ? static_cast<const void*>(&vertex.position) : &vertex.normal;
         assert(input.mapped && input.stream == VertexInputStream::vertex);
         assert(std::memcmp(reinterpret_cast<const std::uint8_t*>(&packed[0]) + input.offset, expected, 12) == 0);
     }
-    assert(pinned_vertex_input("position", false).offset == offsetof(GpuVertex, position));
-    assert(pinned_vertex_input("normal", true).offset == offsetof(GpuVertex, normal));
     for (const bool source_clockwise : {false, true}) for (const bool clockwise_front_face : {false, true}) {
         const std::vector<std::uint32_t> original{0, 1, 2, 0, 2, 3};
         geometry.indices = original; geometry.source_indices_reversed = false;
@@ -357,27 +349,14 @@ int main() {
         assert(geometry.source_indices_reversed || (source.data() == geometry.indices.data() && scratch.empty()));
     }
     ${checks.join("\n")}
-    const auto rejects = [&] {
-        try { (void)node_mesh_block(scene, engine, 0, true); } catch (const std::runtime_error&) { return true; }
-        return false;
-    };
-    geometry.local_normals.clear(); assert(rejects());
-    geometry.local_normals.resize(1); record.position.x = 0.1; assert(rejects()); record.position.x = 0;
-    record.live_imported_transform = true; assert(rejects()); record.live_imported_transform = false;
-    geometry.vertex_space = VertexSpace::mirrored_local; assert(rejects());
-    geometry.vertex_space = VertexSpace::local; geometry.local_normals.clear();
+    // A factory mesh under a mesh parent: the block is the pin's parent walk.
+    record.parent_world.reset();
     record.parent = MeshHandle{1};
     ${setTrs("engine.meshes[1]", parentTrs)}
     ${setTrs("record", childTrs)}
-    for (bool gpu_world : {false, true}) {
-        record.gpu_world_transform = gpu_world;
-        same_matrix(node_mesh_block(scene, engine, 0, true).world, Matrix{${floats(localExpected)}});
-        record.scene_morph_targets = true;
-        same_matrix(node_mesh_block(scene, engine, 0).world, Matrix{${floats(localExpected)}});
-        record.scene_morph_targets = false;
-        const auto local_packed = transformed_vertices(engine, geometry, record);
-        assert(std::memcmp(local_packed[0].local_normal, &vertex.normal, 12) == 0);
-    }
+    same_matrix(node_mesh_block(scene, engine, MeshHandle{0}).world, Matrix{${floats(localExpected)}});
+    record.scene_morph_targets = true;
+    same_matrix(node_mesh_block(scene, engine, MeshHandle{0}).world, Matrix{${floats(localExpected)}});
     std::cout << "node geometry transport: ok\\n";
 }
 `,
@@ -385,6 +364,7 @@ int main() {
         runNativeFixtureCompiler(tools!, [
             "/nologo",
             "/std:c++20",
+            "/DBBLITE_HAS_PBR_RENDERER=1",
             "/W4",
             "/WX",
             "/EHsc",

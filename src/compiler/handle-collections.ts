@@ -1,7 +1,7 @@
-import { valueForKind, withNativeMetadata } from "./types.js";
+import { presenceFlagCpp, valueForKind, withNativeMetadata } from "./types.js";
 import type { ValueBase } from "./types.js";
 // Handle collections carry engine identity, generation-known members and asset traversal contracts.
-import { EmissionSet, EmissionMap } from "./emission-transaction.js";
+import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
@@ -12,7 +12,11 @@ import {
     resolveFunctionDeclaration,
     tryResolveFunctionDeclaration,
 } from "./user-functions.js";
-import { CompilerSymbols } from "./symbols.js";
+import {
+    CompilerSymbols,
+    isNullishLiteral,
+    type LibraryGlobal,
+} from "./symbols.js";
 import {
     argumentAt,
     identifierText,
@@ -45,6 +49,7 @@ import {
 // "which meshes of this file are skinned" has one answer in the compiler.
 import { skinnedMeshIndices } from "../pinned-mesh-features.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
+import { recordAt } from "./record-access.js";
 
 /**
  * One engine handle collection an expression names.
@@ -65,9 +70,7 @@ interface HandleCollectionLoopContext extends Pick<
     | "emit"
     | "increaseIndent"
     | "decreaseIndent"
-    | "pushScope"
-    | "popScope"
-    | "bindLocalValue"
+    | "bindings"
 > {}
 
 /**
@@ -103,14 +106,14 @@ export function emitHandleCollectionLoop<
         `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
     );
     context.increaseIndent();
-    context.pushScope(context.allocateBlockPrefix());
+    context.bindings.pushScope(context.allocateBlockPrefix());
     try {
         const value = valueForKind(target.elementKind, {
             cpp: item,
             engineCpp: target.engineCpp,
             ...(extraBinding ?? {}),
         });
-        context.bindLocalValue(
+        context.bindings.bindLocalValue(
             binding,
             target.elementTemplate
                 ? withNativeMetadata(value, target.elementTemplate)
@@ -118,7 +121,7 @@ export function emitHandleCollectionLoop<
         );
         emitBody(context);
     } finally {
-        context.popScope();
+        context.bindings.popScope();
         context.decreaseIndent();
     }
     context.emit("}");
@@ -140,7 +143,7 @@ interface AssetOwnerMapProof {
 function assetOwnerMapBuilder(
     declaration: ts.FunctionDeclaration,
     resolve: (name: ts.Identifier) => ts.FunctionDeclaration | undefined,
-    isGlobal: (name: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): AssetOwnerMapProof | undefined {
     const parameters = (
         fn: ts.FunctionDeclaration,
@@ -196,9 +199,7 @@ function assetOwnerMapBuilder(
         !rootLoop ||
         map.name.text === params[0]!.text ||
         !ts.isNewExpression(map.initializer) ||
-        !ts.isIdentifier(map.initializer.expression) ||
-        map.initializer.expression.text !== "Map" ||
-        !isGlobal(map.initializer.expression) ||
+        libraryGlobal(map.initializer.expression) !== "Map" ||
         (map.initializer.arguments?.length ?? 0) !== 0 ||
         !isPropertyReadOf(rootLoop.loop.expression, params[0]!, "entities") ||
         !ts.isReturnStatement(returned!) ||
@@ -213,7 +214,7 @@ function assetOwnerMapBuilder(
     if (
         !rootGuard ||
         !guardedBy(rootGuard.test, rootLoop.name, resolve, (fn) =>
-            isChildrenPresenceGuard(fn, isGlobal),
+            isChildrenPresenceGuard(fn, libraryGlobal),
         )
     )
         return undefined;
@@ -260,7 +261,7 @@ function assetOwnerMapBuilder(
             isRenderablePresenceGuard,
         ) ||
         !guardedBy(descend.test, children.name, resolve, (fn) =>
-            isChildrenPresenceGuard(fn, isGlobal),
+            isChildrenPresenceGuard(fn, libraryGlobal),
         )
     )
         return undefined;
@@ -360,32 +361,30 @@ interface HandleCollectionsContext
         Pick<
             LoweringServices,
             | "guardStaticConstructionRead"
-            | "meshWalks"
+            | "sceneManifest"
             | "checker"
             | "symbols"
             | "dataTypes"
             | "options"
             | "assetPayloads"
-            | "reachedNodeParticles"
             | "unwrap"
             | "importedName"
             | "fail"
             | "compileValue"
             | "emitStatement"
-            | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "isInRuntimeControlFlow"
-            | "compileCondition"
+            | "conditions"
             | "compileStringLiteral"
             | "cppString"
-            | "lookup"
-            | "lookupOptional"
+            | "bindings"
             | "resolveStaticExpression"
             | "probeStaticArrayLiteral"
             | "requireEngine"
             | "expectKind"
             | "expectSameEngine"
             | "expectArgumentCount"
-            | "addSceneLight"
+            | "reachFeature"
         > {}
 
 /**
@@ -445,8 +444,8 @@ export class HandleCollections {
         };
         const declaration = resolve(identifier);
         if (!declaration || call.arguments.length !== 1) return undefined;
-        const proof = assetOwnerMapBuilder(declaration, resolve, (name) =>
-            this.context.isDefaultLibraryIdentifier(name),
+        const proof = assetOwnerMapBuilder(declaration, resolve, (callee) =>
+            this.context.libraryGlobal(callee),
         );
         if (!proof) return undefined;
         const owner = this.context.compileValue(argumentAt(call, 0));
@@ -461,10 +460,10 @@ export class HandleCollections {
             parameter: declaration.parameters[0]!.name.getText(),
             body: `{ ${proof.helpers.map((helper) => helper.getText()).join("\n")} ${declaration.body!.statements.map((statement) => statement.getText()).join("\n")} }`,
         });
-        this.context.pushScope(this.context.allocateBlockPrefix());
+        this.context.bindings.pushScope(this.context.allocateBlockPrefix());
         try {
             this.context.emitStatement(proof.mapStatement);
-            const map = this.context.lookup(proof.map);
+            const map = this.context.bindings.lookup(proof.map);
             if (
                 map.dataType?.kind !== "map" ||
                 map.dataType.key.kind !== "string" ||
@@ -482,19 +481,19 @@ export class HandleCollections {
                 walk,
                 proof.child,
                 (context) => {
-                    const child = context.lookup(proof.child);
-                    context.bindLocalValue(proof.ownerName, {
+                    const child = context.bindings.lookup(proof.child);
+                    context.bindings.bindLocalValue(proof.ownerName, {
                         kind: "string",
-                        cpp: `${target.engineCpp}.meshes[${child.cpp}.value].scene_node_name`,
+                        cpp: `${recordAt(`${target.engineCpp}.meshes`, child.cpp)}.scene_node_name`,
                         dataType: { kind: "string" },
                     });
-                    context.bindLocalValue(proof.output, map);
+                    context.bindings.bindLocalValue(proof.output, map);
                     context.emitStatement(proof.collect);
                 },
             );
             return { ...map, engineCpp: target.engineCpp };
         } finally {
-            this.context.popScope();
+            this.context.bindings.popScope();
         }
     }
 
@@ -618,7 +617,7 @@ export class HandleCollections {
         if (!ts.isIdentifier(unwrapped)) {
             return undefined;
         }
-        const value = this.context.lookupOptional(unwrapped);
+        const value = this.context.bindings.lookupOptional(unwrapped);
         return value?.kind === "handle-collection" && value.handleCollection
             ? value
             : undefined;
@@ -830,12 +829,13 @@ export class HandleCollections {
         if (owner.asset?.kind !== "gltf" && owner.asset?.kind !== "babylon")
             return target;
         const key = JSON.stringify(walk);
-        let index = this.context.meshWalks.findIndex(
+        let index = this.context.sceneManifest.meshWalks.findIndex(
             (candidate) => JSON.stringify(candidate) === key,
         );
-        if (index < 0) index = this.context.meshWalks.push(walk) - 1;
-        const demanded = (owner.asset.meshWalks ??= []);
-        if (!demanded.includes(index)) demanded.push(index);
+        if (index < 0)
+            index = this.context.sceneManifest.meshWalks.push(walk) - 1;
+        const demanded = (writable(owner.asset).meshWalks ??= []);
+        if (!demanded.includes(index)) writable(demanded).push(index);
         return {
             ...target,
             containerCpp: `bbl::asset_mesh_walk(${target.engineCpp}, ${owner.cpp}, ${index})`,
@@ -953,10 +953,8 @@ export class HandleCollections {
         const walk = resolve(visit.expression);
         if (
             !walk ||
-            !isRecursiveMeshFlattenVisitor(
-                walk,
-                resolve,
-                (identifier) => !this.context.lookupOptional(identifier),
+            !isRecursiveMeshFlattenVisitor(walk, resolve, (callee) =>
+                this.context.libraryGlobal(callee),
             )
         ) {
             return undefined;
@@ -968,7 +966,7 @@ export class HandleCollections {
         this.requireLoaderFlattenedContainer(owner.asset, entities);
         this.foldedFlattenLoops.add(loop);
         const result = this.assetMeshCollection(owner, declaration.name);
-        result.handleCollection = this.sourceMeshWalk(
+        writable(result).handleCollection = this.sourceMeshWalk(
             owner,
             result.handleCollection!,
             { kind: "preorder" },
@@ -1271,7 +1269,7 @@ export class HandleCollections {
         return {
             property: "children",
             temporaryLabel: "asset_descendant_mesh",
-            containerCpp: `${engineCpp}.assets[${owner.cpp}.value].meshes`,
+            containerCpp: `${recordAt(`${engineCpp}.assets`, owner.cpp)}.meshes`,
             elementKind: "mesh",
             elementCppType: handleCppType("mesh"),
             engineCpp,
@@ -1350,7 +1348,7 @@ export class HandleCollections {
     ): readonly Value[] | undefined {
         const unwrapped = this.context.unwrap(expression);
         const value = ts.isIdentifier(unwrapped)
-            ? this.context.lookupOptional(unwrapped)
+            ? this.context.bindings.lookupOptional(unwrapped)
             : ts.isCallExpression(unwrapped) ||
                 ts.isPropertyAccessExpression(unwrapped) ||
                 ts.isElementAccessExpression(unwrapped) ||
@@ -1433,7 +1431,7 @@ export class HandleCollections {
                 "A scene light is missing its generated light kind.",
             );
         }
-        this.context.addSceneLight(scene, light, light.lightKind);
+        this.context.sceneManifest.addSceneLight(scene, light, light.lightKind);
         return {
             kind: "void",
             cpp: `bbl::add_to_scene(${scene.cpp}, ${light.cpp})`,
@@ -1482,10 +1480,12 @@ export class HandleCollections {
             );
         }
         if (
-            this.context.reachedNodeParticles.sets[set.nodeParticleSetIndex]
-                ?.native ||
-            this.context.reachedNodeParticles.sets[system.nodeParticleSetIndex]
-                ?.native
+            this.context.sceneManifest.reachedNodeParticles.sets[
+                set.nodeParticleSetIndex
+            ]?.native ||
+            this.context.sceneManifest.reachedNodeParticles.sets[
+                system.nodeParticleSetIndex
+            ]?.native
         ) {
             this.context.fail(
                 call,
@@ -1493,7 +1493,7 @@ export class HandleCollections {
             );
         }
         if (
-            this.context.reachedNodeParticles.buffers.some(
+            this.context.sceneManifest.reachedNodeParticles.buffers.some(
                 (buffer) =>
                     buffer.set === set.nodeParticleSetIndex ||
                     buffer.set === system.nodeParticleSetIndex,
@@ -1504,7 +1504,7 @@ export class HandleCollections {
                 "System-list composition cannot follow native frozen particle buffer reads or sprite-sheet assignment; pushed systems share their original buffer identity.",
             );
         }
-        this.context.reachedNodeParticles.steps.push({
+        this.context.sceneManifest.reachedNodeParticles.steps.push({
             op: "push-system",
             set: set.nodeParticleSetIndex,
             fromSet: system.nodeParticleSetIndex,
@@ -1538,7 +1538,7 @@ export class HandleCollections {
         if (callee.name.text !== "push") return undefined;
         const owner = this.context.unwrap(callee.expression);
         if (!ts.isIdentifier(owner)) return undefined;
-        const tuple = this.context.lookupOptional(owner);
+        const tuple = this.context.bindings.lookupOptional(owner);
         if (tuple?.kind !== "tuple" || !tuple.tupleElements) {
             return undefined;
         }
@@ -1600,7 +1600,7 @@ export class HandleCollections {
                     `${pushed.kind} would leave two shapes in one list.`,
             );
         }
-        tuple.tupleElements.push(pushed);
+        writable(tuple.tupleElements).push(pushed);
         return { kind: "void", cpp: "" };
     }
 
@@ -1709,16 +1709,19 @@ export class HandleCollections {
             truthinessCpp: "true",
             engineCpp: context.requireEngine(owner, collection),
         };
-        context.pushScope(context.allocateBlockPrefix());
+        context.bindings.pushScope(context.allocateBlockPrefix());
         try {
-            context.bindLocalValue(predicate.parameters[0]!.name, root);
-            if (context.compileCondition(predicate.body) !== "true")
+            context.bindings.bindLocalValue(
+                predicate.parameters[0]!.name,
+                root,
+            );
+            if (context.conditions.compileCondition(predicate.body) !== "true")
                 return context.fail(
                     predicate.body,
                     "Entity search beyond the synthetic glTF root requires a represented heterogeneous entity collection.",
                 );
         } finally {
-            context.popScope();
+            context.bindings.popScope();
         }
         return root;
     }
@@ -1804,12 +1807,13 @@ export class HandleCollections {
                 );
                 context.expectKind(selected, "material", selector.body);
                 assetPbrMaterial = selected.assetPbrMaterial === true;
-                if (selected.optionalFoundCpp) {
-                    context.emit(`if (${selected.optionalFoundCpp}) {`);
+                const selectedFound = presenceFlagCpp(selected);
+                if (selectedFound) {
+                    context.emit(`if (${selectedFound}) {`);
                     context.increaseIndent();
                 }
-                context.bindLocalValue(predicateParameter, selected);
-                const test = context.compileCondition(
+                context.bindings.bindLocalValue(predicateParameter, selected);
+                const test = context.conditions.compileCondition(
                     predicate.body as ts.Expression,
                 );
                 context.emit(`if (${test}) {`);
@@ -1819,7 +1823,7 @@ export class HandleCollections {
                 context.emit("break;");
                 context.decreaseIndent();
                 context.emit("}");
-                if (selected.optionalFoundCpp) {
+                if (selectedFound) {
                     context.decreaseIndent();
                     context.emit("}");
                 }
@@ -1836,10 +1840,13 @@ export class HandleCollections {
 
     /**
      * The reached recursive `findNode(root, name)` walk over an imported
-     * synthetic root. Native glTF loading has already flattened that root's
-     * renderable descendants into AssetRecord::meshes, in traversal order,
-     * so the DFS result is the first record whose flattened node wrapper or
-     * renderable child has the requested name.
+     * synthetic root. The walk is the pin's DFS over the hierarchy
+     * buildNodeHierarchy builds -- the root, then each node before its child
+     * nodes and then its meshes -- and the document fixes that hierarchy, so
+     * the hit is decided here: a node resolves to the transform node the
+     * loader builds for it, and a mesh to its record. A scene holding an
+     * imported node can move it, so the search reaches the node-carrying
+     * load.
      */
     public compileAssetDescendantNameSearch(
         call: ts.CallExpression,
@@ -1868,14 +1875,38 @@ export class HandleCollections {
                 "Asset descendant name search requires a materialized glTF root.",
             );
         }
-        this.requireUniqueAssetDescendantMatch(root.asset, name, call);
+        const hit = this.assetDescendantHit(root.asset, name, call);
+        this.context.reachFeature("scene:node-transforms", call);
         const engine = this.context.requireEngine(root, call);
+        const asset = recordAt(`${engine}.assets`, root.cpp);
         const result = this.context.allocateTemporaryCppName(
             "asset_descendant_match",
         );
         const found = this.context.allocateTemporaryCppName(
             "asset_descendant_found",
         );
+        if (hit?.kind !== "mesh") {
+            this.context.emit(
+                hit
+                    ? `const ${handleCppType("transform-node")} ${result} = ${asset}.nodes.at(${hit.node});`
+                    : `const ${handleCppType("transform-node")} ${result}{};`,
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const bool",
+                name: found,
+                initializer: hit ? "true" : "false",
+                attributes: "[[maybe_unused]] ",
+            });
+            return {
+                kind: "transform-node",
+                cpp: result,
+                engineCpp: engine,
+                optionalFoundCpp: found,
+            };
+        }
+        // The mesh name is proven unique among the asset's primitives, so
+        // the record carrying it is the DFS hit whatever the table's order.
         const item = this.context.allocateTemporaryCppName(
             "asset_descendant_mesh",
         );
@@ -1888,15 +1919,11 @@ export class HandleCollections {
             attributes: "[[maybe_unused]] ",
         });
         this.context.emit(
-            `for (const ${handleCppType("mesh")} ${item} : ` +
-                `${engine}.assets[${root.cpp}.value].meshes) {`,
+            `for (const ${handleCppType("mesh")} ${item} : ${asset}.meshes) {`,
         );
         this.context.increaseIndent();
         this.context.emit(
-            `if (` +
-                `${engine}.meshes[${item}.value].scene_node_name == ` +
-                `${this.context.cppString(name)} || ` +
-                `${engine}.meshes[${item}.value].name == ` +
+            `if (${recordAt(`${engine}.meshes`, item)}.name == ` +
                 `${this.context.cppString(name)}) {`,
         );
         this.context.increaseIndent();
@@ -1939,7 +1966,7 @@ export class HandleCollections {
         if (
             !declaration ||
             !ts.isFunctionDeclaration(declaration) ||
-            !isAssetSkinnedDescendantSearch(declaration)
+            !isAssetSkinnedDescendantSearch(this.context.checker, declaration)
         ) {
             return undefined;
         }
@@ -1971,10 +1998,12 @@ export class HandleCollections {
         });
         this.context.emit(
             `for (const ${handleCppType("mesh")} ${item} : ` +
-                `${engine}.assets[${root.cpp}.value].meshes) {`,
+                `${recordAt(`${engine}.assets`, root.cpp)}.meshes) {`,
         );
         this.context.increaseIndent();
-        this.context.emit(`if (${engine}.meshes[${item}.value].skinned) {`);
+        this.context.emit(
+            `if (${recordAt(`${engine}.meshes`, item)}.skinned) {`,
+        );
         this.context.increaseIndent();
         this.context.emit(`${result} = ${item};`);
         this.context.emit(`${found} = true;`);
@@ -2026,87 +2055,101 @@ export class HandleCollections {
     }
 
     /**
-     * Proves that the flattened native mesh table can stand for the DFS hit.
-     * A transform-only node has no mesh handle, a multi-primitive node has
-     * several, and two matching records do not prove which hierarchy branch
-     * the source walk reaches first. All three therefore refuse before the
-     * runtime loop is emitted.
+     * The pin's findNode DFS over the hierarchy buildNodeHierarchy builds
+     * from the document: `__root__`, then the scene's root nodes, each node
+     * named `node.name ?? node_<index>` before its child nodes and then its
+     * meshes, each primitive's mesh named `mesh.name || gltf_mesh_<index>` in
+     * extraction order. Undefined when nothing matches. A mesh hit must carry
+     * a name no other primitive does, since its record is found by name.
      */
-    private requireUniqueAssetDescendantMatch(
+    private assetDescendantHit(
         asset: CompileAsset,
         name: string,
         node: ts.Node,
-    ): void {
+    ): { kind: "node"; node: number } | { kind: "mesh" } | undefined {
         const document = this.readAssetDocument(asset, node);
         const nodes = asRecords(document.nodes);
         const meshes = asRecords(document.meshes);
-        let primitiveOrdinal = 0;
-        let matches = 0;
-
-        for (const [nodeIndex, gltfNode] of nodes.entries()) {
-            const authoredNodeName = asString(gltfNode.name);
-            const nodeName = authoredNodeName || `gltf_node_${nodeIndex}`;
-            const meshIndex = asIndex(gltfNode.mesh);
-            if (meshIndex === undefined) {
-                if (nodeName === name) {
-                    this.context.fail(
-                        node,
-                        `Asset '${asset.output}' has a geometry-less node named '${name}'; the flattened native mesh search cannot represent that DFS result.`,
-                    );
-                }
-                continue;
-            }
-
-            const mesh = meshes[meshIndex];
-            if (!mesh) {
-                if (nodeName === name) {
-                    this.context.fail(
-                        node,
-                        `Asset '${asset.output}' names '${name}' on node ${nodeIndex}, whose glTF mesh index ${meshIndex} is invalid.`,
-                    );
-                }
-                continue;
-            }
-            const primitives = asRecords(mesh.primitives);
-            const authoredMeshName = asString(mesh.name);
-            const nodeMatches = nodeName === name;
-            let thisNodeMatches = 0;
-            for (
-                let primitive = 0;
-                primitive < primitives.length;
-                primitive++
-            ) {
-                const meshName =
-                    authoredMeshName || `gltf_mesh_${primitiveOrdinal}`;
-                if (nodeMatches || meshName === name) {
-                    thisNodeMatches++;
-                }
-                primitiveOrdinal++;
-            }
-            if (
-                (nodeMatches || authoredMeshName === name) &&
-                primitives.length === 0
-            ) {
-                this.context.fail(
-                    node,
-                    `Asset '${asset.output}' names '${name}' on a node or mesh with no primitives; the flattened native mesh search cannot represent that DFS result.`,
-                );
-            }
-            if (thisNodeMatches > 1) {
-                this.context.fail(
-                    node,
-                    `Asset '${asset.output}' names '${name}' on a glTF node or mesh with ${thisNodeMatches} primitives; one SceneNode DFS result cannot be represented by several native mesh handles.`,
-                );
-            }
-            matches += thisNodeMatches;
-        }
-
-        if (matches > 1) {
+        if (name === "__root__") {
             this.context.fail(
                 node,
-                `Asset '${asset.output}' resolves '${name}' to ${matches} flattened mesh records; the source DFS's first hierarchy hit is not proven by the flat native table.`,
+                `Asset '${asset.output}': findNode resolving the synthetic root by its own name is not lowered.`,
             );
         }
+        const meshNames = new Map<number, string[]>();
+        const primitiveNames: string[] = [];
+        for (const [nodeIndex, gltfNode] of nodes.entries()) {
+            const meshIndex = asIndex(gltfNode.mesh);
+            if (meshIndex === undefined) continue;
+            const mesh = meshes[meshIndex];
+            if (!mesh) {
+                this.context.fail(
+                    node,
+                    `Asset '${asset.output}' node ${nodeIndex} names an invalid glTF mesh ${meshIndex}.`,
+                );
+            }
+            const authored = asString(mesh.name);
+            // One ordinal per primitive, in node order: extractAllMeshes'.
+            const names: string[] = [];
+            for (const _primitive of asRecords(mesh.primitives)) {
+                const primitiveName =
+                    authored || `gltf_mesh_${primitiveNames.length}`;
+                names.push(primitiveName);
+                primitiveNames.push(primitiveName);
+            }
+            meshNames.set(nodeIndex, names);
+        }
+        // load-gltf.ts: `json.scenes?.[json.scene ?? 0]?.nodes ?? []`.
+        const sceneRoots = asRecords(document.scenes)[
+            asIndex(document.scene) ?? 0
+        ]?.nodes;
+        const roots: unknown[] = Array.isArray(sceneRoots) ? sceneRoots : [];
+        const visit = (
+            index: number,
+            depth: number,
+        ): { kind: "node"; node: number } | { kind: "mesh" } | undefined => {
+            const gltfNode = nodes[index];
+            if (!gltfNode || depth > nodes.length) {
+                this.context.fail(
+                    node,
+                    `Asset '${asset.output}' has an invalid or cyclic node hierarchy.`,
+                );
+            }
+            const authored = gltfNode.name;
+            const nodeName =
+                authored === undefined || authored === null
+                    ? `node_${index}`
+                    : asString(authored);
+            if (nodeName === name) return { kind: "node", node: index };
+            for (const child of Array.isArray(gltfNode.children)
+                ? gltfNode.children
+                : []) {
+                const childIndex = asIndex(child);
+                if (childIndex === undefined) continue;
+                const hit = visit(childIndex, depth + 1);
+                if (hit) return hit;
+            }
+            if ((meshNames.get(index) ?? []).includes(name)) {
+                if (
+                    primitiveNames.filter((primitive) => primitive === name)
+                        .length > 1
+                ) {
+                    this.context.fail(
+                        node,
+                        `Asset '${asset.output}' names several primitives '${name}'; findNode's first one is not found by its name.`,
+                    );
+                }
+                return { kind: "mesh" };
+            }
+            return undefined;
+        };
+        for (const rootNode of roots) {
+            const index = asIndex(rootNode);
+            if (index === undefined) continue;
+            const hit = visit(index, 0);
+            if (hit) return hit;
+        }
+        return undefined;
     }
 
     /** The emitted search loop — the pre-concept lowering, byte for byte. */
@@ -2146,8 +2189,8 @@ export class HandleCollections {
             target,
             predicateParameter,
             (context) => {
-                const item = context.lookup(predicateParameter).cpp;
-                const test = context.compileCondition(
+                const item = context.bindings.lookup(predicateParameter).cpp;
+                const test = context.conditions.compileCondition(
                     predicate.body as ts.Expression,
                 );
                 context.emit(`if (${test}) {`);
@@ -2251,7 +2294,7 @@ export class HandleCollections {
             return resolved.text;
         }
         if (ts.isIdentifier(resolved)) {
-            const value = this.context.lookupOptional(resolved);
+            const value = this.context.bindings.lookupOptional(resolved);
             return value?.kind === "string" ? value.staticString : undefined;
         }
         return undefined;
@@ -2276,9 +2319,7 @@ export class HandleCollections {
                 const thrown = this.context.unwrap(node.expression);
                 const argument =
                     ts.isNewExpression(thrown) &&
-                    ts.isIdentifier(thrown.expression) &&
-                    thrown.expression.text === "Error" &&
-                    this.context.isDefaultLibraryIdentifier(thrown.expression)
+                    this.context.libraryGlobal(thrown.expression) === "Error"
                         ? thrown.arguments?.[0]
                         : undefined;
                 if (argument) {
@@ -2472,7 +2513,7 @@ export class HandleCollections {
     private lookupHandleOperand(expression: ts.Expression): Value | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
-            const value = this.context.lookupOptional(unwrapped);
+            const value = this.context.bindings.lookupOptional(unwrapped);
             if (value) {
                 return handleKinds.includes(value.kind) &&
                     value.animationGroupSource !== "property"
@@ -2634,12 +2675,8 @@ function isAssetDescendantNameSearch(
     const name = declaration.parameters[1]!.name;
     if (!ts.isIdentifier(root) || !ts.isIdentifier(name)) return false;
     if (
-        new EmissionSet([
-            declaration.name.text,
-            root.text,
-            name.text,
-            "undefined",
-        ]).size !== 4
+        new EmissionSet([declaration.name.text, root.text, name.text]).size !==
+        3
     ) {
         return false;
     }
@@ -2679,8 +2716,7 @@ function isAssetDescendantNameSearch(
     if (
         [declaration.name, root, name].some(
             (identifier) => identifier.text === child.text,
-        ) ||
-        child.text === "undefined"
+        )
     ) {
         return false;
     }
@@ -2698,8 +2734,7 @@ function isAssetDescendantNameSearch(
     if (
         [declaration.name, root, name, child].some(
             (identifier) => identifier.text === hit.name.text,
-        ) ||
-        hit.name.text === "undefined"
+        )
     ) {
         return false;
     }
@@ -2731,19 +2766,7 @@ function isAssetDescendantNameSearch(
     if (!ts.isReturnStatement(miss!) || !miss.expression) {
         return false;
     }
-    const missValue = unwrapWalkExpression(miss.expression);
-    return (
-        missValue.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(missValue) &&
-            missValue.text === "undefined" &&
-            checker.getSymbolAtLocation(missValue) ===
-                checker.resolveName(
-                    "undefined",
-                    undefined,
-                    ts.SymbolFlags.Value,
-                    false,
-                ))
-    );
+    return isNullishLiteral(checker, unwrapWalkExpression(miss.expression));
 }
 
 /**
@@ -2768,6 +2791,7 @@ function isAssetDescendantNameSearch(
  * site by the inliner, exactly as the name search's sibling is.
  */
 function isAssetSkinnedDescendantSearch(
+    checker: ts.TypeChecker,
     declaration: ts.FunctionDeclaration,
 ): boolean {
     if (
@@ -2788,10 +2812,7 @@ function isAssetSkinnedDescendantSearch(
         return false;
     }
     const root = declaration.parameters[0]!.name;
-    if (
-        new EmissionSet([declaration.name.text, root.text, "undefined"])
-            .size !== 3
-    ) {
+    if (new EmissionSet([declaration.name.text, root.text]).size !== 2) {
         return false;
     }
     const [alias, selfArm, walk, miss] = declaration.body.statements;
@@ -2805,8 +2826,7 @@ function isAssetSkinnedDescendantSearch(
         !ts.isVariableStatement(alias!) ||
         (alias.declarationList.flags & ts.NodeFlags.Const) === 0 ||
         !isIdentifierRead(aliasDeclaration.initializer, root) ||
-        aliasDeclaration.name.text === declaration.name.text ||
-        aliasDeclaration.name.text === "undefined"
+        aliasDeclaration.name.text === declaration.name.text
     ) {
         return false;
     }
@@ -2859,8 +2879,7 @@ function isAssetSkinnedDescendantSearch(
     if (
         [declaration.name, root, self].some(
             (identifier) => identifier.text === child.text,
-        ) ||
-        child.text === "undefined"
+        )
     ) {
         return false;
     }
@@ -2874,8 +2893,7 @@ function isAssetSkinnedDescendantSearch(
         (loopStatements[0].declarationList.flags & ts.NodeFlags.Const) === 0 ||
         [declaration.name, root, self, child].some(
             (identifier) => identifier.text === hit.name.text,
-        ) ||
-        hit.name.text === "undefined"
+        )
     ) {
         return false;
     }
@@ -2904,11 +2922,7 @@ function isAssetSkinnedDescendantSearch(
     }
 
     if (!ts.isReturnStatement(miss!) || !miss.expression) return false;
-    const missValue = unwrapWalkExpression(miss.expression);
-    return (
-        missValue.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isIdentifier(missValue) && missValue.text === "undefined")
-    );
+    return isNullishLiteral(checker, unwrapWalkExpression(miss.expression));
 }
 
 /**
@@ -3533,13 +3547,13 @@ function isNotNullProbe(
  * `Array.isArray(<parameter>.children)`, through whatever cast the guard
  * writes to reach the property off an `unknown`.
  *
- * `Array` must be the global: a scene binding that name locally would be
- * calling something else entirely, and `lookupOptional` is what says so.
+ * `Array` must be the library global: a scene binding that name itself
+ * would be calling something else entirely.
  */
 function isChildrenArrayProbe(
     expression: ts.Expression,
     parameter: ts.Identifier,
-    isGlobal: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): boolean {
     const current = unwrapWalkExpression(expression);
     if (!ts.isCallExpression(current) || current.arguments.length !== 1) {
@@ -3549,9 +3563,7 @@ function isChildrenArrayProbe(
     if (
         !ts.isPropertyAccessExpression(callee) ||
         callee.name.text !== "isArray" ||
-        !ts.isIdentifier(callee.expression) ||
-        callee.expression.text !== "Array" ||
-        !isGlobal(callee.expression)
+        libraryGlobal(callee.expression) !== "Array"
     ) {
         return false;
     }
@@ -3641,7 +3653,7 @@ function isRenderablePresenceGuard(
  */
 function isChildrenPresenceGuard(
     declaration: ts.FunctionDeclaration,
-    isGlobal: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): boolean {
     const conjunction = typeGuardConjunction(declaration);
     if (!conjunction) return false;
@@ -3655,7 +3667,7 @@ function isChildrenPresenceGuard(
             children = true;
             continue;
         }
-        if (isChildrenArrayProbe(operand, parameter, isGlobal)) {
+        if (isChildrenArrayProbe(operand, parameter, libraryGlobal)) {
             array = true;
             continue;
         }
@@ -3723,7 +3735,7 @@ function guardedBy(
 function isRecursiveMeshFlattenVisitor(
     declaration: ts.FunctionDeclaration,
     resolve: (identifier: ts.Identifier) => ts.FunctionDeclaration | undefined,
-    isGlobal: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
 ): boolean {
     if (
         !declaration.name ||
@@ -3765,7 +3777,7 @@ function isRecursiveMeshFlattenVisitor(
     if (
         !descend ||
         !guardedBy(descend.test, node, resolve, (candidate) =>
-            isChildrenPresenceGuard(candidate, isGlobal),
+            isChildrenPresenceGuard(candidate, libraryGlobal),
         )
     ) {
         return false;

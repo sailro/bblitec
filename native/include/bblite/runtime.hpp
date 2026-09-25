@@ -1,4 +1,20 @@
 #pragma once
+#include <bblite/features/has_animation.hpp>
+#include <bblite/features/has_browser_file.hpp>
+#include <bblite/features/has_camera_gizmos.hpp>
+#include <bblite/features/has_gamepad.hpp>
+#include <bblite/features/has_gizmos.hpp>
+#include <bblite/features/has_light_gizmos.hpp>
+#include <bblite/features/has_picking.hpp>
+#include <bblite/features/has_shadows.hpp>
+#include <bblite/features/has_sprite_animation.hpp>
+#include <bblite/features/has_sprites.hpp>
+#include <bblite/features/has_text.hpp>
+#include <bblite/features/has_ui.hpp>
+#include <bblite/features/shadow_morph_bounds.hpp>
+#include <bblite/features/shadows_csm.hpp>
+#include <bblite/features/workers.hpp>
+
 #include <bblite/checked_handles.hpp>
 #include <bblite/pal_audio_types.hpp>
 #include <bblite/pal_storage_buffer.hpp>
@@ -79,7 +95,6 @@ inline constexpr std::uint32_t invalid_handle = std::numeric_limits<std::uint32_
 inline constexpr std::uint32_t material_family_pbr = 1u << 0;
 inline constexpr std::uint32_t material_family_standard = 1u << 1;
 inline constexpr std::uint32_t material_family_shader = 1u << 2;
-inline constexpr std::uint32_t material_family_grid = 1u << 3;
 
 struct Vec3 {
     float x = 0.0f;
@@ -147,11 +162,13 @@ struct Color3d {
     Color3d(Color3 value) : r(value.r), g(value.g), b(value.b) {}
 };
 
+// A plain value, zero until written: every producer states all four lanes,
+// and the pin's own `clearColor` default is the generated scene factory's.
 struct Color4 {
-    float r = 0.05f;
-    float g = 0.06f;
-    float b = 0.09f;
-    float a = 1.0f;
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+    float a = 0.0f;
 };
 
 struct EngineOptions {
@@ -224,7 +241,7 @@ template <typename Signature> class PlatformEventListeners;
 
 template <typename... Args> class PlatformEventListeners<void(Args...)> {
 public:
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     using Callback = js::Callback<void(Args...)>;
 #else
     using Callback = std::function<void(Args...)>;
@@ -262,7 +279,7 @@ public:
 
     [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
 
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     void add(Callback callback, bool once = false) {
         const auto identity = callback.identity();
         add(identity, std::move(callback), once);
@@ -373,7 +390,7 @@ private:
     std::shared_ptr<BrowserFileRecord> record_;
 };
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 /** Last computed retained-layout box exposed as DOMRect's reached surface. */
 struct UiClientRect {
     double left = 0.0;
@@ -385,11 +402,49 @@ struct UiClientRect {
 
 struct MeshHandle {
     std::uint32_t value = invalid_handle;
+    /**
+     * The slot's `MeshRecord::generation` when this handle was issued. A
+     * retired record's slot is reused by a later mesh under the next
+     * generation, so a handle kept past its mesh's disposal no longer
+     * names the slot's occupant (`mesh_handle_current`).
+     */
+    std::uint32_t generation = 0;
 
     // A handle is an id, so comparing ids is exactly the object
     // identity JavaScript compares meshes by.
     [[nodiscard]] bool operator==(const MeshHandle&) const = default;
 };
+
+/** The (slot, generation) of each mesh whose last table name ended. */
+using ReleasedMeshNames = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+
+/**
+ * An engine table's name for a mesh. The pin's tables hold the Mesh object,
+ * so a mesh `removeFromScene` disposed stays reachable through them and they
+ * keep reading its last state: a shadow generator's caster fit its bounds
+ * and world, a physics body its pose, a gizmo its attached node. Every
+ * table that reads a mesh this way holds a share of one lease per record
+ * (`name_mesh`); a retired record keeps its slot while any share is left,
+ * and the lease's end queues the slot for `reclaim_mesh_names`.
+ */
+struct MeshNameLease {
+    std::weak_ptr<ReleasedMeshNames> released;
+    std::uint32_t slot = invalid_handle;
+    std::uint32_t generation = 0;
+
+    MeshNameLease(std::weak_ptr<ReleasedMeshNames> queue, MeshHandle mesh)
+        : released(std::move(queue)), slot(mesh.value), generation(mesh.generation) {}
+    MeshNameLease(const MeshNameLease&) = delete;
+    MeshNameLease& operator=(const MeshNameLease&) = delete;
+    ~MeshNameLease() {
+        if (const auto queue = released.lock()) {
+            queue->emplace_back(slot, generation);
+        }
+    }
+};
+
+/** One table's share of a mesh's name lease. */
+using MeshName = std::shared_ptr<const MeshNameLease>;
 
 struct MaterialHandle {
     std::uint32_t value = invalid_handle;
@@ -433,12 +488,25 @@ struct CameraHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct TransformNodeLease;
+
 struct TransformNodeHandle {
     std::uint32_t value = invalid_handle;
+    /** The slot's `TransformNodeRecord::generation` when the node was created. */
+    std::uint32_t generation = 0;
+    /**
+     * What keeps the node's record: every copy of a node's handle, in the
+     * program or in an engine table, shares its lease, and the record is
+     * reclaimed once none is left (`TransformNodeLease`).
+     */
+    std::shared_ptr<const TransformNodeLease> lease{};
 
     // The same identity a MeshHandle carries, for the same reason: the
     // parent setter's child registry looks a node up by the id it is.
-    [[nodiscard]] bool operator==(const TransformNodeHandle&) const = default;
+    [[nodiscard]] bool operator==(const TransformNodeHandle& other) const noexcept {
+        return value == other.value && generation == other.generation;
+    }
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(lease); }
 };
 
 /**
@@ -535,7 +603,8 @@ struct VatBake {
  * one record rather than three captured lambdas.
  */
 struct VatHandle {
-    std::uint32_t value = invalid_handle;
+    /** The mesh `attachVat` baked; a kept handle refuses once a later mesh takes its slot. */
+    MeshHandle mesh{};
 };
 
 /**
@@ -590,7 +659,7 @@ struct BillboardSpriteHandle {
 };
 
 /** Which sprite family a frame animation drives. */
-#if !defined(BBLITE_HAS_SPRITE_ANIMATION) || BBLITE_HAS_SPRITE_ANIMATION
+#if BBLITE_HAS_SPRITE_ANIMATION
 #include <bblite/runtime/sprite-animation.hpp>
 #endif
 
@@ -701,7 +770,7 @@ struct BoundingBoxGizmoHandle {
  * and the name, which is all the reached slice reads, is resolved once at
  * pick time rather than re-derived at every read.
  */
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 #include <bblite/runtime/picking-records.hpp>
 #endif
 
@@ -713,13 +782,13 @@ struct BoundingBoxGizmoHandle {
 struct SceneState;
 struct TextRenderableState;
 struct TextLayerState;
-struct TextRendererState;
+struct TextSurface;
 struct TextDataState;
 struct NodeInputState;
 using NodeInputHandle = std::shared_ptr<NodeInputState>;
 struct NodeMaterialInputsState;
 struct NodeMaterialGroupState;
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 struct GpuPickerRecord {
     std::weak_ptr<SceneState> scene;
     bool disposed = false;
@@ -733,17 +802,36 @@ struct GpuPickerRecord {
 };
 
 #endif
-/** One light in a clustered container, at the pin's own resolved defaults. */
+/**
+ * One light in a clustered container: the pin's `ClusteredPointLight`, and
+ * the direction and cone its `ClusteredSpotLight` adds. The factories
+ * resolve every option, so the members carry no defaults of their own.
+ */
 struct ClusteredLight {
     std::array<double, 3> position{};
     std::array<double, 3> diffuse{};
-    double range = 1.0;
-    double intensity = 1.0;
+    double range = 0.0;
+    double intensity = 0.0;
     /** Spot only; a point light leaves the cone unset. */
     std::array<double, 3> direction{};
     double angle = 0.0;
-    bool spot = false;
 };
+
+/**
+ * One `writeDataTexture` the last refresh made: the region of the payload it
+ * covers and its row layout, as the pin's own `queue.writeTexture` states
+ * them, and a count that moves with every write.
+ */
+struct ClusteredTextureWrite {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t bytes_per_row = 0;
+    std::uint32_t rows_per_image = 0;
+    std::uint64_t version = 0;
+};
+
+/** The pin's refresh closure state, generated beside the refresh (clustered_light.hpp). */
+struct ClusteredRefreshState;
 
 /**
  * A clustered light field: a large point/spot set binned into screen tiles
@@ -754,12 +842,16 @@ struct ClusteredLight {
  * its own refresh throws rather than growing either.
  */
 struct ClusteredLightContainer {
-    double horizontal_tiles = 64.0;
-    double vertical_tiles = 64.0;
-    double z_slices = 16.0;
-    std::vector<ClusteredLight> lights;
-    /** Set when any light in the container is a spot. */
+    double horizontal_tiles = 0.0;
+    double vertical_tiles = 0.0;
+    double z_slices = 0.0;
+    /** The pin's two light lists, each in creation order. */
+    std::vector<ClusteredLight> point_lights{};
+    std::vector<ClusteredLight> spot_lights{};
+    /** `_spotSupport`: installed by the first spot light. */
     bool has_spots = false;
+    /** `_version`: bumped by every light the factories add. */
+    double version = 0.0;
 
     std::uint32_t tile_count_x = 1;
     std::uint32_t tile_count_y = 1;
@@ -772,64 +864,28 @@ struct ClusteredLightContainer {
     std::uint32_t slice_rows = 1;
     std::uint32_t mask_rows = 1;
 
-    /** Three texels per light once the container holds a spot. */
-    [[nodiscard]] std::uint32_t stride() const { return has_spots ? 3u : 2u; }
-
-    /** The extent one payload's upload covers. */
-    struct UploadRegion {
-        std::uint32_t width;
-        std::uint32_t height;
-    };
-
-    /**
-     * The pin's own `writeDataTexture` region, so neither backend invents one.
-     *
-     * A payload that fits in a single row is uploaded only as wide as it is
-     * long; past that the rows are full width. Nothing outside the region is
-     * read -- the fragment's `textureLoad` never walks past the active texel
-     * count -- so this is the pin's rule kept rather than a correctness
-     * requirement, and keeping it is what makes a backend's upload comparable
-     * to a browser capture of the same frame.
-     */
-    [[nodiscard]] UploadRegion upload_region(std::uint32_t texels, std::uint32_t rows) const {
-        const std::uint32_t height = std::max(1u, rows);
-        return {
-            height > 1 ? data_texture_width : std::max(1u, std::min(texels, data_texture_width)),
-            height,
-        };
-    }
-
     /** The three data-texture payloads and the params block. */
-    std::vector<float> light_data;
-    std::vector<std::uint32_t> slice_data;
-    std::vector<std::uint32_t> mask_data;
+    std::vector<float> light_data{};
+    std::vector<std::uint32_t> slice_data{};
+    std::vector<std::uint32_t> mask_data{};
     /** Six u32 lanes and two f32 ones: the pin's ArrayBuffer(32), both ways. */
     std::array<std::uint32_t, 8> params{};
-    /** Bumped whenever a refresh rewrote a payload. */
-    std::uint64_t upload_version = 0;
 
     /**
-     * The pin's own dirty key, in the terms this port has for it.
-     *
-     * Upstream compares camera identity, `_cameraChangeKey`, the target
-     * extent and the effective aspect -- four proxies for one question: does
-     * this frame project lights into different tiles than the last did. The
-     * two matrices the cull reads answer it directly, and the light half of
-     * that key folds away because nothing here can mutate a light after
-     * creating it.
+     * The pin's GPU writes, as the backend uploads them: each data texture's
+     * last `writeDataTexture`, and a count of the params block's
+     * `writeBuffer`s (its creation's initial write among them).
      */
-    std::array<float, 16> last_view{};
-    std::array<float, 16> last_proj{};
-    bool binned = false;
-};
+    ClusteredTextureWrite light_write{};
+    ClusteredTextureWrite slice_write{};
+    ClusteredTextureWrite mask_write{};
+    std::uint64_t params_write = 0;
 
-enum class PrimitiveKind {
-    babylon,
-    box,
-    gltf,
-    ground,
-    sphere,
-    torus,
+    /**
+     * The scene's updater: the locals `buildClusteredLightGpuState`'s
+     * refresh closes over, installed once the build returned.
+     */
+    std::shared_ptr<ClusteredRefreshState> refresh{};
 };
 
 enum class CameraKind {
@@ -1018,7 +1074,12 @@ struct RenderTextureRef {
 struct RenderTaskOptions {
     std::string name;
     RenderTargetHandle target{};
-    Color4 clear_color{};
+    /**
+     * `clrColor`, absent when the task named none: the pass then clears to
+     * its scene's live `clearColor`, read at execution
+     * (`att.clearValue = cfg.clrColor ?? sc.clearColor`, render-task-base.ts).
+     */
+    std::optional<Color4> clear_color;
     bool clear = false;
     CameraHandle camera{};
     bool has_camera = false;
@@ -1504,55 +1565,43 @@ struct SolidTexture {
     std::uint64_t identity = 0;
 };
 
+// No initialisers: generation writes every field (`createPbrMaterial` as a
+// full designated literal), including the default of each option the scene
+// omits, so a default written here would be a second copy of a pinned
+// constant nothing checks.
+// A field the emitter forgets is then a compile warning, not a silent value.
 struct PbrMaterialOptions {
-    SolidTexture base_color{};
-    Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
-    bool has_base_color_texture = false;
-    std::shared_ptr<std::vector<double>> source_base_color_factor{};
-    SolidTexture orm{};
-    float metallic_factor = 1.0f;
-    float roughness_factor = 1.0f;
-    float direct_intensity = 1.0f;
-    float environment_intensity = 1.0f;
-    float alpha = 1.0f;
-    bool alpha_blend = false;
-    // Pinned default: the dielectric F0 the PBR material seeds (0.04).
-    float reflectance = 0.04f;
-    bool unlit = false;
-    bool double_sided = false;
-    bool specular_aa = false;
-    bool skybox_mode = false;
-    float transmission_factor = 0.0f;
-    // Pinned default: gltf-ext-dielectric.ts treats ior 1.5 as neutral.
-    float index_of_refraction = 1.5f;
-    float thickness = 0.0f;
-    bool use_thickness_as_depth = false;
-    bool has_volume = false;
-    Color3 attenuation_color{1.0f, 1.0f, 1.0f};
-    float attenuation_distance = 1.0f;
-    float occlusion_strength = 1.0f;
-    float metallic_f0_factor = 1.0f;
-    // The pin's `usePhysicalLightFalloff`, whose default is true: a point or
-    // spot light attenuates by inverse square, and the spot cone by the
-    // physical exponential. False takes the Standard-style linear range and
-    // spot exponent instead. Both arms are composed into every punctual
-    // fragment; this is the lane that selects one (`_writeMaterialData`).
-    bool use_physical_light_falloff = true;
-};
-
-struct GridMaterialOptions {
-    Color3 main_color{0.0f, 0.0f, 0.0f};
-    Color3 line_color{0.0f, 0.5f, 0.5f};
-    float grid_ratio = 1.0f;
-    Vec3 grid_offset{};
-    float major_unit_frequency = 10.0f;
-    float minor_unit_visibility = 0.33f;
-    float opacity = 1.0f;
-    float visibility = 1.0f;
-    bool antialias = true;
-    bool pre_multiply_alpha = false;
-    bool use_max_line = false;
-    bool back_face_culling = true;
+    SolidTexture base_color;
+    Color4 base_color_factor;
+    bool has_base_color_texture;
+    std::shared_ptr<std::vector<double>> source_base_color_factor;
+    SolidTexture orm;
+    float metallic_factor;
+    float roughness_factor;
+    float direct_intensity;
+    float environment_intensity;
+    float alpha;
+    bool alpha_blend;
+    float reflectance;
+    bool unlit;
+    bool double_sided;
+    bool specular_aa;
+    bool skybox_mode;
+    float transmission_factor;
+    float index_of_refraction;
+    float thickness;
+    bool use_thickness_as_depth;
+    bool has_volume;
+    Color3 attenuation_color;
+    float attenuation_distance;
+    float occlusion_strength;
+    float metallic_f0_factor;
+    // The pin's `usePhysicalLightFalloff`: a point or spot light attenuates
+    // by inverse square, and the spot cone by the physical exponential.
+    // False takes the Standard-style linear range and spot exponent instead.
+    // Both arms are composed into every punctual fragment; this is the lane
+    // that selects one (`_writeMaterialData`).
+    bool use_physical_light_falloff;
 };
 
 enum class TextureFilter {
@@ -1867,7 +1916,6 @@ struct ModelVertex {
     Vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
     Vec2 uv{};
     Vec2 uv2{};
-    Vec3 local_position{};
     Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
     std::array<std::uint16_t, 4> joints{};
     Vec4 weights{};
@@ -1884,28 +1932,6 @@ struct LineSystemData {
     std::vector<std::uint32_t> indices;
     std::vector<float> colors;
     std::vector<std::uint32_t> line_point_counts;
-};
-
-/**
- * Which space a geometry's `vertices[].position` lane is already in.
- *
- * `PrimitiveKind` does not answer this — it says whether a mesh has real
- * geometry rather than parametric dimensions, and `createPlane` and
- * `createMeshFromData` both record `gltf` while keeping local vertices.
- * A consumer that needs each vertex's world position has to compose what
- * is missing, so the producer records what it baked:
- *
- * - `local`: the builder's own vertices, with the node transform still on
- *   the `MeshRecord` (every factory mesh).
- * - `world`: the glTF loader's static arm, which multiplied each position
- *   through the mirrored node world before storing it.
- * - `mirrored_local`: the glTF loader's animated and instanced arms, which
- *   apply the RH-to-LH mirror but leave the node matrix for the draw.
- */
-enum class VertexSpace : std::uint8_t {
-    local,
-    world,
-    mirrored_local,
 };
 
 /**
@@ -1933,24 +1959,45 @@ struct MeshPrimitiveState {
     std::optional<bool> clockwise_front_face;
 };
 
+/**
+ * One morph target of `ModelGeometry::morph_positions`/`morph_normals`, read
+ * as the pin's flat `Float32Array` lanes (`deltas[v * 3 + k]`).
+ */
+struct MorphTargetLanes {
+    const std::vector<std::vector<Vec3>>& targets;
+    std::size_t target;
+    [[nodiscard]] float operator[](std::size_t lane) const {
+        const Vec3& delta = targets.at(target).at(lane / 3);
+        switch (lane % 3) {
+        case 0:
+            return delta.x;
+        case 1:
+            return delta.y;
+        default:
+            return delta.z;
+        }
+    }
+};
+
 struct ModelGeometry {
     /** Source procedural streams own one tightly packed allocation. */
     bool owned_packed_geometry = false;
+    /**
+     * The mesh's own local vertex lanes, which the GPU receives unchanged:
+     * a node's world reaches the vertex stage as `mesh.world`, never through
+     * these (`upstream::mesh_world_matrix`).
+     */
     std::vector<ModelVertex> vertices;
-    std::vector<ModelVertex> bind_vertices;
-    // Source NORMAL values for a draw that reads raw local attributes.
-    // Imported bind_vertices may already normalize/mirror them; keep this
-    // optional lane independently, without duplicating the full vertex.
-    std::vector<Vec3> local_normals;
-    /** The loader reversed source triangles for its baked material convention. */
+    /** The loader reversed source triangles for the loaded world's winding. */
     bool source_indices_reversed = false;
     std::vector<std::vector<Vec3>> morph_positions;
+#if BBLITE_SHADOW_MORPH_BOUNDS
     // Each morph target's own delta AABB, filled on first use by the
     // shadow header's ensure_morph_target_ranges and then kept. Upstream
     // this is a WeakMap cache keyed on the mesh and invalidated when its
     // positions or target list change; a geometry's deltas cannot change
-    // once loaded, so there is nothing here to invalidate. Empty in every
-    // scene that never enables morph-target shadows.
+    // once loaded, so there is nothing here to invalidate. Only a scene
+    // that enables morph-target shadows carries it.
     //
     // `mutable` because it is memoization of immutable data and nothing
     // else: the caster collector reads the engine through a const
@@ -1959,10 +2006,10 @@ struct ModelGeometry {
     // differ. The alternative is folding it afresh every frame for every
     // target, which is what the pin's cache exists to avoid.
     mutable std::vector<std::array<Vec3, 2>> morph_bounds;
+#endif
     std::vector<std::vector<Vec3>> morph_normals;
     std::vector<std::vector<Vec3>> morph_tangents;
     std::vector<std::uint32_t> indices;
-    VertexSpace vertex_space = VertexSpace::local;
     MeshTopology topology = MeshTopology::triangles;
     bool has_tangents = false;
     /**
@@ -1978,16 +2025,9 @@ struct ModelGeometry {
      */
     bool has_uvs = true;
     bool has_vertex_colors = false;
-    bool flat_normals = false;
+    /** The object-local box `Mesh.boundMin`/`boundMax` hold. */
     Vec3 bounds_min{};
     Vec3 bounds_max{};
-    // Where the box above sits in the world. A static primitive bakes its
-    // node transform into its vertices, so the two agree; an animated one
-    // keeps local vertices and receives its node matrix per frame, which
-    // leaves `bounds_*` local. Camera framing needs the world box either
-    // way, so the loader records it separately.
-    Vec3 world_bounds_min{};
-    Vec3 world_bounds_max{};
     /** Bumped after each in-place procedural position upload. */
     std::uint64_t position_version = 0;
     /**
@@ -2009,18 +2049,18 @@ template <typename T> void release_storage(std::vector<T>& storage) {
 }
 
 /**
- * Frees every array a retired geometry holds, keeping the slot (bounds,
- * topology, versions) so the handle stays valid. Measured on the voxel
- * sprint: 188 retired chunk geometries held 46.7 MB under the assignment
- * form this replaces.
+ * Frees every array a retired geometry holds, keeping its bounds, topology
+ * and versions for a retired record that still names it. Measured on the
+ * voxel sprint: 188 retired chunk geometries held 46.7 MB under the
+ * assignment form this replaces.
  */
 inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
-    release_storage(geometry.bind_vertices);
-    release_storage(geometry.local_normals);
     geometry.source_indices_reversed = false;
     release_storage(geometry.morph_positions);
+#if BBLITE_SHADOW_MORPH_BOUNDS
     release_storage(geometry.morph_bounds);
+#endif
     release_storage(geometry.morph_normals);
     release_storage(geometry.morph_tangents);
     release_storage(geometry.indices);
@@ -2037,12 +2077,25 @@ inline void release_geometry_storage(ModelGeometry& geometry) {
  * reason: one emitted composition serves both.
  */
 struct TransformNodeRecord {
+    /** Bumped each time `create_transform_node` reuses this slot. */
+    std::uint32_t generation = 0;
+    /** Whether `reclaim_transform_nodes` reclaimed this record. */
+    bool retired = false;
     std::string name;
     Vec3d position{};
     Vec3 rotation{};
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     bool has_rotation_quaternion = false;
     Vec3 scaling{1.0f, 1.0f, 1.0f};
+    /**
+     * `SceneNode._localMatrix`: a glTF `matrix` node's raw local, or the
+     * exact affine local setParent keeps. While set it IS the local
+     * transform and the TRS lanes are ignored; a TRS write clears it unless
+     * `local_matrix_locked` (`_localMatrixLocked`) holds, which only
+     * setParent releases.
+     */
+    std::optional<std::array<float, 16>> local_matrix;
+    bool local_matrix_locked = false;
     /** The node this one hangs under, or none — `IParentable.parent`. */
     TransformNodeHandle parent{};
     /**
@@ -2061,14 +2114,8 @@ struct TransformNodeRecord {
      */
     std::vector<MeshHandle> parented_meshes;
     std::vector<TransformNodeHandle> parented_nodes;
-    /** Bumped by every transform write, which is what re-bakes a child. */
+    /** Bumped by every transform write, which is what a child's world recomposes against. */
     std::uint64_t transform_version = 0;
-};
-
-struct ImportedMeshTrs {
-    Vec3 position{};
-    Vec3 rotation{};
-    Vec3 scaling{1, 1, 1};
 };
 
 struct MeshRecord {
@@ -2085,7 +2132,14 @@ struct MeshRecord {
      * lookup checks this lane before the mesh's independently authored name.
      */
     std::string scene_node_name;
-    PrimitiveKind primitive = PrimitiveKind::box;
+    /**
+     * Whether the producer set the pin's `mesh.boundMin`/`boundMax`:
+     * `createMeshFromData` when its positions fold a finite box, the glTF
+     * loader for every primitive; a .babylon mesh carries neither. The box
+     * itself is the geometry's object-local `bounds_*`; a scene's own writes
+     * ride the overrides.
+     */
+    bool has_bounds = false;
     // The pin holds a node's translation as three JavaScript numbers, and
     // at large-world coordinates the float32 ULP is half a unit -- enough
     // to move a silhouette before the eye-relative subtraction can recover
@@ -2095,7 +2149,6 @@ struct MeshRecord {
     Vec3 rotation{};
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     Vec3 scaling{1.0f, 1.0f, 1.0f};
-    Vec3 dimensions{1.0f, 1.0f, 1.0f};
     // `mesh.receiveShadows`. A composition key for the Standard and PBR
     // families, whose variants carry the sampling code -- and a per-draw
     // VALUE for the node family, whose receiver mixes its factor by the
@@ -2105,6 +2158,8 @@ struct MeshRecord {
     // Scene-code boundMin/boundMax replace the corresponding object-local
     // bound carried by the pinned Mesh. Keep each side optional because the
     // public object permits either property to be assigned independently.
+    // Retirement releases the geometry but not the Mesh's own bounds, so it
+    // moves the geometry's box here (`retire_mesh_record`).
     bool has_bounds_min_override = false;
     bool has_bounds_max_override = false;
     Vec3 bounds_min_override{};
@@ -2127,16 +2182,21 @@ struct MeshRecord {
     /** The world-matrix state's private child registry for dirty pushes. */
     std::vector<MeshHandle> parented_meshes;
     /**
-     * Runtime simulation moves this hierarchy every frame. Its immutable
-     * local vertices stay on the GPU and the renderer supplies the live
-     * world matrix per draw instead of rebaking and re-uploading them.
+     * The world of the scene node this record composes under when that node
+     * has no record of its own: an imported asset's node chain, RH-to-LH
+     * root included (`gltf-parser.ts#computeNodeWorldMatrix`), or a .babylon
+     * mesh's parent nodes. A loader writes it; an animated glTF node's pose
+     * pass rewrites it. Absent for every factory mesh, whose world is its
+     * own TRS under its parents.
      */
-    bool gpu_world_transform = false;
-    /** A static imported mesh restored to its authored local vertex stream. */
-    bool live_imported_transform = false;
-    /** cloneMeshNode starts a fresh world state over the source local attributes. */
+    std::optional<std::array<float, 16>> parent_world;
+    /**
+     * `cloneMeshNode` left the imported hierarchy behind: the clone keeps
+     * its source's local lanes but no longer inherits the root mirror the
+     * loader's index winding was reconciled against, so it draws the
+     * source index order.
+     */
     bool detached_imported_mesh = false;
-    std::optional<ImportedMeshTrs> imported_clone_trs;
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
     std::optional<double> topology_index;
@@ -2151,24 +2211,27 @@ struct MeshRecord {
      * releasing a sharer's geometry twice.
      */
     bool retired = false;
-    // Before renderer startup a clone records the runtime handle of its
-    // source mesh here. The renderer uses that link while assigning stable
-    // creation-order composition rows, then keeps it for clone provenance.
-    std::uint32_t feature_source_mesh = invalid_handle;
-    // Generated shader-feature tables describe only original meshes, in
-    // source creation order. Runtime clone handles can be interleaved with
-    // later imports, so every original receives a stable row and every clone
-    // inherits its source row before the first render plan is built.
+    /** Whether `offer_retired_mesh_slot` offered this retired record's slot. */
+    bool slot_offered = false;
+    /** The lease the tables that name this mesh share (`name_mesh`). */
+    std::weak_ptr<const MeshNameLease> names;
+    /** Bumped each time `store_mesh_record` reuses this slot. */
+    std::uint32_t generation = 0;
+    /**
+     * The generated shader-feature table row this mesh's draws read, which
+     * `store_mesh_record` assigns (`MeshCompositionRows`). A clone copies
+     * its source's record and so keeps its source's row.
+     */
     std::uint32_t composition_feature_row = invalid_handle;
-    // A cloned imported root remains an outer scene-node transform. Unlike
-    // ordinary mesh TRS this is applied by the draw world after deformation,
-    // matching a clone whose mesh retains the source skeleton/morph resource.
+    // An imported root's edit relative to the root the loader composed into
+    // `parent_world`: the loaded root is the pin's `__root__` transform node,
+    // which this port does not keep, so its live TRS rides every record of
+    // the asset and composes on the left of `parent_world`.
     Vec3d outer_position{};
     Vec3d outer_rotation{};
     Vec3d outer_scaling{1, 1, 1};
     Vec4d outer_rotation_quaternion{0, 0, 0, 1};
     bool outer_has_rotation_quaternion = false;
-    float baked_world_scale = 1.0f;
     std::uint64_t transform_version = 0;
     bool has_rotation_quaternion = false;
     bool gpu_deformation = false;
@@ -2192,20 +2255,9 @@ struct MeshRecord {
      */
     bool skinned = false;
     /**
-     * Whether this record's palette came from `createSkeleton` in scene
-     * code rather than from the glTF pose pass.
-     *
-     * The pin composes one thing for both -- `finalWorld = mesh.world *
-     * influence` -- but the loader folds `invMeshWorld` into every palette
-     * entry it writes and leaves the record's TRS at rest, so its draw
-     * passes the identity as `mesh.world`. A scene that writes its own
-     * bone matrices folds nothing: its palette is the bones alone and its
-     * mesh keeps its transform, so the draw passes the record's live world
-     * beside the palette and the CPU vertex bake leaves the vertices
-     * local. Both readers are in `pal_gpu_shared.hpp`.
+     * Whether scene code attached morph targets (`createMorphTargets`):
+     * deformation picking keys its morph projection on the attachment.
      */
-    bool scene_skeleton = false;
-    /** Scene-authored morph deltas and vertices share native local space. */
     bool scene_morph_targets = false;
     bool has_vertex_alpha = false;
     /**
@@ -2234,11 +2286,6 @@ struct MeshRecord {
      * record here; a scene that did would need the per-scene map.
      */
     bool mirrored_seen = false;
-    // Whether the loader stored this mesh's vertices through the native X
-    // mirror. Babylon composes its own vertex stage against unmirrored data and
-    // carries the mirror in the mesh block's world matrix, so a PAL binding
-    // those stages needs the sign to convert between the two.
-    bool mirrored_x = false;
     // Optional Mesh.renderOrder. The pinned renderer supplies its family
     // default only when this field was never assigned.
     bool has_render_order = false;
@@ -2264,27 +2311,6 @@ struct MeshRecord {
      * last streamed, so a still skeleton costs no upload.
      */
     std::uint64_t bone_matrices_version = 0;
-    /**
-     * The animated node's own world matrix, in this port's convention.
-     *
-     * A skinned mesh's transform travels inside its palette, so
-     * `mesh_world_matrix` answers the identity for one and the record's
-     * TRS stays at rest. That is right for every draw -- applying the
-     * transform twice is exactly what `pinned_draw_conventions` avoids --
-     * and wrong for one reader: the pin's detailed pick transforms the
-     * REST normal by `mesh.worldMatrix`, which is this node world and
-     * deliberately NOT the skin. Written by the glTF pose pass only for a
-     * build whose picker draws the deform projection, and read only
-     * there.
-     */
-    std::array<float, 16> deform_node_world{
-        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-    };
-    std::array<float, 16> instance_parent_matrix{
-        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
-    };
     std::vector<std::array<float, 16>> instance_matrices;
     // Thin-instance pool state mirroring the pinned ThinInstanceData:
     // instance_matrices holds the fixed capacity pool, instance_count is
@@ -2316,6 +2342,11 @@ struct MeshRecord {
     // so the flag records the opt-in and keeps its renderable in the pin's
     // live direct-draw path: it does not enable a native compute culler.
     bool thin_instance_gpu_culling = false;
+    // Whether the pin's `_expandWorldBounds` hook is installed: framing and
+    // scene sizing then take `worldMatrix x instanceMatrix x localBounds`
+    // over every instance. `enableThinInstanceWorldBounds` installs it, which
+    // only the glTF GPU-instancing feature calls, on every mesh it instances.
+    bool thin_instance_world_bounds = false;
     // The per-instance RGBA stream `setThinInstanceColors` bound, as the
     // pin's own tightly-packed float4 rows. Empty where the mesh has none.
     std::vector<float> instance_colors;
@@ -2335,20 +2366,32 @@ struct MeshRecord {
     std::uint64_t morph_weights_version = 0;
 };
 
+/**
+ * The generated shader-feature tables' rows, by the meshes a program
+ * stores. The tables list the scene's mesh creation sites in source order;
+ * `store_mesh_record` hands each mesh its row as it is stored, so a row is
+ * one identity whatever slot the mesh takes.
+ *
+ * Without runtime profiles the k-th mesh stored that is not a clone reads
+ * row k. With them (a creation site that runs a generation-unknown number of
+ * times) the program announces the site before its factory runs
+ * (`store_next_mesh_with_profile`) and that mesh reads the site's row
+ * (`profile_rows`), while every other original reads `static_rows[k]` and,
+ * past those, a row after the table (`row_count + k - static_rows.size()`),
+ * which the draw reads as a runtime mesh. `create_engine` installs the
+ * generated rows.
+ */
+struct MeshCompositionRows {
+    std::vector<std::uint32_t> static_rows;
+    std::vector<std::uint32_t> profile_rows;
+    std::uint32_t row_count = 0;
+    /** Originals stored so far, profiled ones excepted. */
+    std::uint32_t originals_stored = 0;
+    std::optional<std::uint32_t> pending_profile;
+};
+
 inline bool has_instance_colors(const MeshRecord& mesh) {
     return mesh.instance_color_source || !mesh.instance_colors.empty();
-}
-
-inline ModelVertex detached_imported_vertex(const MeshRecord& mesh, const ModelGeometry& geometry,
-                                            std::size_t index) {
-    ModelVertex vertex = geometry.bind_vertices.at(index);
-    vertex.position = geometry.vertices.at(index).local_position;
-    if (mesh.primitive == PrimitiveKind::gltf) {
-        vertex.normal.x = -vertex.normal.x;
-        vertex.tangent.x = -vertex.tangent.x;
-        vertex.tangent.w = -vertex.tangent.w;
-    }
-    return vertex;
 }
 
 inline void apply_mesh_bound_overrides(const MeshRecord& mesh, Vec3& minimum, Vec3& maximum) {
@@ -2369,7 +2412,7 @@ inline void apply_mesh_bound_overrides(const MeshRecord& mesh, Vec3& minimum, Ve
 // ---------------------------------------------------------------------------
 
 /** shared/sprite-atlas.ts `SpriteFrame`: UVs in [0,1], size in pixels. */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-atlas-records.hpp>
 #endif
 
@@ -2385,7 +2428,7 @@ enum class DepthCompare {
 };
 
 /** blend-descriptors.ts / sprite-blend.ts, as the pure data they are. */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-blend.hpp>
 #endif
 
@@ -2438,7 +2481,7 @@ struct SplatMeshRecord {
     std::vector<std::vector<std::uint8_t>> sh_textures;
 };
 
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-records.hpp>
 #endif
 
@@ -2484,7 +2527,7 @@ struct EffectRendererOptions {
     Color4 clear_color{};
 };
 
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
 #include <bblite/runtime/animation-records.hpp>
 #endif
 
@@ -2546,7 +2589,9 @@ struct MaterialRecord {
     float emissive_strength = 1.0f;
     Color3 specular_color{1.0f, 1.0f, 1.0f};
     Color3 ambient_color{};
-    float specular_power = 64.0f;
+    // Written by each Standard factory (createStandardMaterial, both .babylon
+    // arms) from the pin's own literal; no other family reads it.
+    float specular_power = 0.0f;
     float diffuse_level = 1.0f;
     float opacity_level = 1.0f;
     float ambient_level = 1.0f;
@@ -2586,12 +2631,14 @@ struct MaterialRecord {
     std::uint32_t diffuse_coord_index = 0;
     std::uint32_t specular_coord_index = 0;
     std::uint32_t ambient_coord_index = 0;
-    float metallic_factor = 1.0f;
-    float roughness_factor = 1.0f;
-    float direct_intensity = 1.0f;
-    float environment_intensity = 1.0f;
-    // Pinned default: the dielectric F0 the PBR material seeds (0.04).
-    float reflectance = 0.04f;
+    // The PBR lanes below carry no initializers: every PBR record is seeded
+    // from the pin's own writer defaults (`pbrMaterialRecordSeedCpp`), then
+    // takes its creation options or its loader's props.
+    float metallic_factor{};
+    float roughness_factor{};
+    float direct_intensity{};
+    float environment_intensity{};
+    float reflectance{};
     // KHR_materials_specular, through the pinned dielectric reflectance ext:
     // specularFactor scales the dielectric F0 and its grazing weight, and
     // specularColorFactor tints the dielectric reflectance. The fragment reads
@@ -2599,41 +2646,44 @@ struct MaterialRecord {
     // composes `dielectricF0 = reflectance * metallicF0Factor`, so the factor
     // is kept apart from the base reflectance rather than folded into it.
     bool has_metallic_reflectance = false;
-    float metallic_f0_factor = 1.0f;
-    float specular_weight = 1.0f;
-    Color3 metallic_reflectance_color{1.0f, 1.0f, 1.0f};
-    float normal_texture_scale = 1.0f;
-    float transmission_factor = 0.0f;
-    // Pinned default: gltf-ext-dielectric.ts treats ior 1.5 as neutral.
-    float index_of_refraction = 1.5f;
-    float thickness = 0.0f;
+    float metallic_f0_factor{};
+    float specular_weight{};
+    Color3 metallic_reflectance_color{};
+    float normal_texture_scale{};
+    float transmission_factor{};
+    float index_of_refraction{};
+    float thickness{};
     bool use_thickness_as_depth = false;
-    Color3 attenuation_color{1.0f, 1.0f, 1.0f};
-    float attenuation_distance = 1.0f;
-    float dispersion = 0.0f;
+    Color3 attenuation_color{};
+    float attenuation_distance{};
+    float dispersion{};
     bool has_subsurface = false;
-    float subsurface_intensity = 1.0f;
-    Color3 subsurface_color{1.0f, 1.0f, 1.0f};
-    Color3 subsurface_diffusion_distance{1.0f, 1.0f, 1.0f};
-    float subsurface_minimum_thickness = 0.0f;
-    float subsurface_maximum_thickness = 1.0f;
-    float clearcoat_intensity = 0.0f;
-    float clearcoat_roughness = 0.0f;
-    // Pinned default: the coat ior the clearcoat layer seeds.
-    float clearcoat_index_of_refraction = 1.5f;
-    float clearcoat_normal_scale = 1.0f;
-    Color3 sheen_color{0.0f, 0.0f, 0.0f};
-    float sheen_roughness = 0.0f;
-    float sheen_intensity = 1.0f;
+    float subsurface_intensity{};
+    Color3 subsurface_color{};
+    Color3 subsurface_diffusion_distance{};
+    float subsurface_minimum_thickness{};
+    float subsurface_maximum_thickness{};
+    // The optional layers, present as the pin's own `isEnabled`: a material
+    // whose `_clearCoat`, `_sheen` or `_iridescence` is absent or disabled
+    // composes and writes no slice for it (each writer's `?.isEnabled`
+    // guard), whatever its lanes hold.
+    bool has_clearcoat = false;
+    float clearcoat_intensity{};
+    float clearcoat_roughness{};
+    float clearcoat_index_of_refraction{};
+    float clearcoat_normal_scale{};
+    bool has_sheen = false;
+    Color3 sheen_color{};
+    float sheen_roughness{};
+    float sheen_intensity{};
     bool shadow_only = false;
     Color3 shadow_only_color{};
-    float shadow_only_opacity = 1.0f;
-    float shadow_only_falloff = 1.0f;
-    // KHR_materials_anisotropy / `setPbrAnisotropy`. The direction is the
-    // pin's own `direction ?? [1, 0]`, written beside the intensity into
+    float shadow_only_opacity{};
+    float shadow_only_falloff{};
+    // KHR_materials_anisotropy / `setPbrAnisotropy`, written into
     // `anisotropyParams` by the extension's own writer.
-    float anisotropy_intensity = 1.0f;
-    Vec2 anisotropy_direction{1.0f, 0.0f};
+    float anisotropy_intensity{};
+    Vec2 anisotropy_direction{};
     bool has_anisotropy = false;
     // `setPbrLightmap`'s intensity multiplier, the one lightmap quantity
     // that is not composed into the fragment: the pin's own
@@ -2645,12 +2695,11 @@ struct MaterialRecord {
     float lightmap_coord_index = 1.0f;
     bool lightmap_shadowmap = false;
     bool lightmap_texture_srgb = false;
-    float iridescence_intensity = 0.0f;
-    // Pinned defaults: KHR_materials_iridescence ior 1.3, thickness
-    // 100..400 nm (gltf-ext-iridescence.ts).
-    float iridescence_index_of_refraction = 1.3f;
-    float iridescence_minimum_thickness = 100.0f;
-    float iridescence_maximum_thickness = 400.0f;
+    bool has_iridescence = false;
+    float iridescence_intensity{};
+    float iridescence_index_of_refraction{};
+    float iridescence_minimum_thickness{};
+    float iridescence_maximum_thickness{};
     bool has_ior = false;
     bool has_volume = false;
     bool skybox_mode = false;
@@ -2658,18 +2707,17 @@ struct MaterialRecord {
     // `usePhysicalLightFalloff`, the pin's own default-true property. The
     // composed punctual arms carry both falloffs and select on the material
     // UBO's `lightFalloffMode`, which `_writeMaterialData` fills from here.
-    bool use_physical_light_falloff = true;
+    bool use_physical_light_falloff = false;
     bool has_occlusion_texture = false;
     // glTF occlusionTexture.strength, which the fragment mixes toward 1. The
     // pin forces its reflectance ext on when this is animated so the mix
     // exists; ours is on the core path, so the value simply rides here.
-    float occlusion_strength = 1.0f;
+    float occlusion_strength{};
     bool unlit = false;
     // setPbrUnlit's optional linear-RGB tint (src/material/pbr/set-unlit.ts).
     // The pin stores it only when the caller supplies one and the writer
-    // reads `_unlitColor ?? [1, 1, 1]`, so an absent tint is the identity
-    // this default already is.
-    Color3 unlit_color{1.0f, 1.0f, 1.0f};
+    // reads `_unlitColor ?? [1, 1, 1]`, which the seed writes.
+    Color3 unlit_color{};
     bool no_color = false;
     /** Original material copied into a no-colour/ESM view. */
     MaterialHandle source_material{};
@@ -2737,7 +2785,6 @@ struct MaterialRecord {
     // family's table the material belongs to.
     bool node_material = false;
     std::shared_ptr<NodeMaterialInputsState> node_inputs;
-    bool grid_material = false;
     bool alpha_to_coverage = false;
     bool shader_alpha_testing = false;
     bool shader_depth_write = true;
@@ -2752,20 +2799,17 @@ struct MaterialRecord {
     std::vector<float> shader_uniform_values;
     /** Storage slots in the shader's declared order. */
     std::vector<StorageBufferHandle> shader_storage_buffers;
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
     /** CSM receiver textures keyed by shader sampler slot. */
     std::vector<ShadowGeneratorHandle> shader_csm_textures;
 #endif
     /** Optional shader material used only by this material's shadow pass. */
     MaterialHandle shadow_caster_material{};
-    Color3 grid_main_color{0.0f, 0.0f, 0.0f};
-    Color3 grid_line_color{0.0f, 0.5f, 0.5f};
-    Vec4 grid_control{1.0f, 10.0f, 0.33f, 1.0f};
-    Vec3 grid_offset{};
-    float grid_visibility = 1.0f;
-    bool grid_antialias = true;
-    bool grid_pre_multiply_alpha = false;
-    bool grid_use_max_line = false;
+    // The mode the factory or loader authored: blend for a PBR `alphaBlend`
+    // (the glTF BLEND arm, the shadow-only extension), a shader or node
+    // graph's own blending; mask for a glTF MASK
+    // cutoff. The live alpha is not folded in: the renderer buckets PBR and
+    // Standard draws from the pin's own `isTransparent` over it.
     MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
     float alpha_cutoff = 0.5f;
     TextureData base_color_texture;
@@ -2853,31 +2897,11 @@ struct MaterialRecord {
 };
 
 inline std::uint32_t material_family_bit(const MaterialRecord& record) {
-    if (record.grid_material)
-        return material_family_grid;
     if (record.shader_material)
         return material_family_shader;
     if (record.standard_material)
         return material_family_standard;
     return material_family_pbr;
-}
-
-// The pin reads `mat.alpha < 1` live when it builds renderables, and the
-// PBR transmission extension forces blending regardless of alpha, so the
-// mode is a derivation of the two factors it is stored beside. One home
-// for that rule: the factor-driven families (Standard, PBR) derive here at
-// creation and at every alpha write; a shader, node, or grid material owns
-// its mode through its variant flag or opacity control instead, and an
-// alpha write leaves it with its factory. A glTF-authored mask mode is
-// alpha-testing, not factor-driven, and likewise stays.
-inline void derive_material_alpha_mode(MaterialRecord& material) {
-    if (material.shader_material || material.node_material || material.grid_material ||
-        material.alpha_mode == MaterialAlphaMode::mask) {
-        return;
-    }
-    material.alpha_mode = material.alpha < 1.0f || material.transmission_factor > 0.0f
-                              ? MaterialAlphaMode::blend
-                              : MaterialAlphaMode::opaque;
 }
 
 struct LightRecord {
@@ -2917,9 +2941,10 @@ struct LightRecord {
     // The meshes this light applies to, as the pinned engine keeps them: an
     // inclusion list wins outright when it is non-empty, otherwise the
     // exclusion list filters. Empty on both means every mesh, which is what
-    // a light created in scene code gets.
-    std::vector<std::uint32_t> included_meshes;
-    std::vector<std::uint32_t> excluded_meshes;
+    // a light created in scene code gets. The pin's removal leaves an entry
+    // in place; its generation matches no later mesh taking the slot.
+    std::vector<MeshHandle> included_meshes;
+    std::vector<MeshHandle> excluded_meshes;
     /**
      * `light.shadowGenerator`. The pin's `ShadowTask` walks `scene.lights`
      * and renders each light's generator, and `standard-renderable.ts`
@@ -2974,25 +2999,32 @@ struct CameraRecord {
     bool limits_installed = false;
     CameraKind kind = CameraKind::arc_rotate;
     Vec3d position{};
-    double alpha = -pi_double / 2.0;
-    double beta = 1.1;
-    double radius = 6.0;
+    // The pose, projection and control scalars below start at zero: the
+    // generated factories write every one their camera kind reads, from the
+    // factory's arguments and the pin's own literal (`createArcRotateCamera`
+    // alpha/beta/radius/target plus its projection and control defaults,
+    // `createFreeCamera` its projection, speed, sensitivity and inertia,
+    // `createGeospatialCamera` its projection). A record no factory built
+    // is not a camera: the pin's no-camera arms are explicit at their use.
+    double alpha = 0.0;
+    double beta = 0.0;
+    double radius = 0.0;
     Vec3d target{};
     Vec3d up_vector{0.0, 1.0, 0.0};
-    double fov = 0.8;
-    double near_plane = 0.1;
-    double far_plane = 1000.0;
-    double inertia = 0.9;
-    double panning_inertia = 0.9;
-    double angular_sensibility = 1000.0;
-    double speed = 2.0;
+    double fov = 0.0;
+    double near_plane = 0.0;
+    double far_plane = 0.0;
+    double inertia = 0.0;
+    double panning_inertia = 0.0;
+    double angular_sensibility = 0.0;
+    double speed = 0.0;
     double free_yaw = 0.0;
     double free_pitch = 0.0;
     double inertial_yaw_offset = 0.0;
     double inertial_pitch_offset = 0.0;
     Vec3d inertial_direction{};
-    double panning_sensibility = 50.0;
-    double wheel_precision = 3.0;
+    double panning_sensibility = 0.0;
+    double wheel_precision = 0.0;
     double inertial_alpha_offset = 0.0;
     double inertial_beta_offset = 0.0;
     double inertial_radius_offset = 0.0;
@@ -3005,6 +3037,13 @@ struct CameraRecord {
     std::optional<double> lower_radius_limit;
     std::optional<double> upper_radius_limit;
     bool controls_enabled = false;
+    /**
+     * The scene `attachControl` pushed the control hook onto: its `_update`
+     * hands the hook `fixedDeltaMs > 0 ? fixedDeltaMs : _currentDelta`, so
+     * the camera advances by that scene's delta. Empty for a control
+     * installed without one, which the pin runs no per-frame hook for.
+     */
+    std::weak_ptr<SceneState> controls_scene;
     std::function<void(CameraRecord&, double, double)> configurable_free_pointer;
     std::function<void(CameraRecord&, double, const std::function<bool(std::string_view)>&)>
         configurable_free_update;
@@ -3067,7 +3106,7 @@ struct AnimationGroupRecord {
     std::uint32_t asset = invalid_handle;
     std::size_t clip = 0;
     /** `AnimationGroup.weight`: what the weighted mixer contributes it at. */
-    float weight = 1.0f;
+    double weight = 1.0;
     std::weak_ptr<PropertyAnimationManagerRecord> animation_owner;
     double duration = 0;
     double frame_rate = 0;
@@ -3185,12 +3224,22 @@ struct AssetRecord {
     Vec4d root_rotation_quaternion{0, 0, 0, 1};
     double root_quaternion_version = 0;
     double root_synced_quaternion_version = -1;
+    /**
+     * The pin's own hierarchy (`buildNodeHierarchy`), carried when scene
+     * code writes imported node transforms: the synthetic `__root__`, whose
+     * TRS is the root edit above, and one transform node per glTF node,
+     * indexed by node, under which each primitive hangs as an identity-TRS
+     * child. Empty otherwise, when the loaded worlds are flattened onto the
+     * meshes and the root edit composes as their outer transform.
+     */
+    TransformNodeHandle root_node{};
+    std::vector<TransformNodeHandle> nodes;
     CameraHandle camera{};
     Color4 clear_color{};
     bool has_camera = false;
     bool has_clear_color = false;
     std::function<void(float)> animation_tick;
-    std::function<void(float)> animation_seek;
+    std::function<void(double)> animation_seek;
     std::shared_ptr<GltfAnimationRuntimeState> source_animation;
     std::function<void(std::size_t, double, bool)> animation_tick_group;
     js::Callback<void(float)> before_render_hook;
@@ -3242,7 +3291,7 @@ struct AssetRecord {
     /** Sets one clip's _stopped, which decides whether a seek reaches it. */
     std::function<void(std::size_t, bool)> set_clip_stopped;
     /** Sets one clip's currentTime in seconds. */
-    std::function<void(std::size_t, float)> set_clip_time;
+    std::function<void(std::size_t, double)> set_clip_time;
     /**
      * Applies one clip at its stored time. The boolean is the pin's own
      * `engine` argument to `goToFrame`: without it a stopped glTF group's
@@ -3265,7 +3314,7 @@ struct AssetRecord {
     /** Sets one clip's loopAnimation, which the weighted mixer reads. */
     std::function<void(std::size_t, bool)> set_clip_loop;
     /** Sets one clip's speedRatio, which its own advance scales by. */
-    std::function<void(std::size_t, float)> set_clip_speed_ratio;
+    std::function<void(std::size_t, double)> set_clip_speed_ratio;
     /**
      * Resolves one clip's AnimationGroupMask against the asset's node names
      * and stores the skip flags the channel walk reads (the pin's own
@@ -3275,7 +3324,7 @@ struct AssetRecord {
     // Marks one clip additive at its reference time (the pin's
     // `group._additive = { referenceTime }`); filled by the generated
     // loader only when the additive mixer is compiled in.
-    std::function<void(std::size_t, float)> set_clip_additive;
+    std::function<void(std::size_t, double)> set_clip_additive;
     /**
      * `AssetContainer.skeletons`: the skeletons the opt-in bone-control
      * chunk built for this file, empty for every other scene.
@@ -3370,11 +3419,11 @@ struct HierarchyInstancePoolRecord {
  * their light-space matrix is fitted with, which is why every consumer that
  * asks about a generator's RESOURCES tests for the ESM arm alone.
  */
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
 #include <bblite/runtime/shadow-records.hpp>
 #endif
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
 enum class UiStyleSelectorKind : std::uint8_t {
     Sequence,
     Class,
@@ -3560,7 +3609,7 @@ struct UiElementRecord {
     std::vector<std::function<void()>> click_callbacks;
     std::unordered_map<std::string, std::vector<std::function<void(const PlatformMouseEvent&)>>>
         event_callbacks;
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
     /** Browser-file state exists only for retained <a>/<input> elements. */
     ObjectUrlHandle download_url{};
     BrowserFileHandle selected_file{};
@@ -3572,7 +3621,7 @@ struct UiElementRecord {
     UiClientRect client_rect{};
     bool client_rect_requested = false;
     std::optional<CanvasState> canvas;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     bool external_gpu_canvas = false;
 #endif
     bool attached_to_root = false;
@@ -3580,7 +3629,7 @@ struct UiElementRecord {
 
 #endif
 
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
 /** One recyclable object-URL slot. Generation prevents stale-handle reuse. */
 struct ObjectUrlRecord {
     std::shared_ptr<const std::vector<std::uint8_t>> bytes;
@@ -3667,7 +3716,7 @@ private:
 };
 #endif
 
-#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
+#if BBLITE_HAS_GIZMOS
 #include <bblite/runtime/gizmo-records.hpp>
 #endif
 
@@ -3748,6 +3797,8 @@ struct EnvironmentIdentity {
 };
 struct DeviceRecoveryRegistration {
     Engine* engine = nullptr;
+    /** `_kind`: the rendering-context kind this strategy recovers. */
+    std::string kind;
     bool disabled = false;
     std::function<void()> on_lost;
     std::function<void()> on_recovered;
@@ -3756,7 +3807,19 @@ struct DeviceRecoveryRegistration {
 
 using MeshMaterialSceneOwners = std::vector<std::weak_ptr<SceneState>>;
 
+/** The (slot, generation) of each transform node whose lease ended. */
+using ReleasedTransformNodes = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+
 struct Engine {
+    /**
+     * Queued by `TransformNodeLease`, released by `reclaim_transform_nodes`.
+     * Declared first so it outlives every table whose handles end a lease
+     * while the engine is torn down.
+     */
+    std::shared_ptr<ReleasedTransformNodes> released_transform_nodes =
+        std::make_shared<ReleasedTransformNodes>();
+    /** Queued by `MeshNameLease`, drained by `reclaim_mesh_names`; declared first for the same reason. */
+    std::shared_ptr<ReleasedMeshNames> released_mesh_names = std::make_shared<ReleasedMeshNames>();
     /** Realm allocations publish a weak owner for APIs reached through scene borrows. */
     std::weak_ptr<Engine> realm_owner;
     std::unordered_map<std::uint32_t, std::shared_ptr<MeshMaterialSceneOwners>>
@@ -3778,7 +3841,7 @@ struct Engine {
     bool device_disposed = false;
     std::uint64_t draw_call_count = 0;
     OwnerLifetime lifetime;
-#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#if BBLITE_WORKERS
     std::shared_ptr<pal::OffscreenRun> offscreen_run;
 #endif
     /** Generated subsystem state; callbacks hold weak references back to it. */
@@ -3860,7 +3923,7 @@ struct Engine {
     PlatformEventListeners<void(const PlatformMouseEvent&)> mouse_move_callbacks;
     PlatformEventListeners<void(const PlatformMouseEvent&)> mouse_wheel_callbacks;
     PlatformEventListeners<void(const PlatformMouseEvent&)> mouse_cancel_callbacks;
-#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
+#if BBLITE_HAS_GAMEPAD
     /** Cached browser property identities; owns no SDL handles. */
     std::shared_ptr<PlatformGamepadState> platform_gamepad_state;
 #endif
@@ -3875,7 +3938,7 @@ struct Engine {
     /** Programmatic focus requested by the source render canvas. */
     bool canvas_focused = false;
     PlatformEventListeners<void(bool)> visibility_change_callbacks;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_HAS_UI
     /** Scene-created DOM after compiler lowering, independent of RmlUi. */
     std::vector<UiElementRecord> ui_elements;
     /** The primary 2D canvas, when this engine is only a platform host. */
@@ -3904,7 +3967,7 @@ struct Engine {
                ui_revision - revision == ui_text_revision - text_revision;
     }
 #endif
-#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#if BBLITE_HAS_BROWSER_FILE
     /** Per-engine Blob URL registry; revoked slots are cleared and recycled. */
     std::vector<ObjectUrlRecord> object_urls;
     std::vector<std::uint32_t> free_object_url_slots;
@@ -3941,23 +4004,30 @@ struct Engine {
     /** One double-precision DOMHighResTimeStamp shared by this RAF turn. */
     double animation_frame_timestamp_ms = 0.0;
     /**
+     * The pin's `eng._currentDelta`: this frame's delta before a scene's own
+     * `fixedDeltaMs` replaces it for that scene's hooks
+     * (`scene_callback_delta`).
+     */
+    double current_delta_ms = 0.0;
+    /**
      * Every animation manager created with this engine
      * (`createAnimationManager({ engine })`). A manager owns animation time
      * for the groups attached to it, so a measured seek has to reach it;
      * registering scenes attach one seeker per manager, the way an asset
      * added to a scene contributes its own.
      */
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
     std::vector<PropertyAnimationManager> animation_managers;
 #endif
     std::vector<MeshRecord> meshes;
+    /** Retired mesh slots `store_mesh_record` reuses (see there). */
+    std::vector<std::uint32_t> free_mesh_slots;
+    MeshCompositionRows mesh_composition_rows;
     // Every source event that changes draw-list membership: the pin's
     // setMeshVisible epoch (only when a flag actually changes), and a
     // culling-enabled thin-instance pool crossing zero active rows. Matrix or
     // count changes within one membership state touch no draw-list storage.
     std::uint64_t draw_list_epoch = 0;
-    /** Whether original meshes and their clones have stable feature rows. */
-    bool composition_feature_rows_initialized = false;
     std::vector<MaterialRecord> materials;
     struct StorageBufferRecord {
         std::vector<std::uint8_t> bytes;
@@ -3977,12 +4047,16 @@ struct Engine {
     std::vector<MaterialHandle> scene_material_slots;
     std::vector<LightRecord> lights;
     std::vector<TransformNodeRecord> transform_nodes;
+    /** Reclaimed transform-node slots `create_transform_node` reuses. */
+    std::vector<std::uint32_t> free_transform_node_slots;
     // Camera controls and render loops keep references to active records while
     // UI callbacks may construct the next mode's cameras. End insertion must
     // therefore preserve those references until the loop observes the scene
     // replacement and restarts.
     std::deque<CameraRecord> cameras;
     std::vector<ModelGeometry> geometries;
+    /** Geometry slots no record names any more (see `store_geometry_record`). */
+    std::vector<std::uint32_t> free_geometry_slots;
     std::vector<std::array<TextureData, 6>> reflection_cubes;
     std::vector<AssetRecord> assets;
     std::vector<HierarchyInstancePoolRecord> hierarchy_instance_pools;
@@ -4018,14 +4092,14 @@ struct Engine {
     double input_replay_pointer_x = 0.0;
     double input_replay_pointer_y = 0.0;
     std::vector<FrameGraphContext*> registered_frame_graph_contexts;
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
 #endif
-#if !defined(BBLITE_HAS_SPRITE_ANIMATION) || BBLITE_HAS_SPRITE_ANIMATION
+#if BBLITE_HAS_SPRITE_ANIMATION
     std::vector<SpriteAnimationManagerRecord> sprite_animation_managers;
 #endif
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<BillboardSystemRecord> billboard_systems;
     std::vector<SpriteRendererRecord> sprite_renderers;
     std::vector<SpriteRenderTextureRecord> sprite_render_textures;
@@ -4041,10 +4115,10 @@ struct Engine {
     std::vector<ClusteredLightContainer> clustered_light_containers;
     std::vector<EffectWrapperRecord> effect_wrappers;
     std::vector<EffectRendererRecord> effect_renderers;
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorRecord> shadow_generators;
 #endif
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
     std::vector<GpuPickerRecord> gpu_pickers;
 #endif
     /**
@@ -4052,10 +4126,14 @@ struct Engine {
      * `registerScene` publishes the address of the scene inside one, and
      * every gizmo follow callback captures it.
      */
-#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
+#if BBLITE_HAS_GIZMOS
     std::vector<std::unique_ptr<UtilityLayerRecord>> utility_layers;
+#if BBLITE_HAS_CAMERA_GIZMOS
     std::vector<CameraGizmoRecord> camera_gizmos;
+#endif
+#if BBLITE_HAS_LIGHT_GIZMOS
     std::vector<LightGizmoRecord> light_gizmos;
+#endif
     std::vector<EditGizmoRecord> edit_gizmos;
     std::weak_ptr<PointerDragDispatcher> canvas_pointer_dispatcher;
     std::vector<BoundingBoxGizmoRecord> bounding_box_gizmos;
@@ -4076,16 +4154,18 @@ struct Engine {
      * candidate collector asks it per mesh and both backends skip their
      * pick sources under it (`pickAsyncImpl`). Null is an unfiltered pick.
      */
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
     using PickFilter = std::function<bool(MeshHandle)>;
     std::function<PickingInfo(GpuPickerHandle, double, double, const PickFilter*)> pick_hook;
 #endif
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
 #endif
-    std::vector<std::shared_ptr<TextRendererState>> registered_text_renderers;
+    // The text half keeps the pin's own list on the text surface the
+    // generated code registers into (`bbl::text_surface`).
+    std::shared_ptr<TextSurface> text_surface;
     // The same list for the effect half; an effect renderer is its own
     // rendering context on the engine exactly as a sprite renderer is.
     std::vector<EffectRendererHandle> registered_effect_renderers;
@@ -4096,7 +4176,7 @@ struct Engine {
      * lazily from inside the enabler, so importing (or here, generating)
      * the extension without using it installs nothing.
      */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     Sprite2DYSortHook sprite_y_sort_hook;
 #endif
     std::uint64_t next_file_texture_identity = 1;
@@ -4108,7 +4188,7 @@ struct Engine {
 inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef reference) {
     if (reference.source != RenderTextureSource::render_target)
         throw std::runtime_error("Stored render textures require a render-target owner.");
-    const auto& target = engine.render_targets.at(reference.target.value);
+    const auto& target = handle_at(engine.render_targets, reference.target);
     if (!target.has_color)
         reference.depth_only = true;
     for (const auto& facade : engine.render_texture_facades) {
@@ -4129,7 +4209,7 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
 }
 
 inline bool has_sprite_renderers(const Engine& engine) {
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     return !engine.registered_sprite_renderers.empty();
 #else
     static_cast<void>(engine);
@@ -4149,7 +4229,11 @@ struct Engine::DeviceRecoveryState {
     GpuTextureIdentity fallback;
     /** The last ordinal `publish_gpu_texture_identity` handed out. */
     std::uint64_t published_textures = 0;
+    /** `_armedDevice`: the generation whose loss the handler recovers, 0 for none. */
+    double armed_device = 0.0;
+    /** `_forceNextLoss`. */
     bool requested = false;
+    /** `_recovering`. */
     bool recovering = false;
     bool resources_ready = false;
     bool disposed = false;
@@ -4189,13 +4273,329 @@ void fail_device_recovery(Engine& engine, const std::string& error);
 void dispose_engine(Engine& engine);
 void register_managed_resource_disposer(Engine& engine, std::function<void()> dispose);
 
+/**
+ * Whether `mesh` still names its slot's occupant: in range and issued for
+ * the record's current generation. A handle kept past its mesh's
+ * retirement fails this once `store_mesh_record` has reused the slot.
+ */
+inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
+    return handle_names_record(engine.meshes, mesh);
+}
+
+/**
+ * The record a table's handle names, or null once a later mesh took the
+ * slot of the disposed mesh it named. The pin keeps writing a disposed mesh
+ * a table still names -- an animation target, a skeleton's palette, a
+ * deformation. While its record is retired but still in its slot, the
+ * write lands on it, and a child or a table that reads it follows; a slot
+ * is reused only once no mesh composes under it and no reader names it
+ * (`offer_retired_mesh_slot`), so a writer that finds no record skips a
+ * write nothing can observe.
+ */
+inline MeshRecord* current_mesh_record(Engine& engine, MeshHandle mesh) {
+    return handle_find(engine.meshes, mesh);
+}
+
+inline const MeshRecord* current_mesh_record(const Engine& engine, MeshHandle mesh) {
+    return handle_find(engine.meshes, mesh);
+}
+
+/** The generated composition-table row a draw of `mesh` reads (`MeshCompositionRows`). */
+inline std::uint32_t composition_feature_mesh(const Engine& engine, MeshHandle mesh) {
+    return handle_at(engine.meshes, mesh).composition_feature_row;
+}
+
+/**
+ * The next mesh `store_mesh_record` stores comes from the runtime creation
+ * site `profile` and reads that site's composition row.
+ */
+inline void store_next_mesh_with_profile(Engine& engine, std::uint32_t profile) {
+    MeshCompositionRows& rows = engine.mesh_composition_rows;
+    if (profile >= rows.profile_rows.size()) {
+        throw std::runtime_error("A runtime mesh names no generated composition profile.");
+    }
+    rows.pending_profile = profile;
+}
+
+/**
+ * The row a mesh stored now reads, per `MeshCompositionRows`: its runtime
+ * creation site's, else the row a clone copied from its source, else the
+ * next original's.
+ */
+inline std::uint32_t stored_mesh_composition_row(Engine& engine, std::uint32_t copied_row) {
+    MeshCompositionRows& rows = engine.mesh_composition_rows;
+    if (const auto profile = std::exchange(rows.pending_profile, std::nullopt)) {
+        return rows.profile_rows[*profile];
+    }
+    if (copied_row != invalid_handle) {
+        return copied_row;
+    }
+    const std::uint32_t original = rows.originals_stored++;
+    const auto static_count = static_cast<std::uint32_t>(rows.static_rows.size());
+    return original < static_count ? rows.static_rows[original]
+                                   : rows.row_count + (original - static_count);
+}
+
+/**
+ * A transform node's liveness. The pin's TransformNode is a JavaScript
+ * object the collector frees once nothing reaches it, and it has no
+ * disposal of its own: removing it from a scene detaches it and nothing
+ * more. So a node's record lives exactly as long as some handle to it
+ * does -- the program's, a mesh's `parent`, another node's `parent` or
+ * `children`, a physics body's, a gizmo's -- and every handle shares this
+ * lease. It is a collected value: its trace names the handles the node's
+ * own record holds (`parent`, `children`, the registry), so a hierarchy
+ * nothing else reaches is freed as a cycle, as JavaScript frees it. The
+ * lease's end queues the record; `reclaim_transform_nodes` releases it at
+ * the next safe point.
+ */
+struct TransformNodeLease {
+    /** The engine, while `engine_alive` says it has not moved or gone. */
+    const Engine* engine = nullptr;
+    std::weak_ptr<const int> engine_alive;
+    std::weak_ptr<ReleasedTransformNodes> released;
+    std::uint32_t slot = invalid_handle;
+    std::uint32_t generation = 0;
+
+    TransformNodeLease(Engine& owner, std::uint32_t node_slot, std::uint32_t node_generation)
+        : engine(&owner), engine_alive(owner.lifetime.token()),
+          released(owner.released_transform_nodes), slot(node_slot), generation(node_generation) {}
+    TransformNodeLease(const TransformNodeLease&) = delete;
+    TransformNodeLease& operator=(const TransformNodeLease&) = delete;
+    ~TransformNodeLease();
+    void gc_trace(const js::TraceVisitor& visitor) const;
+};
+
+inline TransformNodeLease::~TransformNodeLease() {
+    if (const auto queue = released.lock()) {
+        queue->emplace_back(slot, generation);
+    }
+}
+
+inline void TransformNodeLease::gc_trace(const js::TraceVisitor& visitor) const {
+    if (engine_alive.expired() || slot >= engine->transform_nodes.size()) {
+        return;
+    }
+    const TransformNodeRecord& record = engine->transform_nodes[slot];
+    if (record.generation != generation || record.retired) {
+        return;
+    }
+    visitor(record.parent);
+    visitor(record.children);
+    visitor(record.parented_nodes);
+}
+
+/**
+ * Releases the records of the transform nodes whose lease ended: each
+ * drops the handles it held, which may end further leases, and offers its
+ * slot to the next `create_transform_node`. A mesh composing under a node
+ * holds a handle to it, so no live mesh names a released node.
+ */
+inline void reclaim_transform_nodes(Engine& engine) {
+    ReleasedTransformNodes& released = *engine.released_transform_nodes;
+    while (!released.empty()) {
+        const auto [slot, generation] = released.back();
+        released.pop_back();
+        if (slot >= engine.transform_nodes.size()) {
+            continue;
+        }
+        TransformNodeRecord& record = engine.transform_nodes[slot];
+        if (record.generation != generation || record.retired) {
+            continue;
+        }
+        record.retired = true;
+        // Moved out first: destroying the handles can end more leases,
+        // which queue their records while this one is already settled.
+        TransformNodeHandle parent = std::move(record.parent);
+        std::vector<TransformNodeChild> children = std::move(record.children);
+        std::vector<TransformNodeHandle> parented_nodes = std::move(record.parented_nodes);
+        release_storage(record.parented_meshes);
+        record.parent = TransformNodeHandle{};
+        record.children = {};
+        record.parented_nodes = {};
+        std::string().swap(record.name);
+        engine.free_transform_node_slots.push_back(slot);
+    }
+}
+
+/** Stores a new geometry record in a slot no record names any more, or a new one. */
+inline std::uint32_t store_geometry_record(Engine& engine, ModelGeometry geometry) {
+    if (!engine.free_geometry_slots.empty()) {
+        const std::uint32_t slot = engine.free_geometry_slots.back();
+        engine.free_geometry_slots.pop_back();
+        engine.geometries[slot] = std::move(geometry);
+        return slot;
+    }
+    engine.geometries.push_back(std::move(geometry));
+    return static_cast<std::uint32_t>(engine.geometries.size() - 1);
+}
+
+/** Frees the arrays of a geometry its last owner let go, and offers its slot. */
+inline void release_unowned_geometry(Engine& engine, std::uint32_t geometry) {
+    release_geometry_storage(engine.geometries.at(geometry));
+    engine.free_geometry_slots.push_back(geometry);
+}
+
+/**
+ * Offers a retired mesh's slot for reuse once no live mesh composes its
+ * world under it and no table that reads it names it (`name_mesh`). The pin
+ * keeps a disposed parent alive for as long as a child's `parent` names it,
+ * and that child keeps drawing under the parent's last world matrix. A table
+ * that only writes a disposed mesh or compares it (a traversal `children`
+ * list, a loader's asset tables, an animation target, a light's mesh lists)
+ * holds its handle, whose generation tells it apart from the slot's next
+ * occupant: every reader of those writes keeps the slot itself.
+ */
+inline void offer_retired_mesh_slot(Engine& engine, MeshHandle mesh) {
+    MeshRecord* record = handle_find(engine.meshes, mesh);
+    if (record && record->retired && !record->slot_offered && record->parented_meshes.empty() &&
+        record->names.expired()) {
+        record->slot_offered = true;
+        engine.free_mesh_slots.push_back(mesh.value);
+    }
+}
+
+/**
+ * A share of `mesh`'s name lease for a table that keeps reading it after
+ * `removeFromScene` (`MeshNameLease`). A retired mesh named again takes its
+ * slot back if it was offered; one whose slot a later mesh already took
+ * refuses, as every touch through such a kept handle does.
+ */
+inline MeshName name_mesh(Engine& engine, MeshHandle mesh) {
+    MeshRecord& record = handle_at(engine.meshes, mesh);
+    if (MeshName shared = record.names.lock()) {
+        return shared;
+    }
+    if (record.slot_offered) {
+        std::erase(engine.free_mesh_slots, mesh.value);
+        record.slot_offered = false;
+    }
+    MeshName lease = std::make_shared<const MeshNameLease>(engine.released_mesh_names, mesh);
+    record.names = lease;
+    return lease;
+}
+
+inline std::vector<MeshName> name_meshes(Engine& engine, const std::vector<MeshHandle>& meshes) {
+    std::vector<MeshName> names;
+    names.reserve(meshes.size());
+    for (const MeshHandle mesh : meshes) {
+        names.push_back(name_mesh(engine, mesh));
+    }
+    return names;
+}
+
+/** Offers the slots of the retired meshes whose last table name ended. */
+inline void reclaim_mesh_names(Engine& engine) {
+    ReleasedMeshNames& released = *engine.released_mesh_names;
+    while (!released.empty()) {
+        const auto [slot, generation] = released.back();
+        released.pop_back();
+        offer_retired_mesh_slot(engine, MeshHandle{slot, generation});
+    }
+}
+
+/**
+ * Takes `mesh` out of the invalidation registry (`parented_meshes`) of the
+ * parent `record` names, a transform node or a mesh, which is the pin's
+ * `_removeChild` in the parent setter. The traversal `children` lists are
+ * the pin's own arrays and keep their entries.
+ */
+inline void unregister_from_parents(Engine& engine, const MeshRecord& record, MeshHandle mesh) {
+    if (TransformNodeRecord* node = handle_find(engine.transform_nodes, record.transform_parent)) {
+        std::erase(node->parented_meshes, mesh);
+    }
+    if (MeshRecord* parent = handle_find(engine.meshes, record.parent)) {
+        std::erase(parent->parented_meshes, mesh);
+        offer_retired_mesh_slot(engine, record.parent);
+    }
+}
+
+/**
+ * A retired mesh as a new parent: its slot may already be offered, and a
+ * child registered under it would then compose under the slot's next
+ * occupant. The pin allows it -- the child follows the detached object --
+ * and no reached program does it.
+ */
+inline void require_live_mesh_parent(const MeshRecord& parent) {
+    if (parent.retired) {
+        throw std::runtime_error("Mesh '" + parent.name +
+                                 "' was disposed when it left its last scene; parenting a "
+                                 "mesh under it is outside the reached subset.");
+    }
+}
+
+/**
+ * Stores a new mesh record and returns its handle.
+ *
+ * The pin's JavaScript collector frees a disposed mesh once nothing
+ * references it. Here a retired record's slot is offered
+ * (`offer_retired_mesh_slot`) and the next record takes it under the next
+ * generation, so a program that keeps building and retiring meshes holds a
+ * table no larger than the most meshes it held at once. The record takes
+ * its composition row here (`stored_mesh_composition_row`).
+ */
+inline MeshHandle store_mesh_record(Engine& engine, MeshRecord record) {
+    record.composition_feature_row =
+        stored_mesh_composition_row(engine, record.composition_feature_row);
+    // A clone copies its source's record, not the tables naming the source.
+    record.names.reset();
+    reclaim_mesh_names(engine);
+    if (!engine.free_mesh_slots.empty()) {
+        const std::uint32_t slot = engine.free_mesh_slots.back();
+        engine.free_mesh_slots.pop_back();
+        MeshRecord& retired = engine.meshes[slot];
+        record.generation = retired.generation + 1;
+        retired = std::move(record);
+        engine.mesh_material_scenes.erase(slot);
+        return MeshHandle{slot, retired.generation};
+    }
+    record.generation = 0;
+    engine.meshes.push_back(std::move(record));
+    return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1), 0};
+}
+
+/**
+ * `removeFromScene` taking a mesh out of its last scene (`disposeMeshGpu`):
+ * the record is retired and gives up its claim on its geometry, whose
+ * arrays and slot go with the last claim, and its own slot is offered once
+ * no live mesh composes under it and no table reads it
+ * (`offer_retired_mesh_slot`). `disposeMeshGpu` destroys GPU buffers only,
+ * so the Mesh keeps its `boundMin`/`boundMax`: the geometry's box moves
+ * onto the record's own bound lanes for the tables that still read it.
+ */
+inline void retire_mesh_record(Engine& engine, MeshHandle mesh) {
+    MeshRecord& record = handle_at(engine.meshes, mesh);
+    if (record.retired) {
+        return;
+    }
+    record.retired = true;
+    const std::uint32_t geometry = std::exchange(record.geometry, invalid_handle);
+    if (geometry < engine.geometries.size()) {
+        ModelGeometry& shared = engine.geometries[geometry];
+        if (!record.has_bounds_min_override) {
+            record.bounds_min_override = shared.bounds_min;
+            record.has_bounds_min_override = true;
+        }
+        if (!record.has_bounds_max_override) {
+            record.bounds_max_override = shared.bounds_max;
+            record.has_bounds_max_override = true;
+        }
+        if (shared.owners > 1) {
+            --shared.owners;
+        } else {
+            release_unowned_geometry(engine, geometry);
+        }
+    }
+    offer_retired_mesh_slot(engine, mesh);
+}
+
 inline MaterialHandle render_task_mesh_material(const Engine& engine, const RenderTaskMesh& entry) {
-    return entry.follows_material ? engine.meshes.at(entry.mesh.value).material : entry.material;
+    return entry.follows_material ? handle_at(engine.meshes, entry.mesh).material : entry.material;
 }
 
 inline std::vector<MeshHandle> asset_mesh_walk(const Engine& engine, AssetHandle asset,
                                                std::size_t walk_index) {
-    const auto& record = engine.assets.at(asset.value);
+    const auto& record = handle_at(engine.assets, asset);
     if (!record.source_mesh_walks) {
         throw std::runtime_error("Source mesh walk metadata is missing.");
     }
@@ -4243,7 +4643,7 @@ inline void cancel_animation_frame(Engine& engine, std::size_t id) {
     std::erase_if(engine.post_render_animation_frame_once_callbacks, matches);
 }
 
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 inline void PickingInfo::bind_engine(Engine& engine) {
     state->engine = &engine;
     state->engine_lifetime = engine.lifetime.token();
@@ -4271,19 +4671,20 @@ template <typename Data>
 template <typename Data>
 inline void update_storage_buffer(Engine& engine, StorageBufferHandle handle, const Data& data,
                                   double byte_offset) {
-    if (handle.value < engine.storage_buffers.size() && engine.storage_buffers[handle.value].gpu) {
+    Engine::StorageBufferRecord* found = handle_find(engine.storage_buffers, handle);
+    if (found && found->gpu) {
         using Element = typename Data::value_type;
-        engine.storage_buffers[handle.value].gpu->update(
+        found->gpu->update(
             engine, handle.value,
             {reinterpret_cast<const std::uint8_t*>(data.data()), data.size() * sizeof(Element)},
             byte_offset);
         return;
     }
-    if (handle.value >= engine.storage_buffers.size() || !std::isfinite(byte_offset) ||
-        byte_offset < 0.0 || std::floor(byte_offset) != byte_offset) {
+    if (!found || !std::isfinite(byte_offset) || byte_offset < 0.0 ||
+        std::floor(byte_offset) != byte_offset) {
         throw std::runtime_error("Invalid storage-buffer update.");
     }
-    auto& record = engine.storage_buffers[handle.value];
+    auto& record = *found;
     if (record.disposed) {
         throw std::runtime_error("Cannot update a disposed storage buffer.");
     }
@@ -4300,9 +4701,10 @@ inline void update_storage_buffer(Engine& engine, StorageBufferHandle handle, co
 }
 
 inline void dispose_storage_buffer(Engine& engine, StorageBufferHandle handle) {
-    if (handle.value >= engine.storage_buffers.size())
+    Engine::StorageBufferRecord* found = handle_find(engine.storage_buffers, handle);
+    if (!found)
         return;
-    auto& record = engine.storage_buffers[handle.value];
+    auto& record = *found;
     if (record.gpu) {
         record.gpu->dispose(engine, handle.value);
         return;
@@ -4316,16 +4718,13 @@ inline void dispose_storage_buffer(Engine& engine, StorageBufferHandle handle) {
 }
 
 /** Subscribe to the bytes produced by the CSM receiver's own packer. */
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 template <typename Callback>
 [[nodiscard]] inline auto on_csm_receiver_update(Engine& engine, ShadowGeneratorHandle generator,
                                                  Callback callback) {
-    if (generator.value >= engine.shadow_generators.size()) {
-        throw std::runtime_error("Invalid CSM shadow generator.");
-    }
     using Registry = PlatformEventListeners<void(const js::F32Array&)>;
     std::shared_ptr<Registry>& registry =
-        engine.shadow_generators[generator.value].csm_receiver_callbacks;
+        handle_at(engine.shadow_generators, generator).csm_receiver_callbacks;
     if (!registry)
         registry = std::make_shared<Registry>();
     const std::size_t identity = js::next_callback_identity();
@@ -4380,7 +4779,7 @@ inline void project_material_source_colors(MaterialRecord& material) {
 template <typename Array = js::Array<double>>
 [[nodiscard]] js::Nullable<Array> material_color(const Engine& engine, MaterialHandle material,
                                                  MaterialColorSlot slot) {
-    const auto& record = engine.materials.at(material.value);
+    const auto& record = handle_at(engine.materials, material);
     const auto& values = slot == MaterialColorSlot::base_color_factor
                              ? record.source_base_color_factor
                              : record.source_diffuse_color;
@@ -4396,7 +4795,7 @@ inline void set_material_diffuse_color(Engine& engine, MaterialHandle material,
     if (values.size() != 3) {
         throw std::runtime_error("Material diffuseColor requires three numeric channels.");
     }
-    auto& record = engine.materials.at(material.value);
+    auto& record = handle_at(engine.materials, material);
     if (record.source_colors_registered || material_color_has_bound_group(engine, material)) {
         throw std::runtime_error(
             "Replacing a registered material color requires per-group UBO snapshots.");
@@ -4408,7 +4807,7 @@ inline void set_material_diffuse_color(Engine& engine, MaterialHandle material,
 
 [[nodiscard]] inline bool material_texture_present(const Engine& engine, MaterialHandle material,
                                                    MaterialTextureSlot slot) {
-    const MaterialRecord& record = engine.materials.at(material.value);
+    const MaterialRecord& record = handle_at(engine.materials, material);
     if (slot == MaterialTextureSlot::base_color) {
         return !record.standard_material && record.has_public_base_color_texture;
     }
@@ -4423,7 +4822,7 @@ inline void set_material_diffuse_color(Engine& engine, MaterialHandle material,
 material_source_texture(const Engine& engine, MaterialHandle material, MaterialTextureSlot slot) {
     if (!material_texture_present(engine, material, slot))
         return FileTexture{};
-    const MaterialRecord& record = engine.materials.at(material.value);
+    const MaterialRecord& record = handle_at(engine.materials, material);
     if (!record.source_albedo_texture) {
         throw std::runtime_error("This material texture producer has no retained source identity.");
     }
@@ -4439,7 +4838,7 @@ material_source_texture(const Engine& engine, MaterialHandle material, MaterialT
  */
 [[nodiscard]] inline FileTexture material_texture(const Engine& engine, MaterialHandle material,
                                                   MaterialTextureSlot slot) {
-    const MaterialRecord& record = engine.materials.at(material.value);
+    const MaterialRecord& record = handle_at(engine.materials, material);
     FileTexture texture;
     switch (slot) {
     case MaterialTextureSlot::base_color:
@@ -4482,69 +4881,6 @@ material_source_texture(const Engine& engine, MaterialHandle material, MaterialT
     return texture;
 }
 
-/**
- * Finds the topmost visible sprite containing a point in layer-local pixels.
- * Layers and sprites both draw in array order, so picking walks each in the
- * opposite direction. The inverse rotation is pivot-aware through the same
- * normalized coordinates the sprite vertex path uses.
- *
- * `pickSprite2D` asks the optional Y-sort hook for the layer's current draw
- * order first (`pick-sprite-2d.ts`), so a Y-sorted layer is walked in reverse
- * DRAW order and answers with the logical slot that order named. The hook is
- * empty on every layer that never enabled the extension, which is the pin's
- * own `?.drawOrder(layer)` and needs no second detector.
- */
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
-[[nodiscard]] inline std::optional<Sprite2DPickResult>
-pick_sprite_2d(const Engine& engine, const std::vector<Sprite2DLayerHandle>& layers, double x_px,
-               double y_px) {
-    for (auto layer_it = layers.rbegin(); layer_it != layers.rend(); ++layer_it) {
-        if (layer_it->value >= engine.sprite_layers.size()) {
-            continue;
-        }
-        const auto& layer = engine.sprite_layers[layer_it->value];
-        if (!layer.visible) {
-            continue;
-        }
-        // The hook sorts the CPU permutation if a same-frame mutation left
-        // it stale; nothing here packs or touches the GPU.
-        const std::uint32_t* draw_order = engine.sprite_y_sort_hook.draw_order
-                                              ? engine.sprite_y_sort_hook.draw_order(layer)
-                                              : nullptr;
-        const auto stride = static_cast<std::size_t>(layer.instance_floats_per_sprite);
-        for (std::uint32_t sprite = layer.count; sprite > 0; --sprite) {
-            const auto index = draw_order ? draw_order[sprite - 1u] : sprite - 1u;
-            const auto base = static_cast<std::size_t>(index) * stride;
-            if (base + 8u >= layer.instance_data.size()) {
-                continue;
-            }
-            const double width = layer.instance_data[base + 2u];
-            const double height = layer.instance_data[base + 3u];
-            // `pickSprite2D`'s own `sizeX <= 0 || sizeY <= 0`: a sprite
-            // hidden by a non-positive size is skipped, not just an empty
-            // one.
-            if (width <= 0.0 || height <= 0.0) {
-                continue;
-            }
-            const double dx = x_px - layer.instance_data[base];
-            const double dy = y_px - layer.instance_data[base + 1u];
-            const double rotation = layer.instance_data[base + 8u];
-            const double cosine = std::cos(rotation);
-            const double sine = std::sin(rotation);
-            const double local_x = cosine * dx + sine * dy;
-            const double local_y = -sine * dx + cosine * dy;
-            const double u = local_x / width + layer.pivot.x;
-            const double v = local_y / height + layer.pivot.y;
-            if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
-                return Sprite2DPickResult{*layer_it, index, u, v};
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-#endif
-
 inline MaterialHandle remember_scene_material(Engine& engine, std::size_t slot,
                                               MaterialHandle material) {
     if (engine.scene_material_slots.size() <= slot) {
@@ -4581,7 +4917,8 @@ struct EnvironmentState {
     TextureData ground_texture;
     TextureData skybox_texture;
     std::array<TextureData, 6> image_skybox_faces{};
-    float image_skybox_size = 0.0f;
+    // loadSkybox's own `size`, a JavaScript number the box builder reads.
+    double image_skybox_size = 0.0;
     bool has_image_skybox = false;
     bool has_ground = false;
     bool has_skybox = false;
@@ -4599,13 +4936,16 @@ struct EnvironmentState {
     // here. `loadEnvironment` never passes it; only
     // `addDdsEnvironmentBackground` does.
     bool enable_noise = true;
-    float ground_size = 15.0f;
-    float skybox_size = 20.0f;
+    // computeSceneSize's results, kept at the width the pin computes and
+    // hands the background builders in: the geometry and mesh-block writers
+    // round each once, at their own typed-array stores.
+    double ground_size = 15.0;
+    double skybox_size = 20.0;
     std::uint32_t skybox_width = 0;
     std::uint32_t skybox_mip_count = 0;
     std::uint32_t skybox_data_offset = 0;
-    Vec3 ground_position{};
-    Vec3 skybox_position{};
+    Vec3d ground_position{};
+    Vec3d skybox_position{};
     // The pin's own environmentPrimaryColor default literals
     // (load-env.ts: 0.08697355964132344, ..., 0.2122208331110881), stored
     // at the float32 precision the shader uniforms carry.
@@ -4689,22 +5029,22 @@ struct SceneState {
     /** Source shadow scheduler identity, including scenes with no caster passes. */
     std::optional<std::string> shadow_task_name;
     /** Shadow generators retired only after a replacement rebuild succeeds. */
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorHandle> pending_shadow_retirements;
 #endif
     std::vector<AnimationGroupHandle> animation_groups;
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<BillboardSystemHandle> billboard_systems;
 #endif
     // sprite-scene.ts: depth-enabled 2D layers are scene renderables and
     // therefore share this scene's colour, multisample and depth targets.
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<Sprite2DLayerHandle> depth_hosted_sprite_layers;
 #endif
     // `loadSplat` registers the renderable on the scene it is handed, the
     // way `attachGaussianSplattingMesh` pushes into `_renderables`.
     std::vector<SplatMeshHandle> splat_meshes;
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if BBLITE_HAS_TEXT
     /** Retained text is populated only by the reached text attachment adapter. */
     std::vector<std::shared_ptr<TextRenderableState>> text_renderables;
 #endif
@@ -4730,13 +5070,13 @@ struct SceneState {
     js::Callback<void()> flow_graph_dispose;
     bool flow_graph_pointer_refresh = false;
     std::function<void()> flow_graph_pointer_cleanup;
-    std::vector<js::Callback<void(float)>> animation_seekers;
+    std::vector<js::Callback<void(double)>> animation_seekers;
     /**
      * Whether this scene already contributed the seeker that reaches the
      * engine's animation managers. Registration is idempotent upstream,
      * so the contribution is too.
      */
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
     bool seeks_animation_managers = false;
 #endif
     /** The same, for the baked meshes this scene's registration reaches. */
@@ -4785,6 +5125,9 @@ struct SceneState {
         visitor(disposables);
         visitor(animation_seekers);
         visitor(deferred_builders);
+#if BBLITE_HAS_TEXT
+        visitor(text_renderables);
+#endif
     }
 };
 
@@ -4809,11 +5152,11 @@ struct Scene {
     std::vector<MeshHandle>& meshes;
     std::vector<LightHandle>& lights;
     std::vector<TaskHandle>& tasks;
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
     std::vector<ShadowGeneratorHandle>& pending_shadow_retirements;
 #endif
     std::vector<AnimationGroupHandle>& animation_groups;
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
     std::vector<BillboardSystemHandle>& billboard_systems;
     std::vector<Sprite2DLayerHandle>& depth_hosted_sprite_layers;
 #endif
@@ -4821,8 +5164,8 @@ struct Scene {
     ClusteredLightContainerHandle& clustered_lights;
     SnapshotList<js::Callback<void(float)>>& before_render;
     std::vector<js::Callback<void()>>& disposables;
-    std::vector<js::Callback<void(float)>>& animation_seekers;
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+    std::vector<js::Callback<void(double)>>& animation_seekers;
+#if BBLITE_HAS_ANIMATION
     bool& seeks_animation_managers;
 #endif
     bool& seeks_vat;
@@ -4882,18 +5225,18 @@ private:
           disposed(state->disposed), mirrored_meshes(state->mirrored_meshes),
           clear_color(state->clear_color), camera(state->camera), meshes(state->meshes),
           lights(state->lights), tasks(state->tasks),
-#if !defined(BBLITE_HAS_SHADOWS) || BBLITE_HAS_SHADOWS
+#if BBLITE_HAS_SHADOWS
           pending_shadow_retirements(state->pending_shadow_retirements),
 #endif
           animation_groups(state->animation_groups),
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
           billboard_systems(state->billboard_systems),
           depth_hosted_sprite_layers(state->depth_hosted_sprite_layers),
 #endif
           splat_meshes(state->splat_meshes), clustered_lights(state->clustered_lights),
           before_render(state->before_render), disposables(state->disposables),
           animation_seekers(state->animation_seekers),
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
           seeks_animation_managers(state->seeks_animation_managers),
 #endif
           seeks_vat(state->seeks_vat), deferred_builders(state->deferred_builders),
@@ -4918,8 +5261,8 @@ static_assert(std::is_nothrow_move_constructible_v<Scene>);
         [&](const std::shared_ptr<Scene>& scene) {
             return scene &&
                    std::any_of(scene->meshes.begin(), scene->meshes.end(), [&](MeshHandle mesh) {
-                       return mesh.value < engine.meshes.size() &&
-                              engine.meshes[mesh.value].material.value == material.value;
+                       const MeshRecord* record = handle_find(engine.meshes, mesh);
+                       return record && record->material.value == material.value;
                    });
         });
 }
@@ -4937,7 +5280,7 @@ inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uin
  * scene beneath them. Held by pointer-stable storage because the scene's
  * address is what `registerScene` publishes.
  */
-#if !defined(BBLITE_HAS_GIZMOS) || BBLITE_HAS_GIZMOS
+#if BBLITE_HAS_GIZMOS
 #include <bblite/runtime/gizmo-scene.hpp>
 #endif
 
@@ -4948,13 +5291,14 @@ struct FrameGraphContext {
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(updates); }
 };
 
-// No member defaults: generation fills every field from the pin's own
-// factory defaults, so a second copy here could only drift. (The same
-// holds for SphereOptions and TorusOptions below.)
+// No factory defaults: generation fills every field from the pin's own
+// factory defaults, so a second copy here could only drift; the scalars
+// only value-initialize. (The same holds for SphereOptions and TorusOptions
+// below.)
 struct GroundOptions {
-    double width;
-    double height;
-    std::uint32_t subdivisions;
+    double width{};
+    double height{};
+    std::uint32_t subdivisions{};
     Vec2 uv_scale;
 };
 
@@ -5155,7 +5499,7 @@ struct EnvironmentOptions {
     std::string environment_url;
     std::string ground_texture_url;
     std::string skybox_url;
-    float skybox_size = 1000.0f;
+    double skybox_size = 1000.0;
     std::string brdf_url;
     // A skybox URL naming the .env itself asks for the environment's own
     // cubemap rather than a separate DDS, which is the pinned loader's
@@ -5174,8 +5518,8 @@ struct HdrEnvironmentOptions {
     std::string environment_url;
     std::string brdf_url;
     bool use_cubemap_skybox = false;
-    float skybox_size = 0.0f;
-    Vec3 skybox_position{};
+    double skybox_size = 0.0;
+    Vec3d skybox_position{};
 };
 
 // src/material/pbr/background-dds-environment.ts: the DDS skybox and the
@@ -5185,7 +5529,7 @@ struct HdrEnvironmentOptions {
 struct DdsEnvironmentBackgroundOptions {
     std::string ground_texture_url;
     std::string skybox_url;
-    float skybox_size = 0.0f;
+    double skybox_size = 0.0;
     bool enable_noise = true;
 };
 
@@ -5291,20 +5635,15 @@ void set_thin_instance_colors(Engine& engine, MeshHandle mesh, const js::F32Arra
 void set_thin_instance_color(Engine& engine, MeshHandle mesh, double index, double r, double g,
                              double b, double a);
 void set_thin_instance_cull_bounds_pad(Engine& engine, MeshHandle mesh, double pad);
-/** Restore a baked imported mesh's local pivot before replacing its rotation. */
-void prepare_imported_mesh_quaternion_write(Engine& engine, MeshHandle mesh);
 /**
- * Mark a mesh's baked transform dirty, including every mesh whose world
- * matrix depends on it through setParent.
+ * Mark a mesh's transform dirty, including every mesh whose world matrix
+ * depends on it through setParent.
  */
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh);
-/** Keep a runtime-moving mesh subtree local and publish its draw world. */
-void mark_mesh_runtime_transform(Engine& engine, MeshHandle mesh);
 /** The same one level up, recursing into both of a node's child arms. */
-void mark_transform_node_runtime_transform(Engine& engine, TransformNodeHandle node);
-/** Install a mesh quaternion in the coordinate basis its vertices use. */
-void set_mesh_rotation_quaternion(Engine& engine, MeshHandle mesh, Vec4 quaternion,
-                                  bool runtime_transform);
+void mark_transform_node_dirty(Engine& engine, TransformNodeHandle node);
+/** Install a mesh quaternion as its rotation source of truth. */
+void set_mesh_rotation_quaternion(Engine& engine, MeshHandle mesh, Vec4 quaternion);
 void flatten_line_attributes(const std::vector<std::vector<Vec3>>& lines,
                              const std::vector<std::vector<Vec4>>& colors, std::size_t vertex_count,
                              std::vector<float>& positions, std::vector<float>& out_colors,
@@ -5348,7 +5687,6 @@ void add_dds_environment_background(Scene& scene, DdsEnvironmentBackgroundOption
 void load_hdr_environment(Scene& scene, HdrEnvironmentOptions options);
 void load_dds_environment(Scene& scene, DdsEnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
-MaterialHandle create_grid_material(Engine& engine, GridMaterialOptions options);
 MaterialHandle create_shader_material(Engine& engine, std::uint32_t variant);
 /**
  * One texture a scene handed `parseNodeMaterialFromSnippet` through its
@@ -5395,7 +5733,7 @@ void set_shader_texture(Engine& engine, MaterialHandle material, std::uint32_t s
                         FileTexture texture);
 void set_shader_storage_buffer(Engine& engine, MaterialHandle material, std::uint32_t slot,
                                StorageBufferHandle buffer);
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 void set_shader_csm_texture(Engine& engine, MaterialHandle material, std::uint32_t slot,
                             ShadowGeneratorHandle generator);
 #endif
@@ -5528,18 +5866,15 @@ void set_directional_light_direction(Engine& engine, LightHandle light, Vec3 dir
 // src/scene/transform-node.ts createTransformNode: a SceneNode with the
 // pinned factory's own TRS defaults. Its setters take the same shape the
 // light vector setters take -- the field write plus the version bump a
-// child re-bakes against -- because upstream both are ObservableVec3 writes
+// child's world recomposes against -- because upstream both are ObservableVec3 writes
 // on a node whose world matrix is lazily recomposed.
 TransformNodeHandle create_transform_node(Engine& engine, std::string name, Vec3d position,
                                           Vec4 rotation_quaternion, Vec3 scaling);
-void set_transform_node_position(Engine& engine, TransformNodeHandle node, Vec3d position,
-                                 bool runtime_transform = false);
-void set_transform_node_scaling(Engine& engine, TransformNodeHandle node, Vec3 scaling,
-                                bool runtime_transform = false);
-void set_transform_node_rotation(Engine& engine, TransformNodeHandle node, Vec3 rotation,
-                                 bool runtime_transform = false);
-void set_transform_node_rotation_quaternion(Engine& engine, TransformNodeHandle node, Vec4 rotation,
-                                            bool runtime_transform = false);
+void set_transform_node_position(Engine& engine, TransformNodeHandle node, Vec3d position);
+void set_transform_node_scaling(Engine& engine, TransformNodeHandle node, Vec3 scaling);
+void set_transform_node_rotation(Engine& engine, TransformNodeHandle node, Vec3 rotation);
+void set_transform_node_rotation_quaternion(Engine& engine, TransformNodeHandle node,
+                                            Vec4 rotation);
 // `child.parent = node` drives the transform math; `node.children.push`
 // only fills the traversal list. Upstream keeps them apart in exactly this
 // way, so each is its own entry point.
@@ -5567,7 +5902,7 @@ void push_mesh_child(Engine& engine, MeshHandle mesh, MeshHandle child);
 // `transform_node_world` already composes the chain, and
 // `mark_transform_node_dirty` already recurses into `parented_nodes`; this
 // is the write that fills that list, so a node moved under a parent
-// re-bakes the meshes beneath it.
+// dirties the meshes beneath it.
 void set_transform_node_parent(Engine& engine, TransformNodeHandle node,
                                TransformNodeHandle parent);
 void push_transform_node_child(Engine& engine, TransformNodeHandle node, MeshHandle child);
@@ -5695,11 +6030,14 @@ void add_task_at_start(FrameGraphContext& context, TaskHandle task);
  * perspective volume before any float store).
  */
 struct PcfSpotShadowOptions {
-    std::uint32_t map_size = 512;
-    double bias = 0.0;
-    double darkness = 0.0;
-    double near_plane = 1.0;
-    double far_plane = 10000.0;
+    // No initialisers, for the reason `PcfDirectionalShadowOptions` gives:
+    // generation writes every field from the factory's own `??` chain
+    // (the `bbl::upstream::pcf_spot_*` constants) or what the scene passed.
+    std::uint32_t map_size;
+    double bias;
+    double darkness;
+    double near_plane;
+    double far_plane;
 };
 
 /**
@@ -5710,27 +6048,29 @@ struct PcfSpotShadowOptions {
  * disagreed with the deployed shader would be a silent fork.
  */
 struct EsmDirectionalShadowOptions {
-    std::uint32_t map_size = 1024;
-    double depth_scale = 50.0;
-    double bias = 0.00005;
-    std::uint32_t blur_kernel = 1;
-    std::uint32_t blur_scale = 2;
-    double darkness = 0.0;
-    double frustum_edge_falloff = 0.0;
-    double ortho_min_z = 1.0;
-    double ortho_max_z = 10000.0;
+    // No initialisers: every field is written from the factory's own `??`
+    // (`bbl::upstream::esm_default_*`) or what the scene passed.
+    std::uint32_t map_size;
+    double depth_scale;
+    double bias;
+    std::uint32_t blur_kernel;
+    std::uint32_t blur_scale;
+    double darkness;
+    double frustum_edge_falloff;
+    double ortho_min_z;
+    double ortho_max_z;
     /**
      * `cfg.forceRefreshEveryFrame ?? false`: disables the pinned
      * render-gate so the map re-renders every frame (break-meshes, whose
      * physics-driven pieces the map must track).
      */
-    bool force_refresh_every_frame = false;
+    bool force_refresh_every_frame;
     /**
      * Which row of the generated resource table is this generator's.
      * Generation composed one row per ESM factory call, in reach order, so
      * the ordinal is a compile-time value like the three above it.
      */
-    std::uint32_t esm_index = 0;
+    std::uint32_t esm_index;
 };
 
 /**
@@ -5769,21 +6109,21 @@ struct PcfDirectionalShadowOptions {
  * block read them. `stabilizeCascades` and `worldSpaceBias` are the two
  * arms this port does not build and refuse by name at generation.
  */
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 struct CsmDirectionalShadowOptions {
-    // No initialisers, for the reason above: every field is written from
-    // the factory's own `??`.
-    std::uint32_t map_size;
-    std::uint32_t csm_num_cascades;
-    double csm_lambda;
-    double csm_cascade_blend_percentage;
+    // No factory defaults, for the reason above: every field is written
+    // from the factory's own `??`; the scalars only value-initialize.
+    std::uint32_t map_size{};
+    std::uint32_t csm_num_cascades{};
+    double csm_lambda{};
+    double csm_cascade_blend_percentage{};
     /** `cfg.shadowMaxZ ?? null`, resolved against the camera's far plane. */
     std::optional<double> csm_shadow_max_z;
-    double bias;
-    double darkness;
-    double frustum_edge_falloff;
+    double bias{};
+    double darkness{};
+    double frustum_edge_falloff{};
     /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */
-    bool force_refresh_every_frame;
+    bool force_refresh_every_frame{};
 };
 #endif
 
@@ -5793,13 +6133,15 @@ ShadowGeneratorHandle create_esm_directional_shadow_generator(Engine& engine, Li
                                                               EsmDirectionalShadowOptions options);
 ShadowGeneratorHandle create_pcf_directional_shadow_generator(Engine& engine, LightHandle light,
                                                               PcfDirectionalShadowOptions options);
-#if defined(BBLITE_SHADOWS_CSM) && BBLITE_SHADOWS_CSM
+#if BBLITE_SHADOWS_CSM
 ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, LightHandle light,
                                                               CsmDirectionalShadowOptions options);
 #endif
 void set_shadow_task_caster_meshes(Engine& engine, ShadowGeneratorHandle generator,
                                    std::vector<MeshHandle> caster_meshes);
+#if BBLITE_SHADOW_MORPH_BOUNDS
 void enable_morph_target_shadows(Engine& engine, ShadowGeneratorHandle generator);
+#endif
 void add_render_task_mesh(Engine& engine, TaskHandle task, MeshHandle mesh, MaterialHandle material,
                           bool material_override = true);
 void enable_render_task_mesh_refresh(Engine& engine, TaskHandle task);
@@ -5833,23 +6175,18 @@ Vec3d scene_node_position(Engine& engine, const SceneNodeHandle& node);
 Vec3 scene_node_rotation(Engine& engine, const SceneNodeHandle& node);
 Vec3 scene_node_scaling(Engine& engine, const SceneNodeHandle& node);
 Vec4 scene_node_rotation_quaternion(Engine& engine, const SceneNodeHandle& node);
-void set_scene_node_position(Engine& engine, const SceneNodeHandle& node, Vec3d value,
-                             bool runtime_transform);
-void set_scene_node_rotation(Engine& engine, const SceneNodeHandle& node, Vec3 value,
-                             bool runtime_transform);
-void set_scene_node_scaling(Engine& engine, const SceneNodeHandle& node, Vec3 value,
-                            bool runtime_transform);
-void set_scene_node_rotation_quaternion(Engine& engine, const SceneNodeHandle& node, Vec4 value,
-                                        bool runtime_transform);
+void set_scene_node_position(Engine& engine, const SceneNodeHandle& node, Vec3d value);
+void set_scene_node_rotation(Engine& engine, const SceneNodeHandle& node, Vec3 value);
+void set_scene_node_scaling(Engine& engine, const SceneNodeHandle& node, Vec3 value);
+void set_scene_node_rotation_quaternion(Engine& engine, const SceneNodeHandle& node, Vec4 value);
 void set_scene_node_position_component(Engine& engine, const SceneNodeHandle& node,
-                                       std::size_t component, double value, bool runtime_transform);
+                                       std::size_t component, double value);
 void set_scene_node_rotation_component(Engine& engine, const SceneNodeHandle& node,
-                                       std::size_t component, float value, bool runtime_transform);
+                                       std::size_t component, float value);
 void set_scene_node_scaling_component(Engine& engine, const SceneNodeHandle& node,
-                                      std::size_t component, float value, bool runtime_transform);
+                                      std::size_t component, float value);
 void set_scene_node_rotation_quaternion_component(Engine& engine, const SceneNodeHandle& node,
-                                                  std::size_t component, float value,
-                                                  bool runtime_transform);
+                                                  std::size_t component, float value);
 void remove_from_scene(Scene& scene, MeshHandle mesh);
 void remove_from_scene(Scene& scene, LightHandle light);
 void on_before_render(Scene& scene, js::Callback<void(float)> callback);
@@ -5894,11 +6231,11 @@ void exit_pointer_lock(Engine& engine);
 void on_visibility_change(Engine& engine, std::size_t identity, std::function<void(bool)> callback,
                           bool once = false);
 void off_visibility_change(Engine& engine, std::size_t identity);
-#if !defined(BBLITE_HAS_ANIMATION) || BBLITE_HAS_ANIMATION
+#if BBLITE_HAS_ANIMATION
 #include <bblite/runtime/animation-api.hpp>
 #endif
-void set_animation_weight(Engine& engine, AnimationGroupHandle group, float weight);
-void go_to_frame(Engine& engine, AnimationGroupHandle group, float frame, bool with_engine);
+void set_animation_weight(Engine& engine, AnimationGroupHandle group, double weight);
+void go_to_frame(Engine& engine, AnimationGroupHandle group, double frame, bool with_engine);
 void play_animation(Engine& engine, AnimationGroupHandle group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);
 void stop_animation(Engine& engine, AnimationGroupHandle group);
@@ -5918,32 +6255,32 @@ VatClipRow vat_clip_row(Engine& engine, VatBake baked, const std::string& clip);
 // This port's deterministic-pose entry point for a baked mesh, standing
 // for the frozen `play(clip, {offset: round(t*60), fps: 0})` the browser
 // harness drives scene 218 into through its ?seekTime query.
-void seek_vat(Engine& engine, float seconds);
+void seek_vat(Engine& engine, double seconds);
 void set_animation_loop(Engine& engine, AnimationGroupHandle group, bool loop);
-void set_animation_speed_ratio(Engine& engine, AnimationGroupHandle group, float speed_ratio);
+void set_animation_speed_ratio(Engine& engine, AnimationGroupHandle group, double speed_ratio);
 void set_animation_mask(Engine& engine, AnimationGroupHandle group,
                         const std::vector<std::string>& names, bool include);
-void set_animation_current_time(Engine& engine, AnimationGroupHandle group, float time);
-void set_animation_additive(Engine& engine, AnimationGroupHandle group, float reference_time);
+void set_animation_current_time(Engine& engine, AnimationGroupHandle group, double time);
+void set_animation_additive(Engine& engine, AnimationGroupHandle group, double reference_time);
 void set_animation_additive_from_frame(Engine& engine, AnimationGroupHandle group,
-                                       float reference_frame);
-void attach_control(Engine& engine, CameraHandle camera);
+                                       double reference_frame);
+void attach_control(Engine& engine, CameraHandle camera, const Scene& scene);
 void write_camera_scalar(CameraRecord& camera, double CameraRecord::* field, double value);
 void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::* vector,
                                    double Vec3d::* component, double value);
 void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::* vector, Vec3d value);
 void set_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
                        const std::array<double, 6>& limits);
-void attach_free_control(Engine& engine, CameraHandle camera);
+void attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene);
 struct ConfigurableFreeControlOptions {
     std::optional<std::vector<std::string>> upKeys;
     std::optional<std::vector<std::string>> downKeys;
     std::optional<std::vector<std::string>> fastKeys;
     std::optional<double> fastMultiplier;
 };
-void attach_configurable_free_control(Engine& engine, CameraHandle camera,
+void attach_configurable_free_control(Engine& engine, CameraHandle camera, const Scene& scene,
                                       ConfigurableFreeControlOptions options);
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-options.hpp>
 #endif
 
@@ -5970,7 +6307,7 @@ SplatMeshHandle load_sog(Scene& scene, const std::string& path);
 // resets its TRS. Defined by the generated splat bake, which a scene reaches
 // through `bakeCurrentTransformIntoVertices`.
 void bake_current_transform_into_vertices(Engine& engine, SplatMeshHandle splat);
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 #include <bblite/runtime/sprite-api.hpp>
 #endif
 
@@ -6001,7 +6338,7 @@ void update_pixels_texture(Engine& engine, PixelsTexture& texture, const js::U8A
 PixelsTexture create_texture_2d_from_pixels(Engine& engine, const js::U8Array& pixels, double width,
                                             double height, PixelsTextureOptions options = {});
 
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 double add_sprite_2d_index(Engine& engine, Sprite2DLayerHandle layer, Sprite2DProps props);
 void update_sprite_2d_index(Engine& engine, Sprite2DLayerHandle layer, double index,
                             Sprite2DProps props);
@@ -6019,7 +6356,7 @@ void update_sprite_2d_id(Engine& engine, Sprite2DLayerHandle layer, std::uint32_
  * also what the state's own live reads are keyed by here.
  */
 Sprite2DLayerHandle enable_sprite_2d_y_sort(Engine& engine, Sprite2DLayerHandle layer,
-                                            double default_bias);
+                                            std::optional<double> default_bias);
 bool sprite_2d_y_sort_enabled(const Engine& engine, Sprite2DLayerHandle layer);
 void set_sprite_2d_y_sort_bias_id(Engine& engine, Sprite2DLayerHandle layer,
                                   std::uint32_t sprite_id, double bias);
@@ -6038,7 +6375,7 @@ EffectRendererHandle create_effect_renderer(Engine& engine, EffectWrapperHandle 
                                             EffectRendererOptions options);
 void register_effect_renderer(Engine& engine, EffectRendererHandle renderer);
 TaskHandle create_effect_render_task(Engine& engine, EffectTaskOptions options);
-#if !defined(BBLITE_HAS_SPRITES) || BBLITE_HAS_SPRITES
+#if BBLITE_HAS_SPRITES
 SpriteRendererHandle create_sprite_renderer(Engine& engine, SpriteRendererOptions options);
 void add_sprite_renderer_layer(Engine& engine, SpriteRendererHandle renderer,
                                Sprite2DLayerHandle layer);
@@ -6081,7 +6418,7 @@ std::optional<bool> run_pbr_rebuild_transaction(Scene& scene, const std::vector<
 void set_mesh_material(Engine& engine, MeshHandle mesh, MaterialHandle material);
 void mark_mesh_renderable_dirty(Engine& engine, MeshHandle mesh);
 void set_pbr_gamma_albedo(Engine& engine, MaterialHandle material);
-void load_image_skybox(Scene& scene, std::array<std::string, 6> face_paths, float size);
+void load_image_skybox(Scene& scene, std::array<std::string, 6> face_paths, double size);
 void set_scene_fog(Scene& scene, float mode, float density, float start, float end, Color3 color);
 void set_scene_clip_plane(Scene& scene, Vec4 plane);
 void start_engine(Engine& engine);
@@ -6110,6 +6447,8 @@ void clear_interval(Engine& engine, double id);
 void set_mesh_parent(Engine& engine, MeshHandle child, MeshHandle parent);
 void set_mesh_parent(Engine& engine, MeshHandle child, TransformNodeHandle parent);
 void set_asset_root_parent(Engine& engine, AssetHandle child, TransformNodeHandle parent);
+/** The same setParent over a transform-node child; none detaches it. */
+void reparent_transform_node(Engine& engine, TransformNodeHandle child, TransformNodeHandle parent);
 /** src/scene/visibility.ts setMeshVisible cascade. */
 void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
 [[nodiscard]] std::vector<float> mesh_cpu_positions(const Engine& engine, MeshHandle mesh);
@@ -6121,7 +6460,7 @@ void set_mesh_visible(Engine& engine, MeshHandle mesh, bool visible);
 [[nodiscard]] js::Array<double> mesh_bound_min_array(const Engine& engine, MeshHandle mesh);
 [[nodiscard]] js::Array<double> mesh_bound_max_array(const Engine& engine, MeshHandle mesh);
 
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 /** `createGpuPicker(scene)`. */
 GpuPickerHandle create_gpu_picker(Scene& scene);
 /** `PickingInfo.pickedMesh.name`, read where the scene asks for it. */
@@ -6166,7 +6505,7 @@ bool gltf_node_visible(const Engine& engine, AssetHandle asset, std::size_t node
 void set_gltf_node_visible(Engine& engine, AssetHandle asset, std::size_t node, bool visible);
 TextureTransform& gltf_base_color_transform(Engine& engine, AssetHandle asset,
                                             std::size_t material);
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 /**
  * `enableDetailedPicking(picker)`. Emitted with the detailed half; every
  * later pick on this picker draws the third attachment.
@@ -6205,7 +6544,7 @@ void run_interval_callbacks(Engine& engine);
 
 } // namespace bbl
 
-#if !defined(BBLITE_HAS_PICKING) || BBLITE_HAS_PICKING
+#if BBLITE_HAS_PICKING
 template <> struct std::hash<bbl::PickingInfo> {
     [[nodiscard]] std::size_t operator()(const bbl::PickingInfo& info) const noexcept {
         return std::hash<const void*>{}(info.state.get());

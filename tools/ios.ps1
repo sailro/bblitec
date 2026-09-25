@@ -16,7 +16,6 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'bblite-tools.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'package-output.psm1') -Force
 if (-not $IsMacOS) { throw 'iOS builds require macOS and a full Xcode installation.' }
 if (-not $Backend) { $Backend = if ($Sdk -eq 'iphonesimulator') { 'DAWN' } else { 'SDL_GPU' } }
 if ($Sdk -eq 'iphonesimulator' -and $Backend -ne 'DAWN') {
@@ -117,15 +116,13 @@ try {
             }
         )
         if ($MinSize) {
-            $inputs = @("$PSScriptRoot/build-sdl-min.ps1", "$PSScriptRoot/patches/sdl-static-no-dynapi.patch") +
-                @(Get-ChildItem "$root/native/vcpkg-overlay-ports/sdl3" -Filter '*.patch' -File | ForEach-Object FullName)
+            $inputs = Get-DependencyInputs sdl3 @('trimmed')
             Build-DependencyArtifact 'SDL iOS trimmed' $sdl $dependencyIdentity ($dependencyInputs + $inputs) @('lib/libSDL3.a', 'lib/cmake/SDL3/SDL3Config.cmake', 'bblite-sdl-features.cmake', 'provenance.json', 'LICENSE.txt') {
                 & "$PSScriptRoot/build-sdl-min.ps1" -IosSdk $Sdk -EnableAudio:$audioReached -EnableGamepad:$gamepadReached -Jobs $Jobs -CMake $cmake
             }
         }
         if ('ui:rml' -in $features) {
-            $inputs = @("$root/upstream/rmlui.json", "$PSScriptRoot/build-rmlui.ps1", "$PSScriptRoot/package-output.psm1", "$root/native/apply-rmlui-patch.cmake") +
-                @(Get-ChildItem "$root/native/patches" -Filter 'rmlui-*.patch' -File | ForEach-Object FullName) +
+            $inputs = @(Get-DependencyInputs rmlui) +
                 @(@('freetype', 'boost-charconv') + $(if (-not $MinSize -or $svgReached) { @('lunasvg') } else { @() }) |
                     ForEach-Object { "$installed/$triplet/share/$_/vcpkg_abi_info.txt" })
             Build-DependencyArtifact 'RmlUi iOS' $rmlui $dependencyIdentity ($dependencyInputs + $inputs) @('lib/librmlui.a', 'lib/cmake/RmlUi/RmlUiConfig.cmake', 'bblite-rmlui-features.cmake', 'include/RmlUi/Core.h', 'Backends/RmlUi_Platform_SDL.cpp', 'RmlUi-LICENSE.txt') {
@@ -133,7 +130,7 @@ try {
             }
         }
         if ('audio:engine' -in $features) {
-            $inputs = @("$root/upstream/labsound.json", "$PSScriptRoot/build-labsound.ps1", "$PSScriptRoot/patches/labsound-lazy-decoders.patch", "$PSScriptRoot/patches/labsound-core-only.patch")
+            $inputs = Get-DependencyInputs labsound @('core-only')
             $required = @('lib/libLabSound.a', 'include/LabSound/LabSound.h', 'bblite-labsound-features.cmake', 'LabSound-LICENSE.txt', 'LabSound-COPYING.txt')
             if (-not $MinSize -or $audioDecoded) {
                 $required += @('lib/liblibnyquist.a', 'include/libnyquist/Decoders.h', 'libnyquist-LICENSE.txt', 'libnyquist-COPYING.txt')
@@ -143,8 +140,8 @@ try {
             }
         }
         if ($Backend -ne 'SDL_GPU') {
-            $inputs = @("$root/upstream/tint.json", "$PSScriptRoot/build-dawn.ps1", "$PSScriptRoot/patches/dawn-metal-sdk-compat.patch", "$PSScriptRoot/patches/dawn-metal-primitive-index.patch", "$PSScriptRoot/patches/dawn-metal-simulator-capabilities.patch")
-            Build-DependencyArtifact 'Dawn iOS' $dawn $dependencyIdentity ($dependencyInputs + $inputs) @('lib/libwebgpu_dawn.a', 'lib/cmake/Dawn/DawnConfig.cmake', 'include/webgpu/webgpu.h', 'provenance.json', 'LICENSE.txt') {
+            $inputs = Get-DependencyInputs dawn @('metal', 'ios')
+            Build-DependencyArtifact 'Dawn iOS' $dawn $dependencyIdentity ($dependencyInputs + $inputs) @('lib/libwebgpu_dawn.a', 'lib/cmake/Dawn/DawnConfig.cmake', 'include/webgpu/webgpu.h', 'bblite-dawn-features.cmake', 'provenance.json', 'LICENSE.txt') {
                 & "$PSScriptRoot/build-dawn.ps1" -IosSdk $Sdk -IosArchitecture $Architecture -OutputDirectory $dawn -Jobs $Jobs -CMake $cmake
             }
         }
@@ -165,23 +162,13 @@ try {
     Invoke-Checked $cmake $configure
     Invoke-Checked $cmake @('--build', $build, '--parallel', "$Jobs")
     $bundle = "$staging/bblite-$id.app"
-    Assert-PackageChild $staging $bundle
+    Assert-ContainedPath $staging $bundle
     if (Test-Path -LiteralPath $bundle) { Remove-Item -LiteralPath $bundle -Recurse -Force }
     Copy-Item "$build/bblite_native.app" $bundle -Recurse
-    $licenses = "$bundle/licenses"
-    New-Item -ItemType Directory -Force $licenses | Out-Null
-    Get-ChildItem "$installed/$triplet/share" -Filter copyright -Recurse -File | ForEach-Object {
-        Copy-Item $_.FullName (Join-Path $licenses "$($_.Directory.Name).txt")
-    }
-    Copy-Item "$root/node_modules/@babylonjs/lite/LICENSE" "$licenses/Babylon-Lite.txt"
-    if ('ui:rml' -in $features) {
-        Copy-Item "$rmlui/RmlUi-LICENSE.txt" $licenses
-        foreach ($notice in @('Skia', 'Chromium')) { Copy-Item "$root/native/notices/$notice.txt" $licenses }
-    }
-    if ('audio:engine' -in $features) {
-        Get-ChildItem $labsound -File | Where-Object { $_.Name -match '-(LICENSE|COPYING)\.txt$' } | Copy-Item -Destination $licenses
-    }
-    if ($Backend -ne 'SDL_GPU') { Copy-Item "$dawn/LICENSE.txt" "$licenses/Dawn.txt" }
+    # The notices of what this build links: the trimmed SDL's own for -MinSize
+    # (src/package-notices.ts, shared with every platform).
+    Invoke-Checked 'node' @('dist/src/package-notices.js', '--build-directory', $build, '--platform', 'ios',
+        '--output', "$bundle/licenses", '--cmake', $cmake)
     if ($Sdk -eq 'iphonesimulator') {
         Invoke-Checked 'codesign' @('--force', '--sign', '-', $bundle)
         Invoke-Checked 'codesign' @('--verify', '--strict', $bundle)

@@ -286,6 +286,7 @@ test(
             "/MD",
             "/O2",
             "/Gy",
+            "/DBBLITE_HAS_PICKING=1",
             "/I",
             "native/include",
             "/I",

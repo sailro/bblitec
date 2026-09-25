@@ -1,0 +1,67 @@
+Add an HLSL writer option ordering the position builtin first in entry point
+input and output structures. SDL_GPU compiles each stage alone, and D3D12
+links a fragment that reads a prefix of a vertex stage's locations only when
+the position occupies the same leading signature register in both.
+
+--- a/src/tint/lang/hlsl/writer/common/options.h
++++ b/src/tint/lang/hlsl/writer/common/options.h
+@@ -217,6 +217,11 @@ struct Options {
+     /// Set to `true` to run truncate interstage variables during the shader IO transform.
+     bool truncate_interstage_variables = false;
+ 
++    /// Set to `true` to order the position builtin before every other member of the entry point
++    /// input and output structures, so a fragment stage reading a prefix of a vertex stage's
++    /// locations links against it without the stages being compiled together.
++    bool position_first_interstage = false;
++
+     /// Set to `true` to disable the polyfills on integer division and modulo.
+     bool disable_polyfill_integer_div_mod = false;
+ 
+@@ -283,6 +288,7 @@ struct Options {
+                  disable_integer_range_analysis,
+                  disable_workgroup_init,
+                  truncate_interstage_variables,
++                 position_first_interstage,
+                  disable_polyfill_integer_div_mod,
+                  workarounds,
+                  extensions,
+--- a/src/tint/lang/hlsl/writer/raise/raise.cc
++++ b/src/tint/lang/hlsl/writer/raise/raise.cc
+@@ -284,6 +284,7 @@ Result<SuccessType> Raise(core::ir::Module& module, const Options& options) {
+             .first_index_offset_binding = options.root_constant_binding_point,
+             .add_input_position_member = pixel_local_enabled,
+             .truncate_interstage_variables = options.truncate_interstage_variables,
++            .position_first = options.position_first_interstage,
+             .interstage_locations = std::move(options.interstage_locations),
+             .first_index_offset = options.first_index_offset,
+             .first_instance_offset = options.first_instance_offset,
+--- a/src/tint/lang/hlsl/writer/raise/shader_io.cc
++++ b/src/tint/lang/hlsl/writer/raise/shader_io.cc
+@@ -180,6 +180,15 @@ struct StateImpl : core::ir::transform::ShaderIOBackendState {
+     /// @param y another struct member
+     /// @returns true if a comes before b
+     bool StructMemberComparator(const MemberInfo& x, const MemberInfo& y) {
++        if (config.position_first) {
++            const bool x_position = x.member.attributes.builtin == core::BuiltinValue::kPosition;
++            const bool y_position = y.member.attributes.builtin == core::BuiltinValue::kPosition;
++            if (x_position != y_position) {
++                // The position goes first.
++                return x_position;
++            }
++        }
++
+         if (x.member.attributes.color.has_value() && y.member.attributes.color.has_value() &&
+             x.member.attributes.color != y.member.attributes.color) {
+             // Both have color attributes: smallest goes first.
+--- a/src/tint/lang/hlsl/writer/raise/shader_io.h
++++ b/src/tint/lang/hlsl/writer/raise/shader_io.h
+@@ -65,6 +65,9 @@ struct ShaderIOConfig {
+     /// Set to `true` to truncate location variables not found in `interstage_locations`
+     bool truncate_interstage_variables = false;
+ 
++    /// Set to `true` to order the position builtin before every other member.
++    bool position_first = false;
++
+     /// Indicate which interstage io locations are actually used by the later stage.
+     /// There can be at most 30 user defined interstage variables with locations.
+     std::bitset<30> interstage_locations{};

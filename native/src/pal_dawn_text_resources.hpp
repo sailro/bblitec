@@ -38,7 +38,7 @@ template <class Handle, auto Release, auto Destroy = nullptr> struct DawnTextLea
                 Destroy(handle);
         }
         if (!destroyed && capture_id)
-            owner->capture.destroy(capture_id);
+            owner->capture.release(capture_id);
         destroyed = true;
     }
     void retire() noexcept {
@@ -58,9 +58,7 @@ using DawnTextTextureLease = DawnTextLease<WGPUTexture, wgpuTextureRelease, wgpu
 using DawnTextViewLease = DawnTextLease<WGPUTextureView, wgpuTextureViewRelease>;
 using DawnTextGroupLease = DawnTextLease<WGPUBindGroup, wgpuBindGroupRelease>;
 using DawnTextLayoutLease = DawnTextLease<WGPUBindGroupLayout, wgpuBindGroupLayoutRelease>;
-struct DawnTextPipelineLease : DawnTextLease<WGPURenderPipeline, wgpuRenderPipelineRelease> {
-    TextGpuDrawCapture capture;
-};
+using DawnTextPipelineLease = DawnTextLease<WGPURenderPipeline, wgpuRenderPipelineRelease>;
 
 template <class Lease, class Handle>
 std::shared_ptr<Lease> retain_dawn_text_resource(const std::shared_ptr<DawnTextDevice>& owner,
@@ -78,276 +76,277 @@ std::shared_ptr<Lease> retain_dawn_text_resource(const std::shared_ptr<DawnTextD
     return lease;
 }
 
-struct DawnTextBuffer {
+/** `GPUBuffer`. */
+struct DawnTextGpuBuffer final : TextGpuObject {
     std::shared_ptr<DawnTextBufferLease> lease;
-    std::size_t bytes = 0;
+    void destroy() override { lease->destroy(); }
 };
-struct DawnTextTexture {
+/** `GPUTextureView`: one per `createView()`, as the pin creates them. */
+struct DawnTextGpuView final : TextGpuObject {
+    std::shared_ptr<DawnTextViewLease> lease;
+    /** The texture the view reads, kept alive by the view as WebGPU does. */
     std::shared_ptr<DawnTextTextureLease> texture;
-    std::shared_ptr<DawnTextViewLease> view;
+    /** A swapchain or capture target the frame owns. */
+    WGPUTextureView target = nullptr;
+    WGPUTextureView get() const { return lease ? lease->get() : target; }
 };
-struct DawnTextRenderableResources {
-    DawnTextBuffer uniform, instances, styles;
+/** `GPUTexture`. */
+struct DawnTextGpuTexture final : TextGpuObject {
+    std::shared_ptr<DawnTextTextureLease> lease;
+    void destroy() override { lease->destroy(); }
+    TextGpuHandle create_view() override {
+        auto view = std::make_shared<DawnTextGpuView>();
+        view->texture = lease;
+        view->lease = retain_dawn_text_resource<DawnTextViewLease>(
+            lease->owner, create_dawn_texture_view(lease->get(), nullptr), "texture-view");
+        return view;
+    }
 };
-struct DawnTextAtlasResources {
-    DawnTextTexture curves, bands;
-    DawnTextBuffer metadata;
-};
-using DawnTextBindingRole = TextBindingRole;
-struct DawnTextBinding {
-    std::uint32_t binding = 0;
-    DawnTextBindingRole role = DawnTextBindingRole::uniform;
-};
-struct DawnTextLayout {
+/** `GPUBindGroupLayout`, with the composed shader's binding roles. */
+struct DawnTextGpuLayout final : TextGpuObject {
     std::shared_ptr<DawnTextLayoutLease> layout;
-    std::vector<DawnTextBinding> bindings;
+    std::vector<std::pair<std::uint32_t, TextBindingRole>> bindings;
 };
-struct DawnTextGroup {
+/** `GPUBindGroup`, holding what it binds. */
+struct DawnTextGpuGroup final : TextGpuObject {
     std::shared_ptr<DawnTextGroupLease> group;
-    // Keep exactly the resources captured by the data-owned bind group.
-    DawnTextBuffer uniform, styles, metadata;
-    DawnTextTexture curves, bands;
+    std::vector<TextGpuHandle> resources;
     std::vector<TextGpuBindingCapture> bindings;
 };
+/** `GPURenderPipeline`. */
+struct DawnTextGpuPipeline final : TextGpuObject {
+    std::shared_ptr<DawnTextPipelineLease> pipeline;
+    TextGpuDrawCapture capture;
+};
 
-inline DawnTextBuffer& dawn_text_buffer(DawnTextRenderableResources& resources,
-                                        TextBufferKind kind) {
-    switch (kind) {
-    case TextBufferKind::uniform:
-        return resources.uniform;
-    case TextBufferKind::instances:
-        return resources.instances;
-    case TextBufferKind::styles:
-        return resources.styles;
-    }
-    throw std::runtime_error("Unknown text buffer role.");
+template <class Object> std::shared_ptr<Object> dawn_text_object(const TextGpuHandle& handle) {
+    auto object = std::dynamic_pointer_cast<Object>(handle);
+    if (!object)
+        throw std::runtime_error("Text GPU object belongs to another kind or device.");
+    return object;
 }
 
-/** Native resource operations borrowed synchronously by the generated text lifecycle. */
-struct DawnTextResourceOps {
+/** `GPURenderPassEncoder` over a Dawn render pass. */
+struct DawnTextPassEncoder final : TextGpuEncoder {
     std::shared_ptr<DawnTextDevice> owner;
     WGPURenderPassEncoder pass = nullptr;
-    std::shared_ptr<DawnTextPipelineLease> current_pipeline;
-    std::shared_ptr<DawnTextGroup> current_group;
+    /** A pass `beginRenderPass` opened; a scene pass borrows the frame's. */
+    DawnRenderPass owned_pass;
+    std::shared_ptr<DawnTextGpuPipeline> current_pipeline;
+    std::shared_ptr<DawnTextGpuGroup> current_group;
     std::shared_ptr<DawnTextBufferLease> current_quad, current_instances;
 
-    explicit DawnTextResourceOps(std::shared_ptr<DawnTextDevice> device)
-        : owner(std::move(device)) {}
-
-    DawnTextBuffer create_buffer(WGPUBufferUsage usage, std::size_t bytes,
-                                 std::string_view role = "buffer") {
-        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-        descriptor.size = bytes;
-        descriptor.usage = usage | WGPUBufferUsage_CopyDst;
-        return {retain_dawn_text_resource<DawnTextBufferLease>(
-                    owner, wgpuDeviceCreateBuffer(owner->device, &descriptor), role, bytes),
-                bytes};
-    }
-
-    void create_renderable_buffer(TextGpuState& gpu, TextBufferKind kind, std::size_t bytes) {
-        if (!gpu.backend)
-            gpu.backend = std::make_shared<DawnTextRenderableResources>();
-        auto resources = std::static_pointer_cast<DawnTextRenderableResources>(gpu.backend);
-        const auto usage = kind == TextBufferKind::uniform     ? WGPUBufferUsage_Uniform
-                           : kind == TextBufferKind::instances ? WGPUBufferUsage_Vertex
-                                                               : WGPUBufferUsage_Storage;
-        auto& buffer = dawn_text_buffer(*resources, kind);
-        buffer = create_buffer(usage, bytes,
-                               kind == TextBufferKind::uniform     ? "uniform"
-                               : kind == TextBufferKind::instances ? "instances"
-                                                                   : "styles");
-        auto destroy = [lease = buffer.lease] { lease->destroy(); };
-        switch (kind) {
-        case TextBufferKind::uniform:
-            gpu.destroy_uniform = destroy;
-            break;
-        case TextBufferKind::instances:
-            gpu.destroy_instances = destroy;
-            break;
-        case TextBufferKind::styles:
-            gpu.destroy_styles = destroy;
-            break;
-        }
-    }
-
-    void create_atlas_texture(TextAtlasGpuState& atlas, TextAtlasTextureKind kind,
-                              std::size_t width, std::size_t rows) {
-        if (!atlas.backend)
-            atlas.backend = std::make_shared<DawnTextAtlasResources>();
-        auto resources = std::static_pointer_cast<DawnTextAtlasResources>(atlas.backend);
-        auto& texture = kind == TextAtlasTextureKind::curves ? resources->curves : resources->bands;
-        WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
-        descriptor.dimension = WGPUTextureDimension_2D;
-        descriptor.size = WGPUExtent3D{text_gpu_u32(width), text_gpu_u32(rows), 1u};
-        descriptor.format = WGPUTextureFormat_RGBA32Float;
-        descriptor.usage =
-            WGPUTextureUsage_CopyDst | WGPUTextureUsage_CopySrc | WGPUTextureUsage_TextureBinding;
-        texture.texture = retain_dawn_text_resource<DawnTextTextureLease>(
-            owner, wgpuDeviceCreateTexture(owner->device, &descriptor),
-            kind == TextAtlasTextureKind::curves ? "curves" : "bands",
-            width * rows * 4u * sizeof(float), width, rows);
-        texture.view = retain_dawn_text_resource<DawnTextViewLease>(
-            owner, create_dawn_texture_view(texture.texture->get(), nullptr), "texture-view");
-        auto destroy = [lease = texture.texture] { lease->destroy(); };
-        if (kind == TextAtlasTextureKind::curves)
-            atlas.destroy_curves = destroy;
-        else
-            atlas.destroy_bands = destroy;
-    }
-
-    void create_atlas_metadata(TextAtlasGpuState& atlas, std::size_t bytes) {
-        if (!atlas.backend)
-            atlas.backend = std::make_shared<DawnTextAtlasResources>();
-        auto resources = std::static_pointer_cast<DawnTextAtlasResources>(atlas.backend);
-        resources->metadata = create_buffer(WGPUBufferUsage_Storage, bytes, "metadata");
-        atlas.destroy_metadata = [lease = resources->metadata.lease] { lease->destroy(); };
-    }
-
-    void write_renderable_buffer(TextGpuState& gpu, TextBufferKind kind, std::size_t offset,
-                                 std::span<const std::uint8_t> bytes) {
-        const auto resources = std::static_pointer_cast<DawnTextRenderableResources>(gpu.backend);
-        const auto& buffer = dawn_text_buffer(*resources, kind);
-        wgpuQueueWriteBuffer(owner->queue, buffer.lease->get(), offset, bytes.data(), bytes.size());
-        owner->capture.write(buffer.lease->capture_id, offset, bytes);
-    }
-
-    void write_atlas_texture(TextAtlasGpuState& atlas, TextAtlasTextureKind kind,
-                             std::span<const std::uint8_t> bytes, std::size_t bytes_per_row,
-                             std::size_t width, std::size_t rows) {
-        const auto resources = std::static_pointer_cast<DawnTextAtlasResources>(atlas.backend);
-        const auto& texture =
-            kind == TextAtlasTextureKind::curves ? resources->curves : resources->bands;
-        WGPUTexelCopyTextureInfo target = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-        target.texture = texture.texture->get();
-        WGPUTexelCopyBufferLayout layout{};
-        layout.bytesPerRow = text_gpu_u32(bytes_per_row);
-        layout.rowsPerImage = text_gpu_u32(rows);
-        const WGPUExtent3D extent{text_gpu_u32(width), text_gpu_u32(rows), 1u};
-        wgpuQueueWriteTexture(owner->queue, &target, bytes.data(), bytes.size(), &layout, &extent);
-        owner->capture.write(texture.texture->capture_id, 0u, bytes);
-    }
-
-    void write_atlas_metadata(TextAtlasGpuState& atlas, std::span<const std::uint8_t> bytes) {
-        const auto resources = std::static_pointer_cast<DawnTextAtlasResources>(atlas.backend);
-        wgpuQueueWriteBuffer(owner->queue, resources->metadata.lease->get(), 0u, bytes.data(),
-                             bytes.size());
-        owner->capture.write(resources->metadata.lease->capture_id, 0u, bytes);
-    }
-
-    std::shared_ptr<void> create_bind_group(const TextGpuState& gpu, const TextAtlasGpuState& atlas,
-                                            const std::shared_ptr<void>& opaque_layout) {
-        const auto resources = std::static_pointer_cast<DawnTextRenderableResources>(gpu.backend);
-        const auto textures = std::static_pointer_cast<DawnTextAtlasResources>(atlas.backend);
-        const auto layout = std::static_pointer_cast<DawnTextLayout>(opaque_layout);
-        auto result = std::make_shared<DawnTextGroup>();
-        result->uniform = resources->uniform;
-        result->styles = resources->styles;
-        result->metadata = textures->metadata;
-        result->curves = textures->curves;
-        result->bands = textures->bands;
-        std::vector<WGPUBindGroupEntry> entries;
-        for (const auto& row : layout->bindings) {
-            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
-            entry.binding = row.binding;
-            const DawnTextBuffer* buffer = nullptr;
-            switch (row.role) {
-            case DawnTextBindingRole::uniform:
-                buffer = &result->uniform;
-                break;
-            case DawnTextBindingRole::styles:
-                buffer = &result->styles;
-                break;
-            case DawnTextBindingRole::metadata:
-                buffer = &result->metadata;
-                break;
-            case DawnTextBindingRole::curves:
-                entry.textureView = result->curves.view->get();
-                break;
-            case DawnTextBindingRole::bands:
-                entry.textureView = result->bands.view->get();
-                break;
-            }
-            if (buffer) {
-                entry.buffer = buffer->lease->get();
-                entry.size = buffer->bytes;
-            }
-            entries.push_back(entry);
-            if (owner->capture.enabled()) {
-                TextGpuBindingCapture receipt;
-                receipt.binding = row.binding;
-                receipt.role = text_binding_role_name(row.role);
-                if (buffer)
-                    receipt.resource = buffer->lease->capture_id;
-                else {
-                    const auto& texture =
-                        row.role == TextBindingRole::curves ? result->curves : result->bands;
-                    receipt.resource = texture.texture->capture_id;
-                    receipt.view = texture.view->capture_id;
-                }
-                result->bindings.push_back(std::move(receipt));
-            }
-        }
-        WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        descriptor.layout = layout->layout->get();
-        descriptor.entryCount = entries.size();
-        descriptor.entries = entries.data();
-        result->group = retain_dawn_text_resource<DawnTextGroupLease>(
-            owner, wgpuDeviceCreateBindGroup(owner->device, &descriptor), "bind-group");
-        return result;
-    }
-
-    void set_quad_vertex_buffer(const std::shared_ptr<void>& quad) {
-        const auto buffer = std::static_pointer_cast<DawnTextBuffer>(quad);
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 0u, buffer->lease->get(), 0u, WGPU_WHOLE_SIZE);
-        if (owner->capture.enabled())
-            current_quad = buffer->lease;
-    }
-    void set_instance_vertex_buffer(const TextGpuState& gpu) {
-        bind_instance_buffer(
-            std::static_pointer_cast<DawnTextRenderableResources>(gpu.backend)->instances);
-    }
-    std::shared_ptr<void> retain_instance_buffer(const TextGpuState& gpu) {
-        const auto resources = std::static_pointer_cast<DawnTextRenderableResources>(gpu.backend);
-        return std::make_shared<DawnTextBuffer>(resources->instances);
-    }
-    void set_instance_buffer(const std::shared_ptr<void>& buffer) {
-        const auto retained = std::static_pointer_cast<DawnTextBuffer>(buffer);
-        bind_instance_buffer(*retained);
-    }
-    void bind_instance_buffer(const DawnTextBuffer& buffer) {
-        wgpuRenderPassEncoderSetVertexBuffer(pass, 1u, buffer.lease->get(), 0u, WGPU_WHOLE_SIZE);
-        if (owner->capture.enabled())
-            current_instances = buffer.lease;
-    }
-    void set_pipeline(const std::shared_ptr<void>& pipeline) {
-        const auto value = std::static_pointer_cast<DawnTextPipelineLease>(pipeline);
-        wgpuRenderPassEncoderSetPipeline(pass, value->get());
+    void set_pipeline(const TextGpuHandle& handle) override {
+        const auto value = dawn_text_object<DawnTextGpuPipeline>(handle);
+        wgpuRenderPassEncoderSetPipeline(pass, value->pipeline->get());
         if (owner->capture.enabled())
             current_pipeline = value;
     }
-    void set_bind_group(const std::shared_ptr<void>& group) {
-        const auto value = std::static_pointer_cast<DawnTextGroup>(group);
-        wgpuRenderPassEncoderSetBindGroup(pass, 0u, value->group->get(), 0u, nullptr);
+    void set_vertex_buffer(double slot, const TextGpuHandle& handle) override {
+        const auto buffer = dawn_text_object<DawnTextGpuBuffer>(handle);
+        const auto index = text_gpu_u32(text_gpu_size(slot));
+        wgpuRenderPassEncoderSetVertexBuffer(pass, index, buffer->lease->get(), 0u,
+                                             WGPU_WHOLE_SIZE);
         if (owner->capture.enabled())
-            current_group = value;
+            (index == 0 ? current_quad : current_instances) = buffer->lease;
     }
-    void draw(std::size_t vertices, std::size_t instances, std::size_t first_vertex,
-              std::size_t first_instance) {
-        wgpuRenderPassEncoderDraw(pass, text_gpu_u32(vertices), text_gpu_u32(instances),
-                                  text_gpu_u32(first_vertex), text_gpu_u32(first_instance));
+    void set_bind_group(double index, const TextGpuHandle& handle) override {
+        const auto group = dawn_text_object<DawnTextGpuGroup>(handle);
+        wgpuRenderPassEncoderSetBindGroup(pass, text_gpu_u32(text_gpu_size(index)),
+                                          group->group->get(), 0u, nullptr);
+        if (owner->capture.enabled())
+            current_group = group;
+    }
+    void draw(double vertices, double instances, double first_vertex,
+              double first_instance) override {
+        const auto count = text_gpu_u32(text_gpu_size(vertices)),
+                   instance_count = text_gpu_u32(text_gpu_size(instances)),
+                   first = text_gpu_u32(text_gpu_size(first_vertex)),
+                   first_instance_index = text_gpu_u32(text_gpu_size(first_instance));
+        wgpuRenderPassEncoderDraw(pass, count, instance_count, first, first_instance_index);
         if (owner->capture.enabled()) {
             auto receipt = current_pipeline->capture;
-            receipt.pipeline = current_pipeline->capture_id;
+            receipt.pipeline = current_pipeline->pipeline->capture_id;
             receipt.group = current_group->group->capture_id;
             receipt.quad = current_quad->capture_id;
             receipt.instances = current_instances->capture_id;
             receipt.bindings = current_group->bindings;
-            receipt.vertices = text_gpu_u32(vertices);
-            receipt.instance_count = text_gpu_u32(instances);
-            receipt.first_vertex = text_gpu_u32(first_vertex);
-            receipt.first_instance = text_gpu_u32(first_instance);
+            receipt.vertices = count;
+            receipt.instance_count = instance_count;
+            receipt.first_vertex = first;
+            receipt.first_instance = first_instance_index;
             owner->capture.draw(std::move(receipt));
         }
+    }
+    void execute_bundles(const js::Array<TextGpuHandle>& bundles) override {
+        replay_text_bundles(*this, bundles);
+    }
+    void end() override {
+        if (!owned_pass.get())
+            throw std::runtime_error("Text pass encoder does not own its pass.");
+        wgpuRenderPassEncoderEnd(pass);
+        owned_pass.reset();
+        pass = nullptr;
+    }
+};
+
+/** `GPUCommandEncoder` over the frame's Dawn encoder. */
+struct DawnTextCommandEncoder final : TextGpuCommandEncoder {
+    std::shared_ptr<DawnTextDevice> owner;
+    WGPUCommandEncoder encoder = nullptr;
+
+    TextGpuEncoderHandle begin_render_pass(const TextRenderPassDescriptor& descriptor) override {
+        if (descriptor.color_attachments.size() != 1)
+            throw std::runtime_error("Text render passes have one color attachment.");
+        const auto& color = descriptor.color_attachments[0];
+        WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        attachment.view = dawn_text_object<DawnTextGpuView>(color.view)->get();
+        if (color.clear_value) {
+            const auto& value = *color.clear_value;
+            attachment.clearValue = {value.r, value.g, value.b, value.a};
+        }
+        if (color.load_op == "clear")
+            attachment.loadOp = WGPULoadOp_Clear;
+        else if (color.load_op == "load")
+            attachment.loadOp = WGPULoadOp_Load;
+        else
+            throw std::runtime_error("Unmapped text pass load op: " + color.load_op);
+        if (color.store_op != "store")
+            throw std::runtime_error("Unmapped text pass store op: " + color.store_op);
+        attachment.storeOp = WGPUStoreOp_Store;
+        WGPURenderPassDescriptor pass_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        pass_descriptor.colorAttachmentCount = 1;
+        pass_descriptor.colorAttachments = &attachment;
+        auto result = std::make_shared<DawnTextPassEncoder>();
+        result->owner = owner;
+        result->owned_pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+        result->pass = result->owned_pass.get();
+        return result;
+    }
+};
+
+/** The WebGPU half of the Dawn text device: objects, writes and bind groups. */
+struct DawnTextGpuResources : TextGpuDevice {
+    std::shared_ptr<DawnTextDevice> owner = std::make_shared<DawnTextDevice>();
+
+    DawnTextGpuResources(WGPUDevice device, WGPUQueue queue, bool capture) {
+        owner->device = device;
+        owner->queue = queue;
+        owner->capture = TextGpuCapture(capture);
+    }
+    ~DawnTextGpuResources() override { owner->retire(); }
+
+    TextGpuHandle create_buffer(const TextBufferDescriptor& descriptor) override {
+        const auto bytes = text_gpu_size(descriptor.size);
+        WGPUBufferDescriptor info = WGPU_BUFFER_DESCRIPTOR_INIT;
+        info.size = bytes;
+        // WebGPU's usage bits are Dawn's.
+        info.usage = static_cast<WGPUBufferUsage>(text_gpu_size(descriptor.usage));
+        const bool uniform = text_usage_has(descriptor.usage, text_buffer_usage_uniform);
+        auto buffer = std::make_shared<DawnTextGpuBuffer>();
+        buffer->size = descriptor.size;
+        buffer->lease = retain_dawn_text_resource<DawnTextBufferLease>(
+            owner, wgpuDeviceCreateBuffer(owner->device, &info),
+            uniform ? std::string_view("uniform") : text_resource_role(descriptor.label), bytes);
+        return buffer;
+    }
+
+    TextGpuHandle create_texture(const TextTextureDescriptor& descriptor) override {
+        if (descriptor.format != "rgba32float")
+            throw std::runtime_error("Unmapped text texture format: " + descriptor.format);
+        const auto width = text_gpu_size(descriptor.size.width),
+                   rows = text_gpu_size(descriptor.size.height);
+        WGPUTextureDescriptor info = WGPU_TEXTURE_DESCRIPTOR_INIT;
+        info.dimension = WGPUTextureDimension_2D;
+        info.size =
+            WGPUExtent3D{text_gpu_u32(width), text_gpu_u32(rows),
+                         text_gpu_u32(text_gpu_size(descriptor.size.depth_or_array_layers))};
+        info.format = WGPUTextureFormat_RGBA32Float;
+        info.usage = static_cast<WGPUTextureUsage>(text_gpu_size(descriptor.usage));
+        auto texture = std::make_shared<DawnTextGpuTexture>();
+        texture->lease = retain_dawn_text_resource<DawnTextTextureLease>(
+            owner, wgpuDeviceCreateTexture(owner->device, &info),
+            text_resource_role(descriptor.label), width * rows * 4u * sizeof(float), width, rows);
+        return texture;
+    }
+
+    TextGpuHandle create_bind_group(const TextBindGroupDescriptor& descriptor) override {
+        const auto layout_object = dawn_text_object<DawnTextGpuLayout>(descriptor.layout);
+        auto group = std::make_shared<DawnTextGpuGroup>();
+        std::vector<WGPUBindGroupEntry> entries;
+        for (const auto& source : descriptor.entries) {
+            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            entry.binding = text_gpu_u32(text_gpu_size(source.binding));
+            TextGpuBindingCapture receipt;
+            receipt.binding = entry.binding;
+            const auto role =
+                std::find_if(layout_object->bindings.begin(), layout_object->bindings.end(),
+                             [&](const auto& row) { return row.first == entry.binding; });
+            if (role == layout_object->bindings.end())
+                throw std::runtime_error("Text bind group entry has no layout binding.");
+            receipt.role = text_binding_role_name(role->second);
+            if (const auto* binding = std::get_if<TextBufferBinding>(&source.resource)) {
+                const auto buffer = dawn_text_object<DawnTextGpuBuffer>(binding->buffer);
+                entry.buffer = buffer->lease->get();
+                entry.offset = text_gpu_size(binding->offset.value_or(0));
+                if (binding->size)
+                    entry.size = text_gpu_size(*binding->size);
+                receipt.resource = buffer->lease->capture_id;
+                group->resources.push_back(buffer);
+            } else {
+                const auto view =
+                    dawn_text_object<DawnTextGpuView>(std::get<TextGpuHandle>(source.resource));
+                entry.textureView = view->get();
+                receipt.resource = view->texture ? view->texture->capture_id : 0;
+                receipt.view = view->lease ? view->lease->capture_id : 0;
+                group->resources.push_back(view);
+            }
+            entries.push_back(entry);
+            if (owner->capture.enabled())
+                group->bindings.push_back(std::move(receipt));
+        }
+        WGPUBindGroupDescriptor info = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        info.layout = layout_object->layout->get();
+        info.entryCount = entries.size();
+        info.entries = entries.data();
+        group->group = retain_dawn_text_resource<DawnTextGroupLease>(
+            owner, wgpuDeviceCreateBindGroup(owner->device, &info), "bind-group");
+        return group;
+    }
+
+    TextGpuEncoderHandle
+    create_render_bundle_encoder(const TextRenderBundleEncoderDescriptor&) override {
+        return std::make_shared<TextBundleRecorder>();
+    }
+
+    void write_buffer(const TextGpuHandle& handle, double buffer_offset,
+                      const js::ArrayBuffer& data, double data_offset, double size) override {
+        const auto buffer = dawn_text_object<DawnTextGpuBuffer>(handle);
+        const auto bytes = text_gpu_bytes(data, data_offset, size);
+        const auto offset = text_gpu_size(buffer_offset);
+        wgpuQueueWriteBuffer(owner->queue, buffer->lease->get(), offset, bytes.data(),
+                             bytes.size());
+        owner->capture.write(buffer->lease->capture_id, offset, bytes);
+    }
+
+    void write_texture(const TextTexelCopyTextureInfo& destination, const js::ArrayBuffer& data,
+                       const TextTexelCopyBufferLayout& layout_info,
+                       const TextExtent3D& size) override {
+        const auto texture = dawn_text_object<DawnTextGpuTexture>(destination.texture);
+        const auto width = text_gpu_size(size.width), rows = text_gpu_size(size.height);
+        const auto row_bytes = text_gpu_size(layout_info.bytes_per_row.value_or(0));
+        const auto bytes = text_gpu_bytes(data, layout_info.offset.value_or(0),
+                                          static_cast<double>(row_bytes * rows));
+        WGPUTexelCopyTextureInfo target = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+        target.texture = texture->lease->get();
+        WGPUTexelCopyBufferLayout source{};
+        source.bytesPerRow = text_gpu_u32(row_bytes);
+        source.rowsPerImage =
+            text_gpu_u32(text_gpu_size(layout_info.rows_per_image.value_or(size.height)));
+        const WGPUExtent3D extent{text_gpu_u32(width), text_gpu_u32(rows),
+                                  text_gpu_u32(text_gpu_size(size.depth_or_array_layers))};
+        wgpuQueueWriteTexture(owner->queue, &target, bytes.data(), bytes.size(), &source, &extent);
+        owner->capture.write(texture->lease->capture_id, 0u, bytes);
     }
 };
 

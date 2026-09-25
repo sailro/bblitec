@@ -1,4 +1,126 @@
+import ts from "typescript";
+import { sharedPinnedContext } from "../context.js";
+import { lowerPinnedFunction } from "../pinned-function-lowerer.js";
+import { pinnedNumericMathCallsWithHypot } from "../pinned-operators.js";
 import type { GltfLoaderOptions } from "./loader.js";
+import { recordAt } from "../../compiler/record-access.js";
+
+/**
+ * An animated KHR_lights_punctual light, as the pin builds it: the light is
+ * parented to its source node at the node's origin with the glTF forward
+ * (`gltf-feature-lights-punctual.ts`, the `sourceNode` arm), so its world is
+ * the node's world under the parser's `RH_TO_LH_ROOT`, and its direction is
+ * `writeWorldLightDirection` over that world. The helper, the root matrix
+ * and the local forward all come from the pin.
+ */
+export function gltfAnimatedLightCpp(): {
+    helper: string;
+    root: string;
+    forward: string;
+} {
+    const context = sharedPinnedContext();
+    const helper = lowerPinnedFunction(
+        context,
+        "src/light/light-base.ts",
+        "writeWorldLightDirection",
+        [
+            {
+                pinned: "data",
+                kind: "f32Buffer",
+                cpp: "data",
+                cppType: "std::array<float, 3>",
+                mutableRecord: true,
+            },
+            { pinned: "offset", kind: "number", cpp: "offset" },
+            { pinned: "world", kind: "mat4Const", cpp: "world" },
+            {
+                pinned: "direction",
+                kind: "record",
+                cpp: "direction",
+                cppType: "Vec3",
+                annotation: "ObservableVec3",
+            },
+        ],
+        {
+            cppName: "gltf_write_world_light_direction",
+            returns: "void",
+            calls: pinnedNumericMathCallsWithHypot(),
+            memberBindings: new Map(
+                (["x", "y", "z"] as const).map((axis) => [
+                    `direction.${axis}`,
+                    { cpp: `direction.${axis}`, type: "scalar" },
+                ]),
+            ),
+        },
+    );
+    const parser = "src/loader-gltf/gltf-parser.ts";
+    const parserFile = context.sourceFile(parser);
+    const rootMatrix = context.unwrapExpression(
+        context.variableInitializer(parserFile, "RH_TO_LH_ROOT"),
+    );
+    const rootValues =
+        ts.isNewExpression(rootMatrix) &&
+        rootMatrix.arguments?.length === 1 &&
+        ts.isArrayLiteralExpression(rootMatrix.arguments[0]!) &&
+        rootMatrix.arguments[0].elements.length === 16
+            ? rootMatrix.arguments[0].elements
+            : context.contractError(
+                  rootMatrix,
+                  "Expected RH_TO_LH_ROOT to be a sixteen-lane F32 matrix.",
+              );
+    const lights = "src/loader-gltf/gltf-feature-lights-punctual.ts";
+    const lightsFile = context.sourceFile(lights);
+    const forwards = context
+        .findNodes(
+            lightsFile,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(node.left) &&
+                node.left.text === "dir",
+        )
+        .filter((assignment) => {
+            let node: ts.Node = assignment;
+            while (node.parent && !ts.isIfStatement(node.parent)) {
+                node = node.parent;
+            }
+            const guard = node.parent;
+            return (
+                guard !== undefined &&
+                ts.isIfStatement(guard) &&
+                guard.thenStatement === node &&
+                ts.isIdentifier(guard.expression) &&
+                guard.expression.text === "sourceNode"
+            );
+        });
+    const forward = forwards[0]
+        ? context.unwrapExpression(forwards[0].right)
+        : undefined;
+    if (
+        forwards.length !== 1 ||
+        !forward ||
+        !ts.isArrayLiteralExpression(forward) ||
+        forward.elements.length !== 3
+    ) {
+        return context.contractError(
+            lightsFile,
+            "Expected one local light forward in the sourceNode arm.",
+        );
+    }
+    return {
+        helper,
+        root: `std::array<float, 16>{${rootValues
+            .map((value) =>
+                context.floatLiteral(context.numericValue(value, parserFile)),
+            )
+            .join(", ")}}`,
+        forward: `Vec3{${forward.elements
+            .map((value) =>
+                context.floatLiteral(context.numericValue(value, lightsFile)),
+            )
+            .join(", ")}}`,
+    };
+}
 
 /** Native record and Float32 buffer transport around the source animation bodies. */
 export function gltfAnimationRuntimeTypesCpp(
@@ -84,6 +206,7 @@ Matrix gltf_animation_matrix(const GltfAnimationFloats& values,std::size_t index
 export function gltfAnimationPoseTransportCpp(
     options: GltfLoaderOptions,
     cameraRefresh: string,
+    light?: ReturnType<typeof gltfAnimatedLightCpp>,
 ): string {
     return `
         const auto refresh_live_worlds=[animation_runtime=animation_runtime.get()${cameraRefresh || options.animationPointer ? ",&engine" : ""}]() {
@@ -100,12 +223,15 @@ export function gltfAnimationPoseTransportCpp(
             };
             for(std::size_t index=0;index<animation_runtime->nodes.size();++index)compute_animated_world(index);
 ${
-    options.animationPointer
+    light
         ? `            for(const auto& binding:animation_runtime->light_nodes) {
-                auto& light=engine.lights.at(binding.light.value);
-                const auto& world=compute_animated_world(binding.node);
-                light.position={-world[12],world[13],world[14]};
-                light.direction=normalize({world[8],-world[9],-world[10]});
+                auto& light=${recordAt("engine.lights", "binding.light")};
+                const Matrix light_world=upstream::matrix_product(
+                    ${light.root},compute_animated_world(binding.node));
+                light.position={light_world[12],light_world[13],light_world[14]};
+                std::array<float,3> direction{};
+                gltf_write_world_light_direction(direction,0.0,light_world,${light.forward});
+                light.direction={direction[0],direction[1],direction[2]};
             }`
         : ""
 }
@@ -113,12 +239,14 @@ ${cameraRefresh}
         };
         const auto publish_mesh=[animation_runtime=animation_runtime.get(),&engine](std::size_t index) {
             const auto& binding=animation_runtime->meshes.at(index);
-            auto& mesh=engine.meshes.at(binding.mesh);
+            // The pin keeps posing a mesh removeFromScene disposed; nothing
+            // draws it, and its geometry went with the removal.
+            MeshRecord* found=current_mesh_record(engine,binding.mesh);
+            if(!found||found->retired)return;
+            auto& mesh=*found;
 ${options.vat ? `            if(mesh.has_vat)return;` : ""}
-            auto& geometry=engine.geometries.at(binding.geometry);
-            const auto& world=animation_runtime->nodes.at(binding.node).world;
-            publish_gltf_deformation(mesh,geometry,world,binding.initial_joint_matrices,
-                binding.skin<animation_runtime->skins.size(),binding.morph_default_weights);
+            publish_gltf_deformation(mesh,gltf_rooted_world(animation_runtime->nodes.at(binding.node).world),
+                binding.initial_joint_matrices,binding.skin<animation_runtime->skins.size(),binding.morph_default_weights);
         };
         animation_runtime->publish_pose=[animation_runtime=animation_runtime.get(),refresh_live_worlds,publish_mesh]() {
             refresh_live_worlds();
@@ -131,7 +259,7 @@ ${options.vat ? `            if(mesh.has_vat)return;` : ""}
                 auto& matrices=binding.initial_joint_matrices;
                 matrices.resize(static_cast<std::size_t>(skeleton.boneCount));
                 for(std::size_t bone=0;bone<matrices.size();++bone)
-                    matrices[bone]=upstream::matrix_product(binding.initial_mesh_world,gltf_animation_matrix(values,bone));
+                    matrices[bone]=gltf_animation_matrix(values,bone);
             }
         };
         animation_runtime->evaluate_pose=[animation_runtime=animation_runtime.get(),&engine]
@@ -261,7 +389,7 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
                 const auto* name=optional(targeted.as_object(),"targetName");
                 clip.target_names.push_back(name?std::optional<std::string>{name->as_string()}:std::nullopt);
             }
-            engine.animation_groups.push_back(AnimationGroupRecord{clip.name,static_cast<std::uint32_t>(engine.assets.size()),index,static_cast<float>(clip.weight),{},clip.duration,clip.frame_rate});
+            engine.animation_groups.push_back(AnimationGroupRecord{clip.name,static_cast<std::uint32_t>(engine.assets.size()),index,clip.weight,{},clip.duration,clip.frame_rate});
             asset.animation_groups.push_back(AnimationGroupHandle{static_cast<std::uint32_t>(engine.animation_groups.size()-1)});
             animation_runtime->clips.push_back(std::move(clip));
         }
@@ -274,16 +402,16 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
         asset.animation_tick_group=[animation_runtime](std::size_t index,double delta_ms,bool with_engine){animation_runtime->tick_group(index,delta_ms,with_engine);};
         asset.set_clip_playing=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).playing=value;};
         asset.set_clip_stopped=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).stopped=value;};
-        asset.set_clip_time=[animation_runtime](std::size_t index,float value){animation_runtime->clips.at(index).time=value;};
+        asset.set_clip_time=[animation_runtime](std::size_t index,double value){animation_runtime->clips.at(index).time=value;};
         asset.set_clip_loop=[animation_runtime](std::size_t index,bool value){animation_runtime->clips.at(index).loop=value;};
-        asset.set_clip_speed_ratio=[animation_runtime](std::size_t index,float value){animation_runtime->clips.at(index).speed_ratio=value;};
+        asset.set_clip_speed_ratio=[animation_runtime](std::size_t index,double value){animation_runtime->clips.at(index).speed_ratio=value;};
         asset.apply_clip_pose=[animation_runtime](std::size_t index,bool with_engine) {
             auto& clip=animation_runtime->clips.at(index);
             gltf_animation_go_to_frame(clip,clip.time*clip.frame_rate,clip.frame_rate,clip.speed_ratio,with_engine,
                 clip.pose->requires_engine,true,[&](){${syncMask}},
                 [&](double time,bool active_engine){animation_runtime->evaluate_pose(index,time,active_engine);});
         };
-        asset.animation_seek=[animation_runtime](float time) {
+        asset.animation_seek=[animation_runtime](double time) {
             animation_runtime->paused=true;
             for(std::size_t index=0;index<animation_runtime->clips.size();++index) {
                 auto& clip=animation_runtime->clips[index];
@@ -297,7 +425,7 @@ ${options.boneControl ? "            skeleton->override_asset=animation_runtime-
             const auto& groups=engine.assets.at(animation_runtime->asset_index).animation_groups;
             for(std::size_t index=0;index<animation_runtime->clips.size();++index) {
                 auto& clip=animation_runtime->clips[index];
-                const auto manager_owned=!engine.animation_groups.at(groups.at(index).value).animation_owner.expired();
+                const auto manager_owned=!${recordAt("engine.animation_groups", "groups.at(index)")}.animation_owner.expired();
                 gltf_tick_animation(clip,delta_ms,clip.speed_ratio,manager_owned,true,clip.pose->requires_engine,true,
                     [&](){${syncMask}},
                     [&](double time,bool active_engine){animation_runtime->evaluate_pose(index,time,active_engine);});
@@ -307,22 +435,22 @@ ${
     options.vat
         ? `        asset.clip_duration=[animation_runtime](std::size_t index){return static_cast<float>(animation_runtime->clips.at(index).duration);};
         const auto skeleton_binding=[animation_runtime,&engine](MeshHandle mesh)->std::pair<GltfAnimationPoseSkeleton*,AnimatedMeshBinding*> {
-            if(mesh.value>=engine.meshes.size()||engine.meshes[mesh.value].has_vat)return {};
+            if(${recordAt("engine.meshes", "mesh")}.has_vat)return {};
             for(const auto& skeleton:animation_runtime->source_skeletons.entries)
                 for(const auto index:skeleton->meshes) {
                     auto& binding=animation_runtime->meshes.at(index);
-                    if(binding.mesh==mesh.value)return {skeleton.get(),&binding};
+                    if(binding.mesh==mesh)return {skeleton.get(),&binding};
                 }
             return {};
         };
         asset.animation_has_skeleton=[skeleton_binding](MeshHandle mesh){return skeleton_binding(mesh).first!=nullptr;};
         asset.animation_bone_palette=[skeleton_binding](MeshHandle mesh) {
-            const auto [skeleton,binding]=skeleton_binding(mesh);
+            auto* const skeleton=skeleton_binding(mesh).first;
             if(!skeleton)throw std::runtime_error("VAT source skeleton binding is absent.");
             std::vector<Matrix> result;
             result.reserve(static_cast<std::size_t>(skeleton->boneCount));
             for(std::size_t bone=0;bone<static_cast<std::size_t>(skeleton->boneCount);++bone)
-                result.push_back(native_matrix(upstream::matrix_product(binding->initial_mesh_world,gltf_animation_matrix(*skeleton->boneMatrices,bone))));
+                result.push_back(gltf_animation_matrix(*skeleton->boneMatrices,bone));
             return result;
         };
         asset.animation_cpu_go_to_frame=[animation_runtime](std::size_t index,double frame) {
@@ -343,22 +471,22 @@ ${
 }
 ${
     options.animationAdditive
-        ? `        asset.set_clip_additive=[animation_runtime](std::size_t index,float reference_time) {
+        ? `        asset.set_clip_additive=[animation_runtime](std::size_t index,double reference_time) {
             auto& clip=animation_runtime->clips.at(index);clip.additive=true;clip.additive_reference_time=reference_time;
         };`
         : ""
 }
         asset.clone_mesh_animation=[animation_runtime,&engine](MeshHandle source,MeshHandle clone) {
             const auto found=std::find_if(animation_runtime->meshes.begin(),animation_runtime->meshes.end(),
-                [&](const auto& binding){return binding.mesh==source.value;});
+                [&](const auto& binding){return binding.mesh==source;});
             if(found==animation_runtime->meshes.end())return;
             if(found->skin==std::numeric_limits<std::size_t>::max()) {
-                if(!engine.geometries.at(found->geometry).morph_positions.empty())
+                if(!engine.geometries.at(${recordAt("engine.meshes", "source")}.geometry).morph_positions.empty())
                     throw std::runtime_error("Cloning an animated morph hierarchy requires shared morph weights with an independent node world.");
                 return;
             }
             const auto source_index=static_cast<std::size_t>(found-animation_runtime->meshes.begin());
-            auto binding=*found;binding.mesh=clone.value;
+            auto binding=*found;binding.mesh=clone;
             const auto index=animation_runtime->meshes.size();
             animation_runtime->meshes.push_back(binding);
             if(binding.skeleton_binding<animation_runtime->source_skeletons.size())

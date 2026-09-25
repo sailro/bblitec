@@ -1,63 +1,963 @@
-import { type LoweredSource, LoweringContext } from "./context.js";
+/**
+ * `device-lost-recovery.ts`'s coordinator, lowered from the pin.
+ *
+ * The registration list, arming, the lost handler (its armed-device and
+ * forced-loss gates, the snapshot of registrations and each `_onLost`), the
+ * success continuation (disarm, re-arm, each `_onRecovered`), the failure
+ * continuation (each `_onRecoveryFailed`, no re-arm), the scene strategy's
+ * registration, the handle's `disable`, `markNextDeviceLossForRecovery`,
+ * `forceWebGpuDeviceLossForTesting` and the run's
+ * `assertEveryActiveContextKindIsRecoverable` are the pinned bodies
+ * translated.
+ *
+ * The platform around them is the PAL's, and each boundary is named by the
+ * statement it replaces:
+ *
+ *  - The device. A device is identified by its generation; `destroy()` asks
+ *    the PAL to tear the device down at the frame boundary, and the PAL's
+ *    frame loop is what delivers the loss to the armed handler
+ *    (`device.lost.then`) through `begin_device_recovery`.
+ *  - The rebuild. `runDeviceLostRecovery` is the PAL recreating its device
+ *    and replaying the generated uploads over retained CPU owners; it settles
+ *    through `complete_device_recovery` or `fail_device_recovery`.
+ *  - Capture. The scene strategy's `_enable`/`_disable` retain the pin's
+ *    capture caches; native scene and texture owners retain their upload
+ *    inputs unconditionally, so neither hook exists here.
+ */
+import ts from "typescript";
+import type { LoweredSource, LoweringContext } from "./context.js";
 import { assertDeviceRecoveryContracts } from "./device-recovery-contract.js";
+import {
+    lowerPinnedFunctionParts,
+    type PinnedFunctionParameter,
+} from "./pinned-function-lowerer.js";
+import {
+    absentBinding,
+    type PinnedBinding,
+    type PinnedNumericScope,
+} from "./pinned-numeric-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+
+const recoveryModule = "src/engine/device-lost-recovery.ts";
+const testingModule = "src/engine/device-lost-recovery-testing.ts";
+const sceneModule = "src/engine/device-lost-scene-recovery.ts";
+const runModule = "src/engine/device-lost-recovery-run.ts";
+
+const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
+
+/**
+ * The coordinator state's members, on the native record `cpp` names. The
+ * pin's device is its generation, and an unarmed state names generation 0,
+ * which no device ever has.
+ */
+function stateMembers(pinned: string, cpp: string): [string, PinnedBinding][] {
+    return [
+        [pinned, { cpp, type: "opaque" }],
+        [
+            `${pinned}._registrations`,
+            { cpp: `${cpp}.registrations`, type: "opaque" },
+        ],
+        [
+            `${pinned}._registrations.length`,
+            scalar(`static_cast<double>(${cpp}.registrations.size())`),
+        ],
+        [`${pinned}._forceNextLoss`, { cpp: `${cpp}.requested`, type: "bool" }],
+        [`${pinned}._recovering`, { cpp: `${cpp}.recovering`, type: "bool" }],
+        [
+            `${pinned}._armedDevice`,
+            {
+                cpp: `${cpp}.armed_device`,
+                type: "scalar",
+                absentCpp: `${cpp}.armed_device == 0.0`,
+            },
+        ],
+    ];
+}
+
+/** A registration's three callbacks, each called only where one is set. */
+function registrationCalls(
+    name: string,
+): [string, (args: readonly string[]) => string][] {
+    return [
+        [
+            `${name}._onLost`,
+            () => `(${name}->on_lost ? ${name}->on_lost() : void())`,
+        ],
+        [
+            `${name}._onRecovered`,
+            () => `(${name}->on_recovered ? ${name}->on_recovered() : void())`,
+        ],
+        [
+            `${name}._onRecoveryFailed`,
+            (args) =>
+                `(${name}->on_failed ? ${name}->on_failed(${args[0]}) : void())`,
+        ],
+    ];
+}
+
+/** `registrations.indexOf(x)` and `registrations.splice(i, 1)`, `push(x)`. */
+const listMethods: NonNullable<PinnedNumericScope["methods"]> = new Map([
+    ["push", (receiver, args) => `${receiver}.push_back(${args.join(", ")})`],
+    [
+        "indexOf",
+        (receiver, args) => `bbl::js::array_index_of(${receiver}, ${args[0]})`,
+    ],
+    [
+        "splice",
+        (receiver, args) => {
+            if (args.length !== 2 || args[1] !== "1.0") {
+                throw new Error(
+                    "Pinned recovery splices exactly one registration.",
+                );
+            }
+            return `${receiver}.erase(${receiver}.begin() + static_cast<std::ptrdiff_t>(${args[0]}))`;
+        },
+    ],
+]);
+
+/**
+ * `if (!registrations.some((current) => current._kind === registration._kind))
+ * registration._enable?.(engine)` (or `_disable`): the capture hook the first
+ * registration of a kind retains and the last releases. Native owners retain
+ * their sources unconditionally, so the scene strategy has neither hook and
+ * the statement is none.
+ */
+function captureHook(
+    statement: ts.Statement,
+    file: ts.SourceFile,
+    hook: "_enable" | "_disable",
+): boolean {
+    if (!ts.isIfStatement(statement) || statement.elseStatement) return false;
+    const body = ts.isBlock(statement.thenStatement)
+        ? statement.thenStatement.statements
+        : [statement.thenStatement];
+    return (
+        statement.expression.getText(file) ===
+            "!registrations.some((current) => current._kind === registration._kind)" &&
+        body.length === 1 &&
+        body[0]!.getText(file) === `registration.${hook}?.(engine);`
+    );
+}
+
+/** The `.then(...)` call an expression statement makes, unwrapping `void`. */
+function thenCall(statement: ts.Statement): ts.CallExpression | undefined {
+    if (!ts.isExpressionStatement(statement)) return undefined;
+    let expression = statement.expression;
+    if (ts.isVoidExpression(expression)) expression = expression.expression;
+    return ts.isCallExpression(expression) &&
+        ts.isPropertyAccessExpression(expression.expression) &&
+        expression.expression.name.text === "then"
+        ? expression
+        : undefined;
+}
+
+/** An arrow's block body, or a refusal naming what was expected. */
+function arrowBody(
+    context: LoweringContext,
+    node: ts.Expression | undefined,
+    what: string,
+): { parameters: readonly string[]; statements: readonly ts.Statement[] } {
+    const arrow = node ? context.unwrapExpression(node) : undefined;
+    if (!arrow || !ts.isArrowFunction(arrow) || !ts.isBlock(arrow.body)) {
+        return context.contractError(
+            node ?? arrow ?? context.sourceFile(recoveryModule),
+            `Expected ${what} to be a block arrow.`,
+        );
+    }
+    return {
+        parameters: arrow.parameters.map((parameter) =>
+            parameter.name.getText(),
+        ),
+        statements: arrow.body.statements,
+    };
+}
+
+/** `arm`'s three closures: the lost handler and the run's two continuations. */
+function armClosures(context: LoweringContext): {
+    lost: readonly ts.Statement[];
+    recovered: readonly ts.Statement[];
+    failed: readonly ts.Statement[];
+    failedParameter: string;
+} {
+    const { declaration } = context.functionDeclaration(recoveryModule, "arm");
+    const listen = declaration
+        .body!.statements.map(thenCall)
+        .find((call) => call?.expression.getText().startsWith("device.lost."));
+    const lost = arrowBody(
+        context,
+        listen?.arguments[0],
+        "the device-lost handler",
+    );
+    const run = lost.statements
+        .map(thenCall)
+        .find((call) => call !== undefined);
+    if (!run || run.arguments.length !== 2) {
+        return context.contractError(
+            declaration,
+            "Expected the lost handler to settle the recovery run with a success and a failure continuation.",
+        );
+    }
+    const recovered = arrowBody(
+        context,
+        run.arguments[0],
+        "the recovery success continuation",
+    );
+    const failed = arrowBody(
+        context,
+        run.arguments[1],
+        "the recovery failure continuation",
+    );
+    if (lost.parameters.join() !== "info" || failed.parameters.length !== 1) {
+        return context.contractError(
+            declaration,
+            "Expected the lost handler to take `info` and the failure continuation its error.",
+        );
+    }
+    return {
+        lost: lost.statements,
+        recovered: recovered.statements,
+        failed: failed.statements,
+        failedParameter: failed.parameters[0]!,
+    };
+}
+
+/** The scope the coordinator's bodies share. */
+function coordinatorScope(
+    context: LoweringContext,
+    extra: {
+        bindings?: readonly [string, PinnedBinding][];
+        calls?: readonly [string, (args: readonly string[]) => string][];
+        statement?: NonNullable<PinnedNumericScope["statement"]>;
+    } = {},
+): {
+    memberBindings: Map<string, PinnedBinding>;
+    calls: Map<string, (args: readonly string[]) => string>;
+    methods: NonNullable<PinnedNumericScope["methods"]>;
+    statement: NonNullable<PinnedNumericScope["statement"]>;
+    booleanOr: true;
+    booleanAnd: true;
+} {
+    const file = context.sourceFile(recoveryModule);
+    const statement: NonNullable<PinnedNumericScope["statement"]> = (
+        node,
+        lowerer,
+        indent,
+    ) => {
+        // The PAL delivers the loss to the armed handler; the listener
+        // itself is the frame loop's.
+        if (
+            thenCall(node)?.expression.getText(file).startsWith("device.lost.")
+        ) {
+            return [];
+        }
+        // `runDeviceLostRecovery`, dynamically imported and settled by the
+        // two continuations: the PAL's rebuild, which settles through
+        // `complete_device_recovery` or `fail_device_recovery`.
+        const run = thenCall(node);
+        if (
+            run &&
+            node
+                .getText(file)
+                .includes('import("./device-lost-recovery-run.js")')
+        ) {
+            return [];
+        }
+        return extra.statement?.(node, lowerer, indent);
+    };
+    return {
+        memberBindings: new Map<string, PinnedBinding>([
+            ["engine", { cpp: "engine", type: "opaque" }],
+            // A device is its generation.
+            [
+                "engine._device",
+                scalar("static_cast<double>(engine.device_generation)"),
+            ],
+            ...(extra.bindings ?? []),
+        ]),
+        calls: new Map([
+            [
+                "arm",
+                (args: readonly string[]) =>
+                    `arm_device_recovery(${args.join(", ")})`,
+            ],
+            ...(extra.calls ?? []),
+        ]),
+        methods: listMethods,
+        statement,
+        booleanOr: true,
+        booleanAnd: true,
+    };
+}
+
+/** `arm(engine, state)`: which device's loss the handler recovers. */
+function armCpp(context: LoweringContext): string {
+    const parts = lowerPinnedFunctionParts(
+        context,
+        recoveryModule,
+        "arm",
+        [
+            {
+                pinned: "engine",
+                kind: "record",
+                cpp: "engine",
+                cppType: "Engine",
+                annotation: "EngineContext",
+                mutableRecord: true,
+                binding: { cpp: "engine", type: "opaque" },
+            },
+            {
+                pinned: "state",
+                kind: "record",
+                cpp: "state",
+                cppType: "Engine::DeviceRecoveryState",
+                annotation: "DeviceLostRecoveryState",
+                mutableRecord: true,
+                binding: { cpp: "state", type: "opaque" },
+            },
+        ],
+        {
+            cppName: "arm_device_recovery",
+            returns: "void",
+            ...coordinatorScope(context, {
+                bindings: stateMembers("state", "state"),
+            }),
+        },
+    );
+    return `// ${parts.provenance}\n${parts.declaration} {\n${parts.body}\n}`;
+}
+
+/**
+ * The lost handler, the success continuation and the failure continuation,
+ * as the three native entry points the PAL's frame loop reaches. The snapshot
+ * the handler takes (`[...state._registrations]`) is `state.in_flight`, which
+ * the continuations read in its place.
+ */
+function continuationsCpp(context: LoweringContext): string {
+    const file = context.sourceFile(recoveryModule);
+    const { lost, recovered, failed, failedParameter } = armClosures(context);
+    const inFlight: [string, PinnedBinding] = [
+        "registrations",
+        { cpp: "state.in_flight", type: "opaque" },
+    ];
+    // `const registrations = [...state._registrations]`: the snapshot the
+    // two continuations close over, which is why it lives on the record.
+    const snapshot: NonNullable<PinnedNumericScope["statement"]> = (
+        node,
+        lowerer,
+        indent,
+    ) => {
+        const [entry] = ts.isVariableStatement(node)
+            ? node.declarationList.declarations
+            : [];
+        if (!entry || entry.name.getText(file) !== "registrations") {
+            return undefined;
+        }
+        if (
+            entry.getText(file) !== "registrations = [...state._registrations]"
+        ) {
+            return context.contractError(
+                entry,
+                "Expected the lost handler to snapshot the registrations its " +
+                    "continuations settle.",
+            );
+        }
+        lowerer.bindLocal("registrations", inFlight[1]);
+        return [`${indent}state.in_flight = state.registrations;`];
+    };
+    const forOf: NonNullable<PinnedNumericScope["forOf"]> = (
+        iterated,
+        element,
+        list,
+    ) =>
+        iterated === "registrations" && list
+            ? {
+                  range: list.cpp,
+                  bindings: new Map([
+                      [element, { cpp: element, type: "opaque" }],
+                  ]),
+              }
+            : undefined;
+    const body = (
+        statements: readonly ts.Statement[],
+        bindings: readonly [string, PinnedBinding][],
+    ): string => {
+        const { memberBindings, ...scope } = coordinatorScope(context, {
+            bindings: [...stateMembers("state", "state"), ...bindings],
+            calls: registrationCalls("registration"),
+            statement: snapshot,
+        });
+        return lowerPinnedBody(file, statements, {
+            ...scope,
+            bindings: memberBindings,
+            forOf,
+        });
+    };
+    // `device` is the device the handler was armed for: the one being lost.
+    // A loss the PAL delivers is always the `destroy()` a forced loss asked
+    // for, so its reason is "destroyed".
+    const lostBody = body(lost, [
+        ["device", scalar("static_cast<double>(engine.device_generation)")],
+        [
+            'info.reason === "destroyed"',
+            { cpp: "true", type: "bool", staticBoolean: true },
+        ],
+        ["info", absentBinding()],
+    ]);
+    return `// ${context.provenance(recoveryModule, "arm", "its device-lost handler")}
+void device_lost(Engine& engine, Engine::DeviceRecoveryState& state) {
+${lostBody}
+}
+
+// ${context.provenance(recoveryModule, "arm", "the recovery run's success continuation")}
+void device_recovered(Engine& engine, Engine::DeviceRecoveryState& state) {
+${body(recovered, [inFlight])}
+}
+
+// ${context.provenance(recoveryModule, "arm", "the recovery run's failure continuation")}
+void device_recovery_failed([[maybe_unused]] Engine& engine, Engine::DeviceRecoveryState& state, const std::string& ${failedParameter}) {
+${body(failed, [inFlight, [failedParameter, { cpp: failedParameter, type: "opaque" }]])}
+}`;
+}
+
+/**
+ * `_enableDeviceLostRecovery` and the handle's `disable`: the registration
+ * joins the list and arms, and the handle removes it once.
+ */
+function registrationCpp(context: LoweringContext): string {
+    const file = context.sourceFile(recoveryModule);
+    const { declaration } = context.functionDeclaration(
+        recoveryModule,
+        "_enableDeviceLostRecovery",
+    );
+    const statement: NonNullable<PinnedNumericScope["statement"]> = (
+        node,
+        lowerer,
+        indent,
+    ) => {
+        if (
+            captureHook(node, file, "_enable") ||
+            captureHook(node, file, "_disable")
+        ) {
+            return [];
+        }
+        // `const state = getState(engine)`: the coordinator record, created
+        // on first use.
+        if (
+            ts.isVariableStatement(node) &&
+            node.declarationList.declarations[0]?.getText(file) ===
+                "state = getState(engine)"
+        ) {
+            for (const [key, binding] of stateMembers("state", "state")) {
+                lowerer.bindLocal(key, binding);
+            }
+            return [
+                `${indent}Engine::DeviceRecoveryState& state = recovery_state(engine);`,
+            ];
+        }
+        // The first registration records the device's features for the
+        // replacement request; the PAL recreates its own device with the
+        // features it was built for.
+        if (
+            ts.isIfStatement(node) &&
+            node.expression.getText(file) === "registrations.length === 0" &&
+            node.thenStatement
+                .getText(file)
+                .includes("state._requiredFeatures =")
+        ) {
+            return [];
+        }
+        // `let disabled = false`: the handle's own flag, on its record.
+        const [local] = ts.isVariableStatement(node)
+            ? node.declarationList.declarations
+            : [];
+        if (local?.name.getText(file) === "disabled") {
+            if (local.getText(file) !== "disabled = false") {
+                return context.contractError(
+                    local,
+                    "Expected a recovery handle to start enabled.",
+                );
+            }
+            lowerer.bindLocal("disabled", {
+                cpp: "registration->disabled",
+                type: "bool",
+            });
+            return [
+                `${indent}registration->engine = &engine;`,
+                `${indent}registration->disabled = false;`,
+            ];
+        }
+        return undefined;
+    };
+    const engine: PinnedFunctionParameter = {
+        pinned: "engine",
+        kind: "record",
+        cpp: "engine",
+        cppType: "Engine",
+        annotation: "EngineContext",
+        mutableRecord: true,
+        binding: { cpp: "engine", type: "opaque" },
+    };
+    const enable = lowerPinnedFunctionParts(
+        context,
+        recoveryModule,
+        "_enableDeviceLostRecovery",
+        [
+            engine,
+            {
+                pinned: "registration",
+                kind: "record",
+                cpp: "registration",
+                cppType: "std::shared_ptr<DeviceRecoveryRegistration>",
+                annotation: "DeviceLostRecoveryRegistration",
+                binding: { cpp: "registration", type: "opaque" },
+            },
+        ],
+        {
+            cppName: "enable_device_lost_recovery",
+            returns: {
+                type: "std::shared_ptr<DeviceRecoveryRegistration>",
+                value: (_lowerer, expression) => {
+                    const handle = expression
+                        ? context.unwrapExpression(expression)
+                        : undefined;
+                    if (
+                        !handle ||
+                        !ts.isObjectLiteralExpression(handle) ||
+                        handle.properties
+                            .map((property) => property.name?.getText(file))
+                            .join() !== "disable"
+                    ) {
+                        return context.contractError(
+                            expression ?? declaration,
+                            "Expected _enableDeviceLostRecovery to return a handle whose one member is disable.",
+                        );
+                    }
+                    return "registration";
+                },
+            },
+            ...coordinatorScope(context, { statement }),
+        },
+    );
+    // The handle's `disable()`, over the registration it closes on.
+    const handle = context.findNodes(
+        declaration,
+        (node): node is ts.MethodDeclaration =>
+            ts.isMethodDeclaration(node) &&
+            node.name.getText(file) === "disable",
+    )[0];
+    if (!handle?.body) {
+        return context.contractError(
+            declaration,
+            "Expected the recovery handle's disable().",
+        );
+    }
+    const { memberBindings, ...disableScope } = coordinatorScope(context, {
+        bindings: [
+            ["disabled", { cpp: "registration->disabled", type: "bool" }],
+            [
+                "registrations",
+                {
+                    cpp: "recovery_state(*registration->engine).registrations",
+                    type: "opaque",
+                },
+            ],
+            ["registration", { cpp: "registration", type: "opaque" }],
+        ],
+        statement,
+    });
+    const disable = lowerPinnedBody(file, handle.body.statements, {
+        ...disableScope,
+        bindings: memberBindings,
+    });
+    return `// ${enable.provenance}
+${enable.declaration} {
+${enable.body}
+}
+
+// ${context.provenance(recoveryModule, "_enableDeviceLostRecovery", "the handle's disable")}
+void disable_device_recovery(const std::shared_ptr<DeviceRecoveryRegistration>& registration) {
+${disable}
+}`;
+}
+
+/**
+ * `enableDeviceLostSceneRecovery`: the scene strategy's registration. Its
+ * callbacks are the options the compiler writes onto the record once the
+ * scene's own functions are declared; its kind is the one native recovery
+ * rebuilds.
+ */
+function sceneRecoveryCpp(context: LoweringContext): string {
+    const { file, declaration } = context.functionDeclaration(
+        sceneModule,
+        "enableDeviceLostSceneRecovery",
+    );
+    const [statement] = declaration.body!.statements;
+    const call =
+        statement && ts.isReturnStatement(statement) && statement.expression
+            ? context.unwrapExpression(statement.expression)
+            : undefined;
+    const literal =
+        call &&
+        ts.isCallExpression(call) &&
+        call.expression.getText(file) === "_enableDeviceLostRecovery"
+            ? call.arguments[1]
+            : undefined;
+    const members =
+        literal && ts.isObjectLiteralExpression(literal)
+            ? new Map(
+                  literal.properties.map((property) => [
+                      property.name?.getText(file) ?? "",
+                      property,
+                  ]),
+              )
+            : undefined;
+    const kind = members?.get("_kind");
+    // The compiler writes each option callback onto the member of the same
+    // name, and supplies none the scene did not pass.
+    const callbacks = ["onLost", "onRecovered", "onRecoveryFailed"].every(
+        (option) => {
+            const member = members?.get(`_${option}`);
+            return (
+                member !== undefined &&
+                ts.isPropertyAssignment(member) &&
+                member.initializer.getText(file) === `options.${option}`
+            );
+        },
+    );
+    const options = declaration.parameters[1];
+    if (
+        !callbacks ||
+        options?.name.getText(file) !== "options" ||
+        options.initializer?.getText(file) !== "{}" ||
+        declaration.body!.statements.length !== 1 ||
+        !members ||
+        !kind ||
+        !ts.isPropertyAssignment(kind) ||
+        !ts.isStringLiteral(kind.initializer) ||
+        kind.initializer.text !== "scene" ||
+        [...members.keys()].join() !==
+            "_kind,_recoverOrder,_enable,_disable,_recover,_onLost,_onRecovered,_onRecoveryFailed"
+    ) {
+        return context.contractError(
+            declaration,
+            "Expected enableDeviceLostSceneRecovery to register the scene strategy: its kind, order, " +
+                "capture hooks, rebuild and the three option callbacks.",
+        );
+    }
+    return `// ${context.provenance(sceneModule, "enableDeviceLostSceneRecovery")}
+std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(Engine& engine) {
+    if (engine.device_recovery && engine.device_recovery->disposed)
+        throw std::runtime_error("Cannot register recovery on a disposed engine.");
+    auto registration = std::make_shared<DeviceRecoveryRegistration>();
+    registration->kind = ${JSON.stringify(kind.initializer.text)};
+    return enable_device_lost_recovery(engine, std::move(registration));
+}`;
+}
+
+/**
+ * How many contexts of each kind the engine holds, and where the pin gives
+ * those contexts their `_kind`: a `_kind` property of the context the module
+ * creates, or the module's own `KIND` constant.
+ */
+const contextRegistries: readonly {
+    count: string;
+    module: string;
+    kind: "property" | "KIND";
+    macro?: string;
+}[] = [
+    {
+        count: "engine.registered_scenes.size()",
+        module: "src/scene/scene-core.ts",
+        kind: "property",
+    },
+    {
+        count: "engine.registered_sprite_renderers.size()",
+        module: "src/sprite/sprite-renderer.ts",
+        kind: "KIND",
+        macro: "BBLITE_HAS_SPRITES",
+    },
+    {
+        count: "bbl::text_renderer_count(engine)",
+        module: "src/text/text-renderer.ts",
+        kind: "KIND",
+    },
+    {
+        count: "engine.registered_effect_renderers.size()",
+        module: "src/effect/effect-renderer.ts",
+        kind: "property",
+    },
+    {
+        count: "engine.registered_frame_graph_contexts.size()",
+        module: "src/frame-graph/frame-graph-context.ts",
+        kind: "property",
+    },
+];
+
+/**
+ * `assertEveryActiveContextKindIsRecoverable`, lowered: the kinds of the
+ * active rendering contexts no in-flight registration recovers, refused by
+ * the pin's own message.
+ *
+ * Native keeps one registry per context kind on the engine rather than a
+ * list per surface, so the pin's loop over `engine.surfaces` is one pass
+ * over that registry, and `surface._renderingContexts` is every registered
+ * context, carrying the `_kind` the pin gives it. `handlers` is the
+ * in-flight snapshot, keyed by each registration's kind as the pin's map
+ * is.
+ */
+function contextKindAssertionCpp(context: LoweringContext): string {
+    const kinds = contextRegistries.map((entry) => {
+        if (entry.kind === "KIND")
+            return context.pinnedString(entry.module, "KIND");
+        const file = context.sourceFile(entry.module);
+        const initializer = context.namedPropertyInitializer(file, "_kind");
+        return initializer
+            ? context.stringValue(initializer, file)
+            : context.contractError(
+                  file,
+                  `Expected ${entry.module} to give its rendering context a _kind.`,
+              );
+    });
+    const registries = contextRegistries
+        .map((entry, index) => {
+            const line = `    kinds.insert(kinds.end(), ${entry.count}, std::string(${JSON.stringify(kinds[index])}));`;
+            return entry.macro ? `#if ${entry.macro}\n${line}\n#endif` : line;
+        })
+        .join("\n");
+    const assertion = lowerPinnedFunctionParts(
+        context,
+        runModule,
+        "assertEveryActiveContextKindIsRecoverable",
+        [
+            {
+                pinned: "engine",
+                kind: "record",
+                cpp: "engine",
+                cppType: "Engine",
+                annotation: "EngineContext",
+                binding: { cpp: "engine", type: "opaque" },
+            },
+            {
+                pinned: "handlers",
+                kind: "record",
+                cpp: "handlers",
+                cppType:
+                    "std::vector<std::shared_ptr<DeviceRecoveryRegistration>>",
+                annotation:
+                    "ReadonlyMap<string, DeviceLostRecoveryRegistration>",
+                binding: { cpp: "handlers", type: "opaque" },
+            },
+        ],
+        {
+            cppName: "assert_every_active_context_kind_is_recoverable",
+            returns: "void",
+            forOf: (iterated, element) => {
+                if (iterated === "engine.surfaces") {
+                    return {
+                        range: "std::views::single(&engine)",
+                        bindings: new Map([
+                            [element, { cpp: element, type: "opaque" }],
+                        ]),
+                    };
+                }
+                if (iterated.endsWith("._renderingContexts")) {
+                    return {
+                        range: `rendering_context_kinds(*${iterated.slice(0, -"._renderingContexts".length)})`,
+                        bindings: new Map([
+                            [
+                                `${element}._kind`,
+                                { cpp: element, type: "string" },
+                            ],
+                        ]),
+                    };
+                }
+                return undefined;
+            },
+            methods: new Map([
+                [
+                    "has",
+                    (receiver: string, args: readonly string[]) =>
+                        `std::ranges::any_of(${receiver}, [&](const auto& registration) { return registration->kind == ${args[0]}; })`,
+                ],
+            ]),
+        },
+    );
+    return `// Every surface's \`_renderingContexts\`, by kind: one registry per kind.
+static std::vector<std::string> rendering_context_kinds(const Engine& engine) {
+    std::vector<std::string> kinds;
+${registries}
+    return kinds;
+}
+
+// ${assertion.provenance}
+static ${assertion.declaration} {
+${assertion.body}
+}`;
+}
+
+/** `markNextDeviceLossForRecovery` and `forceWebGpuDeviceLossForTesting`. */
+function forcedLossCpp(context: LoweringContext): string {
+    const mark = lowerPinnedFunctionParts(
+        context,
+        recoveryModule,
+        "markNextDeviceLossForRecovery",
+        [
+            {
+                pinned: "engine",
+                kind: "record",
+                cpp: "engine",
+                cppType: "Engine",
+                annotation: "EngineContext",
+                mutableRecord: true,
+                binding: { cpp: "engine", type: "opaque" },
+            },
+        ],
+        {
+            cppName: "mark_next_device_loss_for_recovery",
+            returns: {
+                type: "bool",
+                value: (lowerer, expression) =>
+                    expression
+                        ? lowerer.expression(expression)
+                        : context.contractError(
+                              context.functionDeclaration(
+                                  recoveryModule,
+                                  "markNextDeviceLossForRecovery",
+                              ).declaration,
+                              "Expected markNextDeviceLossForRecovery to return its answer.",
+                          ),
+            },
+            ...coordinatorScope(context, {
+                bindings: [
+                    // `engine._deviceLostRecovery`, absent until the first
+                    // registration creates it: `state?._registrations.length`
+                    // is then undefined, which the pin's `!!` reads as zero.
+                    ...stateMembers(
+                        "engine._deviceLostRecovery",
+                        "(*engine.device_recovery)",
+                    ),
+                    [
+                        "state?._registrations.length",
+                        scalar(
+                            "(engine.device_recovery ? static_cast<double>(engine.device_recovery->registrations.size()) : 0.0)",
+                        ),
+                    ],
+                ],
+            }),
+        },
+    );
+    const force = lowerPinnedFunctionParts(
+        context,
+        testingModule,
+        "forceWebGpuDeviceLossForTesting",
+        [
+            {
+                pinned: "engine",
+                kind: "record",
+                cpp: "engine",
+                cppType: "Engine",
+                annotation: "EngineContext",
+                mutableRecord: true,
+                binding: { cpp: "engine", type: "opaque" },
+            },
+        ],
+        {
+            cppName: "force_web_gpu_device_loss_for_testing",
+            returns: "void",
+            ...coordinatorScope(context, {
+                calls: [
+                    [
+                        "markNextDeviceLossForRecovery",
+                        (args: readonly string[]) =>
+                            `mark_next_device_loss_for_recovery(${args.join(", ")})`,
+                    ],
+                ],
+                // `engine._device.destroy()`: the PAL tears the device down
+                // at the frame boundary and delivers the loss.
+                statement: (node, _lowerer, indent) =>
+                    ts.isExpressionStatement(node) &&
+                    node.expression.getText(
+                        context.sourceFile(testingModule),
+                    ) === "engine._device.destroy()"
+                        ? [`${indent}engine.renderer_restart_requested = true;`]
+                        : undefined,
+            }),
+            callShapes: new Map([
+                ["markNextDeviceLossForRecovery", "bool" as const],
+            ]),
+        },
+    );
+    return `// ${mark.provenance}
+${mark.declaration} {
+${mark.body}
+}
+
+// ${force.provenance}
+${force.declaration} {
+${force.body}
+}`;
+}
 
 export function lowerDeviceRecovery(context: LoweringContext): LoweredSource {
-    const modulePath = "src/engine/device-lost-recovery.ts";
     assertDeviceRecoveryContracts(context);
     return {
-        modulePath,
+        modulePath: recoveryModule,
         symbolName:
-            "_enableDeviceLostRecovery,arm,markNextDeviceLossForRecovery",
+            "_enableDeviceLostRecovery,arm,markNextDeviceLossForRecovery,forceWebGpuDeviceLossForTesting,enableDeviceLostSceneRecovery",
         header: "",
         source: `
-// ${context.provenance(modulePath, "_enableDeviceLostRecovery, arm")}
+// ${context.provenance(recoveryModule, "_enableDeviceLostRecovery, arm")}
 // Native device recreation replays generated upload/composition products over retained CPU owners.
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/js_data.hpp>
+#include <bblite/text_gpu.hpp>
+#include <algorithm>
 #include <iostream>
+#include <ranges>
+#include <string>
+#include <vector>
 
 namespace bbl {
 static Engine::DeviceRecoveryState& recovery_state(Engine& engine) {
     if (!engine.device_recovery) engine.device_recovery = std::make_shared<Engine::DeviceRecoveryState>();
     return *engine.device_recovery;
 }
-std::shared_ptr<DeviceRecoveryRegistration> enable_device_lost_scene_recovery(Engine& engine) {
-    auto& state = recovery_state(engine);
-    if (state.disposed) throw std::runtime_error("Cannot register recovery on a disposed engine.");
-    auto registration = std::make_shared<DeviceRecoveryRegistration>();
-    registration->engine = &engine;
-    state.registrations.push_back(registration);
-    return registration;
-}
-void disable_device_recovery(const std::shared_ptr<DeviceRecoveryRegistration>& registration) {
-    if (!registration || registration->disabled) return;
-    registration->disabled = true;
-    if (!registration->engine || !registration->engine->device_recovery) return;
-    auto& registrations = registration->engine->device_recovery->registrations;
-    std::erase(registrations, registration);
-}
+${armCpp(context)}
+
+${continuationsCpp(context)}
+
+${registrationCpp(context)}
+
+${sceneRecoveryCpp(context)}
+
+${forcedLossCpp(context)}
+
+${contextKindAssertionCpp(context)}
+
 void force_device_loss(Engine& engine) {
-    auto& state = recovery_state(engine);
-    if (state.disposed || std::none_of(state.registrations.begin(), state.registrations.end(), [](const auto& registration) { return !registration->disabled; })) {
-        throw std::runtime_error("forceWebGpuDeviceLossForTesting requires a device-lost recovery handler to be enabled first");
-    }
-    if (state.requested || state.recovering) throw std::runtime_error("A device-loss recovery is already in flight.");
-    state.requested = true;
-    engine.renderer_restart_requested = true;
+    // A disposed engine rebuilds nothing, and one recovery at a time runs
+    // natively: both refuse before the pin's own gate.
+    if (engine.device_recovery && engine.device_recovery->disposed)
+        throw std::runtime_error("Device recovery cannot run on a disposed engine.");
+    if (engine.device_recovery && (engine.device_recovery->requested || engine.device_recovery->recovering))
+        throw std::runtime_error("A device-loss recovery is already in flight.");
+    force_web_gpu_device_loss_for_testing(engine);
 }
 void begin_device_recovery(Engine& engine) {
     auto& state = recovery_state(engine);
-    state.requested = false;
-    state.recovering = true;
+    device_lost(engine, state);
+    // A loss the armed handler declined leaves the pin's device lost; the
+    // native run does not carry on over it.
+    if (!state.recovering) {
+        state.requested = false;
+        throw std::runtime_error("The GPU device was lost with no armed recovery to rebuild it.");
+    }
+    // runDeviceLostRecovery: the PAL recreates its device over retained owners.
     state.resources_ready = false;
-    state.in_flight.clear();
-    for (const auto& registration : state.registrations) if (!registration->disabled) state.in_flight.push_back(registration);
-    for (const auto& registration : state.in_flight) if (registration->on_lost) registration->on_lost();
     const bool was_running = !engine.stopped;
     engine.stopped = true;
-    if (bbl::has_sprite_renderers(engine) || !engine.registered_effect_renderers.empty() || !engine.registered_frame_graph_contexts.empty()) {
-        throw std::runtime_error("Every active rendering context must have an enabled recovery strategy; only scene contexts are represented.");
-    }
+    assert_every_active_context_kind_is_recoverable(engine, state.in_flight);
     state.environments.clear(); state.shadows.clear(); state.renderable_counts.clear(); state.fallback = {};
     ++engine.device_generation;
     engine.stopped = !was_running;
@@ -66,21 +966,19 @@ void complete_device_recovery(Engine& engine) {
     if (!engine.device_recovery) return;
     auto& state = *engine.device_recovery;
     if (!state.recovering || !state.resources_ready) return;
-    state.recovering = false;
     if (pal::environment_variable("BBLITE_RUNTIME_TRACE") == "1") {
         std::cerr << "[bblite trace] recovery generation=" << engine.device_generation << " draws=" << engine.draw_call_count << '\\n';
     }
-    auto registrations = std::move(state.in_flight);
+    device_recovered(engine, state);
     state.in_flight.clear();
-    for (const auto& registration : registrations) if (registration->on_recovered) registration->on_recovered();
 }
 void fail_device_recovery(Engine& engine, const std::string& error) {
     auto& state = recovery_state(engine);
-    state.requested = false; state.recovering = false; state.resources_ready = false;
+    state.requested = false;
+    state.resources_ready = false;
     engine.stopped = true;
-    auto registrations = std::move(state.in_flight);
+    device_recovery_failed(engine, state, error);
     state.in_flight.clear();
-    for (const auto& registration : registrations) if (registration->on_failed) registration->on_failed(error);
 }
 void add_gpu_error_listener(GpuDeviceIdentity device, std::function<void(const std::string&)> listener) {
     if (!device.engine) throw std::runtime_error("Invalid GPU device identity.");

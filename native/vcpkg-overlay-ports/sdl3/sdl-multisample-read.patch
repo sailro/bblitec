@@ -1,3 +1,7 @@
+Allow a multisample texture to carry a read usage and give D3D12 a TEXTURE2DMS
+shader-resource view, so passes can sample multisampled targets. Backport of
+libsdl-org/SDL#15838; drop it at the first SDL release carrying that change.
+
 diff --git a/src/gpu/SDL_gpu.c b/src/gpu/SDL_gpu.c
 index 01e1eb5e9cfa7..f186848b0c51a 100644
 --- a/src/gpu/SDL_gpu.c

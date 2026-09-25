@@ -21,6 +21,7 @@ export function regularExpressionParts(
     };
 }
 import { someAnalysisNode } from "./analysis-walk.js";
+import type { LibraryGlobal } from "./symbols.js";
 
 /** Calls, accessors and writes can change an earlier selected receiver/value. */
 export function expressionMayRunCode(expression: ts.Expression): boolean {
@@ -38,7 +39,7 @@ export function expressionMayRunCode(expression: ts.Expression): boolean {
     );
 }
 
-export interface UnwrapOptions {
+interface UnwrapOptions {
     /**
      * Strip `await` as well. Only a reader that already knows the awaited
      * value lands where the expression sits asks for this — the static
@@ -54,7 +55,7 @@ export interface UnwrapOptions {
  * operation under it: grouping parentheses, `as`, angle-bracket assertions,
  * `!` and `satisfies` — plus `await` when the caller asks.
  */
-export function isExpressionWrapper(
+function isExpressionWrapper(
     node: ts.Node,
     options: UnwrapOptions = {},
 ): node is
@@ -231,7 +232,7 @@ export function mutatingCallTarget(
  */
 export function iteratorMethodCall(
     expression: ts.Expression,
-    isLibrary: (identifier: ts.Identifier) => boolean,
+    libraryGlobal: LibraryGlobal,
     unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
 ):
     | {
@@ -254,7 +255,7 @@ export function iteratorMethodCall(
     }
     const receiver = call.expression.expression;
     if (
-        (ts.isIdentifier(receiver) && isLibrary(receiver)) ||
+        (ts.isIdentifier(receiver) && libraryGlobal(receiver) !== undefined) ||
         someAnalysisNode(
             receiver,
             (node) => ts.isCallExpression(node) || ts.isNewExpression(node),
@@ -307,7 +308,7 @@ export function assignmentTargets(
 }
 
 /** A prefix or postfix `++`/`--`. */
-export type UpdateExpression = (
+type UpdateExpression = (
     ts.PrefixUnaryExpression | ts.PostfixUnaryExpression
 ) & {
     readonly operator:
@@ -366,4 +367,48 @@ export function objectProperty(
         }
     }
     return undefined;
+}
+
+/**
+ * The names a statement declares in its scope: a variable statement's
+ * bindings, through object and array patterns, or a named function, class
+ * or enum declaration's own name.
+ */
+export function statementDeclaredNames(
+    statement: ts.Statement,
+): ts.Identifier[] {
+    const names: ts.Identifier[] = [];
+    const bind = (name: ts.BindingName): void => {
+        if (ts.isIdentifier(name)) {
+            names.push(name);
+            return;
+        }
+        for (const element of name.elements) {
+            if (ts.isBindingElement(element)) bind(element.name);
+        }
+    };
+    if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+            bind(declaration.name);
+        }
+    } else if (
+        (ts.isFunctionDeclaration(statement) ||
+            ts.isClassDeclaration(statement) ||
+            ts.isEnumDeclaration(statement)) &&
+        statement.name
+    ) {
+        names.push(statement.name);
+    }
+    return names;
+}
+
+/** Whether a node is written inside another. */
+export function isDeclaredInside(
+    node: ts.Node,
+    target: ts.Node | undefined,
+): boolean {
+    return (
+        target !== undefined &&
+        ts.findAncestor(node, (owner) => owner === target) !== undefined
+    );
 }

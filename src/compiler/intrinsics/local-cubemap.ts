@@ -1,3 +1,4 @@
+import { writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import type ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -9,6 +10,7 @@ import {
     type LocalCubemapJson,
     type LocalCubemapPlan,
 } from "../../pinned-local-cubemap.js";
+import { recordAt } from "../record-access.js";
 
 export interface LocalCubemapIntrinsicContext
     extends
@@ -17,14 +19,14 @@ export interface LocalCubemapIntrinsicContext
             LoweringServices,
             | "options"
             | "localCubemapState"
-            | "scenePbrMaterials"
-            | "registerAsset"
+            | "sceneManifest"
+            | "assetRegistry"
             | "expectSameEngine"
-            | "engineHasStarted"
+            | "engineLifecycle"
             | "hasRegisteredScene"
             | "emit"
             | "cppString"
-            | "compileCondition"
+            | "conditions"
             | "fail"
         > {}
 
@@ -39,7 +41,7 @@ function optionsJson(
             (environment) => environment.cpp === value.cpp,
         );
         if (index >= 0) return index;
-        environments.push(value);
+        writable(environments).push(value);
         return environments.length - 1;
     }
     if (
@@ -82,7 +84,7 @@ function packetExpression(
     } catch (error) {
         return context.fail(node, String(error));
     }
-    const asset = context.registerAsset(
+    const asset = context.assetRegistry.registerAsset(
         `data:application/json;base64,${Buffer.from(payload).toString("base64")}`,
         "binary",
     );
@@ -106,7 +108,7 @@ export function compileLocalCubemapIntrinsic(
     if (!names.includes(name)) return undefined;
     if (
         context.hasRegisteredScene() ||
-        context.engineHasStarted() ||
+        context.engineLifecycle.engineHasStarted() ||
         context.isRuntimeResourceConstruction()
     )
         context.fail(
@@ -174,7 +176,9 @@ export function compileLocalCubemapIntrinsic(
     const first = context.compileValue(argumentAt(call, 0));
     if (name === "setPbrLocalEnvironmentProbeDebug") {
         context.expectKind(first, "pbr-local-probe-set", argumentAt(call, 0));
-        const enabled = context.compileCondition(argumentAt(call, 1));
+        const enabled = context.conditions.compileCondition(
+            argumentAt(call, 1),
+        );
         if ((enabled !== "true" && enabled !== "false") || !first.localCubemap)
             context.fail(
                 call,
@@ -182,7 +186,7 @@ export function compileLocalCubemapIntrinsic(
             );
         if ((first.localCubemap.plan.debug ?? false) === (enabled === "true"))
             return { kind: "void", cpp: "" };
-        first.localCubemap.plan.debug = enabled === "true";
+        writable(first.localCubemap.plan).debug = enabled === "true";
         return {
             kind: "void",
             cpp: `*${first.cpp} = *${packetExpression(context, first.localCubemap, call)}`,
@@ -198,22 +202,24 @@ export function compileLocalCubemapIntrinsic(
                 "Local environments currently require a statically known scene PBR material.",
             );
         const material =
-            context.scenePbrMaterials[first.scenePbrMaterialIndex]!;
+            context.sceneManifest.scenePbrMaterials[
+                first.scenePbrMaterialIndex
+            ]!;
         if (name === "clearPbrLocalEnvironment") {
-            delete material.localCubemapCandidates;
+            delete writable(material).localCubemapCandidates;
             return {
                 kind: "void",
-                cpp: `${first.engineCpp}.materials.at(${first.cpp}.value).local_environment.reset()`,
+                cpp: `${recordAt(`${first.engineCpp}.materials`, first.cpp)}.local_environment.reset()`,
             };
         }
-        material.localCubemapCandidates = maxCandidates;
+        writable(material).localCubemapCandidates = maxCandidates;
         if (name === "setPbrLocalEnvironmentProbeSet") {
             const set = context.compileValue(argumentAt(call, 1));
             context.expectKind(set, "pbr-local-probe-set", argumentAt(call, 1));
             context.expectSameEngine(first, set, call);
             return {
                 kind: "void",
-                cpp: `${first.engineCpp}.materials.at(${first.cpp}.value).local_environment = ${set.cpp}`,
+                cpp: `${recordAt(`${first.engineCpp}.materials`, first.cpp)}.local_environment = ${set.cpp}`,
             };
         }
     }
@@ -296,6 +302,6 @@ export function compileLocalCubemapIntrinsic(
           }
         : {
               kind: "void",
-              cpp: `${first.engineCpp}.materials.at(${first.cpp}.value).local_environment = ${cpp}`,
+              cpp: `${recordAt(`${first.engineCpp}.materials`, first.cpp)}.local_environment = ${cpp}`,
           };
 }

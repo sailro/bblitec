@@ -1,4 +1,5 @@
 import { GLTF_MESH_WALKS } from "../../gltf-document.js";
+import { recordAt } from "../../compiler/record-access.js";
 
 /**
  * The generated `.babylon` loader.
@@ -8,7 +9,7 @@ import { GLTF_MESH_WALKS } from "../../gltf-document.js";
  * which the pinned engine keeps as a per-mesh light set. A file whose lights
  * name neither emits this loader without the resolution.
  */
-export interface BabylonLoaderLoweredSegments {
+interface BabylonLoaderLoweredSegments {
     /**
      * `bake_local_matrix`, lowered whole from
      * `src/loader-babylon/bake-local-matrix.ts#bakeLocalMatrix`.
@@ -27,10 +28,13 @@ export interface BabylonLoaderLoweredSegments {
 
 export function babylonLoaderCpp(
     provenance: string,
-    cameraParser: string,
+    // The lowered `parseBabylonCamera`, or `undefined` for a scene whose
+    // every `loadBabylon` passes `loadCamera: false`: the pin imports its
+    // camera module only when the option is not false, so neither the parser
+    // nor the camera selection is compiled then.
+    cameraParser: string | undefined,
     lowered: BabylonLoaderLoweredSegments,
     lightMeshLists = false,
-    meshClones = false,
 ): string {
     return `// ${provenance}
 #include <bblite/pal.hpp>
@@ -89,9 +93,7 @@ std::string string_or(
         : fallback;
 }
 
-${cameraParser}
-
-${lowered.bakeLocalMatrix}
+${cameraParser !== undefined ? `${cameraParser}\n\n` : ""}${lowered.bakeLocalMatrix}
 
 ${lowered.materialProperties}
 
@@ -141,7 +143,6 @@ MaterialHandle load_material(
     }
     apply_babylon_material_properties(material, source, scene_ambient);
     project_material_source_colors(material);
-    const float alpha = material.alpha;
     material.base_color_factor = Color4{
         material.diffuse_color.r,
         material.diffuse_color.g,
@@ -182,10 +183,6 @@ MaterialHandle load_material(
                 return index;
             }
     });
-    material.alpha_mode =
-        alpha < 1.0f || material.opacity_texture.has_image()
-            ? MaterialAlphaMode::blend
-            : MaterialAlphaMode::opaque;
     engine.materials.push_back(std::move(material));
     const MaterialHandle handle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
@@ -206,7 +203,9 @@ ${lowered.submeshDefaults}
 
 ${lowered.hierarchy}
 
-// Project the linked source hierarchy into native baked geometry and traversal order.
+// Project the linked source hierarchy into native records and traversal
+// order: a mesh keeps its own TRS and local vertices, and composes under its
+// parent nodes' world, which the pin's node hierarchy holds.
 void realize_babylon_hierarchy(Engine& engine, AssetRecord& asset,
     const std::vector<BabylonHierarchyNode>& nodes, const std::vector<std::size_t>& roots) {
     std::vector<std::array<float, 16>> worlds(nodes.size());
@@ -228,24 +227,8 @@ void realize_babylon_hierarchy(Engine& engine, AssetRecord& asset,
     };
     for (std::size_t index = 0; index < nodes.size(); ++index) {
         const auto& node = nodes[index];
-        const auto& matrix = world(world, index);
-        if (node.mesh.value == invalid_handle) continue;
-        auto& mesh = engine.meshes.at(node.mesh.value);
-        mesh.instance_parent_matrix = matrix;
-        auto& geometry = engine.geometries.at(mesh.geometry);
-        geometry.bounds_min = Vec3{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
-        geometry.bounds_max = Vec3{std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
-        for (std::size_t vertex_index = 0; vertex_index < geometry.vertices.size(); ++vertex_index) {
-            auto& vertex = geometry.vertices[vertex_index];
-            vertex.position = upstream::transform_position(matrix, vertex.local_position);
-            vertex.normal = upstream::normalize_baked_direction(upstream::transform_direction(matrix, geometry.local_normals.at(vertex_index)));
-            geometry.bounds_min.x = std::min(geometry.bounds_min.x, vertex.position.x);
-            geometry.bounds_min.y = std::min(geometry.bounds_min.y, vertex.position.y);
-            geometry.bounds_min.z = std::min(geometry.bounds_min.z, vertex.position.z);
-            geometry.bounds_max.x = std::max(geometry.bounds_max.x, vertex.position.x);
-            geometry.bounds_max.y = std::max(geometry.bounds_max.y, vertex.position.y);
-            geometry.bounds_max.z = std::max(geometry.bounds_max.z, vertex.position.z);
-        }
+        if (node.mesh.value == invalid_handle || node.parent == invalid_handle) continue;
+        ${recordAt("engine.meshes", "node.mesh")}.parent_world = world(world, node.parent);
     }
     std::vector<std::size_t> pending(roots.rbegin(), roots.rend());
     std::vector<bool> seen(nodes.size());
@@ -307,23 +290,24 @@ std::uint32_t upload_babylon_mesh(Engine& engine, const std::vector<float>& posi
     const auto vertex_count = positions.size() / 3;
     ModelGeometry geometry;
     geometry.vertices.resize(vertex_count);
-    geometry.local_normals.resize(vertex_count);
-${meshClones ? "    geometry.bind_vertices.resize(vertex_count);" : ""}
+    geometry.bounds_min = Vec3{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max()};
+    geometry.bounds_max = Vec3{std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
     for (std::size_t index = 0; index < vertex_count; ++index) {
         ModelVertex vertex;
-        vertex.local_position = Vec3{positions[index * 3], positions[index * 3 + 1], positions[index * 3 + 2]};
-        vertex.position = vertex.local_position;
+        vertex.position = Vec3{positions[index * 3], positions[index * 3 + 1], positions[index * 3 + 2]};
         vertex.normal = Vec3{normals[index * 3], normals[index * 3 + 1], normals[index * 3 + 2]};
         if (!uvs.empty()) vertex.uv = Vec2{uvs.at(index * 2), uvs.at(index * 2 + 1)};
         if (!uvs2.empty()) vertex.uv2 = Vec2{uvs2.at(index * 2), uvs2.at(index * 2 + 1)};
-        geometry.local_normals[index] = vertex.normal;
         geometry.vertices[index] = vertex;
-${meshClones ? "        geometry.bind_vertices[index] = vertex;" : ""}
+        geometry.bounds_min.x = std::min(geometry.bounds_min.x, vertex.position.x);
+        geometry.bounds_min.y = std::min(geometry.bounds_min.y, vertex.position.y);
+        geometry.bounds_min.z = std::min(geometry.bounds_min.z, vertex.position.z);
+        geometry.bounds_max.x = std::max(geometry.bounds_max.x, vertex.position.x);
+        geometry.bounds_max.y = std::max(geometry.bounds_max.y, vertex.position.y);
+        geometry.bounds_max.z = std::max(geometry.bounds_max.z, vertex.position.z);
     }
     geometry.indices = indices;
-    const auto index = static_cast<std::uint32_t>(engine.geometries.size());
-    engine.geometries.push_back(std::move(geometry));
-    return index;
+    return store_geometry_record(engine, std::move(geometry));
 }
 
 std::size_t create_babylon_mesh(Engine& engine, std::vector<BabylonHierarchyNode>& nodes,
@@ -331,23 +315,18 @@ std::size_t create_babylon_mesh(Engine& engine, std::vector<BabylonHierarchyNode
     std::uint32_t geometry, const upstream::TrsLanes& transform) {
     MeshRecord mesh;
     mesh.name = name;
-    mesh.primitive = PrimitiveKind::babylon;
     mesh.geometry = geometry;
     mesh.material = material;
     mesh.receives_shadows = receives_shadows;
-${
-    meshClones
-        ? `    mesh.imported_clone_trs = ImportedMeshTrs{
-        Vec3{static_cast<float>(transform.position.x), static_cast<float>(transform.position.y), static_cast<float>(transform.position.z)},
-        transform.rotation, transform.scaling};`
-        : ""
-}
-    const auto mesh_index = static_cast<std::uint32_t>(engine.meshes.size());
-    engine.meshes.push_back(std::move(mesh));
+    mesh.position = transform.position;
+    mesh.rotation = transform.rotation;
+    mesh.scaling = transform.scaling;
+    mesh.has_rotation_quaternion = transform.has_rotation_quaternion;
+    mesh.rotation_quaternion = transform.rotation_quaternion;
     BabylonHierarchyNode node;
     node.id = id;
     node.transform = transform;
-    node.mesh = MeshHandle{mesh_index};
+    node.mesh = store_mesh_record(engine, std::move(mesh));
     const auto index = nodes.size();
     nodes.push_back(std::move(node));
     return index;
@@ -365,18 +344,18 @@ ${lowered.meshConstruction}
 
 ${
     lightMeshLists
-        ? `std::vector<std::uint32_t> resolve_babylon_light_meshes(const Json& ids,
+        ? `std::vector<MeshHandle> resolve_babylon_light_meshes(const Json& ids,
     const std::unordered_map<std::string, std::vector<std::size_t>>& meshes_by_id,
     const std::vector<BabylonHierarchyNode>& nodes) {
     std::unordered_set<std::string> seen;
-    std::vector<std::uint32_t> result;
+    std::vector<MeshHandle> result;
     for (const auto& value : ids) {
         if (!value.is_string()) continue;
         const auto id = value.get<std::string>();
         if (!seen.insert(id).second) continue;
         const auto found = meshes_by_id.find(id);
         if (found == meshes_by_id.end()) continue;
-        for (const auto index : found->second) result.push_back(nodes.at(index).mesh.value);
+        for (const auto index : found->second) result.push_back(nodes.at(index).mesh);
     }
     return result;
 }
@@ -425,11 +404,18 @@ AssetHandle load_babylon(Engine& engine, const std::string& path, bool load_came
         asset.clear_color = *color;
         asset.has_clear_color = true;
     }
-    if (const auto camera = select_babylon_camera(engine, document, load_camera)) {
+${
+    cameraParser !== undefined
+        ? `    if (const auto camera = select_babylon_camera(engine, document, load_camera)) {
         asset.camera = *camera;
         asset.has_camera = true;
     }
-
+`
+        : `    // Every call site passes loadCamera: false, which the pin answers by
+    // never importing its camera module.
+    static_cast<void>(load_camera);
+`
+}
     if (const auto walks = document.find(${JSON.stringify(GLTF_MESH_WALKS)}); walks != document.end()) {
         install_asset_mesh_walks(asset, walks->get<std::vector<std::vector<double>>>());
     }

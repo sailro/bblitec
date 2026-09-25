@@ -1,5 +1,9 @@
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
+import { sharedUpstreamStore } from "../upstream-source.js";
+
+/** The pinned module that declares the error helper. */
+const liteErrorModule = "src/lite-error.ts";
 
 /** Match the imported error helper, including local aliases. */
 export function isPinnedErrorCall(
@@ -12,7 +16,10 @@ export function isPinnedErrorCall(
         if (
             !ts.isImportDeclaration(statement) ||
             !ts.isStringLiteral(statement.moduleSpecifier) ||
-            !/^(?:\.\.?\/)+lite-error\.js$/.test(statement.moduleSpecifier.text)
+            sharedUpstreamStore().resolveImport(
+                file.fileName,
+                statement.moduleSpecifier.text,
+            ) !== liteErrorModule
         )
             return false;
         const bindings = statement.importClause?.namedBindings;
@@ -29,12 +36,11 @@ export function isPinnedErrorCall(
     });
 }
 
-/** Encode fixed-message contract throws using the pin's generated error table. */
-export function encodePinnedErrorContracts(
-    context: LoweringContext,
-    source: string,
-    owner: ts.Node,
-): string {
+/** The pin's generated error table: one message decoder per code. */
+function pinnedErrorTable(context: LoweringContext): {
+    file: ts.SourceFile;
+    table: ts.ArrayLiteralExpression;
+} {
     const file = context.sourceFile("src/error-messages.ts");
     const table = context.variableInitializer(file, "T");
     if (!ts.isArrayLiteralExpression(table))
@@ -42,6 +48,16 @@ export function encodePinnedErrorContracts(
             table,
             "Expected the pinned error message table.",
         );
+    return { file, table };
+}
+
+/** Encode fixed-message contract throws using the pin's generated error table. */
+export function encodePinnedErrorContracts(
+    context: LoweringContext,
+    source: string,
+    owner: ts.Node,
+): string {
+    const { file, table } = pinnedErrorTable(context);
     const codes = new Map<string, number>();
     const templates = new Map<string, number>();
     const reachedCodes = new Set(
@@ -131,6 +147,28 @@ export function encodePinnedErrorContracts(
     }
 }
 
+/** The fixed message the pin's error table decodes for `code`. */
+export function pinnedErrorMessage(
+    context: LoweringContext,
+    code: number,
+): string {
+    const { table } = pinnedErrorTable(context);
+    const decoder = table.elements[code];
+    const message =
+        decoder &&
+        ts.isArrowFunction(decoder) &&
+        decoder.parameters.length === 0 &&
+        !ts.isBlock(decoder.body)
+            ? context.unwrapExpression(decoder.body)
+            : undefined;
+    if (!message || !ts.isStringLiteral(message))
+        return context.contractError(
+            decoder ?? table,
+            `Expected pinned error ${code} to be a fixed message.`,
+        );
+    return message.text;
+}
+
 /** The diagnostic table belongs to the pin; numeric error IDs are build outputs. */
 export function containsPinnedErrorMessage(
     context: LoweringContext,
@@ -145,13 +183,7 @@ export function containsPinnedErrorMessage(
             child.expression.text === "ThrowLiteError",
     );
     if (!calls.length) return false;
-    const file = context.sourceFile("src/error-messages.ts");
-    const table = context.variableInitializer(file, "T");
-    if (!ts.isArrayLiteralExpression(table))
-        return context.contractError(
-            table,
-            "Expected the pinned error message table.",
-        );
+    const { table } = pinnedErrorTable(context);
     return calls.some((call) => {
         const id = call.arguments[0];
         if (!id || !ts.isNumericLiteral(id)) return false;

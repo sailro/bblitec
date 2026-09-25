@@ -1,8 +1,9 @@
 import ts from "typescript";
 import { EmissionMap } from "../emission-transaction.js";
 import { dataTypesEqual, type DataType } from "../data-types.js";
-import type { Value } from "../types.js";
+import { isStringValue, optionalPresentCpp, type Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
+import { isNullishLiteral } from "../symbols.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 
@@ -47,7 +48,7 @@ function expressionEnum(
     // known string names its member just as the literal
     // written in place would.
     if (ts.isIdentifier(unwrapped)) {
-        const bound = lowerer.context.lookupIdentifierValue(unwrapped);
+        const bound = lowerer.context.bindings.lookupOptional(unwrapped);
         if (bound?.staticString !== undefined) {
             return lowerer.context.dataTypes.enumMemberCpp(
                 dataType,
@@ -86,17 +87,14 @@ function expressionStruct(
         lowerer.context.dataTypes.isReferenceStruct(dataType.name)
     ) {
         return (
-            `(${lowerer.context.compileCondition(unwrapped.condition)} ? ` +
+            `(${lowerer.context.conditions.compileCondition(unwrapped.condition)} ? ` +
             `${lowerer.compileForSink(unwrapped.whenTrue, dataType)} : ` +
             `${lowerer.compileForSink(unwrapped.whenFalse, dataType)})`
         );
     }
     if (
         lowerer.context.dataTypes.isReferenceStruct(dataType.name) &&
-        (unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) &&
-                unwrapped.text === "undefined" &&
-                !lowerer.context.lookupIdentifierValue(unwrapped)))
+        isNullishLiteral(lowerer.context.checker, unwrapped)
     ) {
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
@@ -179,10 +177,7 @@ function valueEnum(
             node,
         );
     }
-    if (
-        value.kind === "string" ||
-        (value.kind === "data" && value.dataType?.kind === "string")
-    ) {
+    if (isStringValue(value)) {
         return lowerer.context.dataTypes.enumFromStringCpp(
             dataType,
             value.cpp,
@@ -236,7 +231,7 @@ function valueStruct(
         return (
             `([&]() -> ${target} {\n` +
             `    const auto& ${source} = ${value.cpp};\n` +
-            `    if (!${source}.has_value()) return {};\n` +
+            `    if (!${optionalPresentCpp(source)}) return {};\n` +
             lines.map((line) => `    ${line}\n`).join("") +
             `    return ${converted};\n}())`
         );
@@ -279,7 +274,7 @@ function valueStruct(
     }
     // A structural view of a stored class binds its prototype methods to
     // the retained receiver, just as a view of a local class record does.
-    value = lowerer.context.classLowerer.hydrate(value) ?? value;
+    value = lowerer.context.classLowerer.hydrate(value, node) ?? value;
     if (value.kind === "record") {
         lowerer.context.dataTypes.cppType(dataType);
         const fields = lowerer.context.dataTypes.structFields(
@@ -291,11 +286,10 @@ function valueStruct(
                 if (field.type.kind === "function") {
                     const method =
                         value.recordMethods?.[field.sourceName] ??
-                        value.classDeclaration?.members.find(
-                            (member): member is ts.MethodDeclaration =>
-                                ts.isMethodDeclaration(member) &&
-                                ts.isIdentifier(member.name) &&
-                                member.name.text === field.sourceName,
+                        lowerer.context.classLowerer.viewMethod(
+                            value,
+                            field.sourceName,
+                            node,
                         );
                     if (method) {
                         return lowerer.context.compileStoredDataFunction(

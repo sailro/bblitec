@@ -1,4 +1,4 @@
-import { EmissionMap } from "./emission-transaction.js";
+import { EmissionMap, writable } from "./emission-transaction.js";
 import {
     compositeScalarAccessors,
     compositeScalarFunction,
@@ -489,38 +489,29 @@ export interface AssignmentContext
         DeterministicRandomContext,
         Pick<
             LoweringServices,
-            | "isDefaultLibraryIdentifier"
-            | "noteNodeInputAdmissionFailure"
-            | "noteTextSceneCameraAssignment"
-            | "noteTemporalRecordBoundary"
+            | "libraryGlobal"
+            | "admissions"
             | "isRuntimeResourceConstruction"
             | "checker"
+            | "classLowerer"
             | "dataTypes"
             | "dataLowerer"
-            | "recordSceneMeshMaterial"
-            | "recordUnknownSceneMeshMaterial"
-            | "recordUnknownStandardMeshMaterial"
-            | "recordUnknownSceneMaterialAssignment"
-            | "recordSceneMeshAssetPbrMaterial"
-            | "recordSceneMeshDeformation"
-            | "engineHasStarted"
+            | "sceneManifest"
+            | "engineLifecycle"
             | "hasRegisteredScene"
-            | "recordToneMappingEnabledMutation"
-            | "reachedNodeParticles"
             | "boundPixelsTextures"
             | "resolveStaticExpression"
-            | "lookupOptional"
+            | "bindings"
             | "resolveThisField"
             | "resolveRecordValue"
             | "compileRecordSetter"
-            | "selectToneMapping"
-            | "lookup"
             | "compileValue"
             | "compileForDataSink"
             | "bindClassDataField"
             | "bindClassField"
             | "emitOptionalResourceAssignment"
             | "emitUiPropertyAssignment"
+            | "callbacks"
             | "compileNumber"
             | "compileBoolean"
             | "compileColor3"
@@ -533,35 +524,22 @@ export interface AssignmentContext
             | "expectKind"
             | "expectSameEngine"
             | "requireEngine"
-            | "meshHasThinInstancePool"
-            | "assertAssetRootWritable"
+            | "assetRegistry"
             | "eraseBrowserInstrumentation"
-            | "isBrowserOnlyExpression"
+            | "browserErasure"
             | "isNativeUiValueExpression"
-            | "isBrowserDomValue"
             | "emit"
             | "allocateTemporaryCppName"
-            | "meshTransformDirtyEntry"
             | "reachFeature"
             | "reachJsData"
-            | "noteMaterialColorObjectWrite"
-            | "noteMaterialColorRead"
-            | "noteMaterialColorRenderBoundary"
-            | "recordShadowReceiver"
-            | "recordDynamicShadowReceivers"
-            | "recordSceneMeshId"
-            | "resolveSceneMeshIds"
             | "propertyName"
             | "probeStaticArrayLiteral"
             | "staticStringElements"
             | "compileStaticString"
-            | "withBoundParameters"
             | "withRecordScopes"
             | "compileStoredDataFunction"
             | "cppString"
             | "dataValue"
-            | "recordScenePbrPlugins"
-            | "recordStandardMaterialPlugins"
             | "fail"
         > {}
 
@@ -646,7 +624,7 @@ function emitNodeParticleScalarAssignment(
                 "node-particle set.",
         );
     }
-    if (context.reachedNodeParticles.sets[set]?.native) {
+    if (context.sceneManifest.reachedNodeParticles.sets[set]?.native) {
         context.emit(
             `bbl::upstream::set_native_node_particle_scalar(${set}, ${system}, "${property}", ${context.compileNumber(expression.right, "double")});`,
         );
@@ -661,7 +639,7 @@ function emitNodeParticleScalarAssignment(
                 "simulation runs at generation.",
         );
     }
-    context.reachedNodeParticles.steps.push({
+    context.sceneManifest.reachedNodeParticles.steps.push({
         op: "scalar",
         set,
         system,
@@ -693,8 +671,9 @@ function emitNodeParticleTextureAssignment(
         "node-particle system texture",
     );
     if (
-        context.reachedNodeParticles.sets[target.nodeParticleSetIndex!]
-            ?.native &&
+        context.sceneManifest.reachedNodeParticles.sets[
+            target.nodeParticleSetIndex!
+        ]?.native &&
         context.isRuntimeResourceConstruction()
     ) {
         context.fail(
@@ -722,7 +701,7 @@ function emitNodeParticleTextureAssignment(
                 "node-particle set.",
         );
     }
-    const program = context.reachedNodeParticles;
+    const program = context.sceneManifest.reachedNodeParticles;
     if (
         program.billboards.some(
             (frozen) => frozen.set === set && frozen.system === system,
@@ -774,7 +753,7 @@ function emitPostProcessOptionAssignment(
             left.name.text,
         ]).find((entry) => entry.property === left.name.text);
         if (accessor) {
-            composite.scalarAccesses = [
+            writable(composite).scalarAccesses = [
                 ...new Set([
                     ...(composite.scalarAccesses ?? []),
                     accessor.property,
@@ -816,9 +795,7 @@ function emitPostProcessOptionAssignment(
     // one is refused above.
 
     context.emit(
-        `${context.requireEngine(owner, expression)}.frame_tasks[${
-            owner.cpp
-        }.value].post_process.passes[0].params[${slot}] = ${context.compileNumber(
+        `${recordAt(`${context.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.post_process.passes[0].params[${slot}] = ${context.compileNumber(
             expression.right,
             "double",
         )};`,
@@ -845,9 +822,7 @@ function emitScreenSpaceSettingAssignment(
         return false;
     }
     const setting = left.name.text;
-    const record = `${context.requireEngine(owner, expression)}.frame_tasks[${
-        owner.cpp
-    }.value].screen_space`;
+    const record = `${recordAt(`${context.requireEngine(owner, expression)}.frame_tasks`, owner.cpp)}.screen_space`;
     requireSimpleAssignment(context, expression, "screen-space setting");
     if (setting === "enabled") {
         context.emit(
@@ -925,7 +900,7 @@ function emitSpriteLayerViewAssignment(
     const layer = context.compileValue(layerExpression);
     context.expectKind(layer, "sprite-layer", layerExpression);
     context.emit(
-        `${context.requireEngine(layer, layerExpression)}.sprite_layers[${layer.cpp}.value].view.${field} = static_cast<float>(${context.compileNumber(expression.right, "double")});`,
+        `${recordAt(`${context.requireEngine(layer, layerExpression)}.sprite_layers`, layer.cpp)}.view.${field} = static_cast<float>(${context.compileNumber(expression.right, "double")});`,
     );
     return true;
 }
@@ -1026,7 +1001,7 @@ function emitWriteOnlyNumberExpandoAssignment(
 
     const ownerExpression = context.unwrap(assertedOwner);
     if (!ts.isIdentifier(ownerExpression)) return false;
-    const owner = context.lookup(ownerExpression);
+    const owner = context.bindings.lookup(ownerExpression);
     if (owner.kind !== "mesh") return false;
 
     // This is an expando only when the type before the assertion did not expose
@@ -1111,7 +1086,7 @@ function emitBridgeOriginWrite(
     const owner =
         context.resolveRecordValue(origin.expression) ??
         (originIdentifier
-            ? context.lookupOptional(originIdentifier)
+            ? context.bindings.lookupOptional(originIdentifier)
             : undefined);
     if (owner?.kind !== "node-particle-2d-bridge") return false;
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
@@ -1167,7 +1142,7 @@ export function emitPropertyAssignment(
     const operator = assignmentOperator(context, expression);
     const left = expression.left;
     const regexpOwner = ts.isIdentifier(left.expression)
-        ? (context.lookupOptional(left.expression) ??
+        ? (context.bindings.lookupOptional(left.expression) ??
           (context.checker.getTypeAtLocation(left.expression).symbol?.name ===
           "RegExp"
               ? context.compileValue(left.expression)
@@ -1212,6 +1187,9 @@ export function emitPropertyAssignment(
     if (context.emitUiPropertyAssignment(expression)) {
         return;
     }
+    if (emitBrowserFileAssignment(context, expression, left)) {
+        return;
+    }
     // The same distinction applies to a nullable Web Audio handle stored in
     // a lowered class. Its declaration already created optional native
     // storage, so an assignment through this or a named instance must fill
@@ -1221,9 +1199,8 @@ export function emitPropertyAssignment(
             left.expression.kind === ts.SyntaxKind.ThisKeyword
                 ? context.resolveThisField(left.name.text)
                 : ts.isIdentifier(left.expression)
-                  ? context.lookupOptional(left.expression)?.recordProperties?.[
-                        left.name.text
-                    ]
+                  ? context.bindings.lookupOptional(left.expression)
+                        ?.recordProperties?.[left.name.text]
                   : undefined;
         if (
             existing &&
@@ -1264,12 +1241,12 @@ export function emitPropertyAssignment(
             );
         }
         context.bindClassField(left.name, expression.right);
-        fields[left.name.text] = context.compileValue(left.name);
+        writable(fields)[left.name.text] = context.compileValue(left.name);
         return;
     }
     if (
-        context.isBrowserOnlyExpression(left) ||
-        context.isBrowserDomValue(left)
+        context.browserErasure.isBrowserOnlyExpression(left) ||
+        context.browserErasure.isBrowserDomValue(left)
     ) {
         context.eraseBrowserInstrumentation(expression.pos);
         return;
@@ -1278,8 +1255,8 @@ export function emitPropertyAssignment(
         const drag = context.compileValue(left.expression);
         if (drag.kind === "pointer-drag") {
             context.emit(
-                `${context.requireEngine(drag, expression)}.edit_gizmos[` +
-                    `${drag.cpp}.value].${left.name.text} ${operator} ` +
+                `${recordAt(`${context.requireEngine(drag, expression)}.edit_gizmos`, drag.cpp)}` +
+                    `.${left.name.text} ${operator} ` +
                     `${context.compileBoolean(expression.right)};`,
             );
             return;
@@ -1289,7 +1266,9 @@ export function emitPropertyAssignment(
         return;
     }
     if (operator === "=") {
-        const owner = context.resolveRecordValue(left.expression);
+        const owner =
+            context.resolveRecordValue(left.expression) ??
+            context.classLowerer.storedSetterOwner(left);
         if (owner) {
             if (owner.nativeError)
                 context.fail(
@@ -1357,8 +1336,9 @@ export function emitPropertyAssignment(
                         assigned,
                     );
                     if (bound) {
-                        owner.recordProperties ??= {};
-                        owner.recordProperties[left.name.text] = bound;
+                        writable((writable(owner).recordProperties ??= {}))[
+                            left.name.text
+                        ] = bound;
                         return;
                     }
                 }
@@ -1398,8 +1378,22 @@ export function emitPropertyAssignment(
                         left,
                         "Replacing a record callback requires a native function slot on a locally bound record.",
                     );
-                owner.recordProperties ??= {};
-                owner.recordProperties[left.name.text] = assigned;
+                // A shared instance keeps a field outside its struct only
+                // when every instance holds the same value; rebinding it here
+                // would change it for all of them.
+                if (
+                    owner.dataType?.kind === "struct" &&
+                    context.dataTypes.isClassStruct(owner.dataType.name)
+                )
+                    context.fail(
+                        left,
+                        `Field '${left.name.text}' of a shared class instance is ` +
+                            "not stored per instance, so assigning it would " +
+                            "change it for every instance.",
+                    );
+                writable((writable(owner).recordProperties ??= {}))[
+                    left.name.text
+                ] = context.bindings.settleBuiltValue(assigned);
                 return;
             }
         }
@@ -1416,7 +1410,7 @@ export function emitPropertyAssignment(
             context,
             expression,
             left,
-            context.lookup(left.expression),
+            context.bindings.lookup(left.expression),
         )
     ) {
         return;
@@ -1427,7 +1421,7 @@ export function emitPropertyAssignment(
             context,
             expression,
             left,
-            context.lookup(left.expression),
+            context.bindings.lookup(left.expression),
         )
     ) {
         return;
@@ -1437,7 +1431,7 @@ export function emitPropertyAssignment(
         left.expression.name.text === "dataset" &&
         ts.isIdentifier(left.expression.expression)
     ) {
-        const target = context.lookup(left.expression.expression);
+        const target = context.bindings.lookup(left.expression.expression);
         if (target.kind === "browser") {
             context.eraseBrowserInstrumentation(expression.pos);
             return;
@@ -1448,7 +1442,7 @@ export function emitPropertyAssignment(
         left.expression.name.text === "imageProcessing" &&
         ts.isIdentifier(left.expression.expression)
     ) {
-        const scene = context.lookup(left.expression.expression);
+        const scene = context.bindings.lookup(left.expression.expression);
         context.expectKind(scene, "scene", left.expression.expression);
         const property = left.name.text;
         if (
@@ -1485,7 +1479,10 @@ export function emitPropertyAssignment(
                         `${toneMappingExportNames().join(", ")}.`,
                 );
             }
-            context.selectToneMapping(value.staticString, expression.right);
+            context.sceneManifest.selectToneMapping(
+                value.staticString,
+                expression.right,
+            );
             return;
         }
         if (property === "toneMappingEnabled") {
@@ -1494,13 +1491,13 @@ export function emitPropertyAssignment(
                 expression,
                 `image-processing property '${property}'`,
             );
-            context.recordToneMappingEnabledMutation();
+            context.sceneManifest.recordToneMappingEnabledMutation();
             context.emit(
                 `${scene.cpp}.environment.tone_mapping_enabled = ${context.compileBoolean(expression.right)};`,
             );
             return;
         }
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             expression,
             `authored imageProcessing.${property} writes require double-precision TAA cache-key transport`,
             "always",
@@ -1515,7 +1512,7 @@ export function emitPropertyAssignment(
         left.expression.name.text === "camera" &&
         ts.isIdentifier(left.expression.expression)
     ) {
-        const scene = context.lookup(left.expression.expression);
+        const scene = context.bindings.lookup(left.expression.expression);
         context.expectKind(scene, "scene", left.expression.expression);
         const property = left.name.text;
         if (property === "viewport") {
@@ -1537,7 +1534,7 @@ export function emitPropertyAssignment(
             operator === "=",
         );
         context.emit(
-            `${context.requireEngine(scene, expression)}.cameras[${scene.cpp}.camera.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
+            `${recordAt(`${context.requireEngine(scene, expression)}.cameras`, `${scene.cpp}.camera`)}.${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
         );
         return;
     }
@@ -1579,7 +1576,7 @@ export function emitPropertyAssignment(
             failClassFieldRebind(context, expression, left.name.text);
         }
         context.bindClassField(left.name, expression.right);
-        fields[left.name.text] = context.compileValue(left.name);
+        writable(fields)[left.name.text] = context.compileValue(left.name);
         return;
     }
     if (
@@ -1614,7 +1611,7 @@ export function emitPropertyAssignment(
     if (trsVector && ts.isPropertyAccessExpression(left.expression)) {
         const root = context.compileValue(left.expression.expression);
         if (root.kind === "asset-root") {
-            context.assertAssetRootWritable(root, expression);
+            context.assetRegistry.assertAssetRootWritable(root, expression);
             const vector = left.expression.name.text;
             const axis = trsAxisIndex(left.name.text);
             if (axis === undefined) {
@@ -1642,7 +1639,7 @@ export function emitPropertyAssignment(
                 const vectorRead =
                     vector === "rotation"
                         ? `bbl::asset_root_rotation(${engine}, ${target})`
-                        : `${engine}.assets[${target}.value].root_${trsVector.nativeField}`;
+                        : `${recordAt(`${engine}.assets`, target)}.root_${trsVector.nativeField}`;
                 context.emit(
                     `const double ${previous} = ${vectorRead}.${component};`,
                 );
@@ -1718,7 +1715,7 @@ export function emitPropertyAssignment(
         requireSimpleAssignment(context, expression, "speedRatio");
         if (group.animationGroupSource === "property") {
             context.emit(
-                `${group.cpp}->speed_ratio = ${context.compileNumber(expression.right)};`,
+                `${group.cpp}->speed_ratio = ${context.compileNumber(expression.right, "double")};`,
             );
             return;
         }
@@ -1729,7 +1726,7 @@ export function emitPropertyAssignment(
             `bbl::set_animation_speed_ratio(${context.requireEngine(
                 group,
                 expression,
-            )}, ${group.cpp}, ${context.compileNumber(expression.right)});`,
+            )}, ${group.cpp}, ${context.compileNumber(expression.right, "double")});`,
         );
         return;
     }
@@ -1823,7 +1820,7 @@ export function emitPropertyAssignment(
                         .map((lane) =>
                             lane === component
                                 ? context.compileNumber(expression.right)
-                                : `${engine}.lights[${mesh.cpp}.value].${vector}.${lane}`,
+                                : `${recordAt(`${engine}.lights`, mesh.cpp)}.${vector}.${lane}`,
                         )
                         .join(", ") +
                     `});`,
@@ -1841,7 +1838,7 @@ export function emitPropertyAssignment(
             const component = ["x", "y", "z"][axis]!;
             const engine = context.requireEngine(mesh, expression);
             context.emit(
-                `${engine}.cameras[${mesh.cpp}.value].${vector}.${component} ${operator} ${context.compileNumber(expression.right, "double")};`,
+                `${recordAt(`${engine}.cameras`, mesh.cpp)}.${vector}.${component} ${operator} ${context.compileNumber(expression.right, "double")};`,
             );
             return;
         }
@@ -1854,9 +1851,6 @@ export function emitPropertyAssignment(
                 );
             }
             const engine = context.requireEngine(mesh, expression);
-            const runtimeTransform =
-                context.meshTransformDirtyEntry() ===
-                "mark_mesh_runtime_transform";
             if (mesh.kind === "scene-node") {
                 context.reachFeature("scene:node-transforms", expression);
                 const target = context.allocateTemporaryCppName(
@@ -1888,13 +1882,12 @@ export function emitPropertyAssignment(
                     : right;
                 context.emit(
                     `bbl::${trsVector.sceneNodeComponentSetter}(` +
-                        `${engine}, ${target}, ${axis}u, ${replacement}, ` +
-                        `${runtimeTransform});`,
+                        `${engine}, ${target}, ${axis}u, ${replacement});`,
                 );
                 return;
             }
             const vectorRead =
-                `${engine}.transform_nodes[${mesh.cpp}.value].` +
+                `${recordAt(`${engine}.transform_nodes`, mesh.cpp)}.` +
                 trsVector.nativeField;
             const current = `${vectorRead}.${component}`;
             const replacement =
@@ -1916,7 +1909,7 @@ export function emitPropertyAssignment(
                                 : `${vectorRead}.${lane}`,
                         )
                         .join(", ") +
-                    `}, ${runtimeTransform});`,
+                    `});`,
             );
             return;
         }
@@ -1967,7 +1960,7 @@ export function emitPropertyAssignment(
                 );
             }
             const engine = context.requireEngine(mesh, expression);
-            const current = `${engine}.meshes[${mesh.cpp}.value].${trsVector.nativeField}.${component}`;
+            const current = `${recordAt(`${engine}.meshes`, mesh.cpp)}.${trsVector.nativeField}.${component}`;
             const replacement =
                 operator === "="
                     ? context.compileNumber(
@@ -1984,7 +1977,7 @@ export function emitPropertyAssignment(
                         .map((lane) =>
                             lane === component
                                 ? replacement
-                                : `${engine}.meshes[${mesh.cpp}.value].${trsVector.nativeField}.${lane}`,
+                                : `${recordAt(`${engine}.meshes`, mesh.cpp)}.${trsVector.nativeField}.${lane}`,
                         )
                         .join(", ") +
                     `}, false);`,
@@ -1999,18 +1992,15 @@ export function emitPropertyAssignment(
         // coordinate to the float32 grid, which is the whole reason the
         // field is a double.
         context.emit(
-            `${engine}.${record.collection}[${mesh.cpp}.value].${trsVector.nativeField}.${component} ${operator} ${context.compileNumber(
+            `${recordAt(`${engine}.${record.collection}`, mesh.cpp)}.${trsVector.nativeField}.${component} ${operator} ${context.compileNumber(
                 expression.right,
                 record.collection === "meshes" ? trsVector.precision : "float",
             )};`,
         );
-        // Ordinary geometry bakes the full parent chain into its uploaded
-        // vertices. A parent-only write therefore has to dirty descendants as
-        // well as the mesh itself; mark_mesh_dirty owns that recursive contract.
+        // The world-matrix state's `markLocalDirty`: mark_mesh_dirty pushes
+        // it through the subtree the parent setter registered.
         if (record.bumpsTransformVersion) {
-            context.emit(
-                `bbl::${context.meshTransformDirtyEntry()}(${engine}, ${mesh.cpp});`,
-            );
+            context.emit(`bbl::mark_mesh_dirty(${engine}, ${mesh.cpp});`);
         }
         return;
     }
@@ -2077,9 +2067,7 @@ function staticMeshIdSet(
     );
     if (
         !ts.isNewExpression(unwrapped) ||
-        !ts.isIdentifier(unwrapped.expression) ||
-        unwrapped.expression.text !== "Set" ||
-        !context.isDefaultLibraryIdentifier(unwrapped.expression) ||
+        context.libraryGlobal(unwrapped.expression) !== "Set" ||
         unwrapped.arguments?.length !== 1
     ) {
         context.fail(
@@ -2188,7 +2176,7 @@ function emitCameraViewportAssignment(
         false,
     );
     context.emit(
-        `${context.requireEngine(scene, expression)}.cameras[${scene.cpp}.camera.value]` +
+        `${recordAt(`${context.requireEngine(scene, expression)}.cameras`, `${scene.cpp}.camera`)}` +
             `.viewport = bbl::NormalizedViewport{${lanes.join(", ")}};`,
     );
 }
@@ -2209,6 +2197,7 @@ function requireSimpleAssignment(
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
+import { emitBrowserFileAssignment } from "./browser-file.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";
 import { requireGltfGroupSource } from "./intrinsics/animation.js";
 import {
@@ -2220,6 +2209,7 @@ import { staticNumberValue } from "./option-helpers.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
+import { isGlobalUndefined } from "./symbols.js";
 import {
     emitDeterministicRandomInstall,
     type DeterministicRandomContext,
@@ -2242,6 +2232,7 @@ import {
     sceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
 import type { Feature, LightKind, Value } from "./types.js";
+import { recordAt } from "./record-access.js";
 export { isTrsVectorName } from "../scene-node-transform-descriptor.js";
 
 interface TargetPropertyAssignment {
@@ -2260,7 +2251,7 @@ function compileMeshPrimitiveState(
     const node = context.unwrap(expression);
     if (ts.isConditionalExpression(node))
         return `(${context.compileBoolean(node.condition)} ? ${compileMeshPrimitiveState(context, node.whenTrue)} : ${compileMeshPrimitiveState(context, node.whenFalse)})`;
-    if (ts.isIdentifier(node) && node.text === "undefined")
+    if (isGlobalUndefined(context.checker, node))
         return "std::optional<bbl::MeshPrimitiveState>{}";
     const object = node;
     if (!ts.isObjectLiteralExpression(object))
@@ -2323,7 +2314,7 @@ function validateMeshPrimitiveFeatures(
         validateMeshPrimitiveFeatures(context, node.whenFalse);
         return;
     }
-    if (ts.isIdentifier(node) && node.text === "undefined") return;
+    if (isGlobalUndefined(context.checker, node)) return;
     let value = staticNumberValue(context, node);
     if (
         value === undefined &&
@@ -2361,7 +2352,7 @@ function emitTargetPropertyAssignment(
     // it can through a local. Compile the complete owner path so the same
     // assignment table serves both spellings.
     const target = ts.isIdentifier(targetExpression)
-        ? context.lookup(targetExpression)
+        ? context.bindings.lookup(targetExpression)
         : context.compileValue(targetExpression);
     const property = left.name.text;
     if (
@@ -2388,14 +2379,14 @@ function emitTargetPropertyAssignment(
                       },
                   )}).to_optional()`;
         context.emit(
-            `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].${field} = ${value};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}.${field} = ${value};`,
         );
         return true;
     }
     if (target.kind === "task" && property === "executionEnabled") {
         requireSimpleAssignment(context, expression, "Task.executionEnabled");
         context.emit(
-            `${context.requireEngine(target, expression)}.frame_tasks[${target.cpp}.value].execution_enabled = bbl::js::Nullable<bool>(${context.dataLowerer.compileForSink(expression.right, { kind: "optional", inner: { kind: "boolean" } })}).to_optional();`,
+            `${recordAt(`${context.requireEngine(target, expression)}.frame_tasks`, target.cpp)}.execution_enabled = bbl::js::Nullable<bool>(${context.dataLowerer.compileForSink(expression.right, { kind: "optional", inner: { kind: "boolean" } })}).to_optional();`,
         );
         return true;
     }
@@ -2464,7 +2455,7 @@ function emitTargetPropertyAssignment(
         return true;
 
     if (target.kind === "texture" && property in textureRecordFields) {
-        context.noteNodeInputAdmissionFailure(
+        context.admissions.noteNodeInputAdmissionFailure(
             expression,
             "Node input bindings do not represent texture producer metadata mutation; configure the texture at construction.",
         );
@@ -2516,14 +2507,14 @@ function emitTargetPropertyAssignment(
                         "generation.",
                 );
             }
-            target.textureObjectInvertY = rendered === "true";
+            writable(target).textureObjectInvertY = rendered === "true";
         } else if (property === "uAng") {
             // The value reaches composition as well as the record: the pinned
             // lightmap `detect` compares it against `Math.PI`. A write that
             // does not settle still emits, and the consumer that needs it
             // refuses by name rather than reading a stale zero here.
             const folded = staticNumberValue(context, expression.right);
-            if (folded !== undefined) target.textureUvAng = folded;
+            if (folded !== undefined) writable(target).textureUvAng = folded;
         }
         context.emit(`${owner}.${field.record} = ${rendered};`);
         return true;
@@ -2575,9 +2566,10 @@ function emitTargetPropertyAssignment(
                 `${recordField.kind} ${recordField.property}`,
             );
         }
-        const record =
-            `${context.requireEngine(target, expression)}` +
-            `.${recordField.collection}[${target.cpp}.value]`;
+        const record = recordAt(
+            `${context.requireEngine(target, expression)}.${recordField.collection}`,
+            target.cpp,
+        );
         if (recordField.value === "number2") {
             const elements = context.unwrap(
                 context.resolveStaticExpression(expression.right),
@@ -2605,7 +2597,8 @@ function emitTargetPropertyAssignment(
                 if (recordField.kind === "material") {
                     const bindings =
                         target.materialUboArrayFields ??
-                        (target.materialUboArrayFields = new EmissionMap());
+                        (writable(target).materialUboArrayFields =
+                            new EmissionMap());
                     bindings.set(field, value);
                 }
             }
@@ -2622,7 +2615,7 @@ function emitTargetPropertyAssignment(
             recordField.kind === "material" &&
             recordField.property === "diffuseColor"
         ) {
-            context.noteMaterialColorRenderBoundary(
+            context.admissions.noteMaterialColorRenderBoundary(
                 expression,
                 "whole color replacement after registration",
             );
@@ -2635,13 +2628,15 @@ function emitTargetPropertyAssignment(
                         context.checker.getTypeAtLocation(expression.right),
                     )) ||
                 (ts.isIdentifier(expression.right) &&
-                    context.lookupOptional(expression.right)?.kind === "tuple");
-            if (ts.isObjectLiteralExpression(shape) || legacyTuple) {
-                context.noteMaterialColorObjectWrite(
+                    context.bindings.lookupOptional(expression.right)?.kind ===
+                        "tuple");
+            // A `{ r, g, b }` object falls through to `compileColor3`,
+            // which refuses it: the pin's `diffuseColor` is a number tuple.
+            if (legacyTuple) {
+                context.admissions.noteLegacyDiffuseColorWrite(
                     expression.right,
-                    "diffuseColor",
                 );
-            } else {
+            } else if (!ts.isObjectLiteralExpression(shape)) {
                 // A named or returned array can also be mutated through its other
                 // owner. A fresh literal has no external alias until a getter is read.
                 if (
@@ -2649,7 +2644,7 @@ function emitTargetPropertyAssignment(
                         context.unwrap(expression.right),
                     )
                 ) {
-                    context.noteMaterialColorRead("diffuseColor");
+                    context.admissions.noteMaterialColorRead("diffuseColor");
                 }
                 if (
                     ts.isArrayLiteralExpression(shape) &&
@@ -2698,17 +2693,20 @@ function emitTargetPropertyAssignment(
             if (recordField.property === "alpha") {
                 const alpha = staticNumberValue(context, expression.right);
                 if (alpha === undefined)
-                    delete target.standardMaterialInput.alpha;
-                else target.standardMaterialInput.alpha = alpha;
+                    delete writable(target.standardMaterialInput).alpha;
+                else writable(target.standardMaterialInput).alpha = alpha;
             } else if (
                 recordField.property === "backFaceCulling" ||
                 recordField.property === "disableLighting"
             ) {
                 if (value === "true" || value === "false") {
-                    target.standardMaterialInput[recordField.property] =
-                        value === "true";
+                    writable(target.standardMaterialInput)[
+                        recordField.property
+                    ] = value === "true";
                 } else {
-                    delete target.standardMaterialInput[recordField.property];
+                    delete writable(target.standardMaterialInput)[
+                        recordField.property
+                    ];
                 }
             }
         }
@@ -2716,7 +2714,7 @@ function emitTargetPropertyAssignment(
         if (recordField.kind === "material" && recordField.value === "color3") {
             const bindings =
                 target.materialUboArrayFields ??
-                (target.materialUboArrayFields = new EmissionMap());
+                (writable(target).materialUboArrayFields = new EmissionMap());
             bindings.set(recordField.field, { ...compiled, cpp: stored });
         }
         context.emit(
@@ -2727,21 +2725,9 @@ function emitTargetPropertyAssignment(
             recordField.kind === "material" &&
             recordField.property === "diffuseColor"
         ) {
-            // This legacy object adapter has no numeric-array identity. Its
-            // render field must not be replaced later by the factory's array.
+            // This tuple adapter has no numeric-array identity. Its render
+            // field must not be replaced later by the factory's array.
             context.emit(`${record}.source_diffuse_color.reset();`);
-        }
-        if (
-            recordField.kind === "material" &&
-            recordField.property === "alpha"
-        ) {
-            // The pin reads `mat.alpha < 1` live when it builds
-            // renderables, so a post-creation write moves the
-            // material between the opaque and blended families.
-            // One shared home for the rule (the factory calls the
-            // same helper), so the transmission arm and the family
-            // gates cannot drift from the creation-time derivation.
-            context.emit(`bbl::derive_material_alpha_mode(${record});`);
         }
         return true;
     }
@@ -2752,7 +2738,7 @@ function emitTargetPropertyAssignment(
         // write is not one of its scalar properties, so it invalidates.
         noteCameraRecordWrite(context, target, "target", undefined, false);
         context.emit(
-            `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].target = ${context.compileVec3(expression.right, "double")};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.cameras`, target.cpp)}.target = ${context.compileVec3(expression.right, "double")};`,
         );
         return true;
     }
@@ -2768,7 +2754,7 @@ function emitTargetPropertyAssignment(
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken,
             );
             context.emit(
-                `${context.requireEngine(target, expression)}.cameras[${target.cpp}.value].${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
+                `${recordAt(`${context.requireEngine(target, expression)}.cameras`, target.cpp)}.${nativeProperty} ${operator} ${context.compileNumber(expression.right, "double")};`,
             );
             return true;
         }
@@ -2787,7 +2773,7 @@ function emitTargetPropertyAssignment(
                     "A light parent currently requires an imported transform root or null.",
                 );
             context.expectSameEngine(target, parent, expression);
-            context.assertAssetRootWritable(parent, expression);
+            context.assetRegistry.assertAssetRootWritable(parent, expression);
         }
         context.emit(
             `bbl::set_light_asset_parent(${context.requireEngine(target, expression)}, ${target.cpp}, ${parent ? parent.cpp : "bbl::AssetHandle{}"});`,
@@ -2829,7 +2815,7 @@ function emitTargetPropertyAssignment(
                           : "float",
                   );
         context.emit(
-            `${context.requireEngine(target, expression)}.${direct.collection}[${target.cpp}.value].${direct.nativeProperty} ${operator} ${value};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.${direct.collection}`, target.cpp)}.${direct.nativeProperty} ${operator} ${value};`,
         );
         return true;
     }
@@ -2847,18 +2833,18 @@ function emitLocalMatrixAssignment(
             expression,
             "imported root local matrix",
         );
-        const value = context.unwrap(expression.right);
         if (
-            !ts.isIdentifier(value) ||
-            value.text !== "undefined" ||
-            context.lookupOptional(value)
+            !isGlobalUndefined(
+                context.checker,
+                context.unwrap(expression.right),
+            )
         ) {
             context.fail(
                 expression.right,
                 "An imported synthetic root only exposes clearing _localMatrix with undefined.",
             );
         }
-        context.assertAssetRootWritable(target, expression);
+        context.assetRegistry.assertAssetRootWritable(target, expression);
         // loadGltf's public root is the synthetic TRS node. It never owns a
         // raw glTF matrix in the flattened native representation, so clearing
         // that optional override is observably a no-op here as it is upstream.
@@ -2930,12 +2916,12 @@ function emitCameraAssignment(
         requireSimpleAssignment(context, expression, "scene camera");
         const camera = context.compileValue(expression.right);
         context.expectKind(camera, "camera", expression.right);
-        context.noteTextSceneCameraAssignment(left);
+        context.admissions.noteTextSceneCameraAssignment(left);
         // The scene keeps the camera VALUE, not a copy: a property
         // written after the assignment still reaches it, and one
         // executed port -- the node-particle flow-map build -- reads
         // the scene's camera rather than the scene's own records.
-        target.sceneCamera = camera;
+        writable(target).sceneCamera = camera;
         context.emit(`${target.cpp}.camera = ${camera.cpp};`);
         return true;
     }
@@ -2965,10 +2951,10 @@ function emitRenderOrderAssignment(
         requireSimpleAssignment(context, expression, "mesh renderOrder");
         const engine = context.requireEngine(target, expression);
         context.emit(
-            `${engine}.meshes[${target.cpp}.value].render_order = ${context.compileNumber(expression.right, "double")};`,
+            `${recordAt(`${engine}.meshes`, target.cpp)}.render_order = ${context.compileNumber(expression.right, "double")};`,
         );
         context.emit(
-            `${engine}.meshes[${target.cpp}.value].has_render_order = true;`,
+            `${recordAt(`${engine}.meshes`, target.cpp)}.has_render_order = true;`,
         );
         return true;
     }
@@ -2994,7 +2980,7 @@ function emitNameAssignment(
         const name = context.compileValue(expression.right);
         context.expectKind(name, "string", expression.right);
         context.emit(
-            `${context.requireEngine(target, expression)}.${collection}[${target.cpp}.value].name = ${name.cpp};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.${collection}`, target.cpp)}.name = ${name.cpp};`,
         );
         return true;
     }
@@ -3008,7 +2994,7 @@ function emitIdAssignment(
     const { expression, target, property } = state;
     if (target.kind === "mesh" && property === "id") {
         requireSimpleAssignment(context, expression, "mesh id");
-        context.recordSceneMeshId(
+        context.sceneManifest.recordSceneMeshId(
             target.cpp,
             context.compileStaticString(expression.right),
             expression,
@@ -3049,9 +3035,9 @@ function emitReceiveShadowsAssignment(
             // A handle read from a runtime collection has no generation-known
             // mesh row. Keep both composed states; the emitted record lane is
             // the runtime half of the same key used by both material families.
-            context.recordDynamicShadowReceivers();
+            context.sceneManifest.recordDynamicShadowReceivers();
         } else {
-            context.recordShadowReceiver(target.sceneMeshIndex);
+            context.sceneManifest.recordShadowReceiver(target.sceneMeshIndex);
         }
         // The record lane too, which the node family reads per draw:
         // its receiver mixes each light's factor by `receivesShadow`
@@ -3059,8 +3045,8 @@ function emitReceiveShadowsAssignment(
         // serves a receiving mesh and a non-receiving one. The two
         // composed families never read the lane.
         context.emit(
-            `${context.requireEngine(target, expression)}.meshes[` +
-                `${target.cpp}.value].receives_shadows = true;`,
+            `${recordAt(`${context.requireEngine(target, expression)}.meshes`, target.cpp)}` +
+                `.receives_shadows = true;`,
         );
         return true;
     }
@@ -3095,7 +3081,7 @@ function emitPluginsAssignment(
             family,
         );
         if (target.scenePbrMaterialIndex !== undefined) {
-            context.recordScenePbrPlugins(
+            context.sceneManifest.recordScenePbrPlugins(
                 plugins.manifests,
                 target.scenePbrMaterialIndex,
             );
@@ -3109,11 +3095,11 @@ function emitPluginsAssignment(
         // -- gating the setter's definition on the opt-in instead would
         // leave this call undefined for a scene that never made it.
         context.reachFeature("material:plugin-index", expression);
-        const pluginIndex = context.recordStandardMaterialPlugins(
+        const pluginIndex = context.sceneManifest.recordStandardMaterialPlugins(
             plugins.manifests,
             target.standardMaterialInput ?? {},
         );
-        target.standardMaterialPluginIndex = pluginIndex;
+        writable(target).standardMaterialPluginIndex = pluginIndex;
         emitMaterialPluginResources(
             context,
             target,
@@ -3137,7 +3123,7 @@ function emitShadowGeneratorAssignment(
         context.expectKind(generator, "shadow-generator", expression.right);
         context.expectSameEngine(target, generator, expression);
         context.emit(
-            `${context.requireEngine(target, expression)}.lights[${target.cpp}.value].shadow_generator = ${generator.cpp};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.lights`, target.cpp)}.shadow_generator = ${generator.cpp};`,
         );
         // The pin's `ShadowTask` walks `scene.lights` and its receiver
         // slots come from the same walk, so the generator has to be
@@ -3151,7 +3137,7 @@ function emitShadowGeneratorAssignment(
                     "A light shadow generator assignment is missing its compiler identity.",
                 );
             }
-            target.lightIdentity.shadowGeneratorIndex =
+            writable(target.lightIdentity).shadowGeneratorIndex =
                 generator.shadowGeneratorIndex;
         }
         return true;
@@ -3170,15 +3156,15 @@ function emitIncludedOnlyMeshIdsAssignment(
             expression,
             "light includedOnlyMeshIds",
         );
-        const meshes = context.resolveSceneMeshIds(
+        const meshes = context.sceneManifest.resolveSceneMeshIds(
             staticMeshIdSet(context, expression.right),
             expression.right,
         );
         context.reachFeature("light:included-meshes", expression);
         context.emit(
-            `${context.requireEngine(target, expression)}.lights[` +
-                `${target.cpp}.value].included_meshes = {` +
-                `${meshes.map((mesh) => `${mesh}.value`).join(", ")}};`,
+            `${recordAt(`${context.requireEngine(target, expression)}.lights`, target.cpp)}` +
+                `.included_meshes = {` +
+                `${meshes.join(", ")}};`,
         );
         return true;
     }
@@ -3191,11 +3177,11 @@ function emitMaterialAssignment(
 ): boolean {
     const { expression, target, property } = state;
     if (target.kind === "mesh" && property === "material") {
-        context.noteTemporalRecordBoundary(
+        context.admissions.noteTemporalRecordBoundary(
             expression,
             "mesh material replacement after scene registration",
         );
-        context.noteMaterialColorRenderBoundary(
+        context.admissions.noteMaterialColorRenderBoundary(
             expression,
             "mesh material replacement after registration",
         );
@@ -3230,15 +3216,16 @@ function emitMaterialAssignment(
         // the mesh carries which scene material it was given and a
         // later read of `mesh.material` resolves that record.
         if (material.scenePbrMaterialIndex !== undefined) {
-            target.scenePbrMaterialIndex = material.scenePbrMaterialIndex;
+            writable(target).scenePbrMaterialIndex =
+                material.scenePbrMaterialIndex;
         }
         // The family travels the same way, and for the same reason: a
         // write on `box.material` has to resolve which of the pin's two
         // bridges would read it.
         if (material.standardMaterial) {
-            target.standardMaterial = true;
+            writable(target).standardMaterial = true;
             if (material.standardMaterialPluginIndex !== undefined) {
-                target.standardMaterialPluginIndex =
+                writable(target).standardMaterialPluginIndex =
                     material.standardMaterialPluginIndex;
             }
         }
@@ -3259,7 +3246,7 @@ function emitMaterialAssignment(
             );
         }
         if (meshProfile !== undefined) {
-            context.recordSceneMeshMaterial(meshProfile, {
+            context.sceneManifest.recordSceneMeshMaterial(meshProfile, {
                 pbrMaterial: material.scenePbrMaterialIndex ?? null,
                 nodeMaterial: material.nodeMaterialIndex ?? null,
                 standardMaterial: material.standardMaterial === true,
@@ -3271,19 +3258,21 @@ function emitMaterialAssignment(
                 sceneShaderVariants: material.possibleSceneShaderVariants,
             });
             if (material.assetPbrMaterial) {
-                context.recordSceneMeshAssetPbrMaterial(meshProfile);
+                context.sceneManifest.recordSceneMeshAssetPbrMaterial(
+                    meshProfile,
+                );
             }
         }
         if (
             target.sceneMeshIndex === undefined &&
             material.scenePbrMaterialIndex !== undefined
         ) {
-            context.recordUnknownSceneMeshMaterial(
+            context.sceneManifest.recordUnknownSceneMeshMaterial(
                 material.scenePbrMaterialIndex,
             );
         }
         if (meshProfile === undefined && material.standardMaterial) {
-            context.recordUnknownStandardMeshMaterial();
+            context.sceneManifest.recordUnknownStandardMeshMaterial();
         }
         if (
             material.scenePbrMaterialIndex === undefined &&
@@ -3291,7 +3280,7 @@ function emitMaterialAssignment(
             material.nodeMaterialIndex === undefined &&
             material.shaderVariant === undefined
         ) {
-            context.recordUnknownSceneMaterialAssignment();
+            context.sceneManifest.recordUnknownSceneMaterialAssignment();
         }
         return true;
     }
@@ -3313,10 +3302,10 @@ function emitBoundMinAssignment(
             property === "boundMin" ? "bounds_min" : "bounds_max";
         const side = property === "boundMin" ? "min" : "max";
         context.emit(
-            `${engine}.meshes[${target.cpp}.value].${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
+            `${recordAt(`${engine}.meshes`, target.cpp)}.${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
         );
         context.emit(
-            `${engine}.meshes[${target.cpp}.value].has_bounds_${side}_override = true;`,
+            `${recordAt(`${engine}.meshes`, target.cpp)}.has_bounds_${side}_override = true;`,
         );
         return true;
     }
@@ -3349,7 +3338,7 @@ function emitSkeletonAssignment(
         }
         if (
             context.isRuntimeResourceConstruction() ||
-            context.engineHasStarted()
+            context.engineLifecycle.engineHasStarted()
         ) {
             context.fail(
                 expression,
@@ -3368,7 +3357,7 @@ function emitSkeletonAssignment(
         // `_computeMeshFeatures` reads `mesh.skeleton` for MSH_HAS_SKELETON,
         // and a scene-code mesh's feature word is derived from its recorded
         // streams rather than from a glTF primitive.
-        context.recordSceneMeshDeformation(
+        context.sceneManifest.recordSceneMeshDeformation(
             target.sceneMeshIndex,
             "skinned",
             expression,
@@ -3400,7 +3389,7 @@ function emitMorphTargetsAssignment(
         }
         if (
             context.isRuntimeResourceConstruction() ||
-            context.engineHasStarted()
+            context.engineLifecycle.engineHasStarted()
         ) {
             context.fail(
                 expression,
@@ -3420,7 +3409,7 @@ function emitMorphTargetsAssignment(
             );
         }
         const engine = context.requireEngine(target, expression);
-        context.recordSceneMeshDeformation(
+        context.sceneManifest.recordSceneMeshDeformation(
             target.sceneMeshIndex,
             "morphTargets",
             expression,
@@ -3432,7 +3421,7 @@ function emitMorphTargetsAssignment(
                 `${morph.morphTarget.vertexCountCpp}, ` +
                 `${morph.morphTarget.weightCpp});`,
         );
-        morph.morphTarget.meshCpp = target.cpp;
+        writable(morph.morphTarget).meshCpp = target.cpp;
         context.reachFeature("mesh:morph-targets", expression);
         return true;
     }
@@ -3448,7 +3437,7 @@ function emitOrmTextureAssignment(
         requireSimpleAssignment(context, expression, "PBR ormTexture");
         if (
             context.hasRegisteredScene() ||
-            context.engineHasStarted() ||
+            context.engineLifecycle.engineHasStarted() ||
             context.isRuntimeResourceConstruction()
         ) {
             context.fail(
@@ -3523,7 +3512,7 @@ function emitDiffuseTextureAssignment(
         // plugin signature composes the material's actual feature word rather
         // than the bare Standard defaults.
         if (target.standardMaterialInput) {
-            target.standardMaterialInput.diffuseTexture = {};
+            writable(target.standardMaterialInput).diffuseTexture = {};
         }
         if (texture.kind === "texture" && texture.textureStorage === "stored") {
             context.expectSameEngine(target, texture, expression);

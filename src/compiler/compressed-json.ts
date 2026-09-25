@@ -1,4 +1,5 @@
 import type { LoweringServices } from "./lowering-services.js";
+import { isGlobalUndefined, libraryGlobal, resolvedSymbol } from "./symbols.js";
 // Generation-time lowering for source-owned compressed JSON documents.
 //
 // Babylon Lite keeps large NME graphs out of its browser bundles by storing
@@ -36,12 +37,7 @@ function functionDeclaration(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): ts.FunctionDeclaration | undefined {
-    const symbol = checker.getSymbolAtLocation(identifier);
-    const target =
-        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
-            ? checker.getAliasedSymbol(symbol)
-            : symbol;
-    return target?.declarations?.find(
+    return resolvedSymbol(checker, identifier)?.declarations?.find(
         (candidate): candidate is ts.FunctionDeclaration =>
             ts.isFunctionDeclaration(candidate) && candidate.body !== undefined,
     );
@@ -54,25 +50,6 @@ function identifierIs(
     return (
         !!expression &&
         identifierText(unwrapExpression(expression)) === expected
-    );
-}
-
-/** A built-in rather than a same-spelled module binding. */
-function globalIdentifierIs(
-    checker: ts.TypeChecker,
-    expression: ts.Expression,
-    expected: string,
-): expression is ts.Identifier {
-    const unwrapped = unwrapExpression(expression);
-    if (!ts.isIdentifier(unwrapped) || unwrapped.text !== expected) {
-        return false;
-    }
-    const symbol = checker.getSymbolAtLocation(unwrapped);
-    return (
-        !!symbol?.declarations?.length &&
-        symbol.declarations.every(
-            (declaration) => declaration.getSourceFile().isDeclarationFile,
-        )
     );
 }
 
@@ -175,7 +152,7 @@ function isArrayCheck(
         !!call &&
         call.arguments.length === 1 &&
         ts.isPropertyAccessExpression(call.expression) &&
-        globalIdentifierIs(checker, call.expression.expression, "Array") &&
+        libraryGlobal(checker, call.expression.expression) === "Array" &&
         identifierIs(call.arguments[0], value)
     );
 }
@@ -303,11 +280,8 @@ function isGzipBase64JsonDecoder(
         !byteFactory ||
         byteFactory.arguments.length !== 2 ||
         !ts.isPropertyAccessExpression(byteFactory.expression) ||
-        !globalIdentifierIs(
-            checker,
-            byteFactory.expression.expression,
-            "Uint8Array",
-        )
+        libraryGlobal(checker, byteFactory.expression.expression) !==
+            "Uint8Array"
     ) {
         return false;
     }
@@ -317,7 +291,7 @@ function isGzipBase64JsonDecoder(
         !ts.isCallExpression(decoded) ||
         decoded.questionDotToken ||
         (decoded.typeArguments?.length ?? 0) !== 0 ||
-        !globalIdentifierIs(checker, decoded.expression, "atob") ||
+        libraryGlobal(checker, decoded.expression) !== "atob" ||
         decoded.arguments.length !== 1 ||
         !identifierIs(decoded.arguments[0], encoded) ||
         !ts.isArrowFunction(mapper) ||
@@ -367,7 +341,7 @@ function isGzipBase64JsonDecoder(
         streamCall.expression.expression,
     ) as ts.NewExpression;
     if (
-        !globalIdentifierIs(checker, blob.expression, "Blob") ||
+        libraryGlobal(checker, blob.expression) !== "Blob" ||
         (blob.typeArguments?.length ?? 0) !== 0 ||
         blob.arguments?.length !== 1 ||
         !ts.isArrayLiteralExpression(unwrapExpression(argumentAt(blob, 0))) ||
@@ -378,11 +352,8 @@ function isGzipBase64JsonDecoder(
                 .elements[0],
             bytes.name,
         ) ||
-        !globalIdentifierIs(
-            checker,
-            decompressor.expression,
-            "DecompressionStream",
-        ) ||
+        libraryGlobal(checker, decompressor.expression) !==
+            "DecompressionStream" ||
         (decompressor.typeArguments?.length ?? 0) !== 0 ||
         decompressor.arguments?.length !== 1 ||
         !isStringLiteral(argumentAt(decompressor, 0), "gzip")
@@ -405,7 +376,7 @@ function isGzipBase64JsonDecoder(
         jsonCall.expression.expression,
     ) as ts.NewExpression;
     return (
-        globalIdentifierIs(checker, response.expression, "Response") &&
+        libraryGlobal(checker, response.expression) === "Response" &&
         (response.typeArguments?.length ?? 0) === 0 &&
         response.arguments?.length === 1 &&
         identifierIs(response.arguments[0], stream.name)
@@ -428,7 +399,11 @@ function isArrayGuard(
     );
 }
 
-function isInputAliasLoop(statement: ts.Statement, inputs: string): boolean {
+function isInputAliasLoop(
+    checker: ts.TypeChecker,
+    statement: ts.Statement,
+    inputs: string,
+): boolean {
     const loop = forOfBinding(statement, inputs);
     if (!loop || loop.statements.length !== 3) return false;
     const [guard, entryStatement, assignmentGuard] = loop.statements;
@@ -454,7 +429,7 @@ function isInputAliasLoop(statement: ts.Statement, inputs: string): boolean {
         !ts.isBinaryExpression(missing) ||
         missing.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken ||
         !isPropertyRead(missing.left, entry.name, "inputName") ||
-        !identifierIs(missing.right, "undefined") ||
+        !isGlobalUndefined(checker, missing.right) ||
         !isTypeOfComparison(
             condition.right,
             entry.name,
@@ -520,7 +495,7 @@ function isInputNameAliasRestorer(
         !!inputs &&
         isPropertyRead(inputs.initializer, blockLoop.name, "inputs") &&
         isArrayGuard(checker, inputsGuard!, inputs.name, isContinue) &&
-        isInputAliasLoop(inputLoop!, inputs.name)
+        isInputAliasLoop(checker, inputLoop!, inputs.name)
     );
 }
 

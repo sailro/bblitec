@@ -1,11 +1,15 @@
 /**
- * What a pinned expression's operators and `Math` calls lower to.
+ * JavaScript's operators and `Math` calls: what they fold to at generation
+ * and what they lower to in C++.
  *
- * The lowerers that read arithmetic out of pinned bodies — the material UBO
- * writers, the post-process uniform writers, and the glTF loader's expression
- * renderer — are all lowering the same language. Keeping the tables here means
- * an operator one of them learns is an operator all of them know, and means
- * none rebuilds a map per expression.
+ * Scene code (the static evaluator, the `Math` table, the option readers)
+ * and pinned bodies (the numeric translator, the partial evaluator, the UBO
+ * writers, the constant readers) are the same language. Keeping the folds
+ * and spellings here means an operator one of them learns is an operator
+ * all of them know, with one meaning: a fold is the host engine's own
+ * evaluation, and a spelling carries the specified semantics (`ToInt32`
+ * and the five-bit shift count) rather than whatever the nearest C++
+ * operator does.
  *
  * What is deliberately *not* here is `||`. Its meaning depends on what the
  * pinned expression is doing with it: a boolean guard lowers to C++'s `||`,
@@ -13,6 +17,172 @@
  * next — needs `bbl::js::or_number`. Each caller knows which it is reading.
  */
 import ts from "typescript";
+
+/**
+ * A binary operator over two numbers, folded the way JavaScript evaluates
+ * it — the shifts and masks take `ToInt32` of both sides and the shift
+ * count modulo 32 because the host engine does exactly that. Undefined for
+ * an operator that is not numeric.
+ */
+export function foldNumericBinary(
+    kind: ts.SyntaxKind,
+    left: number,
+    right: number,
+): number | undefined {
+    switch (kind) {
+        case ts.SyntaxKind.PlusToken:
+            return left + right;
+        case ts.SyntaxKind.MinusToken:
+            return left - right;
+        case ts.SyntaxKind.AsteriskToken:
+            return left * right;
+        case ts.SyntaxKind.SlashToken:
+            return left / right;
+        case ts.SyntaxKind.PercentToken:
+            return left % right;
+        case ts.SyntaxKind.AsteriskAsteriskToken:
+            return left ** right;
+        case ts.SyntaxKind.LessThanLessThanToken:
+            return left << right;
+        case ts.SyntaxKind.GreaterThanGreaterThanToken:
+            return left >> right;
+        case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+            return left >>> right;
+        case ts.SyntaxKind.AmpersandToken:
+            return left & right;
+        case ts.SyntaxKind.BarToken:
+            return left | right;
+        case ts.SyntaxKind.CaretToken:
+            return left ^ right;
+        default:
+            return undefined;
+    }
+}
+
+/**
+ * A comparison of two numbers, folded. Over numbers the loose and strict
+ * equalities agree, so both spellings fold alike.
+ */
+export function foldNumericComparison(
+    kind: ts.SyntaxKind,
+    left: number,
+    right: number,
+): boolean | undefined {
+    switch (kind) {
+        case ts.SyntaxKind.LessThanToken:
+            return left < right;
+        case ts.SyntaxKind.LessThanEqualsToken:
+            return left <= right;
+        case ts.SyntaxKind.GreaterThanToken:
+            return left > right;
+        case ts.SyntaxKind.GreaterThanEqualsToken:
+            return left >= right;
+        case ts.SyntaxKind.EqualsEqualsEqualsToken:
+        case ts.SyntaxKind.EqualsEqualsToken:
+            return left === right;
+        case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+        case ts.SyntaxKind.ExclamationEqualsToken:
+            return left !== right;
+        default:
+            return undefined;
+    }
+}
+
+/** A prefix `-`, `+` or `~` over a number, folded. */
+export function foldNumericUnary(
+    operator: ts.PrefixUnaryOperator,
+    operand: number,
+): number | undefined {
+    switch (operator) {
+        case ts.SyntaxKind.MinusToken:
+            return -operand;
+        case ts.SyntaxKind.PlusToken:
+            return +operand;
+        case ts.SyntaxKind.TildeToken:
+            return ~operand;
+        default:
+            return undefined;
+    }
+}
+
+/**
+ * The `bbl::js` helper each bitwise operator lowers to. JavaScript coerces
+ * both sides through `ToInt32` (`ToUint32` for `>>>`) and masks a shift
+ * count to five bits; a bare C++ cast of a double outside int32 range, or a
+ * shift by 32 or more, is undefined behaviour rather than that.
+ */
+export const JS_BITWISE_FUNCTIONS: ReadonlyMap<ts.SyntaxKind, string> = new Map<
+    ts.SyntaxKind,
+    string
+>([
+    [ts.SyntaxKind.AmpersandToken, "bitwise_and"],
+    [ts.SyntaxKind.BarToken, "bitwise_or"],
+    [ts.SyntaxKind.CaretToken, "bitwise_xor"],
+    [ts.SyntaxKind.LessThanLessThanToken, "shift_left"],
+    [ts.SyntaxKind.GreaterThanGreaterThanToken, "shift_right"],
+    [
+        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+        "shift_right_unsigned",
+    ],
+]);
+
+/**
+ * The compound bitwise assignments, each by the binary operator it applies:
+ * `v |= w` stores `v | w`, whose `ToInt32` result is a number again.
+ */
+export const PINNED_BITWISE_ASSIGNMENT_OPERATORS: ReadonlyMap<
+    ts.SyntaxKind,
+    ts.SyntaxKind
+> = new Map<ts.SyntaxKind, ts.SyntaxKind>([
+    [ts.SyntaxKind.AmpersandEqualsToken, ts.SyntaxKind.AmpersandToken],
+    [ts.SyntaxKind.BarEqualsToken, ts.SyntaxKind.BarToken],
+    [ts.SyntaxKind.CaretEqualsToken, ts.SyntaxKind.CaretToken],
+    [
+        ts.SyntaxKind.LessThanLessThanEqualsToken,
+        ts.SyntaxKind.LessThanLessThanToken,
+    ],
+    [
+        ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+        ts.SyntaxKind.GreaterThanGreaterThanToken,
+    ],
+    [
+        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+    ],
+]);
+
+/** A bitwise operator as its `bbl::js` call, or undefined for another kind. */
+export function jsBitwiseCall(
+    kind: ts.SyntaxKind,
+    left: string,
+    right: string,
+): string | undefined {
+    const helper = JS_BITWISE_FUNCTIONS.get(kind);
+    return helper ? `bbl::js::${helper}(${left}, ${right})` : undefined;
+}
+
+/**
+ * `Math.max`/`Math.min` over a numeric range, as JavaScript defines them: a
+ * NaN operand poisons the result and `-0` orders below `+0`, neither of
+ * which `std::max`/`std::min` does. `source` is a range of doubles, or a
+ * braced argument list (`mathExtremeCall`).
+ */
+export function mathExtremeCpp(method: string, source: string): string {
+    return `bbl::js::math_extreme<${method === "max"}>(${source})`;
+}
+
+/**
+ * `Math.max`/`Math.min` over a call's own arguments, at any arity: the one
+ * spelling scene code and pinned bodies share. The braced list evaluates
+ * left to right, as JavaScript's argument list does, and every operand,
+ * whatever its native type, converts to JavaScript's own width first.
+ */
+export function mathExtremeCall(
+    method: "max" | "min",
+    args: readonly string[],
+): string {
+    return mathExtremeCpp(method, `{${args.join(", ")}}`);
+}
 
 /** The operators that mean in C++ exactly what they mean in TypeScript. */
 export const PINNED_ARITHMETIC_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
@@ -85,15 +255,16 @@ export function pinnedRemainderCall(left: string, right: string): string {
 /**
  * The `Math` members that are a `<cmath>` call of the same arity. Every one of
  * these takes and returns a double, which is what a pinned writer computes in
- * before it stores.
+ * before it stores. `Math.max`/`Math.min` are not among them: they are
+ * variadic, and JavaScript's NaN and signed-zero rules are not `std::max`'s,
+ * so they lower through `mathExtremeCall`.
  */
-export const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
+const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
     pow: "std::pow",
     log: "std::log",
-    max: "std::max",
-    min: "std::min",
     cos: "std::cos",
     acos: "std::acos",
+    asin: "std::asin",
     atan2: "std::atan2",
     sin: "std::sin",
     tan: "std::tan",
@@ -123,27 +294,29 @@ export function pinnedMathSpelling(name: string): string {
 }
 
 /**
- * Math calls for numeric scopes. min/max use double unless the scope requests
- * deduced arguments for its existing scalar width. Other semantics, including
- * Math.round and Math.hypot, are supplied by their dedicated helpers.
+ * Math calls for numeric scopes: the `<cmath>` members one to one, and
+ * `Math.max`/`Math.min` at any arity with JavaScript's NaN and signed-zero
+ * rules through `mathExtremeCall`, all at JavaScript's width. Their spelling
+ * lives in `bblite/js_data.hpp`, which every unit a pinned numeric scope
+ * lands in includes. Math.round and Math.hypot are supplied by their
+ * dedicated helpers.
  */
-export function pinnedNumericMathCalls(
-    templateArgument: "double" | "deduced" = "double",
-): Map<string, (args: readonly string[]) => string> {
-    return new Map(
+export function pinnedNumericMathCalls(): Map<
+    string,
+    (args: readonly string[]) => string
+> {
+    const calls = new Map(
         Object.entries(PINNED_MATH_FUNCTIONS).map(
             ([name, spelling]): [
                 string,
                 (args: readonly string[]) => string,
-            ] => [
-                `Math.${name}`,
-                templateArgument === "double" &&
-                (name === "max" || name === "min")
-                    ? (args) => `${spelling}<double>(${args.join(", ")})`
-                    : (args) => `${spelling}(${args.join(", ")})`,
-            ],
+            ] => [`Math.${name}`, (args) => `${spelling}(${args.join(", ")})`],
         ),
     );
+    for (const method of ["max", "min"] as const) {
+        calls.set(`Math.${method}`, (args) => mathExtremeCall(method, args));
+    }
+    return calls;
 }
 
 /**
@@ -185,12 +358,10 @@ export function pinnedRoundCall(args: readonly string[]): string {
 }
 
 /**
- * The `<cmath>` name a `Math.x(...)` call lowers to, or undefined when the
- * node is not such a call.
+ * A `Math.x(...)` call the numeric scopes' shared map lowers -- a `<cmath>`
+ * member or `Math.max`/`Math.min` -- or undefined when the node is not one.
  */
-export function pinnedMathCall(
-    node: ts.Node,
-): { native: string; call: ts.CallExpression } | undefined {
+export function pinnedMathCall(node: ts.Node): ts.CallExpression | undefined {
     if (
         !ts.isCallExpression(node) ||
         !ts.isPropertyAccessExpression(node.expression) ||
@@ -199,6 +370,8 @@ export function pinnedMathCall(
     ) {
         return undefined;
     }
-    const native = PINNED_MATH_FUNCTIONS[node.expression.name.text];
-    return native ? { native, call: node } : undefined;
+    const name = node.expression.name.text;
+    return name === "max" || name === "min" || PINNED_MATH_FUNCTIONS[name]
+        ? node
+        : undefined;
 }

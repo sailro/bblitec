@@ -8,7 +8,8 @@ TypeScript + reached modules → typed lowering + asset/shader composition
 ```
 
 The source pin is [upstream/babylon-lite.json](../upstream/babylon-lite.json).
-`upstream-source.ts` reads package source maps; `pinned-wgsl-build.ts` applies the shader transform.
+`upstream-source.ts` reads package source maps; `pinned-program.ts` checks those sources as one TypeScript
+program, through which lowerers resolve pinned names and types; `pinned-wgsl-build.ts` applies the shader transform.
 
 ## Ownership
 
@@ -30,32 +31,68 @@ Semantic substitutions are listed in [fidelity](fidelity.md).
 
 | Module | Responsibility |
 | --- | --- |
-| `program.ts`, `symbols.ts` | TypeScript program and intrinsic resolution |
+| `program.ts`, `symbols.ts`, `type-facts.ts` | TypeScript program, declaration origin and symbol resolution, nullable-union members |
 | Expressions, statements, assignments, `intrinsics/` | Source lowering |
+| `declarations.ts` | Variable declarations and binding patterns |
+| `properties.ts` | Property rules and property access |
 | `data-types.ts`, `data-lowering.ts`, `values/` | Storage types, typed sinks, value metadata |
 | `native-functions.ts`, `user-functions.ts`, `classes.ts` | Native functions, specialization, classes |
+| `class-members.ts` | Class member tables, inheritance chains and the program's class hierarchies |
 | `module-initializers.ts` | Ordered initialization and shared mutable bindings |
-| `emission-transaction.ts` | Rollback on declined or failed lowering |
-| `analysis-walk.ts`, `lowering-services.ts` | Shared traversal, scope and compiler interface |
+| `scene-manifest.ts`, `scene-materials.ts` | Scene composition records and their `manifest.json` projection |
+| `emission-transaction.ts` | Compiler state's originals per transaction, one per written slot (journaled maps, sets, arrays, records, `@journaled` fields, `writable()` records); a commit folds them into the enclosing transaction, a declined or failed lowering restores them. Fields outside the journal are declared `@unjournaled` with a reason |
+| `binding-scopes.ts` | Lexical scopes, name bindings and capture refusals; pinned temporaries and materialized records |
+| `conditions.ts`, `comparisons.ts` | Condition truth tests, comparison operators and settled folds |
+| `browser-erasure.ts` | Browser-only predicates, deployment folds and erased-expression records |
+| `analysis-walk.ts`, `lowering-services.ts` | Shared traversal and compiler interface |
 | `ui-projection.ts`, `platform-calls.ts` | Retained UI and platform calls |
+| `callbacks.ts`, `shared-closure-analysis.ts` | Frame, platform and physics callbacks; which bindings closures share and which are rebound |
+| `engine-lifecycle.ts`, `async-activations.ts` | The `startEngine` mark, hoisted continuation, finally guard, frame yields and device recovery; async activations and worker hooks |
+| `intrinsic-options.ts`, `asset-registry.ts`, `admissions.ts` | Per-intrinsic option objects; asset registration and its recorded facts; capability admissions deferred until the program reaches the capability |
+| `native-emission-registry.ts` | Namespace-level native definitions, shared bodies, environment structs and static tables |
 
 Dynamic storage demands replay emission against the same parsed program. Earlier aliases and
 initializers use the selected representation. Equivalent definitions share code; invocations retain
 distinct captures and resource identities. Pinned functions use `lowerPinnedFunction`; selected bodies
-use `lowerPinnedBody`. WGSL uses typed IR or explicit reflected-source contracts.
+use `lowerPinnedBody`. Pinned modules over plain records (the text family: data, layout, renderable,
+renderer, GPU writers and alpha-to-coverage membership) use `PinnedRecordModel`: a checked program over
+the pinned sources types every value, structs are emitted from the pinned declarations, and
+`pinned-record-transport.ts` rebuilds records the pin built at generation. Pinned classes are structs of
+their fields with their accessors, methods and constructor lowered over the instance. A closure is a
+`bbl::js::Callback` over its frame's environment struct, which holds the bindings closures capture and is
+shared by the frame and all of its closures; records and environments that can close a cycle describe
+their edges to cycle collection. A parameter whose type a type-only module erased takes each call's
+argument shape (one overload per signature). A bundled package's classes and calls bind by
+`package#name` to native records and adapters: text-shaper's font, shaping buffers and `shapeInto` are
+HarfBuzz (`text_layout.hpp`). A lazy loader's root is the module function its
+`(await import(...)).name` returns. The pin's WebGPU calls lower one to one onto the device interface in
+`text_gpu.hpp`, which each backend implements. WGSL uses typed IR or explicit reflected-source contracts.
 
-Namespace-scope application functions and constant tables compile in one C++ translation unit per owning source,
-listed in `manifest.json` as `sourceUnits`. `main.cpp` owns entry execution; worker entries have
-separate units and namespaces. Shared types and declarations live in `sources/application.hpp`
-(one header per realm); template bodies appear only in units that use them. Paths mirror source folders
-from their common directory; worker realms live under `sources/workers/<module>/`. Single-source programs retain one file.
+Namespace-scope application functions and constant tables compile in C++ translation units per owning source,
+listed in `manifest.json` as `sourceUnits`; a source whose code exceeds `unitMaximumWeight` compiles as
+several `.part<N>.cpp` units, each grouping the definitions that name the same templates, records and
+runtime functions, so each part compiles those once. `main.cpp` owns entry execution; worker entries have separate units and
+namespaces. `sources/application.hpp` (one per realm) holds the includes; each unit declares only the
+types, functions and tables its code reaches, with the overloads their signatures name, and template
+bodies appear only in units that use them. Paths mirror source folders from their common directory;
+worker realms live under `sources/workers/<module>/`. Single-source programs within the budget retain one file.
 Folded imports emit no unit; specialized inline bodies remain with their caller. Module initialization
-and shared bindings retain their ordered entry execution.
+and shared bindings retain their ordered entry execution. An entry or function body larger than
+`outlinedBodyMinimumBytes` moves its compound and expression statements, and large initializers of typed
+declarations, into functions of its source (`body-outlining.ts`) that take the locals they read by
+reference; declarations, statements that leave the body or a loop, and statements reading a local without
+a native type stay in place, and a loop moves whole or not at all.
 
 Ordinary loops remain native loops, including small constant ranges. Static expansion is reserved for
 composition that needs distinct generation-time values or frame-yield continuations. Shared functions,
-callbacks and coroutines retain separate invocation state; equivalent bodies share a native specialization. Concrete
-capture types place those bodies in their owning source unit; unresolved capture types use templates.
+callbacks and coroutines retain separate invocation state. A body is emitted once per distinct
+generation-time argument (callback, record or closed scalar) when every effect it reaches has a native
+representation (`canShareFunctionBody`), including retained DOM/canvas calls, calls through function values
+and scene-node writes; a callback an operation invokes shares only closed effects (`reachesOnlyClosedEffects`).
+A shared body lowers as runtime control flow and records no generation-owned
+construction; a call its separate body cannot represent, or that would lose a static fact of an argument,
+specializes inline. Closure environments are named structs of numbered captures, one per shape. Concrete
+capture types place shared bodies in their owning source unit; unresolved capture types use templates.
 
 Fresh native temporaries transfer into source locals; immutable bindings can borrow stable owners.
 Rebound parameters own their binding while object and container mutations preserve shared identity.
@@ -64,20 +101,29 @@ Escaping callbacks capture copyable handles by value, including handles borrowed
 ## Scene orchestration
 
 `scene-command.ts` resolves registry IDs and paths. The registry owns poses, thresholds and diagnostics.
+Executables start with authored live defaults; parity and checks apply the registered query to the same
+executable.
 Scene, sprite, effect and frame-graph drivers run registered contexts in order. Default task graphs
 belong to scene identity. Property and glTF animation retain separate playback contracts.
 
 ## Runtime and memory
 
-- Handles index engine records; resolve them again after storage growth.
+- Handles reach engine records only through `bbl::handle_at`, which checks the table bound and, for meshes,
+  the slot generation, or `bbl::handle_find` where a missing record is an expected state (null where
+  `handle_at` refuses); resolve them again after storage growth.
 - RAII owns locals. Shared containers and `bbl::js::Ref<T>` preserve JS identity.
 - Computed method receivers retain their selected owner through callbacks and cycle collection.
 - Closures retain referenced cells; suspended calls own their live locals.
-- Traced records, containers and callbacks participate in cycle collection at frame boundaries and teardown. Only complete payloads enter the registry; they detach before destruction.
+- References, shared cells, records, callbacks and containers that can own a traced edge participate in
+  cycle collection at frame boundaries and teardown; other payloads are released by reference counting
+  alone. Only complete payloads enter the registry; they detach before destruction.
 - Managed statics and GC registries are realm-local; teardown clears payloads before releasing registry storage.
 - Non-atomic JS references stay on their owning realm. Borrowed events last one dispatch.
 - Physics, navigation and audio owners are independent of renderer lifetime.
 - GPU resources remain alive through their in-flight submissions.
+- Destructors and noexcept release paths report a broken invariant through `bblite/teardown.hpp`, then
+  terminate. An exception escaping an application entry (generated `main`, the Window application, a
+  platform entry) is reported through `bblite/uncaught_error.hpp` with the realm reporter's wording.
 
 ## Renderer
 

@@ -25,9 +25,15 @@ test("names every way a browser capture stops being evidence", () => {
     mkdirSync(".cache", { recursive: true });
     mkdirSync(captureDirectory, { recursive: true });
     writeFileSync(sourcePath, "export const probe = 1;\n");
+    const scene = resolveScene(sourcePath);
+    // The capture's frame derivation reads the compiled manifest, which
+    // refuses a scene that was never compiled.
+    mkdirSync(scene.output, { recursive: true });
+    writeFileSync(
+        resolve(scene.output, "manifest.json"),
+        JSON.stringify({ features: ["core"], adaptations: [] }),
+    );
     try {
-        const scene = resolveScene(sourcePath);
-
         // No capture at all.
         assert.equal(
             browserCaptureStaleness(scene, captureDirectory, {}),
@@ -126,5 +132,6 @@ test("names every way a browser capture stops being evidence", () => {
     } finally {
         rmSync(sourcePath, { force: true });
         rmSync(captureDirectory, { recursive: true, force: true });
+        rmSync(scene.output, { recursive: true, force: true });
     }
 });

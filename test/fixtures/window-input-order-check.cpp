@@ -1,9 +1,3 @@
-#define BBLITE_WORKERS 1
-#define BBLITE_OFFSCREEN_SURFACES 1
-#define BBLITE_HAS_DOM_INPUT 1
-#define BBLITE_HAS_SDL_GPU 1
-#define BBLITE_HAS_DAWN 0
-#define BBLITE_HAS_PBR_RENDERER 0
 #include "pal_ui_rml.cpp"
 #include "window-frame-clock-fixture.hpp"
 #include <cassert>
@@ -28,6 +22,7 @@ static SDL_Window* hidden_window(const char* title, int width, int height, SDL_W
 #undef SDL_CreateWindow
 #undef handle_ui_rml_event
 #include "pal_media_query.cpp"
+#include "window-frame-unit-fixture.hpp"
 
 namespace bbl {
 void set_canvas_dataset(Engine&, std::string, std::string) {
@@ -38,9 +33,13 @@ void set_canvas_dataset(Engine&, std::string, std::string) {
 namespace {
 std::atomic<int> input_phase = 0;
 std::atomic<int> pending_presentations = 0;
+// Set by the realm's first animation frame: its document, listeners included,
+// was published before that callback could run, so input now reaches them.
+std::atomic<bool> document_live = false;
 int animation_count = 0;
 int animation_at_down = 0;
 bool clicked = false;
+bool dom_clicked = false;
 bool prevent_down = false;
 int moved = 0;
 constexpr int motion_count = 32;
@@ -67,14 +66,16 @@ const char* bblite_build_stamp() { return "fixture-build-stamp"; }
 
 struct InputOrderPresenter final : WindowPresenter {
     OffscreenDevice graphics;
-    int presentations = 0;
+    int live_presentations = 0;
     OffscreenDevice& device() override { return graphics; }
     bool can_present() override { return true; }
     bool present(std::span<const WindowCanvasFrame>, const UiRenderFrame&,
                  const std::string&) override {
         if (input_phase.load() == 1)
             ++pending_presentations;
-        if (++presentations == 6) {
+        // One drain receives the whole gesture: every event is queued here,
+        // before the host polls again.
+        if (document_live.load() && ++live_presentations == 6) {
             SDL_Event event{};
             event.type = SDL_EVENT_MOUSE_MOTION;
             event.motion.which = replay_ui_mouse_id;
@@ -156,6 +157,7 @@ int main() {
         ui_append_to_root(engine, button);
         const auto frame = std::make_shared<EventLoop::AnimationCallback>();
         *frame = [&realm, weak = std::weak_ptr(frame)](double) {
+            document_live.store(true);
             ++animation_count;
             if (const auto next = weak.lock())
                 realm.request_animation_frame(*next);
@@ -183,15 +185,32 @@ int main() {
                                               ++moved;
                                           });
                        });
+        const auto finish = [&realm] {
+            input_phase.store(2);
+            clicked = true;
+            realm.close();
+        };
         on_dom_pointer(engine, DomEventTarget::node(button.value), "click", 2,
-                       [&realm](const PlatformMouseEvent&) {
+                       [finish](const PlatformMouseEvent&) {
                            assert(input_phase.load() == 1 && animation_count == animation_at_down);
                            assert(moved == motion_count);
                            assert(native_pointer_down.load() == (prevent_down ? 0 : 1));
-                           input_phase.store(2);
-                           clicked = true;
-                           realm.close();
+                           assert(!dom_clicked);
+                           dom_clicked = true;
+                           // A prevented pointerdown never reaches the native button,
+                           // so its default action (below) does not run.
+                           if (prevent_down)
+                               finish();
                        });
+        // The button's native default runs its click callbacks after the DOM
+        // click. A slow realm widens the window in which a display that did not
+        // wait for them would present or advance repaint.
+        ui_on_click(engine, button, [finish] {
+            assert(!prevent_down && dom_clicked);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            assert(input_phase.load() == 1 && animation_count == animation_at_down);
+            finish();
+        });
     };
     EngineOptions options;
     options.width = 320;
@@ -206,6 +225,8 @@ int main() {
             animation_count = 0;
             moved = 0;
             clicked = false;
+            dom_clicked = false;
+            document_live = false;
             assert(run_window_application(initialize, options) == 0);
             assert(clicked && pending_presentations == 0);
         }

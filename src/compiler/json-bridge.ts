@@ -12,24 +12,10 @@ import type { LoweringServices } from "./lowering-services.js";
 // The dynamic value stays where the parse put it. It is produced by
 // `JSON.parse` and by reads that descend into one, and it converts at a
 // sink (a number, a string, a condition) exactly where JavaScript coerces.
-
-// The JSON bridge: `JSON.stringify` over the plain-data model, and
-// `JSON.parse` plus the surface a parsed document is interrogated with.
-//
-// Neither half knows an application. `stringify` takes whatever data type
-// its argument already has and registers the records it reaches so their
-// codecs are generated beside them; `parse` produces the model's one
-// dynamic value, and every read over that value answers the way the
-// browser's does -- a missing property is `undefined`, a wrong-typed one
-// fails its guard rather than the program.
-//
-// The dynamic value stays where the parse put it. It is produced by
-// `JSON.parse` and by reads that descend into one, and it converts at a
-// sink (a number, a string, a condition) exactly where JavaScript coerces.
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
+import { isNullishLiteral } from "./symbols.js";
 
-import { browserGlobalNamed } from "./browser-erasure.js";
 import type { DataType } from "./data-types.js";
 import type { Value } from "./types.js";
 
@@ -40,13 +26,12 @@ interface JsonBridgeContext extends Pick<
     | "unwrap"
     | "fail"
     | "expectArgumentCount"
-    | "isDefaultLibraryIdentifier"
-    | "lookupOptional"
+    | "libraryGlobal"
+    | "bindings"
     | "compileValue"
     | "compileNumber"
-    | "compileCondition"
+    | "conditions"
     | "castNumber"
-    | "pinValueToTemporary"
     | "cppString"
     | "reachFeature"
     | "reachJsData"
@@ -57,7 +42,7 @@ interface JsonBridgeContext extends Pick<
 
 interface JsonStrictComparisonContext extends Pick<
     LoweringServices,
-    "compileValue" | "compileNumber" | "compileCondition" | "fail"
+    "compileValue" | "compileNumber" | "conditions" | "fail"
 > {}
 
 const jsonType: DataType = { kind: "json" };
@@ -135,13 +120,16 @@ export function compileJsonElementRead(
         | "dataTypes"
         | "cppString"
         | "fail"
-        | "pinValueToTemporary"
+        | "bindings"
         | "compileValue"
     >,
     owner: Value,
     index: ts.Expression,
 ): Value {
-    const receiver = context.pinValueToTemporary(owner, "json_receiver");
+    const receiver = context.bindings.pinValueToTemporary(
+        owner,
+        "json_receiver",
+    );
     const key = context.compileValue(index);
     return {
         ...jsonValue(
@@ -162,7 +150,7 @@ function isJsonGlobal(
     context: JsonBridgeContext,
     expression: ts.Expression,
 ): boolean {
-    return browserGlobalNamed(context, expression)?.text === "JSON";
+    return context.libraryGlobal(expression) === "JSON";
 }
 
 /**
@@ -179,13 +167,7 @@ function compileStringify(
     context.expectArgumentCount(call, 1, 3);
     const replacer = call.arguments[1];
     if (replacer !== undefined) {
-        const unwrapped = context.unwrap(replacer);
-        const isNothing =
-            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(unwrapped) &&
-                unwrapped.text === "undefined" &&
-                !context.lookupOptional(unwrapped));
-        if (!isNothing) {
+        if (!isNullishLiteral(context.checker, context.unwrap(replacer))) {
             context.fail(
                 replacer,
                 "JSON.stringify lowers with no replacer; a replacer " +
@@ -297,12 +279,12 @@ export function compileJsonCall(
  * strategies -- ask this first.
  */
 export function isJsonRootedExpression(
-    context: Pick<JsonBridgeContext, "unwrap" | "lookupOptional">,
+    context: Pick<JsonBridgeContext, "unwrap" | "bindings">,
     expression: ts.Expression,
 ): boolean {
     const unwrapped = context.unwrap(expression);
     if (ts.isIdentifier(unwrapped)) {
-        return isJsonValue(context.lookupOptional(unwrapped));
+        return isJsonValue(context.bindings.lookupOptional(unwrapped));
     }
     if (
         ts.isPropertyAccessExpression(unwrapped) ||
@@ -310,7 +292,7 @@ export function isJsonRootedExpression(
     ) {
         const owner = context.unwrap(unwrapped.expression);
         const type = ts.isIdentifier(owner)
-            ? context.lookupOptional(owner)?.dataType
+            ? context.bindings.lookupOptional(owner)?.dataType
             : undefined;
         if (type?.kind === "map" && type.value.kind === "json") return true;
         return isJsonRootedExpression(context, unwrapped.expression);
@@ -323,7 +305,7 @@ export function isJsonRootedExpression(
 export function hasDynamicObjectSpread(
     context: Pick<
         JsonBridgeContext,
-        "unwrap" | "lookupOptional" | "checker" | "dataTypes"
+        "unwrap" | "bindings" | "checker" | "dataTypes"
     >,
     literal: ts.ObjectLiteralExpression,
 ): boolean {
@@ -355,7 +337,7 @@ export function compileJsonRead(
 ): Value | undefined {
     const unwrapped = context.unwrap(expression);
     if (ts.isIdentifier(unwrapped)) {
-        const bound = context.lookupOptional(unwrapped);
+        const bound = context.bindings.lookupOptional(unwrapped);
         return isJsonValue(bound) ? bound : undefined;
     }
     if (ts.isPropertyAccessExpression(unwrapped)) {
@@ -415,7 +397,7 @@ export function compileJsonStrictComparison(
         return `${documentCpp}.strict_equals(${context.compileNumber(other, "double")})`;
     }
     if (value.kind === "boolean" || value.dataType?.kind === "boolean") {
-        return `${documentCpp}.strict_equals(${context.compileCondition(other)})`;
+        return `${documentCpp}.strict_equals(${context.conditions.compileCondition(other)})`;
     }
     if (value.kind === "string" || value.dataType?.kind === "string") {
         return `${documentCpp}.strict_equals(${compileString(other)})`;

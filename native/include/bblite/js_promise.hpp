@@ -266,7 +266,8 @@ public:
                     (*converted)(result);
             } catch (const pal::WorkerTerminated&) {
             } catch (...) {
-                result.reject(std::current_exception());
+                run_teardown("Promise completion",
+                             [&] { result.reject(std::current_exception()); });
             }
             return {};
         }
@@ -406,16 +407,6 @@ inline std::string promise_error_message(std::exception_ptr error) {
         return problem.what();
     } catch (...) {
         return "";
-    }
-}
-
-inline std::string promise_error_string(std::exception_ptr error) {
-    try {
-        std::rethrow_exception(error);
-    } catch (const std::exception& problem) {
-        return std::string("Error: ") + problem.what();
-    } catch (...) {
-        return "Error";
     }
 }
 

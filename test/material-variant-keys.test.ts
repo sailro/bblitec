@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
@@ -11,6 +11,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
@@ -33,15 +34,14 @@ test(
             assert.ok(Number.isInteger(bits[name]), name);
         const output = resolve("artifacts/material-variant-keys");
         mkdirSync(output, { recursive: true });
-        const source = readFileSync(
-            "native/src/pal_gpu_shared.hpp",
-            "utf8",
-        ).replaceAll("\r\n", "\n");
+        const source = sharedGpuSource().replaceAll("\r\n", "\n");
         const file = join(output, "check.cpp"),
             executable = join(output, "check.exe");
         writeFileSync(
             file,
             `#define BBLITE_SHADOWS_ESM 1
+#define BBLITE_STANDARD_SKELETON 0
+#define BBLITE_STANDARD_VERTEX_ALPHA 0
 #include <bblite/runtime.hpp>
 #include <cassert>
 namespace bbl::upstream {
@@ -66,7 +66,7 @@ std::array<std::size_t, 1> standard_renderable_mesh_features{base | pinned_msh_r
 std::size_t pbr_runtime_mesh_features = base, standard_runtime_mesh_features = base;
 constexpr unsigned standard_no_color_output_flag = 1, standard_alpha_blend_flag = 2, standard_esm_shadow_output_flag = 4;
 unsigned standard_material_features(const MaterialRecord&) { return 0; }
-bool light_affects_mesh(const LightRecord&, std::uint32_t) { return false; }
+bool light_affects_mesh(const LightRecord&, MeshHandle) { return false; }
 std::string_view pinned_single_light_type(const LightRecord&) { return {}; }
 unsigned pinned_pbr_light_mode(unsigned, bool) { return 0; }
 }
@@ -76,8 +76,8 @@ ${["PinnedVariantKey", "StandardVariantKey"].map((name) => cppRecord(source, `st
 ${[
     "inline bool pinned_record_instanced(",
     "inline bool pinned_record_instance_colored(",
-    "inline PinnedVariantKey pinned_variant_key(",
-    "inline StandardVariantKey standard_variant_key(",
+    "PinnedVariantKey pinned_variant_key(",
+    "StandardVariantKey standard_variant_key(",
 ]
     .map((signature) => cppFunction(source, signature))
     .join("\n")}

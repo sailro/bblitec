@@ -11,14 +11,18 @@ import {
     packagedGltfMeshPlan,
     type GltfConstructedMaterialPlan,
 } from "./gltf-mesh-plan.js";
-import { LoweringContext } from "./lowering/context.js";
+import {
+    LoweringContext,
+    unexportedDeclarationText,
+    sharedPinnedContext,
+} from "./lowering/context.js";
 import { gltfVariantMaterialSource } from "./lowering/gltf/material-variants.js";
 import {
     transpileCommonJs,
     createJavaScriptFunction,
 } from "./typescript-transpile.js";
 
-export interface GltfVariantPlan {
+interface GltfVariantPlan {
     baseCount: number;
     /** Source material indices in the variant phase's construction order. */
     materials: number[];
@@ -81,7 +85,7 @@ function variantRunners(context: LoweringContext): {
     );
     const select = createJavaScriptFunction(
         transpileCommonJs(
-            `${declaration.getText().replace(/^export\s+/, "")}\nreturn selectVariant;`,
+            `${unexportedDeclarationText(declaration)}\nreturn selectVariant;`,
             "gltf-variant-select.ts",
         ),
     )() as Select;
@@ -138,7 +142,7 @@ export async function gltfVariantPlan(
     if (!names.length) return { baseCount, materials, selections };
     const { schedule, select } = context
         ? variantRunners(context)
-        : (pinnedRunners ??= variantRunners(new LoweringContext()));
+        : (pinnedRunners ??= variantRunners(sharedPinnedContext()));
     const definitions = asRecords(document.materials);
     const baseMaterials = base.materials.map((_, index) => ({ index }));
     const meshes = base.meshes.map((mesh) => ({

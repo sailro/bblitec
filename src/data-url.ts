@@ -16,7 +16,7 @@
  */
 
 /** The media type and bytes a `data:` URL carries. */
-export interface DataUrlPayload {
+interface DataUrlPayload {
     /** The declared media type, lowercased, or an empty string when absent. */
     mediaType: string;
     bytes: Uint8Array;
@@ -52,7 +52,7 @@ export function parseDataUrl(source: string): DataUrlPayload | undefined {
  * an inline texture is the whole image -- decoding it to pick an extension,
  * and again to write the file, is the whole payload twice.
  */
-export function dataUrlMediaType(source: string): string | undefined {
+function dataUrlMediaType(source: string): string | undefined {
     return parseDataUrlHeader(source)?.mediaType;
 }
 

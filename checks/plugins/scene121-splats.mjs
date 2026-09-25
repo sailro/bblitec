@@ -16,11 +16,49 @@ import {
     sha256,
 } from "./support.mjs";
 
+/**
+ * @import { PluginContext, PluginOutcome } from "../../dist/src/tooling/check-run.js"
+ */
+
+/**
+ * @typedef {{
+ *     dataSha256: string,
+ *     byteLength: number,
+ *     vertexCount: number,
+ *     boundMin: number[],
+ *     boundMax: number[],
+ *     sampleRows: Array<{ row: number, position: [number, number, number] }>,
+ * }} SplatState the observed steps' state
+ * @typedef {{
+ *     vertexCount: number,
+ *     byteLength: number,
+ *     retainedDataFile: string,
+ *     boundMin: number[],
+ *     boundMax: number[],
+ * }} NativeSplat
+ * @typedef {{ splats: NativeSplat[] }} NativeCapture the fields read from a phase's render capture
+ */
+
+const BOUNDS = /** @type {const} */ (["boundMin", "boundMax"]);
+const LANES = /** @type {const} */ ([0, 1, 2]);
+
+/**
+ * @param {PluginContext} context
+ * @returns {Promise<PluginOutcome>}
+ */
 export async function check(context) {
     const { assetUrl, translatedRows, translationY } = context.options;
+    assert(
+        typeof assetUrl === "string" &&
+            typeof translatedRows === "number" &&
+            typeof translationY === "number",
+        "options: { assetUrl: string, translatedRows: number, translationY: number }",
+    );
     const observations = requireObservations(context);
     assertObservationProvenance(context, observations);
-    const first = observedStep(observations, "first").state;
+    const firstState = observedStep(observations, "first").state;
+    assert(firstState, "the first observation recorded no state");
+    const first = /** @type {SplatState} */ (firstState);
     const idle = observedStep(observations, "idle").state;
     assert.deepEqual(
         idle,
@@ -47,15 +85,17 @@ export async function check(context) {
     );
     assert.equal(first.byteLength, expected.length);
     assert.equal(first.vertexCount, expected.length / 32);
+    /** @type {{ assetSha256: string, expectedDataSha256: string, phases: Record<string, { dataSha256: string, vertexCount: number }> }} */
     const details = {
         assetSha256: sha256(original),
         expectedDataSha256: expectedSha256,
         phases: {},
     };
     for (const backend of context.backends) {
-        for (const phase of Object.values(context.results[backend])) {
-            const splat = phase.capture.splats[0];
+        for (const phase of Object.values(context.results[backend] ?? {})) {
             const where = `${backend}/${phase.id}`;
+            const [splat] = /** @type {NativeCapture} */ (phase.capture).splats;
+            assert(splat, `${where}: the capture holds no splat`);
             assert.equal(
                 splat.vertexCount,
                 first.vertexCount,
@@ -66,6 +106,7 @@ export async function check(context) {
                 expected.length,
                 `${where}: byte length`,
             );
+            assert(phase.capturePath, `${where}: the phase wrote no capture`);
             const data = readFileSync(
                 resolve(dirname(phase.capturePath), splat.retainedDataFile),
             );
@@ -73,7 +114,7 @@ export async function check(context) {
                 data.equals(expected),
                 `${where}: the complete retained source bytes differ`,
             );
-            for (const field of ["boundMin", "boundMax"]) {
+            for (const field of BOUNDS) {
                 assert.deepEqual(
                     splat[field].map(Math.fround),
                     first[field].map(Math.fround),
@@ -81,7 +122,7 @@ export async function check(context) {
                 );
             }
             for (const sample of first.sampleRows) {
-                for (let lane = 0; lane < 3; lane++) {
+                for (const lane of LANES) {
                     assert.equal(
                         data.readFloatLE(sample.row * 32 + lane * 4),
                         Math.fround(sample.position[lane]),

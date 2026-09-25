@@ -20,13 +20,16 @@ import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import test from "node:test";
 import { captureIsCurrent } from "../src/capture-instrumented.js";
+import { discoverDevelopmentTools } from "../src/development-tools.js";
+import { findPinnedTint } from "../src/tint-tool.js";
 
 // Compiled to `dist/test/`, so the repository root is two levels up.
 const root = resolve(import.meta.dirname, "..", "..");
 const generated = resolve(root, "generated");
 const tint =
     process.env["TINT_PATH"] ??
-    resolve(root, "artifacts", "tools", "tint", "tint.exe");
+    findPinnedTint(root, discoverDevelopmentTools().cmake) ??
+    "";
 
 function composedStages(): string[] {
     if (!existsSync(generated)) return [];
@@ -41,11 +44,16 @@ function composedStages(): string[] {
     return found;
 }
 
-test("the pin's composed shaders compile through Tint unchanged", () => {
+test("the pin's composed shaders compile through Tint unchanged", (t) => {
     const stages = composedStages();
     if (stages.length === 0 || !existsSync(tint)) {
         // Without a generated corpus or the pinned Tint there is nothing to
         // measure; the sweep and `tools/build-tint.ps1` populate both.
+        t.skip(
+            stages.length === 0
+                ? "no generated scene carries composed PBR variants"
+                : "the pinned Tint is not built",
+        );
         return;
     }
     const out = mkdtempSync(resolve(tmpdir(), "bblite-variant-"));
@@ -94,9 +102,12 @@ test("the pin's composed shaders compile through Tint unchanged", () => {
  * failure this whole path exists to remove — it compiles, binds and draws, and
  * differs by a term.
  */
-test("emitted variants reproduce the browser's own fragments byte-for-byte", () => {
+test("emitted variants reproduce the browser's own fragments byte-for-byte", (t) => {
     const captures = resolve(root, "artifacts", "capture");
-    if (!existsSync(captures) || !existsSync(generated)) return;
+    if (!existsSync(captures) || !existsSync(generated)) {
+        t.skip("no browser capture or generated scene to compare");
+        return;
+    }
     const emitted = new Map<string, Set<string>>();
     for (const stage of composedStages()) {
         if (!stage.endsWith(".frag.wgsl")) continue;
@@ -138,7 +149,10 @@ test("emitted variants reproduce the browser's own fragments byte-for-byte", () 
     // tree never generated -- a sizing capture of an unintegrated scene, a
     // probe -- considers no fragment at all, and asserting there would report
     // a regression whose cause is which artifacts happen to sit on disk.
-    if (matched + missing.length === 0) return;
+    if (matched + missing.length === 0) {
+        t.skip("no current capture covers a generated scene's PBR fragments");
+        return;
+    }
     assert.ok(
         matched > 0,
         "No captured PBR fragment was reproduced byte-for-byte; the emitted " +

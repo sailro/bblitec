@@ -10,7 +10,7 @@ export class RuntimeSearchParamsRequired extends Error {
 }
 
 /** The runtime query bag over `input`: the one spelling every URLSearchParams value shares. */
-export function searchParamsValue(lowerer: DataLowerer, input: string): Value {
+function searchParamsValue(lowerer: DataLowerer, input: string): Value {
     const type = { kind: "search-params" } as const;
     lowerer.context.reachJsData();
     return {
@@ -51,11 +51,7 @@ export function compileSearchParams(
     node: ts.NewExpression,
 ): Value | undefined {
     const context = lowerer.context;
-    if (
-        !ts.isIdentifier(node.expression) ||
-        node.expression.text !== "URLSearchParams" ||
-        !context.isDefaultLibraryIdentifier(node.expression)
-    )
+    if (context.libraryGlobal(node.expression) !== "URLSearchParams")
         return undefined;
     const args = node.arguments ?? [];
     if (args.length !== 1)
@@ -85,10 +81,16 @@ export function compileSearchParamsMethod(
         );
     const minimum = method === "toString" ? 0 : method === "set" ? 2 : 1;
     context.expectArgumentCount(call, minimum, method === "has" ? 2 : minimum);
-    const receiver = context.pinValueToTemporary(owner, "query_receiver");
+    const receiver = context.bindings.pinValueToTemporary(
+        owner,
+        "query_receiver",
+    );
     const arguments_ = call.arguments.map((argument) => {
         const compiled = context.compileValue(argument);
-        const value = context.pinValueToTemporary(compiled, "query_argument");
+        const value = context.bindings.pinValueToTemporary(
+            compiled,
+            "query_argument",
+        );
         return lowerer.compileKnownValueForSink(
             value,
             { kind: "string" },

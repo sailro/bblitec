@@ -25,11 +25,8 @@ import {
     isShaderSystemMatrix,
     lowerWgslShaderProgram,
     shaderSystemMatrices,
-    type ShaderIrProgram,
 } from "../shader-ir.js";
 import {
-    predeclaredShaderProgram,
-    shaderMaterialPrograms,
     shaderSamplerName,
     shaderUniformValueLayout,
 } from "../shader-material-programs.js";
@@ -80,7 +77,7 @@ export interface ShaderMaterialContext
         StaticBooleanContext,
         Pick<
             LoweringServices,
-            | "reachedShaderPrograms"
+            | "sceneManifest"
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
             | "objectProperty"
@@ -241,64 +238,6 @@ export function compileShaderMaterialOptions(
             `Unsupported shader depthCompare '${depthCompare}'.`,
         );
 
-    for (const program of shaderMaterialPrograms) {
-        if (
-            stringArraysEqual(attributes, program.attributes) &&
-            stringArraysEqual(uniforms, program.uniforms) &&
-            stringArraysEqual(samplers, program.samplers ?? []) &&
-            storageBuffers.length === 0 &&
-            samplerDeclarations.every(
-                ({ sampleType, viewDimension, comparison }) =>
-                    sampleType === "float" &&
-                    viewDimension === "2d" &&
-                    !comparison,
-            ) &&
-            definesEqual(defines, program.defines ?? []) &&
-            needAlphaBlending === program.needAlphaBlending &&
-            blendMode === (program.blendMode ?? "alpha") &&
-            needAlphaTesting === program.needAlphaTesting &&
-            backFaceCulling === program.backFaceCulling &&
-            depthWrite === program.depthWrite &&
-            depthCompare === program.depthCompare
-        ) {
-            let candidate: ShaderIrProgram;
-            try {
-                candidate = lowerWgslShaderProgram({
-                    ...program,
-                    vertexSource,
-                    fragmentSource,
-                    attributes,
-                    uniforms,
-                    samplers,
-                    defines,
-                    needAlphaBlending,
-                    blendMode,
-                    needAlphaTesting,
-                    backFaceCulling,
-                    depthWrite,
-                });
-            } catch (error: unknown) {
-                const message =
-                    error instanceof Error ? error.message : String(error);
-                context.fail(
-                    object,
-                    `Invalid reached shader material WGSL: ${message}`,
-                );
-            }
-            const expected = lowerWgslShaderProgram(program);
-            if (JSON.stringify(candidate) === JSON.stringify(expected)) {
-                const predeclared = predeclaredShaderProgram(program);
-                return reachShaderProgram(context, {
-                    ...predeclared,
-                    uniformDefaults: [],
-                    samplers: [...predeclared.samplers],
-                    storageBuffers: [],
-                    defines: [...predeclared.defines],
-                });
-            }
-        }
-    }
-
     // Scene-local variant: the entry file's own WGSL compiles through
     // the typed shader IR instead of matching a predeclared program.
     // The pin's `name` is optional and it carries the string onto the
@@ -320,17 +259,11 @@ export function compileShaderMaterialOptions(
                   .replace(/[^A-Za-z0-9]+/g, "-")
                   .replace(/^-+|-+$/g, "")
                   .toLowerCase()
-            : `scene-shader-${context.reachedShaderPrograms.length}`;
+            : `scene-shader-${context.sceneManifest.reachedShaderPrograms.length}`;
     if (slug.length === 0) {
         context.fail(
             nameNode,
             "Scene-local shader material names must contain letters or digits.",
-        );
-    }
-    if (shaderMaterialPrograms.some(({ name }) => name === slug)) {
-        context.fail(
-            nameNode,
-            `Shader material name '${slug}' collides with a predeclared variant.`,
         );
     }
     // The pin names nine system uniforms; the reached subset is the three
@@ -651,20 +584,6 @@ function compileShaderDefines(
     return defines;
 }
 
-function definesEqual(
-    left: readonly CompiledShaderDefine[],
-    right: readonly { name: string; value: boolean | number }[],
-): boolean {
-    return (
-        left.length === right.length &&
-        left.every(
-            (entry, index) =>
-                entry.name === right[index]!.name &&
-                entry.value === right[index]!.value,
-        )
-    );
-}
-
 function compileShaderUniformSignatures(
     context: ShaderMaterialContext,
     expression: ts.Expression,
@@ -774,21 +693,21 @@ function reachShaderProgram(
     const identity = ({ name: _name, ...candidate }: CompiledShaderProgram) =>
         JSON.stringify(candidate);
     const programIdentity = identity(program);
-    const existing = context.reachedShaderPrograms.findIndex(
+    const existing = context.sceneManifest.reachedShaderPrograms.findIndex(
         (candidate) =>
             candidate.name === program.name ||
             identity(candidate) === programIdentity,
     );
     if (existing >= 0) {
         return {
-            name: context.reachedShaderPrograms[existing]!.name,
+            name: context.sceneManifest.reachedShaderPrograms[existing]!.name,
             id: existing,
         };
     }
-    context.reachedShaderPrograms.push(program);
+    context.sceneManifest.reachedShaderPrograms.push(program);
     return {
         name: program.name,
-        id: context.reachedShaderPrograms.length - 1,
+        id: context.sceneManifest.reachedShaderPrograms.length - 1,
     };
 }
 
@@ -810,7 +729,7 @@ export function reachFoldedShaderProgram(
     family: string,
     compose: () => CompiledShaderProgram,
 ): { name: string; id: number } {
-    const reached = context.reachedShaderPrograms.findIndex(
+    const reached = context.sceneManifest.reachedShaderPrograms.findIndex(
         (candidate) => candidate.name === name,
     );
     if (reached >= 0) {
@@ -831,23 +750,6 @@ export function reachFoldedShaderProgram(
     return reachShaderProgram(context, program);
 }
 
-export function reachedShaderProgram(
-    context: ShaderMaterialContext,
-    name: string,
-    node: ts.Node,
-): CompiledShaderProgram {
-    const program = context.reachedShaderPrograms.find(
-        (candidate) => candidate.name === name,
-    );
-    if (!program) {
-        context.fail(
-            node,
-            `Shader variant '${name}' was not created in this scene.`,
-        );
-    }
-    return program;
-}
-
 export function resolveShaderUniform(
     context: ShaderMaterialContext,
     material: Value,
@@ -860,8 +762,7 @@ export function resolveShaderUniform(
             "Shader uniform writes require a shader material.",
         );
     }
-    const program = reachedShaderProgram(
-        context,
+    const program = context.sceneManifest.reachedShaderProgram(
         material.shaderVariant,
         nameExpression,
     );
@@ -899,8 +800,7 @@ export function resolveShaderTextureSlot(
             "Shader texture writes require a shader material.",
         );
     }
-    const program = reachedShaderProgram(
-        context,
+    const program = context.sceneManifest.reachedShaderProgram(
         material.shaderVariant,
         nameExpression,
     );
@@ -926,8 +826,7 @@ export function resolveShaderStorageBufferSlot(
             "Shader storage-buffer writes require a shader material.",
         );
     }
-    const program = reachedShaderProgram(
-        context,
+    const program = context.sceneManifest.reachedShaderProgram(
         material.shaderVariant,
         nameExpression,
     );
@@ -1035,13 +934,6 @@ function staticNumber(
     }
     const value = context.compileValue(expression);
     return value.staticNumber;
-}
-
-function stringArraysEqual(left: string[], right: string[]): boolean {
-    return (
-        left.length === right.length &&
-        left.every((value, index) => value === right[index])
-    );
 }
 
 /**

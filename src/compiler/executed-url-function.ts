@@ -22,28 +22,6 @@ import type { LoweringServices } from "./lowering-services.js";
  * value it binds can only be handed to a graph factory or released through
  * `URL.revokeObjectURL`; every other use fails at the value.
  */
-/**
- * A URL a scene function produces from a canvas it draws, executed at
- * generation by the bake that consumes it.
- *
- * `npe-sprite2d-fixture.ts#createNpeSprite2DFlareUrl` draws a radial
- * gradient into an `OffscreenCanvas`, encodes it to a PNG blob and returns
- * `URL.createObjectURL(blob)`; the scene hands that URL to the graph
- * factory whose texture block loads it. The bytes are a browser
- * rasterizer's, exactly as `browser-texture-function.ts` says of the
- * rasterized face, so the function is not lowered. It is not executed
- * HERE either: the URL is meaningful only in the page that made it, and the
- * one consumer this compiler reaches is a node-particle graph factory whose
- * driver already runs in that page. So the call binds to the function's
- * identity -- its module and export -- and the driver runs it, in the same
- * browser, immediately before the build the scene awaited it for.
- *
- * What qualifies is bounded by the same structure the texture producer is:
- * a zero-parameter function whose same-file call closure owns a canvas and
- * reaches `URL.createObjectURL`, and reaches nothing from the pin. The
- * value it binds can only be handed to a graph factory or released through
- * `URL.revokeObjectURL`; every other use fails at the value.
- */
 import ts from "typescript";
 import {
     findRepositoryRoot,
@@ -57,7 +35,7 @@ import {
 } from "./browser-texture-function.js";
 import type { Value } from "./types.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
-import { isDefaultLibraryIdentifier } from "./symbols.js";
+import { libraryGlobal } from "./symbols.js";
 
 interface ExecutedUrlCallContext extends Pick<
     LoweringServices,
@@ -71,9 +49,7 @@ function createsObjectUrl(node: ts.Node, checker: ts.TypeChecker): boolean {
             ts.isCallExpression(child) &&
             ts.isPropertyAccessExpression(child.expression) &&
             child.expression.name.text === "createObjectURL" &&
-            ts.isIdentifier(child.expression.expression) &&
-            child.expression.expression.text === "URL" &&
-            isDefaultLibraryIdentifier(checker, child.expression.expression),
+            libraryGlobal(checker, child.expression.expression) === "URL",
     );
 }
 

@@ -21,6 +21,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { listFiles } from "./tooling/records.js";
 
 /**
  * Every artifact extension `src/compile-shaders.ts` derives from one
@@ -37,6 +38,17 @@ export const compiledShaderArtifactExtensions = [
     ".slots",
     ".tint-reflection.txt",
 ] as const;
+
+/** An offline shader compiler product inside a generated tree. */
+export function isCompiledShaderOutput(path: string): boolean {
+    return (
+        compiledShaderArtifactExtensions.some((extension) =>
+            path.endsWith(extension),
+        ) ||
+        path === "shader-compiler.json" ||
+        path.endsWith("/shader-compiler.json")
+    );
+}
 
 const compiledShaderArtifactPattern = new RegExp(
     `^(.*/shaders/)([^/]+?)(?:${compiledShaderArtifactExtensions
@@ -90,7 +102,7 @@ export class GeneratedTree {
         if (!existsSync(directory)) {
             return;
         }
-        for (const path of this.files(directory)) {
+        for (const path of listFiles(directory)) {
             const key = this.key(path);
             if (this.written.has(key)) {
                 continue;
@@ -135,20 +147,6 @@ export class GeneratedTree {
         return relative(this.root, path).replace(/\\/g, "/").toLowerCase();
     }
 
-    private files(directory: string, out: string[] = []): string[] {
-        for (const entry of readdirSync(directory, {
-            withFileTypes: true,
-        })) {
-            const full = join(directory, entry.name);
-            if (entry.isDirectory()) {
-                this.files(full, out);
-            } else {
-                out.push(full);
-            }
-        }
-        return out;
-    }
-
     private pruneEmptyDirectories(directory: string): boolean {
         let empty = true;
         for (const entry of readdirSync(directory, {
@@ -174,7 +172,7 @@ export class GeneratedTree {
 }
 
 // ---------------------------------------------------------------------------
-// `scene -- neutrality-generated` — the compile-and-digest proof
+// `scene -- neutrality --generated` — the compile-and-digest proof
 //
 // docs/development.md's neutrality ladder: a change confined to
 // TypeScript is proved by compiling every registered scene and digesting
@@ -190,23 +188,12 @@ export class GeneratedTree {
 // Digesting is all this does — the caller compiles first.
 // ---------------------------------------------------------------------------
 
-export interface GeneratedTreeDigest {
+interface GeneratedTreeDigest {
     /** `generated/<path>\t<sha1>`, sorted by path. */
     lines: string[];
     /** Top-level entries under the root that no registry scene owns,
      *  excluded from `lines`. */
     strays: string[];
-}
-
-function listFiles(directory: string, out: string[]): void {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const full = join(directory, entry.name);
-        if (entry.isDirectory()) {
-            listFiles(full, out);
-        } else {
-            out.push(full);
-        }
-    }
 }
 
 /**
@@ -239,9 +226,7 @@ export function digestGeneratedTree(
             strays.push(entry.name);
             continue;
         }
-        const files: string[] = [];
-        listFiles(join(resolvedRoot, entry.name), files);
-        for (const file of files) {
+        for (const file of listFiles(join(resolvedRoot, entry.name))) {
             const relativePath = relative(resolvedRoot, file).replace(
                 /\\/g,
                 "/",
@@ -277,7 +262,7 @@ export function parseDigestBaseline(text: string): Map<string, string> {
     return map;
 }
 
-export interface GeneratedDigestComparison {
+interface GeneratedDigestComparison {
     added: string[];
     removed: string[];
     changed: string[];

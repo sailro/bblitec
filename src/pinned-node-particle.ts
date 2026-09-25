@@ -183,25 +183,25 @@ export type NodeParticleStep =
  * The camera is the scene's own construction, replayed.
  */
 export interface NodeParticleCamera {
-    kind: "arc-rotate";
-    alpha: number;
-    beta: number;
-    radius: number;
-    target: readonly [number, number, number];
+    readonly kind: "arc-rotate";
+    readonly alpha: number;
+    readonly beta: number;
+    readonly radius: number;
+    readonly target: readonly [number, number, number];
     /** The scalar properties written after creation, in write order. */
-    properties: Array<readonly [string, number]>;
+    readonly properties: Array<readonly [string, number]>;
 }
 
 /** One `buildNodeParticleSet*` call: the graph and the options it passed. */
 export interface NodeParticleSetRequest {
-    graph: NodeParticleGraphSource;
-    builder: NodeParticleBuilder;
-    emitter: readonly [number, number, number];
-    textureBaseUrl?: string;
+    readonly graph: NodeParticleGraphSource;
+    readonly builder: NodeParticleBuilder;
+    readonly emitter: readonly [number, number, number];
+    readonly textureBaseUrl?: string;
     /** Provider-backed systems execute source steps and frame updates natively. */
-    native?: true;
+    readonly native?: true;
     /** The scene's camera when the build ran, when it had one. */
-    camera?: NodeParticleCamera;
+    readonly camera?: NodeParticleCamera;
     /**
      * `enableNodeParticleBlendModes(set)`, applied after the build.
      *
@@ -209,7 +209,7 @@ export interface NodeParticleSetRequest {
      * scene reaching either route ends with the same set; this records the
      * second spelling so the driver runs the chain the scene wrote.
      */
-    enableBlendModes?: boolean;
+    readonly enableBlendModes?: boolean;
 }
 
 /**
@@ -266,13 +266,13 @@ export const nodeParticleColumnWidths = {
 export type NodeParticleColumn = keyof typeof nodeParticleColumnWidths;
 
 export interface NodeParticleFrozenBufferRequest {
-    set: number;
-    system: number;
-    columns: NodeParticleColumn[];
+    readonly set: number;
+    readonly system: number;
+    readonly columns: readonly NodeParticleColumn[];
     /** A native value has read the final state, so subsequent bake writes refuse. */
-    observed?: true;
+    readonly observed?: true;
     /** A scene supplied shared native sprite-sheet metadata. */
-    sheet?: true;
+    readonly sheet?: true;
 }
 
 /**
@@ -1066,6 +1066,7 @@ export async function bakeNodeParticles(
         const server = createSuiteSceneServer(driver);
         const result = await runPageGlobal(server, "__bakeNodeParticles", {
             serverName: "node-particle bake server",
+            shared: true,
             browserRequirement:
                 "Baking a node-particle simulation requires Chrome or Edge.",
             browserArgs: screenshotCaptureBrowserArgs,

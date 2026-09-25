@@ -19,7 +19,11 @@ import {
     floatLiteral,
 } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { blendFactorySymbol, nativeBlendFactor } from "./pinned-blend-table.js";
+import {
+    blendFactorySymbol,
+    nativeBlendFactor,
+    pinnedBlendSwitchArms,
+} from "./pinned-blend-table.js";
 import {
     decodeAtlasImageCpp,
     gridSpriteAtlasFramesCpp,
@@ -30,6 +34,7 @@ import {
     pinnedDefaultNumber,
     pinnedDefaultVec2,
 } from "./pinned-material-defaults.js";
+import { sprite2DLayerDefaults } from "./pinned-factory-defaults.js";
 import { pixelsTextureOptionsCpp } from "../pinned-address-modes.js";
 import type { NodeParticleSystemBake } from "../pinned-node-particle.js";
 import {
@@ -39,6 +44,7 @@ import {
     NodeParticleLiveLowerer,
 } from "./node-particle-live-lowerer.js";
 import type { CompileAsset, PixelsTextureSource } from "../compiler/types.js";
+import { recordAt } from "../compiler/record-access.js";
 
 const billboardModule = "src/particle/particle-billboard.ts";
 const blendModule = "src/particle/particle-blend.ts";
@@ -239,40 +245,55 @@ export class NodeParticleLowerer {
      * beside the wrong shader set.
      */
     public particlePassesByMode(): ReadonlyMap<number, number> {
-        const { file, declaration } = this.context.functionDeclaration(
-            blendModule,
-            "createParticleBlend",
-        );
+        const { file, arms } = this.createBlendArms();
         const passes = new Map<number, number>();
-        for (const clause of this.context.findNodes(
-            declaration.body!,
-            ts.isCaseOrDefaultClause,
-        )) {
-            if (ts.isDefaultClause(clause)) continue;
-            const returned = this.context.findNodes(
-                clause,
-                ts.isReturnStatement,
-            )[0]?.expression;
-            if (!returned || !ts.isCallExpression(returned)) {
-                this.context.contractError(
-                    clause,
-                    "createParticleBlend's arms are createBlend calls.",
-                );
-            }
-            const count = returned.arguments[5];
+        for (const { mode, call } of arms) {
+            if (mode === undefined) continue;
+            const count = call.arguments[5];
             passes.set(
-                this.context.numericValue(clause.expression, file),
+                mode,
                 count ? this.context.numericValue(count, file) : 0,
             );
         }
         return passes;
     }
 
-    private particleBlendCpp(): string {
-        const { file, declaration } = this.context.functionDeclaration(
+    /**
+     * `createParticleBlend`'s arms, each asserted to be the `createBlend`
+     * call both readers above and below take their data from.
+     */
+    private createBlendArms(): {
+        file: ts.SourceFile;
+        declaration: ts.FunctionDeclaration;
+        arms: { mode: number | undefined; call: ts.CallExpression }[];
+    } {
+        const { file, declaration, arms } = pinnedBlendSwitchArms(
+            this.context,
             blendModule,
             "createParticleBlend",
         );
+        return {
+            file,
+            declaration,
+            arms: arms.map(({ mode, clause, returned }) => {
+                if (
+                    !returned ||
+                    !ts.isCallExpression(returned) ||
+                    !ts.isIdentifier(returned.expression) ||
+                    returned.expression.text !== "createBlend"
+                ) {
+                    return this.context.contractError(
+                        clause,
+                        "createParticleBlend's arms are createBlend calls.",
+                    );
+                }
+                return { mode, call: returned };
+            }),
+        };
+    }
+
+    private particleBlendCpp(): string {
+        const { file, declaration, arms } = this.createBlendArms();
         const factory = this.context.functionDeclaration(
             blendModule,
             "createBlend",
@@ -340,34 +361,16 @@ export class NodeParticleLowerer {
             "    blend.premultiplied_opacity = false;",
         ];
         let fallback: string | undefined;
-        for (const clause of this.context.findNodes(
-            declaration.body!,
-            ts.isCaseOrDefaultClause,
-        )) {
-            const returned = this.context.findNodes(
-                clause,
-                ts.isReturnStatement,
-            )[0]?.expression;
-            if (
-                !returned ||
-                !ts.isCallExpression(returned) ||
-                !ts.isIdentifier(returned.expression) ||
-                returned.expression.text !== "createBlend"
-            ) {
-                this.context.contractError(
-                    clause,
-                    "createParticleBlend's arms are createBlend calls.",
-                );
-            }
+        for (const { mode, call } of arms) {
             const [, colorSrc, colorDst, alphaSrc, alphaDst, passes] =
-                returned.arguments;
+                call.arguments;
             const factor = (
                 expression: ts.Expression | undefined,
                 what: string,
             ): string => {
                 if (!expression) {
                     this.context.contractError(
-                        returned,
+                        call,
                         `createParticleBlend arm is missing its ${what}.`,
                     );
                 }
@@ -385,11 +388,10 @@ export class NodeParticleLowerer {
                 };`,
                 "        return blend;",
             ].join("\n");
-            if (ts.isDefaultClause(clause)) {
+            if (mode === undefined) {
                 fallback = body;
                 continue;
             }
-            const mode = this.context.numericValue(clause.expression, file);
             lines.push(`    if (mode == ${mode}) {`, body, "    }");
         }
         if (fallback === undefined) {
@@ -519,10 +521,14 @@ export class NodeParticleLowerer {
      * The mirror of `assertBillboardRules`, and needed for the same reason:
      * the bridge has its OWN cell rule and its OWN layer options, so a port
      * that reused the billboard's answers would keep agreeing only while the
-     * two pinned expressions happened to match. Returns the pivot the layer
-     * takes, which the generated registrar emits rather than restating.
+     * two pinned expressions happened to match. Returns the depth and pivot
+     * the bridge's own layer literal names, which the generated registrar
+     * emits rather than restating.
      */
-    private sprite2dBridgeRules(): readonly [number, number] {
+    private sprite2dBridgeRules(): {
+        depth: string;
+        pivot: readonly [number, number];
+    } {
         const { declaration } = this.context.functionDeclaration(
             sprite2dModule,
             "createParticleSprite2DBridge",
@@ -552,10 +558,10 @@ export class NodeParticleLowerer {
             "system.buffer.capacity",
             "pure-2D bridge layer capacity",
         );
-        this.context.assertExpressionShape(
+        const file = declaration.getSourceFile();
+        const depth = this.context.stringValue(
             this.context.propertyInitializer(layerOptions, "depth"),
-            '"none"',
-            "pure-2D bridge layer depth",
+            file,
         );
         const pivot = this.context.unwrapExpression(
             this.context.propertyInitializer(layerOptions, "pivot"),
@@ -569,11 +575,13 @@ export class NodeParticleLowerer {
                 "The pure-2D bridge's layer pivot changed.",
             );
         }
-        const file = declaration.getSourceFile();
-        return [
-            this.context.numericValue(pivot.elements[0]!, file),
-            this.context.numericValue(pivot.elements[1]!, file),
-        ];
+        return {
+            depth,
+            pivot: [
+                this.context.numericValue(pivot.elements[0]!, file),
+                this.context.numericValue(pivot.elements[1]!, file),
+            ],
+        };
     }
 
     /**
@@ -655,10 +663,9 @@ export class NodeParticleLowerer {
      * scene's.
      */
     public sprite2dMultiplyFragment(): string {
-        const file = this.context.sourceFile(sprite2dBlendModule);
-        return this.context.stringValue(
-            this.context.variableInitializer(file, "MULTIPLY_FRAGMENT_WGSL"),
-            file,
+        return this.context.pinnedString(
+            sprite2dBlendModule,
+            "MULTIPLY_FRAGMENT_WGSL",
         );
     }
 
@@ -951,10 +958,8 @@ export class NodeParticleLowerer {
         if (registered) {
             this.assertRegistrationRules();
         }
-        const sprite2dPivot =
-            sprite2d.length > 0
-                ? this.sprite2dBridgeRules()
-                : ([0, 0] as const);
+        const sprite2dLayer =
+            sprite2d.length > 0 ? this.sprite2dBridgeRules() : undefined;
         if (sprite2d.length > 0) {
             this.assertSprite2dSyncRules();
         }
@@ -1104,12 +1109,9 @@ ${
         ? `#include <bblite/upstream/billboard_system.hpp>
 `
         : ""
-}${
-                sprite2d.length === 0
-                    ? ""
-                    : `#include <bblite/upstream/sprite_layer.hpp>
-`
-            }#include <bblite/upstream/node_particles.hpp>
+}// createGridSpriteAtlas, which every particle atlas partitions through.
+#include <bblite/upstream/sprite_layer.hpp>
+#include <bblite/upstream/node_particles.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1201,7 +1203,7 @@ ${decodeAtlasImageCpp()}
     atlas.sampler.address_v = TextureAddressMode::repeat;
     atlas.sampler.max_anisotropy = 4.0f;
 
-${gridSpriteAtlasFramesCpp(this.context)}
+${gridSpriteAtlasFramesCpp()}
 
 ${pushAtlasHandleCpp()}
 }
@@ -1230,7 +1232,7 @@ SpriteAtlasHandle grid_atlas_from_pixels(
     atlas.mip_maps = false;
     atlas.sampler = texture.sampler;
 
-${gridSpriteAtlasFramesCpp(this.context)}
+${gridSpriteAtlasFramesCpp()}
 
 ${pushAtlasHandleCpp()}
 }
@@ -1362,24 +1364,30 @@ ${
 /**
  * The layer options a bridge builds its layer with. The bridge owns
  * capacity, depth, blend and pivot; only the presentation fields come from
- * the caller, and an unnamed one keeps the layer factory's own default.
- * Modes 3 and 4 draw the pin's own Multiply fragment on the primary layer;
- * mode 4's second layer keeps the stock one.
+ * the caller, and an unnamed one takes createSprite2DLayer's own default,
+ * as does the layer depth the bridge leaves out. Modes 3 and 4 draw the
+ * pin's own Multiply fragment on the primary layer; mode 4's second layer
+ * keeps the stock one.
  */
 Sprite2DLayerOptions bridge_layer_options(
     const Sprite2DBridge& bridge,
     const BakedSystem& system) {
-    Sprite2DLayerOptions options;
-    options.capacity = static_cast<float>(system.capacity);
-    options.blend_mode = bridge.exact
+    const SpriteBlendDescriptor blend = bridge.exact
         ? create_particle_blend(system.blend_mode)
         : sprite_2d_blend_for_mode(system.blend_mode);
-    if (bridge.has_opacity) options.opacity = bridge.opacity;
-    if (bridge.has_visible) options.visible = bridge.visible;
-    if (bridge.has_order) options.order = bridge.order;
-    options.pivot = Vec2{${bakedFloatLiteral(sprite2dPivot[0])}, ${bakedFloatLiteral(sprite2dPivot[1])}};
-    options.custom_shader = options.blend_mode.particle_passes >= 1;
-    return options;
+    return Sprite2DLayerOptions{
+        .capacity = static_cast<float>(system.capacity),
+        .blend_mode = blend,
+        .opacity = bridge.has_opacity ? bridge.opacity : ${floatLiteral(sprite2DLayerDefaults().opacity)},
+        .visible = bridge.has_visible ? bridge.visible : ${String(sprite2DLayerDefaults().visible)},
+        .order = bridge.has_order ? bridge.order : ${floatLiteral(sprite2DLayerDefaults().order)},
+        .depth_mode = Sprite2DDepthMode::${sprite2dDepthMode(sprite2dLayer!.depth)},
+        .layer_z = ${floatLiteral(sprite2DLayerDefaults().layerZ)},
+        .pivot = Vec2d{${doubleLiteral(sprite2dLayer!.pivot[0])}, ${doubleLiteral(sprite2dLayer!.pivot[1])}},
+        .custom_shader = blend.particle_passes >= 1,
+        .custom_textures = {},
+        .custom_texture_names = {},
+    };
 }
 
 /**
@@ -1502,7 +1510,7 @@ void sync_node_particle_billboard(
     for (std::size_t i = 0; i < system.particle_count; ++i) {
         const BakedParticle& particle = system.particles[i];
         BillboardSpriteProps props;
-        props.position = particle.position;
+        props.position = Vec3d{particle.position.x, particle.position.y, particle.position.z};
         props.size_world = particle.size_world;
         props.has_size_world = true;
         props.frame = particle.frame;
@@ -1727,9 +1735,9 @@ void assert_frozen_bridge_ownership(const Sprite2DLayerRecord& layer) {
 // Index API caller clears, appends, or hides slots between renderer updates.
 void sync_frozen_bridge(Engine& engine, Sprite2DLayerHandle handle,
     const Sprite2DBridge& bridge, const BakedSystem& system, const FrozenSystem& state) {
-    Sprite2DLayerRecord& layer = engine.sprite_layers[handle.value];
+    Sprite2DLayerRecord& layer = ${recordAt("engine.sprite_layers", "handle")};
     assert_frozen_bridge_ownership(layer);
-    const SpriteAtlasRecord& atlas = engine.sprite_atlases[layer.atlas.value];
+    const SpriteAtlasRecord& atlas = ${recordAt("engine.sprite_atlases", "layer.atlas")};
     const std::size_t alive = system.particle_count;
     const std::uint32_t previous_count = layer.count;
     for (std::size_t i = 0; i < alive; ++i) {
@@ -1806,12 +1814,12 @@ void register_retained_frozen_node_particle_set_2d(
     sprite_renderer_before_update(engine, renderer,
         [&engine, mappings = std::move(mappings)](double) {
             for (const Mapping& mapping : mappings) {
-                if (mapping.secondary) assert_frozen_bridge_ownership(engine.sprite_layers[mapping.secondary->value]);
+                if (mapping.secondary) assert_frozen_bridge_ownership(${recordAt("engine.sprite_layers", "*mapping.secondary")});
                 const Sprite2DBridge& bridge = *mapping.bridge;
                 sync_frozen_bridge(engine, mapping.primary, bridge, *mapping.system, *mapping.state);
                 if (mapping.secondary) {
-                    const Sprite2DLayerRecord& source = engine.sprite_layers[mapping.primary.value];
-                    Sprite2DLayerRecord& target = engine.sprite_layers[mapping.secondary->value];
+                    const Sprite2DLayerRecord& source = ${recordAt("engine.sprite_layers", "mapping.primary")};
+                    Sprite2DLayerRecord& target = ${recordAt("engine.sprite_layers", "*mapping.secondary")};
                     target.opacity = source.opacity;
                     target.visible = source.visible;
                     target.order = source.order;
@@ -1972,7 +1980,7 @@ void sync_native_particle_billboard(Engine& engine, BillboardSystemHandle billbo
     clear_billboard_sprites(engine, billboard);
     for (std::size_t i = 0; i < static_cast<std::size_t>(state.alive); ++i) {
         BillboardSpriteProps props;
-        props.position = Vec3{state.pos_x[i], state.pos_y[i], state.pos_z[i]};
+        props.position = Vec3d{state.pos_x[i], state.pos_y[i], state.pos_z[i]};
         props.size_world = Vec2{
             static_cast<float>(static_cast<double>(state.size[i]) * state.scale_x[i]),
             static_cast<float>(static_cast<double>(state.size[i]) * state.scale_y[i])};
@@ -2190,8 +2198,8 @@ void sync_live_bridge(
     Engine& engine,
     const LiveMapping& mapping,
     const State& state) {
-    Sprite2DLayerRecord& layer = engine.sprite_layers[mapping.layer.value];
-    const SpriteAtlasRecord& atlas = engine.sprite_atlases[layer.atlas.value];
+    Sprite2DLayerRecord& layer = ${recordAt("engine.sprite_layers", "mapping.layer")};
+    const SpriteAtlasRecord& atlas = ${recordAt("engine.sprite_atlases", "layer.atlas")};
     const double pixels_per_unit = mapping.row->pixels_per_unit;
     const double origin_x = mapping.origin_x;
     const double origin_y = mapping.origin_y;
@@ -2471,6 +2479,22 @@ function pixelsTextureCpp(texture: PixelsTextureSource): string {
  * Infinity in its columns is a broken bake, not a value to silently emit
  * as `0.0f`.
  */
+/** A pinned Sprite2D `depth` string as the native layer's depth mode. */
+function sprite2dDepthMode(depth: string): string {
+    const modes: Readonly<Record<string, string>> = {
+        none: "none",
+        test: "test",
+        "test-write": "test_write",
+    };
+    const mode = modes[depth];
+    if (mode === undefined) {
+        throw new Error(
+            `The pure-2D bridge names Sprite2D depth '${depth}', which is not lowered.`,
+        );
+    }
+    return mode;
+}
+
 function bakedFloatLiteral(value: number): string {
     if (!Number.isFinite(value)) {
         throw new Error(

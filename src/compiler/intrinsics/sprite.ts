@@ -10,6 +10,7 @@ import {
     addressModeByPin,
     pixelsTexture2DOptionFields,
     pixelsTextureOptionsCpp,
+    textureFilterByPin,
 } from "../../pinned-address-modes.js";
 import {
     staticNumberValue,
@@ -21,7 +22,17 @@ import {
     numberField,
     type HitRecordContext,
 } from "./hit-record.js";
-import { stringLiteral } from "../../cpp-literals.js";
+import {
+    doubleLiteral,
+    floatLiteral,
+    stringLiteral,
+} from "../../cpp-literals.js";
+import {
+    billboardSystemDefaults,
+    loadSpriteAtlasDefaults,
+    sprite2DLayerDefaults,
+    spriteAtlasPackDefaults,
+} from "../../lowering/pinned-factory-defaults.js";
 
 export interface SpriteIntrinsicContext
     extends
@@ -39,19 +50,15 @@ export interface SpriteIntrinsicContext
             | "expectSameEngine"
             | "compileVec3"
             | "compileBoolean"
-            | "compileCondition"
+            | "conditions"
             | "compileNumber"
-            | "compileVec2"
-            | "compileVec4"
+            | "evaluator"
             | "registerSpriteAtlasAsset"
             | "probePixelsAsset"
             | "allocateTemporaryCppName"
-            | "bindDataTuple"
+            | "bindings"
             | "compileSpriteAtlas"
-            | "recordPlainSpriteProgram"
-            | "recordPureSpriteVertex"
-            | "spriteCustomShaders"
-            | "recordSpriteCustomShader"
+            | "sceneManifest"
             | "emit"
             | "propertyName"
             | "fail"
@@ -80,7 +87,8 @@ export function compileSpriteConstant(importedName: string): Value | undefined {
 }
 
 /**
- * The native factory a `blendMode` option names, or the family's default.
+ * The native factory a `blendMode` option names, or the one the factory's
+ * own `opts.blendMode ?? <export>` falls back to.
  *
  * The family is checked because the two sets are not interchangeable: a 2D
  * descriptor at a billboard system would otherwise compile straight through
@@ -91,10 +99,18 @@ function blendOption(
     options: Value | undefined,
     family: "sprite" | "billboard",
     node: ts.Node,
+    fallbackExport: string,
 ): string {
     const blendMode = property(options, "blendMode");
     if (!blendMode) {
-        return `bbl::${family}_blend_alpha()`;
+        const fallback = parseBlendExport(fallbackExport);
+        if (fallback?.family !== family) {
+            context.fail(
+                node,
+                `The pinned ${family} factory defaults its blend to '${fallbackExport}', which is not a ${family} descriptor.`,
+            );
+        }
+        return `bbl::${fallback.symbol}()`;
     }
     const named =
         blendMode.kind === "sprite-blend" && blendMode.staticString
@@ -108,7 +124,7 @@ function blendOption(
     }
     // The cutout mode is the one billboard descriptor with a second
     // pipeline behind it, so naming it reaches that arm's shader.
-    if (family === "billboard" && named.mode === "cutout") {
+    if (family === "billboard" && named.cutout) {
         context.reachFeature("sprite:billboard-cutout", node);
     }
     return blendMode.cpp;
@@ -173,7 +189,7 @@ function customShaderOption(
 ): { program: string; textures: string; textureNames: string } {
     const named = property(options, "customShader");
     if (!named) {
-        context.recordPlainSpriteProgram(family);
+        context.sceneManifest.recordPlainSpriteProgram(family);
         return { program: "0u", textures: "{}", textureNames: "{}" };
     }
     if (named.kind !== `${family}-custom-shader`) {
@@ -381,8 +397,9 @@ function sprite2DPropsCpp(
 }
 
 /**
- * The `arity` components of a tuple-valued option, as native float
- * expressions.
+ * The `arity` components of a tuple-valued option, as native expressions at
+ * `precision` -- float for a lane the pin stores into an F32 buffer, double
+ * for one it keeps as a number.
  *
  * A tuple written in place is already a list of compiled values. One that
  * arrives from the plain-data model — `color: getGridTint(index)` returns a
@@ -395,6 +412,7 @@ function tupleOption(
     name: string,
     node: ts.Node,
     arity: number,
+    precision: "float" | "double" = "float",
 ): string[] | undefined {
     const value = property(options, name);
     if (!value) {
@@ -408,14 +426,17 @@ function tupleOption(
                 `Sprite option '${name}' expects a ${arity}-element tuple.`,
             );
         }
-        return elements.map((element) => `static_cast<float>(${element.cpp})`);
+        return elements.map(
+            (element) => `static_cast<${precision}>(${element.cpp})`,
+        );
     }
     if (isDataTuple(value, arity)) {
         // Bound before its lanes are read, because `tupleComponents` reads
         // the base once per lane -- the rule `bindDataTuple` states.
         return tupleComponents(
-            context.bindDataTuple(value, arity, `sprite_${name}`),
+            context.bindings.bindDataTuple(value, arity, `sprite_${name}`),
             arity,
+            precision,
         );
     }
     return context.fail(
@@ -463,7 +484,7 @@ function billboardPropsCpp(
             );
         }
     }
-    const position = tupleOption(context, props, "position", call, 3);
+    const position = tupleOption(context, props, "position", call, 3, "double");
     if (!update && !position) {
         context.fail(call, `${importedName}: position required.`);
     }
@@ -477,7 +498,7 @@ function billboardPropsCpp(
     const visible = property(props, "visible");
     return (
         `bbl::BillboardSpriteProps{` +
-        `bbl::Vec3{${position ? position.join(", ") : "0.0f, 0.0f, 0.0f"}}, ` +
+        `bbl::Vec3d{${position ? position.join(", ") : "0.0, 0.0, 0.0"}}, ` +
         `bbl::Vec2{${sizeWorld ? sizeWorld.join(", ") : "0.0f, 0.0f"}}, ` +
         `${sizeWorld ? "true" : "false"}, ` +
         `${frame ? `static_cast<float>(${frame.cpp})` : "0.0f"}, ${frame ? "true" : "false"}, ` +
@@ -700,10 +721,12 @@ function compileCreateSpriteAtlasFromFrames(
         );
         return `${source}${arrow ? "->" : "."}${field.name}`;
     };
+    const packDefaults = spriteAtlasPackDefaults();
     const optionalUnsigned = (name: string, fallback: string): string => {
         const value = access(name);
         return `(${value} ? bbl::js::to_uint32(*${value}) : ${fallback})`;
     };
+    const unsigned = (value: number): string => `${value}u`;
     const pivot = access("pivot");
     const options = optionsRecord(
         context,
@@ -759,17 +782,19 @@ function compileCreateSpriteAtlasFromFrames(
             `${access("pixels")}.data(), ${access("pixels")}.size(), ` +
             `bbl::js::to_uint32(${access("width")}), ` +
             `bbl::js::to_uint32(${access("height")}), ` +
-            `${optionalUnsigned("srcX", "0u")}, ` +
-            `${optionalUnsigned("srcY", "0u")}, ` +
-            `${optionalUnsigned("srcStrideBytes", "0u")}, ` +
+            `${optionalUnsigned("srcX", unsigned(packDefaults.srcX))}, ` +
+            `${optionalUnsigned("srcY", unsigned(packDefaults.srcY))}, ` +
+            // An absent stride stays absent: the packer's own
+            // `srcStrideBytes ?? width * 4` resolves it per frame.
+            `${optionalUnsigned("srcStrideBytes", "std::optional<std::uint32_t>{}")}, ` +
             `(${pivot} ? bbl::Vec2{static_cast<float>((*${pivot})[0]), ` +
-            `static_cast<float>((*${pivot})[1])} : bbl::Vec2{0.5f, 0.5f})}); } ` +
+            `static_cast<float>((*${pivot})[1])} : bbl::Vec2{${packDefaults.pivot.map(floatLiteral).join(", ")}})}); } ` +
             `return bbl::create_sprite_atlas_from_frames(${engine.cpp}, ${normalized}, ` +
             `bbl::SpriteAtlasPackOptions{` +
-            `${numberOption("paddingPx", "1u")}, ` +
-            `${numberOption("maxWidthPx", "1024u")}, ` +
-            `bbl::TextureFilter::${sampling?.staticString === "linear" ? "linear" : "nearest"}, ` +
-            `${premultiplied?.cpp ?? "false"}, ` +
+            `${numberOption("paddingPx", unsigned(packDefaults.paddingPx))}, ` +
+            `${numberOption("maxWidthPx", unsigned(packDefaults.maxWidthPx))}, ` +
+            `bbl::${textureFilterByPin[sampling?.staticString ?? packDefaults.sampling] ?? context.fail(argumentAt(call, 2), `createSpriteAtlasFromFrames sampling '${packDefaults.sampling}' is not a pinned filter.`)}, ` +
+            `${premultiplied?.cpp ?? String(packDefaults.premultipliedAlpha)}, ` +
             `${capacityLanes ? "true" : "false"}, ` +
             `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[0]!})` : "0u"}, ` +
             `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[1]!})` : "0u"}}); }())`,
@@ -827,21 +852,32 @@ function compileCreateGridSpriteAtlas(
         return value.cpp;
     };
     context.reachFeature("sprite:2d", call);
+    // Only the options the scene named: each carries its presence, and an
+    // absent one takes createGridSpriteAtlas's own `??` in the lowered
+    // partition (pinned-grid-atlas.ts), which is where the pin resolves it.
+    const named: string[] = [
+        `.cell_width_px = ${numberValue(cellWidth, "cellWidthPx")}`,
+        `.cell_height_px = ${numberValue(cellHeight, "cellHeightPx")}`,
+    ];
+    const present = (member: string, value: string): void => {
+        named.push(`.has_${member} = true`, `.${member} = ${value}`);
+    };
+    if (columns) present("columns", numberValue(columns, "columns"));
+    if (rows) present("rows", numberValue(rows, "rows"));
+    if (margin) present("margin_px", numberValue(margin, "marginPx"));
+    if (spacing) present("spacing_px", numberValue(spacing, "spacingPx"));
+    if (pivot) {
+        present(
+            "pivot",
+            `bbl::Vec2{static_cast<float>(${pivot[0]}), static_cast<float>(${pivot[1]})}`,
+        );
+    }
+    if (premultiplied) present("premultiplied_alpha", premultiplied.cpp);
     return {
         kind: "sprite-atlas",
         cpp:
             `bbl::create_grid_sprite_atlas(${engine}, ${texture.cpp}, ` +
-            `bbl::GridSpriteAtlasOptions{` +
-            `${numberValue(cellWidth, "cellWidthPx")}, ` +
-            `${numberValue(cellHeight, "cellHeightPx")}, ` +
-            `${columns ? "true" : "false"}, ` +
-            `${columns ? numberValue(columns, "columns") : "0.0"}, ` +
-            `${rows ? "true" : "false"}, ` +
-            `${rows ? numberValue(rows, "rows") : "0.0"}, ` +
-            `${margin ? numberValue(margin, "marginPx") : "0.0"}, ` +
-            `${spacing ? numberValue(spacing, "spacingPx") : "0.0"}, ` +
-            `${pivot ? `bbl::Vec2{static_cast<float>(${pivot[0]}), static_cast<float>(${pivot[1]})}` : "bbl::Vec2{0.5f, 0.5f}"}, ` +
-            `${premultiplied ? premultiplied.cpp : "false"}})`,
+            `bbl::GridSpriteAtlasOptions{${named.join(", ")}})`,
         engineCpp: engine,
     };
 }
@@ -889,19 +925,18 @@ function compileLoadSpriteAtlas(
             }
         }
     }
-    // Each axis is read by name: the loader stamps clamp and the
-    // caller's spread replaces it, so an option naming only one axis
-    // must not land on the other.
+    // Each axis is read by name: the loader stamps its own texture
+    // options literal's mode and the caller's spread replaces it, so an
+    // option naming only one axis must not land on the other.
     const addressMode = (name: "addressModeU" | "addressModeV"): string => {
-        const mode = property(textureOptions, name);
-        if (!mode?.staticString) {
-            return "bbl::TextureAddressMode::clamp";
-        }
-        const mapped = addressModeByPin[mode.staticString];
+        const pinned =
+            property(textureOptions, name)?.staticString ??
+            loadSpriteAtlasDefaults()[name];
+        const mapped = addressModeByPin[pinned];
         if (!mapped) {
             context.fail(
                 argumentAt(call, 2),
-                `loadSpriteAtlas ${name} '${mode.staticString}' is not a pinned address mode.`,
+                `loadSpriteAtlas ${name} '${pinned}' is not a pinned address mode.`,
             );
         }
         return `bbl::${mapped}`;
@@ -931,8 +966,8 @@ function compileLoadSpriteAtlas(
             `bbl::TextureFilter::${
                 sampling?.staticString === "nearest" ? "nearest" : "linear"
             }, ` +
-            `${premultipliedAlpha?.cpp ?? "false"}, ` +
-            `${premultiplyOnLoad?.cpp ?? "false"}, ` +
+            `${premultipliedAlpha?.cpp ?? String(loadSpriteAtlasDefaults().premultipliedAlpha)}, ` +
+            `${premultiplyOnLoad?.cpp ?? String(loadSpriteAtlasDefaults().premultiplyOnLoad)}, ` +
             `${addressMode("addressModeU")}, ` +
             `${addressMode("addressModeV")}})`,
         engineCpp: engine.engineCpp ?? engine.cpp,
@@ -973,13 +1008,15 @@ function compileCreateSprite2DLayer(
     // name the scene imported. `spriteBlendOpaque` names no colour
     // blend at all, which the 2D pipeline expresses by disabling
     // blending.
+    const defaults = sprite2DLayerDefaults();
     const blendCpp = blendOption(
         context,
         options,
         "sprite",
         call.arguments[1] ?? call,
+        defaults.blendMode,
     );
-    const pivot = tupleOption(context, options, "pivot", call, 2);
+    const pivot = tupleOption(context, options, "pivot", call, 2, "double");
     const custom = customShaderOption(
         context,
         options,
@@ -987,26 +1024,36 @@ function compileCreateSprite2DLayer(
         call.arguments[1] ?? call,
     );
     const engineCpp = context.engineFor(atlas, call);
-    const depthMode = (depth?.staticString ?? "none") as NonNullable<
-        Value["spriteDepthMode"]
-    >;
+    const depthMode = depth?.staticString ?? defaults.depth;
+    if (
+        depthMode !== "none" &&
+        depthMode !== "test" &&
+        depthMode !== "test-write"
+    ) {
+        return context.fail(
+            call,
+            `createSprite2DLayer defaults its depth to '${depthMode}', which is not lowered.`,
+        );
+    }
     context.reachFeature("sprite:2d", call);
     return {
         kind: "sprite-layer",
         cpp:
             `bbl::create_sprite_2d_layer(${engineCpp}, ` +
             `${atlas.cpp}, bbl::Sprite2DLayerOptions{` +
-            `${numberOption(options, "capacity", "16.0f")}, ` +
+            `${numberOption(options, "capacity", floatLiteral(defaults.capacity))}, ` +
             `${blendCpp}, ` +
-            `${numberOption(options, "opacity", "1.0f")}, ` +
-            `${property(options, "visible")?.cpp ?? "true"}, ` +
-            `${numberOption(options, "order", "0.0f")}, ` +
+            `${numberOption(options, "opacity", floatLiteral(defaults.opacity))}, ` +
+            `${property(options, "visible")?.cpp ?? String(defaults.visible)}, ` +
+            `${numberOption(options, "order", floatLiteral(defaults.order))}, ` +
             `bbl::Sprite2DDepthMode::${
                 depthMode === "test-write" ? "test_write" : depthMode
             }, ` +
-            `${numberOption(options, "layerZ", "0.5f")}, ` +
-            `bbl::Vec2{${
-                pivot ? `${pivot[0]!}, ${pivot[1]!}` : "0.5f, 0.5f"
+            `${numberOption(options, "layerZ", floatLiteral(defaults.layerZ))}, ` +
+            `bbl::Vec2d{${
+                pivot
+                    ? `${pivot[0]!}, ${pivot[1]!}`
+                    : defaults.pivot.map(doubleLiteral).join(", ")
             }}, ` +
             `${custom.program}, ${custom.textures}, ` +
             `${custom.textureNames}})`,
@@ -1132,7 +1179,9 @@ function compileEnableSprite2DYSort(
     context.expectArgumentCount(call, 1, 2);
     const layer = context.compileValue(argumentAt(call, 0));
     context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
-    let defaultBias = "0.0";
+    // The pin resolves `options.defaultBias ?? 0` itself; an omitted one
+    // travels as absent.
+    let defaultBias = "std::nullopt";
     if (call.arguments[1]) {
         validateObjectProperties(
             context,
@@ -1145,7 +1194,7 @@ function compileEnableSprite2DYSort(
             "defaultBias",
         );
         if (bias) {
-            defaultBias = `static_cast<double>(${bias.cpp})`;
+            defaultBias = `std::optional<double>{static_cast<double>(${bias.cpp})}`;
         }
     }
     const engineCpp = context.engineFor(layer, call);
@@ -1214,7 +1263,9 @@ function compileUpdateSprite2DIndex(
     };
     const unwrappedOptions = context.unwrap(options);
     if (ts.isConditionalExpression(unwrappedOptions)) {
-        const condition = context.compileCondition(unwrappedOptions.condition);
+        const condition = context.conditions.compileCondition(
+            unwrappedOptions.condition,
+        );
         return {
             kind: "void",
             cpp:
@@ -1283,7 +1334,7 @@ function compilePlaySprite2DAnimation(
     );
     const number = (index: number): string =>
         context.compileNumber(argumentAt(call, index), "double");
-    const loop = context.compileCondition(argumentAt(call, 4));
+    const loop = context.conditions.compileCondition(argumentAt(call, 4));
     const options = optionsRecord(context, call.arguments[6], importedName);
     if (property(options, "onEnd")) {
         context.fail(
@@ -1435,11 +1486,13 @@ function compileCreateFacingBillboardSystem(
     // is `billboard_blend_alpha()`. `cutout` carries no colour blend
     // and drives an alpha-test depth-write path this slice does not
     // render, so it refuses rather than drawing the wrong one.
+    const defaults = billboardSystemDefaults();
     const blendCpp = blendOption(
         context,
         options,
         "billboard",
         optionsArg ?? call,
+        defaults.blendMode,
     );
     const custom = customShaderOption(
         context,
@@ -1465,7 +1518,7 @@ function compileCreateFacingBillboardSystem(
     // than recomputed at the call site.
     const axisCpp = locked
         ? context.compileVec3(argumentAt(call, 1))
-        : "bbl::Vec3{0.0f, 0.0f, 0.0f}";
+        : `bbl::Vec3{${defaults.facingAxis.map(floatLiteral).join(", ")}}`;
     const engineCpp = context.engineFor(atlas, call);
     context.reachFeature("sprite:billboard", call);
     if (locked) {
@@ -1486,10 +1539,10 @@ function compileCreateFacingBillboardSystem(
             `${atlas.cpp}, bbl::BillboardOrientation::` +
             `${locked ? "axis_locked" : "facing"}, ${axisCpp}, ` +
             `bbl::BillboardSystemOptions{` +
-            `.capacity = ${numberOption(options, "capacity", "16.0f")}, ` +
+            `.capacity = ${numberOption(options, "capacity", floatLiteral(defaults.capacity))}, ` +
             `.blend = ${blendCpp}, ` +
-            `.opacity = ${numberOption(options, "opacity", "1.0f")}, ` +
-            `.visible = ${property(options, "visible")?.cpp ?? "true"}, ` +
+            `.opacity = ${numberOption(options, "opacity", floatLiteral(defaults.opacity))}, ` +
+            `.visible = ${property(options, "visible")?.cpp ?? String(defaults.visible)}, ` +
             // resolveAlphaCutoff and the order default both follow
             // the descriptor's own depth mode, so they are resolved
             // beside it rather than from the name at this call site.
@@ -1706,7 +1759,7 @@ function compileCreateSprite2DCustomShader(
     const family =
         importedName === "createSprite2DCustomShader" ? "sprite" : "billboard";
     const extraNames = extras.map(({ name }) => name);
-    const familyShaders = context
+    const familyShaders = context.sceneManifest
         .spriteCustomShaders()
         .filter((entry) => entry.family === family);
     const existingIndex = familyShaders.findIndex(
@@ -1735,7 +1788,7 @@ function compileCreateSprite2DCustomShader(
         call,
     );
     if (existingIndex < 0) {
-        context.recordSpriteCustomShader({
+        context.sceneManifest.recordSpriteCustomShader({
             family,
             fragment: fragment.staticString,
             extraTextures: extraNames,
@@ -1764,7 +1817,7 @@ function compileSetSprite2DShaderParams(
         sprite ? "sprite-layer" : "billboard-system",
         argumentAt(call, 0),
     );
-    const params = context.compileVec4(argumentAt(call, 1));
+    const params = context.evaluator.compileVec4(argumentAt(call, 1));
     const engineCpp = context.engineFor(target, call);
     context.emit(
         `bbl::${
@@ -1857,7 +1910,7 @@ function compileSetSprite2DUvOffset(
     const layer = context.compileValue(argumentAt(call, 0));
     context.expectKind(layer, "sprite-layer", argumentAt(call, 0));
     const index = context.compileNumber(argumentAt(call, 1));
-    const offset = context.compileVec2(argumentAt(call, 2));
+    const offset = context.evaluator.compileVec2(argumentAt(call, 2));
     const engineCpp = context.engineFor(layer, call);
     context.reachFeature("sprite:2d", call);
     // Importing the setter is the pin's own opt-in trigger for the
@@ -1906,7 +1959,7 @@ function compileCreateSpriteRenderer(
     const clearValue = tupleClearValue(context, options, call);
     context.reachFeature("sprite:2d", call);
     context.reachFeature("renderer:sprite", call);
-    context.recordPureSpriteVertex();
+    context.sceneManifest.recordPureSpriteVertex();
     return {
         kind: "sprite-renderer",
         cpp:

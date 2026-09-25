@@ -1,3 +1,4 @@
+import { journaled } from "./emission-transaction.js";
 import ts from "typescript";
 import { registerUiImageAsset } from "./assets.js";
 import { bakeCanvasReadback } from "./canvas-readback.js";
@@ -7,10 +8,9 @@ import {
 } from "./intrinsics/character-controller.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { argumentAt } from "./syntax.js";
-import type { Value } from "./types.js";
+import { presenceFlagCpp, type Value } from "./types.js";
 import { UiProjection } from "./ui-projection.js";
 import { requireWindowHost, windowErrorEventValue } from "./window-events.js";
-import { browserGlobalNamed } from "./browser-erasure.js";
 import { emitDomEventListener } from "./dom-listeners.js";
 import {
     parseUiSelectorSequence,
@@ -85,10 +85,9 @@ interface PlatformCallContext
             | "canvasReadbackFunctions"
             | "checker"
             | "compileBoolean"
-            | "compileCondition"
-            | "compileFrameCallback"
+            | "conditions"
+            | "callbacks"
             | "compileNumber"
-            | "compilePlatformCallback"
             | "compileStringLiteral"
             | "compileValue"
             | "cppString"
@@ -96,30 +95,26 @@ interface PlatformCallContext
             | "dataLowerer"
             | "dataTypes"
             | "emit"
-            | "engineHasStarted"
-            | "evaluateBrowserValue"
+            | "engineLifecycle"
+            | "browserErasure"
             | "evaluator"
             | "expectArgumentCount"
             | "expectKind"
             | "expectSameEngine"
             | "fail"
             | "hasPresentationHost"
-            | "hoistForwardCallbackBindings"
             | "probeEmission"
-            | "isBrowserOnlyExpression"
             | "isCanvasElement"
-            | "isDefaultLibraryIdentifier"
+            | "libraryGlobal"
             | "isInFrameCallback"
             | "isNativeHostUiLookup"
-            | "isPrimaryCanvas2DContextCall"
-            | "lookupOptional"
+            | "bindings"
             | "objectProperty"
             | "options"
-            | "pinValueToTemporary"
             | "emitDiscardedValue"
             | "reachFeature"
             | "reachJsData"
-            | "registerAsset"
+            | "assetRegistry"
             | "requireDefaultEngine"
             | "requireEngine"
             | "requirePresentationHost"
@@ -127,6 +122,19 @@ interface PlatformCallContext
             | "userFunctions"
             | "unwrap"
         > {}
+
+/**
+ * An operation on a value that may be absent (an element a lookup may not
+ * have found): it runs only when present, else yields `absent`.
+ */
+function whenPresent(
+    value: Value,
+    operation: string,
+    absent = "static_cast<void>(0)",
+): string {
+    const found = presenceFlagCpp(value);
+    return found ? `(${found} ? ${operation} : ${absent})` : operation;
+}
 
 export class PlatformCalls {
     public constructor(
@@ -161,7 +169,9 @@ export class PlatformCalls {
         if (
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "addEventListener" &&
-            !this.context.isBrowserOnlyExpression(callee.expression)
+            !this.context.browserErasure.isBrowserOnlyExpression(
+                callee.expression,
+            )
         ) {
             const owner = this.context.compileValue(callee.expression);
             if (owner.kind === "gpu-device") {
@@ -194,7 +204,7 @@ export class PlatformCalls {
                         },
                     },
                 };
-                const callback = this.context.compilePlatformCallback(
+                const callback = this.context.callbacks.compilePlatformCallback(
                     argumentAt(call, 1),
                     { cppType: "const std::string&", name: message },
                     [value],
@@ -225,11 +235,11 @@ export class PlatformCalls {
             const value = this.compileUiCall(call, callee);
             if (value) return value;
         }
-        if (
-            ts.isIdentifier(callee) &&
-            this.context.isDefaultLibraryIdentifier(callee)
-        ) {
-            if (callee.text === "isFinite") {
+        // Bare or through the global object (`window.clearTimeout`): the
+        // same library function either way.
+        const global = this.context.libraryGlobal(callee);
+        if (global !== undefined) {
+            if (global === "isFinite") {
                 this.context.expectArgumentCount(call, 1, 1);
                 return {
                     kind: "boolean",
@@ -238,10 +248,10 @@ export class PlatformCalls {
                         `${this.context.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
-            if (callee.text === "setInterval") {
+            if (global === "setInterval") {
                 this.context.expectArgumentCount(call, 2, 2);
                 const engine = this.context.requireDefaultEngine(call);
-                const callback = this.context.compileFrameCallback(
+                const callback = this.context.callbacks.compileFrameCallback(
                     argumentAt(call, 0),
                     "interval",
                 );
@@ -255,7 +265,7 @@ export class PlatformCalls {
                     impure: true,
                 };
             }
-            if (callee.text === "clearInterval") {
+            if (global === "clearInterval") {
                 this.context.expectArgumentCount(call, 1, 1);
                 const engine = this.context.requireDefaultEngine(call);
                 return {
@@ -265,7 +275,7 @@ export class PlatformCalls {
                         `${this.context.compileNumber(argumentAt(call, 0), "double")})`,
                 };
             }
-            if (callee.text === "clearTimeout") {
+            if (global === "clearTimeout") {
                 this.context.expectArgumentCount(call, 1, 1);
                 const engine = this.context.requireDefaultEngine(call);
                 return {
@@ -306,9 +316,7 @@ export class PlatformCalls {
         if (
             callee.name.text === "now" &&
             call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            receiver.text === "performance" &&
-            this.context.isDefaultLibraryIdentifier(receiver)
+            this.context.libraryGlobal(receiver) === "performance"
         ) {
             return {
                 kind: "number",
@@ -319,9 +327,7 @@ export class PlatformCalls {
         if (
             callee.name.text === "now" &&
             call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            receiver.text === "Date" &&
-            this.context.isDefaultLibraryIdentifier(receiver)
+            this.context.libraryGlobal(receiver) === "Date"
         ) {
             return {
                 kind: "number",
@@ -335,7 +341,7 @@ export class PlatformCalls {
             callee.name.text === "stopImmediatePropagation"
         ) {
             const platformEvent = ts.isIdentifier(receiver)
-                ? this.context.lookupOptional(receiver)
+                ? this.context.bindings.lookupOptional(receiver)
                 : ts.isPropertyAccessExpression(receiver) ||
                     ts.isElementAccessExpression(receiver)
                   ? this.context.compileValue(receiver)
@@ -395,9 +401,7 @@ export class PlatformCalls {
         if (
             callee.name.text === "exitPointerLock" &&
             call.arguments.length === 0 &&
-            ts.isIdentifier(receiver) &&
-            receiver.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(receiver)
+            this.context.libraryGlobal(receiver) === "document"
         ) {
             return {
                 kind: "void",
@@ -444,8 +448,8 @@ export class PlatformCalls {
                     ? this.context.unwrap(node.arguments[0])
                     : undefined;
                 if (
-                    ts.isIdentifier(callee) &&
-                    callee.text === "requestAnimationFrame" &&
+                    this.context.libraryGlobal(callee) ===
+                        "requestAnimationFrame" &&
                     argument &&
                     ts.isIdentifier(argument) &&
                     this.context.symbols.valueSymbol(argument) === symbol
@@ -481,7 +485,7 @@ export class PlatformCalls {
         this.context.expectArgumentCount(call, 1, 1);
         const argument = this.context.unwrap(argumentAt(call, 0));
         const stored = ts.isIdentifier(argument)
-            ? this.context.lookupOptional(argument)
+            ? this.context.bindings.lookupOptional(argument)
             : undefined;
         // A materialized callback retains its own requeue operation, including
         // conditional schedules and synchronous priming calls.
@@ -493,7 +497,7 @@ export class PlatformCalls {
             return { kind: "void", cpp: "" };
         }
         const engine = this.context.requireDefaultEngine(call);
-        const callback = this.context.compileFrameCallback(
+        const callback = this.context.callbacks.compileFrameCallback(
             argumentAt(call, 0),
             "timestamp",
         );
@@ -504,7 +508,7 @@ export class PlatformCalls {
             };
         }
         this.requireCompatibleFrameConductor("persistent", call);
-        const callbacks = this.context.engineHasStarted()
+        const callbacks = this.context.engineLifecycle.engineHasStarted()
             ? "post_render_animation_frame_callbacks"
             : "animation_frame_callbacks";
         return {
@@ -513,7 +517,8 @@ export class PlatformCalls {
         };
     }
 
-    private frameConductorOwner: "manager" | "persistent" | undefined;
+    @journaled private accessor frameConductorOwner:
+        "manager" | "persistent" | undefined;
 
     public requireCompatibleFrameConductor(
         owner: "manager" | "persistent",
@@ -603,7 +608,10 @@ export class PlatformCalls {
                 );
             }
             const callback = argumentAt(call, 1);
-            this.context.hoistForwardCallbackBindings(callback, call.pos);
+            this.context.callbacks.hoistForwardCallbackBindings(
+                callback,
+                call.pos,
+            );
             const engine = this.context.requireEngine(uiElement, call);
             if (event === "contextmenu") {
                 // Native has no browser context menu to suppress.
@@ -616,7 +624,7 @@ export class PlatformCalls {
                 cpp: parameter,
                 readOnly: true,
             };
-            const lambda = this.context.compilePlatformCallback(
+            const lambda = this.context.callbacks.compilePlatformCallback(
                 callback,
                 event === "click" || fileChange
                     ? undefined
@@ -648,13 +656,11 @@ export class PlatformCalls {
             return true;
         }
         if (!ts.isIdentifier(callee.expression)) return false;
-        const target = this.context.isDefaultLibraryIdentifier(
-            callee.expression,
-        )
-            ? callee.expression.text
-            : this.context.isCanvasElement(callee.expression)
-              ? "canvas"
-              : undefined;
+        const target =
+            this.context.libraryGlobal(callee.expression) ??
+            (this.context.isCanvasElement(callee.expression)
+                ? "canvas"
+                : undefined);
         if (
             target !== "window" &&
             target !== "document" &&
@@ -672,7 +678,7 @@ export class PlatformCalls {
             argumentAt(call, 0),
         );
         const callback = argumentAt(call, 1);
-        this.context.hoistForwardCallbackBindings(callback, call.pos);
+        this.context.callbacks.hoistForwardCallbackBindings(callback, call.pos);
         let once = false;
         if (!removing && call.arguments[2]) {
             const options = this.context.unwrap(call.arguments[2]);
@@ -684,7 +690,8 @@ export class PlatformCalls {
             }
             const onceExpression = this.context.objectProperty(options, "once");
             if (onceExpression) {
-                const compiled = this.context.compileCondition(onceExpression);
+                const compiled =
+                    this.context.conditions.compileCondition(onceExpression);
                 if (compiled !== "true" && compiled !== "false") {
                     this.context.fail(
                         onceExpression,
@@ -712,7 +719,7 @@ export class PlatformCalls {
             } else {
                 const name =
                     this.context.allocateTemporaryCppName("application_error");
-                const listener = this.context.compilePlatformCallback(
+                const listener = this.context.callbacks.compilePlatformCallback(
                     callback,
                     { cppType: "bbl::pal::ApplicationErrorEvent&", name },
                     [windowErrorEventValue(this.context, name, rejection)],
@@ -772,7 +779,7 @@ export class PlatformCalls {
             parameter = { cppType: "bool", name };
             documentHiddenCpp = name;
         }
-        const listener = this.context.compilePlatformCallback(
+        const listener = this.context.callbacks.compilePlatformCallback(
             callback,
             parameter,
             values,
@@ -903,7 +910,7 @@ export class PlatformCalls {
                 };
             }
         }
-        if (this.context.isPrimaryCanvas2DContextCall(call)) {
+        if (this.context.browserErasure.isPrimaryCanvas2DContextCall(call)) {
             if (
                 this.context.defaultEngine() &&
                 !this.context.hasPresentationHost()
@@ -960,9 +967,7 @@ export class PlatformCalls {
         }
         if (
             callee.name.text === "createElement" &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "document" &&
-            this.context.isDefaultLibraryIdentifier(callee.expression)
+            this.context.libraryGlobal(callee.expression) === "document"
         ) {
             this.context.expectArgumentCount(call, 1, 1);
             const tag = this.context.compileStringLiteral(argumentAt(call, 0));
@@ -1008,8 +1013,8 @@ export class PlatformCalls {
                 callee.name.text === "appendChild") &&
             ts.isPropertyAccessExpression(callee.expression) &&
             callee.expression.name.text === "body" &&
-            browserGlobalNamed(this.context, callee.expression.expression)
-                ?.text === "document";
+            this.context.libraryGlobal(callee.expression.expression) ===
+                "document";
         if (
             rootAppend &&
             callee.name.text === "append" &&
@@ -1118,7 +1123,7 @@ export class PlatformCalls {
                             image.logicalPath,
                         );
                     }
-                    const asset = this.context.registerAsset(
+                    const asset = this.context.assetRegistry.registerAsset(
                         `data:application/octet-stream;base64,${Buffer.from(atlas.pixels).toString("base64")}`,
                         "pixels",
                     );
@@ -1143,11 +1148,8 @@ export class PlatformCalls {
                     const imageData = this.context.unwrap(argumentAt(call, 0));
                     if (
                         !ts.isNewExpression(imageData) ||
-                        !ts.isIdentifier(imageData.expression) ||
-                        imageData.expression.text !== "ImageData" ||
-                        !this.context.isDefaultLibraryIdentifier(
-                            imageData.expression,
-                        ) ||
+                        this.context.libraryGlobal(imageData.expression) !==
+                            "ImageData" ||
                         (imageData.arguments?.length ?? 0) !== 3
                     ) {
                         this.context.fail(
@@ -1304,9 +1306,7 @@ export class PlatformCalls {
             const focus = `bbl::ui_focus(${engine}, ${element.cpp})`;
             return {
                 kind: "void",
-                cpp: element.optionalFoundCpp
-                    ? `(${element.optionalFoundCpp} ? ${focus} : static_cast<void>(0))`
-                    : focus,
+                cpp: whenPresent(element, focus),
             };
         }
         if (element && callee.name.text === "click") {
@@ -1348,7 +1348,7 @@ export class PlatformCalls {
                 callee.name.text,
                 this.context.requireEngine(element, call),
                 element.cpp,
-                element.optionalFoundCpp,
+                presenceFlagCpp(element),
             );
         }
         if (element && callee.name.text === "querySelector") {
@@ -1482,13 +1482,12 @@ export class PlatformCalls {
             this.context.reachJsData();
             return {
                 kind: "data",
-                cpp: element.optionalFoundCpp
-                    ? `(${element.optionalFoundCpp} ? ` +
-                      `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
-                      `${this.context.cppString(matched[1]!)}) : ` +
-                      "bbl::js::Array<bbl::UiElementHandle>{})"
-                    : `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
-                      `${this.context.cppString(matched[1]!)})`,
+                cpp: whenPresent(
+                    element,
+                    `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
+                        `${this.context.cppString(matched[1]!)})`,
+                    "bbl::js::Array<bbl::UiElementHandle>{}",
+                ),
                 dataType: {
                     kind: "vector",
                     element: {
@@ -1612,7 +1611,7 @@ export class PlatformCalls {
                 node: ts.Expression,
             ): Value => {
                 const { nativeBinding, ...expression } = value;
-                return this.context.pinValueToTemporary(
+                return this.context.bindings.pinValueToTemporary(
                     expression,
                     label,
                     node,
@@ -1679,11 +1678,10 @@ export class PlatformCalls {
             this.ui.recordUiStaticRemoval(element);
             return {
                 kind: "void",
-                cpp: element.optionalFoundCpp
-                    ? `(${element.optionalFoundCpp} ? ` +
-                      `bbl::ui_remove(${engine}, ${element.cpp}) : ` +
-                      "static_cast<void>(0))"
-                    : `bbl::ui_remove(${engine}, ${element.cpp})`,
+                cpp: whenPresent(
+                    element,
+                    `bbl::ui_remove(${engine}, ${element.cpp})`,
+                ),
             };
         }
         if (element && callee.name.text === "getBoundingClientRect") {
@@ -1794,9 +1792,7 @@ export class PlatformCalls {
                     `${this.context.cppString(name)}, ${enabled})`;
                 return {
                     kind: "void",
-                    cpp: classElement.optionalFoundCpp
-                        ? `(${classElement.optionalFoundCpp} ? ${mutation} : static_cast<void>(0))`
-                        : mutation,
+                    cpp: whenPresent(classElement, mutation),
                 };
             }
         }

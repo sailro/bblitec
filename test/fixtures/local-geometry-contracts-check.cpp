@@ -1,5 +1,7 @@
-#define BBLITE_HAS_PBR_RENDERER 1
 #define BBLITE_GPU_INSTANCING 1
+#define BBLITE_GPU_MORPH_STORAGE 0
+#define BBLITE_PBR_VARIANTS 0
+#define BBLITE_NODE_GEOMETRY_VARIANTS 0
 #define BBLITE_FLOATING_ORIGIN 0
 #define BBLITE_GPU_DEFORMATION 0
 #include "matrix.hpp"
@@ -12,53 +14,8 @@ enum class RenderMaterialKind { standard, shader };
 }
 namespace bbl::pal {
 #include "shader-consumers.hpp"
-unsigned writes = 0;
-struct Buffer {
-    std::vector<GpuVertex> vertices;
-};
-void write(Buffer* buffer, const void* data, std::size_t size) {
-    assert(size % sizeof(GpuVertex) == 0);
-    ++writes;
-    buffer->vertices.resize(size / sizeof(GpuVertex));
-    std::memcpy(buffer->vertices.data(), data, size);
-}
-void wgpuQueueWriteBuffer(int, Buffer* buffer, std::size_t offset, const void* data,
-                          std::size_t size) {
-    assert(offset == 0);
-    write(buffer, data, size);
-}
-struct Uploads {
-    void update(Buffer* buffer, const void* data, std::size_t size) { write(buffer, data, size); }
-};
-struct Uploaded {
-    Buffer* vertices;
-    std::uint64_t transform_version = 0;
-    bool gpu_world_transform = false;
-};
-struct Driver {
-    Engine engine;
-    std::vector<Uploaded> uploaded;
-    struct Item {
-        std::size_t geometry = 0;
-        upstream::RenderMaterialKind material_kind = upstream::RenderMaterialKind::standard;
-    };
-    std::vector<Item> items;
-    struct {
-        int queue = 0;
-    } state;
-    Uploads frame_buffer_uploads;
-    unsigned profile_transformed_meshes = 0;
-    std::size_t profile_transformed_vertices = 0;
-};
-struct Sdl : Driver {
-#include "SdlTransforms.hpp"
-};
-struct Dawn : Driver {
-#include "DawnTransforms.hpp"
-};
 void check_position(const GpuVertex& vertex, float x, float y, float z) {
-    assert(std::abs(vertex.position[0] - x) < 1e-5f && std::abs(vertex.position[1] - y) < 1e-5f &&
-           std::abs(vertex.position[2] - z) < 1e-5f);
+    assert(vertex.position[0] == x && vertex.position[1] == y && vertex.position[2] == z);
 }
 void check_shared_geometry() {
     struct Shared {
@@ -138,43 +95,6 @@ void check_shader_blocks() {
     block.gather = {{16, 0, 1}};
     assert(!block_is_shared_scene_matrix(block));
 }
-template <class Backend> void check_uploads() {
-    Backend driver;
-    writes = 0;
-    ModelGeometry geometry;
-    ModelVertex vertex;
-    vertex.position = {1, 2, 3};
-    vertex.normal = {0, 1, 0};
-    geometry.vertices.push_back(vertex);
-    driver.engine.geometries.push_back(geometry);
-    driver.engine.meshes.resize(3);
-    std::array<Buffer, 3> buffers;
-    for (std::size_t index = 0; index < 3; ++index) {
-        driver.uploaded.push_back({&buffers[index]});
-        driver.items.emplace_back();
-        driver.engine.meshes[index].position = {10, 20, 30};
-        driver.engine.meshes[index].transform_version = 1;
-    }
-    driver.items[0].material_kind = upstream::RenderMaterialKind::shader;
-    driver.engine.meshes[1].gpu_world_transform = true;
-    driver.synchronize();
-    assert(writes ==
-           2); // Shader has immutable local upload; physics switches its old baked upload once.
-    check_position(buffers[1].vertices[0], 1, 2, 3);
-    check_position(buffers[2].vertices[0], 11, 22, 33);
-    for (auto& mesh : driver.engine.meshes) {
-        mesh.position.x += 5;
-        ++mesh.transform_version;
-    }
-    driver.synchronize();
-    assert(writes == 3);
-    check_position(buffers[1].vertices[0], 1, 2, 3);
-    check_position(buffers[2].vertices[0], 16, 22, 33);
-    for (std::size_t index = 0; index < 3; ++index)
-        assert(driver.uploaded[index].transform_version == 2);
-    driver.synchronize();
-    assert(writes == 3);
-}
 } // namespace bbl::pal
 int main() {
     using namespace bbl;
@@ -183,61 +103,44 @@ int main() {
     ModelGeometry geometry;
     ModelVertex local;
     local.position = {1, 2, 3};
-    local.normal = {0, 1, 0};
+    local.normal = {-0.0f, 1, 0};
     local.tangent = {1, 0, 0, -1};
-    local.local_position = {-1, 2, 3};
     local.uv = {.2f, .3f};
     local.uv2 = {.4f, .5f};
     local.color = {.6f, .7f, .8f, .9f};
-    geometry.bind_vertices = {local};
     geometry.vertices = {local};
-    geometry.vertices[0].position = {101, 202, 303};
-    geometry.vertex_space = VertexSpace::world;
     MeshRecord mesh;
     mesh.position = {10, 20, 30};
-    check_position(transformed_vertices(engine, geometry, mesh)[0], 111, 222, 333);
-    mesh.thin_instanced = true;
-    const auto pooled = transformed_vertices(engine, geometry, mesh);
-    check_position(pooled[0], 1, 2, 3);
-    assert(pooled[0].uv[0] == .2f && pooled[0].uv2[1] == .5f && pooled[0].color[3] == .9f &&
-           pooled[0].tangent[3] == -1);
-    geometry.bind_vertices.clear();
-    check_position(transformed_vertices(engine, geometry, mesh)[0], 101, 202, 303);
-    geometry.bind_vertices = {local};
-    mesh.thin_instanced = false;
-    mesh.live_imported_transform = true;
-    mesh.gpu_world_transform = true;
-    check_position(transformed_vertices(engine, geometry, mesh)[0], 1, 2, 3);
-    geometry.vertex_space = VertexSpace::local;
-    geometry.vertices = {local};
-    check_position(local_vertices(engine, geometry, &mesh)[0], 1, 2, 3);
-    const auto world = shader_draw_world(engine, mesh);
+    // The pin uploads the source lanes whatever the mesh's transform.
+    const auto packed = mesh_gpu_vertices(geometry, mesh);
+    check_position(packed[0], 1, 2, 3);
+    assert(std::memcmp(packed[0].normal, &local.normal, sizeof(packed[0].normal)) == 0);
+    assert(packed[0].uv[0] == .2f && packed[0].uv2[1] == .5f && packed[0].color[3] == .9f &&
+           packed[0].tangent[3] == -1);
+    const Scene scene{};
+    const auto world = mesh_block_world(scene, engine, mesh);
     assert(world[12] == 10 && world[13] == 20 && world[14] == 30);
     mesh.outer_position = {5, 6, 7};
-    const auto moved = shader_draw_world(engine, mesh);
+    const auto moved = mesh_block_world(scene, engine, mesh);
     assert(moved[12] == 15 && moved[13] == 26 && moved[14] == 37);
-    geometry.vertex_space = VertexSpace::world;
-    engine.geometries.push_back(geometry);
+    // No mesh name selects a quaternion convention: the write is the pin's
+    // `rotationQuaternion` store and the dirty mark, for every mesh.
     engine.meshes.resize(2);
-    auto& wheel = engine.meshes[0];
-    wheel.geometry = 0;
-    wheel.name = "wheel_front";
-    wheel.instance_parent_matrix = {2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4, 0, 10, 20, 30, 1};
-    wheel.parented_meshes.push_back(MeshHandle{1});
-    set_mesh_rotation_quaternion(engine, MeshHandle{0}, {.1f, .2f, .3f, .9f}, true);
-    assert(wheel.live_imported_transform && wheel.gpu_world_transform &&
-           engine.meshes[1].gpu_world_transform);
-    assert(wheel.position.x == 10 && wheel.position.y == 20 && wheel.position.z == 30);
-    assert(wheel.scaling.x == 2 && wheel.scaling.y == 3 && wheel.scaling.z == 4);
-    assert(wheel.rotation_quaternion.x == .1f && wheel.rotation_quaternion.y == -.2f &&
-           wheel.rotation_quaternion.z == -.3f && wheel.rotation_quaternion.w == .9f);
-    const auto version = wheel.transform_version;
-    wheel.position.x = 50;
-    set_mesh_rotation_quaternion(engine, MeshHandle{0}, {0, 0, 0, 1}, false);
-    assert(wheel.position.x == 50 && wheel.transform_version == version + 1);
-    check_position(transformed_vertices(engine, engine.geometries[0], wheel)[0], 1, 2, 3);
-    check_uploads<Sdl>();
-    check_uploads<Dawn>();
+    auto& named = engine.meshes[0];
+    named.name = "wheel_front";
+    named.position = {10, 20, 30};
+    named.scaling = {2, 3, 4};
+    named.parented_meshes.push_back(MeshHandle{1});
+    const auto version = named.transform_version;
+    const auto child_version = engine.meshes[1].transform_version;
+    set_mesh_rotation_quaternion(engine, MeshHandle{0}, {.1f, .2f, .3f, .9f});
+    assert(named.has_rotation_quaternion && named.rotation_quaternion.x == .1f &&
+           named.rotation_quaternion.y == .2f && named.rotation_quaternion.z == .3f &&
+           named.rotation_quaternion.w == .9f);
+    assert(named.position.x == 10 && named.position.y == 20 && named.position.z == 30);
+    assert(named.scaling.x == 2 && named.scaling.y == 3 && named.scaling.z == 4);
+    assert(named.transform_version == version + 1 &&
+           engine.meshes[1].transform_version == child_version + 1);
     check_shared_geometry();
     check_shader_blocks();
 }

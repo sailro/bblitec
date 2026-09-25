@@ -76,21 +76,25 @@ test("diagnostic reference refresh and recapture cannot overwrite the curated re
     );
 });
 
-test("attribution accepts differential capture and rejects inputs without instrumented draws", () => {
+test("attribution runs on every measured backend and rejects inputs without instrumented draws", () => {
+    assert.equal(parseParityArguments(["--attribute"]).attribute, true);
     assert.equal(
-        parseParityArguments(["scene6", "--attribute", "--differential"])
-            .attribute,
-        true,
+        parseParityArguments(["--attribute", "--backend", "dawn"]).backend,
+        "dawn",
     );
-    assert.equal(parseParityArguments(["scene6"]).attribute, undefined);
+    assert.equal(parseParityArguments([]).attribute, false);
     for (const companion of [
-        ["--actual", "frame.png"],
-        ["--exe", "other.exe"],
+        ["--actual", "frame.png", "--backend", "dawn"],
         ["--without", "ground"],
     ]) {
         assert.throws(
-            () => parseParityArguments(["scene6", "--attribute", ...companion]),
+            () => parseParityArguments(["--attribute", ...companion]),
             /instrumented twin/,
         );
     }
+    // The executable flag is gone: BBLITE_NATIVE_EXE is the one override.
+    assert.throws(
+        () => parseParityArguments(["--attribute", "--exe", "other.exe"]),
+        /Unknown parity argument '--exe'/,
+    );
 });

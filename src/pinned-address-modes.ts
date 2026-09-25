@@ -1,7 +1,6 @@
 import ts from "typescript";
 import { floatLiteral } from "./cpp-literals.js";
-import { LoweringContext } from "./lowering/context.js";
-import { sharedUpstreamStore } from "./upstream-source.js";
+import { LoweringContext, sharedPinnedContext } from "./lowering/context.js";
 
 const texture2DModule = "src/texture/texture-2d.ts";
 
@@ -88,7 +87,7 @@ export const mipmapModeByPin: Readonly<Record<string, string>> = {
 };
 
 /** `Texture2DOptions`' own defaults, keyed by the option's pinned name. */
-export interface LoadTexture2DDefaults {
+interface LoadTexture2DDefaults {
     minFilter: string;
     magFilter: string;
     mipMaps: boolean;
@@ -129,9 +128,7 @@ let pinnedRules: PinnedTexture2DRules | undefined;
 
 /** The rules, read once per process from the shared pinned source. */
 function pinnedTexture2DRules(): PinnedTexture2DRules {
-    pinnedRules ??= readPinnedTexture2DRules(
-        new LoweringContext(sharedUpstreamStore()),
-    );
+    pinnedRules ??= readPinnedTexture2DRules(sharedPinnedContext());
     return pinnedRules;
 }
 
@@ -391,7 +388,7 @@ export function loadTexture2DSamplerCpp(sampler: {
 }
 
 /** Everything `bbl::load_file_texture` takes past the path. */
-export interface LoadTexture2DUpload {
+interface LoadTexture2DUpload {
     sampler: string;
     invertY: boolean;
     srgb: boolean;

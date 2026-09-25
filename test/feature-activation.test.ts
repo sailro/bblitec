@@ -3,12 +3,17 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import type { AssetSpecializationFeatures } from "../src/asset-specializer.js";
+import type { Activation, ActivationPlan } from "../src/asset-feature-join.js";
 import type { CompiledShaderProgram } from "../src/compiler/types.js";
 import type { NodeParticleSystemEmit } from "../src/lowering/node-particle-lowerer.js";
 import type { NodeVariantManifestEntry } from "../src/pinned-node-material-cpp.js";
 import type { PinnedVariantManifestEntry } from "../src/pinned-pbr-variant-output.js";
 import type { PinnedStandardVariantManifestEntry } from "../src/pinned-standard-variants.js";
 import type { UpstreamEmitOptions } from "../src/upstream-lower.js";
+import type { Feature } from "../src/compiler/types.js";
+import { featureSources } from "../src/compiler/output-projection.js";
+import { generatedSourceRules } from "../src/generated-sources.js";
+import { featureMacrosOf } from "../src/feature-macros.js";
 import {
     featureActivationRows,
     inventoriedRuntimeFeatures,
@@ -21,7 +26,6 @@ function specialization(
 ): AssetSpecializationFeatures {
     return {
         gpuDeformation: false,
-        animatedWorldBounds: false,
         morphStorage: false,
         maxSkinJoints: 0,
         nonTrianglePrimitives: false,
@@ -31,14 +35,31 @@ function specialization(
         animationPointerMaterials: false,
         assetTransmission: false,
         materialSpecular: false,
-        imageBasedLighting: false,
         textureTransform: false,
         gpuInstancing: false,
-        punctualLights: false,
         eightInfluenceSkinning: false,
         gaussianSplats: false,
         compressedImages: false,
         interactivity: false,
+        ...overrides,
+    };
+}
+
+/** A capability the plan decided, with the reasons that turned it on. */
+function decided(...reasons: string[]): Activation {
+    return { value: reasons.length > 0, reasons };
+}
+
+function activationPlan(
+    overrides: Partial<ActivationPlan> = {},
+): ActivationPlan {
+    return {
+        gpuDeformation: decided(),
+        morphStorage: decided(),
+        gpuInstancing: decided(),
+        nodeVisibility: decided(),
+        linearImageProcessing: decided(),
+        transmission: decided(),
         ...overrides,
     };
 }
@@ -58,7 +79,6 @@ function emitOptions(
         postProcessShaders: [],
         postProcessComposites: [],
         gpuDeformation: false,
-        animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
         gaussianSplats: false,
@@ -68,6 +88,7 @@ function emitOptions(
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,
+        transmission: false,
         materialSpecular: false,
         selectedMaterialVariant: "",
         standardLightLists: false,
@@ -123,6 +144,7 @@ function metallicReflectanceMapInputs(
         features: ["material:metallic-reflectance"],
         assetJoinedFeatures: new Map(),
         specialization: specialization(),
+        activation: activationPlan(),
         emit: emitOptions({
             pinnedVariants: [
                 {
@@ -139,7 +161,6 @@ function metallicReflectanceMapInputs(
             lightKinds: [],
             toneMappingStates: [false],
             mutableToneMappingEnabled: false,
-            linearImageProcessing: false,
         },
     };
 }
@@ -181,12 +202,22 @@ function scene33Inputs(): FeatureActivationInputs {
             "material:pbr-linear-image-processing": "scene33.ts:24",
         },
         specialization: specialization({
-            punctualLights: true,
             assetTransmission: true,
+        }),
+        activation: activationPlan({
+            linearImageProcessing: decided(
+                "scene source reached linear PBR image processing",
+                "asset-carried KHR_materials_transmission enables the " +
+                    "runtime's transmission exactly like the feature",
+            ),
+            transmission: decided(
+                "the scene reaches renderer:transmission (enableSceneTransmission)",
+            ),
         }),
         emit: emitOptions({
             punctualLights: true,
             assetTransmission: true,
+            transmission: true,
             assetLightNodes: { count: 5, asset: lamp },
             pinnedVariants: variants(18),
         }),
@@ -204,7 +235,6 @@ function scene33Inputs(): FeatureActivationInputs {
             lightKinds: ["point"],
             toneMappingStates: [true],
             mutableToneMappingEnabled: false,
-            linearImageProcessing: true,
         },
     };
 }
@@ -227,10 +257,20 @@ function dispersiveInputs(): FeatureActivationInputs {
         specialization: specialization({
             assetTransmission: true,
         }),
+        activation: activationPlan({
+            linearImageProcessing: decided(
+                "asset-carried KHR_materials_transmission enables the " +
+                    "runtime's transmission exactly like the feature",
+            ),
+            transmission: decided(
+                "a composed PBR variant carries the pin's refraction fragment",
+            ),
+        }),
         emit: emitOptions({
             iridescence: true,
             dispersion: true,
             assetTransmission: true,
+            transmission: true,
             pinnedVariants: variants(2, {
                 fragmentKey: "ibl|iridescence|refraction",
             }),
@@ -241,7 +281,6 @@ function dispersiveInputs(): FeatureActivationInputs {
             lightKinds: [],
             toneMappingStates: [false],
             mutableToneMappingEnabled: false,
-            linearImageProcessing: true,
         },
     };
 }
@@ -253,7 +292,6 @@ function everythingOnInputs(): FeatureActivationInputs {
         assetJoinedFeatures: new Map([["light:directional", "a.glb"]]),
         specialization: specialization({
             gpuDeformation: true,
-            animatedWorldBounds: true,
             morphStorage: true,
             nonTrianglePrimitives: true,
             nodeVisibility: true,
@@ -261,11 +299,22 @@ function everythingOnInputs(): FeatureActivationInputs {
             animationPointerMaterials: true,
             assetTransmission: true,
             materialSpecular: true,
-            imageBasedLighting: true,
             textureTransform: true,
             gpuInstancing: true,
-            punctualLights: true,
             eightInfluenceSkinning: true,
+        }),
+        activation: activationPlan({
+            gpuDeformation: decided("a glTF asset carries animations"),
+            morphStorage: decided("a glTF asset runs the pinned morph feature"),
+            gpuInstancing: decided("an asset uses EXT_mesh_gpu_instancing"),
+            nodeVisibility: decided("an asset uses KHR_node_visibility"),
+            linearImageProcessing: decided(
+                "scene source reached linear PBR image processing",
+            ),
+            transmission: decided(
+                "the scene reaches renderer:transmission (enableSceneTransmission)",
+                "a composed PBR variant carries the pin's refraction fragment",
+            ),
         }),
         emit: emitOptions({
             idDiagnostics: true,
@@ -273,13 +322,13 @@ function everythingOnInputs(): FeatureActivationInputs {
                 { shaderIndex: 0, attachments: [], emitColor: true },
             ],
             gpuDeformation: true,
-            animatedWorldBounds: true,
             morphStorage: true,
             nonTrianglePrimitives: true,
             nodeVisibility: true,
             animationPointer: true,
             animationPointerMaterials: true,
             assetTransmission: true,
+            transmission: true,
             materialSpecular: true,
             standardLightLists: true,
             standardDiffuseUv2: true,
@@ -323,7 +372,6 @@ function everythingOnInputs(): FeatureActivationInputs {
             lightKinds: ["hemispheric", "directional", "point", "spot"],
             toneMappingStates: [false, true],
             mutableToneMappingEnabled: true,
-            linearImageProcessing: true,
         },
     };
 }
@@ -428,6 +476,7 @@ function familyInputs(): FeatureActivationInputs {
         ],
         assetJoinedFeatures: new Map(),
         specialization: specialization(),
+        activation: activationPlan(),
         emit: emitOptions({
             spriteCustomShaders: [
                 { family: "sprite", fragment: "", extraTextures: [] },
@@ -454,7 +503,6 @@ function familyInputs(): FeatureActivationInputs {
             lightKinds: [],
             toneMappingStates: [false],
             mutableToneMappingEnabled: false,
-            linearImageProcessing: false,
         },
     };
 }
@@ -559,12 +607,12 @@ test("capability rows carry the composed set's activation", () => {
         /scene source reached material:iridescence/,
     );
 
-    // The transmission define reports the asset half only: the scene
-    // never named the feature.
+    // The transmission define reports the composed refraction fragment
+    // only: the scene never reached scene transmission.
     const transmission = named(rows, "BBLITE_RENDERER_TRANSMISSION");
     assert.equal(transmission.active, true);
-    assert.match(transmission.activatedBy, /transmissionFactor > 0/);
-    assert.doesNotMatch(transmission.activatedBy, /scene source/);
+    assert.match(transmission.activatedBy, /refraction fragment/);
+    assert.doesNotMatch(transmission.activatedBy, /renderer:transmission/);
 });
 
 test("a graph-only MorphTargetsBlock activates native empty morph storage", () => {
@@ -713,11 +761,10 @@ function emittedDefines(): Map<string, string> {
 
 /**
  * The emitted names that are constants rather than activation units: the
- * build stamp string, the asset-directory fallback and an include guard.
+ * build stamp string and an include guard.
  */
 const emittedConstants = new Set([
     "BBLITE_BUILD_STAMP",
-    "BBLITE_ASSET_DIR",
     "BBLITE_UPSTREAM_CAMERA_CHANGE_KEY_HPP",
 ]);
 
@@ -1101,5 +1148,69 @@ test("creation-order rows record ordered and interleaved paths", () => {
         named(interleaved, "refusal:scene-material-interleave").activatedBy,
         "composed 1 scene-code PBR material creation(s) through 1 glTF " +
             "load(s) in their recorded handle order",
+    );
+});
+
+test("every claimed reader of a runtime feature reads it", () => {
+    // A runtime-feature row names what reads the feature past the compiler.
+    // The claim is checked against the readers themselves, so a row cannot
+    // name a consumer that never tests the feature -- and a feature nothing
+    // reads is labelled `inventory` rather than dressed as a capability.
+    const cmake = [
+        "native/CMakeLists.txt",
+        ...sourceFiles("native", [".cmake"]),
+    ]
+        .map((file) => readFileSync(file, "utf8"))
+        .join("\n");
+    const adaptations = readFileSync("src/compiler/adaptations.ts", "utf8");
+    // Past the compiler's own walk: the pipeline, the join, the lowerers and
+    // the composition read the finished feature list. The compiler's reach
+    // sites and this inventory are what the claim is about, not readers.
+    const readers = sourceFiles("src", [".ts"])
+        .filter(
+            (file) =>
+                !file.startsWith(join("src", "compiler")) &&
+                file !== join("src", "feature-activation.ts"),
+        )
+        .map((file) => readFileSync(file, "utf8"))
+        .join("\n");
+    const buildReads = (name: string): boolean =>
+        (featureSources[name as Feature] ?? []).length > 0 ||
+        generatedSourceRules.some((rule) =>
+            rule.features.some((feature) => feature === name),
+        ) ||
+        cmake.includes(`"${name}"`) ||
+        featureMacrosOf(name).length > 0;
+    const rows = featureActivationRows(everythingOnInputs()).filter(
+        (row) => row.mechanism === "runtime-feature",
+    );
+    const wrong: string[] = [];
+    for (const row of rows) {
+        const quoted = `"${row.name}"`;
+        // Every reached feature is listed in features.cmake; claiming it as
+        // the consumer means something past the walk tests the name.
+        const read =
+            buildReads(row.name) ||
+            readers.includes(quoted) ||
+            adaptations.includes(quoted);
+        for (const consumer of row.consumers) {
+            const reads =
+                consumer === "inventory"
+                    ? !read
+                    : consumer === "feature macros"
+                      ? featureMacrosOf(row.name).length > 0
+                      : consumer === "features.cmake" ||
+                          consumer === "vcpkg manifest"
+                        ? read
+                        : consumer === "fidelity.json"
+                          ? adaptations.includes(quoted)
+                          : readers.includes(quoted);
+            if (!reads) wrong.push(`${row.name} claims '${consumer}'`);
+        }
+    }
+    assert.deepEqual(
+        wrong,
+        [],
+        "name the reader that tests each feature, or label it inventory",
     );
 });

@@ -127,7 +127,7 @@ test("skinned morph clones follow the source's shared skeleton and morph resourc
 #include <iostream>
 using Json=nlohmann::json;
 namespace bbl {
-struct Binding {std::uint32_t mesh=0;std::size_t skin=0,geometry=0,skeleton_binding=0;std::vector<float> morph_default_weights;};
+struct Binding {MeshHandle mesh{};std::size_t skin=0,skeleton_binding=0;std::vector<float> morph_default_weights;};
 struct Resource {std::vector<std::size_t> meshes;};
 struct Rows {std::vector<std::shared_ptr<Resource>> entries;std::size_t size()const{return entries.size();}Resource& at(std::size_t index){return *entries.at(index);}};
 struct AnimationRuntime {std::vector<Binding> meshes;Rows source_skeletons,source_morphs;};
@@ -142,7 +142,7 @@ Json run(const Json& scenarios) {
         std::vector<std::vector<float>> weights{{.25f,.5f},{.75f,.125f}};
         for(std::size_t index=0;index<2;++index) {
             const auto resource=scenario.at("sharedMorph").get<bool>()?0u:index;
-            animation_runtime->meshes.push_back(Binding{static_cast<std::uint32_t>(index),0,0,0,weights[resource]});
+            animation_runtime->meshes.push_back(Binding{MeshHandle{static_cast<std::uint32_t>(index)},0,0,weights[resource]});
             animation_runtime->source_morphs.at(resource).meshes.push_back(index);
         }
         ${clone};
@@ -150,7 +150,7 @@ Json run(const Json& scenarios) {
         int bone=1;Json observations=Json::array();
         const auto snapshot=[&]{Json rows=Json::array();for(const auto& binding:animation_runtime->meshes) {
             const auto& subscribers=animation_runtime->source_skeletons.at(0).meshes;
-            const auto found=std::find(subscribers.begin(),subscribers.end(),static_cast<std::size_t>(binding.mesh));
+            const auto found=std::find(subscribers.begin(),subscribers.end(),static_cast<std::size_t>(binding.mesh.value));
             rows.push_back({{"weights",binding.morph_default_weights},{"bone",found!=subscribers.end()?bone:1}});
         }return rows;};
         observations.push_back(snapshot());

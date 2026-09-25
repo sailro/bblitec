@@ -14,8 +14,8 @@ param(
 # library stays ABI-identical to the one SDL3_image was compiled
 # against. The engine initializes only SDL_INIT_VIDEO|SDL_INIT_EVENTS
 # and renders through SDL_GPU (D3D12 on Windows, Vulkan on Linux, Metal on macOS).
-# Unreached joystick/HIDAPI, haptic, sensor, camera, power, misc, locale,
-# GL plumbing and the SDL_Renderer core are compiled out entirely.
+# Unreached joystick/HIDAPI, haptic, sensor, camera, power, GL plumbing
+# and the SDL_Renderer core are compiled out entirely.
 # SDL's portable dialog subsystem remains available for desktop browser:file scenes;
 # iOS file dialogs use UIKit in PAL and do not need SDL_DIALOG.
 # static dead stripping removes it from executables that do not reach the PAL.
@@ -55,9 +55,10 @@ $gamepadSetting = if ($EnableGamepad) { "ON" } else { "OFF" }
 $dialogSetting = if ($IosSdk) { 'OFF' } else { 'ON' }
 $variantFeatures = @("video", "events") + $(if (-not $IosSdk) { @("dialogs") } else { @() }) + $enabledFeatures + @("gpu")
 
-# Keep in lockstep with the vcpkg baseline's sdl3 version
-# (native/vcpkg.json builtin-baseline).
-$sdlVersion = "3.4.14"
+# The version the overlay port pins, so the trimmed library stays
+# ABI-identical to the one SDL3_image was compiled against.
+$sdlVersion = (Get-Content (Join-Path $root "native/vcpkg-overlay-ports/sdl3/vcpkg.json") -Raw |
+    ConvertFrom-Json).version
 $repository = "https://github.com/libsdl-org/SDL.git"
 $tag = "release-$sdlVersion"
 
@@ -81,68 +82,39 @@ if (-not (Test-Path (Join-Path $source ".git"))) {
         if ($LASTEXITCODE -ne 0) {
             throw "Unable to fetch SDL tag $tag."
         }
-        git -C $source checkout --force --detach $tag
-        if ($LASTEXITCODE -ne 0) {
-            throw "Unable to check out SDL tag $tag."
-        }
     }
 }
 
-# The project patches the vcpkg overlay port applies
-# (native/vcpkg-overlay-ports/sdl3/portfile.cmake). Stock release-3.4.14
-# does not carry them, and a minimal build without them would diverge
-# from the vcpkg-installed SDL3 the parity numbers were measured against
-# (multisample reads, line rasterization and descriptor heap rollover).
-# The overlay's fix-freebsd.patch only rewires the FreeBSD
-# pkgconfig install path — vcpkg packaging infrastructure with no effect
-# on these Windows/Linux builds — so it is deliberately not applied here.
-# Idempotent: a patch that already sits in the working tree (a re-run on
-# a warm workspace) reverse-applies cleanly and is skipped; anything
-# else fails loudly rather than building unpatched sources.
-# The static-no-dynapi patch is this build's own, kept beside the other script-only
-# patch under tools/patches rather than in the overlay port (whose whole
-# directory keys the development vcpkg install); its header says why the
-# static shipping SDL turns the dynamic API off, and docs/development.md
-# carries what it measured.
-$patches = @(
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\sdl-multisample-read.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-multisample-lines.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-descriptor-heaps.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\d3d12-storage-array.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\metal-storage-buffer-sizes.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\metal-fence-query.patch"),
-    (Join-Path $root "native\vcpkg-overlay-ports\sdl3\gpu-timestamp-queries.patch"),
-    (Join-Path $root "tools\patches\sdl-static-no-dynapi.patch")
-)
-foreach ($patch in $patches) {
-    $patchName = Split-Path -Leaf $patch
-    if (-not (Test-Path $patch)) {
-        throw "SDL patch not found: $patch"
-    }
-    git -C $source apply --check $patch 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        git -C $source apply $patch
-        if ($LASTEXITCODE -ne 0) {
-            throw "Unable to apply SDL patch $patchName."
-        }
-        Write-Output "Applied SDL patch $patchName."
-    } else {
-        git -C $source apply --check --reverse $patch 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            throw (
-                "SDL patch $patchName neither applies to $source nor is " +
-                "already applied. Delete the workspace and rerun."
-            )
-        }
-        Write-Output "SDL patch $patchName is already applied."
-    }
+# The `trimmed` series of native/patches/manifest.json: the overlay port's
+# own patches (the vcpkg-installed SDL3 the parity numbers were measured
+# against carries them) except vcpkg's FreeBSD packaging fix, plus the
+# static build's dynamic-API switch.
+$tagCommit = git -C $source rev-parse "$tag^{commit}"
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to resolve SDL tag $tag."
 }
+Sync-PatchedCheckout $source $repository $tagCommit "SDL $tag" sdl3 @("trimmed") $CMake | Out-Null
+
+# SDL's surface code is linked whole through its blitter tables. The engine
+# only converts decoded images (SDL_ConvertSurface, never blending): keep the
+# indexed and N-to-N converters SDL_image's formats reach and compile out the
+# blending, modulating and scaling blitters, RLE, YUV and SDL's own stb_image
+# loader (SDL_internal.h's lean switches; the generic converter remains).
+# SDL's targets drop /D flags given through CMAKE_C_FLAGS*, so the defines
+# reach them as compile definitions from a project include.
+$surfaceDefines = @("SDL_LEAN_AND_MEAN", "SDL_HAVE_BLIT_0", "SDL_HAVE_BLIT_1", "SDL_HAVE_BLIT_N", "SDL_DISABLE_STB")
+New-Item -ItemType Directory -Path $build -Force | Out-Null
+$surfaceInclude = Join-Path $build "bblite-surface-definitions.cmake"
+Set-ArtifactContent $surfaceInclude "add_compile_definitions($($surfaceDefines -join ' '))`n"
 
 # One table drives the configure and the check after it: every entry is
 # passed as "-D<name>=<value>" and read back from the cache CMake wrote,
 # so an option that reached CMake as PowerShell text instead of its value
 # is refused before anything is compiled -- CMake's if() treats any
-# non-false string as true, which would silently keep the subsystem.
+# non-false string as true, which would silently keep the subsystem. Each
+# entry must also be one of SDL's own options: BOOL, or INTERNAL for a
+# dependent option SDL forces on this platform. A name the pinned SDL does
+# not declare stays UNINITIALIZED in the cache and trims nothing.
 $sdlOptions = [ordered]@{
     SDL_SHARED = "OFF"
     SDL_STATIC = "ON"
@@ -156,8 +128,6 @@ $sdlOptions = [ordered]@{
     SDL_CAMERA = "OFF"
     SDL_POWER = "OFF"
     SDL_DIALOG = $dialogSetting
-    SDL_MISC = "OFF"
-    SDL_LOCALE = "OFF"
     SDL_OPENGL = "OFF"
     SDL_OPENGLES = "OFF"
     SDL_VULKAN = $(if ($IsLinux) { "ON" } else { "OFF" })
@@ -171,7 +141,8 @@ $configureArguments = @(
     "-S", $source,
     "-B", $build,
     "-DCMAKE_BUILD_TYPE=MinSizeRel",
-    "-DCMAKE_INSTALL_PREFIX=$output"
+    "-DCMAKE_INSTALL_PREFIX=$output",
+    "-DCMAKE_PROJECT_SDL3_INCLUDE=$($surfaceInclude.Replace('\', '/'))"
 )
 if ($IsWindows) {
     $configureArguments += @(
@@ -195,9 +166,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "SDL minimal CMake configuration failed."
 }
 
-$cache = Read-CMakeCache (Join-Path $build "CMakeCache.txt")
+$cache = Read-CMakeCache (Join-Path $build "CMakeCache.txt") -WithTypes
 foreach ($option in $sdlOptions.GetEnumerator()) {
-    $actual = $cache[$option.Key]
+    $entry = $cache[$option.Key]
+    $actual = if ($entry) { $entry.Value } else { $null }
     if ($actual -ne $option.Value) {
         throw (
             "The SDL cache records $($option.Key)=$actual where " +
@@ -205,13 +177,20 @@ foreach ($option in $sdlOptions.GetEnumerator()) {
             "CMake as a value. Refusing to build a mis-trimmed SDL."
         )
     }
+    if ($entry.Type -notin @("BOOL", "INTERNAL")) {
+        throw (
+            "The SDL cache records $($option.Key) as $($entry.Type), " +
+            "not an option: SDL $sdlVersion declares no such setting, so it " +
+            "trims nothing. Remove it from the option table."
+        )
+    }
 }
 $unexpanded = @(
     $cache.GetEnumerator() |
-        Where-Object { $_.Key -like "SDL_*" -and $_.Value.Contains('$') }
+        Where-Object { $_.Key -like "SDL_*" -and $_.Value.Value.Contains('$') }
 )
 if ($unexpanded.Count -gt 0) {
-    $listing = ($unexpanded | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ", "
+    $listing = ($unexpanded | ForEach-Object { "$($_.Key)=$($_.Value.Value)" }) -join ", "
     throw "SDL cache entries hold unexpanded script text: $listing"
 }
 
@@ -226,26 +205,40 @@ if ($LASTEXITCODE -ne 0) {
     throw "SDL minimal install failed."
 }
 
-Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -Force
+Copy-ArtifactItem (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt")
+
+# The notices a package of this library owes: SDL's own licence plus the
+# third-party code the trimmed library still compiles -- with -EnableGamepad,
+# HIDAPI. The YUV converters and stb_image are compiled out above; vcpkg's
+# SDL3 copyright carries their notices for its own build.
+$notices = @("SDL $sdlVersion (LICENSE.txt)", (Get-Content (Join-Path $source "LICENSE.txt") -Raw))
+if ($EnableGamepad) {
+    $notices += @("src/hidapi (LICENSE-bsd.txt)", (Get-Content (Join-Path $source "src/hidapi/LICENSE-bsd.txt") -Raw))
+}
+$noticeText = for ($index = 0; $index -lt $notices.Count; $index += 2) {
+    "$($notices[$index]):`n`n$($notices[$index + 1].Trim())`n"
+}
+Set-ArtifactContent (Join-Path $output "NOTICES.txt") ((($noticeText -join "`n")) + "`n")
 
 # Native configuration reads this before project() to reject a generated
 # scene whose reached feature set is incompatible with the selected trimmed
 # dependency. Keep the capability machine-readable rather than inferring it
-# from an install-directory name or from a prose provenance field.
-@(
+# from an install-directory name or from a prose provenance field. The patch
+# record is compared with the pin and the manifest the same way
+# (native/patch-identity.cmake).
+$record = @(
     "set(BBLITE_SDL_AUDIO $audioSetting)"
     "set(BBLITE_SDL_GAMEPAD $gamepadSetting)"
     "set(BBLITE_SDL_DIALOG $dialogSetting)"
     "set(BBLITE_SDL_VULKAN $($sdlOptions.SDL_VULKAN))"
     "set(BBLITE_SDL_METAL $($sdlOptions.SDL_METAL))"
-) -join "`n" |
-    Set-Content (Join-Path $output "bblite-sdl-features.cmake") -Encoding Ascii
+) + @(Get-PatchRecord sdl3 @("trimmed") $CMake)
+Set-ArtifactContent (Join-Path $output "bblite-sdl-features.cmake") (($record -join "`n") + "`n")
 
 @{
     repository = $repository
     tag = $tag
     version = $sdlVersion
-    patches = @($patches | ForEach-Object { Split-Path -Leaf $_ })
     variant = "static, MinSizeRel, $($variantFeatures -join '+') only"
     vulkan = $IsLinux
     metal = $IsMacOS
