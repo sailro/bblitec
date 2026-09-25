@@ -35,6 +35,7 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Performance
 
+- [ ] Bring the split backend's cold compile CPU back to the monolith's: the two scene PCHs cost 3.0–4.4 s each and each family unit ~0.1 s fixed, 9–11.5 s per scene above the pre-split monolith (`native/CMakeLists.txt`, `native/native-header-cache.cmake`).
 - [ ] `minecraft`: worst frame of a chunk-crossing sprint replay at most 16.7 ms (`BBLITE_FPS_PROFILE` maximum interval), with meshing, lighting, water settling and allocation attributed separately (`BBLITE_CPU_PROFILE`).
 - [ ] `scene290`: at least 100 FPS uncapped through impact and settling (`BBLITE_BENCHMARK_FRAMES=0`, `BBLITE_FPS_PROFILE`); Bullet stepping is the bottleneck (`pal_physics_bullet.cpp`).
 
