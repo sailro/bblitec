@@ -92,6 +92,23 @@ test("logical conditions preserve grouping supplied by boolean adapters", () => 
     assert.match(cpp, /\(enabled\) \|\| \(target && target->ready\)/);
 });
 
+test("conditional locals inherit the representations of adapted branches", () => {
+    const cpp = lower(
+        'const lane = axis === 0 ? "x" : "y";',
+        [["axis", { cpp: "axis", type: "scalar" }]],
+        {
+            expression: (node, lowerer) => {
+                if (!ts.isStringLiteral(node)) return undefined;
+                const cpp = node.text === "x" ? "0.0" : "1.0";
+                lowerer.bindLocal(node, { cpp, type: "scalar" });
+                return cpp;
+            },
+        },
+    );
+    assert.match(cpp, /const double lane =/);
+    assert.doesNotMatch(cpp, /std::string/);
+});
+
 test("a number declared from a counted loop index converts explicitly", () => {
     const cpp = lower(
         "let total = 0; for (let start = 0; start < 4; start++) { let left = start; total += left; }",

@@ -2036,9 +2036,6 @@ export class PinnedNumericLowerer {
             // A local the pin initializes with a truth (a literal, a
             // comparison, a join of truths) is a boolean, and stays one:
             // `||=` onto it is a logical store, not a value selection.
-            const kind = this.valueKind(initializer);
-            const isBoolean = kind === "boolean";
-            const isString = kind === "string";
             // A number copied from a counted loop's `std::int64_t` index
             // converts explicitly, as a store of one does.
             const value =
@@ -2046,6 +2043,9 @@ export class PinnedNumericLowerer {
                 this.binding(initializer)?.type === "index"
                     ? `static_cast<double>(${this.expression(source)})`
                     : this.expression(source);
+            const kind = this.valueKind(initializer);
+            const isBoolean = kind === "boolean";
+            const isString = kind === "string";
             this.bindLocal(declaration.name, {
                 cpp,
                 type: isBoolean ? "bool" : isString ? "string" : "scalar",
@@ -4079,6 +4079,10 @@ export class PinnedNumericLowerer {
             return "boolean";
         if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node))
             return "string";
+        if (ts.isConditionalExpression(node)) {
+            const truthy = this.valueKind(node.whenTrue);
+            if (truthy === this.valueKind(node.whenFalse)) return truthy;
+        }
         if (ts.isBinaryExpression(node)) {
             if (PINNED_COMPARISON_OPERATORS.has(node.operatorToken.kind))
                 return "boolean";

@@ -208,7 +208,10 @@ export function lowerWorldAabbHelpers(
             ...(extra.returns ? { returnValue: extra.returns } : {}),
             ...(extra.laneKeys
                 ? {
-                      expression: (node: ts.Expression) => {
+                      expression: (
+                          node: ts.Expression,
+                          lowerer: PinnedNumericLowerer,
+                      ) => {
                           if (!ts.isStringLiteral(node)) return undefined;
                           const lane = lanes.indexOf(node.text);
                           if (lane < 0)
@@ -216,7 +219,9 @@ export function lowerWorldAabbHelpers(
                                   node,
                                   `Unknown accumulator key '${node.text}'.`,
                               );
-                          return context.doubleLiteral(lane);
+                          const cpp = context.doubleLiteral(lane);
+                          lowerer.bindLocal(node, { cpp, type: "scalar" });
+                          return cpp;
                       },
                   }
                 : {}),

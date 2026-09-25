@@ -625,7 +625,7 @@ test("a changed arc-rotate gesture default flows and an unlowered handler statem
                 'secondaryButton ?? "rotate"',
             ),
         ),
-        /\(button == 2\.0\) \? std::string_view\{"rotate"\}/,
+        /button == 2\.0 \? std::string_view\{"rotate"\}/,
     );
     assert.throws(
         () =>
