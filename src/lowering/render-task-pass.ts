@@ -423,9 +423,9 @@ export function geometryTaskCameraCpp(context: LoweringContext): string {
         "executeTask",
     )}
 /** The camera a geometry task renders through, \`config.camera ?? sc.camera\`. */
-inline const CameraRecord* geometry_task_camera(
-    const CameraRecord* configured,
-    const CameraRecord* scene_camera) {
+inline CameraRecord* geometry_task_camera(
+    CameraRecord* configured,
+    CameraRecord* scene_camera) {
     return ${cameraCpp};
 }
 

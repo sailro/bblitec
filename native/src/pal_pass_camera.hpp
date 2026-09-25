@@ -36,15 +36,16 @@ namespace bbl::pal {
  * (`keep_view_projection`) then draws through the one its block last held.
  */
 struct PassCamera {
-    const CameraRecord* camera = nullptr;
+    // Mutable: the pin's change key updates the camera's projection cache.
+    CameraRecord* camera = nullptr;
     CameraPassMatrices matrices{};
 
     [[nodiscard]] ShaderPassMatrices pass() const { return matrices.pass(); }
 };
 
 /** `camera`'s pass over a `width` x `height` extent (`camera_pass_matrices`). */
-inline PassCamera build_pass_camera(const Scene& scene, const Engine& engine,
-                                    const CameraRecord* camera, double width, double height) {
+inline PassCamera build_pass_camera(const Scene& scene, const Engine& engine, CameraRecord* camera,
+                                    double width, double height) {
     return PassCamera{camera, camera_pass_matrices(scene, engine, camera, width, height)};
 }
 
@@ -82,7 +83,7 @@ inline Color4 task_pass_clear_color(const FrameTaskRecord& task) {
  * no camera, so this is the scene's; a null one skips the whole task
  * (`upstream::geometry_task_skips`).
  */
-inline const CameraRecord* geometry_pass_camera(Engine& engine, const Scene& scene) {
+inline CameraRecord* geometry_pass_camera(Engine& engine, const Scene& scene) {
     return upstream::geometry_task_camera(nullptr, scene_camera(engine, scene));
 }
 
@@ -178,7 +179,7 @@ inline void keep_view_projection(CameraPassMatrices& matrices, const CameraRecor
 
 /** `build_pass_camera` with the view-projection its pass keeps. */
 inline PassCamera build_kept_pass_camera(const Scene& scene, const Engine& engine,
-                                         const CameraRecord* camera, double width, double height,
+                                         CameraRecord* camera, double width, double height,
                                          RetainedSceneBlock& retained) {
     PassCamera pass = build_pass_camera(scene, engine, camera, width, height);
     keep_view_projection(pass.matrices, camera, retained);

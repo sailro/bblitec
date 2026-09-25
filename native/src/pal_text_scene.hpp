@@ -68,7 +68,7 @@ struct TextScenePass {
      * (`context._camera ?? null`) as its product, change key and aspect, and
      * a camera-less pass hands them none.
      */
-    void update_for_pass(const CameraRecord* camera, const std::array<float, 16>& view_projection,
+    void update_for_pass(CameraRecord* camera, const std::array<float, 16>& view_projection,
                          double aspect, double width, double height) const {
         const std::optional<TextCameraInput> input =
             camera ? std::optional<TextCameraInput>{TextCameraInput{

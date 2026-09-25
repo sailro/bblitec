@@ -6,6 +6,7 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Compiler
 
+- [ ] Stop the name-keyed native binding registry from keeping a shared-cell type a local's emitted declaration does not use (scene173's `navDebug`); body outlining declines such locals meanwhile (`compiler.ts` `describeNativeValue`, `body-outlining.ts`).
 - [ ] Build the engine-body analysis per queried module or cache its answers, so tetris and doom skip the program over every pinned source (about 0.9 s each; `engineCallMutatesArgument`).
 - [ ] One snake-case convention for pinned names (`cpp-literals.ts` `snakeCase`, `pinnedSnakeCase`).
 - [ ] Reuse `navigation-library.ts` `methodAccess` and `provenance` in `navigation-build-plan.ts`.

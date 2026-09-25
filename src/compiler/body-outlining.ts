@@ -387,6 +387,32 @@ function runsOnceWithoutDeclaring(
     );
 }
 
+/**
+ * The registered type of a deduced local. The registry is keyed by name, so
+ * a shared cell registered for the name elsewhere is not this local's type
+ * unless its own initializer makes or copies a shared pointer; such a local
+ * stays unknown and the statements reading it stay in the body.
+ */
+function registeredDeducedType(
+    declaration: { name: string; initializerIndex?: number },
+    bindingType: (name: string) => string | undefined,
+    statement: CppStatement,
+): string | undefined {
+    const type = bindingType(declaration.name);
+    if (type === undefined || !type.startsWith("std::shared_ptr<")) return type;
+    const initializer =
+        declaration.initializerIndex === undefined
+            ? []
+            : statement.tokens.slice(declaration.initializerIndex + 1);
+    return initializer.some(
+        (token) =>
+            token.kind === "identifier" &&
+            /^(?:make_gc_shared|make_shared|shared_ptr)$/.test(token.text),
+    )
+        ? type
+        : undefined;
+}
+
 /** The object type a declared local names, when it has a spelling. */
 function localType(
     declaration: {
@@ -415,7 +441,7 @@ function localType(
         declaration.spelledType ??
         (aliased !== undefined && frame.has(aliased)
             ? frame.get(aliased)
-            : bindingType(declaration.name));
+            : registeredDeducedType(declaration, bindingType, statement));
     // So does one initialized by a lambda called in place, from its
     // trailing return type.
     if (

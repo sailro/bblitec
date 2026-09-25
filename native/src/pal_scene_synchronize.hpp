@@ -297,7 +297,7 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     backend.mark_uploaded();
     // The cameras' control hooks, then the scene pass's own camera.
     update_surface_cameras(engine, scene_camera(engine, scene));
-    const CameraRecord* camera = scene_pass_camera(engine, scene);
+    CameraRecord* camera = scene_pass_camera(engine, scene);
     trace_camera_state(camera, sync.camera_trace_state, sync.frame);
     upstream::sort_transparent_draws(sync.render_plan.draw_lists.transparent, engine, camera);
     // The frame's product and its two factors, built once: a shader

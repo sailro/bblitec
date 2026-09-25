@@ -1829,7 +1829,7 @@ public:
                         handle_at(engine.render_targets, task.render.target);
                     const DawnRenderTarget& target =
                         handle_at(state.render_targets, task.render.target);
-                    const CameraRecord* const task_camera = task_pass_camera(engine, task);
+                    CameraRecord* const task_camera = task_pass_camera(engine, task);
                     // `_writePassSceneUBO` folds the camera's own viewport into
                     // whichever extent the task was configured for -- the
                     // canvas or the target.
