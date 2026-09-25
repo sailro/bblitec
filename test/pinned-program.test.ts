@@ -43,7 +43,9 @@ test("pinned names resolve through the typed program, not their spelling", () =>
     );
     // The checker types pinned nodes too.
     assert.equal(
-        context.program.checker.typeToString(context.program.typeOf(shadowed)),
+        context.program
+            .checkerFor(shadowed)
+            .typeToString(context.program.typeOf(shadowed)),
         "7",
     );
 });

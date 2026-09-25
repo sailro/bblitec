@@ -11,26 +11,8 @@
  */
 import ts from "typescript";
 import { declaredSymbol } from "../compiler/symbols.js";
+import { moduleSymbols } from "../pinned-program.js";
 import type { LoweringContext } from "./context.js";
-
-const checkers = new WeakMap<ts.SourceFile, ts.TypeChecker>();
-
-/** One pinned module's own symbol table: its declarations and imports. */
-function moduleChecker(file: ts.SourceFile): ts.TypeChecker {
-    const existing = checkers.get(file);
-    if (existing) return existing;
-    const host = ts.createCompilerHost({ noLib: true, noResolve: true });
-    host.getSourceFile = (name) => (name === file.fileName ? file : undefined);
-    const checker = ts
-        .createProgram({
-            rootNames: [file.fileName],
-            options: { noLib: true, noResolve: true, types: [] },
-            host,
-        })
-        .getTypeChecker();
-    checkers.set(file, checker);
-    return checker;
-}
 
 /**
  * The declaration an identifier in a pinned module resolves to. A
@@ -41,8 +23,7 @@ export function pinnedDeclaration(
     file: ts.SourceFile,
     identifier: ts.Identifier,
 ): ts.Declaration | undefined {
-    const checker = moduleChecker(file);
-    return declaredSymbol(checker, identifier)?.declarations?.[0];
+    return declaredSymbol(moduleSymbols(file), identifier)?.declarations?.[0];
 }
 
 /** A pinned function, by the module that declares it and its name. */
