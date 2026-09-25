@@ -41,7 +41,7 @@
 #include "pal_dawn_sprite.hpp"
 #endif
 #if BBLITE_HAS_UI
-#include "pal_sprite_ui_dawn.hpp"
+#include "pal_dawn_sprite_ui.hpp"
 #endif
 
 namespace bbl::pal {

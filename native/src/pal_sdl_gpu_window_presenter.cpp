@@ -1,7 +1,7 @@
 #include "pal_window_presenter.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_sdl_gpu_offscreen.hpp"
-#include "pal_sprite_ui_sdl.hpp"
+#include "pal_sdl_gpu_sprite_ui.hpp"
 #include <deque>
 
 namespace bbl::pal {

@@ -101,11 +101,11 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
     const spriteSdl = readFileSync("native/src/pal_sdl_gpu_sprite.cpp", "utf8");
     const spriteDawn = readFileSync("native/src/pal_dawn_sprite.cpp", "utf8");
     const spriteSdlUi = readFileSync(
-        "native/src/pal_sprite_ui_sdl.hpp",
+        "native/src/pal_sdl_gpu_sprite_ui.hpp",
         "utf8",
     );
     const spriteDawnUi = readFileSync(
-        "native/src/pal_sprite_ui_dawn.hpp",
+        "native/src/pal_dawn_sprite_ui.hpp",
         "utf8",
     );
     const textureCache = readFileSync(
@@ -494,7 +494,7 @@ test("the scene-invariant PAL units compile in their own object library", () => 
         "pal_sdl_gpu_sprite",
         "pal_dawn",
         "pal_window_realm",
-        "pal_window_presenter_sdl",
+        "pal_sdl_gpu_window_presenter",
         "pal_build_stamp",
         "pal_navigation_recast",
     ]) {

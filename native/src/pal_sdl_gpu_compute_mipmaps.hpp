@@ -1,5 +1,5 @@
 #pragma once
-#include "pal_sdl_compute_texture.hpp"
+#include "pal_sdl_gpu_compute_texture.hpp"
 #include <bblite/pal_compute_mipmaps.hpp>
 
 namespace bbl::pal {

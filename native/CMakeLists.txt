@@ -293,6 +293,11 @@ if("${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu.cpp" IN_LIST BBLITE_RUNTIME_SOURCES)
         list(APPEND BBLITE_RUNTIME_SOURCES "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_scene_${bblite_family}.cpp")
     endforeach()
 endif()
+# The Window host presents through its backend's presenter, paired like the
+# renderer units.
+if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
+    list(APPEND BBLITE_RUNTIME_SOURCES "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_window_presenter.cpp")
+endif()
 set(BBLITE_SDL_GPU_SOURCES ${BBLITE_RUNTIME_SOURCES})
 list(FILTER BBLITE_SDL_GPU_SOURCES INCLUDE REGEX "/src/pal_sdl_gpu[^/]*\\.cpp$")
 set(BBLITE_DAWN_SOURCES "")
@@ -430,15 +435,6 @@ if(NOT EXISTS "${BBLITE_GENERATED_DIR}/upstream/include/bblite/features")
         "${BBLITE_GENERATED_DIR} carries no feature macro headers; regenerate "
         "the scene (scene -- compile <id>)."
     )
-endif()
-
-if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
-    if(BBLITE_BACKEND_SDL_GPU)
-        target_sources(bblite_native PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_window_presenter_sdl.cpp")
-    endif()
-    if(BBLITE_BACKEND_DAWN)
-        target_sources(bblite_native PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_window_presenter_dawn.cpp")
-    endif()
 endif()
 
 if(BBLITE_GENERATED_SHADER_FILES)

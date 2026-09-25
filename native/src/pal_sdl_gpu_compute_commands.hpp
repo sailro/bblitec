@@ -9,10 +9,10 @@
 #include "pal_sdl_gpu_timestamp.hpp"
 #endif
 #if BBLITE_COMPUTE_SHADERS
-#include "pal_sdl_compute_pipeline.hpp"
+#include "pal_sdl_gpu_compute_pipeline.hpp"
 #endif
 #if BBLITE_COMPUTE_MIPMAPS
-#include "pal_sdl_compute_mipmaps.hpp"
+#include "pal_sdl_gpu_compute_mipmaps.hpp"
 #endif
 
 namespace bbl::pal {

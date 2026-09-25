@@ -28,7 +28,7 @@ test("backdrop blur survives CSS lowering and vendor spelling", () => {
 test("each backend's one UI compositor preserves backdrop ordering", () => {
     for (const backend of ["sdl", "dawn"] as const) {
         const compositor = readFileSync(
-            `native/src/pal_sprite_ui_${backend}.hpp`,
+            `native/src/pal_${backend === "sdl" ? "sdl_gpu" : "dawn"}_sprite_ui.hpp`,
             "utf8",
         );
         assert.match(compositor, /for_each_ui_segment\(\s*frame,/);

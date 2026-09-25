@@ -1,6 +1,6 @@
 #pragma once
-#include "pal_sdl_storage_buffer.hpp"
-#include "pal_sdl_compute_texture.hpp"
+#include "pal_sdl_gpu_storage_buffer.hpp"
+#include "pal_sdl_gpu_compute_texture.hpp"
 #include <bblite/pal_compute_pipeline.hpp>
 #include <sstream>
 #include <algorithm>

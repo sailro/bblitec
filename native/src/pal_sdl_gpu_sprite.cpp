@@ -41,7 +41,7 @@
 #include "pal_sdl_gpu_sprite.hpp"
 #endif
 #if BBLITE_HAS_UI
-#include "pal_sprite_ui_sdl.hpp"
+#include "pal_sdl_gpu_sprite_ui.hpp"
 #endif
 
 namespace bbl::pal {

@@ -1,5 +1,5 @@
 #pragma once
-#include "pal_sdl_storage_buffer.hpp"
+#include "pal_sdl_gpu_storage_buffer.hpp"
 #include <bblite/pal_storage_readback.hpp>
 #include <thread>
 

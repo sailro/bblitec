@@ -13,24 +13,24 @@
 #include "pal_sdl_gpu_timestamp.hpp"
 #endif
 #if BBLITE_COMPUTE_SHADERS
-#include "pal_sdl_compute_pipeline.hpp"
+#include "pal_sdl_gpu_compute_pipeline.hpp"
 #endif
 #if BBLITE_COMPUTE_TEXTURES
-#include "pal_sdl_compute_texture.hpp"
+#include "pal_sdl_gpu_compute_texture.hpp"
 #endif
 #if BBLITE_COMPUTE_MIPMAPS
-#include "pal_sdl_compute_mipmaps.hpp"
+#include "pal_sdl_gpu_compute_mipmaps.hpp"
 #endif
 
 #if BBLITE_COMPUTE_SHADERS || BBLITE_COMPUTE_MIPMAPS || BBLITE_GPU_TASK_TIMING
-#include "pal_sdl_compute_commands.hpp"
+#include "pal_sdl_gpu_compute_commands.hpp"
 #endif
 #if BBLITE_COMPUTE_BUFFERS
-#include "pal_sdl_storage_buffer.hpp"
+#include "pal_sdl_gpu_storage_buffer.hpp"
 #endif
 #include <thread>
 #if BBLITE_STORAGE_READBACK
-#include "pal_sdl_storage_readback.hpp"
+#include "pal_sdl_gpu_storage_readback.hpp"
 #endif
 
 namespace bbl::pal {

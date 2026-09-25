@@ -21,8 +21,8 @@
 // The backend-neutral scissor clamp all RmlUi consumers share.
 #include "pal_gpu_shared.hpp"
 #include "pal_dawn_shared.hpp"
-#include "pal_ui_backdrop_dawn.hpp"
-#include "pal_ui_filter_dawn.hpp"
+#include "pal_dawn_ui_backdrop.hpp"
+#include "pal_dawn_ui_filter.hpp"
 #include "pal_ui_texture_cache.hpp"
 
 namespace bbl::pal {

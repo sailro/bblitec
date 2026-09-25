@@ -64,7 +64,7 @@
 #include "pal_dawn_offscreen.hpp"
 #endif
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
-#include "pal_sprite_ui_dawn.hpp"
+#include "pal_dawn_sprite_ui.hpp"
 #endif
 #if BBLITE_HAS_BILLBOARDS
 #include "pal_dawn_billboard.hpp"

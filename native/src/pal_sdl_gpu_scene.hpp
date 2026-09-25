@@ -67,7 +67,7 @@
 #include "pal_pass_camera.hpp"
 #include "pal_scene_synchronize.hpp"
 #include "pal_texture_upload_cache.hpp"
-#include "pal_sdl_compute_texture.hpp"
+#include "pal_sdl_gpu_compute_texture.hpp"
 #include "pal_frame_session.hpp"
 #if BBLITE_HAS_TEXT
 #include "pal_sdl_gpu_text.hpp"
@@ -109,7 +109,7 @@
 #include "pal_sdl_gpu_offscreen.hpp"
 #endif
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
-#include "pal_sprite_ui_sdl.hpp"
+#include "pal_sdl_gpu_sprite_ui.hpp"
 #endif
 #if BBLITE_HAS_CLUSTERED_LIGHTS
 #include "pal_sdl_gpu_clustered.hpp"
