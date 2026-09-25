@@ -8,6 +8,10 @@ import {
 // mutation walk consults, and the dispatcher that lowers a data-method
 // call (invoked through `DataLowerer.compileDataMethodCall`).
 import { EmissionSet, EmissionMap, writable } from "./emission-transaction.js";
+import {
+    mutatingArrayMethods,
+    receiverWritingMethods,
+} from "./receiver-methods.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -206,24 +210,6 @@ export function arrayCallbackReceiverPolicy(
         : existingCallbackReceiver;
 }
 
-/** Array methods that can change its length and invalidate element aliases. */
-export const resizingArrayMethods: ReadonlySet<string> = new EmissionSet([
-    "push",
-    "pop",
-    "shift",
-    "unshift",
-    "splice",
-]);
-
-/** Array methods that mutate the receiver even when its length is unchanged. */
-export const mutatingArrayMethods: ReadonlySet<string> = new EmissionSet([
-    ...resizingArrayMethods,
-    "copyWithin",
-    "fill",
-    "reverse",
-    "sort",
-]);
-
 /** Methods that retain argument identity without mutating the argument itself. */
 export const storingDataMethods: ReadonlySet<string> = new EmissionSet([
     "add",
@@ -273,27 +259,6 @@ export function isStoringDataCall(
             ))
     );
 }
-
-/**
- * The methods that change the container they are called on: every
- * mutating array method plus the Map/Set writers. A name outside this set
- * writes nothing through its receiver, so a container only ever read
- * through `get`, `has`, `map` or `find` stays folded.
- */
-export const writeReceiverMethods: ReadonlySet<string> = new EmissionSet([
-    "pop",
-    "shift",
-    "push",
-    "unshift",
-    "reverse",
-    "fill",
-    "copyWithin",
-    "splice",
-    "set",
-    "add",
-    "clear",
-    "delete",
-]);
 
 const constantArrayMethods: ReadonlySet<string> = new EmissionSet([
     "at",
@@ -719,7 +684,7 @@ export function compileDataMethodCall(
     if (
         ts.isArrayLiteralExpression(ownerExpression) &&
         dynamicOwner?.kind === "tuple" &&
-        writeReceiverMethods.has(method)
+        receiverWritingMethods.has(method)
     ) {
         const element = lowerer.knownTupleElement(
             callee.expression,
@@ -755,7 +720,7 @@ export function compileDataMethodCall(
             ? undefined
             : lowerer.compileDataPath(
                   callee.expression,
-                  writeReceiverMethods.has(method) ? "write" : "read",
+                  receiverWritingMethods.has(method) ? "write" : "read",
               )) ??
         (dynamicOwner?.kind === "data" || dynamicOwner?.kind === "string"
             ? dynamicOwner

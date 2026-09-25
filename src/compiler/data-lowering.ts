@@ -35,8 +35,8 @@ import {
 } from "./symbols.js";
 import { compileMapInitializer } from "./collection-methods.js";
 import {
+    absenceKind,
     arrayElementType,
-    nullability,
     slotHoldsOnlyNull,
 } from "./type-facts.js";
 import { dataUnionEquality } from "./data-comparisons.js";
@@ -92,8 +92,8 @@ import {
 import {
     compileDataMethodCall,
     arrayCallbackReceiverPolicy,
-    resizingArrayMethods,
 } from "./data-methods.js";
+import { resizingArrayMethods } from "./receiver-methods.js";
 import { isTrsVectorName } from "./assignments.js";
 import {
     isAssignmentExpression,
@@ -5848,14 +5848,15 @@ export class DataLowerer {
             // the emitted text: an element `staticNumberValue` folds is a
             // generation-known double, and one it cannot fold references
             // locals and must keep its expression at the use site.
-            const constant = unwrapped.elements.every(
-                (element) =>
-                    staticNumberValue(this.context, element) !== undefined,
+            const values = unwrapped.elements.map((element) =>
+                staticNumberValue(this.context, element),
             );
             return this.typedArrayFromElements(
                 kind,
                 elements,
-                constant,
+                values.every((value): value is number => value !== undefined)
+                    ? values
+                    : undefined,
                 unwrapped,
             );
         }
@@ -5896,12 +5897,15 @@ export class DataLowerer {
                     unwrapped,
                 ),
             );
+            const values = staticSource.tupleElements.map(
+                (entry) => entry.staticNumber,
+            );
             return this.typedArrayFromElements(
                 kind,
                 elements,
-                staticSource.tupleElements.every(
-                    (entry) => entry.staticNumber !== undefined,
-                ),
+                values.every((value): value is number => value !== undefined)
+                    ? values
+                    : undefined,
                 unwrapped,
             );
         }
@@ -5948,27 +5952,27 @@ export class DataLowerer {
      * The table stores each element already converted into the array's own
      * element type (`typedArrayTable`), so the use site copies it unchanged.
      *
-     * `constant` is the caller's structural fact that every element is a
-     * generation-known number; an element referencing locals must keep
+     * `values` are the elements' generation-known numbers, present only
+     * when every element is one; an element referencing locals must keep
      * its expression at the use site, so only a fully constant literal
      * hoists.
      */
     private typedArrayFromElements(
         kind: TypedArrayKind,
         elements: readonly string[],
-        constant: boolean,
+        values: readonly number[] | undefined,
         source: ts.Node,
     ): string {
         const prefix = typedArrayStem(kind);
         if (
             elements.length < DataLowerer.HOISTED_TYPED_ARRAY_MIN_ELEMENTS ||
-            !constant
+            !values
         ) {
             return `bbl::js::${prefix}_array_from(bbl::js::Array<double>{${elements.join(", ")}})`;
         }
-        // An element that is not a plain literal keeps the double table
-        // the runtime store converts.
-        const table = typedArrayTable(kind, elements) ?? {
+        // A value with no literal in the element type keeps the double
+        // table the runtime store converts.
+        const table = typedArrayTable(kind, values, elements) ?? {
             elementCppType: kind === "f32array" ? "float" : "double",
             elements:
                 kind === "f32array"
@@ -9273,46 +9277,6 @@ export class DataLowerer {
         return undefined;
     }
 
-    /**
-     * Whether an absent operand is the absent value `literal` names. A
-     * native absence is one state, so the operand's type says which it is:
-     * a type that admits only `undefined` -- or a lookup that can miss, of
-     * values that are never `null` -- is `undefined`, one that admits only
-     * `null` is `null`, and one that admits both refuses. A type that
-     * admits neither was narrowed by the program; its absence test stands.
-     */
-    private absenceOf(
-        operand: ts.Expression,
-        value: Value,
-        literal: "null" | "undefined",
-    ): boolean {
-        const absent = nullability(
-            this.context.checker.getTypeAtLocation(operand),
-        );
-        // A presence flag the type does not account for (an unchecked
-        // index or a search that can miss) marks a slot that is not there:
-        // `undefined`.
-        const state = value.preserveUncheckedLookup
-            ? absent.null
-                ? undefined
-                : "undefined"
-            : absent.undefined && !absent.null
-              ? "undefined"
-              : absent.null && !absent.undefined
-                ? "null"
-                : absent.null && absent.undefined
-                  ? undefined
-                  : presenceFlagCpp(value) !== undefined
-                    ? "undefined"
-                    : literal;
-        if (state === undefined)
-            this.context.fail(
-                operand,
-                `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
-            );
-        return state === literal;
-    }
-
     public equalityComparison(
         expression: ts.BinaryExpression,
     ): string | undefined {
@@ -9443,26 +9407,34 @@ export class DataLowerer {
                 this.compileDataPath(nullSide, "read") ??
                 this.context.compileValue(nullSide);
             // `==` takes null and undefined as one; `===` asks which absent
-            // state the operand is in, which a native absence answers only
-            // through what the operand's type admits (`absenceOf`).
+            // state the operand is in (`absenceKind`).
             const absentTest = (
                 present: string,
                 absent = `!(${present})`,
             ): string => {
-                // A value that knows whether its slot existed tells a
-                // missing one (`undefined`) from a stored `null` exactly.
-                if (!loose && literal !== undefined && value.slotFoundCpp) {
-                    const found = value.slotFoundCpp;
+                if (loose || literal === undefined)
+                    return negated ? present : absent;
+                const state = absenceKind(
+                    this.context.checker,
+                    value,
+                    nullSide,
+                );
+                if (state === "either")
+                    this.context.fail(
+                        nullSide,
+                        `A value that may be null or undefined is compared strictly with ${literal} only once one of them is ruled out (compare with \`== null\`, or narrow the type).`,
+                    );
+                // A read that knows whether its slot existed tells a missing
+                // one (`undefined`) from a stored `null` exactly.
+                if (typeof state === "object") {
+                    const found = state.slotFoundCpp;
                     if (literal === "undefined")
                         return negated ? found : `!${found}`;
                     const storedNull = `(${found} && ${absent})`;
                     return negated ? `!${storedNull}` : storedNull;
                 }
-                const same =
-                    loose || literal === undefined
-                        ? true
-                        : this.absenceOf(nullSide, value, literal);
-                if (!same) return negated ? "true" : "false";
+                if (state !== literal && state !== "unconstrained")
+                    return negated ? "true" : "false";
                 return negated ? present : absent;
             };
             if (value.kind === "json-null") {

@@ -3,7 +3,7 @@ import ts from "typescript";
 import { typeCanCarryReference } from "./type-facts.js";
 import { moduleImportKind } from "../module-imports.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { writeReceiverMethods } from "./data-methods.js";
+import { receiverWritingMethods } from "./receiver-methods.js";
 import {
     aliasTarget,
     declaredSymbol,
@@ -159,7 +159,7 @@ function collectMutatedContainerSymbols(
             recordThrough(node.expression);
         } else {
             const target = mutatingCallTarget(node, (method) =>
-                writeReceiverMethods.has(method),
+                receiverWritingMethods.has(method),
             );
             if (target) record(target);
         }

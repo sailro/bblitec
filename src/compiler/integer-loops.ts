@@ -125,15 +125,12 @@ export function integerCounterRead(cppName: string): string {
 }
 
 /**
- * The native counter a value reads, while its C++ is still that read: a
- * value re-bound under its own name (a shared body's parameter) keeps the
- * metadata but reads its own storage.
+ * The native counter a value reads. A value stored under its own name (a
+ * materialized parameter, a local initialized from the counter) drops the
+ * metadata where it is stored.
  */
 export function integerCounterOf(value: Value | undefined): string | undefined {
-    const counter = value?.integerCounterCpp;
-    return counter !== undefined && value!.cpp === integerCounterRead(counter)
-        ? counter
-        : undefined;
+    return value?.integerCounterCpp;
 }
 
 /** The condition compared natively, when it tests the counter against an integer. */

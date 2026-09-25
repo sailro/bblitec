@@ -369,6 +369,39 @@ export function objectProperty(
     return undefined;
 }
 
+/**
+ * The names a statement declares in its scope: a variable statement's
+ * bindings, through object and array patterns, or a named function, class
+ * or enum declaration's own name.
+ */
+export function statementDeclaredNames(
+    statement: ts.Statement,
+): ts.Identifier[] {
+    const names: ts.Identifier[] = [];
+    const bind = (name: ts.BindingName): void => {
+        if (ts.isIdentifier(name)) {
+            names.push(name);
+            return;
+        }
+        for (const element of name.elements) {
+            if (ts.isBindingElement(element)) bind(element.name);
+        }
+    };
+    if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+            bind(declaration.name);
+        }
+    } else if (
+        (ts.isFunctionDeclaration(statement) ||
+            ts.isClassDeclaration(statement) ||
+            ts.isEnumDeclaration(statement)) &&
+        statement.name
+    ) {
+        names.push(statement.name);
+    }
+    return names;
+}
+
 /** Whether a node is written inside another. */
 export function isDeclaredInside(
     node: ts.Node,

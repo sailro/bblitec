@@ -11,7 +11,8 @@ import {
 import { isPrimitiveBrowserValue } from "./browser-erasure.js";
 import { CompileError } from "./compile-error.js";
 import { isNeverResized } from "./data-lowering.js";
-import { isStoringDataCall, mutatingArrayMethods } from "./data-methods.js";
+import { isStoringDataCall } from "./data-methods.js";
+import { mutatingArrayMethods } from "./receiver-methods.js";
 import {
     isOpaqueReference,
     isTypedArrayType,
@@ -1191,6 +1192,8 @@ export class DeclarationLowerer {
             ...(slotFoundCpp ? { slotFoundCpp } : {}),
             nativeBinding: true,
         };
+        // The local reads its own storage, not a counted loop's counter.
+        delete writable(stored).integerCounterCpp;
         if (!sharedClosureStorage) delete writable(stored).sharedStorageCpp;
         if (stored.kind === "audio-engine" && stored.audioMainBusCpp) {
             writable(stored).audioMainBusCpp = this.context.takeNativeTemporary(

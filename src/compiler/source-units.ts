@@ -6,7 +6,7 @@ import {
     resolve,
     sep,
 } from "node:path";
-import { cppIdentifiers, cppTokens } from "./cpp-identifiers.js";
+import { cppTokens } from "./cpp-identifiers.js";
 import { cppDeclaredNames, splitCppDeclarations } from "./cpp-statements.js";
 
 export type NativeFunctionDefinition = {
@@ -82,12 +82,29 @@ export function sourceUnitStem(root: string, source: string): string {
  */
 export const unitMaximumWeight = 24_000;
 
-function codeWeight(code: string): number {
-    let identifiers = 0;
-    for (const token of cppTokens(code))
-        if (token.kind === "identifier") identifiers++;
-    return identifiers;
+/** What one pass over a piece of code finds: the names it uses and its weight. */
+interface CodeScan {
+    readonly identifiers: ReadonlySet<string>;
+    /** Identifier tokens, repeats included ({@link unitMaximumWeight}). */
+    readonly weight: number;
 }
+
+function scanCode(code: string): CodeScan {
+    const identifiers = new Set<string>();
+    let weight = 0;
+    for (const token of cppTokens(code)) {
+        if (token.kind !== "identifier") continue;
+        identifiers.add(token.text);
+        weight++;
+    }
+    return { identifiers, weight };
+}
+
+/** The names the wrapper around a unit's pieces adds to its body. */
+const unitWrapperNames: ReadonlySet<string> = new Set([
+    "namespace",
+    "bblscene",
+]);
 
 /**
  * What one piece of a unit costs a part. Its code and the template
@@ -108,18 +125,17 @@ interface PieceCost {
 const sharedNameWeight = 20;
 
 function pieceCost(
-    piece: string,
-    reachedTemplates: (code: string) => ReadonlySet<string>,
+    piece: CodeScan,
+    reachedTemplates: (identifiers: Iterable<string>) => ReadonlySet<string>,
     templateWeight: (name: string) => number,
 ): PieceCost {
     const templates = new Map<string, number>();
-    for (const name of reachedTemplates(piece))
+    for (const name of reachedTemplates(piece.identifiers))
         templates.set(name, templateWeight(name));
     const shared = new Map<string, number>();
-    for (const name of cppIdentifiers(piece))
-        shared.set(name, sharedNameWeight);
+    for (const name of piece.identifiers) shared.set(name, sharedNameWeight);
     for (const [name, weight] of templates) shared.set(name, weight);
-    return { code: codeWeight(piece), templates, shared };
+    return { code: piece.weight, templates, shared };
 }
 
 /**
@@ -131,14 +147,14 @@ function pieceCost(
  * own code. Pieces keep their order within a part, and parts are ordered by
  * their first piece.
  */
-function packUnitParts(
-    pieces: readonly string[],
-    reachedTemplates: (code: string) => ReadonlySet<string>,
+function packUnitParts<Piece extends { readonly scan: CodeScan }>(
+    pieces: readonly Piece[],
+    reachedTemplates: (identifiers: Iterable<string>) => ReadonlySet<string>,
     templateWeight: (name: string) => number,
     pinFirst: boolean,
-): string[][] {
+): Piece[][] {
     const costs = pieces.map((piece) =>
-        pieceCost(piece, reachedTemplates, templateWeight),
+        pieceCost(piece.scan, reachedTemplates, templateWeight),
     );
     const allTemplates = new Map<string, number>();
     let whole = 0;
@@ -258,19 +274,24 @@ export function sceneDeclarations(block: string): UnitDeclaration[] {
  */
 function unitDeclarations(
     declarations: readonly UnitDeclaration[],
-): (code: string) => string {
+): (identifiers: Iterable<string>) => string {
     const indexed = declarations.map((declaration) => {
         const tokens = [...cppTokens(declaration.text)];
         const declared = cppDeclaredNames(tokens);
         // A declaration's own name reaches no other overload of it.
-        const references = new Set(cppIdentifiers(declaration.text));
+        const references = new Set<string>();
+        for (const token of tokens)
+            if (token.kind === "identifier") references.add(token.text);
         for (const name of declared?.names ?? []) references.delete(name);
         return { ...declaration, declared, references };
     });
     const byName = new Map<string, number[]>();
     for (const [index, { declared }] of indexed.entries())
-        for (const name of declared?.names ?? [])
-            byName.set(name, [...(byName.get(name) ?? []), index]);
+        for (const name of declared?.names ?? []) {
+            const list = byName.get(name);
+            if (list) list.push(index);
+            else byName.set(name, [index]);
+        }
     // Overloads found by argument-dependent lookup (a record's `json_write`)
     // follow the types their signatures name.
     const overloads = indexed.flatMap(({ declared }, index) =>
@@ -279,7 +300,14 @@ function unitDeclarations(
             ? [index]
             : [],
     );
-    return (code) => {
+    const referencesAny = (
+        references: ReadonlySet<string>,
+        names: ReadonlySet<string>,
+    ): boolean => {
+        for (const name of references) if (names.has(name)) return true;
+        return false;
+    };
+    return (identifiers) => {
         const selected = new Set<number>();
         const types = new Set<string>();
         const pending: number[] = [];
@@ -294,7 +322,7 @@ function unitDeclarations(
         };
         for (const [index, { declared }] of indexed.entries())
             if (!declared) select(index);
-        reach(cppIdentifiers(code));
+        reach(identifiers);
         for (;;) {
             while (pending.length > 0) {
                 const declaration = indexed[pending.pop()!]!;
@@ -306,9 +334,7 @@ function unitDeclarations(
             for (const index of overloads)
                 if (
                     !selected.has(index) &&
-                    [...indexed[index]!.references].some((name) =>
-                        types.has(name),
-                    )
+                    referencesAny(indexed[index]!.references, types)
                 )
                     select(index);
             if (pending.length === 0) break;
@@ -355,32 +381,34 @@ export function renderSourceUnits(options: {
     const templates = new Map(
         options.templates.map((definition) => [
             definition.name,
-            {
-                identifiers: cppIdentifiers(definition.definition),
-                weight: codeWeight(definition.definition),
-            },
+            scanCode(definition.definition),
         ]),
     );
-    const reachedTemplates = (code: string): ReadonlySet<string> => {
+    const reachedTemplates = (
+        identifiers: Iterable<string>,
+    ): ReadonlySet<string> => {
         const reached = new Set<string>();
-        const visit = (identifiers: ReadonlySet<string>): void => {
-            for (const identifier of identifiers) {
+        const visit = (names: Iterable<string>): void => {
+            for (const identifier of names) {
                 const definition = templates.get(identifier);
                 if (!definition || reached.has(identifier)) continue;
                 reached.add(identifier);
                 visit(definition.identifiers);
             }
         };
-        if (templates.size > 0) visit(cppIdentifiers(code));
+        if (templates.size > 0) visit(identifiers);
         return reached;
     };
+    // Each piece is scanned once: its names and weight both pack the parts
+    // and select what each part's body needs.
     const parts = [...groups].map(([key, group]) => ({
         key,
         source: group.source,
         pieces: packUnitParts(
-            key === resolve(source)
+            (key === resolve(source)
                 ? [entry, ...group.definitions]
-                : group.definitions,
+                : group.definitions
+            ).map((text) => ({ text, scan: scanCode(text) })),
             reachedTemplates,
             (name) => templates.get(name)!.weight,
             key === resolve(source),
@@ -405,13 +433,6 @@ export function renderSourceUnits(options: {
     ]);
     const sourceUnits: SourceUnit[] = [];
     const declarationsFor = unitDeclarations(options.declarations);
-    const requiredTemplates = (body: string): string => {
-        const reached = reachedTemplates(body);
-        return options.templates
-            .filter(({ name }) => reached.has(name))
-            .map(({ definition }) => definition)
-            .join("\n\n");
-    };
     for (const { key, source: partSource, pieces } of parts) {
         const isEntry = key === resolve(source);
         const stem = `sources/${sourceUnitStem(root, partSource)}`;
@@ -425,16 +446,29 @@ export function renderSourceUnits(options: {
                 "\\",
                 "/",
             );
-            const unitEntry = isEntry && index === 0 ? piece[0]! : "";
-            const definitions = (unitEntry ? piece.slice(1) : piece).join(
-                "\n\n",
+            const unitEntry = isEntry && index === 0 ? piece[0]!.text : "";
+            const definitions = (unitEntry ? piece.slice(1) : piece)
+                .map(({ text }) => text)
+                .join("\n\n");
+            // The body's names are its pieces', its templates' and the
+            // wrapper's, so no part is scanned again.
+            const bodyNames = new Set<string>();
+            for (const { scan } of piece)
+                for (const name of scan.identifiers) bodyNames.add(name);
+            const reached = reachedTemplates(bodyNames);
+            const required = options.templates.filter(({ name }) =>
+                reached.has(name),
             );
-            const body = `namespace bblscene {\n${requiredTemplates(definitions + unitEntry)}\n${definitions}\n}\n${unitEntry}`;
+            for (const { name } of required)
+                for (const identifier of templates.get(name)!.identifiers)
+                    bodyNames.add(identifier);
+            for (const name of unitWrapperNames) bodyNames.add(name);
+            const body = `namespace bblscene {\n${required.map(({ definition }) => definition).join("\n\n")}\n${definitions}\n}\n${unitEntry}`;
             if (files.has(path))
                 throw new Error(`Generated source path collision: ${path}`);
             files.set(
                 path,
-                `// Generated by bblitec. Do not edit.\n#include "${include}"\n${wrap(`${declarationsFor(body)}\n${body}`)}`,
+                `// Generated by bblitec. Do not edit.\n#include "${include}"\n${wrap(`${declarationsFor(bodyNames)}\n${body}`)}`,
             );
             sourceUnits.push({
                 source: partSource,

@@ -108,7 +108,7 @@ import {
 import { staticNumberValue } from "./option-helpers.js";
 import { readFrozenParticleElement } from "./particle-buffer.js";
 import { pickedMeshHandleCpp } from "./properties.js";
-import { nullability } from "./type-facts.js";
+import { absenceKind, nullability } from "./type-facts.js";
 import type { Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
@@ -359,11 +359,24 @@ export function stringConcatPart(
             },
             node,
         );
-        // A value that knows whether its slot existed spells a stored
-        // `null` and a missing slot apart.
-        const absent = value.slotFoundCpp
-            ? `(${value.slotFoundCpp} ? "null" : "undefined")`
-            : context.cppString(absentSpelling(context, value, node));
+        const absence = absenceKind(context.checker, value, node);
+        if (absence === "either")
+            return context.fail(
+                node,
+                'A value that may be null or undefined is spelled only once one of them is ruled out (`value ?? "undefined"`).',
+            );
+        // A read that knows whether its slot existed spells a stored `null`
+        // and a missing slot apart.
+        const absent =
+            typeof absence === "object"
+                ? `(${absence.slotFoundCpp} ? "null" : "undefined")`
+                : context.cppString(
+                      absence !== "unconstrained"
+                          ? absence
+                          : value.dataType.undefinedOnly
+                            ? "undefined"
+                            : "null",
+                  );
         // A present string is already text; any other part is joined into one.
         const text =
             inner.kind === "string" ? present : `bbl::js::concat(${present})`;
@@ -389,36 +402,6 @@ export function stringConcatPart(
     return context.fail(
         node,
         "String concatenation supports string, number, boolean, enum and null values, and absent ones of those kinds.",
-    );
-}
-
-/**
- * How JavaScript spells an absent optional operand. The native optional has
- * one absent state, so the spelling comes from what the operand can be: a
- * type that admits only `undefined` -- or a lookup that can miss, of values
- * that are never `null` -- spells "undefined", a type that admits only
- * `null` spells "null". An operand that may be either does not say which
- * one a runtime absence is, and refuses.
- */
-function absentSpelling(
-    context: Pick<LoweringServices, "checker" | "fail">,
-    value: Value,
-    node: ts.Node,
-): "undefined" | "null" {
-    const absent = nullability(context.checker.getTypeAtLocation(node));
-    if (value.preserveUncheckedLookup && !absent.null) return "undefined";
-    if (absent.undefined && !absent.null) return "undefined";
-    if (absent.null && !absent.undefined && !value.preserveUncheckedLookup)
-        return "null";
-    if (
-        !absent.null &&
-        !absent.undefined &&
-        value.dataType?.kind === "optional"
-    )
-        return value.dataType.undefinedOnly ? "undefined" : "null";
-    return context.fail(
-        node,
-        'A value that may be null or undefined is spelled only once one of them is ruled out (`value ?? "undefined"`).',
     );
 }
 
@@ -1294,18 +1277,35 @@ export class ExpressionLowerer {
                     (text) => this.context.cppString(text),
                 );
             }
-            // An absent value the checker types `T | null`, without
-            // undefined, is null: typeof spells it "object". An unchecked
-            // lookup can still be undefined.
             const checked = nullability(
                 this.context.checker.getTypeAtLocation(expression),
             );
-            const absentType =
-                checked.null &&
-                !checked.undefined &&
-                !operand.preserveUncheckedLookup
-                    ? "object"
-                    : "undefined";
+            // An absent null is an "object"; which absent value this is
+            // follows the one rule (`absenceKind`), asked only where the
+            // operand can be absent. A run-time answer reads the slot flag.
+            const absentType = (): { cpp: string; runtime: boolean } => {
+                const absence = absenceKind(
+                    this.context.checker,
+                    operand,
+                    expression,
+                );
+                if (absence === "either")
+                    return this.context.fail(
+                        expression,
+                        "typeof a value that may be null or undefined answers only once one of them is ruled out (narrow the type).",
+                    );
+                return typeof absence === "object"
+                    ? {
+                          cpp: `(${absence.slotFoundCpp} ? "object" : "undefined")`,
+                          runtime: true,
+                      }
+                    : {
+                          cpp: this.context.cppString(
+                              absence === "null" ? "object" : "undefined",
+                          ),
+                          runtime: false,
+                      };
+            };
             const unionType =
                 operand.dataType?.kind === "optional"
                     ? operand.dataType.inner
@@ -1323,12 +1323,15 @@ export class ExpressionLowerer {
                     ),
                 );
                 const table = `std::array<const char*, ${names.length}>{${names.join(", ")}}`;
+                const absent =
+                    operand.dataType?.kind === "optional"
+                        ? absentType()
+                        : undefined;
                 return {
                     kind: "string",
-                    cpp:
-                        operand.dataType?.kind === "optional"
-                            ? `([](const auto& value) -> std::string { return value.has_value() ? ${table}[(*value).index()] : ${this.context.cppString(absentType)}; }(${operand.cpp}))`
-                            : `std::string(${table}[(${operand.cpp}).index()])`,
+                    cpp: absent
+                        ? `([${absent.runtime ? "&" : ""}](const auto& value) -> std::string { return value.has_value() ? ${table}[(*value).index()] : ${absent.cpp}; }(${operand.cpp}))`
+                        : `std::string(${table}[(${operand.cpp}).index()])`,
                 };
             }
             const documentType = compileJsonTypeOf(operand);
@@ -1365,7 +1368,7 @@ export class ExpressionLowerer {
                     cpp:
                         `(${present} ? ` +
                         `${this.context.cppString(type)} : ` +
-                        `${this.context.cppString(absentType)})`,
+                        `${absentType().cpp})`,
                     dataType: { kind: "string" },
                 };
             }

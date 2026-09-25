@@ -1069,6 +1069,8 @@ export class BindingScopes {
                 : {}),
         };
         delete writable(stored).nativeOwnedRvalue;
+        // The value now reads its own storage, not a counted loop's counter.
+        delete writable(stored).integerCounterCpp;
         if (!sharedStorage) delete writable(stored).sharedStorageCpp;
         if (
             value.kind === "data" &&

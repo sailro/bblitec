@@ -214,23 +214,28 @@ test("integer tables store each element as the typed array would", () => {
         ["i8array", (v) => Int8Array.from(v)],
     ];
     for (const [kind, store] of kinds) {
-        const table = typedArrayTable(kind, text);
+        const table = typedArrayTable(kind, values, text);
         assert.ok(table, kind);
         const expected = Array.from(store(values), (value) =>
             kind.startsWith("u") ? `${value}u` : `${value}`,
         );
         assert.deepEqual(table.elements, expected, kind);
     }
-    assert.deepEqual(typedArrayTable("i8array", ["(-3.0)", "2"])?.elements, [
-        "-3",
-        "2",
-    ]);
-    assert.equal(typedArrayTable("u32array", ["1.0", "count"]), undefined);
-    assert.equal(typedArrayTable("u32array", ["(1.0 / 3.0)"]), undefined);
-    assert.deepEqual(typedArrayTable("f64array", ["0.1", "count"])?.elements, [
-        "0.1",
-        "count",
-    ]);
+    // The table converts the generation-known values; a double table
+    // keeps the emitted literals, and a value with no literal in the
+    // element type (a non-finite float) keeps the double table instead.
+    assert.deepEqual(
+        typedArrayTable("i8array", [-3, 2], ["(-3.0)", "2.0"])?.elements,
+        ["-3", "2"],
+    );
+    assert.deepEqual(
+        typedArrayTable("f64array", [0.1, 2], ["0.1", "2.0"])?.elements,
+        ["0.1", "2.0"],
+    );
+    assert.equal(
+        typedArrayTable("f32array", [1, Infinity], ["1.0", "inf"]),
+        undefined,
+    );
 });
 
 test("hoisted constant typed-array tables are stored in their element type", () => {
