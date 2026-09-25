@@ -4806,9 +4806,9 @@ const sceneInputs: readonly SceneInput[] = [
                     })),
                     {
                         name: "GPU frame counter",
-                        x: 92,
+                        x: 87,
                         y: 298,
-                        width: 20,
+                        width: 32,
                         height: 14,
                     },
                 ],

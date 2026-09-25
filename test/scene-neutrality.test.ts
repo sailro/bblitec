@@ -17,6 +17,12 @@ for (const fixture of [
         message: /GPU timing total: 1\/602 pixel\(s\) changed/,
     },
     {
+        name: "the leading frame counter digit",
+        regionName: "GPU frame counter",
+        expected: 0,
+        message: /GPU frame counter: 1\/448 pixel\(s\) changed/,
+    },
+    {
         name: "stable pixel movement despite unchanged report cells",
         stable: true,
         sameReport: true,
@@ -77,7 +83,9 @@ for (const fixture of [
                 png.data.fill(255);
                 if (current && backend === "dawn" && !fixture.noPixelChange) {
                     const region = partition.regions.find(
-                        (region) => region.name === "GPU timing total",
+                        (region) =>
+                            region.name ===
+                            (fixture.regionName ?? "GPU timing total"),
                     )!;
                     png.data[(region.y * width + region.x) * 4] = 0;
                     if (fixture.stable) png.data[0] = 0;
