@@ -152,7 +152,7 @@ const sceneRendererFamilies = [
 ] as const;
 
 /** A scene renderer backend's files: its state header, family units and driver. */
-function sceneBackendFiles(backend: "sdl" | "dawn"): string[] {
+export function sceneBackendFiles(backend: "sdl" | "dawn"): string[] {
     const stem = backend === "sdl" ? "pal_sdl_gpu" : "pal_dawn";
     return [
         `native/src/${stem}_scene.hpp`,
