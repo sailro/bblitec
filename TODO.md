@@ -6,6 +6,8 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Compiler
 
+- [ ] Record `{type, constant}` per native binding instead of `constNativeBindings` and "const " prefixes on the first-wins `nativeBindingTypes` (`compiler.ts`, `statements.ts`, `body-outlining.ts`).
+- [ ] Find a closure's uncaptured names with one token pass (`unqualifiedIdentifiers`) instead of a regex per name, and build `environmentStruct` once per closure (`compiler.ts`).
 - [ ] Build one checked pinned program: text builds a second one (`pinned-typed-program.ts`) with its own library and `noUncheckedIndexedAccess`.
 - [ ] Converge the pinned record lowerers (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`) on one record and absence model, and emit the per-family structs of `sprite-y-sort-lowerer.ts`, `physics-floating-origin-lowerer.ts` and `clustered-light-runtime.ts` through `PinnedRecordModel`.
 - [ ] Share the base numeric lowerer's for/for-of/switch/try arms with its subclasses instead of their copies (`pinned-record-lowerer.ts`, `character-kernel-lowerer.ts`).
