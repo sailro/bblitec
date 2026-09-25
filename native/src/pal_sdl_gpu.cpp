@@ -703,27 +703,19 @@ public:
                 // own WGSL, so which blocks and textures survive to the
                 // compiled artifact is the caller's text to decide -- a
                 // sampler read only inside a branch a define folds away is
-                // stripped, and the registers behind it move up. The
-                // compaction pass publishes what it assigned, so the PAL
+                // stripped, and the registers behind it move up. bblite-tint
+                // writes the slots it assigned beside the stage, so the PAL
                 // binds by that sidecar rather than by the reflection
                 // generation derived, exactly as the post-process and
                 // billboard programs already do.
-                state.shader_vertex_slots[variant] = read_pinned_stage_slots(vertex_name);
-                state.shader_fragment_slots[variant] = read_pinned_stage_slots(fragment_name);
-                const PinnedStageSlots& vertex_slots = state.shader_vertex_slots[variant];
-                const PinnedStageSlots& fragment_slots = state.shader_fragment_slots[variant];
-                shader_vertex_shaders[variant] =
-                    load_shader(state.device, vertex_name.c_str(), SDL_GPU_SHADERSTAGE_VERTEX,
-                                static_cast<Uint32>(vertex_slots.textures.size()),
-                                static_cast<Uint32>(vertex_slots.uniforms.size()), "mainVertex",
-                                static_cast<Uint32>(vertex_slots.storage.size()),
-                                static_cast<Uint32>(vertex_slots.storage_textures.size()));
-                shader_fragment_shaders[variant] =
-                    load_shader(state.device, fragment_name.c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-                                static_cast<Uint32>(fragment_slots.textures.size()),
-                                static_cast<Uint32>(fragment_slots.uniforms.size()), "mainFragment",
-                                static_cast<Uint32>(fragment_slots.storage.size()),
-                                static_cast<Uint32>(fragment_slots.storage_textures.size()));
+                PinnedStage vertex_stage =
+                    load_pinned_stage(state.device, vertex_name, SDL_GPU_SHADERSTAGE_VERTEX);
+                PinnedStage fragment_stage =
+                    load_pinned_stage(state.device, fragment_name, SDL_GPU_SHADERSTAGE_FRAGMENT);
+                shader_vertex_shaders[variant] = std::move(vertex_stage.shader);
+                shader_fragment_shaders[variant] = std::move(fragment_stage.shader);
+                state.shader_vertex_slots[variant] = std::move(vertex_stage.slots);
+                state.shader_fragment_slots[variant] = std::move(fragment_stage.slots);
             }
         }
         auto id_fragment_shader =
@@ -2756,8 +2748,9 @@ public:
                                         const std::array<float, 16> world =
                                             mesh_block_world(graph_scene, engine,
                                                              handle_at(engine.meshes, entry.mesh));
-                                        SDL_PushGPUVertexUniformData(command, 1, world.data(),
-                                                                     sizeof(world));
+                                        SDL_PushGPUVertexUniformData(command,
+                                                                     mesh_world_uniform_slot,
+                                                                     world.data(), sizeof(world));
                                         const SDL_GPUBufferBinding index_binding{
                                             mesh.indices,
                                             0,

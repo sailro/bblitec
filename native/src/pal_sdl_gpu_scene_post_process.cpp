@@ -25,13 +25,9 @@ GpuPostProcessProgram build_post_process_program(GpuState& state, std::uint32_t 
     program.vertex_slots = read_pinned_stage_slots(vertex_name);
     program.fragment_slots = read_pinned_stage_slots(fragment_name);
     auto vertex_shader =
-        load_shader(state.device, vertex_name.c_str(), SDL_GPU_SHADERSTAGE_VERTEX,
-                    static_cast<Uint32>(program.vertex_slots.textures.size()),
-                    static_cast<Uint32>(program.vertex_slots.uniforms.size()), "postProcessVertex");
-    auto fragment_shader = load_shader(
-        state.device, fragment_name.c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-        static_cast<Uint32>(program.fragment_slots.textures.size()),
-        static_cast<Uint32>(program.fragment_slots.uniforms.size()), "postProcessFragment");
+        load_shader(state.device, vertex_name, SDL_GPU_SHADERSTAGE_VERTEX, program.vertex_slots);
+    auto fragment_shader = load_shader(state.device, fragment_name, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                                       program.fragment_slots);
     // The generated table names the pin's factors; turning them into this
     // API's enums is the backend's own `blend_state_from`.
     const upstream::PostProcessBlend blend = upstream::post_process_blend(alpha_mode);
@@ -137,13 +133,9 @@ GpuScreenSpaceProgram build_screen_space_program(GpuState& state, std::uint32_t 
     program.vertex_slots = read_pinned_stage_slots(vertex_name);
     program.fragment_slots = read_pinned_stage_slots(fragment_name);
     auto vertex_shader =
-        load_shader(state.device, vertex_name.c_str(), SDL_GPU_SHADERSTAGE_VERTEX,
-                    static_cast<Uint32>(program.vertex_slots.textures.size()),
-                    static_cast<Uint32>(program.vertex_slots.uniforms.size()), info.vertex_entry);
-    auto fragment_shader = load_shader(
-        state.device, fragment_name.c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-        static_cast<Uint32>(program.fragment_slots.textures.size()),
-        static_cast<Uint32>(program.fragment_slots.uniforms.size()), info.fragment_entry);
+        load_shader(state.device, vertex_name, SDL_GPU_SHADERSTAGE_VERTEX, program.vertex_slots);
+    auto fragment_shader = load_shader(state.device, fragment_name, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                                       program.fragment_slots);
     // The pin builds each stage against its own single-sample target
     // format with no blend and a triangle list (`ensureProducerPipeline`).
     SDL_GPUColorTargetDescription target{};

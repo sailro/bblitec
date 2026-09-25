@@ -12,6 +12,7 @@
 #include "pal_dawn_resources.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
+#include "pal_gpu_common.hpp"
 #include "pal_dawn_completion.hpp"
 #include "pal_dawn_formats.hpp"
 #if BBLITE_GPU_TASK_TIMING
@@ -61,6 +62,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -953,18 +955,10 @@ inline DawnReflectedBinding parse_dawn_reflected_binding(std::string_view line,
                    "'.");
     };
     const auto number = [&](std::string_view word) {
-        constexpr std::uint32_t max_index = 4096;
-        std::uint32_t value = 0;
-        if (word.empty())
+        const std::optional<std::uint32_t> value = parse_sidecar_index(word);
+        if (!value)
             malformed();
-        for (const char digit : word) {
-            if (digit < '0' || digit > '9')
-                malformed();
-            value = value * 10 + static_cast<std::uint32_t>(digit - '0');
-            if (value > max_index)
-                malformed();
-        }
-        return value;
+        return value.value_or(0u);
     };
     if (words.size() < 5)
         return malformed();
@@ -1010,15 +1004,10 @@ inline std::vector<DawnReflectedBinding> read_dawn_reflected_bindings(std::strin
     const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     constexpr std::string_view prefix = "@binding ";
     std::vector<DawnReflectedBinding> rows;
-    for (std::size_t start = 0; start < text.size();) {
-        std::size_t end = std::min(text.find('\n', start), text.size());
-        std::string_view line = text.substr(start, end - start);
-        while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
-            line.remove_suffix(1);
+    for_each_sidecar_line(text, [&](std::string_view line) {
         if (line.starts_with(prefix))
             rows.push_back(parse_dawn_reflected_binding(line, stem));
-        start = end + 1;
-    }
+    });
     return rows;
 }
 

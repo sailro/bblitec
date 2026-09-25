@@ -302,12 +302,9 @@ private:
             gpu_error("picking-billboard.vert kept neither the scene nor the "
                       "per-system block");
         }
-        auto vertex = load_shader(device_, vertex_stem, SDL_GPU_SHADERSTAGE_VERTEX, 0,
-                                  static_cast<std::uint32_t>(vertex_slots.uniforms.size()), "vs");
+        auto vertex = load_shader(device_, vertex_stem, SDL_GPU_SHADERSTAGE_VERTEX, vertex_slots);
         auto fragment =
-            load_shader(device_, fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT,
-                        static_cast<std::uint32_t>(fragment_slots.textures.size()),
-                        static_cast<std::uint32_t>(fragment_slots.uniforms.size()), "fs");
+            load_shader(device_, fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT, fragment_slots);
 
         // The pin's own six instance attributes, read out of the table the
         // billboard lowerer generated from the RENDER pipeline's offsets --

@@ -505,18 +505,21 @@ struct DawnRenderTarget {
     std::uint32_t allocation = 0;
 };
 
-/** A depth-only task's mesh: its world block and the group binding it. */
-struct DawnDepthOnlyDraw {
-    DawnBuffer world{};
+/**
+ * A depth-only task's group 1 for one mesh: the task's view-projection beside
+ * the mesh's own stage blocks (`serve_mesh_stage_binding`), and the world
+ * buffer it was built over -- a mesh uploaded again carries new blocks.
+ */
+struct DawnDepthOnlyGroup {
+    WGPUBuffer mesh_world = nullptr;
     DawnBindGroup group{};
 };
 
 struct DawnRenderTask {
     upstream::RenderDrawLists draw_lists;
     DawnBuffer view_projection{};
-    // Depth-only passes bind group 1 per mesh: the task's view-projection
-    // and the mesh's world, keyed by the mesh's slot.
-    std::unordered_map<std::uint32_t, DawnDepthOnlyDraw> depth_only_draws;
+    // Depth-only passes bind group 1 per mesh, keyed by the mesh's slot.
+    std::unordered_map<std::uint32_t, DawnDepthOnlyGroup> depth_only_groups;
     // A task the scene gave its own camera composes its own view-projection
     // and eye position, so it needs its own copy of the pin's per-pass scene
     // block; the lights beside it are the scene's and stay shared. Null for
@@ -1119,7 +1122,7 @@ struct DawnState : DawnDevice {
     // and rebuild together with the meshes.
     void release_render_tasks() {
         for (DawnRenderTask& task : render_tasks) {
-            task.depth_only_draws.clear();
+            task.depth_only_groups.clear();
             if (task.pinned_frame_group) {
                 task.pinned_frame_group.reset();
             }
@@ -3004,6 +3007,25 @@ void present_stopped_temporal_frame(DawnState& state, WGPUCommandEncoder encoder
  * own per-draw block.
  */
 DawnMeshBindings& diagnostic_bindings_for(DawnState& state, DawnMesh& mesh);
+
+/**
+ * The shared material stage's world and deformation blocks for one mesh, as
+ * queue writes: what the diagnostic and depth-only draws read through
+ * `serve_mesh_stage_binding`.
+ */
+void write_mesh_stage_blocks(DawnState& state, const Scene& scene, const Engine& engine,
+                             const MeshRecord& mesh, const DawnMeshResources& gpu);
+
+/**
+ * One binding of the shared material stage's group 1 for a mesh drawn outside
+ * its material pipeline -- the diagnostic and depth-only draws: the pass's
+ * view-projection, the mesh's deformation block when deformation is compiled
+ * in, and its world block at `mesh_world_uniform_binding`, both of which
+ * `write_mesh_blocks` keeps current. False for a binding the stage does not
+ * declare.
+ */
+bool serve_mesh_stage_binding(WGPUBindGroupEntry& entry, WGPUBuffer view_projection,
+                              const DawnMeshResources& mesh);
 
 /** Build the four reflected groups for an active ShaderMaterial draw. */
 DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const Scene& scene,

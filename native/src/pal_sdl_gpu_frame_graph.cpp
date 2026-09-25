@@ -236,14 +236,10 @@ PostProcessProgram build_post_process_program(State& state, std::uint32_t module
     const std::string fragment_name = stem + ".frag";
     program.vertex_slots = read_pinned_stage_slots(vertex_name);
     program.fragment_slots = read_pinned_stage_slots(fragment_name);
-    auto vertex =
-        load_shader(state.gpu.device, vertex_name.c_str(), SDL_GPU_SHADERSTAGE_VERTEX,
-                    static_cast<Uint32>(program.vertex_slots.textures.size()),
-                    static_cast<Uint32>(program.vertex_slots.uniforms.size()), "postProcessVertex");
-    auto fragment = load_shader(
-        state.gpu.device, fragment_name.c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-        static_cast<Uint32>(program.fragment_slots.textures.size()),
-        static_cast<Uint32>(program.fragment_slots.uniforms.size()), "postProcessFragment");
+    auto vertex = load_shader(state.gpu.device, vertex_name, SDL_GPU_SHADERSTAGE_VERTEX,
+                              program.vertex_slots);
+    auto fragment = load_shader(state.gpu.device, fragment_name, SDL_GPU_SHADERSTAGE_FRAGMENT,
+                                program.fragment_slots);
     const upstream::PostProcessBlend blend = upstream::post_process_blend(alpha_mode);
     SDL_GPUColorTargetDescription target{};
     target.format = format;

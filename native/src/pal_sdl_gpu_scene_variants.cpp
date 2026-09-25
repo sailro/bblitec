@@ -436,17 +436,10 @@ pinned_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPi
     const std::string fragment_name = pinned_stage_name(entry.fragment_shader);
     const PinnedStageSlots& vertex_slots = state.pinned_vertex_slots[variant];
     const PinnedStageSlots& fragment_slots = state.pinned_fragment_slots[variant];
-    auto vertex_shader = load_shader(state.device, vertex_name.c_str(), SDL_GPU_SHADERSTAGE_VERTEX,
-                                     static_cast<Uint32>(vertex_slots.textures.size()),
-                                     static_cast<Uint32>(vertex_slots.uniforms.size()), "main",
-                                     static_cast<Uint32>(vertex_slots.storage.size()),
-                                     static_cast<Uint32>(vertex_slots.storage_textures.size()));
+    auto vertex_shader =
+        load_shader(state.device, vertex_name, SDL_GPU_SHADERSTAGE_VERTEX, vertex_slots);
     auto fragment_shader =
-        load_shader(state.device, fragment_name.c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-                    static_cast<Uint32>(fragment_slots.textures.size()),
-                    static_cast<Uint32>(fragment_slots.uniforms.size()), "main",
-                    static_cast<Uint32>(fragment_slots.storage.size()),
-                    static_cast<Uint32>(fragment_slots.storage_textures.size()));
+        load_shader(state.device, fragment_name, SDL_GPU_SHADERSTAGE_FRAGMENT, fragment_slots);
 
     // The variant's own inputs, at the locations it declares them. The names are
     // the pin's; where each sits in our vertex is this backend's.
@@ -938,18 +931,10 @@ node_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPipe
     const upstream::NodeVariantStems stems = pal::node_variant_stems(slot);
     const PinnedStageSlots& vertex_slots = state.node_vertex_slots[slot];
     const PinnedStageSlots& fragment_slots = state.node_fragment_slots[slot];
-    auto vertex_shader =
-        load_shader(state.device, std::string(stems.vertex).c_str(), SDL_GPU_SHADERSTAGE_VERTEX,
-                    static_cast<Uint32>(vertex_slots.textures.size()),
-                    static_cast<Uint32>(vertex_slots.uniforms.size()), "vs_main",
-                    static_cast<Uint32>(vertex_slots.storage.size()),
-                    static_cast<Uint32>(vertex_slots.storage_textures.size()));
-    auto fragment_shader =
-        load_shader(state.device, std::string(stems.fragment).c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-                    static_cast<Uint32>(fragment_slots.textures.size()),
-                    static_cast<Uint32>(fragment_slots.uniforms.size()), "fs_main",
-                    static_cast<Uint32>(fragment_slots.storage.size()),
-                    static_cast<Uint32>(fragment_slots.storage_textures.size()));
+    auto vertex_shader = load_shader(state.device, std::string(stems.vertex),
+                                     SDL_GPU_SHADERSTAGE_VERTEX, vertex_slots);
+    auto fragment_shader = load_shader(state.device, std::string(stems.fragment),
+                                       SDL_GPU_SHADERSTAGE_FRAGMENT, fragment_slots);
     std::vector<SDL_GPUVertexAttribute> attributes;
     attributes.reserve(view.attribute_count);
     for (std::size_t index = 0; index < view.attribute_count; ++index) {
@@ -1477,17 +1462,10 @@ standard_variant_pipeline(GpuState& state, std::size_t variant, upstream::Render
     const std::string fragment_name = standard_stage_name(entry.fragment_shader);
     const PinnedStageSlots& vertex_slots = state.standard_vertex_slots[variant];
     const PinnedStageSlots& fragment_slots = state.standard_fragment_slots[variant];
-    auto vertex_shader = load_shader(state.device, vertex_name.c_str(), SDL_GPU_SHADERSTAGE_VERTEX,
-                                     static_cast<Uint32>(vertex_slots.textures.size()),
-                                     static_cast<Uint32>(vertex_slots.uniforms.size()), "main",
-                                     static_cast<Uint32>(vertex_slots.storage.size()),
-                                     static_cast<Uint32>(vertex_slots.storage_textures.size()));
+    auto vertex_shader =
+        load_shader(state.device, vertex_name, SDL_GPU_SHADERSTAGE_VERTEX, vertex_slots);
     auto fragment_shader =
-        load_shader(state.device, fragment_name.c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-                    static_cast<Uint32>(fragment_slots.textures.size()),
-                    static_cast<Uint32>(fragment_slots.uniforms.size()), "main",
-                    static_cast<Uint32>(fragment_slots.storage.size()),
-                    static_cast<Uint32>(fragment_slots.storage_textures.size()));
+        load_shader(state.device, fragment_name, SDL_GPU_SHADERSTAGE_FRAGMENT, fragment_slots);
     std::vector<SDL_GPUVertexAttribute> attributes;
     attributes.reserve(entry.attribute_count);
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {

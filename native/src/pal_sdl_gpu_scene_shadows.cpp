@@ -8,12 +8,6 @@ namespace bbl::pal {
 inline namespace sdl_scene {
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_SHADOW_RECEIVERS && BBLITE_SHADOWS_ESM
-SDL_GPUTextureFormat esm_texture_format(upstream::EsmTextureFormat format) {
-    return format == upstream::EsmTextureFormat::depth32_float
-               ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
-               : SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
-}
-
 GpuState::EsmBlur& ensure_esm_blur(GpuState& state, const ShadowGeneratorRecord& generator,
                                    SDL_GPUTexture* source) {
     const std::uint32_t esm_index = generator.esm_index;
@@ -42,21 +36,11 @@ GpuState::EsmBlur& ensure_esm_blur(GpuState& state, const ShadowGeneratorRecord&
     blur.blur_v = create_half();
     const std::string stem = "shadow-blur-" + std::to_string(esm_index);
     // The `.slots` sidecars are the only authority on which register each
-    // block kept after HLSL compaction, exactly as for a composed variant.
-    const PinnedStageSlots vertex_slots = read_pinned_stage_slots(stem + ".vert");
-    const PinnedStageSlots fragment_slots = read_pinned_stage_slots(stem + ".frag");
+    // block kept in the compiled stage, exactly as for a composed variant.
     auto vertex_shader =
-        load_shader(state.device, (stem + ".vert").c_str(), SDL_GPU_SHADERSTAGE_VERTEX,
-                    static_cast<Uint32>(vertex_slots.textures.size()),
-                    static_cast<Uint32>(vertex_slots.uniforms.size()), "main",
-                    static_cast<Uint32>(vertex_slots.storage.size()),
-                    static_cast<Uint32>(vertex_slots.storage_textures.size()));
+        load_pinned_stage(state.device, stem + ".vert", SDL_GPU_SHADERSTAGE_VERTEX).shader;
     auto fragment_shader =
-        load_shader(state.device, (stem + ".frag").c_str(), SDL_GPU_SHADERSTAGE_FRAGMENT,
-                    static_cast<Uint32>(fragment_slots.textures.size()),
-                    static_cast<Uint32>(fragment_slots.uniforms.size()), "main",
-                    static_cast<Uint32>(fragment_slots.storage.size()),
-                    static_cast<Uint32>(fragment_slots.storage_textures.size()));
+        load_pinned_stage(state.device, stem + ".frag", SDL_GPU_SHADERSTAGE_FRAGMENT).shader;
     SDL_GPUColorTargetDescription color_target{};
     // The one target `blurPipeline` declares, as the factory declared it.
     color_target.format = esm_texture_format(resources.blur_target_format);

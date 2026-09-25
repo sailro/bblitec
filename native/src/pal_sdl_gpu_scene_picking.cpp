@@ -30,11 +30,9 @@ void ensure_pick_pipelines(GpuState& state) {
     state.pick_frag_mesh_slot = stage_uniform_slot(fragment_slots, "mesh");
 
     auto vertex_shader =
-        load_shader(state.device, "picking.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0,
-                    static_cast<std::uint32_t>(vertex_slots.uniforms.size()), "vs");
+        load_shader(state.device, "picking.vert", SDL_GPU_SHADERSTAGE_VERTEX, vertex_slots);
     auto fragment_shader =
-        load_shader(state.device, "picking.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0,
-                    static_cast<std::uint32_t>(fragment_slots.uniforms.size()), "fs");
+        load_shader(state.device, "picking.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, fragment_slots);
 
     // The renderer's interleaved stream read at its own pitch: the pin
     // binds a position-only buffer, and these are the same numbers.
@@ -93,16 +91,10 @@ void ensure_pick_pipelines(GpuState& state) {
         gpu_error("picking-thin.vert kept neither its scene, mesh nor instance block");
     }
 
-    auto thin_vertex =
-        load_shader(state.device, "picking-thin.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0,
-                    static_cast<std::uint32_t>(thin_vertex_slots.uniforms.size()), "vs",
-                    static_cast<std::uint32_t>(thin_vertex_slots.storage.size()),
-                    static_cast<std::uint32_t>(thin_vertex_slots.storage_textures.size()));
-    auto thin_fragment =
-        load_shader(state.device, "picking-thin.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0,
-                    static_cast<std::uint32_t>(thin_fragment_slots.uniforms.size()), "fs",
-                    static_cast<std::uint32_t>(thin_fragment_slots.storage.size()),
-                    static_cast<std::uint32_t>(thin_fragment_slots.storage_textures.size()));
+    auto thin_vertex = load_shader(state.device, "picking-thin.vert", SDL_GPU_SHADERSTAGE_VERTEX,
+                                   thin_vertex_slots);
+    auto thin_fragment = load_shader(state.device, "picking-thin.frag",
+                                     SDL_GPU_SHADERSTAGE_FRAGMENT, thin_fragment_slots);
     SDL_GPUGraphicsPipelineCreateInfo thin_info = info;
     thin_info.vertex_shader = thin_vertex.get();
     thin_info.fragment_shader = thin_fragment.get();
@@ -132,12 +124,10 @@ void ensure_pick_pipelines(GpuState& state) {
     state.pick_detailed_frag_scene_slot = stage_uniform_slot(detailed_fragment_slots, "scene");
     state.pick_detailed_frag_mesh_slot = stage_uniform_slot(detailed_fragment_slots, "mesh");
 
-    auto detailed_vertex =
-        load_shader(state.device, "picking-detailed.vert", SDL_GPU_SHADERSTAGE_VERTEX, 0,
-                    static_cast<std::uint32_t>(detailed_vertex_slots.uniforms.size()), "vs");
-    auto detailed_fragment =
-        load_shader(state.device, "picking-detailed.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0,
-                    static_cast<std::uint32_t>(detailed_fragment_slots.uniforms.size()), "fs");
+    auto detailed_vertex = load_shader(state.device, "picking-detailed.vert",
+                                       SDL_GPU_SHADERSTAGE_VERTEX, detailed_vertex_slots);
+    auto detailed_fragment = load_shader(state.device, "picking-detailed.frag",
+                                         SDL_GPU_SHADERSTAGE_FRAGMENT, detailed_fragment_slots);
 
     SDL_GPUColorTargetDescription detailed_targets[3]{};
     detailed_targets[0].format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -183,16 +173,10 @@ void ensure_pick_pipelines(GpuState& state) {
                 gpu_error("deformation pick projection kept neither its scene nor mesh block");
             }
             auto deform_vertex =
-                load_shader(state.device, stem, SDL_GPU_SHADERSTAGE_VERTEX,
-                            static_cast<Uint32>(program.vertex_slots.textures.size()),
-                            static_cast<Uint32>(program.vertex_slots.uniforms.size()), "vs",
-                            static_cast<Uint32>(program.vertex_slots.storage.size()),
-                            static_cast<Uint32>(program.vertex_slots.storage_textures.size()));
+                load_shader(state.device, stem, SDL_GPU_SHADERSTAGE_VERTEX, program.vertex_slots);
             const char* fragment_stem = mode == 0 ? "picking.frag" : "picking-detailed.frag";
-            const auto deform_fragment_slots = read_pinned_stage_slots(fragment_stem);
             auto deform_fragment =
-                load_shader(state.device, fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT, 0,
-                            static_cast<Uint32>(deform_fragment_slots.uniforms.size()), "fs");
+                load_pinned_stage(state.device, fragment_stem, SDL_GPU_SHADERSTAGE_FRAGMENT).shader;
             SDL_GPUGraphicsPipelineCreateInfo deform_info =
 #if BBLITE_HAS_DETAILED_PICKING
                 mode == 1 ? detailed_info :
@@ -221,14 +205,10 @@ void ensure_pick_pipelines(GpuState& state) {
                   "the pick colour");
     }
 
-    auto cloud_vertex =
-        load_shader(state.device, "picking-splat.vert", SDL_GPU_SHADERSTAGE_VERTEX,
-                    static_cast<std::uint32_t>(cloud_vertex_slots.textures.size()),
-                    static_cast<std::uint32_t>(cloud_vertex_slots.uniforms.size()), "vs");
-    auto cloud_fragment =
-        load_shader(state.device, "picking-splat.frag", SDL_GPU_SHADERSTAGE_FRAGMENT,
-                    static_cast<std::uint32_t>(cloud_fragment_slots.textures.size()),
-                    static_cast<std::uint32_t>(cloud_fragment_slots.uniforms.size()), "fs");
+    auto cloud_vertex = load_shader(state.device, "picking-splat.vert", SDL_GPU_SHADERSTAGE_VERTEX,
+                                    cloud_vertex_slots);
+    auto cloud_fragment = load_shader(state.device, "picking-splat.frag",
+                                      SDL_GPU_SHADERSTAGE_FRAGMENT, cloud_fragment_slots);
 
     // The pin's own two streams: the unit quad, and the sorted splat index
     // per instance.
