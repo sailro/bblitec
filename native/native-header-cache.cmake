@@ -212,12 +212,17 @@ endfunction()
 # trees of this checkout share one PCH and its users' entries, and a PCH
 # naming another worktree's files is never handed out. On a miss ccache
 # preprocesses a user with the PCH's source included as text, so the users
-# also read the folder of the PCH's generated headers.
+# also read the folder of the PCH's generated headers. NAME is the PCH's own
+# object library; HEADERS are `<system>` spellings or absolute paths.
 function(bblite_shared_pch)
-    cmake_parse_arguments(PARSE_ARGV 0 arg "" "INCLUDE_DIRECTORY" "TARGETS;HEADERS")
-    set(text "// The precompiled header of native/CMakeLists.txt.\n")
+    cmake_parse_arguments(PARSE_ARGV 0 arg "" "NAME;INCLUDE_DIRECTORY" "TARGETS;HEADERS")
+    set(text "// A precompiled header of native/CMakeLists.txt.\n")
     foreach(header IN LISTS arg_HEADERS)
-        string(APPEND text "#include ${header}\n")
+        if(header MATCHES "^<")
+            string(APPEND text "#include ${header}\n")
+        else()
+            string(APPEND text "#include \"${header}\"\n")
+        endif()
     endforeach()
     string(SHA256 key "${text}")
     string(SUBSTRING "${key}" 0 16 key)
@@ -230,29 +235,29 @@ function(bblite_shared_pch)
         file(RENAME "${source}.partial" "${source}")
     endif()
     file(LOCK "${source}.lock" RELEASE)
-    add_library(bblite_pch OBJECT "${source}")
-    target_link_libraries(bblite_pch PRIVATE bblite_features)
+    add_library(${arg_NAME} OBJECT "${source}")
+    target_link_libraries(${arg_NAME} PRIVATE bblite_features)
     if(arg_INCLUDE_DIRECTORY)
-        target_include_directories(bblite_pch PRIVATE "${arg_INCLUDE_DIRECTORY}")
+        target_include_directories(${arg_NAME} PRIVATE "${arg_INCLUDE_DIRECTORY}")
     endif()
     set_source_files_properties("${source}" PROPERTIES COMPILE_OPTIONS "-Xclang;-emit-pch")
     set(launcher ${CMAKE_CXX_COMPILER_LAUNCHER})
     list(FILTER launcher EXCLUDE REGEX "^base_dir=")
-    set_property(TARGET bblite_pch PROPERTY CXX_COMPILER_LAUNCHER "${launcher}")
+    set_property(TARGET ${arg_NAME} PROPERTY CXX_COMPILER_LAUNCHER "${launcher}")
     # The compile's output object is the PCH the units read. A source's
     # OBJECT_DEPENDS takes no generator expression, so the units depend on a
     # stamp touched after each compile of it.
-    set(pch "$<TARGET_OBJECTS:bblite_pch>")
-    set(stamp "${CMAKE_CURRENT_BINARY_DIR}/bblite_pch.stamp")
+    set(pch "$<TARGET_OBJECTS:${arg_NAME}>")
+    set(stamp "${CMAKE_CURRENT_BINARY_DIR}/${arg_NAME}.stamp")
     add_custom_command(
         OUTPUT "${stamp}"
         COMMAND "${CMAKE_COMMAND}" -E touch "${stamp}"
         DEPENDS "${pch}"
         VERBATIM
     )
-    add_custom_target(bblite_pch_stamp DEPENDS "${stamp}")
+    add_custom_target(${arg_NAME}_stamp DEPENDS "${stamp}")
     foreach(target IN LISTS arg_TARGETS)
-        add_dependencies(${target} bblite_pch_stamp)
+        add_dependencies(${target} ${arg_NAME}_stamp)
         target_compile_options(${target} PRIVATE "SHELL:-Xclang -include-pch -Xclang ${pch}")
         if(arg_INCLUDE_DIRECTORY)
             target_include_directories(${target} PRIVATE "${arg_INCLUDE_DIRECTORY}")

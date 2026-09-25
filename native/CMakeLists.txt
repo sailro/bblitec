@@ -351,6 +351,29 @@ if(APPLE)
 endif()
 add_library(bblite_pal_common OBJECT ${BBLITE_PAL_COMMON_SOURCES})
 target_link_libraries(bblite_pal_common PRIVATE bblite_features)
+# Each backend's scene renderer -- its driver and its family units, every
+# one of which opens with the backend's scene header -- compiles in an object
+# library of its own, so that header is parsed once per tree, in the
+# library's precompiled header (the PCH block below), not once per unit.
+set(BBLITE_SCENE_RENDERER_UNIT "/src/pal_(sdl_gpu|dawn)(_scene_[a-z_]+)?\\.cpp$")
+set(BBLITE_SDL_GPU_SCENE_SOURCES ${BBLITE_RUNTIME_SOURCES})
+list(FILTER BBLITE_SDL_GPU_SCENE_SOURCES INCLUDE REGEX "${BBLITE_SCENE_RENDERER_UNIT}")
+list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "${BBLITE_SCENE_RENDERER_UNIT}")
+set(BBLITE_DAWN_SCENE_SOURCES "")
+if(BBLITE_BACKEND_DAWN)
+    set(BBLITE_DAWN_SCENE_SOURCES ${BBLITE_DAWN_SOURCES})
+    list(FILTER BBLITE_DAWN_SCENE_SOURCES INCLUDE REGEX "${BBLITE_SCENE_RENDERER_UNIT}")
+endif()
+list(FILTER BBLITE_DAWN_SOURCES EXCLUDE REGEX "${BBLITE_SCENE_RENDERER_UNIT}")
+set(BBLITE_SCENE_RENDERER_TARGETS "")
+foreach(bblite_backend IN ITEMS sdl_gpu dawn)
+    string(TOUPPER "${bblite_backend}" bblite_backend_variable)
+    if(BBLITE_${bblite_backend_variable}_SCENE_SOURCES)
+        add_library(bblite_${bblite_backend}_scene OBJECT ${BBLITE_${bblite_backend_variable}_SCENE_SOURCES})
+        target_link_libraries(bblite_${bblite_backend}_scene PRIVATE bblite_features)
+        list(APPEND BBLITE_SCENE_RENDERER_TARGETS bblite_${bblite_backend}_scene)
+    endif()
+endforeach()
 set(BBLITE_ENTRY_SOURCE "${BBLITE_GENERATED_DIR}/main.cpp")
 # The platform wrapper includes main.cpp; every other application unit is compiled normally.
 set(BBLITE_APPLICATION_UNITS ${BBLITE_APPLICATION_SOURCES})
@@ -393,7 +416,7 @@ target_sources(
     ${BBLITE_GENERATED_UNITS}
     ${BBLITE_APPLICATION_UNITS}
 )
-target_link_libraries(bblite_native PRIVATE bblite_features bblite_pal_common)
+target_link_libraries(bblite_native PRIVATE bblite_features bblite_pal_common ${BBLITE_SCENE_RENDERER_TARGETS})
 # Build-option macros are defined here; every feature-keyed macro is a
 # generated header of its own (bblite/features/, src/feature-macros.ts) that
 # each file testing it includes, and the generator's own decisions live in
@@ -1107,12 +1130,21 @@ if(BBLITE_PCH AND (NOT BBLITE_NATIVE_CACHE_ACTIVE OR CMAKE_CXX_COMPILER_ID STREQ
     endif()
     # Built once and used by every unit of the object library and the
     # executable: both consume the same interface requirements, and the PCH
-    # closure reaches no generated header beyond activation macros.
+    # closure reaches no generated header beyond activation macros. Each
+    # backend's scene renderer library precompiles the same set and its
+    # scene header, which reaches lowered module headers.
     if(BBLITE_NATIVE_CACHE_ACTIVE AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
         set(BBLITE_SHARED_PCH ON)
     else()
         target_precompile_headers(bblite_pal_common PRIVATE ${BBLITE_PCH_HEADERS})
         target_precompile_headers(bblite_native REUSE_FROM bblite_pal_common)
+        foreach(bblite_target IN LISTS BBLITE_SCENE_RENDERER_TARGETS)
+            string(REGEX REPLACE "^bblite_(.+)_scene$" "\\1" bblite_backend "${bblite_target}")
+            target_precompile_headers(
+                ${bblite_target} PRIVATE ${BBLITE_PCH_HEADERS}
+                "${BBLITE_NATIVE_ROOT}/src/pal_${bblite_backend}_scene.hpp"
+            )
+        endforeach()
     endif()
 endif()
 
@@ -1122,7 +1154,7 @@ endif()
 # folder holding exactly the generated headers its include closure names
 # (native-header-cache.cmake), so its compile line and dependencies follow
 # what it reads, and a scene-invariant PAL unit's line is the same in every
-# scene whose activation macros it reads agree. The precompiled header reads
+# scene whose activation macros it reads agree. Each precompiled header reads
 # the folder of its own closure.
 if(BBLITE_NATIVE_CACHE_ACTIVE)
     set_source_files_properties(
@@ -1131,7 +1163,7 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
         ${BBLITE_APPLICATION_UNITS}
         PROPERTIES INCLUDE_DIRECTORIES "${BBLITE_GENERATED_DIR}/upstream/include")
     bblite_cache_unit_headers(
-        TARGETS bblite_pal_common bblite_native
+        TARGETS bblite_pal_common bblite_native ${BBLITE_SCENE_RENDERER_TARGETS}
         SCENE_INVARIANT bblite_pal_common
         EXCLUDE "${BBLITE_ENTRY_SOURCE}" "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
     )
@@ -1148,12 +1180,31 @@ if(BBLITE_NATIVE_CACHE_ACTIVE)
     endif()
     if(BBLITE_SHARED_PCH)
         bblite_shared_pch(
+            NAME bblite_pch
             TARGETS bblite_pal_common bblite_native
             HEADERS ${BBLITE_PCH_HEADERS}
             INCLUDE_DIRECTORY "${BBLITE_PCH_GENERATED_DIR}"
         )
     elseif(BBLITE_PCH_GENERATED_DIR)
         target_include_directories(bblite_pal_common PRIVATE "${BBLITE_PCH_GENERATED_DIR}")
+    endif()
+    if(BBLITE_PCH_HEADERS)
+        foreach(bblite_target IN LISTS BBLITE_SCENE_RENDERER_TARGETS)
+            string(REGEX REPLACE "^bblite_(.+)_scene$" "\\1" bblite_backend "${bblite_target}")
+            set(bblite_scene_header "${BBLITE_NATIVE_ROOT}/src/pal_${bblite_backend}_scene.hpp")
+            bblite_generated_inputs(bblite_scene_generated ${BBLITE_PCH_ROOTS} "${bblite_scene_header}")
+            bblite_cached_headers(bblite_scene_generated_dir ${bblite_scene_generated})
+            if(BBLITE_SHARED_PCH)
+                bblite_shared_pch(
+                    NAME ${bblite_target}_pch
+                    TARGETS ${bblite_target}
+                    HEADERS ${BBLITE_PCH_HEADERS} "${bblite_scene_header}"
+                    INCLUDE_DIRECTORY "${bblite_scene_generated_dir}"
+                )
+            else()
+                target_include_directories(${bblite_target} PRIVATE "${bblite_scene_generated_dir}")
+            endif()
+        endforeach()
     endif()
 else()
     target_include_directories(bblite_features INTERFACE "${BBLITE_GENERATED_DIR}/upstream/include")
