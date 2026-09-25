@@ -16,6 +16,7 @@ import {
     pinnedLibraryRoot,
 } from "../pinned-shader-composer.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
+import { statementDeclaredNames } from "../compiler/syntax.js";
 
 /**
  * One record in a list a builder loops over -- an extra texture's `name`, an
@@ -325,30 +326,9 @@ function topLevelDeclarations(text: string, fileName: string): string[] {
         false,
         ts.ScriptKind.JS,
     );
-    const names: string[] = [];
-    const bind = (name: ts.BindingName): void => {
-        if (ts.isIdentifier(name)) {
-            names.push(name.text);
-            return;
-        }
-        for (const element of name.elements) {
-            if (!ts.isOmittedExpression(element)) bind(element.name);
-        }
-    };
-    for (const statement of file.statements) {
-        if (
-            (ts.isFunctionDeclaration(statement) ||
-                ts.isClassDeclaration(statement)) &&
-            statement.name
-        ) {
-            names.push(statement.name.text);
-        } else if (ts.isVariableStatement(statement)) {
-            for (const declaration of statement.declarationList.declarations) {
-                bind(declaration.name);
-            }
-        }
-    }
-    return names;
+    return file.statements.flatMap((statement) =>
+        statementDeclaredNames(statement).map((name) => name.text),
+    );
 }
 
 /** The augmented module, written once per content under the OS temp directory. */

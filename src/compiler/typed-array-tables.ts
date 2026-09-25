@@ -14,34 +14,19 @@ interface TypedArrayTable {
 }
 
 /**
- * A plain C++ floating or integer literal, optionally parenthesised as a
- * negated one is, which reads as the same double in JavaScript.
- */
-const DECIMAL_LITERAL =
-    /^(?:(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)|\((-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\))$/i;
-
-/** The number a plain literal element spells, or undefined for any other text. */
-function literalValue(text: string): number | undefined {
-    const match = DECIMAL_LITERAL.exec(text);
-    return match ? Number(match[1] ?? match[2]) : undefined;
-}
-
-/**
- * The element type and element literals of a constant table of `kind`,
- * or undefined where the elements do not all read as plain literals (the
+ * The element type and element literals of a constant table of `kind`
+ * over its generation-known `values` (spelled `elementText` as doubles),
+ * or undefined where a value has no literal in the element type (the
  * caller then keeps the generic double table the runtime converts).
  */
 export function typedArrayTable(
     kind: TypedArrayKind,
+    values: readonly number[],
     elementText: readonly string[],
 ): TypedArrayTable | undefined {
     const { elementCppType, storeLiteral } = typedArrayElement(kind);
     if (!storeLiteral) {
         return { elementCppType, elements: [...elementText] };
-    }
-    const values = elementText.map(literalValue);
-    if (!values.every((value): value is number => value !== undefined)) {
-        return undefined;
     }
     const elements = values.map(storeLiteral);
     return elements.every((element) => element !== undefined)

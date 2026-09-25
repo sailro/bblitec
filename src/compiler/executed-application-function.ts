@@ -33,7 +33,7 @@ import {
     declarationOrigin,
     declaredSymbol,
 } from "./symbols.js";
-import { rootIdentifier } from "./syntax.js";
+import { rootIdentifier, statementDeclaredNames } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
 import { pinnedModuleBinding } from "../lowering/pinned-shader-builders.js";
@@ -228,25 +228,7 @@ function moduleScopeStatement(
 
 /** The names a closure statement binds in its file's scope. */
 function declaredNames(statement: ts.Statement): string[] {
-    if (ts.isFunctionDeclaration(statement)) {
-        return statement.name ? [statement.name.text] : [];
-    }
-    const names: string[] = [];
-    const bind = (name: ts.BindingName): void => {
-        if (ts.isIdentifier(name)) {
-            names.push(name.text);
-            return;
-        }
-        for (const element of name.elements) {
-            if (!ts.isOmittedExpression(element)) bind(element.name);
-        }
-    };
-    if (ts.isVariableStatement(statement)) {
-        for (const declaration of statement.declarationList.declarations) {
-            bind(declaration.name);
-        }
-    }
-    return names;
+    return statementDeclaredNames(statement).map((name) => name.text);
 }
 
 /** The analysis of one execution: what runs, and the text that runs it. */

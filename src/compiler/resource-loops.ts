@@ -45,7 +45,7 @@ import {
 } from "./intrinsics/registry.js";
 import { isMaterialCallEffectIntrinsic } from "./intrinsics/material.js";
 import { isAssetCallEffectIntrinsic } from "./intrinsics/asset.js";
-import { resizingArrayMethods } from "./data-methods.js";
+import { resizingArrayMethods } from "./receiver-methods.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 
 interface ResourceLoopContext

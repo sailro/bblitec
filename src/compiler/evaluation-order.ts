@@ -2,7 +2,7 @@ import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { classChain, type ClassHierarchy } from "./class-members.js";
 import { isEngineDeclaration, type EngineBodies } from "./engine-bodies.js";
-import { writeReceiverMethods } from "./data-methods.js";
+import { receiverWritingMethods } from "./receiver-methods.js";
 import { propertyIsReadOnly } from "./data-types.js";
 import {
     declaredInDefaultLibrary,
@@ -69,14 +69,6 @@ type Unit = ts.FunctionLikeDeclaration | ts.PropertyDeclaration;
 
 /** The generator `Math.random` advances: each call reads and writes it. */
 const randomState = Symbol("Math.random");
-
-/**
- * Whether a built-in method changes its receiver. Read at call time: the
- * table lives in a module that imports this one.
- */
-function mutatesReceiver(method: string): boolean {
-    return method === "sort" || writeReceiverMethods.has(method);
-}
 
 function emptyStorage(): Storage {
     return { any: false, heap: false, variables: new Set() };
@@ -542,7 +534,8 @@ export class EvaluationOrder {
             !this.isFresh(callee.expression, unit)
         ) {
             access.reads.heap = true;
-            if (mutatesReceiver(callee.name.text)) access.writes.heap = true;
+            if (receiverWritingMethods.has(callee.name.text))
+                access.writes.heap = true;
         }
         for (const argument of call.arguments ?? []) {
             const expression = unwrapExpression(argument);

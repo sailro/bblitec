@@ -2486,7 +2486,10 @@ export interface ValueFields {
     parameterBinding?: boolean;
     /** A local the emitter materialized as a native variable; reads go through it. */
     nativeBinding?: true;
-    /** The native 64-bit counter a counted loop reads as this number. */
+    /**
+     * The native 64-bit counter a counted loop reads as this number. Only a
+     * read of the counter carries it: storing the value elsewhere drops it.
+     */
     integerCounterCpp?: string;
     /** A value bound by a native runtime iteration, not a static unroll. */
     runtimeIteration?: true;

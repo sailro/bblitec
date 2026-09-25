@@ -270,18 +270,6 @@ export function classMethod(
     return declared;
 }
 
-/** The static method `name` resolves to through the constructor chain. */
-export function classStaticMethod(
-    table: ClassMemberTable,
-    name: string,
-): ts.MethodDeclaration | undefined {
-    for (const link of classChain(table)) {
-        const method = link.staticMethods.get(name);
-        if (method) return method;
-    }
-    return undefined;
-}
-
 /**
  * The accessors an instance of `table`'s class sees: the nearest class that
  * declares either half of a name owns both halves, as a property descriptor
@@ -335,22 +323,6 @@ export function effectiveConstructor(
         if (link.constructorDeclaration) return link.constructorDeclaration;
     }
     return undefined;
-}
-
-/** The static fields `table`'s class reads through its constructor chain, nearest first. */
-export function classChainStaticFields(
-    table: ClassMemberTable,
-): Map<string, ts.PropertyDeclaration & { name: ts.MemberName }> {
-    const fields = new Map<
-        string,
-        ts.PropertyDeclaration & { name: ts.MemberName }
-    >();
-    for (const link of classChain(table)) {
-        for (const [name, field] of link.staticFields) {
-            if (!fields.has(name)) fields.set(name, field);
-        }
-    }
-    return fields;
 }
 
 /**

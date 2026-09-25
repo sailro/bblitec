@@ -19,6 +19,7 @@ import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import { declaredSymbol } from "./symbols.js";
 import { sourceLocation, syntaxKindName } from "../source-location.js";
+import { statementDeclaredNames } from "./syntax.js";
 
 interface SurveySite {
     file: string;
@@ -105,28 +106,6 @@ function enclosingFunctionName(statement: ts.Statement): string {
         : "<anonymous>";
 }
 
-function declaredNames(statement: ts.Statement): ts.Identifier[] {
-    const names: ts.Identifier[] = [];
-    const collect = (name: ts.BindingName): void => {
-        if (ts.isIdentifier(name)) names.push(name);
-        else
-            for (const element of name.elements)
-                if (ts.isBindingElement(element)) collect(element.name);
-    };
-    if (ts.isVariableStatement(statement)) {
-        for (const declaration of statement.declarationList.declarations)
-            collect(declaration.name);
-    } else if (
-        (ts.isFunctionDeclaration(statement) ||
-            ts.isClassDeclaration(statement) ||
-            ts.isEnumDeclaration(statement)) &&
-        statement.name
-    ) {
-        names.push(statement.name);
-    }
-    return names;
-}
-
 export class SurveyCollector {
     /** @unjournaled The census counts refusals a rollback discards too. */
     private readonly realms = new Map<string, Attempt>();
@@ -206,7 +185,7 @@ export class SurveyCollector {
         census.rolledBack.add(statement);
         // Every statement this refusal rolled back loses its declarations,
         // whichever caller reached the site first.
-        for (const name of declaredNames(statement)) {
+        for (const name of statementDeclaredNames(statement)) {
             const symbol = declaredSymbol(checker, name);
             if (symbol && !attempt.declarations.has(symbol))
                 attempt.declarations.set(symbol, census.site);

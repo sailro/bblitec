@@ -206,7 +206,7 @@ import {
     unwrappedIdentifier,
 } from "./compiler/syntax.js";
 import { CompileError } from "./compiler/compile-error.js";
-import { mutatingArrayMethods } from "./compiler/data-methods.js";
+import { mutatingArrayMethods } from "./compiler/receiver-methods.js";
 import {
     ClosureCaptures,
     nativeCompanionKeys,
