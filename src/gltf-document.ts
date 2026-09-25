@@ -22,8 +22,7 @@ import {
  *   writer may have added, because it alone reports parse failures instead of
  *   swallowing them.
  *
- * The module also owns the JSON-shaped helper family those readers' consumers
- * share, and `animatedMaterialPointerPatterns` — the pointer list generation
+ * The module also owns `animatedMaterialPointerPatterns` — the pointer list generation
  * and the compose gate must agree on.
  *
  * What deliberately does NOT live here: `compressed-geometry.ts`'s chunk walk
