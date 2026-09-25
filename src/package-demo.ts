@@ -46,6 +46,11 @@ import {
 } from "./package-output.js";
 import { findRepositoryRoot } from "./repository-root.js";
 import { readShippingProfile } from "./shipping-profile.js";
+import {
+    compiledBackend,
+    parseBackendName,
+    type CompiledNativeBackend,
+} from "./tooling/backends.js";
 import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import { readCompiledAssetSources } from "./tooling/generated-readers.js";
 import { asObject } from "./gltf-document.js";
@@ -72,7 +77,7 @@ export function shippingPlatform(
 /** The package file name stem of `scene`'s `backend` package on `platform`. */
 function desktopPackageName(
     scene: string,
-    backend: "SDL_GPU" | "DAWN",
+    backend: CompiledNativeBackend,
     platform: ShippingPlatform,
 ): string {
     return `bblitec-${scene}-${backend.toLowerCase().replace("_", "-")}-${
@@ -90,7 +95,7 @@ interface DesktopPackageOptions {
     buildDirectory: string;
     /** macOS: the arm64 slice. */
     arm64BuildDirectory?: string;
-    expectBackend?: "SDL_GPU" | "DAWN";
+    expectBackend?: CompiledNativeBackend;
     outputRoot: string;
     cmake: string;
     platform?: ShippingPlatform;
@@ -99,7 +104,7 @@ interface DesktopPackageOptions {
 
 interface DesktopPackageReceipt {
     scene: string;
-    backend: "SDL_GPU" | "DAWN";
+    backend: CompiledNativeBackend;
     platform: "windows" | "linux" | "macos";
     graphicsApi: string;
     buildDirectory: string;
@@ -203,7 +208,7 @@ interface Slice {
     cache: Record<string, string>;
     executable: string;
     generatedDirectory: string;
-    backend: "SDL_GPU" | "DAWN";
+    backend: CompiledNativeBackend;
 }
 
 /** Refuses a build tree that is not the exact mini shape of `scene`. */
@@ -237,19 +242,21 @@ function readSlice(
                 throw new Error(`Universal build slices disagree on ${key}.`);
         }
     }
-    const backend = cache.BBLITE_BACKEND;
-    if (backend === undefined)
+    const recorded = cache.BBLITE_BACKEND;
+    if (recorded === undefined)
         throw new Error(
             `BBLITE_BACKEND is not recorded in ${cacheFile}. Reconfigure the exact mini tree with the current toolchain.`,
         );
-    if (backend === "BOTH")
+    const selection = parseBackendName(
+        recorded,
+        `BBLITE_BACKEND in ${cacheFile}`,
+        true,
+    );
+    if (selection === "both")
         throw new Error(
             `Shipping requires a single backend; ${buildDirectory} was configured with BBLITE_BACKEND=BOTH.`,
         );
-    if (backend !== "SDL_GPU" && backend !== "DAWN")
-        throw new Error(
-            `Unsupported BBLITE_BACKEND '${backend}' in ${cacheFile}.`,
-        );
+    const backend = compiledBackend(selection);
     if (options.expectBackend && backend !== options.expectBackend)
         throw new Error(
             `Build directory ${buildDirectory} was configured with BBLITE_BACKEND=${backend}, not ${options.expectBackend}.`,
@@ -473,7 +480,7 @@ function unixRuntimeLibraries(
 /** The README a desktop package carries. */
 function readme(
     scene: string,
-    backend: "SDL_GPU" | "DAWN",
+    backend: CompiledNativeBackend,
     exeName: string,
     target: Host,
     root: string,
@@ -582,7 +589,7 @@ function readme(
  * intermediates are development artifacts.
  */
 export function desktopShaderSuffixes(
-    backend: "SDL_GPU" | "DAWN",
+    backend: CompiledNativeBackend,
     platform: ShippingPlatform,
 ): string[] {
     if (backend === "DAWN") return [".native.wgsl"];
@@ -965,8 +972,10 @@ async function main(): Promise<void> {
     if (flagNumber(parsed, "--jobs", "package:demo") !== undefined)
         throw new Error("--jobs applies to mobile packages.");
     const backend = parsed.values.get("--backend");
-    if (backend !== undefined && backend !== "sdl_gpu" && backend !== "dawn")
-        throw new Error("--backend must be sdl_gpu or dawn.");
+    const expectBackend =
+        backend === undefined
+            ? undefined
+            : compiledBackend(parseBackendName(backend, "--backend", false));
     const cmake = discoverDevelopmentTools().cmake;
     if (!cmake)
         throw new Error("Packaging requires CMake; run npm run doctor.");
@@ -978,9 +987,7 @@ async function main(): Promise<void> {
             parsed.values.get("--build-directory") ??
             `native/build-${scene}-min-sdl${target === "darwin" ? "-x86_64" : ""}`,
         ...(arm64 !== undefined ? { arm64BuildDirectory: arm64 } : {}),
-        ...(backend !== undefined
-            ? { expectBackend: backend === "dawn" ? "DAWN" : "SDL_GPU" }
-            : {}),
+        ...(expectBackend !== undefined ? { expectBackend } : {}),
         outputRoot: parsed.values.get("--output") ?? "artifacts/releases",
         cmake,
     });

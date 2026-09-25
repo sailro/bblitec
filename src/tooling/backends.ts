@@ -28,6 +28,13 @@ const COMPILED_BACKENDS = {
     both: "BOTH",
 } as const satisfies { readonly [S in BackendSelection]: Uppercase<S> };
 
+/** A build that compiles one renderer: what a shipping package carries. */
+export type CompiledNativeBackend = Uppercase<NativeBackend>;
+
+export function compiledBackend(
+    selection: NativeBackend,
+): CompiledNativeBackend;
+export function compiledBackend(selection: BackendSelection): CompiledBackend;
 export function compiledBackend(selection: BackendSelection): CompiledBackend {
     return COMPILED_BACKENDS[selection];
 }
