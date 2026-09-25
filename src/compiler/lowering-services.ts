@@ -45,6 +45,7 @@ import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
 import type { PropertyAccessLowerer } from "./properties.js";
+import type { NativeEmissionRegistry } from "./native-emission-registry.js";
 import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
 import type { IntrinsicOptions } from "./intrinsic-options.js";
@@ -118,6 +119,7 @@ export interface LoweringServices {
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
     readonly propertyAccess: PropertyAccessLowerer;
+    readonly nativeEmission: NativeEmissionRegistry;
     readonly assetRegistry: AssetRegistry;
     readonly admissions: AdmissionRecorder;
     readonly intrinsicOptions: IntrinsicOptions;
@@ -392,45 +394,6 @@ export interface LoweringServices {
     /** Runs `work` in an emission transaction: committed on return, rolled back on a throw. */
     transaction(work: () => void): void;
     captureEmittedLines(emitBody: () => void): string[];
-    recordAccessor(
-        owner: Value,
-        mapType: string,
-        entries: readonly string[],
-        canHoist: boolean,
-    ): string;
-    registerNativeFunction(
-        prototype: string,
-        definitionLines: string[],
-        source?: ts.Node,
-    ): void;
-    registerSharedNativeFunction(
-        name: string,
-        definitionLines: string[],
-        localBindings: readonly string[],
-        declaration?: { source: ts.Node; prototype: string },
-    ): string;
-    renderSharedCoroutine(
-        closure: CapturedClosure,
-        returnType: string,
-        source: ts.Node,
-        parameters?: string,
-        args?: string,
-        environment?: string,
-        parameterNames?: readonly string[],
-    ): string;
-    renderSharedClosure(
-        closure: CapturedClosure,
-        returnType: string,
-        source: ts.Node,
-        parameters: string,
-        parameterNames: readonly string[],
-        name?: string,
-    ): string;
-    registerNativeTemplate(
-        name: string,
-        lines: string[],
-        prototype?: string,
-    ): void;
     canReplaySharedCallEffects(body: ts.Node): boolean;
     beginNativeFunctionBody(
         returnType: DataType | undefined,
@@ -573,10 +536,6 @@ export interface LoweringServices {
     unwrap(expression: ts.Expression): ts.Expression;
     /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
     catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean;
-    materializeStaticNativeValue(
-        identifier: ts.Identifier,
-        value: Value,
-    ): Value;
     bindClassParameterValue(
         identifier: ts.Identifier,
         argument: ts.Expression,

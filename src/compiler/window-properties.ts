@@ -16,7 +16,7 @@ type Context = Pick<
     | "dataLowerer"
     | "compileValue"
     | "allocateTemporaryCppName"
-    | "registerNativeFunction"
+    | "nativeEmission"
     | "emit"
     | "fail"
 >;
@@ -111,12 +111,15 @@ export class WindowProperties {
                       };
             const cppType = context.dataTypes.cppType(type);
             const name = context.allocateTemporaryCppName("window_property");
-            context.registerNativeFunction(`${cppType}& ${name}();`, [
-                `${cppType}& ${name}() {`,
-                `    struct Storage { ${cppType} value{}; };`,
-                "    return bbl::js::realm_scratch<Storage>().value;",
-                "}",
-            ]);
+            context.nativeEmission.registerNativeFunction(
+                `${cppType}& ${name}();`,
+                [
+                    `${cppType}& ${name}() {`,
+                    `    struct Storage { ${cppType} value{}; };`,
+                    "    return bbl::js::realm_scratch<Storage>().value;",
+                    "}",
+                ],
+            );
             field = { type, cpp: `bblscene::${name}()` };
             this.fields.set(target.name.text, field);
         }

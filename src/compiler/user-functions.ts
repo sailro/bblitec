@@ -1187,11 +1187,8 @@ export interface UserFunctionContext
             | "registerNativeBindingType"
             | "registerNativeConstBinding"
             | "registerNativeTemporary"
-            | "registerNativeFunction"
-            | "registerSharedNativeFunction"
+            | "nativeEmission"
             | "captureManagedClosureLines"
-            | "renderSharedCoroutine"
-            | "renderSharedClosure"
             | "callbackIdentity"
             | "emit"
             | "increaseIndent"
@@ -3624,23 +3621,24 @@ export class UserFunctionLowerer {
                     `[[maybe_unused]] Self& ${localGroup.self}`,
                     ...parameterDeclarations,
                 ];
-                const sharedName = context.registerSharedNativeFunction(
-                    name,
-                    [
-                        `struct ${name} {`,
-                        `    template<typename Environment, typename Self>`,
-                        `    ${returnCpp} operator()(${parameters.join(", ")}) const {`,
-                        ...captured.lines.map((line) => `        ${line}`),
-                        "    }",
-                        "};",
-                    ],
-                    [
-                        ...captured.localBindings,
-                        ...parameterNames,
-                        captured.environment,
-                        localGroup.self,
-                    ],
-                );
+                const sharedName =
+                    context.nativeEmission.registerSharedNativeFunction(
+                        name,
+                        [
+                            `struct ${name} {`,
+                            `    template<typename Environment, typename Self>`,
+                            `    ${returnCpp} operator()(${parameters.join(", ")}) const {`,
+                            ...captured.lines.map((line) => `        ${line}`),
+                            "    }",
+                            "};",
+                        ],
+                        [
+                            ...captured.localBindings,
+                            ...parameterNames,
+                            captured.environment,
+                            localGroup.self,
+                        ],
+                    );
                 closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName}{})`;
                 writable(entry.value).nativeCaptures = captured.nativeCaptures;
             } else if (localGroup?.sharedName) {
@@ -3648,7 +3646,7 @@ export class UserFunctionLowerer {
                 // its environment; a value that names one uncaptured stays
                 // with an inline specialization.
                 if (captured.uncaptured) throw new SharedCallRequiresInline();
-                closure = context.renderSharedClosure(
+                closure = context.nativeEmission.renderSharedClosure(
                     captured,
                     returnCpp,
                     entry.declaration,
@@ -4214,7 +4212,7 @@ export class UserFunctionLowerer {
                   returnCpp,
                   !promiseType,
                   (closure, type, declarations, args, environment) =>
-                      context.renderSharedCoroutine(
+                      context.nativeEmission.renderSharedCoroutine(
                           closure,
                           type,
                           declaration,
@@ -4224,7 +4222,7 @@ export class UserFunctionLowerer {
                           parameters.map(({ cppName }) => cppName),
                       ),
               )
-            : context.renderSharedClosure(
+            : context.nativeEmission.renderSharedClosure(
                   closure,
                   returnCpp,
                   declaration,

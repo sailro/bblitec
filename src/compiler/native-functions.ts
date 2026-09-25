@@ -61,7 +61,7 @@ export interface NativeFunctionContext extends Pick<
     | "bindings"
     | "allocateUserFunctionPrefix"
     | "captureEmittedLines"
-    | "registerNativeFunction"
+    | "nativeEmission"
     | "registerNativeTemporary"
     | "registerNativeBinding"
     | "registerNativeBindingType"
@@ -2372,7 +2372,7 @@ export class NativeFunctionLowerer {
         source: ts.Node,
     ): void {
         const parameterList = definition.parameterDeclarations.join(", ");
-        this.context.registerNativeFunction(
+        this.context.nativeEmission.registerNativeFunction(
             `${returnCpp} ${cppName}(${parameterList});`,
             [
                 `${returnCpp} ${cppName}(${parameterList}) {`,

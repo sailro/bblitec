@@ -208,7 +208,7 @@ export interface ExpressionContext
             | "withRecordScopes"
             | "captureRecordScopes"
             | "probeEmission"
-            | "recordAccessor"
+            | "nativeEmission"
             | "requireEngine"
             | "conditions"
             | "compileNumber"
@@ -218,7 +218,6 @@ export interface ExpressionContext
             | "assetRegistry"
             | "moduleRelativeAssetUrl"
             | "compileDynamicModuleRelativeAssetUrl"
-            | "materializeStaticNativeValue"
             | "isNumberExpression"
             | "propertyName"
             | "namesLocalFunction"
@@ -687,7 +686,7 @@ export class ExpressionLowerer {
             if (resolved !== unwrapped) {
                 const value = this.compileValue(resolved);
                 return value.kind === "regexp"
-                    ? this.context.materializeStaticNativeValue(
+                    ? this.context.nativeEmission.materializeStaticNativeValue(
                           unwrapped,
                           value,
                       )
@@ -3799,7 +3798,7 @@ export class ExpressionLowerer {
                 const keyCpp =
                     dynamicString || dynamicEnum ? "std::string" : "double";
                 const mapType = `bbl::js::Map<${keyCpp}, ${valueCpp}>`;
-                const table = this.context.recordAccessor(
+                const table = this.context.nativeEmission.recordAccessor(
                     owner,
                     mapType,
                     entries,

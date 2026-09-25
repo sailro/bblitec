@@ -15,7 +15,7 @@ function sharedGetter(
 ): string {
     const context = lowerer.context;
     const name = context.allocateTemporaryCppName("dynamic_view_getter");
-    const shared = context.registerSharedNativeFunction(
+    const shared = context.nativeEmission.registerSharedNativeFunction(
         name,
         [
             `struct ${name} {`,

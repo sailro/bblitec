@@ -200,7 +200,7 @@ export interface DataLoweringContext
             | "registerNativeTemporary"
             | "nativeBindingCheckpoint"
             | "takeNativeTemporary"
-            | "registerSharedNativeFunction"
+            | "nativeEmission"
             | "checker"
             | "bindings"
             | "dataTypes"

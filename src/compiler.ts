@@ -26,17 +26,14 @@ import type {
     NativeFunctionBodyOptions,
     NativeReturnValueCompiler,
 } from "./compiler/lowering-services.js";
-import { SharedNativeFunctions } from "./compiler/shared-native-functions.js";
-import type {
-    ApplicationCpp,
-    NativeFunctionDefinition,
-} from "./compiler/source-units.js";
+import type { ApplicationCpp } from "./compiler/source-units.js";
 import {
     renderNativeDeclaration,
     type NativeDeclaration,
 } from "./compiler/native-declarations.js";
 import { persistContinuationLocals } from "./compiler/continuation-storage.js";
 import ts from "typescript";
+import { NativeEmissionRegistry } from "./compiler/native-emission-registry.js";
 import { AssetRegistry } from "./compiler/asset-registry.js";
 import { AdmissionRecorder } from "./compiler/admissions.js";
 import { IntrinsicOptions } from "./compiler/intrinsic-options.js";
@@ -629,6 +626,9 @@ class Compiler implements LoweringServices {
     public readonly admissions: AdmissionRecorder = new AdmissionRecorder(this);
     /** Asset registration and the facts generation stamps on registered assets. */
     public readonly assetRegistry: AssetRegistry = new AssetRegistry(this);
+    /** The namespace-level definitions the application's units compile. */
+    public readonly nativeEmission: NativeEmissionRegistry =
+        new NativeEmissionRegistry(this);
     private readonly statements = new StatementLowerer();
     public readonly userFunctions: UserFunctionLowerer;
     public readonly ui: UiProjection = new UiProjection(this);
@@ -661,10 +661,6 @@ class Compiler implements LoweringServices {
     @journaled private accessor staticAssetUrlCandidateCache:
         readonly string[] | undefined;
     private readonly expressions: ExpressionLowerer;
-    private readonly nativeDefinitions =
-        emissionArray<NativeFunctionDefinition>();
-    private readonly sharedNativeFunctions = new SharedNativeFunctions();
-    private readonly staticNativeDeclarations: string[] = emissionArray([]);
     private readonly returnFrames: Array<
         | ({
               kind: "native";
@@ -3542,7 +3538,7 @@ class Compiler implements LoweringServices {
                     ),
                 );
             });
-            return this.renderSharedClosure(
+            return this.nativeEmission.renderSharedClosure(
                 compiled,
                 "void",
                 unwrapped,
@@ -3573,7 +3569,7 @@ class Compiler implements LoweringServices {
                         emitBody,
                         captureByValue ? false : "entry",
                     );
-                    return this.renderSharedClosure(
+                    return this.nativeEmission.renderSharedClosure(
                         compiled,
                         "void",
                         unwrapped,
@@ -3736,7 +3732,7 @@ class Compiler implements LoweringServices {
             signature === "void" || signature === "interval"
                 ? ""
                 : cppParameter;
-        return this.renderSharedClosure(
+        return this.nativeEmission.renderSharedClosure(
             compiled,
             "void",
             unwrapped,
@@ -3804,7 +3800,7 @@ class Compiler implements LoweringServices {
         } finally {
             this.frameCallbackDepth = previousDepth;
         }
-        return this.renderSharedClosure(
+        return this.nativeEmission.renderSharedClosure(
             compiled,
             "void",
             expression,
@@ -3896,7 +3892,7 @@ class Compiler implements LoweringServices {
         const lambdaParameter = parameter
             ? `[[maybe_unused]] ${frameCallbackParameterType(signature)} ${parameter}`
             : "";
-        return this.renderSharedClosure(
+        return this.nativeEmission.renderSharedClosure(
             compiled,
             "void",
             identifier,
@@ -5852,181 +5848,12 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * One native accessor per materialized compile-time table: a record
-     * read under a run-time key lowers to a lookup in a `bbl::js::Map`
-     * built from the record's entries, and every function reading the same
-     * record used to carry its own function-local copy of that map -- five
-     * 23-entry block registries in the voxel demo. The map is keyed by its
-     * full initializer text, so two reads that materialize the same table
-     * at the same types share one definition, and a read whose entries
-     * emitted helper lines at the call site keeps its inline form.
-     */
-    private readonly staticRecordAccessors = new EmissionMap<string, string>();
-
-    /** Closure environment structs already registered, by name. */
-    private readonly environmentStructs = new EmissionSet<string>();
-
-    /**
      * Identity of the C++ lexical scope currently receiving emitted lines.
      * Captured callback/IIFE bodies get their own identity so a lazily
      * materialized local cannot be reused by code emitted outside that body.
      */
-    @journaled private accessor activeEmissionScope = 0;
+    @journaled public accessor activeEmissionScope = 0;
     @journaled private accessor nextEmissionScope = 1;
-
-    public recordAccessor(
-        owner: Value,
-        mapType: string,
-        entries: readonly string[],
-        canHoist: boolean,
-    ): string {
-        if (!canHoist) {
-            if (
-                !owner.runtimeRecordCpp ||
-                owner.runtimeRecordScope !== this.activeEmissionScope
-            ) {
-                const table = writable(owner);
-                const cppName = this.allocateTemporaryCppName("record_table");
-                table.runtimeRecordCpp = cppName;
-                table.runtimeRecordScope = this.activeEmissionScope;
-                this.emit(`${mapType} ${cppName}{${entries.join(", ")}};`);
-                return cppName;
-            }
-            return owner.runtimeRecordCpp;
-        }
-        const initializer = `${mapType} values{${entries.join(", ")}};`;
-        const existing = this.staticRecordAccessors.get(initializer);
-        if (existing) return `bblscene::${existing}()`;
-        const name = `bbl_static_table_${this.staticRecordAccessors.size}`;
-        this.registerNativeFunction(`${mapType}& ${name}();`, [
-            `${mapType}& ${name}() {`,
-            `    static thread_local ${initializer}`,
-            `    return values;`,
-            `}`,
-        ]);
-        this.staticRecordAccessors.set(initializer, name);
-        return `bblscene::${name}()`;
-    }
-
-    public registerNativeFunction(
-        prototype: string,
-        definitionLines: string[],
-        source: ts.Node = this.sourceFile,
-    ): void {
-        this.nativeDefinitions.push({
-            kind: "function",
-            source: source.getSourceFile().fileName,
-            prototype,
-            lines: definitionLines,
-        });
-    }
-
-    public registerSharedNativeFunction(
-        name: string,
-        definitionLines: string[],
-        localBindings: readonly string[],
-        declaration?: { source: ts.Node; prototype: string },
-    ): string {
-        const entry = this.sharedNativeFunctions.intern(
-            name,
-            definitionLines.join("\n"),
-            new Set(localBindings),
-        );
-        if (entry.added) {
-            if (declaration)
-                this.registerNativeFunction(
-                    declaration.prototype,
-                    definitionLines,
-                    declaration.source,
-                );
-            else this.registerNativeTemplate(entry.name, definitionLines);
-        }
-        return entry.name;
-    }
-
-    public renderSharedCoroutine(
-        closure: CapturedClosure,
-        returnType: string,
-        source: ts.Node,
-        parameters = "",
-        args = "",
-        environment = closure.initializer,
-        parameterNames: readonly string[] = [],
-    ): string {
-        const shared = this.registerSharedClosureBody(
-            this.allocateTemporaryCppName("async_body"),
-            closure,
-            returnType,
-            source,
-            parameters,
-            parameterNames,
-            "value",
-        );
-        return `bblscene::${shared}(${environment}${args ? `, ${args}` : ""})`;
-    }
-
-    public renderSharedClosure(
-        closure: CapturedClosure,
-        returnType: string,
-        source: ts.Node,
-        parameters: string,
-        parameterNames: readonly string[],
-        name = this.allocateTemporaryCppName("closure_body"),
-    ): string {
-        const shared = this.registerSharedClosureBody(
-            name,
-            closure,
-            returnType,
-            source,
-            parameters,
-            parameterNames,
-            "reference",
-        );
-        const invocation = closure.environmentType
-            ? shared
-            : `${shared}<decltype(${closure.initializer})>`;
-        return `bbl::js::make_closure(${closure.initializer}, bblscene::${invocation})`;
-    }
-
-    private registerSharedClosureBody(
-        name: string,
-        closure: CapturedClosure,
-        returnType: string,
-        source: ts.Node,
-        parameters: string,
-        parameterNames: readonly string[],
-        passing: "value" | "reference",
-    ): string {
-        const signature = `${returnType} ${name}([[maybe_unused]] ${closure.environmentType ?? "Environment"}${passing === "reference" ? "&" : ""} ${closure.environment}${parameters ? `, ${parameters}` : ""})`;
-        return this.registerSharedNativeFunction(
-            name,
-            [
-                ...(closure.environmentType
-                    ? []
-                    : ["template<typename Environment>"]),
-                `${signature} {`,
-                ...closure.lines,
-                "}",
-            ],
-            [...closure.localBindings, ...parameterNames],
-            closure.environmentType
-                ? { source, prototype: `${signature};` }
-                : undefined,
-        );
-    }
-
-    public registerNativeTemplate(
-        name: string,
-        lines: string[],
-        prototype?: string,
-    ): void {
-        this.nativeDefinitions.push({
-            kind: "template",
-            name,
-            lines,
-            ...(prototype === undefined ? {} : { prototype }),
-        });
-    }
 
     public beginNativeFunctionBody(
         returnType: DataType | undefined,
@@ -6403,9 +6230,9 @@ class Compiler implements LoweringServices {
         );
         const environmentType = capture.environmentType;
         const struct = capture.environmentStruct;
-        if (!this.environmentStructs.has(struct.name)) {
-            this.environmentStructs.add(struct.name);
-            this.registerNativeTemplate(
+        if (!this.nativeEmission.environmentStructs.has(struct.name)) {
+            this.nativeEmission.environmentStructs.add(struct.name);
+            this.nativeEmission.registerNativeTemplate(
                 struct.name,
                 [...struct.lines],
                 struct.declaration,
@@ -7602,7 +7429,7 @@ class Compiler implements LoweringServices {
                           callback,
                       )
                     : "0u",
-                cpp: this.renderSharedClosure(
+                cpp: this.nativeEmission.renderSharedClosure(
                     closure,
                     "void",
                     callback,
@@ -7764,7 +7591,7 @@ class Compiler implements LoweringServices {
         }
         return {
             identity: identity ?? "0u",
-            cpp: this.renderSharedClosure(
+            cpp: this.nativeEmission.renderSharedClosure(
                 compiled,
                 "void",
                 callback,
@@ -8128,33 +7955,6 @@ class Compiler implements LoweringServices {
      */
     public unwrap(expression: ts.Expression): ts.Expression {
         return this.evaluator.unwrap(expression);
-    }
-
-    public materializeStaticNativeValue(
-        identifier: ts.Identifier,
-        value: Value,
-    ): Value {
-        const existing = this.bindings.lookupOptional(identifier);
-        if (existing) return existing;
-        const symbol = this.symbols.valueSymbol(identifier);
-        if (!symbol) {
-            this.fail(
-                identifier,
-                `Unable to resolve variable '${identifier.text}'.`,
-            );
-        }
-        const cppName = this.bindings.cppIdentifier(identifier.text);
-        // A function-local static: its construction can throw, which a
-        // namespace-scope initializer would turn into termination.
-        this.staticNativeDeclarations.push(
-            `auto& ${cppName}() {\n    static auto value = ${value.cpp};\n    return value;\n}`,
-        );
-        const stored = { ...value, cpp: `${cppName}()` };
-        this.bindings.variableScopes[0]!.set(symbol, {
-            name: identifier.text,
-            value: stored,
-        });
-        return stored;
     }
 
     /** Captured mutable parameters own their binding, not the caller's slot. */
@@ -9062,7 +8862,7 @@ class Compiler implements LoweringServices {
                   this.sceneRegistrationSite,
               )
             : undefined;
-        this.registerNativeFunction(
+        this.nativeEmission.registerNativeFunction(
             "void bbl_register_scene(bbl::Scene& scene);",
             [
                 "void bbl_register_scene(bbl::Scene& scene) {",
@@ -9081,7 +8881,7 @@ class Compiler implements LoweringServices {
         this.reachFeature("renderer:geometry-output", node);
         this.reachFeature("frame-graph:resources", node);
         if (!this.defaultRenderTaskAdapted) {
-            this.registerNativeFunction(
+            this.nativeEmission.registerNativeFunction(
                 "void bbl_ensure_default_render_task(bbl::Scene& scene);",
                 [
                     "void bbl_ensure_default_render_task(bbl::Scene& scene) {",
@@ -9754,8 +9554,9 @@ class Compiler implements LoweringServices {
             screenSpaceTaskCount: this.sceneManifest.screenSpaceTasks.length,
             renderDataPreamble: () =>
                 this.dataTypes.renderPreamble(!!this.options.workers),
-            nativeFunctions: this.nativeDefinitions,
-            staticNativeDeclarations: this.staticNativeDeclarations,
+            nativeFunctions: this.nativeEmission.nativeDefinitions,
+            staticNativeDeclarations:
+                this.nativeEmission.staticNativeDeclarations,
             bindingType: (name) => this.nativeBindingCaptureType(name),
             ...(physicsDebugConstructionBody
                 ? { physicsDebugConstructionBody }

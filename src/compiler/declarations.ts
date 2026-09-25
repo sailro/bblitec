@@ -96,7 +96,7 @@ interface DeclarationContext
             | "nativeBindingCheckpoint"
             | "options"
             | "reachJson"
-            | "renderSharedClosure"
+            | "nativeEmission"
             | "requireDefaultEngine"
             | "symbols"
             | "takeNativeTemporary"
@@ -1519,7 +1519,7 @@ export class DeclarationLowerer {
                 `${this.context.dataTypes.cppType(type)} ${forward.parameterNames[index]}`,
         );
         this.context.emit(
-            `${forward.storageCpp} = ${this.context.renderSharedClosure(compiled, "void", value.callbackDeclaration, parameters.join(", "), forward.parameterNames)};`,
+            `${forward.storageCpp} = ${this.context.nativeEmission.renderSharedClosure(compiled, "void", value.callbackDeclaration, parameters.join(", "), forward.parameterNames)};`,
         );
         this.context.bindings.rebindVariable(name, {
             kind: "callback",
@@ -1804,7 +1804,7 @@ export class DeclarationLowerer {
                 ),
         );
         this.context.emit(
-            `${storage.cpp} = ${this.context.renderSharedClosure(compiled, returnCpp, callback, parameterDeclarations.join(", "), [])};`,
+            `${storage.cpp} = ${this.context.nativeEmission.renderSharedClosure(compiled, returnCpp, callback, parameterDeclarations.join(", "), [])};`,
         );
     }
 

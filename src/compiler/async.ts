@@ -35,7 +35,7 @@ interface AsyncContext extends Pick<
     | "withEngineBootstrap"
     | "allocateTemporaryCppName"
     | "registerNativeBinding"
-    | "renderSharedCoroutine"
+    | "nativeEmission"
     | "emit"
     | "emitDiscardedValue"
     | "unwrap"
@@ -581,7 +581,7 @@ export class AsyncLowerer {
         // this pointer or a borrowed environment must never enter its frame.
         // Terminal throws share the native coroutine completion path, including
         // when earlier statements suspend. No unreachable epilogue is emitted.
-        const cpp = context.renderSharedCoroutine(
+        const cpp = context.nativeEmission.renderSharedCoroutine(
             compiled,
             `bbl::js::Promise<${cppType}>`,
             declaration,
