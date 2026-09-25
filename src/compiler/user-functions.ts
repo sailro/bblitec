@@ -2999,14 +2999,11 @@ export class UserFunctionLowerer {
                     ? undefined
                     : {
                           cpp: `bbl_recursive_${context.allocateUserFunctionPrefix()}group`,
-                          self: `bbl_recursive_${context.allocateUserFunctionPrefix()}self`,
                           bodies: new Map<SupportedFunction, string>(),
                       };
-            for (const [index, entry] of entries.entries()) {
+            for (const entry of entries) {
                 if (localGroup) {
-                    writable(entry.value).cpp = recursive
-                        ? `${localGroup.self}.template call<${index}>`
-                        : localGroup.cpp;
+                    if (!recursive) writable(entry.value).cpp = localGroup.cpp;
                     continue;
                 }
                 const returnCpp = entry.returnType
@@ -3045,6 +3042,10 @@ export class UserFunctionLowerer {
             // generated. A later source call may observe different compile-time
             // class/resource arguments and receives its own local specialization.
             const emitBodies = (): void => {
+                const recursiveValues =
+                    localGroup && recursive
+                        ? entries.map((member) => member.value)
+                        : undefined;
                 for (const entry of recursive ? entries : []) {
                     const identifier = this.declarationIdentifier(
                         entry.declaration,
@@ -3072,7 +3073,14 @@ export class UserFunctionLowerer {
                         entry,
                         escapes,
                         localGroup && {
-                            ...(recursive ? { self: localGroup.self } : {}),
+                            ...(recursiveValues
+                                ? {
+                                      self: {
+                                          name: `bbl_recursive_${context.allocateUserFunctionPrefix()}self`,
+                                          values: recursiveValues,
+                                      },
+                                  }
+                                : {}),
                             ...(sharedBody
                                 ? { sharedName: localGroup.cpp }
                                 : {}),
@@ -3316,7 +3324,7 @@ export class UserFunctionLowerer {
         },
         escapes: boolean,
         localGroup?: {
-            self?: string;
+            self?: { name: string; values: readonly Value[] };
             sharedName?: string;
             accept: (body: string) => void;
         },
@@ -3490,11 +3498,20 @@ export class UserFunctionLowerer {
                         ),
                     () =>
                         context.captureManagedClosureLines(() => {
-                            if (localGroup?.self)
-                                context.registerNativeBinding(
-                                    localGroup.self,
+                            if (localGroup?.self) {
+                                const binding = context.registerNativeBinding(
+                                    localGroup.self.name,
                                     true,
                                 );
+                                for (const [
+                                    index,
+                                    value,
+                                ] of localGroup.self.values.entries()) {
+                                    writable(value).cpp =
+                                        `${localGroup.self.name}.template call<${index}>`;
+                                    writable(value).nativeCaptures = [binding];
+                                }
+                            }
                             for (const {
                                 parameter,
                                 value,
@@ -3642,7 +3659,7 @@ export class UserFunctionLowerer {
                 const name = context.allocateTemporaryCppName("recursive_body");
                 const parameters = [
                     `[[maybe_unused]] Environment& ${captured.environment}`,
-                    `[[maybe_unused]] Self& ${localGroup.self}`,
+                    `[[maybe_unused]] Self& ${localGroup.self.name}`,
                     ...parameterDeclarations,
                 ];
                 const sharedName =
@@ -3660,7 +3677,7 @@ export class UserFunctionLowerer {
                             ...captured.localBindings,
                             ...parameterNames,
                             captured.environment,
-                            localGroup.self,
+                            localGroup.self.name,
                         ],
                     );
                 closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName}{})`;
