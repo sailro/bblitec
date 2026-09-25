@@ -63,11 +63,19 @@ export function hashEntries(entries: readonly string[]): string {
  * for the same pinned sources and native headers hundreds of times in one
  * process, and reads each once. A file whose size or mtime moved is read
  * again, so an edit during the run is still seen.
+ *
+ * Two writes inside one file-system clock tick leave the same mtime, and a
+ * same-size edit then keeps the key too. A digest is therefore kept only
+ * for a file last written at least `settledMtimeMs` before it was read:
+ * any later write lands in a later tick and moves the mtime.
  */
 const contentDigests = new Map<
     string,
     { size: number; mtimeMs: number; sha256: string }
 >();
+
+/** Longer than the coarsest file-system timestamp resolution (FAT's 2 s). */
+const settledMtimeMs = 2_000;
 
 export function contentDigest(path: string): string {
     const stat = statSync(path);
@@ -82,11 +90,13 @@ export function contentDigest(path: string): string {
     const sha256 = createHash("sha256")
         .update(readFileSync(path))
         .digest("hex");
-    contentDigests.set(path, {
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-        sha256,
-    });
+    if (Date.now() - stat.mtimeMs >= settledMtimeMs)
+        contentDigests.set(path, {
+            size: stat.size,
+            mtimeMs: stat.mtimeMs,
+            sha256,
+        });
+    else contentDigests.delete(path);
     return sha256;
 }
 

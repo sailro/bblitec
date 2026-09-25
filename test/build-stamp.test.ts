@@ -91,6 +91,20 @@ test("digests the compiled inputs of a generated scene", (t) => {
     );
 });
 
+test("a same-size native edit inside one file-system clock tick moves the stamp", (t) => {
+    const root = scratchRepository();
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const generated = resolve(root, "generated/scene");
+    const source = resolve(root, "native/src/pal.cpp");
+    const tick = new Date();
+    utimesSync(source, tick, tick);
+    const first = computeBuildStamp(generated, root).stamp;
+    // The second write keeps the size and, as within one clock tick, the mtime.
+    writeFileSync(source, "int pal() { return 1; }\n");
+    utimesSync(source, tick, tick);
+    assert.notEqual(computeBuildStamp(generated, root).stamp, first);
+});
+
 test("application units and their shared headers participate in build identity", (t) => {
     const root = scratchRepository();
     t.after(() => rmSync(root, { recursive: true, force: true }));
