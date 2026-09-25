@@ -270,7 +270,7 @@ Unchanged pinned applications, including their reached source and asset graphs.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
-| Ocean | <img src="images/scenes/ocean.png" alt="Ocean rendering" width="160"> | 0.306 / 0.302 | 0.307 / 0.302 | Spectral ocean; compute FFT and mipmaps; procedural sky; buoyancy; retained controls; canvas-only MAD: 0.008 / 0.008 on both backends. |
+| Ocean | <img src="images/scenes/ocean.png" alt="Ocean rendering" width="160"> | 0.307 / 0.302 | 0.306 / 0.301 | Spectral ocean; compute FFT and mipmaps; procedural sky; buoyancy; retained controls; canvas-only MAD: 0.008 / 0.008 on both backends. |
 | Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | $\color{#1a7f37}{\textsf{0.423}} / \color{#9a6700}{\textsf{0.549}}$ | $\color{#1a7f37}{\textsf{0.423}} / \color{#9a6700}{\textsf{0.549}}$ | Dedicated Worker realms; transferred canvases; retained blocking control. UI and localized lens residuals; canvas-only MAD: 0.001 / 0.002 on both backends. |
 | Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | $\color{#cf222e}{\textsf{1.155}} / \color{#9a6700}{\textsf{0.918}}$ | $\color{#cf222e}{\textsf{1.155}} / \color{#9a6700}{\textsf{0.918}}$ | Thin-instance game; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.093 / 0.101, Dawn 0.093 / 0.101. |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | WAD game; sprites; audio; retained UI. |

@@ -11,7 +11,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 
 ## Qualification
 
-- [ ] Qualify platform/runtime changes with full tests, the backend sweep, and live resize/input.
 - [ ] One captured-spawn variant beside `runChecked` for `package-demo.ts`, `package-output.ts`, `shipping-profile.ts` and `patch-inventory.ts`.
 - [ ] Move the scene180 uniform plugin onto `webgpu-recorder.init.js` and share one `observedState` helper in `checks/plugins/support.mjs`.
 - [ ] Read `test/native-fixture.ts` unit lists from the `pal_*_scene_all.cpp` includes and share one camera test fixture.
