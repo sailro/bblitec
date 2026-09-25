@@ -513,7 +513,7 @@ public:
 };
 } // namespace
 
-void run_frame_graph_gpu_engine(Engine& engine) { SdlFrameGraphRun::run(engine); }
+SceneRun run_frame_graph_gpu_engine(Engine& engine) { return SdlFrameGraphRun::run(engine); }
 
 #endif
 

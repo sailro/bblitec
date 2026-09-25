@@ -198,7 +198,7 @@ public:
 };
 } // namespace
 
-void run_effect_gpu_engine(Engine& engine) { SdlEffectRun::run(engine); }
+SceneRun run_effect_gpu_engine(Engine& engine) { return SdlEffectRun::run(engine); }
 #endif
 
 } // namespace bbl::pal

@@ -400,7 +400,7 @@ public:
 };
 } // namespace
 
-void run_sprite_gpu_engine(Engine& engine) { SdlSpriteRun::run(engine); }
+SceneRun run_sprite_gpu_engine(Engine& engine) { return SdlSpriteRun::run(engine); }
 #endif
 
 } // namespace bbl::pal

@@ -664,7 +664,7 @@ std::shared_ptr<MediaQueryList> create_media_query(std::string query) {
     return media;
 }
 
-int run_window_application(WorkerEntry initialize, EngineOptions options) {
+static Iteration<int> window_application_iterations(WorkerEntry initialize, EngineOptions options) {
     try {
         const auto frame_options = read_frame_options();
         const auto capture_frame_text = environment_variable("BBLITE_CAPTURE_ENGINE_FRAME");
@@ -689,7 +689,10 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
             throw std::runtime_error(SDL_GetError());
         struct Quit {
-            ~Quit() { SDL_Quit(); }
+            ~Quit() {
+                if (!active_sdl_application)
+                    SDL_Quit();
+            }
         } quit;
         configure_run_surface(options);
         using Window = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
@@ -931,6 +934,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             std::optional<AnimationFrameSource::Batch> repaint_batch;
             bool running = true;
             while (running && !finished) {
+                co_yield true;
                 const double started = cpu_profile ? monotonic_milliseconds() : 0;
                 std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
                 {
@@ -947,7 +951,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 }
                 SDL_Event event;
                 for (;;) {
-                    if (!SDL_PollEvent(&event))
+                    if (!poll_sdl_event(&event))
                         break;
                     if (is_emulated_pointer_event(event))
                         continue;
@@ -1207,9 +1211,18 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             if (application_error)
                 std::rethrow_exception(application_error);
             if (!services->reload_requested)
-                return 0;
+                co_return 0;
             location->commit_reload();
         }
+    } catch (...) {
+        co_return report_uncaught_error(std::current_exception());
+    }
+}
+int run_window_application(WorkerEntry initialize, EngineOptions options) {
+    try {
+        return run_sdl_application(
+            window_application_iterations(std::move(initialize), std::move(options)),
+            read_frame_options().interactive());
     } catch (...) {
         return report_uncaught_error(std::current_exception());
     }

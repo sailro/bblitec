@@ -8,6 +8,10 @@ void apply_canvas_cursor(Engine&);
 
 namespace bbl::pal {
 std::string environment_variable(const char*) { return {}; }
+FrameOptions read_frame_options() {
+    assert(false);
+    return {};
+}
 int canvas_cursor_updates = 0;
 void apply_canvas_cursor(Engine&) { ++canvas_cursor_updates; }
 } // namespace bbl::pal

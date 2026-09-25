@@ -12,7 +12,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 ## Platform and runtime
 
 - [ ] Serve every pinned GPU writer through one WebGPU-shaped device, not a text-only one (`text_gpu.hpp`).
-- [ ] Adopt SDL's main-callback loop for interactive builds so the Win32 move/resize modal loop no longer stalls iteration (`pal_platform_events.hpp`).
 
 ## Qualification
 

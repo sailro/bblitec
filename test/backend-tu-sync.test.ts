@@ -128,7 +128,7 @@ test("scene replacement restarts both backends without retaining a dead root", (
     assert.match(runtime, /bool renderer_restart_requested = false;/);
     assert.match(
         dispatch,
-        /if \(!engine\.renderer_restart_requested\)\s+return;/,
+        /if \(!engine\.renderer_restart_requested\)\s+co_return 0;/,
     );
     for (const backend of backends) {
         assert.match(

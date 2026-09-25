@@ -103,6 +103,10 @@ Color-less depth sampled by material slots uses an R32 copy with `(depth, 0, 0, 
 Standalone sprite/text UNORM clears round to the nearest byte; floating-point and sRGB targets are unchanged.
 Linux Canvas2D texture bakes use the reference capture's Vulkan rasterizer; Windows/macOS bake flags are unchanged.
 
+Interactive desktop runs use SDL main callbacks, including iteration during Win32 move/resize.
+Suspended frame state owns renderer resources until shutdown. Capture, benchmark and mobile runs
+use explicit iteration; Worker renderers retain their realm RAF scheduling.
+
 ## Temporal post-process transport
 
 Each TAA source task owns scratch, uniforms and history. Hooks run once in source order.

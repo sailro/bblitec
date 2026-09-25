@@ -513,7 +513,7 @@ public:
 };
 } // namespace
 
-void run_frame_graph_dawn_engine(Engine& engine) { DawnFrameGraphRun::run(engine); }
+SceneRun run_frame_graph_dawn_engine(Engine& engine) { return DawnFrameGraphRun::run(engine); }
 
 #endif
 

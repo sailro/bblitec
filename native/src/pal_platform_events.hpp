@@ -19,6 +19,7 @@
 
 #include "pal_runtime_trace.hpp"
 #include "pal_window.hpp"
+#include "pal_sdl_application.hpp"
 
 namespace bbl::pal {
 
@@ -736,12 +737,6 @@ inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
     return false;
 }
 
-// Conventional SDL_PollEvent loops stall application iteration during the
-// Win32 move/resize modal loop; the fix is SDL's main-callback loop for
-// interactive builds (TODO.md, Worker and platform). Do not work around that
-// with re-entrant event watchers, compositor flushes, or temporary
-// window-style changes.
-
 /** Translate SDL's button masks to PointerEvent.buttons. */
 inline double dom_mouse_buttons(SDL_MouseButtonFlags pressed) {
     return ((pressed & SDL_BUTTON_LMASK) != 0 ? 1.0 : 0.0) +
@@ -1251,7 +1246,7 @@ inline void poll_platform_events(Engine& engine, bool& running, bool test_pass,
         return;
     }
     SDL_Event event;
-    while (SDL_PollEvent(&event)) {
+    while (poll_sdl_event(&event)) {
         if (is_emulated_pointer_event(event))
             continue;
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {

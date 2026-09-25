@@ -4178,7 +4178,9 @@ SceneRun run_gpu_engine(Engine& engine) {
         const FrameOutcome outcome = conduct_frame(renderer);
         if (outcome == FrameOutcome::stopped || outcome == FrameOutcome::restart)
             break;
+#if BBLITE_WORKERS
         if (outcome == FrameOutcome::rendered || renderer.yield_when_skipped())
+#endif
             BBLITE_FRAME_YIELD(outcome == FrameOutcome::rendered);
     }
     renderer.discard_frame();

@@ -189,7 +189,7 @@ public:
 };
 } // namespace
 
-void run_effect_dawn_engine(Engine& engine) { DawnEffectRun::run(engine); }
+SceneRun run_effect_dawn_engine(Engine& engine) { return DawnEffectRun::run(engine); }
 #endif
 
 } // namespace bbl::pal

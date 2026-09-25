@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pal_frame_conductor.hpp"
+#include <bblite/pal_frame_driver.hpp>
 #include "pal_gpu_frame.hpp"
 #include "pal_platform_events.hpp"
 
@@ -93,12 +94,14 @@ public:
     explicit RendererRun(Engine& target) : FrameSession(target) {}
 
     /** Drive one renderer from setup until its session stops. */
-    static void run(Engine& engine) {
+    static SceneRun run(Engine& engine) {
         Derived renderer(engine);
         renderer.setup();
         while (conduct_frame(renderer) != FrameOutcome::stopped) {
+            BBLITE_FRAME_YIELD(true);
         }
         renderer.finish_run();
+        BBLITE_RUN_RETURN(true);
     }
 
     FramePreparation prepare() {

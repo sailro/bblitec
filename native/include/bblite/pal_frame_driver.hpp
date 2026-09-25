@@ -106,12 +106,12 @@ private:
 using SceneRun = FrameDriver;
 } // namespace bbl::pal
 
+#else
+#include <bblite/pal_iteration.hpp>
+namespace bbl::pal {
+using SceneRun = Iteration<bool>;
+}
+#endif
+
 #define BBLITE_RUN_RETURN(value) co_return value
 #define BBLITE_FRAME_YIELD(rendered) co_yield rendered
-#else
-namespace bbl::pal {
-using SceneRun = bool;
-}
-#define BBLITE_RUN_RETURN(value) return value
-#define BBLITE_FRAME_YIELD(rendered) static_cast<void>(0)
-#endif
