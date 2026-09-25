@@ -2,6 +2,7 @@ import ts from "typescript";
 import { declaredSymbol } from "../compiler/symbols.js";
 import { unwrapExpression } from "../compiler/syntax.js";
 import { moduleSymbols } from "../pinned-program.js";
+import { forEachAnalysisNode } from "../compiler/analysis-walk.js";
 
 type Root = ts.Symbol | ts.Node | symbol;
 interface BindingKey {
@@ -48,11 +49,7 @@ export class PinnedBindings<T> {
             root: unwrapExpression(node),
             path: [],
         };
-        const path = JSON.stringify(key.path);
-        return (
-            this.locals.get(key.root)?.get(path)?.value ??
-            this.ports.get(key.root)?.get(path)?.value
-        );
+        return this.read(key);
     }
 
     public isPort(node: ts.Expression): boolean {
@@ -67,11 +64,7 @@ export class PinnedBindings<T> {
     public port(name: string, at: ts.Node): T | undefined {
         this.enter(at);
         const key = this.portKey(name, this.sourceScope(at));
-        const path = JSON.stringify(key.path);
-        return (
-            this.locals.get(key.root)?.get(path)?.value ??
-            this.ports.get(key.root)?.get(path)?.value
-        );
+        return this.read(key);
     }
 
     public set(node: ts.Expression, value: T): void {
@@ -111,17 +104,17 @@ export class PinnedBindings<T> {
                     )
                 )
                     continue;
-                this.put(
-                    this.locals,
-                    {
-                        root: to.root,
-                        path: [
-                            ...to.path,
-                            ...entry.path.slice(from.path.length),
-                        ],
-                    },
-                    entry.value,
-                );
+                const key = {
+                    root: to.root,
+                    path: [...to.path, ...entry.path.slice(from.path.length)],
+                };
+                // An explicit destination adapter owns that read, including an
+                // optional-chain guard the source record's direct member lacks.
+                if (
+                    !key.path.some((part) => part.startsWith("optional:")) ||
+                    !this.ports.get(key.root)?.has(JSON.stringify(key.path))
+                )
+                    this.put(this.locals, key, entry.value);
             }
         }
     }
@@ -158,6 +151,20 @@ export class PinnedBindings<T> {
         if (!entries)
             bindings.set(key.root, (entries = new Map<string, Entry<T>>()));
         entries.set(JSON.stringify(key.path), { path: key.path, value });
+    }
+
+    private read(key: BindingKey): T | undefined {
+        const lookup = (path: readonly string[]): T | undefined => {
+            const encoded = JSON.stringify(path);
+            return (
+                this.locals.get(key.root)?.get(encoded)?.value ??
+                this.ports.get(key.root)?.get(encoded)?.value
+            );
+        };
+        return (
+            lookup(key.path) ??
+            lookup(key.path.map((part) => part.replace(/^optional:/, "")))
+        );
     }
 
     private portKey(name: string, at: ts.Node): BindingKey {
@@ -208,8 +215,8 @@ export class PinnedBindings<T> {
         let declarations = this.regionDeclarations.get(region);
         if (!declarations) {
             const found = new Map<string, ts.Symbol[]>();
-            const visit = (node: ts.Node): void => {
-                if (node !== region && ts.isFunctionLike(node)) return;
+            forEachAnalysisNode(region, (node) => {
+                if (node !== region && ts.isFunctionLike(node)) return "skip";
                 if (
                     (ts.isVariableDeclaration(node) ||
                         ts.isBindingElement(node) ||
@@ -223,9 +230,7 @@ export class PinnedBindings<T> {
                         found.set(node.name.text, entries);
                     }
                 }
-                ts.forEachChild(node, visit);
-            };
-            visit(region);
+            });
             this.regionDeclarations.set(region, (declarations = found));
         }
         const candidates = declarations.get(name) ?? [];
@@ -260,7 +265,10 @@ export class PinnedBindings<T> {
             return (
                 owner && {
                     root: owner.root,
-                    path: [...owner.path, `property:${node.name.text}`],
+                    path: [
+                        ...owner.path,
+                        `${node.questionDotToken ? "optional:" : ""}property:${node.name.text}`,
+                    ],
                 }
             );
         }
@@ -273,7 +281,13 @@ export class PinnedBindings<T> {
                   ? `property:${Number(index.text)}`
                   : this.indexKey(index, at);
             return owner && part !== undefined
-                ? { root: owner.root, path: [...owner.path, part] }
+                ? {
+                      root: owner.root,
+                      path: [
+                          ...owner.path,
+                          `${node.questionDotToken ? "optional:" : ""}${part}`,
+                      ],
+                  }
                 : undefined;
         }
         if (ts.isBinaryExpression(node)) {

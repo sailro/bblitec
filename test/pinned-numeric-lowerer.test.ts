@@ -72,6 +72,24 @@ function lower(
     return lowerer.statements(file.statements, "").join("\n");
 }
 
+test("record aliases retain optional-read adapters while rebinding ordinary members", () => {
+    const output = lower(
+        "const state = engine.record; const guarded = state?.count; const direct = state.count;",
+        [
+            ["engine.record", { cpp: "(*record)", type: "opaque" }],
+            ["engine.record.count", { cpp: "record->count", type: "scalar" }],
+            ["state.count", { cpp: "unbound.count", type: "scalar" }],
+            [
+                "state?.count",
+                { cpp: "(record ? record->count : 0.0)", type: "scalar" },
+            ],
+        ],
+    );
+    assert.match(output, /guarded = \(record \? record->count : 0\.0\);/);
+    assert.match(output, /direct = record->count;/);
+    assert.doesNotMatch(output, /unbound/);
+});
+
 test("loop and branch locals preserve outer bindings and avoid native shadowing", () => {
     const cpp = lower(
         `let p = 7; let pi = 2; for (let p = 0; p < 3; p++) { pi += p; } if (pi > 0) { let p = 9; pi += p; } { let p = 4; pi += p; } p += pi;`,

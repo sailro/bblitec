@@ -256,13 +256,16 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
             ),
         ).source;
     const pinned = lowerDeviceRecovery(new LoweringContext()).source;
-    assert.match(pinned, /if \(!state\.requested\) \{\n\s*return;/);
+    assert.match(
+        pinned,
+        /if \(\(\(true\) && \(!\(state\.requested\)\)\)\) \{\n\s*return;/,
+    );
     assert.match(
         lowered(
             'info.reason === "destroyed" && !state._forceNextLoss',
             'info.reason === "destroyed" && state._forceNextLoss',
         ),
-        /if \(state\.requested\) \{\n\s*return;/,
+        /if \(\(\(true\) && \(state\.requested\)\)\) \{\n\s*return;/,
     );
     assert.match(
         lowered(
@@ -281,7 +284,7 @@ test("recovery refuses pinned defaults, lifecycle, ownership and PAL contract dr
     assert.match(pinned, /registration->kind = "scene";/);
     assert.match(
         pinned,
-        /if \(!std::ranges::any_of\(handlers, \[&\]\(const auto& registration\) \{ return registration->kind == context; \}\)\) \{\n\s*unrecoverable\.add\(context\);/,
+        /if \(!\(std::ranges::any_of\(handlers, \[&\]\(const auto& registration\) \{ return registration->kind == context; \}\)\)\) \{\n\s*unrecoverable\.add\(context\);/,
     );
     assert.match(
         pinned,
