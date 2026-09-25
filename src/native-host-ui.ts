@@ -21,7 +21,7 @@ import {
     type NativeHostUiStyleRule,
 } from "./ui-style-rule.js";
 
-export function refuseUnknownKeys(
+function refuseUnknownKeys(
     record: Record<string, unknown>,
     known: readonly string[],
     location: string,
@@ -33,7 +33,7 @@ export function refuseUnknownKeys(
     }
 }
 
-export function nativeHostUiElement(
+function nativeHostUiElement(
     value: unknown,
     location: string,
 ): NativeHostUiElement {

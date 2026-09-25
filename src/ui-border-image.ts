@@ -1,5 +1,5 @@
 /** The bounded CSS border-image surface shared by inline and stylesheet declarations. */
-export interface UiBorderImage {
+interface UiBorderImage {
     readonly source: string;
     readonly slices: readonly string[];
     readonly widths: readonly string[];

@@ -36,7 +36,7 @@ const upstreamStates = [
 ] as const;
 type UpstreamState = (typeof upstreamStates)[number];
 
-export interface PatchLibrary {
+interface PatchLibrary {
     name: string;
     pin: { file: string; field: string };
     builder: string | undefined;
@@ -45,7 +45,7 @@ export interface PatchLibrary {
     variants: readonly string[];
 }
 
-export interface MaintainedPatch {
+interface MaintainedPatch {
     library: string;
     order: number;
     file: string;
@@ -55,7 +55,7 @@ export interface MaintainedPatch {
     inheritedFromVcpkg: boolean;
 }
 
-export interface PatchManifest {
+interface PatchManifest {
     libraries: ReadonlyMap<string, PatchLibrary>;
     patches: readonly MaintainedPatch[];
 }

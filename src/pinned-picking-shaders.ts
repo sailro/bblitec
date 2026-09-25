@@ -83,7 +83,7 @@ interface DeformProjectionExports {
 }
 
 /** The orientations the pin's billboard basis forks on. */
-export type BillboardPickOrientation = "facing" | "axis-locked";
+type BillboardPickOrientation = "facing" | "axis-locked";
 
 interface BillboardPipelineExports {
     makeBillboardPickWgsl(

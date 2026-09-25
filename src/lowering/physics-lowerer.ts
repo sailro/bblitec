@@ -94,7 +94,7 @@ const shapeParameterLanes = (owner: string): string =>
             `    js::Nullable<${shapeParameterStorage(shape)}> ${field}{};`,
     ).join("\n");
 
-export const havokModule = "src/physics/havok.ts";
+const havokModule = "src/physics/havok.ts";
 
 /**
  * The trigger-volume module. Upstream keeps it standalone "so the trigger
@@ -103,7 +103,7 @@ export const havokModule = "src/physics/havok.ts";
  * exports are what this port mirrors: the shape flag, and the post-step
  * drain that turns the back end's event stream into `{ type }`.
  */
-export const havokTriggerModule = "src/physics/havok-trigger.ts";
+const havokTriggerModule = "src/physics/havok-trigger.ts";
 
 /**
  * The physics sub-features a tree reached, each named after the runtime
@@ -112,7 +112,7 @@ export const havokTriggerModule = "src/physics/havok-trigger.ts";
  * the same rule the PAL applies through its `BBLITE_HAS_PHYSICS_*` gates,
  * which the build writes from the same feature list.
  */
-export interface PhysicsLoweringOptions {
+interface PhysicsLoweringOptions {
     /** `physics:queries`: the single-hit shape proximity and cast queries. */
     readonly queries?: boolean;
     /** `physics:container`: compound shapes. */

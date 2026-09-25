@@ -141,7 +141,7 @@ export function sharedGpuSource(): string {
 }
 
 /** The feature families each scene renderer backend compiles as its own unit. */
-export const sceneRendererFamilies = [
+const sceneRendererFamilies = [
     "meshes",
     "variants",
     "shadows",
@@ -152,7 +152,7 @@ export const sceneRendererFamilies = [
 ] as const;
 
 /** A scene renderer backend's files: its state header, family units and driver. */
-export function sceneBackendFiles(backend: "sdl" | "dawn"): string[] {
+function sceneBackendFiles(backend: "sdl" | "dawn"): string[] {
     const stem = backend === "sdl" ? "pal_sdl_gpu" : "pal_dawn";
     return [
         `native/src/${stem}_scene.hpp`,
@@ -175,7 +175,7 @@ export function sceneBackendSource(backend: "sdl" | "dawn"): string {
 }
 
 /** The units holding the shared GPU helpers' bodies, for a fixture to link. */
-export const sharedGpuUnits = [
+const sharedGpuUnits = [
     "native/src/pal_gpu_frame.cpp",
     "native/src/pal_gpu_images.cpp",
     "native/src/pal_gpu_shared.cpp",
@@ -294,7 +294,7 @@ function fixtureMacroFolder(overrides: ReadonlyMap<string, boolean>): string {
  * feature macros as headers, the build options it leaves unset, third-party
  * headers external, and an undefined name in a `#if` an error.
  */
-export function nativeFixtureArguments(
+function nativeFixtureArguments(
     tools: WindowsBuildTools,
     arguments_: readonly string[],
 ): readonly string[] {

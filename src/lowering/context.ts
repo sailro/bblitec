@@ -134,7 +134,7 @@ export function unwrapExpression(expression: ts.Expression): ts.Expression {
  * initial value: a binding the pin mutates at run time (`MAX_LIGHTS`, which
  * `setMaxLights` grows) that this port freezes and refuses the mutation of.
  */
-export function moduleScopeConstant(
+function moduleScopeConstant(
     file: ts.SourceFile,
     name: string,
     options: { frozen?: boolean } = {},
@@ -271,13 +271,13 @@ export function nullishDefault(
 }
 
 /** A pinned constant's initializer, with the module declaring it. */
-export interface PinnedConstant {
+interface PinnedConstant {
     initializer: ts.Expression;
     file: ts.SourceFile;
 }
 
 /** How `numericValue` reaches past the expression it is handed. */
-export interface NumericValueOptions {
+interface NumericValueOptions {
     /**
      * The constant an identifier names. The default reads a module-scope
      * `const` its own file declares; a caller with a store follows imports
@@ -294,9 +294,7 @@ export interface NumericValueOptions {
  * a local that shadows a module constant is the local, and an import is
  * followed through its rename and re-exports.
  */
-export function declarationOf(
-    identifier: ts.Identifier,
-): ts.Declaration | undefined {
+function declarationOf(identifier: ts.Identifier): ts.Declaration | undefined {
     const file = ts.getOriginalNode(identifier).getSourceFile() as
         ts.SourceFile | undefined;
     if (!file) {

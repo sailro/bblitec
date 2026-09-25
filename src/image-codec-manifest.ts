@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { asObject } from "./gltf-document.js";
 import { findRepositoryRoot } from "./repository-root.js";
 
-export interface ImageCodec {
+interface ImageCodec {
     codec: string;
     mimeType: string;
     extensions: readonly string[];

@@ -69,12 +69,12 @@ export type Transported =
     | { readonly tuple: readonly number[] }
     | { readonly variant: number; readonly of: Transported };
 
-export interface TransportedRecord {
+interface TransportedRecord {
     readonly name: string;
     readonly fields: Readonly<Record<string, Transported>>;
 }
 
-export type TransportedContainer =
+type TransportedContainer =
     | { readonly kind: "array" | "set"; readonly items: readonly Transported[] }
     | {
           readonly kind: "map";

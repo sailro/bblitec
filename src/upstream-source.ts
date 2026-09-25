@@ -72,7 +72,7 @@ export function readUpstreamPin(
     };
 }
 
-export interface PublicExport {
+interface PublicExport {
     exportedName: string;
     importedName: string;
     modulePath: string;

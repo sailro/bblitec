@@ -7,7 +7,7 @@ import {
 } from "../src/shader-material-programs.js";
 import type { CompiledShaderProgram } from "../src/compiler/types.js";
 
-export const fixtureShaderPrograms: ShaderMaterialProgramSource[] = [
+const fixtureShaderPrograms: ShaderMaterialProgramSource[] = [
     {
         name: "alpha-card",
         vertexSource: `struct VertexOutput {

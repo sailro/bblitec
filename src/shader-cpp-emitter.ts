@@ -1,7 +1,7 @@
 import { floatLiteral } from "./cpp-literals.js";
 import { typeComponents, type ShaderExpression } from "./shader-ir.js";
 
-export interface ShaderCppScalar {
+interface ShaderCppScalar {
     cpp: string;
     constant?: boolean;
     /** This lane is a normalized byte, with this expression as its byte index. */

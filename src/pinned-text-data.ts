@@ -50,7 +50,7 @@ export interface TextFontSource {
     sha256: string;
 }
 
-export interface TextProvenance {
+interface TextProvenance {
     pin: { package: string; version: string; sourceVersion: string };
     modules: { path: string; sha256: string }[];
     /** Hash of the actual font bytes and the complete ordered argument payload. */
@@ -58,7 +58,7 @@ export interface TextProvenance {
 }
 
 /** What the pin built, before its buffers are packaged. */
-export interface BakedText {
+interface BakedText {
     /** Static text: the pin's `DefaultTextData`. */
     data?: TransportedGraph;
     /** Live text: the font's family curve-set id and packaged repertoire. */

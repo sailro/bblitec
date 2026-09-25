@@ -23,7 +23,7 @@ import {
 } from "./browser-harness.js";
 import { cachedJsonBake, moduleIdentity } from "./bake-cache.js";
 
-export interface HdrPrefilterSource {
+interface HdrPrefilterSource {
     width: number;
     height: number;
     data: Float32Array;

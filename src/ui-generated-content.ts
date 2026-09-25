@@ -9,7 +9,7 @@ export function isUiGeneratedPart(value: unknown): value is UiGeneratedPart {
         typeof value === "string" && Object.hasOwn(UI_GENERATED_PARTS, value)
     );
 }
-export interface UiContentPart {
+interface UiContentPart {
     kind: "text" | "attribute";
     value: string;
 }

@@ -66,7 +66,7 @@ export interface ShadowCapabilityInputs {
     nodePcfCasters?: number;
 }
 
-export interface ShadowCapabilities {
+interface ShadowCapabilities {
     /** That a shadow generator is reached at all, under either filter. */
     reached: boolean;
     /**

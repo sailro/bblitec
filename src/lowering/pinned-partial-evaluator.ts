@@ -50,8 +50,7 @@ export type Completion<V> =
 export const NORMAL: Completion<never> = { kind: "normal" };
 
 /** JavaScript truthiness: decided at generation, or a C++ `bool`. */
-export type Truth =
-    { k: "static"; value: boolean } | { k: "residual"; cpp: string };
+type Truth = { k: "static"; value: boolean } | { k: "residual"; cpp: string };
 
 /**
  * What the evaluator needs to know about a value to apply JavaScript's own

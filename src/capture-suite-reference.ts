@@ -354,7 +354,7 @@ const seededRandomScript =
     " return ((t ^ (t >>> 14)) >>> 0) / 4294967296;" +
     " }; })();";
 
-export interface SuiteCaptureOptions {
+interface SuiteCaptureOptions {
     /** Preserve browser scrollbars, including their layout width. */
     showScrollbars?: boolean;
     /** CSS canvas size for device-local diagnostics; canonical references use 1280x720. */

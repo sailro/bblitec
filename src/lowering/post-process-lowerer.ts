@@ -1188,7 +1188,7 @@ interface PostProcessPassOrder {
  * writer dispatch, the emitted records and the deployed stage table all index
  * by it, so it is derived here and nowhere else.
  */
-export function postProcessPassOrder(
+function postProcessPassOrder(
     tasks: readonly PostProcessTaskManifest[],
     composites: readonly ComposedComposite[],
 ): PostProcessPassOrder[] {

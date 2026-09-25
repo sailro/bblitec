@@ -14,7 +14,7 @@ export interface ApiCase {
     targets: { id: string; fingerprint: string }[];
 }
 
-export interface ApiReceipt {
+interface ApiReceipt {
     schemaVersion: 1;
     inputs: string;
     cases: {

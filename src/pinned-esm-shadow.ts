@@ -15,7 +15,7 @@ import { importPinnedModule } from "./pinned-shader-composer.js";
 import { createRecordingDevice, writtenFloats } from "./recording-device.js";
 
 /** One texture the pinned factory asked its device for, in creation order. */
-export interface EsmTextureDescriptor {
+interface EsmTextureDescriptor {
     width: number;
     height: number;
     format: string;

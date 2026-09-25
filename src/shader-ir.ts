@@ -20,7 +20,7 @@ export interface ShaderStageConstant {
     value: number;
 }
 
-export type ShaderType =
+type ShaderType =
     "f32" | "mat4x4<f32>" | "vec2<f32>" | "vec3<f32>" | "vec4<f32>";
 
 const shaderTypeShorthands: Readonly<Record<string, ShaderType>> = {
@@ -30,12 +30,12 @@ const shaderTypeShorthands: Readonly<Record<string, ShaderType>> = {
     mat4x4f: "mat4x4<f32>",
 };
 
-export interface ShaderAttribute {
+interface ShaderAttribute {
     kind: "builtin" | "location";
     value: string | number;
 }
 
-export interface ShaderStructMember {
+interface ShaderStructMember {
     name: string;
     type: string;
     attribute?: ShaderAttribute | undefined;
@@ -146,13 +146,13 @@ export type ShaderStatement =
     | { kind: "var"; name: string; type?: string; value?: ShaderExpression }
     | { kind: "assert"; value: ShaderExpression };
 
-export interface ShaderParameter {
+interface ShaderParameter {
     name: string;
     type: string;
     attribute?: ShaderAttribute;
 }
 
-export interface ShaderBinding {
+interface ShaderBinding {
     name: string;
     type: string;
     group: number;
@@ -191,7 +191,7 @@ export interface ShaderModule {
     functions?: ShaderFunction[];
 }
 
-export interface ShaderComputeModule {
+interface ShaderComputeModule {
     bindings: ShaderBinding[];
     overrides: Array<{
         name: string;
@@ -205,7 +205,7 @@ export interface ShaderComputeModule {
     statements: ShaderStatement[];
 }
 
-export interface ShaderUniformMemberReflection {
+interface ShaderUniformMemberReflection {
     name: string;
     type: ShaderType;
     offset: number;
@@ -2476,7 +2476,7 @@ export function shaderSystemUniformType(name: ShaderSystemMatrix): ShaderType {
     return shaderSystemUniformRow(name).type;
 }
 
-export function shaderSystemUniformFloatSize(name: ShaderSystemMatrix): number {
+function shaderSystemUniformFloatSize(name: ShaderSystemMatrix): number {
     return shaderSystemUniformRow(name).floatSize;
 }
 

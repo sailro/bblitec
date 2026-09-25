@@ -24,7 +24,7 @@ export interface SourceCameraMatrices {
     ): Float32Array;
 }
 
-export interface GltfCamera {
+interface GltfCamera {
     name: string;
     position: number[];
     target: number[];

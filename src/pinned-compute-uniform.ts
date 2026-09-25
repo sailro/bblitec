@@ -5,7 +5,7 @@ export interface ComputeUniformField {
     name: string;
     type: string;
 }
-export interface ComputeUniformFieldSlot {
+interface ComputeUniformFieldSlot {
     type: string;
     offset: number;
     byteLength: number;
@@ -15,7 +15,7 @@ export interface ComputeUniformFieldSlot {
     scalar: number;
     kind: number;
 }
-export interface ComputeUniformLayoutData {
+interface ComputeUniformLayoutData {
     byteLength: number;
     fields: readonly (readonly [string, ComputeUniformFieldSlot])[];
 }

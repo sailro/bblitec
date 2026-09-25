@@ -65,7 +65,7 @@ function alphaFlags(context: LoweringContext): ReadonlyMap<string, number> {
     );
 }
 
-export type StandardMeshAlphaDecision = (
+type StandardMeshAlphaDecision = (
     shadowOutput: boolean,
     hasVertexAlpha: boolean,
     hasVertexColor: boolean,

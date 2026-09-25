@@ -9,7 +9,7 @@ interface TextShaderStage {
     constants?: Readonly<Record<string, number>>;
 }
 
-export interface TextPipelineDescriptor {
+interface TextPipelineDescriptor {
     layout: { bindGroupLayouts: readonly TextBindingLayout[] };
     vertex: TextShaderStage & {
         buffers: readonly {
@@ -55,7 +55,7 @@ interface TextBindingLayout {
     ))[];
 }
 
-export interface TextPipelineOptions {
+interface TextPipelineOptions {
     format: string;
     sampleCount: number;
     depthStencilFormat?: string;

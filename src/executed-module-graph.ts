@@ -45,7 +45,7 @@ export interface ClosureModule {
 }
 
 /** An entry module and every sibling its emitted code requires. */
-export interface CommonJsModuleGraph {
+interface CommonJsModuleGraph {
     entry: string;
     modules: Record<string, ClosureModule>;
 }

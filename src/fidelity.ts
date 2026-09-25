@@ -1,4 +1,4 @@
-export type FidelityRisk = "low" | "medium" | "high";
+type FidelityRisk = "low" | "medium" | "high";
 
 export interface CompileAdaptation {
     id: string;
@@ -16,7 +16,7 @@ export interface CompileAdaptation {
     validation: string[];
 }
 
-export interface ShaderInvariant {
+interface ShaderInvariant {
     id: string;
     upstreamModule: string;
     upstreamMarker: string;

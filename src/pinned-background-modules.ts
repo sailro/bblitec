@@ -43,26 +43,26 @@ import {
 import { pinnedSceneLayout } from "./pinned-scene-layout.js";
 
 /** One attribute of a pinned vertex buffer layout. */
-export interface PinnedVertexAttribute {
+interface PinnedVertexAttribute {
     shaderLocation: number;
     offset: number;
     format: string;
 }
 
 /** One pinned vertex buffer layout. */
-export interface PinnedVertexBufferLayout {
+interface PinnedVertexBufferLayout {
     arrayStride: number;
     attributes: readonly PinnedVertexAttribute[];
 }
 
 /** One deployed stage: the stem it compiles under and the pin's module. */
-export interface PinnedBackgroundStage {
+interface PinnedBackgroundStage {
     stem: string;
     wgsl: string;
 }
 
 /** A group-1 layout entry, as the pin's `createBindGroupLayout` states it. */
-export interface PinnedBackgroundBinding {
+interface PinnedBackgroundBinding {
     binding: number;
     /** The module variable at this binding, for diagnostics. */
     name: string;
@@ -72,10 +72,10 @@ export interface PinnedBackgroundBinding {
 }
 
 /** One of `BlendFactor`'s names, the blend factors the pin's arms use. */
-export type PinnedBlendFactor = "one" | "src_alpha" | "one_minus_src_alpha";
+type PinnedBlendFactor = "one" | "src_alpha" | "one_minus_src_alpha";
 
 /** The pipeline state the pin's descriptor sets, beyond modules and layouts. */
-export interface PinnedBackgroundPipelineState {
+interface PinnedBackgroundPipelineState {
     cullMode: "none" | "back";
     clockwiseFrontFace: boolean;
     depthWrite: boolean;
@@ -92,7 +92,7 @@ export interface PinnedBackgroundPipelineState {
  * `posBuffer`, `0`, `positions` -- a property of the object the builder
  * returns, or an element of its tuple.
  */
-export interface PinnedBackgroundDraw {
+interface PinnedBackgroundDraw {
     vertexSlots: readonly string[];
     index: string;
     indexFormat: "uint16" | "uint32";
@@ -860,7 +860,7 @@ const rootPosition = [0.5, -1.25, 2];
 const primaryColor = [0.125, 0.375, 0.625];
 
 /** Which arms a scene reached. */
-export interface PinnedBackgroundReach {
+interface PinnedBackgroundReach {
     ground: boolean;
     skybox: boolean;
     ddsEnvironment: boolean;

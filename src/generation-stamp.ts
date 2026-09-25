@@ -62,7 +62,7 @@ import {
 } from "./tooling/records.js";
 import { artifactDirectory } from "./tooling/artifacts.js";
 
-export interface GenerationStamp {
+interface GenerationStamp {
     version: 2;
     /** The repository files the generation read, as the manifest lists them. */
     inputs: string[];
@@ -74,7 +74,7 @@ export interface GenerationStamp {
     durationMs?: number;
 }
 
-export interface GenerationScene {
+interface GenerationScene {
     id: string;
     output: string;
 }

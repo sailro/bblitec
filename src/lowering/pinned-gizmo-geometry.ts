@@ -786,7 +786,7 @@ ${declaration.body!.statements.flatMap((statement) => lowerer.statement(statemen
 }
 
 /** Which display gizmos a scene builds: each half is emitted only for its own. */
-export interface ReachedDisplayGizmos {
+interface ReachedDisplayGizmos {
     camera: boolean;
     light: boolean;
 }

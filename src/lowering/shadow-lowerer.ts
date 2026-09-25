@@ -519,7 +519,7 @@ function assertShadowUboLayout(context: LoweringContext): void {
 }
 
 /** The pinned ESM-directional defaults, each read from its own `??`. */
-export interface PinnedEsmDefaults {
+interface PinnedEsmDefaults {
     mapSize: number;
     depthScale: number;
     bias: number;
@@ -885,7 +885,7 @@ function esmCasterBoundsFallback(context: LoweringContext): {
 }
 
 /** One pinned PCF-spot default, read from its own `??`. */
-export interface PinnedPcfSpotDefaults {
+interface PinnedPcfSpotDefaults {
     mapSize: number;
     bias: number;
     darkness: number;

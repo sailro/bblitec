@@ -130,7 +130,7 @@ const VALUES_PER_LINE = 64;
  * An empty stream has no array to bound -- a zero-length C array is not
  * C++ -- so it answers with the empty vector or span and declares nothing.
  */
-export type CppArrayTableRegistrar = (
+type CppArrayTableRegistrar = (
     symbol: string,
     elementType: string,
     elements: string[],

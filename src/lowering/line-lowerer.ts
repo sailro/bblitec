@@ -28,8 +28,8 @@ import { lowerComputeAabb } from "./pinned-compute-aabb.js";
 import type { CompiledShaderProgram } from "../compiler/types.js";
 import { recordAt } from "../compiler/record-access.js";
 
-export const lineMaterialModule = "src/material/line/line-material.ts";
-export const lineSystemModule = "src/mesh/create-line-system.ts";
+const lineMaterialModule = "src/material/line/line-material.ts";
+const lineSystemModule = "src/mesh/create-line-system.ts";
 
 /** The permutation a `createLineMaterial` call settles at generation. */
 export interface LineMaterialOptions {

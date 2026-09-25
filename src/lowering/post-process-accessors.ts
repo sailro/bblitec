@@ -7,7 +7,7 @@ import { sharedPinnedContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 /** The composite's own scalar state used by one inline pass's writer. */
-export interface CompositeScalarAccessor {
+interface CompositeScalarAccessor {
     property: string;
     effect: string;
     slot: number;

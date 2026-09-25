@@ -25,7 +25,7 @@ export interface GltfAnimationBindings {
     excludedNodes: number[];
 }
 
-export interface SourceBindings {
+interface SourceBindings {
     nodeToMeshIndices: Map<number, number[]>;
     skeletons: Array<{
         jointNodes: number[];

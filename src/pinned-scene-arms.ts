@@ -40,7 +40,7 @@ export interface PinnedSceneArm {
     options: PinnedComposeOptions;
 }
 
-export interface PinnedSceneArmRequest {
+interface PinnedSceneArmRequest {
     /** Which single-light kinds to include an arm for. */
     lightKinds: readonly PinnedSingleLightType[];
     /** Include the multi-light loop arm. */

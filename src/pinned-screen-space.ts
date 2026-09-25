@@ -145,7 +145,7 @@ export const SCREEN_SPACE_SCALAR_SETTINGS: readonly string[] = [
 ];
 
 /** The one triple the contact task publishes, carried as three lanes. */
-export const SCREEN_SPACE_VECTOR_SETTINGS: readonly string[] = ["tint"];
+const SCREEN_SPACE_VECTOR_SETTINGS: readonly string[] = ["tint"];
 
 /** The native `ScreenSpaceTaskOptions` member a pinned setting maps to. */
 export function nativeSettingName(setting: string): string {
@@ -173,7 +173,7 @@ const NON_SETTING_PROPERTIES = new Set([
     ...Object.values(SCREEN_SPACE_KINDS).map((facts) => facts.stableTexture),
 ]);
 
-export interface ScreenSpaceCompositionRequest {
+interface ScreenSpaceCompositionRequest {
     /** The Babylon Lite entry point the task was created through. */
     intrinsic: string;
     /** Every option the scene wrote, statically resolved and forwarded whole. */
@@ -185,7 +185,7 @@ export interface ScreenSpaceCompositionRequest {
 }
 
 /** Which texture a stage's binding reads, by what the pin bound there. */
-export type ScreenSpaceTextureRole =
+type ScreenSpaceTextureRole =
     "depth" | "source-color" | "raw" | "history" | "stable";
 
 export interface ScreenSpaceStageBinding {
@@ -215,7 +215,7 @@ export interface ComposedScreenSpaceStage {
 }
 
 /** One ordinary post-process pass the task built: history copy or composite. */
-export interface ComposedScreenSpacePass extends ComposedPostProcess {
+interface ComposedScreenSpacePass extends ComposedPostProcess {
     sampling: "nearest" | "linear";
     /** Whether the pin's pipeline blends into its target. */
     blended: boolean;

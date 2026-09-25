@@ -45,7 +45,7 @@ import type { UpstreamEmitOptions } from "./upstream-lower.js";
 /** Where the inventory is written, beside the other upstream artifacts. */
 export const featureActivationPath = "upstream/feature-activation.json";
 
-export type FeatureActivationMechanism =
+type FeatureActivationMechanism =
     | "runtime-feature"
     | "capability"
     | "codec"
@@ -69,7 +69,7 @@ export type FeatureActivationMechanism =
  * beyond the manifest and this table reads -- its code is emitted by the
  * compiler where it is reached, and no build rule tests the name.
  */
-export type FeatureActivationConsumer =
+type FeatureActivationConsumer =
     | "features.cmake"
     | "feature macros"
     | "render_capabilities.hpp"

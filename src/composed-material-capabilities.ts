@@ -12,14 +12,14 @@
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
 
 /** A composed stage pair, whichever family produced it. */
-export interface ComposedStages {
+interface ComposedStages {
     /** The pin's own composition key -- the fragment ids joined by `|`. */
     fragmentKey?: string;
     vertexWgsl: string;
     fragmentWgsl: string;
 }
 
-export interface ComposedMaterialCapabilities {
+interface ComposedMaterialCapabilities {
     /** Some PBR variant spliced the pin's clearcoat fragment. */
     clearcoat: boolean;
     /** Some PBR variant spliced the pin's sheen fragment. */

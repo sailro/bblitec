@@ -14,7 +14,7 @@
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
 /** One preset, as the pinned table states it. */
-export interface PinnedPolyhedron {
+interface PinnedPolyhedron {
     vertex: readonly (readonly number[])[];
     face: readonly (readonly number[])[];
 }

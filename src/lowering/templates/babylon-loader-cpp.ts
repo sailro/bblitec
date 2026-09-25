@@ -9,7 +9,7 @@ import { recordAt } from "../../compiler/record-access.js";
  * which the pinned engine keeps as a per-mesh light set. A file whose lights
  * name neither emits this loader without the resolution.
  */
-export interface BabylonLoaderLoweredSegments {
+interface BabylonLoaderLoweredSegments {
     /**
      * `bake_local_matrix`, lowered whole from
      * `src/loader-babylon/bake-local-matrix.ts#bakeLocalMatrix`.

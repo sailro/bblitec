@@ -25,7 +25,7 @@ import { discoverDevelopmentTools } from "./development-tools.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
 import { contentDigest, writeJsonRecord } from "./tooling/records.js";
 
-export interface PackageOutput {
+interface PackageOutput {
     root: string;
     name: string;
     staging: string;
@@ -82,7 +82,7 @@ export function newPackageOutput(root: string, name: string): PackageOutput {
 }
 
 /** The plan of a staging directory `newPackageOutput` made. */
-export function stagedPackageOutput(
+function stagedPackageOutput(
     root: string,
     name: string,
     staging: string,

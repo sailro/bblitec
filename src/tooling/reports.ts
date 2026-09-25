@@ -13,14 +13,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { computeBuildStamp } from "../build-stamp.js";
 import { writeJsonRecord } from "./records.js";
 
-export interface ReportMeta {
+interface ReportMeta {
     tool: string;
     backend?: string;
     generatedDirectory?: string;
 }
 
 /** The provenance every report written here carries. */
-export interface ReportProvenance {
+interface ReportProvenance {
     tool: string;
     backend?: string;
     generatedStamp?: string;

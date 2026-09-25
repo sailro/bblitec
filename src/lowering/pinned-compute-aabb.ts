@@ -31,7 +31,7 @@ const COMPUTE_AABB_MODULE = "src/math/compute-aabb.ts";
 /** The pin's `Aabb` return, as the double pair every consumer reads. */
 const COMPUTE_AABB_RESULT = "std::array<std::array<double, 3>, 2>";
 
-export interface ComputeAabbLowering {
+interface ComputeAabbLowering {
     /** Which of the pinned guard's two arms the emitted function is. */
     arm: "world" | "local";
     cppName: string;

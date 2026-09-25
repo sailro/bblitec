@@ -81,7 +81,7 @@ export interface ActivationPlan {
 }
 
 /** The plan as the join decides it, before composition has run. */
-export type JoinedActivationPlan = Omit<ActivationPlan, "transmission">;
+type JoinedActivationPlan = Omit<ActivationPlan, "transmission">;
 
 /**
  * The transmission renderer, from the pin's two ways in: the scene
@@ -119,7 +119,7 @@ export interface AssetFeatureJoin {
     plan: JoinedActivationPlan;
 }
 
-export interface AssetFeatureJoinInputs {
+interface AssetFeatureJoinInputs {
     result: CompileResult;
     outputPath: string;
     /** Each glTF asset's packaged document, parsed once for generation. */

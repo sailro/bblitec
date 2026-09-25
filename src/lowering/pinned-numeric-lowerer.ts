@@ -258,7 +258,7 @@ export function absentBinding(value?: "undefined" | "null"): PinnedBinding {
  * `name` bound as one record of `shape` spelled `cpp`, and every member
  * path the body may read through it (`light`, `light.position`).
  */
-export function recordBindings(
+function recordBindings(
     name: string,
     cpp: string,
     shape: PinnedRecordShape,

@@ -36,7 +36,7 @@ const particleMultiplyModule = "src/particle/particle-billboard-renderable.ts";
  * identical, so this is the whole difference between the two families of
  * billboard.
  */
-export type BillboardOrientation = "facing" | "axis-locked";
+type BillboardOrientation = "facing" | "axis-locked";
 
 /**
  * Which depth path a system draws through. The pin's `DEPTH_MODE_TABLE`
@@ -45,10 +45,10 @@ export type BillboardOrientation = "facing" | "axis-locked";
  * selects a fragment arm, a pipeline state, and (per the module doc) the
  * slot the system draws in.
  */
-export type BillboardDepthMode = "transparent" | "cutout";
+type BillboardDepthMode = "transparent" | "cutout";
 
 /** A custom-shader program: the caller's fragment body and its extra textures. */
-export interface BillboardCustomProgram {
+interface BillboardCustomProgram {
     fragment: string;
     extraTextures: readonly string[];
 }

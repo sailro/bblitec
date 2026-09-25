@@ -1,7 +1,7 @@
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 
 /** The composer's output over one template configuration and fragment set. */
-export interface ComposedPinnedPbrShader {
+interface ComposedPinnedPbrShader {
     vertexWgsl: string;
     fragmentWgsl: string;
     /** The pin's identity for the permutation, e.g. `ibl|clearcoat`. */

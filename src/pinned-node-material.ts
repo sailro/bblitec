@@ -54,7 +54,7 @@ export interface ComposedNodeAttribute {
  * `EnvironmentTextures` — the same specular cube and BRDF LUT the material
  * families sample — so the PAL resolves them against what it already holds.
  */
-export interface ComposedNodeEnvBindings {
+interface ComposedNodeEnvBindings {
     iblTexture: number;
     iblSampler: number;
     brdfLut: number;
@@ -70,7 +70,7 @@ export interface ComposedNodeEnvBindings {
  * pin allocates them after the node UBO and texture pairs, so neither PAL may
  * infer fixed slots for them.
  */
-export interface ComposedNodeMorphBindings {
+interface ComposedNodeMorphBindings {
     deltas: number;
     weights: number;
 }
@@ -148,7 +148,7 @@ export interface ComposedNodeMaterial {
  * stages read it are the composed module's own answers, reflected out of it
  * where the rows are emitted.
  */
-export interface ComposedNodeShadowBinding {
+interface ComposedNodeShadowBinding {
     lightIndex: number;
     texture: number;
     sampler: number;
@@ -157,7 +157,7 @@ export interface ComposedNodeShadowBinding {
 }
 
 /** The ESM caster module and the one binding it adds. */
-export type ComposedNodeCaster =
+type ComposedNodeCaster =
     | {
           kind: "esm";
           wgsl: string;
@@ -203,7 +203,7 @@ export interface ComposedNodeGeometryView {
     colorTargetCount: number;
 }
 
-export interface ComposeNodeMaterialOptions {
+interface ComposeNodeMaterialOptions {
     shadowLights?: readonly {
         lightIndex: number;
         shadowType: "esm" | "pcf" | "csm";

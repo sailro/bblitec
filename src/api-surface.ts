@@ -9,7 +9,7 @@ import {
     resolvedSymbol,
 } from "./compiler/symbols.js";
 
-export interface ApiItem {
+interface ApiItem {
     id: string;
     owner: string;
     kind: string;
@@ -32,7 +32,7 @@ export function apiHash(text: string | Buffer): string {
 }
 
 /** Token boundaries and literal contents matter; comments and formatting do not. */
-export function declarationText(node: ts.Node): string {
+function declarationText(node: ts.Node): string {
     const printer = ts.createPrinter({ removeComments: true });
     const text = printer.printNode(
         ts.EmitHint.Unspecified,
