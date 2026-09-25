@@ -2968,6 +2968,160 @@ test("text refuses a value that may be either null or undefined", () => {
     );
 });
 
+check(
+    "strict null and undefined equality follows the operand's type",
+    `
+    interface Options {
+        label?: string;
+        size?: number | null;
+        onPick?: () => void;
+    }
+    function flags(options: Options): string {
+        const parts: string[] = [];
+        parts.push(options.label === null ? "n" : "-");
+        parts.push(options.label === undefined ? "u" : "-");
+        parts.push(options.label !== null ? "N" : "-");
+        parts.push(options.label !== undefined ? "U" : "-");
+        parts.push(options.label == null ? "nn" : "--");
+        parts.push(options.label != undefined ? "UU" : "--");
+        parts.push(options.onPick === null ? "fn" : "-");
+        parts.push(options.onPick === undefined ? "fu" : "-");
+        return parts.join("");
+    }
+    function main(): void {
+        const absent = flags({});
+        if (absent !== "-uN-nn---fu") throw new Error("absent field " + absent);
+        const present = flags({ label: "x", onPick: () => {} });
+        if (present !== "--NU--UU--") throw new Error("present field " + present);
+        const sizes: Array<number | null> = [];
+        sizes.push(null);
+        const first = sizes[0];
+        if (first !== null) throw new Error("stored null");
+        const lookup = new Map<string, number>();
+        const miss = lookup.get("a");
+        if (miss === null || miss !== undefined) throw new Error("map miss is undefined");
+        const items: number[] = [];
+        const popped = items.pop();
+        if (popped === null || popped !== undefined) throw new Error("pop of an empty array is undefined");
+        const omitted: Options = {};
+        if (omitted.label === null || omitted.label !== undefined) throw new Error("omitted field is undefined");
+        const walls = new Map<string, { w: number } | null>();
+        let built = 0;
+        function wall(name: string): { w: number } | null {
+            const cached = walls.get(name);
+            if (cached !== undefined) return cached;
+            built++;
+            const result = name === "missing" ? null : { w: name.length };
+            walls.set(name, result);
+            return result;
+        }
+        if (wall("missing") !== null || wall("missing") !== null || built !== 1) throw new Error("a stored null is found " + built);
+        const nullableSizes = new Map<string, number | null>([["none", null]]);
+        const none = nullableSizes.get("none");
+        const gone = nullableSizes.get("gone");
+        if (none !== null || none === undefined || gone !== undefined || gone === null) throw new Error("stored null and miss");
+        if ("a" + nullableSizes.get("none") + nullableSizes.get("gone") !== "anullundefined") throw new Error("lookup spelling");
+    }
+    main();
+`,
+);
+
+test("strict equality refuses a value that may be either null or undefined", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        const values: Array<number | null | undefined> = [];
+        values.push(null);
+        const isNull = values[0] === null;
+    `),
+        /may be null or undefined is compared strictly with null only once one of them is ruled out/,
+    );
+});
+
+check(
+    "enum members inside array and object literals",
+    `
+    enum Shape {
+        Box,
+        Ball,
+    }
+    enum Tone {
+        Soft = "soft",
+        Bold = "bold",
+    }
+    function main(): void {
+        const shapes: Shape[] = [Shape.Ball, Shape["Box"]];
+        if (shapes.length !== 2 || shapes[0] !== Shape.Ball || shapes[1] !== 0) throw new Error("numeric enum array literal");
+        const tones: Tone[] = [Tone.Bold, Tone["Soft"]];
+        if (tones.join(",") !== "bold,soft") throw new Error("string enum array literal " + tones.join(","));
+        const pair: [Shape, number] = [Shape.Ball, 2];
+        if (pair[0] + pair[1] !== 3) throw new Error("enum tuple lane");
+        const counts = [5, 7];
+        counts[Shape.Box] -= 1;
+        if (counts[Shape.Ball] !== 7 || counts[Shape.Box] !== 4) throw new Error("array indexed by an enum member");
+        const byShape: Record<string, Shape> = { ball: Shape.Ball };
+        if (byShape.ball !== 1) throw new Error("enum record member");
+    }
+    main();
+`,
+);
+
+check(
+    "strict null and undefined comparisons read whether the slot existed",
+    `
+    interface Attachment {
+        label: string;
+    }
+    interface Entry {
+        id: string;
+        attachment: Attachment | null;
+        note: string | null;
+    }
+    const catalog: Entry[] = [
+        { id: "a", attachment: null, note: null },
+        { id: "b", attachment: { label: "x" }, note: "n" },
+    ];
+    function find(id: string): Entry | undefined {
+        return catalog.find((entry) => entry.id === id);
+    }
+    function main(): void {
+        // Optional chain over a nullable field.
+        if (find("a")?.attachment !== null) throw new Error("present owner, null field");
+        if (find("a")?.attachment === undefined) throw new Error("present owner is not undefined");
+        if (find("missing")?.attachment !== undefined) throw new Error("missing owner");
+        if (find("missing")?.attachment === null) throw new Error("missing owner is not null");
+        if (find("b")?.attachment === null || find("b")?.attachment === undefined) throw new Error("present field");
+        const chained = find("a")?.attachment;
+        if (chained !== null || chained === undefined) throw new Error("bound chain");
+        if ("c" + find("a")?.note + find("missing")?.note + find("b")?.note !== "cnullundefinedn") throw new Error("chain spelling");
+        // pop/shift of nullable elements.
+        const maybe: (number | null)[] = [null];
+        if (maybe.pop() !== null) throw new Error("popped null");
+        if (maybe.pop() !== undefined) throw new Error("popped from empty");
+        const queue: Array<string | null> = [null, "q"];
+        const head = queue.shift();
+        if (head !== null || head === undefined) throw new Error("shifted null");
+        if (queue.shift() !== "q" || queue.shift() !== undefined) throw new Error("shifted rest");
+        let order = "";
+        const pops: (number | null)[] = [1, null];
+        if (pops.pop() === null) order += "n";
+        if (pops.pop() === 1) order += "1";
+        if (pops.pop() === undefined) order += "u";
+        if (order !== "n1u") throw new Error("two pops in turn " + order);
+        // Index into an array of nullable elements.
+        const sizes: Array<number | null> = [null, 3];
+        if (sizes[0] !== null || sizes[1] !== 3) throw new Error("stored elements");
+        let index = 5;
+        if (sizes[index] === null || sizes[index] !== undefined) throw new Error("past the end");
+        index = 0;
+        if ("s" + sizes[index] + sizes[index + 7] !== "snullundefined") throw new Error("element spelling");
+        const plain: number[] = [1];
+        if (plain[3] === null) throw new Error("past the end of a never-null array");
+    }
+    main();
+`,
+);
+
 test("engine calls that write their arguments keep operand order and object storage", async (t) => {
     // The pinned normalizeVec3ToRef and scaleVec3ToRef write `out`; the
     // expected values follow their bodies (`v.x * (1 / len)`).

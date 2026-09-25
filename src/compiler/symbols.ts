@@ -251,6 +251,36 @@ export function resolvedSymbol(
     return symbol && aliasTarget(checker, symbol);
 }
 
+/**
+ * The constant an enum member access (`Shape.Ball`, `Shape["Ball"]`)
+ * names. The checker answers `getConstantValue` on the access itself only
+ * for a `const enum`; the member's declaration answers for every enum.
+ */
+export function enumMemberConstant(
+    checker: ts.TypeChecker,
+    access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | number | undefined {
+    // An element access names a member only when its owner is the enum
+    // itself: `values[Shape.Ball]` indexes `values` by a member.
+    if (
+        ts.isElementAccessExpression(access) &&
+        ((resolvedSymbol(checker, unwrapExpression(access.expression))?.flags ??
+            0) &
+            ts.SymbolFlags.Enum) ===
+            0
+    )
+        return undefined;
+    const member = resolvedSymbol(
+        checker,
+        ts.isPropertyAccessExpression(access)
+            ? access
+            : access.argumentExpression,
+    )?.valueDeclaration;
+    return member && ts.isEnumMember(member)
+        ? checker.getConstantValue(member)
+        : checker.getConstantValue(access);
+}
+
 /** The names the library binds the global object itself to. */
 const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
     "globalThis",

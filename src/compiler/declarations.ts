@@ -957,6 +957,26 @@ export class DeclarationLowerer {
                 this.context.reachJsData();
                 initializerCpp = `bbl::js::snapshot_value(${selectedCpp})`;
             }
+            // A local keeps whether its value's slot existed as of its own
+            // initialization (`Value.slotFoundCpp`).
+            const slotFoundCpp =
+                narrowed.slotFoundCpp === undefined ||
+                cppIdentifierPattern.test(narrowed.slotFoundCpp)
+                    ? narrowed.slotFoundCpp
+                    : (() => {
+                          const name =
+                              this.context.allocateTemporaryCppName(
+                                  "slot_found",
+                              );
+                          this.context.emit({
+                              kind: "declaration",
+                              type: "const bool",
+                              name,
+                              initializer: narrowed.slotFoundCpp,
+                              attributes: "[[maybe_unused]] ",
+                          });
+                          return name;
+                      })();
             this.context.emit({
                 kind: "declaration",
                 name: cppName,
@@ -1059,6 +1079,7 @@ export class DeclarationLowerer {
                     ...(narrowed.preserveUncheckedLookup
                         ? { preserveUncheckedLookup: true as const }
                         : {}),
+                    ...(slotFoundCpp ? { slotFoundCpp } : {}),
                     ...(optionalHandle
                         ? {
                               optionalStorageCpp: boundCpp,

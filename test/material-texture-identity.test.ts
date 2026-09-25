@@ -12,6 +12,7 @@ import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 const scenePath = "corpus/babylon-lite/lab/lite/src/lite/scene149.ts";
@@ -161,7 +162,7 @@ test("native material getters retain producer variants, replacement aliases and 
 #include <cmath>
 namespace bbl {
 namespace upstream { enum class MaterialTextureSrgb { linear, srgb, srgb_unless_standard, base_color, lightmap }; }
-${cppFunction(readFileSync("native/src/pal_gpu_shared.hpp", "utf8"), "inline bool material_slot_srgb(")}
+${cppFunction(sharedGpuSource(), "bool material_slot_srgb(")}
 Engine create_engine(EngineOptions) {return {};}
 ${functions}
 PixelsTexture create_texture_2d_from_pixels(Engine& engine,const js::U8Array& pixels,double width,double height,PixelsTextureOptions options) {

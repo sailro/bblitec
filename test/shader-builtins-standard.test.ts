@@ -48,6 +48,7 @@ import {
     findRepositoryRoot,
     sharedUpstreamStore,
 } from "../src/upstream-source.js";
+import { sharedGpuSource } from "./native-fixture.js";
 
 const root = findRepositoryRoot();
 const store = sharedUpstreamStore();
@@ -275,10 +276,7 @@ test("shared vertex projections preserve every PAL binding, varying and optional
         );
         assert.match(source, new RegExp(store.pin.sourceVersion));
     }
-    const pal = readFileSync(
-        join(root, "native", "src", "pal_gpu_shared.hpp"),
-        "utf8",
-    );
+    const pal = sharedGpuSource();
     assert.match(
         pal,
         new RegExp(

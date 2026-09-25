@@ -73,6 +73,9 @@ struct UploadedMesh {
             instances->pick_reference = false;
     }
 };
+// The two backends' row types, as their row writes name them.
+using GpuMesh = UploadedMesh;
+using DawnMesh = UploadedMesh;
 } // namespace bbl
 
 #include "updates.hpp"

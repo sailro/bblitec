@@ -13,6 +13,8 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("geometry stays local: shader draws share one world record and a mesh uploads its geometry's own lanes", (t) => {
@@ -29,7 +31,7 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
         }),
         renderer = plan.source;
     const scene = new SceneLowerer(context).lowerCore().source;
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     writeFileSync(join(output, "matrix.hpp"), pinnedMatrixHeader(context));
     writeFileSync(
         join(output, "world.hpp"),
@@ -58,26 +60,27 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
     namespace bbl::pal {
         ${cppRecord(shared, "struct GpuVertex {")}
         ${[
-            "inline std::array<float, 16> mesh_block_world(",
-            "inline std::vector<GpuVertex> mesh_gpu_vertices(",
+            "std::array<float, 16> mesh_block_world(",
+            "std::vector<GpuVertex> mesh_gpu_vertices(",
             "inline std::optional<std::array<float, 16>> shader_world_view(",
         ]
             .map((signature) => cppFunction(shared, signature))
             .join("\n")}
         ${cppRecord(shared, "struct ShaderPassMatrices {")}
         ${cppRecord(shared, "struct ShaderDrawMatrices {")}
-        ${cppFunction(shared, "inline bool block_is_shared_scene_matrix(")}
-        ${cppFunction(shared, "inline void shader_stage_block_floats(")}
+        ${cppFunction(shared, "bool block_is_shared_scene_matrix(")}
+        ${cppFunction(shared, "void shader_stage_block_floats(")}
         ${shared.slice(shared.indexOf("struct SharedGeometryIdentity {"), shared.lastIndexOf("/**", shared.indexOf("inline void release_shared_user(")))}
+        ${cppFunction(shared, "std::uint64_t fnv1a_append(")}
+        ${cppFunction(shared, "SharedGeometryIdentity shared_geometry_identity(")}
     }`,
     );
     const consumers: string[] = [];
-    for (const file of [
-        "pal_sdl_gpu.cpp",
-        "pal_dawn.cpp",
-        "pal_render_capture.hpp",
+    for (const source of [
+        sceneBackendSource("sdl"),
+        sceneBackendSource("dawn"),
+        readFileSync("native/src/pal_render_capture.hpp", "utf8"),
     ]) {
-        const source = readFileSync(`native/src/${file}`, "utf8");
         let offset = 0;
         while (true) {
             const start = source.indexOf(

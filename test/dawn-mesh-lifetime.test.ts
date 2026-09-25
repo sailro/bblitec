@@ -8,6 +8,8 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("Dawn mesh teardown releases bindings before resources and shared layouts", (t) => {
@@ -19,12 +21,12 @@ test("Dawn mesh teardown releases bindings before resources and shared layouts",
     }
     const output = resolve("artifacts/dawn-mesh-lifetime");
     mkdirSync(output, { recursive: true });
-    const source = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const source = sceneBackendSource("dawn");
     const pipelineKey = source.match(
         /using DawnVariantPipelineKey[\s\S]*?;/,
     )?.[0];
     assert.ok(pipelineKey);
-    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const shared = sharedGpuSource();
     writeFileSync(
         join(output, "records.hpp"),
         [

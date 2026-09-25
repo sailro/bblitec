@@ -45,6 +45,37 @@ export function presentMembers(type: ts.Type): readonly ts.Type[] {
     );
 }
 
+/**
+ * Whether a slot of this type -- a Map value, an array element, an object
+ * field -- can hold `null` but never `undefined`: its absent content is
+ * then `null`, so a missing slot is the only `undefined` a read yields.
+ */
+export function slotHoldsOnlyNull(type: ts.Type): boolean {
+    const absent = nullability(type);
+    return absent.null && !absent.undefined;
+}
+
+/** Whether a type is a generic instantiation (`Map<K, V>`, `Array<T>`). */
+export function isTypeReference(type: ts.Type): type is ts.TypeReference {
+    return (
+        (type.flags & ts.TypeFlags.Object) !== 0 &&
+        ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !== 0
+    );
+}
+
+/**
+ * The element type of an array-like type, or undefined for another type.
+ */
+export function arrayElementType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): ts.Type | undefined {
+    return checker.getIndexTypeOfType(
+        checker.getNonNullableType(type),
+        ts.IndexKind.Number,
+    );
+}
+
 /** Which absent values a type admits. */
 export interface Nullability {
     /** A member is `null`. */

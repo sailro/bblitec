@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -8,6 +8,7 @@ import {
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sceneBackendSource,
 } from "./native-fixture.js";
 
 test("scene attachments preserve MSAA and sprite contexts retain target, load and stage order", (t) => {
@@ -19,14 +20,11 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
     }
     const output = resolve("artifacts/scene-stage-contracts");
     mkdirSync(output, { recursive: true });
-    for (const [backend, file] of [
-        ["Sdl", "pal_sdl_gpu.cpp"],
-        ["Dawn", "pal_dawn.cpp"],
+    for (const [backend, name] of [
+        ["Sdl", "sdl"],
+        ["Dawn", "dawn"],
     ] as const) {
-        const encode = cppFunction(
-            readFileSync(`native/src/${file}`, "utf8"),
-            "void encode(",
-        );
+        const encode = cppFunction(sceneBackendSource(name), "void encode(");
         const stageStart = encode.indexOf(
             "for (const upstream::RenderStage stage : render_plan.stages)",
         );

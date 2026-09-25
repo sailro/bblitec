@@ -53,6 +53,7 @@ test("both renderers synchronize a scene in one order, keep surviving uploads, a
         "/I",
         join(nativeFixtureVcpkgRoot, "include"),
         "test/fixtures/scene-topology-sync-check.cpp",
+        "native/src/pal_gpu_shared.cpp",
         ...units,
         "/link",
         "/OPT:REF",

@@ -9,6 +9,7 @@ import {
     cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 
 test("sprite backend uploads preserve dirty rows, clocks, bindings and scene insertion order", (t) => {
@@ -19,7 +20,7 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
     }
     const read = (name: string) =>
         readFileSync(`native/src/${name}.hpp`, "utf8").replaceAll("\r\n", "\n");
-    const shared = read("pal_gpu_shared"),
+    const shared = sharedGpuSource(),
         sdl = read("pal_sdl_gpu_sprite"),
         dawn = read("pal_dawn_sprite");
     const sdlBillboard = read("pal_sdl_gpu_billboard"),
@@ -71,17 +72,17 @@ test("sprite backend uploads preserve dirty rows, clocks, bindings and scene ins
     ].join("\n");
     const functions = [
         ...[
-            "inline SpriteDirtyRange resolve_sprite_dirty_range(",
-            "inline SpriteInstanceUpload resolve_sprite_instance_upload(",
-            "inline bool sprite_blend_equal(",
-            "inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(",
-            "inline bool sprite_scene_pipeline_compatible(",
-            "inline Vec3d frame_floating_origin_offset(",
+            "SpriteDirtyRange resolve_sprite_dirty_range(",
+            "SpriteInstanceUpload resolve_sprite_instance_upload(",
+            "bool sprite_blend_equal(",
+            "SpriteLayerPipelinePlan sprite_layer_pipeline_plan(",
+            "bool sprite_scene_pipeline_compatible(",
+            "Vec3d frame_floating_origin_offset(",
             "inline CameraRecord* scene_camera(",
-            "inline BillboardDrawPlan billboard_draw_plan(",
-            "inline bool billboard_needs_upload(",
-            "inline void stamp_billboard_upload(",
-            "inline std::string sprite_program_stem(",
+            "BillboardDrawPlan billboard_draw_plan(",
+            "bool billboard_needs_upload(",
+            "void stamp_billboard_upload(",
+            "std::string sprite_program_stem(",
         ].map((signature) => cppFunction(shared, signature)),
         cppRecord(dawn, "struct DawnSpriteProgram {"),
         cppFunction(

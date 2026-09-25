@@ -2316,6 +2316,15 @@ export interface ValueFields {
      * not-found guard away.
      */
     optionalFoundCpp?: string;
+    /**
+     * Whether the value was read from a slot that exists: a key `Map.get`
+     * found, the owner an optional chain reached, the element `pop()` or
+     * `shift()` removed, an index within the array. The value's own absence
+     * is one native state for a stored `null` and a missing slot alike; this
+     * flag tells `=== undefined` (no slot) from `=== null` (a stored null),
+     * and spells them apart.
+     */
+    slotFoundCpp?: string;
     /** JavaScript truthiness when it differs from mere optional presence. */
     truthinessCpp?: string;
     /** An Error delivered by native device recovery, with the Error message contract. */

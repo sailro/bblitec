@@ -8,6 +8,7 @@ import {
     cppFunction,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    sharedGpuSource,
 } from "./native-fixture.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -65,13 +66,13 @@ test(
     "laid-out canvas panes retain physical bounds at any CSS density",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "canvas-pane-density",
             `
         #include <bblite/runtime.hpp>
         #include <cassert>
-        namespace bbl::pal { ${cppFunction(source, "inline PixelViewport laid_out_canvas_pane(")} }
+        namespace bbl::pal { ${cppFunction(source, "PixelViewport laid_out_canvas_pane(")} }
         int main() {
             bbl::Engine engine;
             engine.options.width = 1200; engine.options.height = 800;
@@ -221,7 +222,7 @@ test(
     "VAT synchronization retains unchanged payloads and retries failed uploads",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "vat-record-sync",
             `
@@ -273,7 +274,7 @@ test(
     "target planning resolves pane sizes, scaled chains and format inheritance before allocation",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "render-target-plan",
             `
@@ -284,10 +285,10 @@ test(
             std::optional<Pane> surface_canvas_pane(const Engine&, std::optional<UiElementHandle> canvas, unsigned, unsigned) {
                 return canvas ? std::optional<Pane>{{301,201}} : std::nullopt;
             }
-            ${cppFunction(source, "inline std::pair<std::uint32_t, std::uint32_t> surface_target_extent(")}
+            ${cppFunction(source, "std::pair<std::uint32_t, std::uint32_t> surface_target_extent(")}
             ${cppFunction(source, "inline std::uint32_t scaled_target_extent(")}
             ${cppFunction(source, "struct ScaledExtents {")};
-            ${cppFunction(source, "inline ScaledExtents scaled_target_extents(")}
+            ${cppFunction(source, "ScaledExtents scaled_target_extents(")}
             template<class Format> ${cppFunction(source, "struct RenderTargetPlan {")};
             template<class Format, class Convert> ${cppFunction(source, "std::vector<RenderTargetPlan<Format>> plan_render_targets(")}
         }
@@ -399,7 +400,7 @@ test(
     "backdrop sizing and screen-space recording preserve allocation retries and pass order",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         runCpp(
             "effect-pass-plans",
             `
@@ -454,7 +455,7 @@ test(
     "pick contributor admission follows the picked scene, visibility and source filter",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         for (const floating of [0, 1]) {
             runCpp(
                 `pick-contributor-admission-${floating}`,
@@ -464,7 +465,7 @@ test(
             #include <cassert>
             namespace bbl::pal {
                 ${cppFunction(source, "inline bool billboard_pick_draws(")}
-                ${cppFunction(source, "inline void validate_pick_contributors(")}
+                ${cppFunction(source, "void validate_pick_contributors(")}
             }
             int main() {
                 bbl::Engine engine;
@@ -520,7 +521,7 @@ test(
     "detailed picking refuses only thin instances admitted by geometry and filter gates",
     { skip: !nativeTools },
     () => {
-        const source = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+        const source = sharedGpuSource();
         const renderer = readFileSync(
             "src/lowering/renderer-lowerer.ts",
             "utf8",

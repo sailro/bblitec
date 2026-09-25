@@ -1,5 +1,5 @@
 import { inlineCpp } from "./generated-cpp.js";
-import { cppFunction } from "./native-fixture.js";
+import { cppFunction, sceneBackendSource } from "./native-fixture.js";
 /**
  * The node-material composition path: a Babylon NME graph compiled by the
  * pin's own emitter and pipeline builder, never re-derived here.
@@ -178,7 +178,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
 });
 
 test("both native node paths bind per-mesh morph storage and its fallback", () => {
-    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const sdl = sceneBackendSource("sdl");
     const drawNode = cppFunction(sdl, "void draw_node_variant(");
     const resolverStart = drawNode.indexOf("const auto resolve_storage");
     const resolverEnd = drawNode.indexOf("bind_stage_storage(", resolverStart);
@@ -193,7 +193,7 @@ test("both native node paths bind per-mesh morph storage and its fallback", () =
     assert.match(sdl, /gpu_mesh\.morph_deltas = state\.empty_morph_deltas;/);
     assert.match(sdl, /gpu_mesh\.morph_weights = state\.empty_morph_weights;/);
 
-    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const dawn = sceneBackendSource("dawn");
     assert.match(
         dawn,
         /storage_layout_entry\(view\.morph\.deltas_binding, WGPUShaderStage_Vertex\)/,
@@ -252,7 +252,7 @@ test("both node backends apply alpha-combine blending without depth writes", () 
     // A geometry view joins the same expression rather than forking it: the
     // pin compiles that view at alpha mode 0 whatever the graph declares, so
     // it is one more reason a node draw is opaque, not a second predicate.
-    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const sdl = sceneBackendSource("sdl");
     assert.match(
         sdl,
         /traits\.transparent && !shadow_pass && !caster && !geometry_view;/,
@@ -266,7 +266,7 @@ test("both node backends apply alpha-combine blending without depth writes", () 
         /info\.depth_stencil_state\.enable_depth_write = !transparent;/,
     );
 
-    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const dawn = sceneBackendSource("dawn");
     assert.match(
         dawn,
         /traits\.transparent && !shadow_pass && !caster && !geometry_view;/,

@@ -33,6 +33,7 @@ import { syntaxKindName } from "../source-location.js";
 import {
     aliasTarget,
     declaredSymbol,
+    enumMemberConstant,
     isAbsentTypeofIdentifier,
     resolvedSymbol,
 } from "./symbols.js";
@@ -357,7 +358,11 @@ export function stringConcatPart(
             },
             node,
         );
-        const absent = context.cppString(absentSpelling(context, value, node));
+        // A value that knows whether its slot existed spells a stored
+        // `null` and a missing slot apart.
+        const absent = value.slotFoundCpp
+            ? `(${value.slotFoundCpp} ? "null" : "undefined")`
+            : context.cppString(absentSpelling(context, value, node));
         // A present string is already text; any other part is joined into one.
         const text =
             inner.kind === "string" ? present : `bbl::js::concat(${present})`;
@@ -728,14 +733,10 @@ export class ExpressionLowerer {
             if (mathFunction) return mathFunction;
             const audioPrototype = audioPrototypeValue(this.context, unwrapped);
             if (audioPrototype) return audioPrototype;
-            const member = resolvedSymbol(
+            const constant = enumMemberConstant(
                 this.context.checker,
                 unwrapped,
-            )?.valueDeclaration;
-            const constant =
-                member && ts.isEnumMember(member)
-                    ? this.context.checker.getConstantValue(member)
-                    : this.context.checker.getConstantValue(unwrapped);
+            );
             if (typeof constant === "string")
                 return staticStringValue(constant, (text) =>
                     this.context.cppString(text),
@@ -915,6 +916,13 @@ export class ExpressionLowerer {
             this.context.fail(unwrapped, "Unsupported constructor expression.");
         }
         if (ts.isElementAccessExpression(unwrapped)) {
+            // `Tone["Soft"]` names an enum member as `Tone.Soft` does.
+            const member = enumMemberConstant(this.context.checker, unwrapped);
+            if (typeof member === "string")
+                return staticStringValue(member, (text) =>
+                    this.context.cppString(text),
+                );
+            if (typeof member === "number") return numberConstantValue(member);
             const value = this.compileIndexedValue(
                 unwrapped,
                 expression,
