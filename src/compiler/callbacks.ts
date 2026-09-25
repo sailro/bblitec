@@ -405,6 +405,10 @@ export class CallbackLowerer {
         let compiled: CapturedClosure;
         try {
             const emitBody = () => {
+                const binding = this.context.registerNativeConstBinding(
+                    dataName,
+                    true,
+                );
                 const result = this.context.compileCallbackWithValues(
                     callback,
                     [
@@ -413,6 +417,7 @@ export class CallbackLowerer {
                             cpp: dataName,
                             dataType: { kind: "f32array" },
                             borrowedData: true,
+                            nativeCaptures: [binding],
                         },
                     ],
                     expression,

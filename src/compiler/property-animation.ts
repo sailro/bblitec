@@ -204,15 +204,22 @@ export class PropertyAnimationTargetLowerer {
             const argument = context.allocateTemporaryCppName(
                 "property_animation_value",
             );
-            const closure = context.captureManagedClosureLines(() =>
+            const closure = context.captureManagedClosureLines(() => {
+                const binding = context.registerNativeBinding(
+                    argument,
+                    false,
+                    true,
+                    "float",
+                );
                 context.withRecordScopes(owner, () =>
                     context.classLowerer.compileSetter(owner, setter, node, {
                         kind: "number",
                         cpp: `static_cast<double>(${argument})`,
                         dataType: { kind: "number" },
+                        nativeCaptures: [binding],
                     }),
-                ),
-            );
+                );
+            });
             return (
                 `bbl::PropertyAnimationTarget{` +
                 `bbl::PropertyAnimationTargetKind::callback, {}, ` +
@@ -236,6 +243,7 @@ export class PropertyAnimationTargetLowerer {
             "property_animation_value",
         );
         const closure = context.captureManagedClosureLines(() => {
+            context.registerNativeBinding(argument, false, true, "float");
             context.useNativeValue(retained);
             context.emit(`${fieldCpp} = static_cast<double>(${argument});`);
         });

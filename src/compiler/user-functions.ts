@@ -1183,6 +1183,7 @@ export interface UserFunctionContext
             | "emitStatement"
             | "statementTerminatesAfterLowering"
             | "bindings"
+            | "platformDocumentHidden"
             | "declarations"
             | "allocateUserFunctionPrefix"
             | "allocateTemporaryCppName"
@@ -3658,10 +3659,6 @@ export class UserFunctionLowerer {
                 closure = `bbl::js::make_closure(${captured.initializer}, bblscene::${sharedName}{})`;
                 writable(entry.value).nativeCaptures = captured.nativeCaptures;
             } else if (localGroup?.sharedName) {
-                // A namespace body reaches its caller's locals only through
-                // its environment; a value that names one uncaptured stays
-                // with an inline specialization.
-                if (captured.uncaptured) throw new SharedCallRequiresInline();
                 closure = context.nativeEmission.renderSharedClosure(
                     captured,
                     returnCpp,

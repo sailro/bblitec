@@ -115,6 +115,7 @@ interface PlatformCallContext
             | "emitDiscardedValue"
             | "reachFeature"
             | "reachJsData"
+            | "registerNativeBinding"
             | "assetRegistry"
             | "requireDefaultEngine"
             | "requireEngine"
@@ -1692,11 +1693,18 @@ export class PlatformCalls {
             this.context.emit(
                 `const auto ${rect} = bbl::ui_get_client_rect(${engine}, ${element.cpp});`,
             );
+            const binding = this.context.registerNativeBinding(
+                rect,
+                false,
+                false,
+                "const bbl::UiClientRect",
+            );
             const component = (name: string): Value => ({
                 kind: "number",
                 cpp: `${rect}.${name}`,
                 dataType: { kind: "number" },
                 engineCpp: engine,
+                nativeCaptures: [binding],
             });
             return {
                 kind: "record",

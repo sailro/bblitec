@@ -1,6 +1,5 @@
 import { NativeCaptureCache } from "./compiler/native-capture-cache.js";
 import { cppTokens } from "./compiler/cpp-identifiers.js";
-import { unqualifiedIdentifiers } from "./compiler/cpp-statements.js";
 import {
     isStringValue,
     optionalPresentCpp,
@@ -4948,10 +4947,19 @@ class Compiler implements LoweringServices {
     public captureNativeExpression(
         compile: () => string,
     ): import("./compiler/closure-captures.js").NativeExpression {
+        const { value: cpp, nativeCaptures } =
+            this.captureNativeDependencies(compile);
+        return { cpp, nativeCaptures };
+    }
+
+    public captureNativeDependencies<T>(compile: () => T): {
+        value: T;
+        nativeCaptures: readonly NativeCaptureBinding[];
+    } {
         const dependencies = new EmissionSet<NativeCaptureBinding>();
         this.nativeDependencyStack.push(dependencies);
         try {
-            return { cpp: compile(), nativeCaptures: [...dependencies] };
+            return { value: compile(), nativeCaptures: [...dependencies] };
         } finally {
             this.popDependencies(this.nativeDependencyStack);
         }
@@ -5012,31 +5020,11 @@ class Compiler implements LoweringServices {
                 struct.declaration,
             );
         }
-        // Enclosing names the body reads without its environment: bindings
-        // it did not capture, and other enclosing locals (a platform event
-        // parameter) it names unqualified.
-        const captured = new Set(capture.nativeCaptures);
-        const unqualified = new Set(unqualifiedIdentifiers(tokens));
-        const uncaptured = [...identifiers].filter((name) => {
-            const binding = this.nativeBindings.get(name);
-            if (binding)
-                return (
-                    binding.sequence <= capture.boundary &&
-                    !captured.has(binding)
-                );
-            const allocated = this.allocatedCppNames.get(name);
-            return (
-                allocated !== undefined &&
-                allocated <= allocationBoundary &&
-                unqualified.has(name)
-            );
-        });
         return {
             lines: [...capture.declarations, ...lines],
             environment: capture.environment,
             initializer: capture.initializer,
             ...(environmentType ? { environmentType } : {}),
-            ...(uncaptured.length > 0 ? { uncaptured } : {}),
             nativeCaptures: capture.nativeCaptures,
             localBindings: [
                 capture.environment,

@@ -61,6 +61,8 @@ export interface NativeFunctionContext extends Pick<
     | "bindings"
     | "allocateUserFunctionPrefix"
     | "captureEmittedLines"
+    | "captureNativeDependencies"
+    | "nativeBindingCheckpoint"
     | "nativeEmission"
     | "registerNativeTemporary"
     | "registerNativeBinding"
@@ -184,9 +186,10 @@ export function captureDataFunctionBody(
          *  method's synthetic `this` record). */
         beforeBody?: () => void;
         /** The definition is emitted at namespace scope. */
-        namespaceScope?: boolean;
+        namespaceScope?: ts.Node;
     },
 ): { parameterDeclarations: string[]; lines: string[] } {
+    const bindingBoundary = context.nativeBindingCheckpoint();
     context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
         const parameterDeclarations = [
@@ -224,9 +227,8 @@ export function captureDataFunctionBody(
             channels?.namespaceScope ? { namespaceScope: true } : {},
         );
         try {
-            return {
-                parameterDeclarations,
-                lines: context.dataLowerer.captureStringIndexes(
+            const captured = context.captureNativeDependencies(() =>
+                context.dataLowerer.captureStringIndexes(
                     parameters
                         .filter(
                             (parameter) =>
@@ -242,7 +244,19 @@ export function captureDataFunctionBody(
                         })),
                     () => context.captureEmittedLines(emitBody),
                 ),
-            };
+            );
+            if (
+                channels?.namespaceScope &&
+                captured.nativeCaptures.some(
+                    (binding) => binding.sequence <= bindingBoundary,
+                )
+            )
+                context.fail(
+                    channels.namespaceScope,
+                    "A namespace body reads an enclosing native local and requires a closure.",
+                    "entry-scope-required",
+                );
+            return { parameterDeclarations, lines: captured.value };
         } finally {
             context.endNativeFunctionBody();
         }
@@ -1838,7 +1852,7 @@ export class NativeFunctionLowerer {
                     this.emitValueBody(body.statements, !!signature.returnType);
                 },
                 {
-                    namespaceScope: true,
+                    namespaceScope: signature.method,
                     bindLeading: () =>
                         signature.fields.map((field) => {
                             const cppName = this.context.bindings.cppIdentifier(
@@ -2339,7 +2353,7 @@ export class NativeFunctionLowerer {
                 () => {
                     this.emitValueBody(body.statements, !!signature.returnType);
                 },
-                { namespaceScope: true },
+                { namespaceScope: signature.declaration },
             ),
             signature.declaration,
         );

@@ -112,6 +112,7 @@ interface ClassLoweringContext extends Pick<
     | "compileValue"
     | "emitStatement"
     | "bindings"
+    | "platformDocumentHidden"
     | "bindClassParameterValue"
     | "compileClassParameterValue"
     | "bindClassField"

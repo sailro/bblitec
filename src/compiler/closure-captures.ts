@@ -37,8 +37,6 @@ export interface CapturedClosure {
     nativeCaptures: readonly NativeCaptureBinding[];
     localBindings: readonly string[];
     environmentType?: string;
-    /** Enclosing native bindings the body names without capturing them. */
-    uncaptured?: readonly string[];
 }
 
 /**

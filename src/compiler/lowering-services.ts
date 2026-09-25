@@ -360,6 +360,10 @@ export interface LoweringServices {
     ): string[];
     useNativeValue(value: Value, seen?: Set<Value>): void;
     captureNativeExpression(compile: () => string): NativeExpression;
+    captureNativeDependencies<T>(compile: () => T): {
+        value: T;
+        nativeCaptures: readonly NativeCaptureBinding[];
+    };
     captureManagedClosureLines(
         emitBody: () => void,
         byReference?: boolean | "entry",
