@@ -20,7 +20,7 @@ export interface ShadowIntrinsicContext
             | "admissions"
             | "compileNumber"
             | "compileBoolean"
-            | "compileF32ArrayCallback"
+            | "callbacks"
             | "allocateTemporaryCppName"
             | "emit"
             | "expectObjectLiteral"
@@ -443,7 +443,7 @@ export function compileShadowIntrinsic(
                 "shadow-generator",
                 argumentAt(call, 0),
             );
-            const callback = context.compileF32ArrayCallback(
+            const callback = context.callbacks.compileF32ArrayCallback(
                 argumentAt(call, 1),
             );
             const disposer = context.allocateTemporaryCppName(

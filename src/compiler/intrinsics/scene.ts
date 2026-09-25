@@ -27,8 +27,7 @@ export interface SceneIntrinsicContext
             | "expectObjectLiteral"
             | "objectProperty"
             | "expectSameEngine"
-            | "compileFrameCallback"
-            | "compileVoidCallback"
+            | "callbacks"
             | "captureManagedClosureLines"
             | "useNativeValue"
             | "compileStringLiteral"
@@ -180,7 +179,7 @@ export function compileSceneIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::on_before_render(${scene.cpp}, ` +
-                    `${context.compileFrameCallback(argumentAt(call, 1))})`,
+                    `${context.callbacks.compileFrameCallback(argumentAt(call, 1))})`,
             };
         }
 
@@ -192,7 +191,7 @@ export function compileSceneIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::on_scene_dispose(${scene.cpp}, ` +
-                    `${context.compileVoidCallback(argumentAt(call, 1))})`,
+                    `${context.callbacks.compileVoidCallback(argumentAt(call, 1))})`,
             };
         }
 

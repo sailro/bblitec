@@ -57,9 +57,7 @@ interface AudioCallContext
             | "conditions"
             | "compileStringLiteral"
             | "dataTypes"
-            | "hoistForwardCallbackBindings"
-            | "compilePlatformCallback"
-            | "platformEventCallbackIdentity"
+            | "callbacks"
             | "bindings"
             | "emitDiscardedValue"
         > {}
@@ -517,7 +515,10 @@ export function compileAudioMethodCall(
                         "Only scheduled audio source ended listeners are represented.",
                     );
                 const callback = argumentAt(call, 1);
-                context.hoistForwardCallbackBindings(callback, call.pos);
+                context.callbacks.hoistForwardCallbackBindings(
+                    callback,
+                    call.pos,
+                );
                 const removing = method === "removeEventListener";
                 const callbackType =
                     context.checker.getTypeAtLocation(callback);
@@ -539,10 +540,11 @@ export function compileAudioMethodCall(
                                       callback,
                                   )
                                 : value;
-                        identity = context.platformEventCallbackIdentity(
-                            snapshot,
-                            callback,
-                        );
+                        identity =
+                            context.callbacks.platformEventCallbackIdentity(
+                                snapshot,
+                                callback,
+                            );
                     } else {
                         if (
                             callbackType
@@ -556,11 +558,12 @@ export function compileAudioMethodCall(
                                 callback,
                                 "Audio ended event payloads are not represented yet.",
                             );
-                        const compiled = context.compilePlatformCallback(
-                            callback,
-                            undefined,
-                            [],
-                        );
+                        const compiled =
+                            context.callbacks.compilePlatformCallback(
+                                callback,
+                                undefined,
+                                [],
+                            );
                         identity = compiled.identity;
                         listener = compiled.cpp;
                     }

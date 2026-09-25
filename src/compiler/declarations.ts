@@ -88,6 +88,7 @@ interface DeclarationContext
             | "constArrayLiteral"
             | "defaultEngine"
             | "emitDiscardedValue"
+            | "callbacks"
             | "emitNativeCallbackStorage"
             | "engineLifecycle"
             | "evaluator"
@@ -110,8 +111,6 @@ interface DeclarationContext
         ts.VariableDeclaration,
         DataType | undefined
     >;
-    /** Callback bindings hoisted ahead of their declaration. */
-    readonly hoistedCallbackBindings: Set<ts.Symbol>;
     /** Host-page element lookups awaiting the retained UI projection. */
     readonly pendingHostUiLookups: Value[];
     /** Module constants the static evaluator still folds. */
@@ -240,10 +239,14 @@ export class DeclarationLowerer {
         );
         if (
             declarationSymbol &&
-            this.context.hoistedCallbackBindings.has(declarationSymbol) &&
+            this.context.callbacks.hoistedCallbackBindings.has(
+                declarationSymbol,
+            ) &&
             this.context.bindings.lookupOptional(declaration.name)
         ) {
-            this.context.hoistedCallbackBindings.delete(declarationSymbol);
+            this.context.callbacks.hoistedCallbackBindings.delete(
+                declarationSymbol,
+            );
             return;
         }
         const sourceName = declaration.name.text;

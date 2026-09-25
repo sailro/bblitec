@@ -42,8 +42,7 @@ export interface EngineIntrinsicContext
             | "expectObjectLiteral"
             | "objectProperty"
             | "propertyName"
-            | "compileFrameCallback"
-            | "compileVoidCallback"
+            | "callbacks"
         > {}
 
 function reachRenderer(
@@ -215,7 +214,7 @@ export function compileEngineIntrinsic(
             });
             if (update) {
                 context.emit(
-                    `bbl::on_frame_graph_update(${nativeContext}, ${context.compileFrameCallback(update)});`,
+                    `bbl::on_frame_graph_update(${nativeContext}, ${context.callbacks.compileFrameCallback(update)});`,
                 );
             }
             return {
@@ -326,7 +325,7 @@ export function compileEngineIntrinsic(
             context.reachFeature("engine:gpu-retirement", call);
             return {
                 kind: "data",
-                cpp: `bbl::on_render_target_texture_resize(${engine}, ${target.cpp}, ${context.compileVoidCallback(argumentAt(call, 1))})`,
+                cpp: `bbl::on_render_target_texture_resize(${engine}, ${target.cpp}, ${context.callbacks.compileVoidCallback(argumentAt(call, 1))})`,
                 dataType: { kind: "function", parameters: [], identity: true },
             };
         }

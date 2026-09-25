@@ -169,7 +169,7 @@ export function compileCanvasValue(
         requireWindowHost(context, node);
         return {
             kind: "worker-resize-observer",
-            cpp: `bbl::pal::create_resize_observer(${context.compileFrameCallback(argumentAt(node, 0), "void")})`,
+            cpp: `bbl::pal::create_resize_observer(${context.callbacks.compileFrameCallback(argumentAt(node, 0), "void")})`,
             impure: true,
         };
     }
@@ -213,7 +213,7 @@ export function compileCanvasValue(
             }
             return {
                 kind: "void",
-                cpp: `${owner.cpp}->add_change_listener(${context.compileFrameCallback(argumentAt(node, 1), "void")})`,
+                cpp: `${owner.cpp}->add_change_listener(${context.callbacks.compileFrameCallback(argumentAt(node, 1), "void")})`,
             };
         }
         if (

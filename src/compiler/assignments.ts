@@ -511,7 +511,7 @@ export interface AssignmentContext
             | "bindClassField"
             | "emitOptionalResourceAssignment"
             | "emitUiPropertyAssignment"
-            | "compilePlatformCallback"
+            | "callbacks"
             | "compileNumber"
             | "compileBoolean"
             | "compileColor3"

@@ -22,7 +22,6 @@ import type {
     DefaultRenderTaskEmission,
     Feature,
     ResolvedCompileOptions,
-    FrameCallbackSignature,
     Value,
     ValueKind,
 } from "./types.js";
@@ -44,6 +43,7 @@ import type { ConditionLowerer } from "./conditions.js";
 import type { BrowserErasure } from "./browser-erasure.js";
 import type { DeclarationLowerer } from "./declarations.js";
 import type { PropertyAccessLowerer } from "./properties.js";
+import type { CallbackLowerer } from "./callbacks.js";
 import type { AsyncActivations } from "./async-activations.js";
 import type { EngineLifecycle } from "./engine-lifecycle.js";
 import type { SharedClosureAnalysis } from "./shared-closure-analysis.js";
@@ -80,16 +80,6 @@ export interface LoweringServices {
     hasPresentationHost(): boolean;
     hasFeature(feature: Feature): boolean;
     failAtFile(message: string): never;
-    hoistForwardCallbackBindings(callback: ts.Expression, before: number): void;
-    platformEventCallbackIdentity(callback: Value, node: ts.Node): string;
-    compilePlatformCallback(
-        callback: ts.Expression,
-        parameter: { cppType: string; name: string } | undefined,
-        values: readonly Value[],
-        documentHiddenCpp?: string,
-        captureByValue?: boolean,
-        assignIdentity?: boolean,
-    ): { cpp: string; identity: string };
     readonly sourceFile: ts.SourceFile;
     readonly checker: ts.TypeChecker;
     readonly options: ResolvedCompileOptions;
@@ -102,6 +92,7 @@ export interface LoweringServices {
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;
     readonly propertyAccess: PropertyAccessLowerer;
+    readonly callbacks: CallbackLowerer;
     readonly asyncActivations: AsyncActivations;
     readonly engineLifecycle: EngineLifecycle;
     readonly sharedClosures: SharedClosureAnalysis;
@@ -212,13 +203,6 @@ export interface LoweringServices {
     compileVec2(expression: ts.Expression): string;
     compileVec4(expression: ts.Expression): string;
     compileBoolean(expression: ts.Expression): string;
-    compileFrameCallback(
-        expression: ts.Expression,
-        signature?: FrameCallbackSignature,
-        retainCaptures?: boolean,
-    ): string;
-    compileVoidCallback(expression: ts.Expression): string;
-    compileF32ArrayCallback(expression: ts.Expression): string;
     compileColor3(expression: ts.Expression): string;
     compileColor4(expression: ts.Expression): string;
     compileNumber(
@@ -547,9 +531,6 @@ export interface LoweringServices {
         arguments_: readonly Value[],
         callNode: ts.Node,
     ): Value;
-    compilePhysicsCollisionCallback(expression: ts.Expression): string;
-    compilePhysicsTriggerCallback(expression: ts.Expression): string;
-    compilePhysicsCharacterCallback(expression: ts.Expression): string;
     knownValueWithoutEvaluation(expression: ts.Expression): Value | undefined;
     knownCollectionCardinality(expression: ts.Expression): number | undefined;
     runtimeCollectionCardinality(expression: ts.Expression): number | undefined;

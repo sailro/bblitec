@@ -224,7 +224,7 @@ export interface ExpressionContext
             | "cppString"
             | "browserErasure"
             | "libraryGlobal"
-            | "compileFrameCallback"
+            | "callbacks"
             | "requireDefaultEngine"
             | "handleCollections"
             | "handleCollectionIterationTarget"
@@ -239,9 +239,6 @@ export interface ExpressionContext
             | "compileExecutedUrlFunctionCall"
             | "compileStaticFetchMethod"
             | "compilePlatformCall"
-            | "compilePlatformCallback"
-            | "platformEventCallbackIdentity"
-            | "hoistForwardCallbackBindings"
             | "reachJson"
             | "reachLocalStorage"
             | "reachFileReader"
@@ -1845,7 +1842,7 @@ export class ExpressionLowerer {
                 );
             }
             const engine = this.context.requireDefaultEngine(call);
-            const callback = this.context.compileFrameCallback(
+            const callback = this.context.callbacks.compileFrameCallback(
                 argumentAt(call, 0),
                 "void",
             );
@@ -1856,7 +1853,7 @@ export class ExpressionLowerer {
             };
         }
         const engine = this.context.requireDefaultEngine(call);
-        const callback = this.context.compileFrameCallback(
+        const callback = this.context.callbacks.compileFrameCallback(
             argumentAt(call, 0),
             "void",
         );
@@ -4615,7 +4612,7 @@ export class ExpressionLowerer {
                 cpp:
                     "bbl::sprite_renderer_before_update(" +
                     `${engineCpp}, ${renderer.cpp}, ` +
-                    `${this.context.compileFrameCallback(argumentAt(call, 0), "double-delta")})`,
+                    `${this.context.callbacks.compileFrameCallback(argumentAt(call, 0), "double-delta")})`,
                 engineCpp,
             };
         }

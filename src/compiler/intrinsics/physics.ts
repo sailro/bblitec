@@ -69,9 +69,7 @@ export interface PhysicsIntrinsicContext
             | "propertyAccess"
             | "expectSameEngine"
             | "expectObjectLiteral"
-            | "compileFrameCallback"
-            | "compilePhysicsCollisionCallback"
-            | "compilePhysicsTriggerCallback"
+            | "callbacks"
             | "allocateTemporaryCppName"
             | "registerNativeBinding"
             | "emit"
@@ -1354,7 +1352,7 @@ function compileOnPhysicsTrigger(
         cpp:
             `bbl::upstream::on_physics_trigger(` +
             `${world.cpp}, ` +
-            `${context.compilePhysicsTriggerCallback(argumentAt(call, 1))})`,
+            `${context.callbacks.compilePhysicsTriggerCallback(argumentAt(call, 1))})`,
     };
 }
 
@@ -1370,7 +1368,7 @@ function compileOnPhysicsAfterStep(
         cpp:
             `bbl::upstream::on_physics_after_step(` +
             `${world.cpp}, ` +
-            `${context.compileFrameCallback(argumentAt(call, 1))})`,
+            `${context.callbacks.compileFrameCallback(argumentAt(call, 1))})`,
     };
 }
 
@@ -1625,7 +1623,7 @@ function compileOnPhysicsCollision(
         kind: "void",
         cpp:
             `bbl::upstream::on_physics_collision(` +
-            `${world.cpp}, ${context.compilePhysicsCollisionCallback(argumentAt(call, 1))})`,
+            `${world.cpp}, ${context.callbacks.compilePhysicsCollisionCallback(argumentAt(call, 1))})`,
     };
 }
 

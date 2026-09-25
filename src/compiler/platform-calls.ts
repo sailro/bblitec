@@ -86,9 +86,8 @@ interface PlatformCallContext
             | "checker"
             | "compileBoolean"
             | "conditions"
-            | "compileFrameCallback"
+            | "callbacks"
             | "compileNumber"
-            | "compilePlatformCallback"
             | "compileStringLiteral"
             | "compileValue"
             | "cppString"
@@ -104,7 +103,6 @@ interface PlatformCallContext
             | "expectSameEngine"
             | "fail"
             | "hasPresentationHost"
-            | "hoistForwardCallbackBindings"
             | "probeEmission"
             | "isCanvasElement"
             | "libraryGlobal"
@@ -206,7 +204,7 @@ export class PlatformCalls {
                         },
                     },
                 };
-                const callback = this.context.compilePlatformCallback(
+                const callback = this.context.callbacks.compilePlatformCallback(
                     argumentAt(call, 1),
                     { cppType: "const std::string&", name: message },
                     [value],
@@ -253,7 +251,7 @@ export class PlatformCalls {
             if (global === "setInterval") {
                 this.context.expectArgumentCount(call, 2, 2);
                 const engine = this.context.requireDefaultEngine(call);
-                const callback = this.context.compileFrameCallback(
+                const callback = this.context.callbacks.compileFrameCallback(
                     argumentAt(call, 0),
                     "interval",
                 );
@@ -499,7 +497,7 @@ export class PlatformCalls {
             return { kind: "void", cpp: "" };
         }
         const engine = this.context.requireDefaultEngine(call);
-        const callback = this.context.compileFrameCallback(
+        const callback = this.context.callbacks.compileFrameCallback(
             argumentAt(call, 0),
             "timestamp",
         );
@@ -610,7 +608,10 @@ export class PlatformCalls {
                 );
             }
             const callback = argumentAt(call, 1);
-            this.context.hoistForwardCallbackBindings(callback, call.pos);
+            this.context.callbacks.hoistForwardCallbackBindings(
+                callback,
+                call.pos,
+            );
             const engine = this.context.requireEngine(uiElement, call);
             if (event === "contextmenu") {
                 // Native has no browser context menu to suppress.
@@ -623,7 +624,7 @@ export class PlatformCalls {
                 cpp: parameter,
                 readOnly: true,
             };
-            const lambda = this.context.compilePlatformCallback(
+            const lambda = this.context.callbacks.compilePlatformCallback(
                 callback,
                 event === "click" || fileChange
                     ? undefined
@@ -677,7 +678,7 @@ export class PlatformCalls {
             argumentAt(call, 0),
         );
         const callback = argumentAt(call, 1);
-        this.context.hoistForwardCallbackBindings(callback, call.pos);
+        this.context.callbacks.hoistForwardCallbackBindings(callback, call.pos);
         let once = false;
         if (!removing && call.arguments[2]) {
             const options = this.context.unwrap(call.arguments[2]);
@@ -718,7 +719,7 @@ export class PlatformCalls {
             } else {
                 const name =
                     this.context.allocateTemporaryCppName("application_error");
-                const listener = this.context.compilePlatformCallback(
+                const listener = this.context.callbacks.compilePlatformCallback(
                     callback,
                     { cppType: "bbl::pal::ApplicationErrorEvent&", name },
                     [windowErrorEventValue(this.context, name, rejection)],
@@ -778,7 +779,7 @@ export class PlatformCalls {
             parameter = { cppType: "bool", name };
             documentHiddenCpp = name;
         }
-        const listener = this.context.compilePlatformCallback(
+        const listener = this.context.callbacks.compilePlatformCallback(
             callback,
             parameter,
             values,

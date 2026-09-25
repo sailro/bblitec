@@ -20,7 +20,7 @@ export interface AsyncActivationContext extends Pick<
     | "browserErasure"
     | "captureEmittedLines"
     | "checker"
-    | "compilePlatformCallback"
+    | "callbacks"
     | "compileValue"
     | "decreaseIndent"
     | "emit"
@@ -245,7 +245,7 @@ export class AsyncActivations {
             event === "message"
                 ? "const bbl::pal::WorkerMessage&"
                 : "bbl::pal::WorkerErrorEvent&";
-        const callback = this.context.compilePlatformCallback(
+        const callback = this.context.callbacks.compilePlatformCallback(
             expression,
             { name, cppType: type },
             [

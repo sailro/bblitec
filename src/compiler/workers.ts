@@ -15,7 +15,7 @@ export interface WorkerLoweringContext extends Pick<
     | "libraryGlobal"
     | "bindings"
     | "compileValue"
-    | "compileFrameCallback"
+    | "callbacks"
     | "reachFeature"
     | "reachJsData"
     | "asyncActivations"
@@ -592,7 +592,7 @@ export function compileWorkerValue(
                 node,
                 "Native timers require a callback and optional delay.",
             );
-        const callback = context.compileFrameCallback(
+        const callback = context.callbacks.compileFrameCallback(
             argumentAt(node, 0),
             member === "setInterval" ? "interval" : "void",
         );
@@ -624,7 +624,7 @@ export function compileWorkerValue(
             return context.fail(node, "queueMicrotask requires one callback.");
         return {
             kind: "void",
-            cpp: `${loop}.queue_microtask(${context.compileFrameCallback(argumentAt(node, 0), "void")})`,
+            cpp: `${loop}.queue_microtask(${context.callbacks.compileFrameCallback(argumentAt(node, 0), "void")})`,
         };
     }
     return undefined;

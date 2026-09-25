@@ -21,7 +21,7 @@ export interface AnimationIntrinsicContext
             | "resolveStaticExpression"
             | "bindings"
             | "requirePresentationHost"
-            | "compileFrameCallback"
+            | "callbacks"
             | "requireCompatibleFrameConductor"
             | "requireEngine"
             | "expectSameEngine"
@@ -145,7 +145,7 @@ export function compileAnimationIntrinsic(
                 );
             if (onUpdate)
                 fields.push(
-                    `.on_update = ${context.compileFrameCallback(onUpdate, "timestamp", true)}`,
+                    `.on_update = ${context.callbacks.compileFrameCallback(onUpdate, "timestamp", true)}`,
                 );
             if (onUpdate && !engineExpression)
                 fields.push(".source_engine_present = false");

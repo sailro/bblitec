@@ -153,11 +153,9 @@ interface UiProjectionContext extends Pick<
     | "conditions"
     | "compileNumber"
     | "compilePlatformCall"
-    | "compilePlatformCallback"
-    | "hoistForwardCallbackBindings"
+    | "callbacks"
     | "compileStringLiteral"
     | "compileValue"
-    | "compileVoidCallback"
     | "cppString"
     | "dataLowerer"
     | "defaultEngine"
@@ -3599,11 +3597,11 @@ export class UiProjection {
                 "A file input's onchange handler is assigned once; replacing it is not lowered.",
             );
         writable(element).uiFileChangeHandler = true;
-        this.context.hoistForwardCallbackBindings(
+        this.context.callbacks.hoistForwardCallbackBindings(
             assignment.right,
             assignment.pos,
         );
-        const handler = this.context.compilePlatformCallback(
+        const handler = this.context.callbacks.compilePlatformCallback(
             assignment.right,
             undefined,
             [],
@@ -3723,7 +3721,7 @@ export class UiProjection {
                 ts.isFunctionExpression(expression.right))
         ) {
             this.context.emit(
-                `bbl::set_global_callback(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(globalLeft.name.text)}, ${this.context.compileVoidCallback(expression.right)});`,
+                `bbl::set_global_callback(${this.context.requireDefaultEngine(expression)}, ${this.context.cppString(globalLeft.name.text)}, ${this.context.callbacks.compileVoidCallback(expression.right)});`,
             );
             return true;
         }
