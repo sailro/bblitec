@@ -672,33 +672,8 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
     commands.reset();
     encoder.reset();
 
-    WGPUBufferMapCallbackInfo map_callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-    map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-    // Recorded rather than thrown: the callback runs inside
-    // `wgpuInstanceWaitAny`, so an exception would unwind through
-    // Dawn's own C frame. Every other wait in this backend reports a
-    // map failure the same way.
-    map_callback.callback = [](WGPUMapAsyncStatus status, WGPUStringView message, void* userdata1,
-                               void*) {
-        if (status != WGPUMapAsyncStatus_Success) {
-            auto* error = static_cast<std::string*>(userdata1);
-            if (error->empty())
-                *error = view_text(message);
-        }
-    };
-    map_callback.userdata1 = &state.uncaptured_error;
-    wait_for(state.instance, wgpuBufferMapAsync(state.pick_targets.staging, WGPUMapMode_Read, 0,
-                                                pick_staging_bytes, map_callback));
-    if (!state.uncaptured_error.empty()) {
-        dawn_error("pick buffer map failed: " + state.uncaptured_error);
-    }
-    const void* mapped =
-        wgpuBufferGetConstMappedRange(state.pick_targets.staging, 0, pick_staging_bytes);
-    if (!mapped)
-        dawn_error("pick map returned no data.");
-    const PickReadback readback =
-        decode_pick_readback(static_cast<const std::uint8_t*>(mapped), detailed);
-    wgpuBufferUnmap(state.pick_targets.staging);
+    const DawnReadbackMap mapped(state, state.pick_targets.staging, pick_staging_bytes);
+    const PickReadback readback = decode_pick_readback(mapped.bytes().data(), detailed);
     return resolve_gpu_pick(engine, *request, ranges, readback);
 }
 #endif

@@ -3762,25 +3762,13 @@ public:
             }
         }
 #endif
-        DawnBuffer readback{nullptr};
-        const std::uint32_t bytes_per_row = (width * 4 + 255) & ~255u;
+        DawnSurfaceCapture capture;
         if (capture_frame) {
             if (!scene.tasks.empty() && !frame_graph_presented) {
                 throw std::runtime_error("Frame graph did not present a capture source.");
             }
-            WGPUBufferDescriptor readback_descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
-            readback_descriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-            readback_descriptor.size = static_cast<std::uint64_t>(bytes_per_row) * height;
-            readback = wgpuDeviceCreateBuffer(state.device, &readback_descriptor);
-            WGPUTexelCopyTextureInfo copy_source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-            copy_source.texture = capture_source;
-            WGPUTexelCopyBufferInfo copy_destination = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
-            copy_destination.layout.bytesPerRow = bytes_per_row;
-            copy_destination.layout.rowsPerImage = height;
-            copy_destination.buffer = readback;
-            const WGPUExtent3D copy_size{width, height, 1};
-            wgpuCommandEncoderCopyTextureToBuffer(encoder, &copy_source, &copy_destination,
-                                                  &copy_size);
+            capture =
+                begin_dawn_surface_capture(state.device, encoder, capture_source, width, height);
         }
         DawnCommandBuffer command{wgpuCommandEncoderFinish(encoder, nullptr)};
         submit_dawn_command(state.queue, command);
@@ -3794,35 +3782,10 @@ public:
 #endif
 
         if (capture_frame) {
-            WGPUBufferMapCallbackInfo map_callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-            map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-            map_callback.callback = [](WGPUMapAsyncStatus status, WGPUStringView message,
-                                       void* userdata1, void*) {
-                if (status != WGPUMapAsyncStatus_Success) {
-                    auto* error = static_cast<std::string*>(userdata1);
-                    if (error->empty())
-                        *error = view_text(message);
-                }
-            };
-            map_callback.userdata1 = &state.uncaptured_error;
-            wait_for(state.instance,
-                     wgpuBufferMapAsync(readback, WGPUMapMode_Read, 0,
-                                        static_cast<std::size_t>(bytes_per_row) * height,
-                                        map_callback));
-            const void* mapped = wgpuBufferGetConstMappedRange(
-                readback, 0, static_cast<std::size_t>(bytes_per_row) * height);
-            if (!mapped)
-                dawn_error("buffer map returned no data.");
-            std::vector<std::uint8_t> pixels(static_cast<const std::uint8_t*>(mapped),
-                                             static_cast<const std::uint8_t*>(mapped) +
-                                                 static_cast<std::size_t>(bytes_per_row) * height);
-            wgpuBufferUnmap(readback);
-            save_capture_png(pixels, width, height, bytes_per_row,
-                             state.surface_format == WGPUTextureFormat_BGRA8Unorm, screenshot_path);
+            finish_dawn_surface_capture(state, capture, width, height, screenshot_path);
             captures.screenshot_saved = true;
         }
-        if (readback)
-            readback.reset();
+        capture.readback.reset();
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         if (ui_after_capture_copy) {
             // Complete the canvas-only readback before transitioning the

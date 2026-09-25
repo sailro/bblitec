@@ -550,32 +550,12 @@ void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFo
     submit_dawn_command(state.queue, command);
     command.reset();
     encoder.reset();
-    WGPUBufferMapCallbackInfo map_callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-    map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-    map_callback.callback = [](WGPUMapAsyncStatus status, WGPUStringView message, void* userdata1,
-                               void*) {
-        if (status != WGPUMapAsyncStatus_Success) {
-            auto* error = static_cast<std::string*>(userdata1);
-            if (error->empty())
-                *error = view_text(message);
-        }
-    };
-    map_callback.userdata1 = &state.uncaptured_error;
-    wait_for(state.instance,
-             wgpuBufferMapAsync(readback, WGPUMapMode_Read, 0,
-                                static_cast<std::size_t>(aligned_row_bytes) * height,
-                                map_callback));
-    const auto* mapped = static_cast<const std::uint8_t*>(wgpuBufferGetConstMappedRange(
-        readback, 0, static_cast<std::size_t>(aligned_row_bytes) * height));
-    if (!mapped) {
-        readback.reset();
-        dawn_error("diagnostic readback map returned no data.");
-    }
+    const DawnReadbackMap mapping(state, readback,
+                                  static_cast<std::size_t>(aligned_row_bytes) * height);
+    const auto* mapped = mapping.bytes().data();
     if (!raw_path.empty() && format == WGPUTextureFormat_RGBA16Float) {
         std::ofstream raw(raw_path, std::ios::binary);
         if (!raw) {
-            wgpuBufferUnmap(readback);
-            readback.reset();
             throw std::runtime_error("Unable to open HDR diagnostic output '" + raw_path + "'.");
         }
         write_readback_raw_rows(raw, mapped, height, aligned_row_bytes, source_row_bytes);
@@ -589,8 +569,6 @@ void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFo
                                                 : ReadbackFormatClass::rgba8;
     std::vector<std::uint8_t> rgba =
         convert_readback_rows(mapped, width, height, aligned_row_bytes, format_class);
-    wgpuBufferUnmap(readback);
-    readback.reset();
     save_capture_png(rgba, width, height, output_row_bytes, false, path);
 }
 
