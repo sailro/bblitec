@@ -60,7 +60,7 @@ export interface AssetIntrinsicContext
             | "resolveStaticExpression"
             | "expectStaticArrayLiteral"
             | "sceneManifest"
-            | "assetMeshCollection"
+            | "handleCollections"
         > {}
 
 /**
@@ -223,7 +223,7 @@ function compileGetContainerMeshes(
 ): Value | undefined {
     context.expectArgumentCount(call, 1, 1);
     const container = context.compileValue(argumentAt(call, 0));
-    return context.assetMeshCollection(container, call);
+    return context.handleCollections.assetMeshCollection(container, call);
 }
 
 function compileLoadGltf(

@@ -41,7 +41,7 @@ export interface PropertyAnimationTargetContext extends Pick<
     | "allocateTemporaryCppName"
     | "captureManagedClosureLines"
     | "withRecordScopes"
-    | "compileRecordSetterValue"
+    | "classLowerer"
     | "callbackIdentity"
     | "requireDefaultEngine"
     | "emit"
@@ -206,7 +206,7 @@ export class PropertyAnimationTargetLowerer {
             );
             const closure = context.captureManagedClosureLines(() =>
                 context.withRecordScopes(owner, () =>
-                    context.compileRecordSetterValue(owner, setter, node, {
+                    context.classLowerer.compileSetter(owner, setter, node, {
                         kind: "number",
                         cpp: `static_cast<double>(${argument})`,
                         dataType: { kind: "number" },

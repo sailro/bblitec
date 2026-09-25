@@ -29,7 +29,7 @@ export interface AnimationIntrinsicContext
             | "expectObjectLiteral"
             | "objectProperty"
             | "propertyName"
-            | "compileAnimationGroupList"
+            | "handleCollections"
             | "symbols"
         > {}
 
@@ -168,7 +168,7 @@ export function compileAnimationIntrinsic(
                 "animation-manager",
                 argumentAt(call, 0),
             );
-            const groups = context.compileAnimationGroupList(
+            const groups = context.handleCollections.compileAnimationGroupList(
                 argumentAt(call, 1),
             );
             associateManagerEngine(context, manager, groups.engineCpp, call);

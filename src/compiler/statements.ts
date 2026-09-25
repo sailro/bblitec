@@ -83,16 +83,11 @@ interface StatementLoweringContext extends Pick<
     | "reachFeature"
     | "reachJsData"
     | "cppString"
-    | "emitDataAssignment"
+    | "dataLowerer"
     | "emitOptionalResourceAssignment"
     | "assignOptionalResourceValue"
     | "emitDataPostfix"
     | "dataIterationTarget"
-    | "assetEntitiesIterationTarget"
-    | "assetFlattenedMeshesIterationTarget"
-    | "assetRootChildrenIterationTarget"
-    | "isFoldedFlattenLoop"
-    | "handleCollectionIterationTarget"
     | "bindDataIterationVariable"
     | "registerNativeBindingType"
     | "activeNativeReturnType"
@@ -111,10 +106,8 @@ interface StatementLoweringContext extends Pick<
     | "captureHoistedLines"
     | "probeEmission"
     | "allocateTemporaryCppName"
-    | "dataLowerer"
     | "declarations"
     | "emitAssignment"
-    | "emitLogicalAssignment"
     | "emitDelete"
     | "compileValue"
     | "compileTextMutation"
@@ -149,8 +142,6 @@ interface StatementLoweringContext extends Pick<
     | "parameterizedResourceLoop"
     | "emitParameterizedResourceLoop"
     | "isInParameterizedResourceLoop"
-    | "snapshotAliasState"
-    | "restoreAliasState"
     | "enterRuntimeControlFlow"
     | "leaveRuntimeControlFlow"
     | "isInRuntimeControlFlow"
@@ -471,7 +462,7 @@ export class StatementLowerer {
                 )
         )
             return;
-        if (context.isFoldedFlattenLoop(statement)) {
+        if (context.handleCollections.isFoldedFlattenLoop(statement)) {
             // The declaration above it already answered with the
             // container's flattened meshes; the loop that filled the list
             // is the other half of that one construct.
@@ -1049,21 +1040,21 @@ export class StatementLowerer {
         // Alias invalidation is path-sensitive: a branch that always
         // leaves the iteration cannot invalidate anything for the code
         // that follows the `if`, so its effects are rolled back.
-        const beforeThen = context.snapshotAliasState();
+        const beforeThen = context.dataLowerer.snapshotAliasState();
         this.inRuntimeControlFlow(context, () =>
             this.emitScopedBody(context, statement.thenStatement),
         );
         if (terminatesFlow(statement.thenStatement)) {
-            context.restoreAliasState(beforeThen);
+            context.dataLowerer.restoreAliasState(beforeThen);
         }
         if (statement.elseStatement) {
             context.emit("} else {");
-            const beforeElse = context.snapshotAliasState();
+            const beforeElse = context.dataLowerer.snapshotAliasState();
             this.inRuntimeControlFlow(context, () =>
                 this.emitScopedBody(context, statement.elseStatement!),
             );
             if (terminatesFlow(statement.elseStatement)) {
-                context.restoreAliasState(beforeElse);
+                context.dataLowerer.restoreAliasState(beforeElse);
             }
         }
         context.emit("}");
@@ -2263,9 +2254,10 @@ export class StatementLowerer {
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        const target = context.assetRootChildrenIterationTarget(
-            statement.expression,
-        );
+        const target =
+            context.handleCollections.assetRootChildrenIterationTarget(
+                statement.expression,
+            );
         if (!target) {
             return false;
         }
@@ -2338,9 +2330,10 @@ export class StatementLowerer {
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        const resolved = context.assetFlattenedMeshesIterationTarget(
-            statement.expression,
-        );
+        const resolved =
+            context.handleCollections.assetFlattenedMeshesIterationTarget(
+                statement.expression,
+            );
         if (!resolved) {
             return false;
         }
@@ -2377,7 +2370,7 @@ export class StatementLowerer {
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        const target = context.assetEntitiesIterationTarget(
+        const target = context.handleCollections.assetEntitiesIterationTarget(
             statement.expression,
         );
         if (!target) {
@@ -2775,7 +2768,7 @@ export class StatementLowerer {
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        const target = context.handleCollectionIterationTarget(
+        const target = context.handleCollections.iterationTarget(
             statement.expression,
         );
         if (!target) {
@@ -3047,7 +3040,7 @@ export class StatementLowerer {
             ts.isBinaryExpression(unwrapped) &&
             isLogicalAssignmentOperator(unwrapped.operatorToken.kind)
         ) {
-            context.emitLogicalAssignment(unwrapped);
+            context.dataLowerer.emitLogicalAssignment(unwrapped);
             return;
         }
         const assignmentOperator = ts.isBinaryExpression(unwrapped)
@@ -3128,7 +3121,7 @@ export class StatementLowerer {
                 } else if (
                     (target.kind === "data" || target.kind === "promise") &&
                     operator === "=" &&
-                    context.emitDataAssignment(unwrapped)
+                    context.dataLowerer.emitAssignment(unwrapped)
                 ) {
                     return;
                 } else if (

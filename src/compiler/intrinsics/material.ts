@@ -63,7 +63,7 @@ export interface MaterialIntrinsicContext
             | "requireEngine"
             | "compileNumber"
             | "compileBoolean"
-            | "compileVec2"
+            | "evaluator"
             | "compileColor3"
             | "captureNativeExpression"
             | "compileStringLiteral"

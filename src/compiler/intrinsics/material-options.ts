@@ -84,7 +84,7 @@ export interface MaterialOptionContext
             | "compileColor3"
             | "compileColor4"
             | "compileVec3"
-            | "compileVec2"
+            | "evaluator"
         > {}
 
 /**
@@ -1107,7 +1107,7 @@ export function compileAnisotropyOptions(
             ? context.compileNumber(intensity)
             : pinnedDefaultFloatCpp("anisotropyIntensity"),
         direction: direction
-            ? context.compileVec2(direction)
+            ? context.evaluator.compileVec2(direction)
             : pinnedDefaultVec2Cpp("anisotropyDirection"),
         manifest: {
             isEnabled: enabled === "true",

@@ -178,10 +178,7 @@ import {
 import { isNullable, presentMembers } from "./compiler/type-facts.js";
 import { StaticEvaluator } from "./compiler/static-evaluator.js";
 import { StatementLowerer } from "./compiler/statements.js";
-import {
-    HandleCollections,
-    type HandleCollectionTarget,
-} from "./compiler/handle-collections.js";
+import { HandleCollections } from "./compiler/handle-collections.js";
 import {
     UserFunctionLowerer,
     aliasedMutationScan,
@@ -615,12 +612,6 @@ class Compiler implements LoweringServices {
     public readonly userFunctions: UserFunctionLowerer;
     public readonly ui: UiProjection = new UiProjection(this);
     public readonly platform = new PlatformCalls(this, this.ui);
-    public get uiDegradedStyleProperties(): Set<string> {
-        return this.ui.uiDegradedStyleProperties;
-    }
-    public get uiScopedSheetSelectors(): Set<string> {
-        return this.ui.uiScopedSheetSelectors;
-    }
     public readonly asyncLowerer = new AsyncLowerer(this);
     public readonly windowProperties: WindowProperties = new WindowProperties(
         this,
@@ -1607,10 +1598,6 @@ class Compiler implements LoweringServices {
         return binding !== undefined && this.nativeConstBindings.has(binding);
     }
 
-    public emitLogicalAssignment(expression: ts.BinaryExpression): void {
-        this.dataLowerer.emitLogicalAssignment(expression);
-    }
-
     public emitDelete(expression: ts.DeleteExpression): void {
         if (this.windowProperties.remove(expression)) return;
         this.dataLowerer.emitDelete(expression);
@@ -2587,15 +2574,6 @@ class Compiler implements LoweringServices {
             );
     }
 
-    public compileRecordSetterValue(
-        owner: Value,
-        setter: ts.SetAccessorDeclaration,
-        node: ts.Expression,
-        value: Value,
-    ): void {
-        this.classLowerer.compileSetter(owner, setter, node, value);
-    }
-
     public expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression {
@@ -2696,14 +2674,6 @@ class Compiler implements LoweringServices {
         return this.evaluator.castNumber(value, precision);
     }
 
-    public compileVec2(expression: ts.Expression): string {
-        return this.evaluator.compileVec2(expression);
-    }
-
-    public compileVec4(expression: ts.Expression): string {
-        return this.evaluator.compileVec4(expression);
-    }
-
     public compileBoolean(expression: ts.Expression): string {
         return this.evaluator.compileBoolean(expression);
     }
@@ -2756,10 +2726,6 @@ class Compiler implements LoweringServices {
         return this.dataTypes.enumMembers(dataType.name).includes(literal)
             ? this.dataTypes.enumMemberCpp(dataType, literal, expression)
             : undefined;
-    }
-
-    public isNumberExpression(expression: ts.Expression): boolean {
-        return this.evaluator.isNumberExpression(expression);
     }
 
     /**
@@ -3820,14 +3786,6 @@ class Compiler implements LoweringServices {
 
     public reachImageDecode(): void {
         this.imageDecodeReached = true;
-    }
-
-    public snapshotAliasState(): Map<string, string> {
-        return this.dataLowerer.snapshotAliasState();
-    }
-
-    public restoreAliasState(snapshot: Map<string, string>): void {
-        this.dataLowerer.restoreAliasState(snapshot);
     }
 
     public enterRuntimeControlFlow(): void {
@@ -5296,10 +5254,6 @@ class Compiler implements LoweringServices {
         } else this.emit(statement);
     }
 
-    public emitDataAssignment(expression: ts.BinaryExpression): boolean {
-        return this.dataLowerer.emitAssignment(expression);
-    }
-
     public emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean {
         if (this.compileCameraMutation(expression)) return true;
         return this.dataLowerer.emitPostfixUnary(expression);
@@ -5776,72 +5730,6 @@ class Compiler implements LoweringServices {
 
     public dataValue(cpp: string, dataType: DataType): Value {
         return this.dataLowerer.leafValue(cpp, dataType);
-    }
-
-    /**
-     * The glTF animation groups a call names — the handle-collection
-     * concept's list resolution, delegated so intrinsic contexts keep
-     * their method.
-     */
-    public compileAnimationGroupList(expression: ts.Expression): {
-        cpp: string;
-        engineCpp: string;
-    } {
-        return this.handleCollections.compileAnimationGroupList(expression);
-    }
-
-    /** `<container>.entities` — the concept's entity-walk fold. */
-    public assetEntitiesIterationTarget(
-        expression: ts.Expression,
-    ): Value | undefined {
-        return this.handleCollections.assetEntitiesIterationTarget(expression);
-    }
-
-    /** `<gltf container>.entities[0]` — the concept's root indexing. */
-    public assetRootElementAccess(
-        expression: ts.ElementAccessExpression,
-    ): Value | undefined {
-        return this.handleCollections.assetRootElementAccess(expression);
-    }
-
-    /**
-     * A proven container flatten's mesh collection, with the container it
-     * flattened — the licence a whole-list setter needs.
-     */
-    public assetFlattenedMeshesIterationTarget(
-        expression: ts.Expression,
-    ): { target: HandleCollectionTarget; asset: CompileAsset } | undefined {
-        return this.handleCollections.assetFlattenedMeshesIterationTarget(
-            expression,
-        );
-    }
-
-    /**
-     * Whether a driver loop was already folded into the collection binding
-     * its declaration carries — the recursive-visitor flatten's second half.
-     */
-    public isFoldedFlattenLoop(statement: ts.Statement): boolean {
-        return this.handleCollections.isFoldedFlattenLoop(statement);
-    }
-
-    /** An imported root's flattened descendants — the concept's walk target. */
-    public assetRootChildrenIterationTarget(
-        expression: ts.Expression,
-    ): HandleCollectionTarget | undefined {
-        return this.handleCollections.assetRootChildrenIterationTarget(
-            expression,
-        );
-    }
-
-    /** The loop target a collection expression or binding names. */
-    public handleCollectionIterationTarget(
-        expression: ts.Expression,
-    ): HandleCollectionTarget | undefined {
-        return this.handleCollections.iterationTarget(expression);
-    }
-
-    public assetMeshCollection(owner: Value, expression: ts.Expression): Value {
-        return this.handleCollections.assetMeshCollection(owner, expression);
     }
 
     public bindDataIterationVariable(

@@ -194,7 +194,6 @@ export interface ExpressionContext
             | "unwrap"
             | "expectArgumentCount"
             | "isInRuntimeControlFlow"
-            | "emitLogicalAssignment"
             | "resolveRecordValue"
             | "expectKind"
             | "expectSameEngine"
@@ -218,7 +217,6 @@ export interface ExpressionContext
             | "assetRegistry"
             | "moduleRelativeAssetUrl"
             | "compileDynamicModuleRelativeAssetUrl"
-            | "isNumberExpression"
             | "propertyName"
             | "namesLocalFunction"
             | "cppString"
@@ -227,8 +225,6 @@ export interface ExpressionContext
             | "callbacks"
             | "requireDefaultEngine"
             | "handleCollections"
-            | "handleCollectionIterationTarget"
-            | "assetRootElementAccess"
             | "compileRegisteredConstant"
             | "compileRegisteredIntrinsic"
             | "compileThinInstanceUploadHelper"
@@ -1234,7 +1230,7 @@ export class ExpressionLowerer {
                 unwrapped,
             );
         }
-        if (this.context.isNumberExpression(unwrapped)) {
+        if (this.context.evaluator.isNumberExpression(unwrapped)) {
             const staticNumber = ts.isNumericLiteral(unwrapped)
                 ? Number(unwrapped.text)
                 : undefined;
@@ -1438,7 +1434,7 @@ export class ExpressionLowerer {
             ts.isBinaryExpression(unwrapped) &&
             isLogicalAssignmentOperator(unwrapped.operatorToken.kind)
         ) {
-            this.context.emitLogicalAssignment(unwrapped);
+            this.context.dataLowerer.emitLogicalAssignment(unwrapped);
             const target = this.context.compileValue(unwrapped.left);
             return target.kind === "data"
                 ? this.context.dataLowerer.narrowOptional(
@@ -3561,7 +3557,8 @@ export class ExpressionLowerer {
         if (data) {
             return data;
         }
-        const assetRoot = this.context.assetRootElementAccess(unwrapped);
+        const assetRoot =
+            this.context.handleCollections.assetRootElementAccess(unwrapped);
         if (assetRoot) {
             return assetRoot;
         }
