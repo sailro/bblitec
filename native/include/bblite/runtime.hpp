@@ -392,8 +392,16 @@ struct MeshHandle {
     [[nodiscard]] bool operator==(const MeshHandle&) const = default;
 };
 
-/** The (slot, generation) of each mesh whose last table name ended. */
-using ReleasedMeshNames = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+/** Slots whose last lease ended; generations keep reused slots distinct. */
+using ReleasedRecords = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+using ReleasedMeshNames = ReleasedRecords;
+using ReleasedTransformNodes = ReleasedRecords;
+
+template <typename Table> struct RecordLease;
+struct MeshLeaseTable;
+struct TransformNodeLeaseTable;
+using MeshNameLease = RecordLease<MeshLeaseTable>;
+using TransformNodeLease = RecordLease<TransformNodeLeaseTable>;
 
 /**
  * An engine table's name for a mesh. The pin's tables hold the Mesh object,
@@ -404,23 +412,6 @@ using ReleasedMeshNames = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
  * (`name_mesh`); a retired record keeps its slot while any share is left,
  * and the lease's end queues the slot for `reclaim_mesh_names`.
  */
-struct MeshNameLease {
-    std::weak_ptr<ReleasedMeshNames> released;
-    std::uint32_t slot = invalid_handle;
-    std::uint32_t generation = 0;
-
-    MeshNameLease(std::weak_ptr<ReleasedMeshNames> queue, MeshHandle mesh)
-        : released(std::move(queue)), slot(mesh.value), generation(mesh.generation) {}
-    MeshNameLease(const MeshNameLease&) = delete;
-    MeshNameLease& operator=(const MeshNameLease&) = delete;
-    ~MeshNameLease() {
-        if (const auto queue = released.lock()) {
-            queue->emplace_back(slot, generation);
-        }
-    }
-};
-
-/** One table's share of a mesh's name lease. */
 using MeshName = std::shared_ptr<const MeshNameLease>;
 
 struct MaterialHandle {
@@ -464,8 +455,6 @@ struct LightHandle {
 struct CameraHandle {
     std::uint32_t value = invalid_handle;
 };
-
-struct TransformNodeLease;
 
 struct TransformNodeHandle {
     std::uint32_t value = invalid_handle;
@@ -3751,9 +3740,6 @@ struct DeviceRecoveryRegistration {
 
 using MeshMaterialSceneOwners = std::vector<std::weak_ptr<SceneState>>;
 
-/** The (slot, generation) of each transform node whose lease ended. */
-using ReleasedTransformNodes = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
-
 struct Engine {
     /**
      * Queued by `TransformNodeLease`, released by `reclaim_transform_nodes`.
@@ -4255,41 +4241,55 @@ inline std::uint32_t stored_mesh_composition_row(Engine& engine, std::uint32_t c
  * lease's end queues the record; `reclaim_transform_nodes` releases it at
  * the next safe point.
  */
-struct TransformNodeLease {
+struct TransformNodeLeaseTable {
     /** The engine, while `engine_alive` says it has not moved or gone. */
     const Engine* engine = nullptr;
     std::weak_ptr<const int> engine_alive;
-    std::weak_ptr<ReleasedTransformNodes> released;
-    std::uint32_t slot = invalid_handle;
-    std::uint32_t generation = 0;
-
-    TransformNodeLease(Engine& owner, std::uint32_t node_slot, std::uint32_t node_generation)
-        : engine(&owner), engine_alive(owner.lifetime.token()),
-          released(owner.released_transform_nodes), slot(node_slot), generation(node_generation) {}
-    TransformNodeLease(const TransformNodeLease&) = delete;
-    TransformNodeLease& operator=(const TransformNodeLease&) = delete;
-    ~TransformNodeLease();
-    void gc_trace(const js::TraceVisitor& visitor) const;
+    explicit TransformNodeLeaseTable(Engine& owner)
+        : engine(&owner), engine_alive(owner.lifetime.token()) {}
+    static const auto& release_queue(Engine& owner) { return owner.released_transform_nodes; }
+    void trace_record(std::uint32_t slot, std::uint32_t generation,
+                      const js::TraceVisitor& visitor) const {
+        if (engine_alive.expired() || slot >= engine->transform_nodes.size()) {
+            return;
+        }
+        const TransformNodeRecord& record = engine->transform_nodes[slot];
+        if (record.generation != generation || record.retired) {
+            return;
+        }
+        visitor(record.parent);
+        visitor(record.children);
+        visitor(record.parented_nodes);
+    }
 };
 
-inline TransformNodeLease::~TransformNodeLease() {
-    if (const auto queue = released.lock()) {
-        queue->emplace_back(slot, generation);
-    }
-}
+struct MeshLeaseTable {
+    explicit MeshLeaseTable(Engine&) {}
+    static const auto& release_queue(Engine& owner) { return owner.released_mesh_names; }
+};
 
-inline void TransformNodeLease::gc_trace(const js::TraceVisitor& visitor) const {
-    if (engine_alive.expired() || slot >= engine->transform_nodes.size()) {
-        return;
+/** Last-owner release queues a record; the table supplies any collected edges. */
+template <typename Table> struct RecordLease : private Table {
+    std::weak_ptr<ReleasedRecords> released;
+    std::uint32_t slot;
+    std::uint32_t generation;
+
+    RecordLease(Engine& owner, std::uint32_t record_slot, std::uint32_t record_generation)
+        : Table(owner), released(Table::release_queue(owner)), slot(record_slot),
+          generation(record_generation) {}
+    RecordLease(const RecordLease&) = delete;
+    RecordLease& operator=(const RecordLease&) = delete;
+    ~RecordLease() {
+        if (const auto queue = released.lock()) {
+            queue->emplace_back(slot, generation);
+        }
     }
-    const TransformNodeRecord& record = engine->transform_nodes[slot];
-    if (record.generation != generation || record.retired) {
-        return;
+    void gc_trace(const js::TraceVisitor& visitor) const
+        requires requires(const Table& table) { table.trace_record(slot, generation, visitor); }
+    {
+        Table::trace_record(slot, generation, visitor);
     }
-    visitor(record.parent);
-    visitor(record.children);
-    visitor(record.parented_nodes);
-}
+};
 
 /**
  * Releases the records of the transform nodes whose lease ended: each
@@ -4376,7 +4376,7 @@ inline MeshName name_mesh(Engine& engine, MeshHandle mesh) {
         std::erase(engine.free_mesh_slots, mesh.value);
         record.slot_offered = false;
     }
-    MeshName lease = std::make_shared<const MeshNameLease>(engine.released_mesh_names, mesh);
+    MeshName lease = std::make_shared<const MeshNameLease>(engine, mesh.value, mesh.generation);
     record.names = lease;
     return lease;
 }

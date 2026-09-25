@@ -19,7 +19,6 @@ Internal work, qualification, performance and refusal defects. Capability gaps a
 - [ ] Compact SPIR-V vertex inputs at build time in `tools/tint-sdl` and delete the runtime registry (`pal_spirv_vertex.hpp`, `pal_sdl_gpu_resources.hpp`).
 - [ ] Keep one engine rendering-context list whose entries carry their `_kind`, as the pin does (device recovery's per-registry counts).
 - [ ] Serve every pinned GPU writer through one WebGPU-shaped device, not a text-only one (`text_gpu.hpp`).
-- [ ] One `RecordLease<Table>` for the mesh-name and transform-node leases (`runtime.hpp`).
 - [ ] Write Dawn material and UV blocks once per frame or version change, not in every pass (`pal_dawn_scene_variants.cpp`).
 - [ ] Name SDL_GPU backend functions by their backend as the files are: `render_sprite_ui_sdl_frame`, `render_ui_backdrop_sdl` and siblings say `sdl` where they mean SDL_GPU (`native/src/pal_sdl_gpu_*`).
 - [ ] Adopt SDL's main-callback loop for interactive builds so the Win32 move/resize modal loop no longer stalls iteration (`pal_platform_events.hpp`).
