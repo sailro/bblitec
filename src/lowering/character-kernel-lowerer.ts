@@ -176,7 +176,7 @@ export class CharacterKernelLowerer extends PinnedNumericLowerer {
         return (
             symbol?.getName() === name &&
             (symbol.declarations ?? []).some((declaration) =>
-                this.context.program.program.isSourceFileDefaultLibrary(
+                this.context.program.isDefaultLibrary(
                     declaration.getSourceFile(),
                 ),
             )

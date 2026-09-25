@@ -4,7 +4,7 @@ import {
     classMemberTable,
     classMethod,
 } from "./class-members.js";
-import { aliasTarget, declaredSymbol, declarationOrigin } from "./symbols.js";
+import { declarationOrigin } from "./symbols.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 
 /**
@@ -13,12 +13,12 @@ import { sharedUpstreamStore } from "../upstream-source.js";
  * A scene reads the engine through the package typings, which declare a
  * function or a class method without its body. The pin's own sources carry
  * the body: the public export a typing names resolves to the module that
- * declares it, and the pinned program's checker follows that module's
- * exports to the function, or to the class and its method. A method a
- * subclass may override is every implementation the pinned hierarchy has.
+ * declares it, whose own exports lead to the function, or to the class and
+ * its method. A method a subclass may override is every implementation the
+ * pinned hierarchy has.
  */
 export interface EngineBodies {
-    /** The pinned program's checker and class hierarchy. */
+    /** The checker and class hierarchy of the program over every pinned source, built on first read. */
     readonly checker: ts.TypeChecker;
     readonly hierarchy: ClassHierarchy;
     /**
@@ -47,35 +47,35 @@ export function isEngineDeclaration(declaration: ts.Node): boolean {
 function createEngineBodies(): EngineBodies {
     const store = sharedUpstreamStore();
     const pinned = store.program;
-    const checker = pinned.checker;
-    const hierarchy = new ClassHierarchy(checker, pinned.program);
+    let hierarchy: ClassHierarchy | undefined;
+    // The program over every source, built on the first body analysed: an
+    // analysis follows a body's calls anywhere in the pin, and a method
+    // call to every override.
+    const classes = (): ClassHierarchy =>
+        (hierarchy ??= new ClassHierarchy(pinned.checker, pinned.program));
     const resolved = new Map<string, readonly ts.Declaration[]>();
 
     /** The pinned declarations a public export names, through re-exports. */
     const exported = (name: string): readonly ts.Declaration[] => {
         const known = resolved.get(name);
         if (known) return known;
-        let found: readonly ts.Declaration[] = [];
         const origin = store.findPublicExport(name);
-        if (origin) {
-            const file = store.getSourceFile(origin.modulePath);
-            const module = declaredSymbol(checker, file);
-            const symbol = module
-                ? checker
-                      .getExportsOfModule(module)
-                      .find((entry) => entry.name === origin.importedName)
-                : undefined;
-            found = symbol
-                ? (aliasTarget(checker, symbol).declarations ?? [])
-                : [];
-        }
+        const found =
+            (origin &&
+                pinned.exportedSymbol(origin.modulePath, origin.importedName)
+                    ?.declarations) ??
+            [];
         resolved.set(name, found);
         return found;
     };
 
     return {
-        checker,
-        hierarchy,
+        get checker() {
+            return pinned.checker;
+        },
+        get hierarchy() {
+            return classes();
+        },
         bodies(declaration) {
             if (ts.isFunctionDeclaration(declaration) && declaration.name) {
                 // An overloaded function's implementation is the one
@@ -104,11 +104,11 @@ function createEngineBodies(): EngineBodies {
                 );
                 if (!owner) return undefined;
                 const method = classMethod(
-                    classMemberTable(checker, owner),
+                    classMemberTable(pinned.checker, owner),
                     declaration.name.text,
                 );
                 if (!method?.body) return undefined;
-                const implementations = hierarchy.implementations(method) ?? [
+                const implementations = classes().implementations(method) ?? [
                     method,
                 ];
                 return implementations.every(
