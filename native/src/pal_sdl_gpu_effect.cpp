@@ -169,9 +169,12 @@ public:
             color_target.store_op = SDL_GPU_STOREOP_STORE;
         }
         SdlRenderPass render_pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
-        for (std::size_t index = 0; index < passes.size(); ++index) {
-            const EffectRendererRecord& record =
-                engine.effect_renderers[engine.effect_renderer_contexts()[index].value];
+        const auto contexts = engine.effect_renderer_contexts();
+        auto renderer = contexts.begin();
+        for (std::size_t index = 0; index < passes.size(); ++index, ++renderer) {
+            if (renderer == contexts.end())
+                throw std::out_of_range("Rendering context index.");
+            const EffectRendererRecord& record = engine.effect_renderers[renderer->value];
             record_effect_pass(command, render_pass, engine, passes[index], record.effect);
         }
         render_pass.end();

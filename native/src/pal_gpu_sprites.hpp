@@ -139,15 +139,14 @@ void begin_sprite_renderer_update(Engine& engine, SpriteRendererHandle renderer,
  */
 template <typename SpritePassList>
 inline bool sprite_passes_match_registered(const Engine& engine, const SpritePassList& passes) {
-    if (passes.size() != engine.sprite_renderer_contexts().size()) {
-        return false;
-    }
-    for (std::size_t index = 0; index < passes.size(); ++index) {
-        if (passes[index].renderer.value != engine.sprite_renderer_contexts()[index].value) {
+    std::size_t index = 0;
+    for (const auto& renderer : engine.sprite_renderer_contexts()) {
+        if (index == passes.size() || passes[index].renderer.value != renderer.value) {
             return false;
         }
+        ++index;
     }
-    return true;
+    return index == passes.size();
 }
 
 /**

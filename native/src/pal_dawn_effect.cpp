@@ -130,9 +130,12 @@ public:
     void synchronize() {
         // Every context updates before any records, which is the pinned
         // loop's order.
-        for (std::size_t index = 0; index < passes.size(); ++index) {
-            const EffectRendererRecord& record =
-                engine.effect_renderers[engine.effect_renderer_contexts()[index].value];
+        const auto contexts = engine.effect_renderer_contexts();
+        auto renderer = contexts.begin();
+        for (std::size_t index = 0; index < passes.size(); ++index, ++renderer) {
+            if (renderer == contexts.end())
+                throw std::out_of_range("Rendering context index.");
+            const EffectRendererRecord& record = engine.effect_renderers[renderer->value];
             upload_dawn_effect_pass(state.queue, engine, passes[index], record.effect);
         }
     }
