@@ -319,12 +319,11 @@ pass. Each
 repository unit reads a content-addressed folder holding exactly the generated headers its include closure
 names (`native/native-header-cache.cmake`), so a generated header rebuilds only its includers and a unit
 hits across scenes whose inputs to it agree; lowered modules compile from content-addressed copies under the
-cache (`sources/<module>-<digest>.cpp`, the name their diagnostics carry). clang-cl builds each precompiled
-header (the shared one, and each backend's scene-renderer one) from a source under the cache named by its
-text, so every tree of a checkout whose PCH inputs agree shares it and its users' entries; its own entry
-keys on the checkout's absolute paths, which the PCH records. Like `/Yc`, each instantiates the templates
-its headers use (`-fpch-instantiate-templates`), so units do not repeat them. Debug keys retain directory
-identity.
+cache (`sources/<module>-<digest>.cpp`, the name their diagnostics carry). clang-cl builds the precompiled
+header from a source under the cache named by its text, so every tree of a checkout whose PCH inputs agree
+shares it and its users' entries; its own entry keys on the checkout's absolute paths, which the PCH
+records. Like `/Yc`, it instantiates the templates its headers use (`-fpch-instantiate-templates`), so units
+do not repeat them. Debug keys retain directory identity.
 
 ## Shader compilation
 

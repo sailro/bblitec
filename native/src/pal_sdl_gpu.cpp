@@ -1,6 +1,7 @@
 // The SDL_GPU scene renderer's driver: the pass helpers, the state's
 // release and the frame run. The feature families it draws through are
-// their own units (pal_sdl_gpu_scene_<family>.cpp).
+// their own files (pal_sdl_gpu_scene_<family>.cpp), compiled with it as one
+// translation unit (pal_sdl_gpu_scene_all.cpp).
 #include <bblite/features/compute_frame_graph.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/gpu_task_timing.hpp>
