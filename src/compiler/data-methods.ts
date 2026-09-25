@@ -43,7 +43,11 @@ import { declarationInDefaultLibrary, libraryGlobal } from "./symbols.js";
 import { replacementCallback } from "./string-replacement.js";
 import { stringConcatPart } from "./expressions.js";
 import { numberConstantValue } from "./number-intrinsics.js";
-import { nullability } from "./type-facts.js";
+import {
+    arrayElementType,
+    isTypeReference,
+    slotHoldsOnlyNull,
+} from "./type-facts.js";
 
 /**
  * `Array.isArray(value)` over the data model. Parsed JSON remains dynamic;
@@ -2279,14 +2283,41 @@ function compileArrayRemoval(
     // A nullable element is its own absent state, and a shared object is
     // absent as the empty reference, as `Map.get` reads them.
     const element = dataType.element;
-    return lowerer.leafValue(
-        `bbl::js::array_${method}_or_absent(${narrowed.cpp})`,
+    const resultType: DataType =
         element.kind === "optional" ||
-            (element.kind === "struct" &&
-                lowerer.context.dataTypes.isReferenceStruct(element.name))
+        (element.kind === "struct" &&
+            lowerer.context.dataTypes.isReferenceStruct(element.name))
             ? element
-            : { kind: "optional", inner: element },
-    );
+            : { kind: "optional", inner: element };
+    const removal = `bbl::js::array_${method}_or_absent(${narrowed.cpp})`;
+    // An element that may itself be `null` is `undefined` only when the
+    // array was empty: take that fact with the removal (`Value.slotFoundCpp`).
+    const callee = lowerer.context.unwrap(call.expression);
+    const elementType = ts.isPropertyAccessExpression(callee)
+        ? arrayElementType(
+              lowerer.context.checker,
+              lowerer.context.checker.getTypeAtLocation(callee.expression),
+          )
+        : undefined;
+    if (!elementType || !slotHoldsOnlyNull(elementType))
+        return lowerer.leafValue(removal, resultType);
+    const found = lowerer.context.allocateTemporaryCppName("removal_found");
+    lowerer.context.emit({
+        kind: "declaration",
+        type: "const bool",
+        name: found,
+        initializer: `!${narrowed.cpp}.empty()`,
+        attributes: "[[maybe_unused]] ",
+    });
+    const removed = lowerer.context.allocateTemporaryCppName("removed");
+    lowerer.context.emit({
+        kind: "declaration",
+        type: "auto",
+        name: removed,
+        initializer: removal,
+        attributes: "[[maybe_unused]] ",
+    });
+    return { ...lowerer.leafValue(removed, resultType), slotFoundCpp: found };
 }
 
 function compileArrayUnshift(state: ArrayMethodState): Value {
@@ -2385,12 +2416,16 @@ function compileMapDataMethod(
             argumentAt(call, 0),
         );
         // A lookup among values that may be `null` records whether its key
-        // was there (`Value.keyFoundCpp`), reading the key once for both.
-        let keyFoundCpp: string | undefined;
-        if (
-            method === "get" &&
-            nullability(lowerer.context.checker.getTypeAtLocation(call)).null
-        ) {
+        // was there (`Value.slotFoundCpp`), reading the key once for both.
+        let slotFoundCpp: string | undefined;
+        const mapType = lowerer.context.checker.getNonNullableType(
+            lowerer.context.checker.getTypeAtLocation(callee.expression),
+        );
+        const storedType =
+            method === "get" && isTypeReference(mapType)
+                ? lowerer.context.checker.getTypeArguments(mapType)[1]
+                : undefined;
+        if (storedType && slotHoldsOnlyNull(storedType)) {
             // The test reads the key again, so a key that is not a name or
             // a literal is read once, first.
             if (!cppIdentifierPattern.test(key) && !/^"[^"\\]*"$/.test(key)) {
@@ -2404,7 +2439,7 @@ function compileMapDataMethod(
                 });
                 key = pinned;
             }
-            keyFoundCpp = `${narrowed.cpp}.has(${key})`;
+            slotFoundCpp = `${narrowed.cpp}.has(${key})`;
         }
         const staticKey =
             keyValue.staticString ??
@@ -2451,7 +2486,7 @@ function compileMapDataMethod(
                 ),
                 optionalFoundCpp: optionalPresentCpp(result),
                 optionalStorageCpp: `${result}.to_optional()`,
-                ...(keyFoundCpp ? { keyFoundCpp } : {}),
+                ...(slotFoundCpp ? { slotFoundCpp } : {}),
             };
         }
         if (
@@ -2468,14 +2503,14 @@ function compileMapDataMethod(
                 ),
                 ownedCpp: `${narrowed.cpp}.get_owned(${key})`,
                 nativeLvalue: true,
-                ...(keyFoundCpp ? { keyFoundCpp } : {}),
+                ...(slotFoundCpp ? { slotFoundCpp } : {}),
             };
         }
         return {
             kind: "data",
             cpp: `${narrowed.cpp}.get(${key})`,
             ownedCpp: `${narrowed.cpp}.get_owned(${key})`,
-            ...(keyFoundCpp ? { keyFoundCpp } : {}),
+            ...(slotFoundCpp ? { slotFoundCpp } : {}),
             // TypeScript flattens `(T | null) | undefined` to one
             // nullable union. Preserve that shape so a single
             // source guard narrows a Map whose value is nullable.

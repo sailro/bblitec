@@ -957,22 +957,22 @@ export class DeclarationLowerer {
                 this.context.reachJsData();
                 initializerCpp = `bbl::js::snapshot_value(${selectedCpp})`;
             }
-            // A local keeps whether its lookup found the key as of its
-            // own initialization (`Value.keyFoundCpp`).
-            const keyFoundCpp =
-                narrowed.keyFoundCpp === undefined ||
-                cppIdentifierPattern.test(narrowed.keyFoundCpp)
-                    ? narrowed.keyFoundCpp
+            // A local keeps whether its value's slot existed as of its own
+            // initialization (`Value.slotFoundCpp`).
+            const slotFoundCpp =
+                narrowed.slotFoundCpp === undefined ||
+                cppIdentifierPattern.test(narrowed.slotFoundCpp)
+                    ? narrowed.slotFoundCpp
                     : (() => {
                           const name =
                               this.context.allocateTemporaryCppName(
-                                  "key_found",
+                                  "slot_found",
                               );
                           this.context.emit({
                               kind: "declaration",
                               type: "const bool",
                               name,
-                              initializer: narrowed.keyFoundCpp,
+                              initializer: narrowed.slotFoundCpp,
                               attributes: "[[maybe_unused]] ",
                           });
                           return name;
@@ -1079,7 +1079,7 @@ export class DeclarationLowerer {
                     ...(narrowed.preserveUncheckedLookup
                         ? { preserveUncheckedLookup: true as const }
                         : {}),
-                    ...(keyFoundCpp ? { keyFoundCpp } : {}),
+                    ...(slotFoundCpp ? { slotFoundCpp } : {}),
                     ...(optionalHandle
                         ? {
                               optionalStorageCpp: boundCpp,

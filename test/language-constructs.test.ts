@@ -1392,8 +1392,7 @@ check(
     const key = Math.random() > .5 ? "b" : "b";
     const match = find(key);
     if (!match || !match.attachment || match.attachment.position[1] !== 2) throw new Error("runtime lookup");
-    const plain = find("a");
-    if (!plain || plain.attachment !== null || find("missing") !== undefined) throw new Error("nullable lookup");
+    if (find("a")?.attachment !== null || find("missing") !== undefined) throw new Error("nullable lookup");
 `,
 );
 
@@ -2589,7 +2588,7 @@ check(
     const word = words.pop();
     if (word !== "a" || words.pop() !== undefined) throw new Error("string pop");
     const maybe: (number | null)[] = [null];
-    if (maybe.pop() != null || maybe.pop() != undefined) throw new Error("nullable pop");
+    if (maybe.pop() !== null || maybe.pop() !== undefined) throw new Error("nullable pop");
     class Node { constructor(readonly id: number) {} }
     const nodes: Node[] = [new Node(1)];
     const node = nodes.pop();
@@ -3062,6 +3061,62 @@ check(
         if (counts[Shape.Ball] !== 7 || counts[Shape.Box] !== 4) throw new Error("array indexed by an enum member");
         const byShape: Record<string, Shape> = { ball: Shape.Ball };
         if (byShape.ball !== 1) throw new Error("enum record member");
+    }
+    main();
+`,
+);
+
+check(
+    "strict null and undefined comparisons read whether the slot existed",
+    `
+    interface Attachment {
+        label: string;
+    }
+    interface Entry {
+        id: string;
+        attachment: Attachment | null;
+        note: string | null;
+    }
+    const catalog: Entry[] = [
+        { id: "a", attachment: null, note: null },
+        { id: "b", attachment: { label: "x" }, note: "n" },
+    ];
+    function find(id: string): Entry | undefined {
+        return catalog.find((entry) => entry.id === id);
+    }
+    function main(): void {
+        // Optional chain over a nullable field.
+        if (find("a")?.attachment !== null) throw new Error("present owner, null field");
+        if (find("a")?.attachment === undefined) throw new Error("present owner is not undefined");
+        if (find("missing")?.attachment !== undefined) throw new Error("missing owner");
+        if (find("missing")?.attachment === null) throw new Error("missing owner is not null");
+        if (find("b")?.attachment === null || find("b")?.attachment === undefined) throw new Error("present field");
+        const chained = find("a")?.attachment;
+        if (chained !== null || chained === undefined) throw new Error("bound chain");
+        if ("c" + find("a")?.note + find("missing")?.note + find("b")?.note !== "cnullundefinedn") throw new Error("chain spelling");
+        // pop/shift of nullable elements.
+        const maybe: (number | null)[] = [null];
+        if (maybe.pop() !== null) throw new Error("popped null");
+        if (maybe.pop() !== undefined) throw new Error("popped from empty");
+        const queue: Array<string | null> = [null, "q"];
+        const head = queue.shift();
+        if (head !== null || head === undefined) throw new Error("shifted null");
+        if (queue.shift() !== "q" || queue.shift() !== undefined) throw new Error("shifted rest");
+        let order = "";
+        const pops: (number | null)[] = [1, null];
+        if (pops.pop() === null) order += "n";
+        if (pops.pop() === 1) order += "1";
+        if (pops.pop() === undefined) order += "u";
+        if (order !== "n1u") throw new Error("two pops in turn " + order);
+        // Index into an array of nullable elements.
+        const sizes: Array<number | null> = [null, 3];
+        if (sizes[0] !== null || sizes[1] !== 3) throw new Error("stored elements");
+        let index = 5;
+        if (sizes[index] === null || sizes[index] !== undefined) throw new Error("past the end");
+        index = 0;
+        if ("s" + sizes[index] + sizes[index + 7] !== "snullundefined") throw new Error("element spelling");
+        const plain: number[] = [1];
+        if (plain[3] === null) throw new Error("past the end of a never-null array");
     }
     main();
 `,

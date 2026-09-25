@@ -358,10 +358,10 @@ export function stringConcatPart(
             },
             node,
         );
-        // A lookup that knows whether its key was there spells a stored
-        // `null` and a miss apart.
-        const absent = value.keyFoundCpp
-            ? `(${value.keyFoundCpp} ? "null" : "undefined")`
+        // A value that knows whether its slot existed spells a stored
+        // `null` and a missing slot apart.
+        const absent = value.slotFoundCpp
+            ? `(${value.slotFoundCpp} ? "null" : "undefined")`
             : context.cppString(absentSpelling(context, value, node));
         // A present string is already text; any other part is joined into one.
         const text =

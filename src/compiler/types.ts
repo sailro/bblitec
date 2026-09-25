@@ -2317,12 +2317,14 @@ export interface ValueFields {
      */
     optionalFoundCpp?: string;
     /**
-     * A `Map.get` whose stored values may be `null`: whether the key was
-     * there when the lookup ran. The value's own absence is one native
-     * state for a stored `null` and a miss alike; this flag is what tells
-     * `=== undefined` (a miss) from `=== null` (a stored null).
+     * Whether the value was read from a slot that exists: a key `Map.get`
+     * found, the owner an optional chain reached, the element `pop()` or
+     * `shift()` removed, an index within the array. The value's own absence
+     * is one native state for a stored `null` and a missing slot alike; this
+     * flag tells `=== undefined` (no slot) from `=== null` (a stored null),
+     * and spells them apart.
      */
-    keyFoundCpp?: string;
+    slotFoundCpp?: string;
     /** JavaScript truthiness when it differs from mere optional presence. */
     truthinessCpp?: string;
     /** An Error delivered by native device recovery, with the Error message contract. */

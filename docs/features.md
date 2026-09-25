@@ -78,9 +78,11 @@ pinned body (an interface method) counts as touching everything. An object or ar
 the statement that builds it holds each member's value as it was built, and an object an engine
 function writes through (`normalizeVec3ToRef(v, out)`) keeps native storage. Loose
 equality between operands of one primitive type is strict equality; across types it refuses. `=== null`
-and `=== undefined` on an absent value answer from what its type admits, and a `Map.get` among values
-that may be `null` knows whether its key was there; a value whose type admits both refuses a strict
-comparison (`== null` answers either). An enum member reads as its constant wherever it is written,
+and `=== undefined` on an absent value answer from what its type admits. A read whose slot may hold
+`null` -- a `Map.get`, an optional chain over a nullable field, an array index, `pop()`/`shift()` --
+knows whether the slot existed, so a missing slot (`undefined`) and a stored `null` compare and spell
+apart; a value that may be either with no such slot refuses a strict comparison (`== null` answers
+either). An enum member reads as its constant wherever it is written,
 `Tone["Soft"]` included. Destructuring finishes the source before
 left-to-right target writes. Defaults requiring distinct null/undefined states refuse when storage
 cannot distinguish them. `for...of` admits identifiers, tuple/rest bindings and plain struct fields;
