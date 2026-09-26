@@ -182,11 +182,10 @@ struct WindowServices final : CanvasProvider {
     std::unique_ptr<DocumentSnapshot> pending;
     std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
     std::uint64_t requested = 0, completed = 0;
-    /** Document input the display posted, and how much of it the realm has
-     * handled. One input event's DOM transaction, including the events its
-     * native default posts (click, input, change, toggle), completes before
-     * the display handles the next event or presents, as a browser dispatches
-     * them within one task. Both are guarded by `mutex`. */
+    /** Document input posted and handled, guarded by `mutex`. Except for mouse
+     * motion, each transaction and its native default's events (click, input,
+     * change, toggle) finish before the display handles the next event or
+     * presents. Mouse motion remains ordered without blocking presentation. */
     std::uint64_t input_posted = 0, input_handled = 0;
     std::shared_ptr<const LayoutSnapshot> layout;
     std::atomic<bool> screen_requested = false;
@@ -749,8 +748,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                                 [&] { dispatch_canvas_input(*pointer); });
                             return;
                         }
-                        // Every other packet is document input the display posted
-                        // and waits on: acknowledge it however its dispatch ends.
+                        // Acknowledge document input however its dispatch ends,
+                        // so the display can finish any pending input wait.
                         const auto handled = js::finally([&] {
                             {
                                 const std::lock_guard lock(services->mutex);
@@ -961,19 +960,25 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     if (frame_options.test_pass && is_platform_input_event(event) &&
                         !is_replayed_ui_event(event))
                         continue;
+                    // Mouse motion has no cancelable native default. Keep its
+                    // source callbacks ordered in the realm mailbox without
+                    // making worker presentation wait for a busy Window realm.
+                    const bool move = event.type == SDL_EVENT_MOUSE_MOTION;
                     if (auto batch = prepare_dom_platform_input(display, event)) {
                         // The script's listeners decide the native default.
                         dispatch_dom_batch(display, batch);
-                        await_input();
+                        if (!move)
+                            await_input();
                         if (finished)
                             break;
-                        if (batch->default_prevented)
+                        if (!move && batch->default_prevented)
                             continue;
                     }
                     const bool reaches_canvas = handle_ui_rml_event(*ui, event);
-                    // The events the native default posted (a button's click, a
-                    // control's input and change) finish before the next event.
-                    await_input();
+                    // Complete synchronous native-default transactions,
+                    // including any click, input or change events they posted.
+                    if (!move)
+                        await_input();
                     if (finished)
                         break;
                     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
@@ -1019,7 +1024,6 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         services->inbox->post(std::move(packet));
                         continue;
                     }
-                    const bool move = event.type == SDL_EVENT_MOUSE_MOTION;
                     const bool down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
                     const bool up = event.type == SDL_EVENT_MOUSE_BUTTON_UP;
                     const bool wheel = event.type == SDL_EVENT_MOUSE_WHEEL;
@@ -1220,9 +1224,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
 }
 int run_window_application(WorkerEntry initialize, EngineOptions options) {
     try {
-        return run_sdl_application(
-            window_application_iterations(std::move(initialize), std::move(options)),
-            read_frame_options().interactive());
+        return run_sdl_application(window_application_iterations(initialize, std::move(options)),
+                                   read_frame_options().interactive());
     } catch (...) {
         return report_uncaught_error(std::current_exception());
     }

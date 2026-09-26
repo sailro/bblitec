@@ -1,7 +1,7 @@
 // Offscreen (worker) windows: the window trace lines
 // `window frame=<n> now-ms=<t> canvas=<id>:<sequence>@<w>x<h> ...` name each
-// canvas's presented-frame sequence. While the host button is held
-// (frames 80-180 of the blocked phase) the main realm presents at most
+// canvas's presented-frame sequence. While the main realm is blocked
+// (frames 80-180 of each phase) the main realm presents at most
 // 8 frames and the worker at least 50; the button (the red row-35
 // pixels) sits centred and its label expands while blocked; after the
 // second press releases it the label contracts, the main realm resumes
@@ -97,7 +97,7 @@ export function check(context) {
                 Math.abs(center - png.width / 2) <= 1,
                 `${where}: the button is off centre: ${center}`,
             );
-            if (phase.id === "blocked") {
+            if (phase.id.startsWith("blocked")) {
                 assert(
                     right - left > 270,
                     `${where}: the block label did not expand`,
