@@ -1,5 +1,7 @@
 // SDL_GPU shadows: the ESM blur and the shadow generators' passes. Dawn's
 // twin is pal_dawn_scene_shadows.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_shadows.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
@@ -15,9 +17,10 @@ GpuState::EsmBlur& ensure_esm_blur(GpuState& state, const ShadowGeneratorRecord&
         state.esm_blurs.resize(esm_index + 1);
     }
     GpuState::EsmBlur& blur = state.esm_blurs[esm_index];
-    blur.source = source;
-    if (blur.pipeline)
+    if (blur.pipeline && blur.source == source)
         return blur;
+    blur.clear(state.device);
+    blur.source = source;
     // Written once: neither `bias` nor `depthScale` has a setter, which is
     // the same reason Dawn creates its own buffer once.
     blur.params = upstream::shadow_params_block(generator);
@@ -53,7 +56,7 @@ GpuState::EsmBlur& ensure_esm_blur(GpuState& state, const ShadowGeneratorRecord&
     info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
     info.target_info.color_target_descriptions = &color_target;
     info.target_info.num_color_targets = 1;
-    blur.pipeline = create_sdl_graphics_pipeline(state.device, &info);
+    blur.pipeline = create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &info);
     if (!blur.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline ESM blur");
     }
@@ -77,10 +80,10 @@ void run_esm_blur(GpuState& state, SDL_GPUCommandBuffer* command, std::uint32_t 
         binding.sampler = state.shadow_filtering_sampler;
         SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
         // `BlurParams` is declared in both stages, so both are pushed.
-        SDL_PushGPUVertexUniformData(command, 0, direction.data(),
-                                     static_cast<Uint32>(direction.size() * sizeof(float)));
-        SDL_PushGPUFragmentUniformData(command, 0, direction.data(),
-                                       static_cast<Uint32>(direction.size() * sizeof(float)));
+        SdlGpuWriteDevice{}.write_vertex_uniform(
+            command, 0, direction.data(), static_cast<Uint32>(direction.size() * sizeof(float)));
+        SdlGpuWriteDevice{}.write_fragment_uniform(
+            command, 0, direction.data(), static_cast<Uint32>(direction.size() * sizeof(float)));
         count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
         pass.end();
     };
@@ -93,6 +96,21 @@ void run_esm_blur(GpuState& state, SDL_GPUCommandBuffer* command, std::uint32_t 
 void update_shadow_generators(GpuState& state, const Scene& scene, Engine& engine) {
     if (engine.shadow_generators.empty())
         return;
+    for (std::size_t index = 0; index < state.shadow_generators.size(); ++index) {
+        if (engine.shadow_generators[index].map_target.value != invalid_handle)
+            continue;
+        auto& retired = state.shadow_generators[index];
+        if (retired.info)
+            SDL_ReleaseGPUBuffer(state.device, retired.info);
+        retired = {};
+    }
+#if BBLITE_SHADOWS_ESM
+    mark_active_esm_maps(engine, state.active_esm_maps, state.esm_blurs.size());
+    for (std::uint32_t index = 0; index < state.esm_blurs.size(); ++index) {
+        if (!state.active_esm_maps[index])
+            state.esm_blurs[index].clear(state.device);
+    }
+#endif
     if (state.shadow_generators.size() < engine.shadow_generators.size()) {
         state.shadow_generators.resize(engine.shadow_generators.size());
     }

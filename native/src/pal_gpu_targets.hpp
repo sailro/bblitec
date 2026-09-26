@@ -2,9 +2,24 @@
 // borrowing, the effect wrapper's bindings, the transmission grab, scaled
 // and planned target extents, post-process extents and geometry outputs.
 #pragma once
+#include "pal_gpu_surface.hpp"
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
-#include "pal_gpu_picking.hpp"
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string_view>
+#include <vector>
+#include <bblite/upstream/pinned_texture.hpp>
+#if BBLITE_HAS_SCREEN_SPACE
+#include <bblite/upstream/frame_graph_screen_space.hpp>
+#include <bblite/upstream/screen_space_shaders.hpp>
+#endif
 
 namespace bbl::pal {
 
@@ -129,6 +144,10 @@ plan_render_targets(const Engine& engine, std::uint32_t width, std::uint32_t hei
     std::vector<RenderTargetPlan<Format>> plans;
     plans.reserve(engine.render_targets.size());
     for (const auto& record : engine.render_targets) {
+        if (record.retired) {
+            plans.push_back({0, 0, Format{}});
+            continue;
+        }
         auto [target_width, target_height] = surface_target_extent(engine, record, width, height);
         Format format = surface_format;
         if (record.scale_source.value != invalid_handle) {

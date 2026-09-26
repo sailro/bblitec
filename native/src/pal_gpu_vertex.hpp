@@ -2,7 +2,20 @@
 // `GpuVertex`, its streams, the deformation block, the mesh vertex and
 // shared-geometry caches, the thin-instance pool and the morph payloads.
 #pragma once
-#include "pal_gpu_sprites.hpp"
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <string_view>
+#include <vector>
+#if BBLITE_GPU_INSTANCING
+#include <bblite/upstream/renderer_plan.hpp>
+#endif
 
 namespace bbl::pal {
 

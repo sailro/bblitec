@@ -46,7 +46,7 @@ struct Buffer final : StorageBufferAllocation {
             --counters->buffers;
         }
     }
-    void write(std::size_t offset, std::span<const std::uint8_t> value) override {
+    void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> value) override {
         assert(alive && offset + value.size() <= bytes.size());
         std::copy(value.begin(), value.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset));
     }

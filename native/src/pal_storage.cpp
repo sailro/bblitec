@@ -113,19 +113,11 @@ constexpr std::size_t kMaximumEncodedNameLength = 180;
 std::optional<std::string> read_local_storage(const std::string& key) {
     require_runtime_execution("external storage input");
     const std::filesystem::path path = entry_path(key);
-    std::error_code error;
-    const bool exists = std::filesystem::exists(path, error);
-    if (error) {
-        // Absent is a `null` read; anything else is a real failure and is
-        // not quietly turned into one.
-        if (error == std::errc::no_such_file_or_directory) {
-            return std::nullopt;
-        }
-        throw std::runtime_error("Unable to read local storage entry: " + error.message() + ".");
-    }
-    if (!exists)
+    auto bytes = detail::file_read_value(
+        detail::try_read_binary_file_bounded(path, kMaximumEntryBytes, "local storage entry"));
+    if (!bytes)
         return std::nullopt;
-    return detail::read_text_file_bounded(path, kMaximumEntryBytes, "local storage entry");
+    return std::string(bytes->begin(), bytes->end());
 }
 
 void write_local_storage(const std::string& key, const std::string& value) {

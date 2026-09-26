@@ -10,6 +10,8 @@ namespace bbl::pal {
 struct DawnStorageBuffer final : StorageBufferAllocation {
     DawnBuffer buffer;
     WGPUQueue queue = nullptr;
+    const void* device_identity() const override { return queue; }
+    std::optional<std::size_t> buffer_capacity() const override { return gpu_size(size); }
     ~DawnStorageBuffer() override { destroy(); }
     void destroy() override {
         if (buffer) {
@@ -17,8 +19,8 @@ struct DawnStorageBuffer final : StorageBufferAllocation {
             buffer = {};
         }
     }
-    void write(std::size_t offset, std::span<const std::uint8_t> bytes) override {
-        wgpuQueueWriteBuffer(queue, buffer, offset, bytes.data(), bytes.size());
+    void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
+        write_dawn_gpu_buffer(queue, buffer, offset, bytes);
     }
 };
 
@@ -33,6 +35,7 @@ create_dawn_storage_buffer(WGPUDevice device, WGPUQueue queue,
     descriptor.mappedAtCreation = initial.has_value();
     auto allocation = std::make_shared<DawnStorageBuffer>();
     allocation->queue = queue;
+    allocation->size = static_cast<double>(options.byte_length);
     allocation->buffer = wgpuDeviceCreateBuffer(device, &descriptor);
     if (!allocation->buffer)
         throw std::runtime_error("Dawn storage buffer creation failed.");

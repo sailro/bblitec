@@ -2,7 +2,17 @@
 // matrices, the per-draw products and the stage block gather.
 #pragma once
 #include <bblite/features/has_pbr_renderer.hpp>
-#include "pal_gpu_pipeline.hpp"
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <array>
+#include <optional>
+#include <vector>
+#include "pal_gpu_surface.hpp"
+#if BBLITE_HAS_PBR_RENDERER
+#include <bblite/upstream/renderer_plan.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
+#endif
 
 namespace bbl::pal {
 

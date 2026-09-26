@@ -1,10 +1,15 @@
+import {
+    recordOf as record,
+    optionalOf as optional,
+    recordScalars,
+} from "./record-shapes.js";
 /**
  * The pin's text GPU path as native records: the WebGPU objects, descriptors
  * and encoders it speaks, the engine surface it draws to, and the GPU-side
  * records of text renderables and the standalone text renderer.
  *
  * WebGPU is the platform boundary. The pinned GPU functions lower whole over
- * `bblite/text_gpu.hpp`, whose device, queue and encoders each backend
+ * `bblite/gpu.hpp`, whose device, queue and encoders each backend
  * implements with WebGPU's own semantics: a descriptor reaches the backend as
  * the pin builds it, a buffer is created with the pin's size and usage, and a
  * write carries the pin's offsets. Pipelines and their shared quad come from
@@ -19,21 +24,10 @@ import type {
     RecordShape,
     RecordSpec,
 } from "./pinned-record-lowerer.js";
+import { gpuRecords } from "./gpu-schema.js";
 import { webgpuFlagNamespaces } from "../webgpu-flags.js";
 
-const number: RecordShape = { kind: "number" };
-const string: RecordShape = { kind: "string" };
-const none: RecordShape = { kind: "void" };
-const buffer: RecordShape = { kind: "buffer" };
-const record = (name: string): RecordShape => ({ kind: "record", name });
-const optional = (value: RecordShape): RecordShape => ({
-    kind: "optional",
-    value,
-});
-const array = (element: RecordShape): RecordShape => ({
-    kind: "array",
-    element,
-});
+const { number, string, void: none } = recordScalars;
 const fn = (
     parameters: readonly RecordShape[],
     result: RecordShape,
@@ -41,16 +35,11 @@ const fn = (
 /** A backend GPU object the text path holds; absent while `null`. */
 const gpuObject: RecordShape = {
     kind: "native",
-    cpp: "bbl::TextGpuHandle",
+    cpp: "bbl::GpuHandle",
     nullable: true,
 };
 const typedF32: RecordShape = { kind: "typed", element: "f32" };
 
-/** A platform object's method, as the runtime interface spells it. */
-const method = (shape: RecordShape, native: string): MemberSpec => ({
-    shape,
-    access: (owner) => `${owner}->${native}`,
-});
 const members = (
     entries: readonly (readonly [string, MemberSpec])[],
 ): ReadonlyMap<string, MemberSpec> => new Map(entries);
@@ -70,233 +59,8 @@ const descriptor = (
     members: members(entries),
 });
 
-const encoder = (pinned: string): RecordSpec => ({
-    pinned: [pinned],
-    cpp: "TextGpuEncoder",
-    handle: "TextGpuEncoderHandle",
-    reference: true,
-    native: true,
-    members: members([
-        ["setPipeline", method(fn([gpuObject], none), "set_pipeline")],
-        [
-            "setVertexBuffer",
-            method(
-                fn([number, record("GPUBuffer")], none),
-                "set_vertex_buffer",
-            ),
-        ],
-        [
-            "setBindGroup",
-            method(fn([number, gpuObject], none), "set_bind_group"),
-        ],
-        ["draw", method(fn([number, number, number, number], none), "draw")],
-        ["finish", method(fn([], gpuObject), "finish")],
-        [
-            "executeBundles",
-            method(fn([array(gpuObject)], none), "execute_bundles"),
-        ],
-        ["end", method(fn([], none), "end")],
-    ]),
-});
-
 export const textGpuRecords: readonly RecordSpec[] = [
-    // WebGPU objects: one backend handle each, compared by identity.
-    {
-        pinned: ["GPUBuffer"],
-        cpp: "TextGpuObject",
-        handle: "TextGpuHandle",
-        reference: true,
-        native: true,
-        members: members([
-            ["size", { shape: number, access: (owner) => `${owner}->size` }],
-            ["destroy", method(fn([], none), "destroy")],
-        ]),
-    },
-    {
-        pinned: ["GPUTexture"],
-        cpp: "TextGpuObject",
-        handle: "TextGpuHandle",
-        reference: true,
-        native: true,
-        members: members([
-            ["destroy", method(fn([], none), "destroy")],
-            ["createView", method(fn([], gpuObject), "create_view")],
-        ]),
-    },
-    {
-        pinned: ["GPUDevice"],
-        cpp: "TextGpuDevice",
-        handle: "TextGpuDeviceHandle",
-        reference: true,
-        native: true,
-        members: members([
-            [
-                "createBuffer",
-                method(
-                    fn([record("GPUBufferDescriptor")], record("GPUBuffer")),
-                    "create_buffer",
-                ),
-            ],
-            [
-                "createTexture",
-                method(
-                    fn([record("GPUTextureDescriptor")], record("GPUTexture")),
-                    "create_texture",
-                ),
-            ],
-            [
-                "createBindGroup",
-                method(
-                    fn([record("GPUBindGroupDescriptor")], gpuObject),
-                    "create_bind_group",
-                ),
-            ],
-            [
-                "createRenderBundleEncoder",
-                method(
-                    fn(
-                        [record("GPURenderBundleEncoderDescriptor")],
-                        record("GPURenderBundleEncoder"),
-                    ),
-                    "create_render_bundle_encoder",
-                ),
-            ],
-            // The queue is the device's own.
-            ["queue", { shape: record("GPUQueue"), access: (owner) => owner }],
-        ]),
-    },
-    {
-        pinned: ["GPUQueue"],
-        cpp: "TextGpuDevice",
-        handle: "TextGpuDeviceHandle",
-        reference: true,
-        native: true,
-        members: members([
-            [
-                "writeBuffer",
-                method(
-                    fn(
-                        [record("GPUBuffer"), number, buffer, number, number],
-                        none,
-                    ),
-                    "write_buffer",
-                ),
-            ],
-            [
-                "writeTexture",
-                method(
-                    fn(
-                        [
-                            record("GPUTexelCopyTextureInfo"),
-                            buffer,
-                            record("GPUTexelCopyBufferLayout"),
-                            record("GPUExtent3DDict"),
-                        ],
-                        none,
-                    ),
-                    "write_texture",
-                ),
-            ],
-        ]),
-    },
-    encoder("GPURenderPassEncoder"),
-    encoder("GPURenderBundleEncoder"),
-    {
-        pinned: ["GPUCommandEncoder"],
-        cpp: "TextGpuCommandEncoder",
-        handle: "TextGpuCommandEncoderHandle",
-        reference: true,
-        native: true,
-        members: members([
-            [
-                "beginRenderPass",
-                method(
-                    fn(
-                        [record("GPURenderPassDescriptor")],
-                        record("GPURenderPassEncoder"),
-                    ),
-                    "begin_render_pass",
-                ),
-            ],
-        ]),
-    },
-    // Descriptors.
-    descriptor("GPUBufferDescriptor", "TextBufferDescriptor", [
-        ["label", field(optional(string))],
-        ["size", field(number)],
-        ["usage", field(number)],
-    ]),
-    descriptor("GPUTextureDescriptor", "TextTextureDescriptor", [
-        ["label", field(optional(string))],
-        ["format", field(string)],
-        ["size", field(record("GPUExtent3DDict"))],
-        ["usage", field(number)],
-    ]),
-    descriptor("GPUExtent3DDict", "TextExtent3D", [
-        ["width", field(number)],
-        ["height", field(number)],
-        ["depthOrArrayLayers", field(number)],
-    ]),
-    descriptor("GPUBindGroupDescriptor", "TextBindGroupDescriptor", [
-        ["label", field(optional(string))],
-        ["layout", field(gpuObject)],
-        ["entries", field(array(record("GPUBindGroupEntry")))],
-    ]),
-    descriptor("GPUBindGroupEntry", "TextBindGroupEntry", [
-        ["binding", field(number)],
-        [
-            "resource",
-            // GPUBindingResource: a buffer binding, or a view or sampler.
-            field({
-                kind: "variant",
-                members: [record("GPUBufferBinding"), gpuObject],
-            }),
-        ],
-    ]),
-    descriptor("GPUBufferBinding", "TextBufferBinding", [
-        ["buffer", field(record("GPUBuffer"))],
-        ["offset", field(optional(number))],
-        ["size", field(optional(number))],
-    ]),
-    descriptor("GPUTexelCopyTextureInfo", "TextTexelCopyTextureInfo", [
-        ["texture", field(record("GPUTexture"))],
-    ]),
-    descriptor("GPUTexelCopyBufferLayout", "TextTexelCopyBufferLayout", [
-        ["offset", field(optional(number))],
-        ["bytesPerRow", field(optional(number))],
-        ["rowsPerImage", field(optional(number))],
-    ]),
-    descriptor(
-        "GPURenderBundleEncoderDescriptor",
-        "TextRenderBundleEncoderDescriptor",
-        [
-            ["colorFormats", field(array(string))],
-            ["sampleCount", field(optional(number))],
-        ],
-    ),
-    descriptor("GPURenderPassDescriptor", "TextRenderPassDescriptor", [
-        [
-            "colorAttachments",
-            field(array(record("GPURenderPassColorAttachment"))),
-        ],
-    ]),
-    descriptor(
-        "GPURenderPassColorAttachment",
-        "TextRenderPassColorAttachment",
-        [
-            ["view", field(gpuObject)],
-            // GPUColor: this path passes the dictionary form.
-            ["clearValue", field(optional(record("GPUColorDict")))],
-            ["loadOp", field(string)],
-            ["storeOp", field(string)],
-        ],
-    ),
-    descriptor("GPUColorDict", "Color4d", [
-        ["r", field(number)],
-        ["g", field(number)],
-        ["b", field(number)],
-        ["a", field(number)],
-    ]),
+    ...gpuRecords,
     // The engine and its primary surface: one native surface the backend
     // points at its device, target size, swapchain view and frame encoder.
     {
@@ -320,7 +84,41 @@ export const textGpuRecords: readonly RecordSpec[] = [
             ["scRT", field(record("TextSurfaceTarget"), "sc_rt")],
             [
                 "_renderingContexts",
-                field(array(record("TextRenderer")), "rendering_contexts"),
+                {
+                    shape: record("RenderingContextList"),
+                    access: (owner) => `${owner}->engine->rendering_contexts`,
+                },
+            ],
+        ]),
+    },
+    {
+        pinned: ["RenderingContextList"],
+        cpp: "RenderingContextList&",
+        reference: false,
+        native: true,
+        members: members([
+            [
+                "indexOf",
+                {
+                    shape: fn([record("TextRenderer")], number),
+                    access: (owner) => `${owner}.index_of`,
+                },
+            ],
+            [
+                "push",
+                {
+                    shape: fn([record("TextRenderer")], none),
+                    access: (owner) =>
+                        `([&](const bbl::TextRenderer& context) { ${owner}.push_back(context->kind, context); })`,
+                },
+            ],
+            [
+                "splice",
+                {
+                    shape: fn([number, number], none),
+                    access: (owner) =>
+                        `([&](double index, double count) { if (count != 1.0) throw std::runtime_error("Rendering context removal count."); ${owner}.erase_at(static_cast<std::size_t>(index)); })`,
+                },
             ],
         ]),
     },
@@ -405,11 +203,11 @@ export const textGpuRecords: readonly RecordSpec[] = [
         handle: "TextRenderer",
         reference: true,
         omit: new Map([
-            ["_kind", "the renderer's type is its kind"],
             ["_resize", "a text renderer has no size-dependent resources"],
             ["_drawCallsPre", "the backend counts a frame's draw calls"],
         ]),
         members: members([
+            ["_kind", field(string, "kind")],
             // GPUColor: the renderer stores the dictionary it was given.
             ["clearColor", field(record("GPUColorDict"))],
         ]),
@@ -462,12 +260,15 @@ export const textGpuAdapters: readonly (readonly [string, CallAdapter])[] = [
         `${TEXT_PIPELINE}#getOrCreateTextPipeline`,
         {
             cpp: (argument) =>
-                `${argument(0)}->device->text_pipeline(${[1, 2, 3, 4, 5, 6].map(argument).join(", ")})`,
+                `bbl::text_pipelines(${argument(0)}->device).text_pipeline(${[1, 2, 3, 4, 5, 6].map(argument).join(", ")})`,
         },
     ],
     [
         `${TEXT_PIPELINE}#getTextPipelineCache`,
-        { cpp: (argument) => `${argument(0)}->device->text_pipeline_cache()` },
+        {
+            cpp: (argument) =>
+                `bbl::text_pipelines(${argument(0)}->device).text_pipeline_cache()`,
+        },
     ],
     [
         `${CAMERA}#getEffectiveAspectRatio`,

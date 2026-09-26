@@ -152,7 +152,7 @@ inline WGPUTexture upload_dawn_rgba_texture(WGPUDevice device, WGPUQueue queue,
     layout.bytesPerRow = width * 4u;
     layout.rowsPerImage = height;
     const WGPUExtent3D size{width, height, 1};
-    wgpuQueueWriteTexture(queue, &destination, rgba, bytes, &layout, &size);
+    DawnGpuDevice{queue}.write_texture(&destination, rgba, bytes, &layout, &size);
     return texture.release();
 }
 
@@ -189,6 +189,45 @@ inline void wait_for(WGPUInstance instance, WGPUFuture future) {
     }
 }
 
+/** A synchronous readback mapping; every exit, including decode failure, unmaps it. */
+class DawnReadbackMap {
+public:
+    DawnReadbackMap(DawnDevice& state, WGPUBuffer buffer, std::size_t size) : buffer_(buffer) {
+        WGPUBufferMapCallbackInfo callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+        callback.mode = WGPUCallbackMode_WaitAnyOnly;
+        callback.userdata1 = &state.uncaptured_error;
+        callback.callback = [](WGPUMapAsyncStatus status, WGPUStringView message, void* userdata,
+                               void*) {
+            if (status != WGPUMapAsyncStatus_Success) {
+                auto& error = *static_cast<std::string*>(userdata);
+                if (error.empty()) {
+                    error = "readback map failed: " + view_text(message);
+                }
+            }
+        };
+        wait_for(state.instance, wgpuBufferMapAsync(buffer, WGPUMapMode_Read, 0, size, callback));
+        if (!state.uncaptured_error.empty()) {
+            wgpuBufferUnmap(buffer);
+            dawn_error(state.uncaptured_error);
+        }
+        const auto* bytes =
+            static_cast<const std::uint8_t*>(wgpuBufferGetConstMappedRange(buffer, 0, size));
+        if (!bytes) {
+            wgpuBufferUnmap(buffer);
+            dawn_error("readback map returned no data.");
+        }
+        bytes_ = {bytes, size};
+    }
+    DawnReadbackMap(const DawnReadbackMap&) = delete;
+    DawnReadbackMap& operator=(const DawnReadbackMap&) = delete;
+    ~DawnReadbackMap() { wgpuBufferUnmap(buffer_); }
+    [[nodiscard]] std::span<const std::uint8_t> bytes() const { return bytes_; }
+
+private:
+    WGPUBuffer buffer_;
+    std::span<const std::uint8_t> bytes_;
+};
+
 #if BBLITE_OFFSCREEN_SURFACES
 class SharedDawnErrors {
 public:
@@ -209,6 +248,7 @@ private:
 };
 
 struct DawnOffscreenDevice final : OffscreenDevice {
+    const void* device_identity() const override { return queue; }
 #if BBLITE_GPU_TASK_TIMING
     bool supports_gpu_timestamps() const override {
         return wgpuDeviceHasFeature(device, WGPUFeatureName_TimestampQuery) != 0;
@@ -1389,8 +1429,8 @@ inline void update_dawn_extra_texture(WGPUQueue queue, DawnSampledTexture& uploa
     layout.bytesPerRow = extra.width * 4u;
     layout.rowsPerImage = extra.height;
     const WGPUExtent3D size{extra.width, extra.height, 1};
-    wgpuQueueWriteTexture(queue, &destination, extra.rgba.data(), extra.rgba.size(), &layout,
-                          &size);
+    DawnGpuDevice{queue}.write_texture(&destination, extra.rgba.data(), extra.rgba.size(), &layout,
+                                       &size);
     uploaded.uploaded_version = extra.version;
 }
 
@@ -1434,7 +1474,7 @@ inline DawnSurfaceCapture begin_dawn_surface_capture(WGPUDevice device, WGPUComm
     return capture;
 }
 
-inline void save_capture_png(const std::vector<std::uint8_t>& pixels, std::uint32_t width,
+inline void save_capture_png(std::span<const std::uint8_t> pixels, std::uint32_t width,
                              std::uint32_t height, std::uint32_t bytes_per_row, bool bgra,
                              const std::string& path) {
     SDL_Surface* surface =
@@ -1467,26 +1507,8 @@ inline void finish_dawn_surface_capture(DawnDevice& state, const DawnSurfaceCapt
                                         std::uint32_t width, std::uint32_t height,
                                         const std::string& path) {
     const std::size_t size = static_cast<std::size_t>(capture.bytes_per_row) * height;
-    WGPUBufferMapCallbackInfo map_callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-    map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-    map_callback.callback = [](WGPUMapAsyncStatus status, WGPUStringView message, void* userdata1,
-                               void*) {
-        if (status != WGPUMapAsyncStatus_Success) {
-            auto* error = static_cast<std::string*>(userdata1);
-            if (error->empty())
-                *error = view_text(message);
-        }
-    };
-    map_callback.userdata1 = &state.uncaptured_error;
-    wait_for(state.instance,
-             wgpuBufferMapAsync(capture.readback, WGPUMapMode_Read, 0, size, map_callback));
-    const void* mapped = wgpuBufferGetConstMappedRange(capture.readback, 0, size);
-    if (!mapped)
-        dawn_error("buffer map returned no data.");
-    const std::vector<std::uint8_t> pixels(static_cast<const std::uint8_t*>(mapped),
-                                           static_cast<const std::uint8_t*>(mapped) + size);
-    wgpuBufferUnmap(capture.readback);
-    save_capture_png(pixels, width, height, capture.bytes_per_row,
+    const DawnReadbackMap mapped(state, capture.readback, size);
+    save_capture_png(mapped.bytes(), width, height, capture.bytes_per_row,
                      state.surface_format == WGPUTextureFormat_BGRA8Unorm, path);
 }
 

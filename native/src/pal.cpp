@@ -2,6 +2,7 @@
 #include <bblite/features/physics_viewer.hpp>
 
 #include <bblite/pal.hpp>
+#include "pal_file_io.hpp"
 #include <bblite/runtime.hpp>
 
 #include <algorithm>
@@ -305,12 +306,9 @@ Engine create_engine(EngineOptions options) {
 }
 
 std::vector<std::uint8_t> read_binary_file(const std::string& path) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-        throw std::runtime_error("Unable to open file '" + path + "'.");
-    }
-    return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(stream),
-                                     std::istreambuf_iterator<char>());
+    return detail::read_binary_file_bounded(detail::utf8_file_path(path),
+                                            detail::maximum_resource_file_bytes,
+                                            "file '" + path + "'", detail::FileLinks::follow);
 }
 
 std::string join_path(const std::string& root, const std::string& relative_path) {

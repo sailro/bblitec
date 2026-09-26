@@ -4,7 +4,15 @@
 #pragma once
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_sprites.hpp>
-#include "pal_gpu_surface.hpp"
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include "pal_record_sync.hpp"
 
 namespace bbl::pal {
 
@@ -124,22 +132,21 @@ void begin_sprite_renderer_update(Engine& engine, SpriteRendererHandle renderer,
 
 /**
  * Whether a standalone driver's pass list still mirrors
- * `engine.registered_sprite_renderers` one-to-one, in order. Both
+ * `engine.sprite_renderer_contexts()` one-to-one, in order. Both
  * backends' pass records carry the renderer handle, so one comparison
  * serves either list; a mismatch means a callback registered or disposed
  * a renderer and the passes must be rebuilt.
  */
 template <typename SpritePassList>
 inline bool sprite_passes_match_registered(const Engine& engine, const SpritePassList& passes) {
-    if (passes.size() != engine.registered_sprite_renderers.size()) {
-        return false;
-    }
-    for (std::size_t index = 0; index < passes.size(); ++index) {
-        if (passes[index].renderer.value != engine.registered_sprite_renderers[index].value) {
+    std::size_t index = 0;
+    for (const auto& renderer : engine.sprite_renderer_contexts()) {
+        if (index == passes.size() || passes[index].renderer.value != renderer.value) {
             return false;
         }
+        ++index;
     }
-    return true;
+    return index == passes.size();
 }
 
 /**

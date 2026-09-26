@@ -3,7 +3,7 @@
 #include <type_traits>
 #include <vector>
 
-static std::vector<int> released;
+static std::vector<int> released_resources;
 static bool fail_view = false;
 static int view_calls = 0;
 static int texture_refs = 0;
@@ -12,15 +12,15 @@ template <typename T> T fake() { return reinterpret_cast<T>(std::uintptr_t{1}); 
 
 void wgpuTextureRelease(WGPUTexture texture) {
     assert(texture);
-    released.push_back(1);
+    released_resources.push_back(1);
 }
 void wgpuTextureViewRelease(WGPUTextureView view) {
     assert(view);
-    released.push_back(2);
+    released_resources.push_back(2);
 }
 void wgpuSamplerRelease(WGPUSampler sampler) {
     assert(sampler);
-    released.push_back(3);
+    released_resources.push_back(3);
 }
 void wgpuTextureAddRef(WGPUTexture texture) {
     assert(texture);
@@ -41,7 +41,7 @@ int main() {
     static_assert(!std::is_copy_constructible_v<DawnSampledTexture>);
     static_assert(std::is_nothrow_move_constructible_v<DawnSampledTexture>);
     for (int stage = 1; stage <= 3; ++stage) {
-        released.clear();
+        released_resources.clear();
         try {
             DawnSampledTexture texture;
             texture.texture = fake<WGPUTexture>();
@@ -59,7 +59,7 @@ int main() {
         const std::vector<int> expected = stage == 1   ? std::vector<int>{1}
                                           : stage == 2 ? std::vector<int>{2, 1}
                                                        : std::vector<int>{3, 2, 1};
-        assert(released == expected);
+        assert(released_resources == expected);
     }
     const int previous_calls = view_calls;
     try {
@@ -68,7 +68,7 @@ int main() {
     } catch (const bbl::GpuTransportError&) {
     }
     assert(view_calls == previous_calls);
-    released.clear();
+    released_resources.clear();
     {
         DawnTexture first{fake<WGPUTexture>()};
         DawnTexture second;
@@ -79,13 +79,13 @@ int main() {
         const auto borrowed = first.get();
         assert(borrowed == fake<WGPUTexture>());
         auto transferred = first.release();
-        assert(!first && released.empty());
+        assert(!first && released_resources.empty());
         first = transferred;
         first.reset();
         first.reset();
     }
-    assert(released == std::vector<int>{1});
-    released.clear();
+    assert(released_resources == std::vector<int>{1});
+    released_resources.clear();
     {
         DawnTexture color{fake<WGPUTexture>()};
         DawnTextureView view{fake<WGPUTextureView>()};
@@ -101,5 +101,5 @@ int main() {
         // Partial attachment creation leaves independent owning vectors.
         colors.push_back(DawnTexture{fake<WGPUTexture>()});
     }
-    assert(released == (std::vector<int>{1, 2, 2, 1, 1}));
+    assert(released_resources == (std::vector<int>{1, 2, 2, 1, 1}));
 }

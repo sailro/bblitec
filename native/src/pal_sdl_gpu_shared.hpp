@@ -1,9 +1,10 @@
 #pragma once
+#include "pal_gpu_images.hpp"
 #include <bblite/features/has_gamepad.hpp>
 
 #include "pal_sdl_gpu_device.hpp"
+#include "pal_sdl_gpu_writes.hpp"
 #include "pal_sdl_gpu_resources.hpp"
-#include "pal_spirv_vertex.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_device_options.hpp"
 #include "pal_gpu_common.hpp"
@@ -101,7 +102,7 @@ inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
     if (!fence) {
         gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence");
     }
-    if (!wait_sdl_fence(device, fence.get())) {
+    if (!wait_sdl_gpu_fence(device, fence.get())) {
         gpu_error("SDL_WaitForGPUFences");
     }
 
@@ -122,7 +123,7 @@ inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
         write_readback_raw_rows(raw, mapped, height, aligned_row_bytes, source_row_bytes);
     }
     const std::uint32_t output_row_bytes = width * 4;
-    // The shared row conversion (pal_gpu_shared.hpp); only the SDL_GPU
+    // The shared row conversion (shared GPU helpers); only the SDL_GPU
     // format enum is translated here.
     const ReadbackFormatClass format_class =
         format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT ? ReadbackFormatClass::rgba16_float
@@ -169,6 +170,8 @@ inline void save_texture_png(SDL_GPUDevice*, SdlGpuCommand& command, SDL_GPUText
  * own WGSL to decide.
  */
 struct PinnedStageSlots {
+    /** Original locations ordered by the SPIR-V module's compacted locations. */
+    std::optional<std::vector<Uint32>> spirv_inputs;
     /** The entry point the stage's module declared, as the sidecar names it. */
     std::string entry_point;
     /** Uniform blocks in slot order: `scene`, `lights`, `mesh`, `material`. */
@@ -190,6 +193,23 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
         read_binary_file(join_path(shader_root, base_name + ".slots"));
     PinnedStageSlots slots;
     const auto take = [&](std::string_view line) {
+        constexpr std::string_view input_tag = "@spirv-inputs";
+        if (line == input_tag || line.starts_with("@spirv-inputs ")) {
+            if (slots.spirv_inputs)
+                throw std::runtime_error("Duplicate SPIR-V input layout in " + base_name);
+            auto& inputs = slots.spirv_inputs.emplace();
+            line.remove_prefix(input_tag.size());
+            while (!line.empty()) {
+                line.remove_prefix(1);
+                const auto end = std::min(line.find(' '), line.size());
+                const auto location = parse_sidecar_index(line.substr(0, end));
+                if (!location || (!inputs.empty() && inputs.back() >= *location))
+                    throw std::runtime_error("Malformed SPIR-V input layout in " + base_name);
+                inputs.push_back(*location);
+                line.remove_prefix(end);
+            }
+            return;
+        }
         const std::size_t space = line.find(' ');
         if (line.empty() || space == std::string_view::npos)
             return;
@@ -395,12 +415,12 @@ inline void push_stage_uniforms(SDL_GPUCommandBuffer* command, const PinnedStage
                           .c_str());
         }
         if (fragment) {
-            SDL_PushGPUFragmentUniformData(command, static_cast<Uint32>(slot), block.data,
-                                           static_cast<Uint32>(block.bytes));
+            SdlGpuWriteDevice{}.write_fragment_uniform(
+                command, static_cast<Uint32>(slot), block.data, static_cast<Uint32>(block.bytes));
             continue;
         }
-        SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(slot), block.data,
-                                     static_cast<Uint32>(block.bytes));
+        SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(slot), block.data,
+                                                 static_cast<Uint32>(block.bytes));
     }
 }
 
@@ -409,8 +429,8 @@ inline void push_stage_uniform(SDL_GPUCommandBuffer* command, int slot, const vo
                                std::size_t bytes) {
     if (slot < 0)
         return;
-    SDL_PushGPUFragmentUniformData(command, static_cast<Uint32>(slot), data,
-                                   static_cast<Uint32>(bytes));
+    SdlGpuWriteDevice{}.write_fragment_uniform(command, static_cast<Uint32>(slot), data,
+                                               static_cast<Uint32>(bytes));
 }
 
 /** The vertex-stage twin of `push_stage_uniform`. */
@@ -418,8 +438,8 @@ inline void push_vertex_stage_uniform(SDL_GPUCommandBuffer* command, int slot, c
                                       std::size_t bytes) {
     if (slot < 0)
         return;
-    SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(slot), data,
-                                 static_cast<Uint32>(bytes));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(slot), data,
+                                             static_cast<Uint32>(bytes));
 }
 
 /** A device for the offline compiler's DXIL, SPIR-V or MSL stages. Its SPIR-V
@@ -503,7 +523,7 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
             // A texture read without a sampler. SDL packs these after the
             // sampler pairs in the same register space, which is why the count
             // belongs to the shader rather than to the bind call.
-            std::uint32_t storage_textures = 0) {
+            std::uint32_t storage_textures = 0, const PinnedStageSlots* reflected = nullptr) {
     const SDL_GPUShaderFormat supported = SDL_GetGPUShaderFormats(device);
     SDL_GPUShaderFormat format = SDL_GPU_SHADERFORMAT_INVALID;
     const char* extension = nullptr;
@@ -536,11 +556,16 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
                                         : shader_override;
     std::vector<std::uint8_t> code =
         read_binary_file(join_path(shader_root, std::string(base_name) + extension));
-    std::map<Uint32, Uint32> inputs;
+    std::optional<std::vector<Uint32>> inputs;
     const bool compact_inputs =
         format == SDL_GPU_SHADERFORMAT_SPIRV && stage == SDL_GPU_SHADERSTAGE_VERTEX;
-    if (compact_inputs)
-        inputs = compact_spirv_vertex_inputs(code);
+    if (compact_inputs) {
+        inputs =
+            reflected ? reflected->spirv_inputs : read_pinned_stage_slots(base_name).spirv_inputs;
+        if (!inputs)
+            throw std::runtime_error("SPIR-V shader has no compiled vertex layout: " +
+                                     std::string(base_name));
+    }
     SDL_GPUShaderCreateInfo info{};
     info.code_size = code.size();
     info.code = code.data();
@@ -556,13 +581,7 @@ load_shader(SDL_GPUDevice* device, const char* base_name, SDL_GPUShaderStage sta
         throw std::runtime_error(std::string("SDL_CreateGPUShader ") + base_name + extension +
                                  " (" + entrypoint + "): " + SDL_GetError());
     }
-    OwnedSdlShader owned{shader, {device}};
-    if (compact_inputs) {
-        auto& registry = sdl_shader_inputs();
-        const std::lock_guard lock(registry.mutex);
-        registry.layouts.emplace(shader, std::move(inputs));
-    }
-    return owned;
+    return OwnedSdlShader{shader, {device, std::move(inputs)}};
 }
 
 /**
@@ -580,7 +599,7 @@ inline OwnedSdlShader load_shader(SDL_GPUDevice* device, const std::string& stem
                        static_cast<std::uint32_t>(slots.textures.size()),
                        static_cast<std::uint32_t>(slots.uniforms.size()), slots.entry_point.c_str(),
                        static_cast<std::uint32_t>(slots.storage.size()),
-                       static_cast<std::uint32_t>(slots.storage_textures.size()));
+                       static_cast<std::uint32_t>(slots.storage_textures.size()), &slots);
 }
 
 /** A compiled stage and the sidecar it was created from. */
@@ -595,77 +614,6 @@ inline PinnedStage load_pinned_stage(SDL_GPUDevice* device, const std::string& s
     PinnedStageSlots slots = read_pinned_stage_slots(stem);
     OwnedSdlShader shader = load_shader(device, stem, stage, slots);
     return {std::move(shader), std::move(slots)};
-}
-
-inline SDL_GPUBuffer* upload_buffer(SDL_GPUDevice* device, SDL_GPUBufferUsageFlags usage,
-                                    const void* data, std::size_t size) {
-    SDL_GPUBufferCreateInfo buffer_info{};
-    buffer_info.usage = usage;
-    buffer_info.size = static_cast<Uint32>(size);
-    OwnedSdlBuffer buffer{SDL_CreateGPUBuffer(device, &buffer_info), {device}};
-    if (!buffer.get())
-        gpu_error("SDL_CreateGPUBuffer");
-
-    SDL_GPUTransferBufferCreateInfo transfer_info{};
-    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    transfer_info.size = static_cast<Uint32>(size);
-    OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
-    if (!transfer.get())
-        gpu_error("SDL_CreateGPUTransferBuffer");
-    void* mapped = SDL_MapGPUTransferBuffer(device, transfer.get(), false);
-    if (!mapped)
-        gpu_error("SDL_MapGPUTransferBuffer");
-    std::memcpy(mapped, data, size);
-    SDL_UnmapGPUTransferBuffer(device, transfer.get());
-
-    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
-    if (!command)
-        gpu_error("SDL_AcquireGPUCommandBuffer");
-    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    if (!copy)
-        gpu_error("SDL_BeginGPUCopyPass upload");
-    SDL_GPUTransferBufferLocation source{transfer.get(), 0};
-    SDL_GPUBufferRegion destination{buffer.get(), 0, static_cast<Uint32>(size)};
-    SDL_UploadToGPUBuffer(copy, &source, &destination, false);
-    copy.end();
-    if (!command.submit())
-        gpu_error("SDL_SubmitGPUCommandBuffer");
-    transfer.reset();
-    return buffer.release();
-}
-
-inline void update_buffer(SDL_GPUDevice* device, SDL_GPUBuffer* buffer, const void* data,
-                          std::size_t size) {
-    SDL_GPUTransferBufferCreateInfo transfer_info{};
-    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    transfer_info.size = static_cast<Uint32>(size);
-    OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
-    if (!transfer.get())
-        gpu_error("SDL_CreateGPUTransferBuffer");
-    void* mapped = SDL_MapGPUTransferBuffer(device, transfer.get(), false);
-    if (!mapped)
-        gpu_error("SDL_MapGPUTransferBuffer");
-    std::memcpy(mapped, data, size);
-    SDL_UnmapGPUTransferBuffer(device, transfer.get());
-
-    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
-    if (!command)
-        gpu_error("SDL_AcquireGPUCommandBuffer");
-    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    if (!copy)
-        gpu_error("SDL_BeginGPUCopyPass update");
-    const SDL_GPUTransferBufferLocation source{transfer.get(), 0};
-    const SDL_GPUBufferRegion destination{
-        buffer,
-        0,
-        static_cast<Uint32>(size),
-    };
-    SDL_UploadToGPUBuffer(copy, &source, &destination, true);
-    copy.end();
-    if (!command.submit()) {
-        gpu_error("SDL_SubmitGPUCommandBuffer");
-    }
-    transfer.reset();
 }
 
 inline SDL_FColor gpu_clear_color(SDL_GPUDevice* device, SDL_GPUTextureFormat format,
@@ -720,36 +668,155 @@ inline void generate_texture_mipmaps(SDL_GPUDevice* device, SDL_GPUCommandBuffer
  * that changes per frame -- the clustered light field's three data textures --
  * needs the copy without a second allocation.
  */
-inline void upload_2d_texture_into(SDL_GPUDevice* device, SDL_GPUTexture* texture,
-                                   const void* bytes, std::size_t byte_size, std::uint32_t width,
-                                   std::uint32_t height, const char* label,
-                                   std::uint32_t mip_levels = 1) {
-    SDL_GPUTransferBufferCreateInfo transfer_info{};
-    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    transfer_info.size = static_cast<Uint32>(byte_size);
-    OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &transfer_info), {device}};
-    if (!transfer.get())
-        gpu_error(label);
+inline void write_sdl_gpu_buffer(SDL_GPUDevice* device, SDL_GPUBuffer* buffer, std::size_t offset,
+                                 std::span<const std::uint8_t> bytes, bool cycle) {
+    if (!device || !buffer)
+        throw std::runtime_error("SDL buffer write has no resource.");
+    const auto count = gpu_u32(bytes.size()), start = gpu_u32(offset);
+    if (count > std::numeric_limits<Uint32>::max() - start)
+        throw std::runtime_error("SDL buffer write exceeds the native API size range.");
+    if (bytes.empty())
+        return;
+    SDL_GPUTransferBufferCreateInfo info{};
+    info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    info.size = count;
+    OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &info), {device}};
+    if (!transfer)
+        gpu_error("SDL_CreateGPUTransferBuffer buffer write");
     void* mapped = SDL_MapGPUTransferBuffer(device, transfer.get(), false);
     if (!mapped)
-        gpu_error(label);
-    std::memcpy(mapped, bytes, byte_size);
+        gpu_error("SDL_MapGPUTransferBuffer buffer write");
+    std::memcpy(mapped, bytes.data(), bytes.size());
     SDL_UnmapGPUTransferBuffer(device, transfer.get());
-
     SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
     if (!command)
-        gpu_error(label);
+        gpu_error("SDL_AcquireGPUCommandBuffer buffer write");
     SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
     if (!copy)
-        gpu_error("SDL_BeginGPUCopyPass texture upload");
-    const SDL_GPUTextureTransferInfo source{transfer.get(), 0, width, height};
-    const SDL_GPUTextureRegion destination{texture, 0, 0, 0, 0, 0, width, height, 1};
-    SDL_UploadToGPUTexture(copy, &source, &destination, false);
+        gpu_error("SDL_BeginGPUCopyPass buffer write");
+    const SDL_GPUTransferBufferLocation source{transfer.get(), 0};
+    const SDL_GPUBufferRegion destination{buffer, start, count};
+    SDL_UploadToGPUBuffer(copy, &source, &destination, cycle);
     copy.end();
-    generate_texture_mipmaps(device, command, texture, width, height, mip_levels);
     if (!command.submit())
-        gpu_error(label);
-    transfer.reset();
+        gpu_error("SDL_SubmitGPUCommandBuffer buffer write");
+}
+
+inline void write_sdl_gpu_texture(SDL_GPUDevice* device, SDL_GPUTexture* texture,
+                                  std::span<const std::uint8_t> bytes,
+                                  const GpuTextureWriteLayout& layout, const GpuWriteExtent& extent,
+                                  std::uint32_t mip_levels, SdlTextureTransferCache* cache) {
+    if (!device || !texture)
+        throw std::runtime_error("SDL texture write has no resource.");
+    if (!extent.width || !extent.height || !extent.depth_or_array_layers)
+        return;
+    if (extent.depth_or_array_layers != 1)
+        throw std::runtime_error("This SDL texture destination accepts one image per write.");
+    const auto count = gpu_u32(bytes.size());
+    SDL_GPUTransferBufferCreateInfo info{};
+    info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    info.size = count;
+    OwnedSdlTransfer temporary{nullptr, {device}};
+    SDL_GPUTransferBuffer* transfer = nullptr;
+    if (cache) {
+        if (!cache->transfer || cache->capacity < count) {
+            if (cache->transfer)
+                SDL_ReleaseGPUTransferBuffer(device, std::exchange(cache->transfer, nullptr));
+            cache->capacity = 0;
+            cache->transfer = SDL_CreateGPUTransferBuffer(device, &info);
+            if (!cache->transfer)
+                gpu_error("SDL_CreateGPUTransferBuffer texture write");
+            cache->capacity = count;
+        }
+        transfer = cache->transfer;
+    } else {
+        temporary.reset(SDL_CreateGPUTransferBuffer(device, &info));
+        transfer = temporary.get();
+        if (!transfer)
+            gpu_error("SDL_CreateGPUTransferBuffer texture write");
+    }
+    void* mapped = SDL_MapGPUTransferBuffer(device, transfer, cache != nullptr);
+    if (!mapped)
+        gpu_error("SDL_MapGPUTransferBuffer texture write");
+    std::memcpy(mapped, bytes.data(), bytes.size());
+    SDL_UnmapGPUTransferBuffer(device, transfer);
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
+    if (!command)
+        gpu_error("SDL_AcquireGPUCommandBuffer texture write");
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
+    if (!copy)
+        gpu_error("SDL_BeginGPUCopyPass texture write");
+    const SDL_GPUTextureTransferInfo source{transfer, gpu_u32(layout.offset), extent.width,
+                                            layout.rows_per_image.value_or(extent.height)};
+    const SDL_GPUTextureRegion destination{texture, 0, 0, 0, 0, 0, extent.width, extent.height, 1};
+    SDL_UploadToGPUTexture(copy, &source, &destination, cache != nullptr);
+    copy.end();
+    generate_texture_mipmaps(device, command, texture, extent.width, extent.height, mip_levels);
+    if (!command.submit())
+        gpu_error("SDL_SubmitGPUCommandBuffer texture write");
+}
+
+/** A texture write recorded in a caller's copy pass, retaining its transfer through submission. */
+struct SdlCopyTextureDestination final : GpuObject {
+    SDL_GPUDevice* device;
+    SDL_GPUCopyPass* pass;
+    SDL_GPUTextureRegion target;
+    std::vector<OwnedSdlTransfer>& transfers;
+    Uint32 pixels_per_row, rows_per_layer;
+    std::size_t flip_row_bytes;
+    SdlCopyTextureDestination(SDL_GPUDevice* owner, SDL_GPUCopyPass* command,
+                              const SDL_GPUTextureRegion& destination,
+                              std::vector<OwnedSdlTransfer>& leases, Uint32 pixels = 0,
+                              Uint32 rows = 0, std::size_t flipped_row = 0)
+        : device(owner), pass(command), target(destination), transfers(leases),
+          pixels_per_row(pixels), rows_per_layer(rows), flip_row_bytes(flipped_row) {}
+    const void* device_identity() const override { return device; }
+    void write_texture_bytes(std::span<const std::uint8_t> bytes,
+                             const GpuTextureWriteLayout& layout,
+                             const GpuWriteExtent& extent) override {
+        if (!pass || !target.texture)
+            throw std::runtime_error("SDL texture write has no copy destination.");
+        if (flip_row_bytes && (layout.offset != 0 || extent.height > bytes.size() / flip_row_bytes))
+            throw std::runtime_error("SDL flipped image exceeds its source bytes.");
+        SDL_GPUTransferBufferCreateInfo info{};
+        info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        info.size = gpu_u32(bytes.size());
+        OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &info), {device}};
+        if (!transfer)
+            gpu_error("SDL_CreateGPUTransferBuffer texture batch");
+        void* mapped = SDL_MapGPUTransferBuffer(device, transfer.get(), false);
+        if (!mapped)
+            gpu_error("SDL_MapGPUTransferBuffer texture batch");
+        if (flip_row_bytes) {
+            for (std::size_t row = 0; row < extent.height; ++row)
+                std::memcpy(static_cast<std::uint8_t*>(mapped) + row * flip_row_bytes,
+                            bytes.data() + (extent.height - row - 1) * flip_row_bytes,
+                            flip_row_bytes);
+        } else {
+            std::memcpy(mapped, bytes.data(), bytes.size());
+        }
+        SDL_UnmapGPUTransferBuffer(device, transfer.get());
+        const SDL_GPUTextureTransferInfo source{
+            transfer.get(), gpu_u32(layout.offset), pixels_per_row ? pixels_per_row : extent.width,
+            rows_per_layer ? rows_per_layer : layout.rows_per_image.value_or(extent.height)};
+        auto destination = target;
+        destination.w = extent.width;
+        destination.h = extent.height;
+        destination.d = extent.depth_or_array_layers;
+        SDL_UploadToGPUTexture(pass, &source, &destination, false);
+        transfers.push_back(std::move(transfer));
+    }
+};
+
+inline void upload_2d_texture_into(SDL_GPUDevice* device, SDL_GPUTexture* texture,
+                                   const void* bytes, std::size_t byte_size, std::uint32_t width,
+                                   std::uint32_t height, const char*,
+                                   std::uint32_t mip_levels = 1) {
+    if (!bytes && byte_size)
+        throw std::runtime_error("SDL texture write has no source bytes.");
+    SdlTextureDestination destination{device, texture, mip_levels};
+    SdlGpuWriteDevice{device}.write_texture(
+        destination, {static_cast<const std::uint8_t*>(bytes), byte_size}, {}, {width, height, 1});
 }
 
 /**
@@ -761,9 +828,9 @@ inline void upload_2d_texture_into(SDL_GPUDevice* device, SDL_GPUTexture* textur
  * queues the same writes before one queue submission; this batch gives the
  * SDL backend the same command-boundary shape without changing scene data.
  */
-class GpuBufferUploadBatch {
+class GpuBufferUploadBatch : public SdlGpuWriteDevice {
 public:
-    explicit GpuBufferUploadBatch(SDL_GPUDevice* device) : device_(device) {}
+    explicit GpuBufferUploadBatch(SDL_GPUDevice* owner) : SdlGpuWriteDevice(owner) {}
 
     GpuBufferUploadBatch(const GpuBufferUploadBatch&) = delete;
     GpuBufferUploadBatch& operator=(const GpuBufferUploadBatch&) = delete;
@@ -771,9 +838,9 @@ public:
     // The transfer buffer persists across submits, so a batch that
     // outlives its frame loop stops paying a create/release per frame;
     // SDL defers the actual release past any submit still reading it.
-    ~GpuBufferUploadBatch() {
+    ~GpuBufferUploadBatch() override {
         if (transfer_) {
-            SDL_ReleaseGPUTransferBuffer(device_, transfer_);
+            SDL_ReleaseGPUTransferBuffer(device, transfer_);
         }
     }
 
@@ -781,15 +848,15 @@ public:
         SDL_GPUBufferCreateInfo buffer_info{};
         buffer_info.usage = usage;
         buffer_info.size = static_cast<Uint32>(size);
-        SDL_GPUBuffer* buffer = SDL_CreateGPUBuffer(device_, &buffer_info);
+        SDL_GPUBuffer* buffer = SDL_CreateGPUBuffer(device, &buffer_info);
         if (!buffer)
             gpu_error("SDL_CreateGPUBuffer");
-        stage(buffer, data, size, false);
+        write_buffer(buffer, 0, data, size, false, size);
         return buffer;
     }
 
     void update(SDL_GPUBuffer* buffer, const void* data, std::size_t size) {
-        stage(buffer, 0u, data, size, true);
+        write_buffer(buffer, 0u, data, size, true);
     }
 
     void update(SDL_GPUBuffer* buffer, std::size_t destination_offset, const void* data,
@@ -797,7 +864,7 @@ public:
         // A region rewrite must preserve bytes outside the destination. A
         // cycled backing store has no such contents, so only the legacy
         // whole-buffer arm above may request cycling.
-        stage(buffer, destination_offset, data, size, false);
+        write_buffer(buffer, destination_offset, data, size, false);
     }
 
     void submit() {
@@ -805,13 +872,13 @@ public:
             return;
         if (transfer_capacity_ < bytes_size_) {
             if (transfer_) {
-                SDL_ReleaseGPUTransferBuffer(device_, transfer_);
+                SDL_ReleaseGPUTransferBuffer(device, transfer_);
                 transfer_ = nullptr;
             }
             SDL_GPUTransferBufferCreateInfo transfer_info{};
             transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
             transfer_info.size = static_cast<Uint32>(bytes_size_);
-            transfer_ = SDL_CreateGPUTransferBuffer(device_, &transfer_info);
+            transfer_ = SDL_CreateGPUTransferBuffer(device, &transfer_info);
             if (!transfer_) {
                 gpu_error("SDL_CreateGPUTransferBuffer buffer batch");
             }
@@ -820,13 +887,13 @@ public:
         // Cycling hands back a fresh backing store when the previous
         // submit still reads the kept transfer buffer, which is what
         // makes reuse across submits safe.
-        void* mapped = SDL_MapGPUTransferBuffer(device_, transfer_, true);
+        void* mapped = SDL_MapGPUTransferBuffer(device, transfer_, true);
         if (!mapped)
             gpu_error("SDL_MapGPUTransferBuffer buffer batch");
         std::memcpy(mapped, bytes_.get(), bytes_size_);
-        SDL_UnmapGPUTransferBuffer(device_, transfer_);
+        SDL_UnmapGPUTransferBuffer(device, transfer_);
 
-        SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device_)};
+        SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
         if (!command) {
             gpu_error("SDL_AcquireGPUCommandBuffer buffer batch");
         }
@@ -854,8 +921,31 @@ public:
     }
 
 private:
-    void stage(SDL_GPUBuffer* buffer, const void* data, std::size_t size, bool cycle) {
-        stage(buffer, 0u, data, size, cycle);
+    struct Destination final : GpuObject {
+        GpuBufferUploadBatch& batch;
+        SDL_GPUBuffer* buffer;
+        bool cycle;
+        std::optional<std::size_t> capacity;
+        Destination(GpuBufferUploadBatch& owner, SDL_GPUBuffer* value, bool reuse,
+                    std::optional<std::size_t> extent)
+            : batch(owner), buffer(value), cycle(reuse), capacity(extent) {}
+        const void* device_identity() const override { return batch.device; }
+        std::optional<std::size_t> buffer_capacity() const override { return capacity; }
+        void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
+            batch.stage(buffer, offset, bytes.data(), bytes.size(), cycle);
+        }
+    };
+    void write_buffer(SDL_GPUBuffer* buffer, std::size_t offset, const void* data, std::size_t size,
+                      bool cycle, std::optional<std::size_t> capacity = {}) {
+        if (!buffer || (!data && size))
+            throw std::runtime_error("SDL buffer write has no resource or source bytes.");
+        gpu_u32(offset);
+        gpu_u32(size);
+        if (size > std::numeric_limits<Uint32>::max() - offset)
+            throw std::runtime_error("SDL buffer write exceeds the native API size range.");
+        Destination destination{*this, buffer, cycle, capacity};
+        GpuDevice::write_buffer(destination, offset,
+                                {static_cast<const std::uint8_t*>(data), size});
     }
 
     void stage(SDL_GPUBuffer* buffer, std::size_t destination_offset, const void* data,
@@ -896,7 +986,6 @@ private:
         bool cycle = false;
     };
 
-    SDL_GPUDevice* device_ = nullptr;
     // Kept across submits and grown when a frame stages more; released by
     // the destructor.
     SDL_GPUTransferBuffer* transfer_ = nullptr;
@@ -908,6 +997,30 @@ private:
     std::size_t bytes_size_ = 0;
     std::size_t bytes_capacity_ = 0;
 };
+
+inline SDL_GPUBuffer* upload_buffer(SDL_GPUDevice* device, SDL_GPUBufferUsageFlags usage,
+                                    const void* data, std::size_t size) {
+    SDL_GPUBufferCreateInfo info{};
+    info.usage = usage;
+    info.size = gpu_u32(size);
+    OwnedSdlBuffer buffer{SDL_CreateGPUBuffer(device, &info), {device}};
+    if (!buffer)
+        gpu_error("SDL_CreateGPUBuffer");
+    if (!data && size)
+        throw std::runtime_error("SDL buffer write has no source bytes.");
+    SdlBufferDestination destination{device, buffer.get(), false};
+    SdlGpuWriteDevice{device}.write_buffer(destination, 0,
+                                           {static_cast<const std::uint8_t*>(data), size});
+    return buffer.release();
+}
+inline void update_buffer(SDL_GPUDevice* device, SDL_GPUBuffer* buffer, const void* data,
+                          std::size_t size) {
+    if (!data && size)
+        throw std::runtime_error("SDL buffer write has no source bytes.");
+    SdlBufferDestination destination{device, buffer, true};
+    SdlGpuWriteDevice{device}.write_buffer(destination, 0,
+                                           {static_cast<const std::uint8_t*>(data), size});
+}
 
 inline SDL_GPUSampler* create_texture_sampler(SDL_GPUDevice* device,
                                               const TextureSamplerState& sampler) {

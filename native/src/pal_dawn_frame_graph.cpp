@@ -1,5 +1,6 @@
 // Dawn driver for a standalone FrameGraphContext. It records only the tasks
 // the context owns and therefore carries no scene/camera/mesh renderer.
+#include <bblite/upstream/pinned_surface.hpp>
 #include <bblite/features/gpu_task_timing.hpp>
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_frame_graph_renderer.hpp>
@@ -28,7 +29,10 @@
 #if BBLITE_GPU_TASK_TIMING
 #include <bblite/pal_gpu_task_timing.hpp>
 #endif
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_dawn_post_process.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
 
@@ -63,32 +67,7 @@ void release_target_resources(State*, TargetResources& target) noexcept {
 using Target = OwnedGpuRecord<TargetResources, State, &release_target_resources>;
 
 #if BBLITE_HAS_POST_PROCESS
-struct PostProcessProgramResources {
-    std::uint32_t module = 0;
-    WGPUTextureFormat format = WGPUTextureFormat_Undefined;
-    std::uint32_t samples = 1;
-    std::uint32_t alpha_mode = 0;
-    std::size_t extra_textures = 0;
-    std::uint32_t uniform_binding = 0;
-    std::uint32_t uniform_size = 0;
-    WGPUShaderModule shader = nullptr;
-    WGPUBindGroupLayout group_layout = nullptr;
-    WGPUPipelineLayout pipeline_layout = nullptr;
-    WGPURenderPipeline pipeline = nullptr;
-};
-
-void release_program_resources(State*, PostProcessProgramResources& program) noexcept {
-    if (program.pipeline)
-        wgpuRenderPipelineRelease(program.pipeline);
-    if (program.pipeline_layout)
-        wgpuPipelineLayoutRelease(program.pipeline_layout);
-    if (program.group_layout)
-        wgpuBindGroupLayoutRelease(program.group_layout);
-    if (program.shader)
-        wgpuShaderModuleRelease(program.shader);
-}
-using PostProcessProgram =
-    OwnedGpuRecord<PostProcessProgramResources, State, &release_program_resources>;
+using PostProcessProgram = DawnPostProcessProgram;
 
 struct PostProcessPassResources {
     std::size_t program = npos;
@@ -108,6 +87,7 @@ using PostProcessPass = OwnedGpuRecord<PostProcessPassResources, State, &release
 struct State : DawnDevice {
     std::uint32_t samples = 1;
     std::vector<Target> targets;
+    std::uint64_t render_targets_version = 0;
 #if BBLITE_HAS_EFFECT_TASK
     std::vector<DawnEffectPass> effects;
 #endif
@@ -166,7 +146,8 @@ void release(State& state) {
 }
 
 void build_graph(State& state, const Engine& engine, std::uint32_t width, std::uint32_t height) {
-    if (state.targets.size() == engine.render_targets.size() && state.width == width &&
+    if (state.render_targets_version == engine.render_targets_version &&
+        state.targets.size() == engine.render_targets.size() && state.width == width &&
         state.height == height) {
         return;
     }
@@ -175,10 +156,13 @@ void build_graph(State& state, const Engine& engine, std::uint32_t width, std::u
                             [](TextureFormatClass format) { return texture_format(format); });
     release_graph(state);
     state.width = width;
+    state.render_targets_version = engine.render_targets_version;
     state.height = height;
     state.targets.resize(engine.render_targets.size());
     for (std::size_t index = 0; index < engine.render_targets.size(); ++index) {
         const RenderTargetRecord& record = engine.render_targets[index];
+        if (record.retired)
+            continue;
         Target& target = state.targets[index];
         target = Target{state};
         const auto& planned = target_plans[index];
@@ -238,61 +222,6 @@ std::pair<WGPUTexture, WGPUTextureView> source_view(State& state, const Engine& 
     return {target.sampled, target.sampled_view};
 }
 
-/** Builds the entry `post_process_program` below found missing. */
-PostProcessProgram build_post_process_program(State& state,
-                                              const upstream::PostProcessShaderInfo& info,
-                                              WGPUTextureFormat format, std::uint32_t samples,
-                                              std::uint32_t alpha_mode, std::size_t extras,
-                                              std::uint32_t uniform_size) {
-    PostProcessProgram program{state};
-    program.module = info.module_index;
-    program.format = format;
-    program.samples = samples;
-    program.alpha_mode = alpha_mode;
-    program.extra_textures = extras;
-    program.uniform_binding = info.uniform_binding;
-    program.uniform_size = uniform_size;
-    const std::string stem = "postprocess-" + std::to_string(info.module_index);
-    const std::string vertex_stem = stem + ".vert", fragment_stem = stem + ".frag";
-    program.shader = load_wgsl_module(state.device, fragment_stem);
-    // Group 0 as the module declares it: the source sampler and texture,
-    // the program's extra textures, and its uniform block when it has one.
-    const std::array<DawnLayoutStage, 2> stages{{
-        {vertex_stem, WGPUShaderStage_Vertex},
-        {fragment_stem, WGPUShaderStage_Fragment},
-    }};
-    program.group_layout = create_dawn_reflected_layout(state.device, stages, 0);
-    WGPUPipelineLayoutDescriptor layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    layout.bindGroupLayoutCount = 1;
-    layout.bindGroupLayouts = &program.group_layout;
-    program.pipeline_layout = wgpuDeviceCreatePipelineLayout(state.device, &layout);
-    const upstream::PostProcessBlend blend = upstream::post_process_blend(alpha_mode);
-    const WGPUBlendState blend_state = blend_state_from(blend.factors);
-    WGPUColorTargetState color = WGPU_COLOR_TARGET_STATE_INIT;
-    color.format = format;
-    if (blend.enabled)
-        color.blend = &blend_state;
-    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = program.shader;
-    fragment.entryPoint = string_view("postProcessFragment");
-    fragment.targetCount = 1;
-    fragment.targets = &color;
-    WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.layout = program.pipeline_layout;
-    descriptor.vertex.module = program.shader;
-    descriptor.vertex.entryPoint = string_view("postProcessVertex");
-    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    descriptor.primitive.cullMode = WGPUCullMode_None;
-    descriptor.multisample.count = samples;
-    descriptor.multisample.mask = ~0u;
-    descriptor.fragment = &fragment;
-    program.pipeline = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
-    if (!program.pipeline) {
-        dawn_error("post-process pipeline creation failed.");
-    }
-    return program;
-}
-
 // The find-or-create walk is the shared `find_or_create_program`; the key
 // stays this driver's own -- its layout bakes in the bind-group shape.
 std::size_t post_process_program(State& state, const upstream::PostProcessShaderInfo& info,
@@ -302,15 +231,15 @@ std::size_t post_process_program(State& state, const upstream::PostProcessShader
     return find_or_create_program(
         state.programs,
         [&](const PostProcessProgram& found) {
-            return found.module == info.module_index && found.format == format &&
+            return found.module_index == info.module_index && found.format == format &&
                    found.samples == samples && found.alpha_mode == alpha_mode &&
                    found.extra_textures == extras &&
                    found.uniform_binding == info.uniform_binding &&
                    found.uniform_size == uniform_size;
         },
         [&] {
-            return build_post_process_program(state, info, format, samples, alpha_mode, extras,
-                                              uniform_size);
+            return build_dawn_post_process_program(state.device, info, format, samples, alpha_mode,
+                                                   extras, uniform_size);
         });
 }
 
@@ -380,7 +309,7 @@ void record_post_process(State& state, Engine& engine, TaskHandle task_handle,
         std::vector<float> data(program.uniform_size / 4u, 0.0f);
         upstream::write_post_process_uniforms(engine, pass, output_width, output_height,
                                               source_width, source_height, data.data());
-        wgpuQueueWriteBuffer(state.queue, gpu.uniforms, 0, data.data(), program.uniform_size);
+        DawnGpuDevice{state.queue}.write_buffer(gpu.uniforms, 0, data.data(), program.uniform_size);
         pass.uniforms_dirty = false;
     }
     WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
@@ -433,10 +362,9 @@ public:
     }
     void setup() {
         reject_unsupported_frame_options(frame_options, "Dawn frame graph", true, false);
-        if (engine.registered_frame_graph_contexts.empty() ||
-            !engine.registered_frame_graph_contexts.front())
+        if (engine.frame_graph_contexts().empty() || !engine.frame_graph_contexts().front())
             throw std::runtime_error("Frame-graph renderer requires a registered context.");
-        context = engine.registered_frame_graph_contexts.front();
+        context = engine.frame_graph_contexts().front();
         state.samples = frame_options.single_sample
                             ? 1u
                             : upstream::preferred_sample_count(engine.options.msaa_samples);
@@ -503,8 +431,9 @@ public:
 #endif
         for (const TaskHandle handle : context->tasks) {
             FrameTaskRecord& task = handle_at(engine.frame_tasks, handle);
-            if (task.execution_enabled == false)
+            if (task.execution_enabled == false) {
                 continue;
+            }
 #if BBLITE_GPU_TASK_TIMING
             const auto timing_scope = timing_sequence.scoped_task(engine, handle);
 #endif
@@ -584,7 +513,7 @@ public:
 };
 } // namespace
 
-void run_frame_graph_dawn_engine(Engine& engine) { DawnFrameGraphRun::run(engine); }
+SceneRun run_frame_graph_dawn_engine(Engine& engine) { return DawnFrameGraphRun::run(engine); }
 
 #endif
 

@@ -4,7 +4,19 @@
 #pragma once
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_ui.hpp>
-#include "pal_gpu_textures.hpp"
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <utility>
+#if BBLITE_FLOATING_ORIGIN
+#include <bblite/upstream/camera_math.hpp>
+#include "pal_gpu_variants.hpp"
+#endif
 
 namespace bbl::pal {
 

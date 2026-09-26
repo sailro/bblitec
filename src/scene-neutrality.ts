@@ -52,6 +52,7 @@ const imageCells = new Set([
  * | Scene | Backend | 4x re-runs vs run 1 | at one sample |
  * | --- | --- | --- | --- |
  * | 9 | Dawn | differ | byte-identical |
+ * | regression-opacity-alpha-write | Dawn | differ, worst MAD 0.000002, max 1 | byte-identical |
  * | 14 | SDL_GPU | differ, worst MAD 0.000002, max 1 | byte-identical |
  * | 37 | Dawn | differ | byte-identical |
  * | 37 | SDL_GPU | differ, worst MAD 0.000059, max 1 | byte-identical |
@@ -91,6 +92,7 @@ const imageCells = new Set([
  */
 const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
+    ["regression-opacity-alpha-write", new Set(["dawn"])],
     ["scene14", new Set(["sdl_gpu"])],
     ["scene37", new Set(["dawn", "sdl_gpu"])],
     ["scene44", new Set(["dawn", "sdl_gpu"])],

@@ -76,13 +76,13 @@ struct UiBackdropSdlResources {
     }
 };
 
-inline void render_ui_backdrop_sdl(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
-                                   SDL_GPUTexture* target, SDL_GPUTextureFormat target_format,
-                                   SDL_GPUBuffer* vertices, SDL_GPUBuffer* indices,
-                                   SDL_GPUSampler* sampler,
-                                   SDL_GPUGraphicsPipeline* composite_pipeline,
-                                   UiBackdropSdlResources& resources, const UiRenderFrame& frame,
-                                   std::size_t backdrop_index) {
+inline void render_ui_backdrop_sdl_gpu(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
+                                       SDL_GPUTexture* target, SDL_GPUTextureFormat target_format,
+                                       SDL_GPUBuffer* vertices, SDL_GPUBuffer* indices,
+                                       SDL_GPUSampler* sampler,
+                                       SDL_GPUGraphicsPipeline* composite_pipeline,
+                                       UiBackdropSdlResources& resources,
+                                       const UiRenderFrame& frame, std::size_t backdrop_index) {
     const auto& backdrop = frame.backdrops[backdrop_index];
     if (resources.pairs.size() <= backdrop_index)
         resources.pairs.resize(backdrop_index + 1);
@@ -119,8 +119,8 @@ inline void render_ui_backdrop_sdl(SDL_GPUDevice* device, SDL_GPUCommandBuffer* 
     const std::array<float, 16> projection{
         2.0f / frame.width, 0, 0, 0, 0, -2.0f / frame.height, 0, 0, 0, 0, 0.0001f, 0, -1, 1, 0, 1};
     const std::array<float, 2> translation{0, 0};
-    SDL_PushGPUVertexUniformData(command, 0, projection.data(), sizeof(projection));
-    SDL_PushGPUVertexUniformData(command, 1, translation.data(), sizeof(translation));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(), sizeof(projection));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(), sizeof(translation));
     const SDL_GPUBufferBinding vertex_binding{vertices, 0}, index_binding{indices, 0};
     const auto draw = [&](SDL_GPUTexture* output, SDL_GPUTexture* input, std::uint32_t first,
                           std::uint32_t count, bool composite) {

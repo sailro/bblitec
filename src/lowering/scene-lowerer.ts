@@ -1,3 +1,4 @@
+import { renderingContextKind } from "./rendering-context-kind.js";
 import ts from "typescript";
 import { assetRootTransformSource } from "./asset-root-transform.js";
 import { LoweredSource, LoweringContext } from "./context.js";
@@ -2644,12 +2645,12 @@ void off_visibility_change(Engine& engine, std::size_t identity) {
 void register_scene(Scene& scene) {
     require_scene_engine(scene);
     const auto found = std::find_if(
-        scene.engine->registered_scenes.begin(),
-        scene.engine->registered_scenes.end(),
+        scene.engine->scenes().begin(),
+        scene.engine->scenes().end(),
         [&scene](const std::shared_ptr<Scene>& registered) {
             return registered && registered->shares_identity(scene);
         });
-    if (found != scene.engine->registered_scenes.end()) return;${managerSeek}${vatSeek}
+    if (found != scene.engine->scenes().end()) return;${managerSeek}${vatSeek}
 ${options.pbrSceneHooks ? "    prepare_pbr_scene_build(scene);\n" : ""}\
     drain_scene_deferred_builders(scene);
 ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
@@ -2673,70 +2674,20 @@ ${
         [](const auto& a, const auto& b) { return a->order < b->order; });\n`
         : ""
 }\
-    scene.engine->registered_scenes.push_back(
+    scene.engine->rendering_contexts.push_back(${renderingContextKind(this.context, "src/scene/scene-core.ts")},
         std::make_shared<Scene>(scene));
 }
 
 void unregister_scene(Scene& scene) {
     require_scene_engine(scene);
-    scene.engine->registered_scenes.erase(
-        std::remove_if(
-            scene.engine->registered_scenes.begin(),
-            scene.engine->registered_scenes.end(),
-            [&scene](const std::shared_ptr<Scene>& registered) {
-                return registered && registered->shares_identity(scene);
-            }),
-        scene.engine->registered_scenes.end());
+    scene.engine->rendering_contexts.erase_if<std::shared_ptr<Scene>>(
+        [&scene](const std::shared_ptr<Scene>& registered) {
+            return registered && registered->shares_identity(scene);
+        });
 }
 
-void dispose_scene(Scene& scene) {
-    if (scene.disposed) return;
-    scene.disposed = true;
-    unregister_scene(scene);
-    auto disposables = std::move(scene.disposables);
-    scene.disposables.clear();
-    for (const auto& dispose : disposables) {
-        dispose();
-    }
-    for (const auto mesh : scene.meshes) unregister_mesh_material_scene(scene, mesh);
-    scene.meshes.clear();
-    scene.lights.clear();
-    scene.tasks.clear();
 #if BBLITE_HAS_SHADOWS
-    scene.pending_shadow_retirements.clear();
-#endif
-    scene.animation_groups.clear();
-#if BBLITE_HAS_SPRITES
-    scene.billboard_systems.clear();
-    scene.depth_hosted_sprite_layers.clear();
-#endif
-    scene.splat_meshes.clear();
-${options.text ? "    scene.state->text_renderables.clear();\n" : ""}\
-    scene.before_render.clear();
-    scene.animation_seekers.clear();
-    scene.deferred_builders.clear();
-${options.nodeMaterials ? "    scene.state->node_material_groups.clear();\n" : ""}\
-${
-    options.pbrSceneHooks
-        ? `    scene.state->pbr_material_group.reset();
-    scene.state->source_material_groups.reset();
-    scene.state->material_outputs.clear();
-    scene.state->material_runtime_error = nullptr;
-    scene.state->pbr_material_swap_queue.clear();
-    scene.state->material_group_rebuild_pending = false;
-    scene.state->process_material_groups = nullptr;
-    scene.state->enqueue_material_group = nullptr;
-    scene.state->complete_material_group = nullptr;
-`
-        : ""
-}\
-    scene.camera = {};
-}
-
-void rebuild_scene_renderables(Scene& scene) {
-    require_scene_engine(scene);
-${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n" : ""}\
-#if BBLITE_HAS_SHADOWS
+void retire_scene_shadow_states(Scene& scene) {
     for (const ShadowGeneratorHandle generator :
          scene.pending_shadow_retirements) {
         if (generator.value >= scene.engine->shadow_generators.size()) {
@@ -2770,7 +2721,19 @@ ${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n
                         });
                 }),
             scene.tasks.end());
-        shadow.caster_tasks.clear();
+        for (const TaskHandle task : retired) {
+            if (auto* record = bbl::handle_find(scene.engine->frame_tasks, task)) {
+                *record = FrameTaskRecord{};
+                record->execution_enabled = false;
+            }
+        }
+        if (auto* target = bbl::handle_find(scene.engine->render_targets, shadow.map_target)) {
+            *target = RenderTargetRecord{};
+            target->retired = true;
+            ++scene.engine->render_targets_version;
+        }
+        shadow.caster_tasks = std::vector<TaskHandle>{};
+        shadow.csm_cascades = std::vector<ShadowCascade>{};
         shadow.map_target = RenderTargetHandle{};
         for (LightRecord& light : scene.engine->lights) {
             if (light.shadow_generator.value == generator.value) {
@@ -2779,6 +2742,58 @@ ${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n
         }
     }
     scene.pending_shadow_retirements.clear();
+}
+#endif
+
+void dispose_scene(Scene& scene) {
+    if (scene.disposed) return;
+    scene.disposed = true;
+    unregister_scene(scene);
+    auto disposables = std::move(scene.disposables);
+    scene.disposables.clear();
+    for (const auto& dispose : disposables) {
+        dispose();
+    }
+    for (const auto mesh : scene.meshes) unregister_mesh_material_scene(scene, mesh);
+    scene.meshes.clear();
+    scene.lights.clear();
+    scene.tasks.clear();
+#if BBLITE_HAS_SHADOWS
+    retire_scene_shadow_states(scene);
+#endif
+    scene.animation_groups.clear();
+#if BBLITE_HAS_SPRITES
+    scene.billboard_systems.clear();
+    scene.depth_hosted_sprite_layers.clear();
+#endif
+    scene.splat_meshes.clear();
+${options.text ? "    scene.state->text_renderables.clear();\n" : ""}\
+    scene.before_render.clear();
+    scene.animation_seekers.clear();
+    scene.deferred_builders.clear();
+${options.nodeMaterials ? "    scene.state->node_material_groups.clear();\n" : ""}\
+${
+    options.pbrSceneHooks
+        ? `    scene.state->pbr_material_group.reset();
+    scene.state->source_material_groups.reset();
+    scene.state->material_outputs.clear();
+    scene.state->material_runtime_error = nullptr;
+    scene.state->pbr_material_swap_queue.clear();
+    scene.state->material_group_rebuild_pending = false;
+    scene.state->process_material_groups = nullptr;
+    scene.state->enqueue_material_group = nullptr;
+    scene.state->complete_material_group = nullptr;
+`
+        : ""
+}\
+    scene.camera = {};
+}
+
+void rebuild_scene_renderables(Scene& scene) {
+    require_scene_engine(scene);
+${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n" : ""}\
+#if BBLITE_HAS_SHADOWS
+    retire_scene_shadow_states(scene);
 #endif
     scene.topology_rebuild_pending = false;
     ++scene.render_topology_version;

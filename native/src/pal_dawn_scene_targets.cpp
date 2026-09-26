@@ -1,6 +1,11 @@
 // Dawn scene targets: frame-graph and render-target textures, the
 // transmission grab, depth copies and the diagnostic readbacks. SDL_GPU's
 // twin is pal_sdl_gpu_scene_targets.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_images.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
@@ -27,7 +32,8 @@ WGPUTexture create_frame_texture(DawnState& state, WGPUTextureFormat format, std
 
 void create_frame_graph_textures(DawnState& state, const Engine& engine, std::uint32_t width,
                                  std::uint32_t height) {
-    if (state.render_targets.size() == engine.render_targets.size() &&
+    if (state.render_targets_version == engine.render_targets_version &&
+        state.render_targets.size() == engine.render_targets.size() &&
         state.frame_graph_width == width && state.frame_graph_height == height &&
         !surface_targets_changed(engine, state.render_targets, width, height)) {
         synchronize_render_target_lifecycles(engine);
@@ -46,6 +52,8 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
     state.render_targets.resize(engine.render_targets.size());
     for (std::size_t index = 0; index < target_plans.size(); ++index) {
         const RenderTargetRecord record = engine.render_targets[index];
+        if (record.retired)
+            continue;
         const auto& planned = target_plans[index];
         auto& current = state.render_targets[index];
         std::shared_ptr<DawnRenderTarget> replacement;
@@ -223,6 +231,7 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
                                                    "wgpuTextureCreateView geometry task depth");
     }
     state.frame_graph_width = width;
+    state.render_targets_version = engine.render_targets_version;
     state.frame_graph_height = height;
 }
 
@@ -357,8 +366,8 @@ void encode_image_processing(DawnState& state, WGPUCommandEncoder encoder,
         scene.environment.tone_mapping_enabled ? 1.0f : 0.0f,
         0.0f,
     };
-    wgpuQueueWriteBuffer(state.queue, state.image_processing_params, 0, params.data(),
-                         sizeof(params));
+    DawnGpuDevice{state.queue}.write_buffer(state.image_processing_params, 0, params.data(),
+                                            sizeof(params));
     WGPURenderPassColorAttachment color_attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
     color_attachment.view = surface_view;
     color_attachment.loadOp = WGPULoadOp_Clear;
@@ -550,38 +559,18 @@ void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFo
     submit_dawn_command(state.queue, command);
     command.reset();
     encoder.reset();
-    WGPUBufferMapCallbackInfo map_callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-    map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-    map_callback.callback = [](WGPUMapAsyncStatus status, WGPUStringView message, void* userdata1,
-                               void*) {
-        if (status != WGPUMapAsyncStatus_Success) {
-            auto* error = static_cast<std::string*>(userdata1);
-            if (error->empty())
-                *error = view_text(message);
-        }
-    };
-    map_callback.userdata1 = &state.uncaptured_error;
-    wait_for(state.instance,
-             wgpuBufferMapAsync(readback, WGPUMapMode_Read, 0,
-                                static_cast<std::size_t>(aligned_row_bytes) * height,
-                                map_callback));
-    const auto* mapped = static_cast<const std::uint8_t*>(wgpuBufferGetConstMappedRange(
-        readback, 0, static_cast<std::size_t>(aligned_row_bytes) * height));
-    if (!mapped) {
-        readback.reset();
-        dawn_error("diagnostic readback map returned no data.");
-    }
+    const DawnReadbackMap mapping(state, readback,
+                                  static_cast<std::size_t>(aligned_row_bytes) * height);
+    const auto* mapped = mapping.bytes().data();
     if (!raw_path.empty() && format == WGPUTextureFormat_RGBA16Float) {
         std::ofstream raw(raw_path, std::ios::binary);
         if (!raw) {
-            wgpuBufferUnmap(readback);
-            readback.reset();
             throw std::runtime_error("Unable to open HDR diagnostic output '" + raw_path + "'.");
         }
         write_readback_raw_rows(raw, mapped, height, aligned_row_bytes, source_row_bytes);
     }
     const std::uint32_t output_row_bytes = width * 4;
-    // The shared row conversion (pal_gpu_shared.hpp); only the WebGPU
+    // The shared row conversion (shared GPU helpers); only the WebGPU
     // format enum is translated here.
     const ReadbackFormatClass format_class =
         format == WGPUTextureFormat_RGBA16Float ? ReadbackFormatClass::rgba16_float
@@ -589,8 +578,6 @@ void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFo
                                                 : ReadbackFormatClass::rgba8;
     std::vector<std::uint8_t> rgba =
         convert_readback_rows(mapped, width, height, aligned_row_bytes, format_class);
-    wgpuBufferUnmap(readback);
-    readback.reset();
     save_capture_png(rgba, width, height, output_row_bytes, false, path);
 }
 
@@ -673,11 +660,13 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
             if (cluster_ids) {
                 const DiagnosticClusterUniforms uniforms =
                     diagnostic_cluster_uniforms(current_cluster_base, alpha_options);
-                wgpuQueueWriteBuffer(state.queue, uniform_buffer, 0, &uniforms, sizeof(uniforms));
+                DawnGpuDevice{state.queue}.write_buffer(uniform_buffer, 0, &uniforms,
+                                                        sizeof(uniforms));
             } else {
                 const DiagnosticIdUniforms uniforms = diagnostic_id_uniforms(
                     static_cast<std::uint32_t>(mesh_index + 1), alpha_options);
-                wgpuQueueWriteBuffer(state.queue, uniform_buffer, 0, &uniforms, sizeof(uniforms));
+                DawnGpuDevice{state.queue}.write_buffer(uniform_buffer, 0, &uniforms,
+                                                        sizeof(uniforms));
             }
             WGPUBindGroupEntry uniform_entry = WGPU_BIND_GROUP_ENTRY_INIT;
             uniform_entry.binding = 0;

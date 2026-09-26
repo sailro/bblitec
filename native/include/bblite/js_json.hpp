@@ -585,13 +585,7 @@ public:
     void set(std::string_view key, JsonValue value) const {
         if (kind_ != Kind::object || native_)
             throw std::runtime_error("Dynamic property assignment requires an owned object.");
-        for (Entry& entry : *object_) {
-            if (entry.first == key) {
-                entry.second = std::move(value);
-                return;
-            }
-        }
-        object_->emplace_back(key, std::move(value));
+        set_entry(*object_, key, std::move(value));
     }
 
     [[nodiscard]] JsonArrayView elements() const;
@@ -773,6 +767,16 @@ public:
     }
 
 private:
+    friend class JsonValueParser;
+    template <typename Key> static void set_entry(Object& entries, Key&& key, JsonValue value) {
+        for (Entry& entry : entries) {
+            if (entry.first == key) {
+                entry.second = std::move(value);
+                return;
+            }
+        }
+        entries.emplace_back(std::forward<Key>(key), std::move(value));
+    }
     [[nodiscard]] std::size_t array_size() const {
         return native_array_ ? native_array_->size() : array_->size();
     }
@@ -1008,33 +1012,72 @@ inline void json_write(JsonWriter& writer, const JsonValue& value) {
     writer.end_object();
 }
 
-[[nodiscard]] inline JsonValue json_value_from_document(const nlohmann::ordered_json& document) {
-    if (document.is_null())
-        return JsonValue::null_value();
-    if (document.is_boolean()) {
-        return JsonValue::from_boolean(document.get<bool>());
-    }
-    if (document.is_number()) {
-        return JsonValue::from_number(document.get<double>());
-    }
-    if (document.is_string()) {
-        return JsonValue::from_string(document.get<std::string>());
-    }
-    if (document.is_array()) {
+class JsonValueParser {
+    struct Frame {
+        bool object;
+        std::string key;
         JsonValue::Array elements;
-        elements.reserve(document.size());
-        for (const nlohmann::ordered_json& element : document) {
-            elements.push_back(json_value_from_document(element));
+        JsonValue::Object entries;
+    };
+
+    std::vector<Frame> frames_;
+    JsonValue result_;
+
+    bool append(JsonValue value) {
+        if (frames_.empty()) {
+            result_ = std::move(value);
+        } else if (Frame& frame = frames_.back(); frame.object) {
+            JsonValue::set_entry(frame.entries, std::move(frame.key), std::move(value));
+        } else {
+            frame.elements.push_back(std::move(value));
         }
-        return JsonValue::from_array(std::move(elements));
+        return true;
     }
-    JsonValue::Object entries;
-    entries.reserve(document.size());
-    for (auto entry = document.begin(); entry != document.end(); ++entry) {
-        entries.emplace_back(entry.key(), json_value_from_document(entry.value()));
+
+public:
+    bool null() { return append(JsonValue::null_value()); }
+    bool boolean(bool value) { return append(JsonValue::from_boolean(value)); }
+    bool number_integer(nlohmann::json::number_integer_t value) {
+        return append(JsonValue::from_number(static_cast<double>(value)));
     }
-    return JsonValue::from_object(std::move(entries));
-}
+    bool number_unsigned(nlohmann::json::number_unsigned_t value) {
+        return append(JsonValue::from_number(static_cast<double>(value)));
+    }
+    bool number_float(nlohmann::json::number_float_t value, const std::string&) {
+        return append(JsonValue::from_number(value));
+    }
+    bool string(std::string& value) { return append(JsonValue::from_string(std::move(value))); }
+    bool binary(nlohmann::json::binary_t&) {
+        throw std::runtime_error("Binary values are not JSON.");
+    }
+    bool start_object(std::size_t) {
+        frames_.push_back(Frame{true, {}, {}, {}});
+        return true;
+    }
+    bool key(std::string& value) {
+        frames_.back().key = std::move(value);
+        return true;
+    }
+    bool end_object() {
+        JsonValue value = JsonValue::from_object(std::move(frames_.back().entries));
+        frames_.pop_back();
+        return append(std::move(value));
+    }
+    bool start_array(std::size_t) {
+        frames_.push_back(Frame{false, {}, {}, {}});
+        return true;
+    }
+    bool end_array() {
+        JsonValue value = JsonValue::from_array(std::move(frames_.back().elements));
+        frames_.pop_back();
+        return append(std::move(value));
+    }
+    template <typename Exception>
+    bool parse_error(std::size_t, const std::string&, const Exception& error) {
+        throw error;
+    }
+    [[nodiscard]] JsonValue take_result() { return std::move(result_); }
+};
 
 /**
  * `JSON.parse(text)`. nlohmann owns the grammar and throws on a malformed
@@ -1042,10 +1085,9 @@ inline void json_write(JsonWriter& writer, const JsonValue& value) {
  * in the source sees it exactly where it would there.
  */
 [[nodiscard]] inline JsonValue json_parse(const std::string& text) {
-    // `ordered_json` rather than the default `json`, whose object is a
-    // sorted `std::map`: a document read back and written out again keeps
-    // its own key order.
-    return json_value_from_document(nlohmann::ordered_json::parse(text));
+    JsonValueParser parser;
+    nlohmann::json::sax_parse(text, &parser);
+    return parser.take_result();
 }
 
 /**

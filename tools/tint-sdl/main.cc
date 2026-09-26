@@ -43,6 +43,8 @@
 #include <utility>
 #include <vector>
 
+#include "spirv_vertex.hpp"
+
 #include "spirv-tools/libspirv.hpp"
 #include "src/tint/api/common/binding_point.h"
 #include "src/tint/api/common/bindings.h"
@@ -858,6 +860,7 @@ int main(int argc, const char** argv) {
     // SPIR-V: SDL's descriptor sets, each binding its HLSL register; a sampled
     // texture and its sampler share the binding of the combined image sampler
     // SDL binds there.
+    std::optional<std::map<uint32_t, uint32_t>> spirv_inputs;
     const auto write_spirv = [&](const std::string& path, bool demote) {
         TextureSamplers(pairs, entry_point);
         auto ir = LoweredIr(program);
@@ -886,6 +889,9 @@ int main(int argc, const char** argv) {
         auto result = tint::spirv::writer::Generate(ir, options);
         if (result != tint::Success) {
             Fail("SPIR-V: " + Reason(result.Failure()));
+        }
+        if (*arguments.stage == Stage::kVertex) {
+            spirv_inputs = bbl::shader_tools::compact_spirv_vertex_inputs(result->spirv);
         }
         spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_1);
         std::string errors;
@@ -929,6 +935,14 @@ int main(int argc, const char** argv) {
         }
     } else {
         sidecar += "@entry " + entry_point + "\n";
+        if (spirv_inputs) {
+            sidecar += "@spirv-inputs";
+            for (const auto& [location, compact] : *spirv_inputs) {
+                (void)compact;
+                sidecar += " " + std::to_string(location);
+            }
+            sidecar += "\n";
+        }
         for (const auto& slot : slots) {
             sidecar += std::string(1, slot.kind) + std::to_string(slot.kind_index) + " " +
                        slot.resource.variable_name + "\n";

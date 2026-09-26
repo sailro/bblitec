@@ -11,7 +11,7 @@ struct SdlStorageMapCompletion final : OffscreenCompletion {
         : waiter([device, fence, complete = std::move(complete)] {
               std::exception_ptr error;
               try {
-                  if (!wait_sdl_fence(device, fence))
+                  if (!wait_sdl_gpu_fence(device, fence))
                       gpu_error("SDL storage readback fence");
               } catch (...) {
                   error = std::current_exception();

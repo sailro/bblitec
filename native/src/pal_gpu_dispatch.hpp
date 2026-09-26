@@ -29,9 +29,9 @@ struct GpuBackend {
     std::string_view name;
     SceneRun (*run_scene)(Engine&);
     /** Sprite, text and Canvas2D renderers share the 2D frame host. */
-    void (*run_2d)(Engine&);
-    void (*run_effects)(Engine&);
-    void (*run_frame_graph)(Engine&);
+    SceneRun (*run_2d)(Engine&);
+    SceneRun (*run_effects)(Engine&);
+    SceneRun (*run_frame_graph)(Engine&);
     std::shared_ptr<WindowPresenter> (*create_window_presenter)(SDL_Window*);
     /** Flags the backend's surface needs on the SDL window it presents to. */
     SDL_WindowFlags window_flags;
@@ -72,7 +72,7 @@ inline constexpr GpuBackend sdl_gpu_backend{
     BBLITE_GPU_2D_ENTRY(run_sprite_gpu_engine),
     BBLITE_GPU_EFFECT_ENTRY(run_effect_gpu_engine),
     BBLITE_GPU_FRAME_GRAPH_ENTRY(run_frame_graph_gpu_engine),
-    BBLITE_GPU_WINDOW_ENTRY(create_window_sdl_presenter),
+    BBLITE_GPU_WINDOW_ENTRY(create_window_sdl_gpu_presenter),
     0,
 };
 #endif

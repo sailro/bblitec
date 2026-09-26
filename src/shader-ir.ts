@@ -2750,7 +2750,7 @@ const attributeTypes: Record<string, { location: number; type: ShaderType }> = {
  * per-instance colour a material that declares it takes the lane after.
  * The same numbers are stated once natively as
  * `instance_matrix_first_location` / `instance_color_location`
- * (`native/src/pal_gpu_shared.hpp`), which is what the specialized WGSL
+ * (`native/src/pal_gpu_vertex.hpp`), which is what the specialized WGSL
  * these produce is bound against.
  */
 const instanceAttributes: ReadonlyArray<{

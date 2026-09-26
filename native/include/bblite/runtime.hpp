@@ -6,6 +6,7 @@
 
 #include <bblite/js_callback.hpp>
 #include <bblite/snapshot_list.hpp>
+#include <bblite/rendering_contexts.hpp>
 #include <bblite/dom_event_state.hpp>
 
 #include <algorithm>
@@ -392,8 +393,16 @@ struct MeshHandle {
     [[nodiscard]] bool operator==(const MeshHandle&) const = default;
 };
 
-/** The (slot, generation) of each mesh whose last table name ended. */
-using ReleasedMeshNames = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+/** Slots whose last lease ended; generations keep reused slots distinct. */
+using ReleasedRecords = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+using ReleasedMeshNames = ReleasedRecords;
+using ReleasedTransformNodes = ReleasedRecords;
+
+template <typename Table> struct RecordLease;
+struct MeshLeaseTable;
+struct TransformNodeLeaseTable;
+using MeshNameLease = RecordLease<MeshLeaseTable>;
+using TransformNodeLease = RecordLease<TransformNodeLeaseTable>;
 
 /**
  * An engine table's name for a mesh. The pin's tables hold the Mesh object,
@@ -404,23 +413,6 @@ using ReleasedMeshNames = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
  * (`name_mesh`); a retired record keeps its slot while any share is left,
  * and the lease's end queues the slot for `reclaim_mesh_names`.
  */
-struct MeshNameLease {
-    std::weak_ptr<ReleasedMeshNames> released;
-    std::uint32_t slot = invalid_handle;
-    std::uint32_t generation = 0;
-
-    MeshNameLease(std::weak_ptr<ReleasedMeshNames> queue, MeshHandle mesh)
-        : released(std::move(queue)), slot(mesh.value), generation(mesh.generation) {}
-    MeshNameLease(const MeshNameLease&) = delete;
-    MeshNameLease& operator=(const MeshNameLease&) = delete;
-    ~MeshNameLease() {
-        if (const auto queue = released.lock()) {
-            queue->emplace_back(slot, generation);
-        }
-    }
-};
-
-/** One table's share of a mesh's name lease. */
 using MeshName = std::shared_ptr<const MeshNameLease>;
 
 struct MaterialHandle {
@@ -464,8 +456,6 @@ struct LightHandle {
 struct CameraHandle {
     std::uint32_t value = invalid_handle;
 };
-
-struct TransformNodeLease;
 
 struct TransformNodeHandle {
     std::uint32_t value = invalid_handle;
@@ -756,6 +746,8 @@ struct SceneState;
 struct TextRenderableState;
 struct TextLayerState;
 struct TextSurface;
+struct TextRendererState;
+using TextRenderer = std::shared_ptr<TextRendererState>;
 struct TextDataState;
 struct NodeInputState;
 using NodeInputHandle = std::shared_ptr<NodeInputState>;
@@ -1468,6 +1460,8 @@ struct RenderTargetRecord {
     SurfaceRenderTargetSizeResolver resolve_surface_size = nullptr;
     std::shared_ptr<RenderTargetLifecycle> lifecycle{};
     DepthTextureFormat depth_format = DepthTextureFormat::depth24_plus_stencil8;
+    /** A retired internal target keeps its handle slot without retaining attachments. */
+    bool retired = false;
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -2517,6 +2511,7 @@ struct LocalCubemapRecord {
 };
 
 struct MaterialRecord {
+    std::uint64_t ubo_version = 0;
     std::shared_ptr<LocalCubemapRecord> local_environment;
     /** Material.name, copied from the authored asset when one exists. */
     std::string name;
@@ -3751,8 +3746,9 @@ struct DeviceRecoveryRegistration {
 
 using MeshMaterialSceneOwners = std::vector<std::weak_ptr<SceneState>>;
 
-/** The (slot, generation) of each transform node whose lease ended. */
-using ReleasedTransformNodes = std::vector<std::pair<std::uint32_t, std::uint32_t>>;
+using RenderingContextList =
+    RenderingContexts<std::shared_ptr<Scene>, FrameGraphContext*, SpriteRendererHandle,
+                      EffectRendererHandle, TextRenderer>;
 
 struct Engine {
     /**
@@ -4001,6 +3997,7 @@ struct Engine {
     std::vector<SceneSkeletonRecord> scene_skeletons;
     std::vector<BoneRecord> bones;
     std::vector<RenderTargetRecord> render_targets;
+    std::uint64_t render_targets_version = 0;
     std::vector<FrameTaskRecord> frame_tasks;
     std::shared_ptr<pal::ComputeCommandEncoder> current_compute_encoder;
     js::Callback<void(std::shared_ptr<pal::ComputeCommandEncoder>)> compute_one_shot_submitted;
@@ -4011,7 +4008,16 @@ struct Engine {
      * Scene copies share their state, so retaining a wrapper here remains
      * valid after the generated local that registered it leaves scope.
      */
-    SnapshotList<std::shared_ptr<Scene>> registered_scenes;
+    RenderingContextList rendering_contexts;
+    auto scenes() const { return rendering_contexts.select<std::shared_ptr<Scene>>(); }
+    auto frame_graph_contexts() const { return rendering_contexts.select<FrameGraphContext*>(); }
+    auto sprite_renderer_contexts() const {
+        return rendering_contexts.select<SpriteRendererHandle>();
+    }
+    auto effect_renderer_contexts() const {
+        return rendering_contexts.select<EffectRendererHandle>();
+    }
+    auto text_renderer_contexts() const { return rendering_contexts.select<TextRenderer>(); }
     /**
      * A scene renderer sets this when an application callback replaces its
      * root SceneContext. The PAL dispatcher then rebuilds the backend around
@@ -4024,7 +4030,6 @@ struct Engine {
     unsigned int input_replay_mouse_buttons = 0u;
     double input_replay_pointer_x = 0.0;
     double input_replay_pointer_y = 0.0;
-    std::vector<FrameGraphContext*> registered_frame_graph_contexts;
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
     std::vector<SpriteAnimationManagerRecord> sprite_animation_managers;
@@ -4073,15 +4078,7 @@ struct Engine {
      */
     using PickFilter = std::function<bool(MeshHandle)>;
     std::function<PickingInfo(GpuPickerHandle, double, double, const PickFilter*)> pick_hook;
-    // `engine._renderingContexts`, for the sprite half: registration
-    // order is draw order across renderers.
-    std::vector<SpriteRendererHandle> registered_sprite_renderers;
-    // The text half keeps the pin's own list on the text surface the
-    // generated code registers into (`bbl::text_surface`).
     std::shared_ptr<TextSurface> text_surface;
-    // The same list for the effect half; an effect renderer is its own
-    // rendering context on the engine exactly as a sprite renderer is.
-    std::vector<EffectRendererHandle> registered_effect_renderers;
     std::uint64_t next_pixels_texture_identity = 1;
     /**
      * The optional Sprite2D Y-sort extension's hook, empty until a scene
@@ -4120,7 +4117,7 @@ inline FileTexture retained_render_texture(Engine& engine, RenderTextureRef refe
 }
 
 inline bool has_sprite_renderers(const Engine& engine) {
-    return !engine.registered_sprite_renderers.empty();
+    return !engine.sprite_renderer_contexts().empty();
 }
 
 struct Engine::DeviceRecoveryState {
@@ -4255,41 +4252,55 @@ inline std::uint32_t stored_mesh_composition_row(Engine& engine, std::uint32_t c
  * lease's end queues the record; `reclaim_transform_nodes` releases it at
  * the next safe point.
  */
-struct TransformNodeLease {
+struct TransformNodeLeaseTable {
     /** The engine, while `engine_alive` says it has not moved or gone. */
     const Engine* engine = nullptr;
     std::weak_ptr<const int> engine_alive;
-    std::weak_ptr<ReleasedTransformNodes> released;
-    std::uint32_t slot = invalid_handle;
-    std::uint32_t generation = 0;
-
-    TransformNodeLease(Engine& owner, std::uint32_t node_slot, std::uint32_t node_generation)
-        : engine(&owner), engine_alive(owner.lifetime.token()),
-          released(owner.released_transform_nodes), slot(node_slot), generation(node_generation) {}
-    TransformNodeLease(const TransformNodeLease&) = delete;
-    TransformNodeLease& operator=(const TransformNodeLease&) = delete;
-    ~TransformNodeLease();
-    void gc_trace(const js::TraceVisitor& visitor) const;
+    explicit TransformNodeLeaseTable(Engine& owner)
+        : engine(&owner), engine_alive(owner.lifetime.token()) {}
+    static const auto& release_queue(Engine& owner) { return owner.released_transform_nodes; }
+    void trace_record(std::uint32_t slot, std::uint32_t generation,
+                      const js::TraceVisitor& visitor) const {
+        if (engine_alive.expired() || slot >= engine->transform_nodes.size()) {
+            return;
+        }
+        const TransformNodeRecord& record = engine->transform_nodes[slot];
+        if (record.generation != generation || record.retired) {
+            return;
+        }
+        visitor(record.parent);
+        visitor(record.children);
+        visitor(record.parented_nodes);
+    }
 };
 
-inline TransformNodeLease::~TransformNodeLease() {
-    if (const auto queue = released.lock()) {
-        queue->emplace_back(slot, generation);
-    }
-}
+struct MeshLeaseTable {
+    explicit MeshLeaseTable(Engine&) {}
+    static const auto& release_queue(Engine& owner) { return owner.released_mesh_names; }
+};
 
-inline void TransformNodeLease::gc_trace(const js::TraceVisitor& visitor) const {
-    if (engine_alive.expired() || slot >= engine->transform_nodes.size()) {
-        return;
+/** Last-owner release queues a record; the table supplies any collected edges. */
+template <typename Table> struct RecordLease : private Table {
+    std::weak_ptr<ReleasedRecords> released;
+    std::uint32_t slot;
+    std::uint32_t generation;
+
+    RecordLease(Engine& owner, std::uint32_t record_slot, std::uint32_t record_generation)
+        : Table(owner), released(Table::release_queue(owner)), slot(record_slot),
+          generation(record_generation) {}
+    RecordLease(const RecordLease&) = delete;
+    RecordLease& operator=(const RecordLease&) = delete;
+    ~RecordLease() {
+        if (const auto queue = released.lock()) {
+            queue->emplace_back(slot, generation);
+        }
     }
-    const TransformNodeRecord& record = engine->transform_nodes[slot];
-    if (record.generation != generation || record.retired) {
-        return;
+    void gc_trace(const js::TraceVisitor& visitor) const
+        requires requires(const Table& table) { table.trace_record(slot, generation, visitor); }
+    {
+        Table::trace_record(slot, generation, visitor);
     }
-    visitor(record.parent);
-    visitor(record.children);
-    visitor(record.parented_nodes);
-}
+};
 
 /**
  * Releases the records of the transform nodes whose lease ended: each
@@ -4376,7 +4387,7 @@ inline MeshName name_mesh(Engine& engine, MeshHandle mesh) {
         std::erase(engine.free_mesh_slots, mesh.value);
         record.slot_offered = false;
     }
-    MeshName lease = std::make_shared<const MeshNameLease>(engine.released_mesh_names, mesh);
+    MeshName lease = std::make_shared<const MeshNameLease>(engine, mesh.value, mesh.generation);
     record.names = lease;
     return lease;
 }
@@ -5133,8 +5144,7 @@ static_assert(std::is_nothrow_move_constructible_v<Scene>);
 [[nodiscard]] inline bool material_color_has_bound_group(const Engine& engine,
                                                          MaterialHandle material) {
     return std::any_of(
-        engine.registered_scenes.begin(), engine.registered_scenes.end(),
-        [&](const std::shared_ptr<Scene>& scene) {
+        engine.scenes().begin(), engine.scenes().end(), [&](const std::shared_ptr<Scene>& scene) {
             return scene &&
                    std::any_of(scene->meshes.begin(), scene->meshes.end(), [&](MeshHandle mesh) {
                        const MeshRecord* record = handle_find(engine.meshes, mesh);

@@ -30,7 +30,10 @@
 
 // billboard_draw_plan / billboard_needs_upload: the program ladder and
 // the upload gate, decided once for both backends.
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_textures.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 // sprite_blend_factor: one translation of the pinned blend enum, shared
 // with the 2D layer's pass.
@@ -170,7 +173,7 @@ inline BillboardPass create_billboard_pass(SDL_GPUDevice* device, Engine& engine
     info.depth_stencil_state.compare_op = gpu_depth_compare(upstream::pinned_depth_compare);
     info.depth_stencil_state.enable_depth_test = true;
     info.depth_stencil_state.enable_depth_write = plan.cutout_writes_depth;
-    // The one a2c rule (pal_gpu_shared.hpp): at one sample the Dawn twin's
+    // The one a2c rule (shared GPU helpers): at one sample the Dawn twin's
     // pipeline validation would reject it, and this API would quantize
     // coverage to a ~0.5 cutoff — different pixels per backend.
     info.multisample_state.enable_alpha_to_coverage =
@@ -180,7 +183,8 @@ inline BillboardPass create_billboard_pass(SDL_GPUDevice* device, Engine& engine
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = depth_format;
     info.target_info.has_depth_stencil_target = true;
-    pass.pipeline = OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &info), {device}};
+    pass.pipeline =
+        OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, vertex_shader, &info), {device}};
     if (!pass.pipeline)
         gpu_error("SDL_CreateGPUGraphicsPipeline");
     vertex_shader.reset();
@@ -208,8 +212,8 @@ inline BillboardPass create_billboard_pass(SDL_GPUDevice* device, Engine& engine
         add_info.vertex_shader = add_vertex.shader.get();
         add_info.fragment_shader = add_fragment.shader.get();
         add_info.target_info.color_target_descriptions = &add_target;
-        pass.add_pipeline =
-            OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &add_info), {device}};
+        pass.add_pipeline = OwnedSdlPipeline{
+            create_sdl_gpu_graphics_pipeline(device, add_vertex.shader, &add_info), {device}};
         if (!pass.add_pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline");
         }

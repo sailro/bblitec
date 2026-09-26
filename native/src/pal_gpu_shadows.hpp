@@ -1,10 +1,42 @@
 // The shadow family's shared half: the depth state a pass takes, the
 // casters a directional fit folds, and the generators' refresh.
 #pragma once
+#include "pal_gpu_surface.hpp"
 #include <bblite/features/shadows_csm.hpp>
-#include "pal_gpu_materials.hpp"
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <vector>
+#include <bblite/upstream/pinned_depth_state.hpp>
+#if BBLITE_SHADOW_RECEIVERS
+#include <bblite/upstream/pinned_shadow.hpp>
+#include <bblite/upstream/renderer_plan.hpp>
+#endif
+#if BBLITE_SHADOWS_ESM
+#include <bblite/upstream/esm_shadow.hpp>
+#endif
 
 namespace bbl::pal {
+
+#if BBLITE_SHADOWS_ESM
+inline void mark_active_esm_maps(const Engine& engine, std::vector<bool>& active,
+                                 std::size_t map_count) {
+    active.assign(map_count, false);
+    for (const auto& generator : engine.shadow_generators) {
+        if (generator.filter == ShadowFilter::esm_directional &&
+            generator.map_target.value != invalid_handle && generator.esm_index < map_count)
+            active[generator.esm_index] = true;
+    }
+}
+#endif
 
 /**
  * The depth state one pass takes: the pin's own convention, or the shadow

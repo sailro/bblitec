@@ -663,7 +663,7 @@ test("a changed pinned GPU statement is a changed native statement, and unknown 
             module,
             "{ binding: 4, resource: { buffer: gpu._styleBuf } }",
             "{ binding: 4, resource: { buffer: gpu._instanceBuf } }",
-            /binding = 4\.0; record_\d+\.resource = [^;]*\(\[&\] \{ bbl::TextBufferBinding record_\d+\{\}; record_\d+\.buffer = gpu->instance_buf;/,
+            /binding = 4\.0; record_\d+\.resource = [^;]*\(\[&\] \{ bbl::GpuBufferBinding record_\d+\{\}; record_\d+\.buffer = gpu->instance_buf;/,
         ],
         [
             module,
@@ -690,6 +690,6 @@ test("a changed pinned GPU statement is a changed native statement, and unknown 
                 "_enabledTargets.delete(target)",
             ),
         ).header(),
-        /if \(enabled\) \{[^]*weak_delete\(/,
+        /if \(enabled\) \{[^]*\.erase\(std::weak_ptr<const void>\(target\)\)/,
     );
 });

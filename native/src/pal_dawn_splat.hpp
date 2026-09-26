@@ -45,7 +45,7 @@
 #include <vector>
 
 #include "pal_dawn_shared.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_pipeline.hpp"
 
 namespace bbl::pal {
 
@@ -68,7 +68,7 @@ namespace bbl::pal {
  * array rather than a four typed here, so it is the pin's own bind-group
  * order that decides -- the same declaration both backends upload from.
  *
- * Stated once per backend rather than once in `pal_gpu_shared.hpp`,
+ * Stated once per backend rather than once in the shared GPU helpers,
  * because the generated declaration it measures has to be included
  * outside a namespace and the shared header has no such include: hoisting
  * it there put `upstream::` inside `bbl::pal` and broke every name in the
@@ -127,7 +127,7 @@ inline void write_dawn_splat_texture(WGPUQueue queue, WGPUTexture texture, const
     layout.bytesPerRow = width * 4u * 4u;
     layout.rowsPerImage = height;
     const WGPUExtent3D size{width, height, 1};
-    wgpuQueueWriteTexture(queue, &destination, texels, byte_size, &layout, &size);
+    DawnGpuDevice{queue}.write_texture(&destination, texels, byte_size, &layout, &size);
 }
 
 /**
@@ -349,7 +349,7 @@ create_dawn_splat_pass(WGPUDevice device, WGPUQueue queue, WGPUTextureFormat col
         if (!created)
             dawn_error("splat buffer");
         if (data)
-            wgpuQueueWriteBuffer(queue, created, 0, data, bytes);
+            DawnGpuDevice{queue}.write_buffer(created, 0, data, bytes);
         return created.release();
     };
     pass.quad = buffer(WGPUBufferUsage_Vertex, upstream::splat_quad_vertices.data(),
@@ -436,8 +436,8 @@ inline void upload_dawn_splat_pass(
         for (std::size_t i = 0; i < pass.cpu_order.size(); ++i) {
             pass.order_floats[i] = static_cast<float>(pass.cpu_order[i]);
         }
-        wgpuQueueWriteBuffer(queue, pass.order, 0, pass.order_floats.data(),
-                             pass.order_floats.size() * sizeof(float));
+        DawnGpuDevice{queue}.write_buffer(pass.order, 0, pass.order_floats.data(),
+                                          pass.order_floats.size() * sizeof(float));
     }
 
     upstream::SplatUniforms uniforms;
@@ -448,7 +448,7 @@ inline void upload_dawn_splat_pass(
                                    camera_position
 #endif
     );
-    wgpuQueueWriteBuffer(queue, pass.uniforms, 0, &uniforms, sizeof(uniforms));
+    DawnGpuDevice{queue}.write_buffer(pass.uniforms, 0, &uniforms, sizeof(uniforms));
 }
 
 /** Binds and draws into a pass the caller opened. */

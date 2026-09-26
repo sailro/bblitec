@@ -35,7 +35,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_targets.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 
 namespace bbl::pal {
@@ -131,7 +131,8 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
     info.target_info.num_color_targets = 1;
     info.target_info.color_target_descriptions = &color;
     info.target_info.has_depth_stencil_target = false;
-    pass.pipeline = OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &info), {device}};
+    pass.pipeline =
+        OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, vertex.shader, &info), {device}};
     vertex.shader.reset();
     fragment.shader.reset();
     if (!pass.pipeline)
@@ -163,7 +164,7 @@ inline void record_effect_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass*
     SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
     const EffectWrapperRecord& wrapper = handle_at(engine.effect_wrappers, handle);
     if (pass.has_uniform_block && !wrapper.uniform_values.empty()) {
-        // The symmetric size validation (pal_gpu_shared.hpp): a short
+        // The symmetric size validation (shared GPU helpers): a short
         // push leaves a stale tail behind the declared size.
         require_effect_uniform_size(wrapper, pass.uniform_bytes);
         push_stage_uniform(command, 0, wrapper.uniform_values.data(),

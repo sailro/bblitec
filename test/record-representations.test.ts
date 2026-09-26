@@ -35,6 +35,40 @@ export function probe(cell: FixtureCell | null, amount?: number, flag?: boolean)
     if (next) result += next.value;
     return result + (amount ?? 7);
 }
+
+export function collections(): number[] {
+    const numbers = new Map<number, number | undefined>();
+    numbers.set(1, 7);
+    const kept = numbers.get(1);
+    numbers.set(1, 99);
+    numbers.delete(1);
+    numbers.set(2, undefined);
+    const cells = new Map<number, FixtureCell>();
+    const cell: FixtureCell = { value: 11 };
+    cells.set(1, cell);
+    const saved = cells.get(1);
+    cells.clear();
+    const weak = new WeakMap<FixtureCell, number>();
+    weak.set(cell, 13);
+    const weakValue = weak.get(cell);
+    weak.delete(cell);
+    const values: number[] = [17];
+    const popped = values.pop();
+    const empty = values.pop();
+    const references: FixtureCell[] = [cell];
+    const poppedCell = references.pop();
+    const callbacks = new Map<number, () => number>();
+    callbacks.set(1, () => 19);
+    const callback = callbacks.get(1);
+    callbacks.clear();
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    bytes.set(bytes.subarray(0, 3), 1);
+    const out = [kept ?? -1, numbers.get(2) ?? -2, saved!.value,
+        weakValue ?? -3, weak.has(cell) ? 1 : 0, popped ?? -4,
+        empty ?? -5, poppedCell!.value, callback!(),
+        bytes[0]!, bytes[1]!, bytes[2]!, bytes[3]!];
+    return out;
+}
 `;
 
 test("both record lowerers preserve reference absence and optional scalar truthiness", async (t) => {
@@ -60,10 +94,16 @@ test("both record lowerers preserve reference absence and optional scalar truthi
             ],
             values: new Map(),
             adapters: new Map(),
-            exported: new Set([`${modulePath}#probe`]),
+            exported: new Set([
+                `${modulePath}#probe`,
+                `${modulePath}#collections`,
+            ]),
         },
     );
-    const lowered = model.lower([declaration]);
+    const lowered = model.lower([
+        declaration,
+        model.functionDeclaration(modulePath, "collections"),
+    ]);
     const fields = new Map<string, RecordShape>([
         ["value", recordScalars.number],
         ["next", optionalOf(recordOf("FixtureCell"))],
@@ -96,6 +136,7 @@ test("both record lowerers preserve reference absence and optional scalar truthi
             amount?: number,
             flag?: boolean,
         ): number;
+        collections(this: void): number[];
     };
     const expected = [
         reference.probe(null),
@@ -141,6 +182,10 @@ template<class Cell, class Probe> void check(Cell cell, Cell next, Probe probe) 
 int main() {
     check(std::make_shared<bbl::FixtureCell>(), std::make_shared<bbl::FixtureCell>(), bbl::probe);
     check(bbl::js::make_ref<bbl::kernel::FixtureCell>(), bbl::js::make_ref<bbl::kernel::FixtureCell>(), bbl::kernel::probe);
+    const auto values = bbl::collections();
+    for (std::size_t i = 0; i < values.size(); ++i)
+        std::cout << (i ? " " : "") << bbl::js::number_to_string(values[i]);
+    std::cout << "\\n";
 }
 `,
     );
@@ -158,5 +203,9 @@ int main() {
     const output = execFileSync(exe, { encoding: "utf8" })
         .trim()
         .split(/\r?\n/);
-    assert.deepEqual(output, [expected, expected]);
+    assert.deepEqual(output, [
+        expected,
+        expected,
+        reference.collections().join(" "),
+    ]);
 });

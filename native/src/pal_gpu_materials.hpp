@@ -2,9 +2,25 @@
 // the variant pipeline keys, each family's variant key and blocks, their
 // shadow rows, the node graph slots, and the bone and VAT palettes.
 #pragma once
+#include "pal_gpu_common.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
-#include "pal_gpu_vertex.hpp"
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+#include "pal_gpu_variants.hpp"
+#if BBLITE_HAS_PBR_RENDERER
+#include <bblite/upstream/renderer_plan.hpp>
+#include <bblite/upstream/material_texture_slots.hpp>
+#endif
 
 namespace bbl::pal {
 

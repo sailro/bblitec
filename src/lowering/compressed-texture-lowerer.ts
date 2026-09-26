@@ -13,7 +13,7 @@ const KTX2_MODULE = "src/texture/ktx2-loader.ts";
 /**
  * The block formats both backends bind, by the pin's own WebGPU names.
  *
- * This is `CompressedBlockFormat` in `native/src/pal_gpu_shared.hpp`, which
+ * This is `CompressedBlockFormat` in `native/src/pal_gpu_images.hpp`, which
  * is where each backend translates one of these into its own enumerator.
  * The emitted table carries these rows alone so the two ends agree: a
  * container the port cannot upload is refused where the pin refuses an

@@ -70,15 +70,15 @@ struct TextScenePass {
      */
     void update_for_pass(CameraRecord* camera, const std::array<float, 16>& view_projection,
                          double aspect, double width, double height) const {
-        const std::optional<TextCameraInput> input =
-            camera ? std::optional<TextCameraInput>{TextCameraInput{
+        const bbl::js::Nullable<TextCameraInput> input =
+            camera ? bbl::js::Nullable<TextCameraInput>{TextCameraInput{
                          js::TypedArray<float>(view_projection.begin(), view_projection.end()),
                          upstream::scene_camera_change_key(*camera), aspect}}
                    : std::nullopt;
         update(input ? &*input : nullptr, width, height);
     }
 
-    double draw(const TextGpuEncoderHandle& pass, const TextSurfaceHandle& surface) const {
+    double draw(const GpuEncoderHandle& pass, const TextSurfaceHandle& surface) const {
         double count = 0;
         for (const auto& binding : bindings) {
             // The render pass task binds the binding's declared pipeline before

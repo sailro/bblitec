@@ -21,7 +21,7 @@
 
 #include <bblite/runtime.hpp>
 
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_picking.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 #if BBLITE_HAS_BILLBOARDS
 #include <bblite/upstream/billboard_system.hpp>
@@ -237,14 +237,15 @@ public:
                 // orientations come out of one composed module, so they
                 // resolve `scene` to the same slot, and pushed uniform
                 // state persists across draws.
-                SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(pipeline.scene_slot),
-                                             &scene_uniforms, sizeof(scene_uniforms));
+                SdlGpuWriteDevice{}.write_vertex_uniform(command,
+                                                         static_cast<Uint32>(pipeline.scene_slot),
+                                                         &scene_uniforms, sizeof(scene_uniforms));
                 scene_pushed = true;
             }
             const BillboardPickUniforms uniforms =
                 build_billboard_pick_uniforms(view, candidate.base_id, 0.0f, candidate.axis);
-            SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(pipeline.system_slot),
-                                         &uniforms, sizeof(uniforms));
+            SdlGpuWriteDevice{}.write_vertex_uniform(
+                command, static_cast<Uint32>(pipeline.system_slot), &uniforms, sizeof(uniforms));
             SDL_GPUBufferBinding instance_binding{};
             instance_binding.buffer = systems_[candidate.system_index].instances;
             SDL_BindGPUVertexBuffers(pass, 0, &instance_binding, 1);
@@ -351,7 +352,7 @@ private:
         info.target_info.num_color_targets = 2;
         info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D24_UNORM;
         info.target_info.has_depth_stencil_target = true;
-        pipeline.pipeline = create_sdl_graphics_pipeline(device_, &info);
+        pipeline.pipeline = create_sdl_gpu_graphics_pipeline(device_, vertex, &info);
         if (!pipeline.pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline picking-billboard");
         }

@@ -1,6 +1,9 @@
 // Dawn scene textures: material, compressed, cube and environment uploads
 // and the pinned backgrounds. SDL_GPU's twin is
 // pal_sdl_gpu_scene_textures.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_images.hpp"
+#include "pal_gpu_textures.hpp"
 #include <bblite/features/compute_textures.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 
@@ -30,7 +33,8 @@ WGPUTexture create_solid_texture(DawnState& state, const std::vector<std::uint8_
         const WGPUExtent3D size{1, 1, 1};
         std::array<std::uint8_t, 256> row{};
         std::memcpy(row.data(), texel.data(), texel.size());
-        wgpuQueueWriteTexture(state.queue, &destination, row.data(), row.size(), &layout, &size);
+        DawnGpuDevice{state.queue}.write_texture(&destination, row.data(), row.size(), &layout,
+                                                 &size);
     }
     return texture.release();
 }
@@ -76,8 +80,8 @@ WGPUTexture upload_compressed_texture(DawnState& state, const CompressedTexture&
         layout.bytesPerRow = geometry.row_bytes;
         layout.rowsPerImage = geometry.block_rows;
         const WGPUExtent3D size{geometry.width, geometry.height, 1};
-        wgpuQueueWriteTexture(state.queue, &destination, mip.bytes.data(), mip.bytes.size(),
-                              &layout, &size);
+        DawnGpuDevice{state.queue}.write_texture(&destination, mip.bytes.data(), mip.bytes.size(),
+                                                 &layout, &size);
     }
     return texture.release();
 }
@@ -129,8 +133,8 @@ WGPUTexture upload_material_texture(DawnState& state, const TextureData& texture
         static_cast<std::uint32_t>(image.height),
         1,
     };
-    wgpuQueueWriteTexture(state.queue, &destination, image.rgba.data(), image.rgba.size(), &layout,
-                          &size);
+    DawnGpuDevice{state.queue}.write_texture(&destination, image.rgba.data(), image.rgba.size(),
+                                             &layout, &size);
     generate_mipmaps(state, texture, format, mip_count);
     return texture.release();
 }
@@ -183,8 +187,8 @@ WGPUTexture upload_reflection_cube(DawnState& state,
             static_cast<std::uint32_t>(height),
             1,
         };
-        wgpuQueueWriteTexture(state.queue, &destination, image.rgba.data(), image.rgba.size(),
-                              &layout, &size);
+        DawnGpuDevice{state.queue}.write_texture(&destination, image.rgba.data(), image.rgba.size(),
+                                                 &layout, &size);
         generate_mipmaps(state, texture, WGPUTextureFormat_RGBA8Unorm, mip_count,
                          static_cast<std::int32_t>(face));
     }
@@ -260,8 +264,8 @@ WGPUTexture create_environment_texture(DawnState& state, const EnvironmentState&
             layout.bytesPerRow = mip_width * 8;
             layout.rowsPerImage = mip_width;
             const WGPUExtent3D size{mip_width, mip_width, 1};
-            wgpuQueueWriteTexture(state.queue, &destination, source_bytes, byte_size, &layout,
-                                  &size);
+            DawnGpuDevice{state.queue}.write_texture(&destination, source_bytes, byte_size, &layout,
+                                                     &size);
         }
     }
     return texture.release();
@@ -356,8 +360,9 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
     layout.bytesPerRow = width * 8;
     layout.rowsPerImage = height;
     const WGPUExtent3D size{width, height, 1};
-    wgpuQueueWriteTexture(state.queue, &destination, half_pixels.data(),
-                          half_pixels.size() * sizeof(std::uint16_t), &layout, &size);
+    DawnGpuDevice{state.queue}.write_texture(&destination, half_pixels.data(),
+                                             half_pixels.size() * sizeof(std::uint16_t), &layout,
+                                             &size);
     if (state.brdf_view)
         wgpuTextureViewRelease(state.brdf_view);
     if (state.brdf_texture)
@@ -405,8 +410,8 @@ WGPUTexture upload_dawn_dds_skybox(DawnState& state, const EnvironmentState& env
         layout.bytesPerRow = mip_size * 8;
         layout.rowsPerImage = mip_size;
         const WGPUExtent3D size{mip_size, mip_size, 1};
-        wgpuQueueWriteTexture(state.queue, &destination, data.bytes.data() + offset, byte_size,
-                              &layout, &size);
+        DawnGpuDevice{state.queue}.write_texture(&destination, data.bytes.data() + offset,
+                                                 byte_size, &layout, &size);
     });
     return texture.release();
 }

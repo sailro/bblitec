@@ -1,6 +1,8 @@
 // Dawn shadows: the shadow samplers and groups, the ESM blur and the
 // shadow generators' passes. SDL_GPU's twin is
 // pal_sdl_gpu_scene_shadows.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_shadows.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
 
 #include "pal_dawn_scene.hpp"
@@ -63,8 +65,10 @@ DawnState::EsmBlur& ensure_esm_blur(DawnState& state, WGPUTextureView source,
         state.esm_blurs.resize(esm_index + 1);
     }
     DawnState::EsmBlur& blur = state.esm_blurs[esm_index];
-    if (blur.pipeline)
+    if (blur.pipeline && blur.source == source)
         return blur;
+    blur.clear();
+    blur.source = source;
     const upstream::EsmShadowResources& resources = upstream::esm_shadow_resources[esm_index];
     const upstream::EsmTextureDescriptor& half = resources.textures[2];
     const auto create_half = [&](WGPUTexture& texture, WGPUTextureView& view) {
@@ -322,6 +326,23 @@ WGPUBindGroup shadow_group_for(DawnState& state, const Scene& scene, const Engin
 void write_shadow_generators(DawnState& state, const Scene& scene, Engine& engine) {
     if (engine.shadow_generators.empty())
         return;
+    for (std::size_t index = 0; index < state.shadow_uniforms.size(); ++index) {
+        if (engine.shadow_generators[index].map_target.value != invalid_handle)
+            continue;
+        if (const auto buffer = std::exchange(state.shadow_uniforms[index], nullptr))
+            wgpuBufferRelease(buffer);
+#if BBLITE_SHADOWS_ESM
+        if (const auto buffer = std::exchange(state.shadow_params[index], nullptr))
+            wgpuBufferRelease(buffer);
+#endif
+    }
+#if BBLITE_SHADOWS_ESM
+    mark_active_esm_maps(engine, state.active_esm_maps, state.esm_blurs.size());
+    for (std::uint32_t index = 0; index < state.esm_blurs.size(); ++index) {
+        if (!state.active_esm_maps[index])
+            state.esm_blurs[index].clear();
+    }
+#endif
     if (state.shadow_uniforms.size() < engine.shadow_generators.size()) {
         state.shadow_uniforms.resize(engine.shadow_generators.size(), nullptr);
 #if BBLITE_SHADOWS_ESM
@@ -347,8 +368,8 @@ void write_shadow_generators(DawnState& state, const Scene& scene, Engine& engin
                 handle_at(state.shadow_uniforms, handle) =
                     create_buffer(state, WGPUBufferUsage_Uniform, block.bytes.data(), block.size);
             } else if (moved) {
-                wgpuQueueWriteBuffer(state.queue, handle_at(state.shadow_uniforms, handle), 0,
-                                     block.bytes.data(), block.size);
+                DawnGpuDevice{state.queue}.write_buffer(handle_at(state.shadow_uniforms, handle), 0,
+                                                        block.bytes.data(), block.size);
             }
         });
 }

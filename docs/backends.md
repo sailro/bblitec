@@ -24,13 +24,14 @@ backend requests fail.
 `pal_frame_conductor.hpp` coordinates scene, sprite, effect and frame-graph drivers. `pal_gpu_dispatch.hpp`
 holds each compiled backend's entry points and Window presenter; `RendererRun` (`pal_frame_session.hpp`)
 shares the standalone hosts' input, clock, capture and benchmark phases.
-`pal_gpu_shared.hpp` includes what the GPU backends share, one header per concern: the scene-invariant
+GPU units include their shared concerns directly: the scene-invariant
 `pal_gpu_frame.hpp` (run options, clocks, frame boundaries, capture gates, profiles) and `pal_gpu_images.hpp`
 (texel packing, decoded uploads, readback rows), then the scene-shaped surface, texture, sprite, vertex,
 material, shadow, scene-block, picking, target, pipeline and shader-pass headers. Their non-template
 bodies compile once per build, whenever a renderer unit or the window realm is built: the scene-invariant
 ones in `pal_gpu_frame.cpp` and `pal_gpu_images.cpp`, beside the other activation-macro-only PAL units, and
-the scene-shaped ones in `pal_gpu_shared.cpp`.
+the scene-shaped ones in `pal_gpu_shared.cpp`. `pal_gpu_variants.hpp` orders the generated material
+families whose uniform declarations are shared.
 Each backend's scene renderer is a driver (`pal_sdl_gpu.cpp`, `pal_dawn.cpp`: pass helpers and the frame run),
 a state header (`pal_sdl_gpu_scene.hpp`, `pal_dawn_scene.hpp`) and one file per feature family, paired across
 the backends as `pal_sdl_gpu_scene_<family>.cpp` / `pal_dawn_scene_<family>.cpp`: meshes, variants, shadows,
@@ -75,6 +76,7 @@ on a worker thread; SDL waits for submission fences. Promise reactions stay on t
   its separately compiled D3D12 stages link when a fragment reads a prefix of the vertex outputs;
   pinned stages keep Tint's order, whose fragments that omit the position read a prefix of it.
 - SPIR-V is version 1.3 and preserves varying locations; SDL_GPU devices request Vulkan 1.1.
+  Tint compacts vertex inputs at build time; shader-owned sidecar metadata maps pipeline attributes to those locations.
   Vertex-buffer inputs compact with their pipeline attributes to fit mobile limits.
 - Tint's SPIR-V keeps floating-point-dependent branches; the Vulkan driver optimizes the arithmetic.
 - Metal uses `main0`, flattened sidecar bindings and buffer lengths at reserved index 30 for robust access.
@@ -101,6 +103,10 @@ Color-less depth sampled by material slots uses an R32 copy with `(depth, 0, 0, 
 Standalone sprite/text UNORM clears round to the nearest byte; floating-point and sRGB targets are unchanged.
 Linux Canvas2D texture bakes use the reference capture's Vulkan rasterizer; Windows/macOS bake flags are unchanged.
 
+Interactive desktop runs use SDL main callbacks, including iteration during Win32 move/resize.
+Suspended frame state owns renderer resources until shutdown. Capture, benchmark and mobile runs
+use explicit iteration; Worker renderers retain their realm RAF scheduling.
+
 ## Temporal post-process transport
 
 Each TAA source task owns scratch, uniforms and history. Hooks run once in source order.
@@ -126,8 +132,9 @@ Computation workers need no GPU; worker-free builds omit worker scheduling.
 
 Window engines use the supplied RAF timestamp. Windows hosts with the compositor clock API pace
 repaint from its heartbeat and prefer supported mailbox presentation, with FIFO fallback. Other hosts
-use presentation completion. Input callbacks, native defaults and the events those defaults post (click,
-input, change, toggle) finish before the next input event and before repaint. The host services
+use presentation completion. Mouse motion stays ordered in the realm mailbox without blocking worker
+presentation. Other input transactions, including callbacks and events posted by native defaults,
+finish before the next input event and before repaint. The host services
 input and layout while awaiting RAF callback submissions, bounded by the next heartbeat, then selects
 the latest canvas frames. Completion receipts contain weak native inbox references, never JS values.
 

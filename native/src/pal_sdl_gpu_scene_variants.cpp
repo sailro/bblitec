@@ -1,6 +1,12 @@
 // SDL_GPU material variants: the pinned PBR, node and Standard families'
 // slots, resources, pipelines and draws. Dawn's twin is
 // pal_dawn_scene_variants.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_textures.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -504,7 +510,8 @@ pinned_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPi
                                      entry.color_target_count, "pinned",
                                      transparent ? &color_target.blend_state : nullptr);
     }
-    OwnedSdlPipeline pipeline{create_sdl_graphics_pipeline(state.device, &info), {state.device}};
+    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &info),
+                              {state.device}};
     if (!pipeline)
         gpu_error("SDL_CreateGPUGraphicsPipeline pinned variant");
     return state.pinned_pipelines.emplace(key, std::move(pipeline)).first->second.get();
@@ -525,35 +532,10 @@ void sync_morph_weights(GpuBufferUploadBatch& uploads, GpuMesh& mesh, const Mode
 #if BBLITE_HAS_PBR_RENDERER && (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON)
 void upload_pinned_float_texture(GpuState& state, SDL_GPUTexture* texture, const float* data,
                                  std::uint32_t width, std::uint32_t height, std::uint32_t bytes) {
-    if (!state.pinned_float_transfer || state.pinned_float_transfer_bytes < bytes) {
-        if (state.pinned_float_transfer) {
-            SDL_ReleaseGPUTransferBuffer(state.device, state.pinned_float_transfer);
-        }
-        SDL_GPUTransferBufferCreateInfo transfer_info{};
-        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        transfer_info.size = bytes;
-        state.pinned_float_transfer = SDL_CreateGPUTransferBuffer(state.device, &transfer_info);
-        if (!state.pinned_float_transfer)
-            gpu_error("SDL_CreateGPUTransferBuffer");
-        state.pinned_float_transfer_bytes = bytes;
-    }
-    SDL_GPUTransferBuffer* transfer = state.pinned_float_transfer;
-    void* mapped = SDL_MapGPUTransferBuffer(state.device, transfer, true);
-    if (!mapped)
-        gpu_error("SDL_MapGPUTransferBuffer");
-    std::memcpy(mapped, data, bytes);
-    SDL_UnmapGPUTransferBuffer(state.device, transfer);
-    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(state.device)};
-    if (!command)
-        gpu_error("SDL_AcquireGPUCommandBuffer");
-    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    SDL_GPUTextureTransferInfo source{transfer, 0, width, height};
-    SDL_GPUTextureRegion destination{texture, 0, 0, 0, 0, 0, width, height, 1};
-    SDL_UploadToGPUTexture(copy, &source, &destination, true);
-    copy.end();
-    if (!command.submit()) {
-        gpu_error("SDL_SubmitGPUCommandBuffer");
-    }
+    SdlTextureDestination target{state.device, texture, 1, &state.pinned_float_transfer};
+    SdlGpuWriteDevice{state.device}.write_texture(
+        target, {reinterpret_cast<const std::uint8_t*>(data), bytes}, {0, width * 16u, height},
+        {width, height, 1});
 }
 
 SDL_GPUTexture* create_pinned_float_texture(GpuState& state, std::uint32_t width,
@@ -1013,7 +995,8 @@ node_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPipe
             upstream::node_geometry_variants[geometry_variant].color_target_count, "node", nullptr);
     }
 #endif
-    OwnedSdlPipeline pipeline{create_sdl_graphics_pipeline(state.device, &info), {state.device}};
+    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &info),
+                              {state.device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline node variant");
     }
@@ -1526,7 +1509,8 @@ standard_variant_pipeline(GpuState& state, std::size_t variant, upstream::Render
                                      entry.color_target_count, "standard",
                                      transparent ? &color_target.blend_state : nullptr);
     }
-    OwnedSdlPipeline pipeline{create_sdl_graphics_pipeline(state.device, &info), {state.device}};
+    OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &info),
+                              {state.device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline standard variant");
     }
@@ -1574,10 +1558,8 @@ void draw_standard_variant(
         bound_pipeline = variant_pipeline;
     }
     const MeshRecord& record = handle_at(engine.meshes, item.mesh);
-    upstream::MeshUniforms pinned_mesh = pinned_mesh_block(scene, engine, item.mesh);
-    if (velocity_history) {
-        write_pinned_velocity_tail(*velocity_history, item.mesh, pinned_mesh);
-    }
+    const upstream::MeshUniforms pinned_mesh =
+        pinned_mesh_block(scene, engine, item.mesh, velocity_history);
     const upstream::StandardMaterialUniforms material_block =
         standard_material_block(material, features);
     const upstream::StandardUvTransformUniforms uv_block = standard_uv_block(material, features);
@@ -1676,9 +1658,9 @@ void draw_standard_variant(
         PreparedSdlDraw prepared;
         prepared.pipeline = variant_pipeline;
         prepared.vertex_uniforms =
-            prepare_sdl_uniforms(vertex_slots.uniforms, vertex_uniforms, deferred_scene);
+            prepare_sdl_gpu_uniforms(vertex_slots.uniforms, vertex_uniforms, deferred_scene);
         prepared.fragment_uniforms =
-            prepare_sdl_uniforms(fragment_slots.uniforms, fragment_uniforms, deferred_scene);
+            prepare_sdl_gpu_uniforms(fragment_slots.uniforms, fragment_uniforms, deferred_scene);
         prepared.vertex_textures = resolve_stage_textures(
             vertex_slots, "standard variant",
             [&](const std::string& name, std::size_t slot) { return textures(false, name, slot); });

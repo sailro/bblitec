@@ -41,7 +41,14 @@
 // The custom-shader stage blocks are reported through the same
 // `shader_stage_block_floats` packing both backends push, so a capture
 // diff can never disagree with an upload about the block's bytes.
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_shadows.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_pipeline.hpp"
+#include "pal_gpu_shader_passes.hpp"
 #if BBLITE_HAS_TEXT
 #include "pal_text_capture.hpp"
 #else
@@ -1352,7 +1359,7 @@ inline void write_sprite_renderer_list(JsonWriter& json, const Engine& engine, i
     for (std::size_t index = 0; index < engine.sprite_renderers.size(); ++index) {
         const SpriteRendererRecord& renderer = engine.sprite_renderers[index];
         bool registered = false;
-        for (const SpriteRendererHandle candidate : engine.registered_sprite_renderers) {
+        for (const SpriteRendererHandle candidate : engine.sprite_renderer_contexts()) {
             if (candidate.value == static_cast<std::uint32_t>(index)) {
                 registered = true;
                 break;
@@ -1491,7 +1498,7 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
     for (std::size_t index = 0; index < engine.effect_renderers.size(); ++index) {
         const EffectRendererRecord& renderer = engine.effect_renderers[index];
         bool registered = false;
-        for (const EffectRendererHandle candidate : engine.registered_effect_renderers) {
+        for (const EffectRendererHandle candidate : engine.effect_renderer_contexts()) {
             if (candidate.value == static_cast<std::uint32_t>(index)) {
                 registered = true;
                 break;
@@ -2156,7 +2163,7 @@ inline void write_standalone_render_capture(const std::string& path, const char*
 }
 #endif // standalone renderers
 
-// Declared on CaptureGate (pal_gpu_shared.hpp); defined here beside the
+// Declared on CaptureGate (shared GPU helpers); defined here beside the
 // writer it calls — under the same standalone-renderer gate — so a TU
 // including only the shared header carries no undefined inline, and a
 // scene-only build compiles neither half.

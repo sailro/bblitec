@@ -39,7 +39,6 @@ test("SDL integer texture allocations, shader counts and draw bindings preserve 
     const source = `#include <bblite/runtime.hpp>
 #include "pal_gpu_common.hpp"
 #include "pal_sdl_gpu_resources.hpp"
-#include "pal_spirv_vertex.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -53,6 +52,8 @@ struct Texture { SDL_GPUTextureCreateInfo info; std::vector<std::uint8_t> bytes;
 static std::map<SDL_GPUTexture*, Texture> allocations;
 static std::uintptr_t identity = 1;
 static SDL_GPUShaderCreateInfo shader_info{};
+static SDL_GPUShaderFormat supported_formats = SDL_GPU_SHADERFORMAT_DXIL;
+static std::string fixture_sidecar = ${JSON.stringify(sidecar)};
 static std::vector<SDL_GPUTexture*> sampled, loaded;
 static bool last_fragment = false;
 template<class T> T next_handle() { return reinterpret_cast<T>(identity++); }
@@ -65,7 +66,7 @@ SDL_GPUTexture* SDL_CreateGPUTexture(SDL_GPUDevice*, const SDL_GPUTextureCreateI
 void SDL_ReleaseGPUTexture(SDL_GPUDevice*, SDL_GPUTexture* texture) { allocations.erase(texture); }
 SDL_GPUSampler* SDL_CreateGPUSampler(SDL_GPUDevice*, const SDL_GPUSamplerCreateInfo*) { return next_handle<SDL_GPUSampler*>(); }
 void SDL_ReleaseGPUSampler(SDL_GPUDevice*, SDL_GPUSampler*) {}
-SDL_GPUShaderFormat SDL_GetGPUShaderFormats(SDL_GPUDevice*) { return SDL_GPU_SHADERFORMAT_DXIL; }
+SDL_GPUShaderFormat SDL_GetGPUShaderFormats(SDL_GPUDevice*) { return supported_formats; }
 SDL_PropertiesID SDL_GetGPUDeviceProperties(SDL_GPUDevice*) { return 0; }
 bool SDL_GetBooleanProperty(SDL_PropertiesID, const char*, bool fallback) { return fallback; }
 SDL_GPUShader* SDL_CreateGPUShader(SDL_GPUDevice*, const SDL_GPUShaderCreateInfo* info) { shader_info = *info; return next_handle<SDL_GPUShader*>(); }
@@ -86,7 +87,7 @@ void SDL_BindGPUFragmentStorageTextures(SDL_GPURenderPass*, Uint32 first, SDL_GP
 std::string environment_variable(const char*) { return {}; }
 std::string executable_directory() { return {}; }
 std::string join_path(const std::string&, const std::string& name) { return name; }
-std::vector<std::uint8_t> read_binary_file(const std::string&) { const std::string text = ${JSON.stringify(sidecar)}; return {text.begin(), text.end()}; }
+std::vector<std::uint8_t> read_binary_file(const std::string&) { return {fixture_sidecar.begin(), fixture_sidecar.end()}; }
 void upload_2d_texture_into(SDL_GPUDevice*, SDL_GPUTexture* texture, const void* bytes, std::size_t size, std::uint32_t, std::uint32_t, const char*, bool) {
     auto data = static_cast<const std::uint8_t*>(bytes); allocations.at(texture).bytes.assign(data, data + size);
 }
@@ -126,6 +127,17 @@ int main() {
     assert(slots.storage == std::vector<std::string>{"morph"});
     auto shader = load_shader(device, "fixture", SDL_GPU_SHADERSTAGE_FRAGMENT, static_cast<Uint32>(slots.textures.size()), 0, "main", static_cast<Uint32>(slots.storage.size()), static_cast<Uint32>(slots.storage_textures.size()));
     assert(shader_info.num_samplers == 1 && shader_info.num_storage_textures == 2 && shader_info.num_storage_buffers == 1);
+    supported_formats = SDL_GPU_SHADERFORMAT_SPIRV;
+    fixture_sidecar = "@spirv-inputs 0 3 16\\n";
+    auto vertex = load_shader(device, "fixture", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
+    assert((vertex.get_deleter().spirv_inputs == std::vector<Uint32>{0, 3, 16}));
+    fixture_sidecar = "@spirv-inputs\\n";
+    assert(read_pinned_stage_slots("fixture").spirv_inputs->empty());
+    for (const std::string invalid : {"", "@spirv-inputs 3 0\\n", "@spirv-inputs 0 0\\n", "@spirv-inputs -1\\n", "@spirv-inputs\\n@spirv-inputs\\n"}) {
+        fixture_sidecar = invalid;
+        try { load_shader(device, "fixture", SDL_GPU_SHADERSTAGE_VERTEX, 0, 0); assert(false); }
+        catch (const std::runtime_error&) {}
+    }
     for (bool fragment : {false, true}) {
         bind_stage_textures(render_pass, slots, fragment, "fixture", [&](const std::string& name, std::size_t) {
             if (name == "color") return SDL_GPUTextureSamplerBinding{gpu.lights, gpu.sampler};

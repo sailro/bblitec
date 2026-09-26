@@ -63,7 +63,7 @@ int main() {
         bbl::set_node_input_texture(retained, pixels);
         assert(engine.materials[a.value].shader_textures[0].identity == solid.identity);
         bbl::register_scene(scene);
-        assert(engine.registered_scenes.size() == 1);
+        assert(engine.scenes().size() == 1);
         bbl::dispose_scene(scene);
     }
     bbl::js::collect_cycles();
@@ -91,7 +91,7 @@ int main() {
         } catch (const std::runtime_error& error) {
             threw = std::string(error.what()).find("albedo") != std::string::npos;
         }
-        assert(threw && engine.registered_scenes.empty());
+        assert(threw && engine.scenes().empty());
         assert(engine.materials[missing.value].shader_textures.empty());
         assert(engine.materials[valid.value].shader_textures[0].identity == solid.identity);
     }

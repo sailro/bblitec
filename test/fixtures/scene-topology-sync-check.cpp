@@ -8,6 +8,7 @@
 // scene block kept as it was, no other scene's camera, a skipped geometry
 // task, the scene's own clear colour and the pass viewport it sets.
 #include "pal_scene_synchronize.hpp"
+#include "pal_gpu_images.hpp"
 
 #include <algorithm>
 #include <array>
@@ -150,7 +151,7 @@ struct Run {
     RetainedSceneBlocks pass_blocks;
     long frame = 0;
 
-    Run() { engine.registered_scenes.push_back(std::make_shared<Scene>(scene)); }
+    Run() { engine.rendering_contexts.push_back("scene", std::make_shared<Scene>(scene)); }
 
     SceneSyncOutcome synchronize(Hooks& hooks) {
         SceneSyncState<Row> sync{engine,

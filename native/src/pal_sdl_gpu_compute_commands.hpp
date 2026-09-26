@@ -17,8 +17,8 @@
 
 namespace bbl::pal {
 /** Separate dependent passes retain SDL resource transitions within one submission. */
-inline void submit_sdl_compute_commands(SDL_GPUDevice* device,
-                                        std::span<const ComputeCommand> commands) {
+inline void submit_sdl_gpu_compute_commands(SDL_GPUDevice* device,
+                                            std::span<const ComputeCommand> commands) {
     if (commands.empty())
         return;
     SdlGpuCommand encoder{SDL_AcquireGPUCommandBuffer(device)};
@@ -30,7 +30,7 @@ inline void submit_sdl_compute_commands(SDL_GPUDevice* device,
     for (const auto& command : commands) {
         if (const auto* dispatch = std::get_if<ComputeDispatch>(&command)) {
 #if BBLITE_COMPUTE_SHADERS
-            encode_sdl_compute(encoder, *dispatch, scratch);
+            encode_sdl_gpu_compute(encoder, *dispatch, scratch);
 #else
             (void)dispatch;
             throw std::runtime_error("This build does not provide compute dispatch.");

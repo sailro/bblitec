@@ -18,9 +18,7 @@ inline void dispose_engine_retirements(Engine& engine) {
         engine.dispose_gpu_retirements();
 }
 inline void unconfigure_engine_surfaces(Engine& engine) {
-    engine.registered_scenes.clear();
-    engine.registered_frame_graph_contexts.clear();
-    engine.registered_effect_renderers.clear();
+    engine.rendering_contexts.clear();
 #if BBLITE_WORKERS
     if (engine.offscreen_run)
         engine.offscreen_run->discard_pending();

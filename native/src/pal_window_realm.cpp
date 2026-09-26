@@ -7,7 +7,7 @@
 #include <bblite/pal_location.hpp>
 #include "pal_window_presenter.hpp"
 #include "pal_window_frame_clock.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_frame.hpp"
 #include "pal_platform_events.hpp"
 #include "pal_system_preferences.hpp"
 #include "pal_window.hpp"
@@ -182,11 +182,10 @@ struct WindowServices final : CanvasProvider {
     std::unique_ptr<DocumentSnapshot> pending;
     std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
     std::uint64_t requested = 0, completed = 0;
-    /** Document input the display posted, and how much of it the realm has
-     * handled. One input event's DOM transaction, including the events its
-     * native default posts (click, input, change, toggle), completes before
-     * the display handles the next event or presents, as a browser dispatches
-     * them within one task. Both are guarded by `mutex`. */
+    /** Document input posted and handled, guarded by `mutex`. Except for mouse
+     * motion, each transaction and its native default's events (click, input,
+     * change, toggle) finish before the display handles the next event or
+     * presents. Mouse motion remains ordered without blocking presentation. */
     std::uint64_t input_posted = 0, input_handled = 0;
     std::shared_ptr<const LayoutSnapshot> layout;
     std::atomic<bool> screen_requested = false;
@@ -431,9 +430,9 @@ void dispatch_canvas_input(const WindowPointerEvent& packet) {
                                       event.wheel.mouse_y);
     }
 #if BBLITE_HAS_PBR_RENDERER
-    if (engine->registered_scenes.empty() || !engine->registered_scenes.front())
+    if (engine->scenes().empty() || !engine->scenes().front())
         return;
-    const auto camera = engine->registered_scenes.front()->camera;
+    const auto camera = engine->scenes().front()->camera;
     if (camera.value < engine->cameras.size())
         handle_camera_pointer_event(event, handle_at(engine->cameras, camera),
                                     target->second.camera, engine->canvas_client_width,
@@ -664,7 +663,7 @@ std::shared_ptr<MediaQueryList> create_media_query(std::string query) {
     return media;
 }
 
-int run_window_application(WorkerEntry initialize, EngineOptions options) {
+static Iteration<int> window_application_iterations(WorkerEntry initialize, EngineOptions options) {
     try {
         const auto frame_options = read_frame_options();
         const auto capture_frame_text = environment_variable("BBLITE_CAPTURE_ENGINE_FRAME");
@@ -689,7 +688,10 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS))
             throw std::runtime_error(SDL_GetError());
         struct Quit {
-            ~Quit() { SDL_Quit(); }
+            ~Quit() {
+                if (!active_sdl_application)
+                    SDL_Quit();
+            }
         } quit;
         configure_run_surface(options);
         using Window = std::unique_ptr<SDL_Window, decltype(&SDL_DestroyWindow)>;
@@ -746,8 +748,8 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                                 [&] { dispatch_canvas_input(*pointer); });
                             return;
                         }
-                        // Every other packet is document input the display posted
-                        // and waits on: acknowledge it however its dispatch ends.
+                        // Acknowledge document input however its dispatch ends,
+                        // so the display can finish any pending input wait.
                         const auto handled = js::finally([&] {
                             {
                                 const std::lock_guard lock(services->mutex);
@@ -931,6 +933,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             std::optional<AnimationFrameSource::Batch> repaint_batch;
             bool running = true;
             while (running && !finished) {
+                co_yield true;
                 const double started = cpu_profile ? monotonic_milliseconds() : 0;
                 std::vector<std::unique_ptr<ClipboardWrite>> clipboard_writes;
                 {
@@ -947,7 +950,7 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                 }
                 SDL_Event event;
                 for (;;) {
-                    if (!SDL_PollEvent(&event))
+                    if (!poll_sdl_event(&event))
                         break;
                     if (is_emulated_pointer_event(event))
                         continue;
@@ -957,19 +960,25 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                     if (frame_options.test_pass && is_platform_input_event(event) &&
                         !is_replayed_ui_event(event))
                         continue;
+                    // Mouse motion has no cancelable native default. Keep its
+                    // source callbacks ordered in the realm mailbox without
+                    // making worker presentation wait for a busy Window realm.
+                    const bool move = event.type == SDL_EVENT_MOUSE_MOTION;
                     if (auto batch = prepare_dom_platform_input(display, event)) {
                         // The script's listeners decide the native default.
                         dispatch_dom_batch(display, batch);
-                        await_input();
+                        if (!move)
+                            await_input();
                         if (finished)
                             break;
-                        if (batch->default_prevented)
+                        if (!move && batch->default_prevented)
                             continue;
                     }
                     const bool reaches_canvas = handle_ui_rml_event(*ui, event);
-                    // The events the native default posted (a button's click, a
-                    // control's input and change) finish before the next event.
-                    await_input();
+                    // Complete synchronous native-default transactions,
+                    // including any click, input or change events they posted.
+                    if (!move)
+                        await_input();
                     if (finished)
                         break;
                     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
@@ -1015,7 +1024,6 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
                         services->inbox->post(std::move(packet));
                         continue;
                     }
-                    const bool move = event.type == SDL_EVENT_MOUSE_MOTION;
                     const bool down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
                     const bool up = event.type == SDL_EVENT_MOUSE_BUTTON_UP;
                     const bool wheel = event.type == SDL_EVENT_MOUSE_WHEEL;
@@ -1207,9 +1215,17 @@ int run_window_application(WorkerEntry initialize, EngineOptions options) {
             if (application_error)
                 std::rethrow_exception(application_error);
             if (!services->reload_requested)
-                return 0;
+                co_return 0;
             location->commit_reload();
         }
+    } catch (...) {
+        co_return report_uncaught_error(std::current_exception());
+    }
+}
+int run_window_application(WorkerEntry initialize, EngineOptions options) {
+    try {
+        return run_sdl_application(window_application_iterations(initialize, std::move(options)),
+                                   read_frame_options().interactive());
     } catch (...) {
         return report_uncaught_error(std::current_exception());
     }

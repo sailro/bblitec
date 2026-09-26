@@ -1,4 +1,5 @@
 #include "pal_ui_rml.cpp"
+#include "pal_platform_events.hpp"
 #include "pal_window_frame_clock.hpp"
 #include <bblite/pal_animation_frame.hpp>
 
@@ -9,6 +10,7 @@ std::mutex producer_mutex;
 std::condition_variable producer_changed;
 std::atomic<bool> source_ready = false, slow_started = false;
 std::atomic<int> fixture_callbacks = 0, retire_checks = 0, dispatched_ticks = 0;
+std::atomic<int> pointer_moves = 0;
 bool release_slow = false;
 int pulses = 0, attempts = 0;
 const auto deadline = EventLoop::Clock::now() + 5s;
@@ -47,6 +49,12 @@ public:
             std::unique_lock lock(producer_mutex);
             require(producer_changed.wait_until(lock, deadline, [] { return slow_started.load(); }),
                     "Second RAF was never dispatched");
+            SDL_Event event{};
+            event.type = SDL_EVENT_MOUSE_MOTION;
+            event.motion.which = replay_ui_mouse_id;
+            event.motion.x = 20;
+            event.motion.y = 20;
+            require(SDL_PushEvent(&event), "Fixture mouse event failed");
         } else {
             std::this_thread::yield();
         }
@@ -143,7 +151,7 @@ struct ReceiptPresenter final : WindowPresenter {
             return true;
         }
         require(attempts == 4 && frames[0].frame.sequence == 4 && fixture_callbacks == 3 &&
-                    dispatched_ticks == 3,
+                    dispatched_ticks == 3 && pointer_moves == 1,
                 "Completed next RAF did not replace the expired image");
         SDL_Event event{};
         event.type = SDL_EVENT_QUIT;
@@ -151,7 +159,7 @@ struct ReceiptPresenter final : WindowPresenter {
         return true;
     }
 };
-std::shared_ptr<WindowPresenter> create_window_sdl_presenter(SDL_Window*) {
+std::shared_ptr<WindowPresenter> create_window_sdl_gpu_presenter(SDL_Window*) {
     return std::make_shared<ReceiptPresenter>();
 }
 } // namespace bbl::pal
@@ -164,6 +172,13 @@ int main() {
         const auto canvas = ui_create_element(engine, "canvas");
         ui_set_attribute(engine, canvas, "style", "width:40px;height:40px;");
         ui_append_to_root(engine, canvas);
+        on_dom_pointer(engine, DomEventTarget::window(), "pointermove", 1,
+                       [canvas](const PlatformMouseEvent& event) {
+                           require(window_element_size(canvas).width == 40,
+                                   "Deferred pointer input lost synchronous layout access");
+                           event.prevent_default();
+                           ++pointer_moves;
+                       });
         const auto run = window_canvas(canvas)->rendering_context();
         require(window_element_size(canvas).width == 40, "Initial canvas layout failed");
         run->publish(40, 40, std::make_shared<OffscreenImage>());

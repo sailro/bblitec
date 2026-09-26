@@ -28,6 +28,10 @@ namespace bbl {
 void set_canvas_dataset(Engine&, std::string, std::string) { assert(false); }
 } // namespace bbl
 namespace bbl::pal {
+FrameOptions read_frame_options() {
+    assert(false);
+    return {};
+}
 std::string replay_source;
 std::vector<std::string> calls;
 bool consume_ui = false;
@@ -46,6 +50,7 @@ void dispatch_surface_camera_pointer(Engine&, const SDL_Event&, int*, int&, int&
 }
 struct InputState {
     SDL_Window* window;
+    std::uint64_t material_upload_frame = 0;
     bool surface = true;
     unsigned surface_width = 640, surface_height = 480;
     struct {

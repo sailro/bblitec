@@ -34,7 +34,7 @@
 #include <utility>
 #include <vector>
 
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 
 namespace bbl::pal {
@@ -59,7 +59,7 @@ namespace bbl::pal {
  * array rather than a four typed here, so it is the pin's own bind-group
  * order that decides -- the same declaration both backends upload from.
  *
- * Stated once per backend rather than once in `pal_gpu_shared.hpp`,
+ * Stated once per backend rather than once in the shared GPU helpers,
  * because the generated declaration it measures has to be included
  * outside a namespace and the shared header has no such include: hoisting
  * it there put `upstream::` inside `bbl::pal` and broke every name in the
@@ -190,7 +190,8 @@ create_splat_pass(SDL_GPUDevice* device,
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = depth_format;
     info.target_info.has_depth_stencil_target = true;
-    pass.pipeline = OwnedSdlPipeline{create_sdl_graphics_pipeline(device, &info), {device}};
+    pass.pipeline =
+        OwnedSdlPipeline{create_sdl_gpu_graphics_pipeline(device, vertex_shader, &info), {device}};
     if (!pass.pipeline)
         gpu_error("SDL_CreateGPUGraphicsPipeline splat");
     vertex_shader.reset();
@@ -332,8 +333,8 @@ record_splat_pass(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* render_pass,
         camera_position
 #endif
     );
-    SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(pass.uniform_slot), &uniforms,
-                                 sizeof(uniforms));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(pass.uniform_slot),
+                                             &uniforms, sizeof(uniforms));
     push_stage_uniform(command, pass.fragment_uniform_slot, &uniforms, sizeof(uniforms));
 
     SDL_GPUBufferBinding vertex_bindings[2]{};

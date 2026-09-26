@@ -8,6 +8,7 @@
 // translation unit exists because a scene registering no `SceneContext`
 // generates no camera math and no render plan, so `pal_sdl_gpu.cpp` cannot be
 // compiled for it at all.
+#include <bblite/upstream/pinned_surface.hpp>
 #include <bblite/features/has_effect_renderer.hpp>
 
 #include <bblite/pal.hpp>
@@ -20,7 +21,7 @@
 #include <vector>
 
 #include "pal_platform_events.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_frame.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
 
@@ -62,7 +63,7 @@ public:
     }
     void setup() {
         reject_unsupported_frame_options(frame_options, "SDL_GPU effects", true, false);
-        if (engine.registered_effect_renderers.empty())
+        if (engine.effect_renderer_contexts().empty())
             throw std::runtime_error("Effect renderer requires a registered EffectRenderer.");
         const DeviceOptions device_options = frame_device_options(frame_options);
         create_sdl_gpu_device(engine.options, device_options, gpu);
@@ -80,7 +81,7 @@ public:
 
         // Registration order is draw order across renderers, as it is in the
         // pinned `engine._renderingContexts`.
-        for (const EffectRendererHandle& handle : engine.registered_effect_renderers) {
+        for (const EffectRendererHandle& handle : engine.effect_renderer_contexts()) {
             const EffectRendererRecord& record = handle_at(engine.effect_renderers, handle);
             passes.push_back(
                 create_effect_pass(device, engine, record.effect, swapchain_format, samples));
@@ -152,7 +153,7 @@ public:
     }
     void encode() {
         const auto& first =
-            handle_at(engine.effect_renderers, engine.registered_effect_renderers.front());
+            handle_at(engine.effect_renderers, engine.effect_renderer_contexts().front());
         // Where this frame's single-sample pixels land: the readback
         // texture on a capture run, the swapchain itself otherwise.
         SDL_GPUTexture* const destination = capture_run ? resolve : swapchain;
@@ -168,9 +169,12 @@ public:
             color_target.store_op = SDL_GPU_STOREOP_STORE;
         }
         SdlRenderPass render_pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
-        for (std::size_t index = 0; index < passes.size(); ++index) {
-            const EffectRendererRecord& record =
-                engine.effect_renderers[engine.registered_effect_renderers[index].value];
+        const auto contexts = engine.effect_renderer_contexts();
+        auto renderer = contexts.begin();
+        for (std::size_t index = 0; index < passes.size(); ++index, ++renderer) {
+            if (renderer == contexts.end())
+                throw std::out_of_range("Rendering context index.");
+            const EffectRendererRecord& record = engine.effect_renderers[renderer->value];
             record_effect_pass(command, render_pass, engine, passes[index], record.effect);
         }
         render_pass.end();
@@ -197,7 +201,7 @@ public:
 };
 } // namespace
 
-void run_effect_gpu_engine(Engine& engine) { SdlEffectRun::run(engine); }
+SceneRun run_effect_gpu_engine(Engine& engine) { return SdlEffectRun::run(engine); }
 #endif
 
 } // namespace bbl::pal

@@ -241,6 +241,19 @@ int main(int argc, char** argv) {
     require(bbl::js::file_text(engine, file) == "selected bytes", "initial File.text snapshot");
 
     const std::filesystem::path save_path = root / "saved.json";
+    require(std::holds_alternative<std::monostate>(
+                bbl::pal::detail::try_read_binary_file_bounded(save_path, 64u, "absent file")),
+            "an absent path is distinct from an empty file or read failure");
+    const auto empty_path = root / "empty.bin";
+    write_text(empty_path, "");
+    const auto empty_read =
+        bbl::pal::detail::try_read_binary_file_bounded(empty_path, 0, "empty file");
+    require(std::holds_alternative<std::vector<std::uint8_t>>(empty_read) &&
+                std::get<std::vector<std::uint8_t>>(empty_read).empty(),
+            "empty file is a value");
+    require(std::holds_alternative<bbl::pal::detail::FileReadError>(
+                bbl::pal::detail::try_read_binary_file_bounded(other_path, 1, "bounded file")),
+            "oversized input reports an error before allocation");
     save_override = save_path.string();
     require(bbl::pal::save_file(engine, options, std::string_view("saved bytes")),
             "environment-selected save file");

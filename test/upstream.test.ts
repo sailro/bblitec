@@ -227,7 +227,7 @@ test("generates scene defaults, routing, and idempotent registration", () => {
         lowered.source,
         /void on_scene_dispose\([\s\S]*scene\.disposables\.push_back\(std::move\(callback\)\);/,
     );
-    assert.match(lowered.source, /registered_scenes\.end\(\)/);
+    assert.match(lowered.source, /scenes\(\)\.end\(\)/);
     // Runtime removal lowers the pin's removeMeshFromScene order: the
     // scene's task lists, the scene list and its renderables, the material
     // groups and swap queue, the parent link, the disposal, then the
@@ -251,11 +251,11 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     );
     assert.match(
         lowered.source,
-        /void unregister_scene\(Scene& scene\)[\s\S]{0,400}registered_scenes\.erase/,
+        /void unregister_scene\(Scene& scene\)[\s\S]{0,400}rendering_contexts\.erase_if/,
     );
     assert.match(
         lowered.source,
-        /void rebuild_scene_renderables\(Scene& scene\)[\s\S]{0,2200}pending_shadow_retirements\.clear\(\);[\s\S]{0,120}topology_rebuild_pending = false;[\s\S]{0,100}\+\+scene\.render_topology_version;/,
+        /void rebuild_scene_renderables\(Scene& scene\)[\s\S]{0,2200}retire_scene_shadow_states\(scene\);[\s\S]{0,120}topology_rebuild_pending = false;[\s\S]{0,100}\+\+scene\.render_topology_version;/,
     );
     assert.match(
         lowered.source,
@@ -2261,7 +2261,7 @@ test("gates pure and depth-hosted sprite permutations independently", () => {
         uvScroll: true,
     });
     // The stock program and the custom ones share the permutation suffix,
-    // the names `sprite_program_stem` (pal_gpu_shared.hpp) loads.
+    // the names `sprite_program_stem` (pal_gpu_sprites.hpp) loads.
     assert.deepEqual(
         pure.map((permutation) => spriteProgramStem(0, permutation)),
         ["sprite", "sprite_uvscroll"],

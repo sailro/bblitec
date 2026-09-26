@@ -3,6 +3,7 @@
 #include <bblite/runtime.hpp>
 #include <SDL3/SDL_gpu.h>
 #include "pal_sdl_gpu_commands.hpp"
+#include "pal_sdl_gpu_writes.hpp"
 
 #include <array>
 #include <cstring>
@@ -29,8 +30,8 @@ struct PreparedSdlUniform {
 /** Resolve and validate every block before any later logical hook runs. */
 template <class Resolve>
 std::vector<PreparedSdlUniform>
-prepare_sdl_uniforms(const std::vector<std::string>& names, Resolve&& resolve,
-                     const std::shared_ptr<PersistentSceneUniforms>& source) {
+prepare_sdl_gpu_uniforms(const std::vector<std::string>& names, Resolve&& resolve,
+                         const std::shared_ptr<PersistentSceneUniforms>& source) {
     std::vector<PreparedSdlUniform> prepared;
     prepared.reserve(names.size());
     for (std::size_t slot = 0; slot < names.size(); ++slot) {
@@ -74,18 +75,18 @@ struct PreparedSdlScenePass {
     std::vector<PreparedSdlDraw> draws{};
 };
 
-inline void encode_sdl_prepared_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pass,
-                                     const PreparedSdlDraw& draw) {
+inline void encode_sdl_gpu_prepared_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pass,
+                                         const PreparedSdlDraw& draw) {
     SDL_BindGPUGraphicsPipeline(pass, draw.pipeline);
     for (std::size_t slot = 0; slot < draw.vertex_uniforms.size(); ++slot) {
         const auto& block = draw.vertex_uniforms[slot];
-        SDL_PushGPUVertexUniformData(command, static_cast<Uint32>(slot), block.data(),
-                                     static_cast<Uint32>(block.size()));
+        SdlGpuWriteDevice{}.write_vertex_uniform(command, static_cast<Uint32>(slot), block.data(),
+                                                 static_cast<Uint32>(block.size()));
     }
     for (std::size_t slot = 0; slot < draw.fragment_uniforms.size(); ++slot) {
         const auto& block = draw.fragment_uniforms[slot];
-        SDL_PushGPUFragmentUniformData(command, static_cast<Uint32>(slot), block.data(),
-                                       static_cast<Uint32>(block.size()));
+        SdlGpuWriteDevice{}.write_fragment_uniform(command, static_cast<Uint32>(slot), block.data(),
+                                                   static_cast<Uint32>(block.size()));
     }
     if (!draw.vertex_textures.empty())
         SDL_BindGPUVertexSamplers(pass, 0, draw.vertex_textures.data(),
@@ -105,8 +106,8 @@ inline void encode_sdl_prepared_draw(SDL_GPUCommandBuffer* command, SDL_GPURende
     SDL_DrawGPUIndexedPrimitives(pass, draw.index_count, draw.instance_count, 0, 0, 0);
 }
 
-inline void encode_sdl_prepared_scene(SDL_GPUCommandBuffer* command,
-                                      const PreparedSdlScenePass& scene) {
+inline void encode_sdl_gpu_prepared_scene(SDL_GPUCommandBuffer* command,
+                                          const PreparedSdlScenePass& scene) {
     SdlRenderPass pass{
         SDL_BeginGPURenderPass(command, &scene.target, 1, scene.depth ? &*scene.depth : nullptr)};
     if (scene.viewport)
@@ -114,7 +115,7 @@ inline void encode_sdl_prepared_scene(SDL_GPUCommandBuffer* command,
     if (scene.scissor)
         SDL_SetGPUScissor(pass, &*scene.scissor);
     for (const auto& draw : scene.draws)
-        encode_sdl_prepared_draw(command, pass, draw);
+        encode_sdl_gpu_prepared_draw(command, pass, draw);
     pass.end();
 }
 

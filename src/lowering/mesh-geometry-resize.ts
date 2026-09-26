@@ -174,7 +174,7 @@ export function lowerMeshGeometryResize(context: LoweringContext): string {
                     iterated === "meshes"
                         ? "meshes"
                         : iterated === "engine._renderingContexts"
-                          ? "engine.registered_scenes"
+                          ? "engine.scenes()"
                           : undefined;
                 return range
                     ? {

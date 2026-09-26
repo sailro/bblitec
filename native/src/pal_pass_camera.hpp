@@ -26,7 +26,9 @@
 #include <optional>
 #include <utility>
 
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_shader_passes.hpp"
 
 namespace bbl::pal {
 

@@ -328,31 +328,20 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
 #include <stdexcept>
 using namespace bbl;
 /** A GPU object whose destroy() leaves its mark. */
-struct Marked final : TextGpuObject {
+struct Marked final : GpuObject {
     std::string* log = nullptr;
     char mark = 0;
     void destroy() override { *log += mark; }
 };
-/** The device the uniform tail writes through: each write's range and bytes. */
-struct UniformWrites final : TextGpuDevice {
+/** The buffer the uniform tail writes through: each write's range and bytes. */
+struct UniformWrites final : GpuObject {
     std::ofstream& out;
-    TextGpuHandle target;
     explicit UniformWrites(std::ofstream& output) : out(output) {}
-    void write_buffer(const TextGpuHandle& buffer, double offset, const js::ArrayBuffer& data,
-                      double data_offset, double size) override {
-        if (buffer != target) throw std::runtime_error("uniform target");
-        const std::uint32_t prefix[] = {static_cast<std::uint32_t>(offset),static_cast<std::uint32_t>(size)};
+    void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
+        const std::uint32_t prefix[] = {static_cast<std::uint32_t>(offset),static_cast<std::uint32_t>(bytes.size())};
         out.write(reinterpret_cast<const char*>(prefix),sizeof(prefix));
-        out.write(reinterpret_cast<const char*>(data.data()) + static_cast<std::size_t>(data_offset),
-                  static_cast<std::streamsize>(size));
+        out.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));
     }
-    TextGpuHandle create_buffer(const TextBufferDescriptor&) override { throw std::runtime_error("buffer"); }
-    TextGpuHandle create_texture(const TextTextureDescriptor&) override { throw std::runtime_error("texture"); }
-    TextGpuHandle create_bind_group(const TextBindGroupDescriptor&) override { throw std::runtime_error("group"); }
-    TextGpuEncoderHandle create_render_bundle_encoder(const TextRenderBundleEncoderDescriptor&) override { throw std::runtime_error("bundle"); }
-    void write_texture(const TextTexelCopyTextureInfo&, const js::ArrayBuffer&, const TextTexelCopyBufferLayout&, const TextExtent3D&) override { throw std::runtime_error("texture write"); }
-    TextPipelineSet text_pipeline(const std::string&, double, const std::optional<std::string>&, bool, const std::shared_ptr<const void>&, const std::string&) override { throw std::runtime_error("pipeline"); }
-    TextPipelineDeviceCacheHandle text_pipeline_cache() override { throw std::runtime_error("cache"); }
 };
 int main() {
     auto data = std::make_shared<TextDataState>();
@@ -372,15 +361,14 @@ int main() {
         for (std::size_t index = 0; index < world.size(); ++index) { const double wide=world.load(index); state.write(reinterpret_cast<const char*>(&wide),sizeof(wide)); }
     };
     TextCameraInput camera{js::TypedArray<float>{${Array.from(vp, (value) => `${Number.isInteger(value) ? value.toFixed(1) : value}f`).join(",")}},4,1.25};
-    auto device = std::make_shared<UniformWrites>(writes);
+    auto device = std::make_shared<GpuDevice>();
     auto surface = std::make_shared<TextSurface>();
     surface->device = device;
     // The renderable's GPU record as \`ensureGpu\` creates it.
     auto gpu = std::make_shared<TextRenderableGpu>();
     gpu->device = device;
-    gpu->text_u = std::make_shared<TextGpuObject>();
-    device->target = gpu->text_u;
-    gpu->style_buf = std::make_shared<TextGpuObject>();
+    gpu->text_u = std::make_shared<UniformWrites>(writes);
+    gpu->style_buf = std::make_shared<GpuObject>();
     gpu->style_buf->size = 32;
     gpu->instance_cap = 8;
     gpu->uploaded_data_version = gpu->uploaded_camera_version = gpu->uploaded_aspect = -1;
@@ -623,6 +611,7 @@ test("deferred scene registration observes snapshot order, identity guards, fail
         "void drain_scene_deferred_builders(",
         "void register_scene(",
         "void unregister_scene(",
+        "void retire_scene_shadow_states(",
         "void dispose_scene(",
     ]
         .map((name) => cppFunction(source, name))
@@ -633,7 +622,7 @@ ${lowerMeshMaterialSetter(context)}
 ${bodies}
 }
 /** A GPU object whose destroy() leaves its mark. */
-struct Marked final : bbl::TextGpuObject {
+struct Marked final : bbl::GpuObject {
     std::string* log = nullptr;
     char mark = 0;
     void destroy() override { *log += mark; }
@@ -651,7 +640,7 @@ int main(){
     scene.deferred_builders.push_back([&]{order+="a";scene.deferred_builders.push_back([&]{order+="c";});});
     scene.deferred_builders.push_back([&]{order+="b";});
     register_scene(scene);
-    if(order!="abc" || engine.registered_scenes.size()!=1) return 1;
+    if(order!="abc" || engine.scenes().size()!=1) return 1;
     auto alias=scene;
     alias.deferred_builders.push_back([&]{order+="d";});
     register_scene(alias);
@@ -662,7 +651,7 @@ int main(){
     scene.deferred_builders.push_back([&]{order+="e";scene.deferred_builders.push_back([&]{order+="g";});throw std::runtime_error("builder");});
     scene.deferred_builders.push_back([&]{order+="f";});
     try { register_scene(scene); return 4; } catch(const std::runtime_error&) {}
-    if(order!="abcde" || !engine.registered_scenes.empty() || scene.deferred_builders.size()!=1) return 5;
+    if(order!="abcde" || !engine.scenes().empty() || scene.deferred_builders.size()!=1) return 5;
     register_scene(scene); if(order!="abcdeg") return 6;
     Scene rejected;rejected.engine=&engine;
     std::string rejected_order;
@@ -675,7 +664,7 @@ int main(){
     try {register_scene(rejected);return 12;} catch(const std::runtime_error& error) {
         if(std::string(error.what())!="first rejection")return 13;
     }
-    if(rejected_order!="ab" || rejected.deferred_builders.size()!=1 || engine.registered_scenes.size()!=1)return 14;
+    if(rejected_order!="ab" || rejected.deferred_builders.size()!=1 || engine.scenes().size()!=1)return 14;
     register_scene(rejected);if(rejected_order!="abc")return 15;
     unregister_scene(rejected);
     rejected.deferred_builders.emplace_back([&]{rejected_order+="d";},SceneDeferredFailure::promise_rejection);
@@ -699,7 +688,7 @@ int main(){
     r->gpu->instance_buf=marked(destroyed,'i');
     r->gpu->style_buf=marked(destroyed,'s');
     dispose_scene(scene);dispose_scene(alias);
-    if(destroyed!="uis" || !scene.state->text_renderables.empty() || !engine.registered_scenes.empty()) return 9;
+    if(destroyed!="uis" || !scene.state->text_renderables.empty() || !engine.scenes().empty()) return 9;
     try { add_text_renderable(scene,r); return 11; } catch(const std::runtime_error&) {}
     std::weak_ptr<SceneState> weak;
     { Scene abandoned;weak=abandoned.state;add_text_renderable(abandoned,r); }
@@ -870,7 +859,7 @@ test("materialized text preserves byte streams, source identities, atlas ownersh
 #include <iterator>
 std::vector<std::uint8_t> read(const std::string& path){std::ifstream input(path,std::ios::binary);return {std::istreambuf_iterator<char>(input),{}};}
 /** A GPU object whose destroy() leaves its mark. */
-struct Marked final : bbl::TextGpuObject {
+struct Marked final : bbl::GpuObject {
     std::string* log = nullptr;
     char mark = 0;
     void destroy() override { *log += mark; }
@@ -894,7 +883,7 @@ int main(){
     ${pinned.groups.map(([start, count, live], index) => `if(first->groups[${index}]->slot_start!=${start} || first->groups[${index}]->slot_count!=${count} || first->groups[${index}]->live_count!=${live}) return 5;`).join("\n")}
     std::string destroyed;
     for(auto& entry:first->storage->curve_sets){auto gpu=std::make_shared<SharedAtlasGpu>();gpu->curve_tex=marked(destroyed,'c');gpu->band_tex=marked(destroyed,'b');gpu->meta_buf=marked(destroyed,'m');entry.second->atlas->gpu=gpu;}
-    for(auto& group:first->groups)group->bind_group=std::make_shared<TextGpuObject>();
+    for(auto& group:first->groups)group->bind_group=std::make_shared<GpuObject>();
     auto rendered=create_text_renderable(first);first.reset();
     dispose_text_data(alias);
     if(!alias->groups.empty() || alias->instance_count!=0 || alias->style_count!=0 || !destroyed.empty() || alias->storage->curve_sets.size()!=${pinned.atlases})return 6;

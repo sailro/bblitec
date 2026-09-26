@@ -1,0 +1,46 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "GPU descriptors reuse the shared record-shape constructors.",
+      "applied": true
+    },
+    {
+      "summary": "Typed GPU destinations share one validation dispatch; owned resources call the native transport directly.",
+      "applied": true
+    },
+    {
+      "summary": "Compressed, layered and batched texture writes use the same shared GPU device boundary.",
+      "applied": true
+    },
+    {
+      "summary": "Single SDL buffer writes copy directly into mapped transfers; staging batches serve grouped writes.",
+      "applied": true
+    },
+    {
+      "summary": "Scene rendering reuses its planned scene snapshot, and filtered registry walks are linear.",
+      "applied": true
+    },
+    {
+      "summary": "ESM retirement marks active maps once in reusable scratch storage.",
+      "applied": true
+    },
+    {
+      "summary": "JSON parsing and dynamic property assignment share ordered insertion.",
+      "applied": true
+    },
+    {
+      "summary": "Frame drivers use coroutine keywords directly, without redundant macros.",
+      "applied": true
+    },
+    {
+      "summary": "Frame mutation fixtures register individual replacement scenes directly.",
+      "applied": true
+    }
+  ]
+}

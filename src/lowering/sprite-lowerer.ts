@@ -1,3 +1,4 @@
+import { renderingContextKind } from "./rendering-context-kind.js";
 import ts from "typescript";
 import { PinnedShaderBuilders } from "./pinned-shader-builders.js";
 import type { ShaderTextBinding } from "./pinned-shader-builders.js";
@@ -2368,16 +2369,8 @@ bool remove_sprite_renderer_layer(
 void unregister_sprite_renderer(
     Engine& engine,
     SpriteRendererHandle renderer) {
-    std::vector<SpriteRendererHandle>& registered =
-        engine.registered_sprite_renderers;
-    const auto found = std::find_if(
-        registered.begin(),
-        registered.end(),
-        [&](const SpriteRendererHandle& candidate) {
-            return candidate.value == renderer.value;
-        });
-    if (found == registered.end()) return;
-    registered.erase(found);
+    const auto index = engine.rendering_contexts.index_of(renderer);
+    if (index != -1.0) engine.rendering_contexts.erase_at(static_cast<std::size_t>(index));
 }
 
 // sprite-renderer.ts#disposeSpriteRenderer: idempotent, and the observable
@@ -2399,7 +2392,8 @@ void dispose_sprite_renderer(
 void register_sprite_renderer(
     Engine& engine,
     SpriteRendererHandle renderer) {
-    engine.registered_sprite_renderers.push_back(renderer);
+    if (engine.rendering_contexts.index_of(renderer) != -1.0) return;
+    engine.rendering_contexts.push_back(${renderingContextKind(this.context, "src/sprite/sprite-renderer.ts")}, renderer);
 }
 
 // sprite-renderer.ts: \`_beforeUpdate\` is an ordinary array a caller

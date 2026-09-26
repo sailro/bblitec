@@ -23,7 +23,7 @@
 #include <bblite/runtime.hpp>
 
 #include "pal_dawn_shared.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_picking.hpp"
 #if BBLITE_HAS_BILLBOARDS
 // dawn_billboard_format: one translation of the pinned float count,
 // shared with the visible billboard pass.
@@ -44,7 +44,7 @@ namespace bbl::pal {
  * so one buffer can carry every candidate's block.
  *
  * The scene block needs no twin: `PickSceneUniforms` in
- * `pal_gpu_shared.hpp` is the pin's own layout and both backends upload it
+ * the shared GPU helpers is the pin's own layout and both backends upload it
  * unchanged. Only this one differs, and only in its stride: the tail is
  * computed from the shared block, so a field added there cannot move it.
  */
@@ -248,12 +248,12 @@ public:
             // uploads the same rows sorted back to front. Ungated as the
             // pin leaves it: `writeBuffer` is a staged copy with no
             // submit, which is the SDL twin's whole reason for a stamp.
-            wgpuQueueWriteBuffer(queue_, resources.instances, 0, system.instance_data.data(),
-                                 static_cast<std::size_t>(candidate.count) *
-                                     upstream::billboard_instance_stride_bytes);
+            DawnGpuDevice{queue_}.write_buffer(resources.instances, 0, system.instance_data.data(),
+                                               static_cast<std::size_t>(candidate.count) *
+                                                   upstream::billboard_instance_stride_bytes);
             const BillboardPickUniforms uniforms =
                 build_billboard_pick_uniforms(view, candidate.base_id, 0.0f, candidate.axis);
-            wgpuQueueWriteBuffer(queue_, resources.uniforms, 0, &uniforms, sizeof(uniforms));
+            DawnGpuDevice{queue_}.write_buffer(resources.uniforms, 0, &uniforms, sizeof(uniforms));
         }
     }
 
@@ -307,8 +307,8 @@ private:
         indices_ = wgpuDeviceCreateBuffer(device_, &descriptor);
         if (!indices_)
             dawn_error("billboard pick index buffer");
-        wgpuQueueWriteBuffer(queue_, indices_, 0, upstream::billboard_index_data.data(),
-                             static_cast<std::size_t>(descriptor.size));
+        DawnGpuDevice{queue_}.write_buffer(indices_, 0, upstream::billboard_index_data.data(),
+                                           static_cast<std::size_t>(descriptor.size));
     }
 
     void ensure_system(SystemResources& resources, const BillboardSystemRecord& system) {

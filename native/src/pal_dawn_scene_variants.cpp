@@ -1,6 +1,11 @@
 // Dawn material variants: the pinned PBR, node and Standard families'
 // layouts, resources, pipelines and draws. SDL_GPU's twin is
 // pal_sdl_gpu_scene_variants.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -10,6 +15,13 @@
 
 namespace bbl::pal {
 inline namespace dawn_scene {
+
+inline std::uint64_t material_ubo_version(const Engine& engine, const MaterialRecord* material) {
+    if (!material)
+        return 0;
+    const auto* source = handle_find(engine.materials, material->source_material);
+    return source ? source->ubo_version : material->ubo_version;
+}
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) &&                                                \
     (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || BBLITE_NODE_VARIANTS > 0)
@@ -218,8 +230,8 @@ void write_pinned_geometry_prologue(DawnState& state, const Scene& scene, const 
     pinned_geometry_frame_group(state);
     const upstream::SceneUniforms scene_block =
         pinned_scene_block(scene, engine, camera, geometry_matrix);
-    wgpuQueueWriteBuffer(state.queue, state.pinned_geometry_scene_uniforms, 0, &scene_block,
-                         sizeof(scene_block));
+    DawnGpuDevice{state.queue}.write_buffer(state.pinned_geometry_scene_uniforms, 0, &scene_block,
+                                            sizeof(scene_block));
     if (!geometry.pinned_geometry_params) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = sizeof(PinnedGeometryParams);
@@ -242,7 +254,8 @@ void write_pinned_geometry_prologue(DawnState& state, const Scene& scene, const 
             0.0f,
         },
     };
-    wgpuQueueWriteBuffer(state.queue, geometry.pinned_geometry_params, 0, &params, sizeof(params));
+    DawnGpuDevice{state.queue}.write_buffer(geometry.pinned_geometry_params, 0, &params,
+                                            sizeof(params));
     geometry.previous_view_projection = geometry_matrix;
 }
 #endif
@@ -371,8 +384,8 @@ void sync_morph_weights(DawnState& state, DawnMesh& mesh, const ModelGeometry& g
     if (!mesh.owns_morph_buffers || mesh.morph_weights_version == record.morph_weights_version)
         return;
     const std::vector<float> weights = morph_weight_values(geometry, record);
-    wgpuQueueWriteBuffer(state.queue, mesh.morph_weights, 16, weights.data(),
-                         weights.size() * sizeof(float));
+    DawnGpuDevice{state.queue}.write_buffer(mesh.morph_weights, 16, weights.data(),
+                                            weights.size() * sizeof(float));
     mesh.morph_weights_version = record.morph_weights_version;
 }
 #endif
@@ -415,8 +428,8 @@ void write_pinned_bone_texture(DawnState& state, DawnMesh& mesh, const MeshRecor
             layout.bytesPerRow = palette.bytes;
             layout.rowsPerImage = palette.height;
             WGPUExtent3D extent{palette.width, palette.height, 1};
-            wgpuQueueWriteTexture(state.queue, &destination, floats, palette.bytes, &layout,
-                                  &extent);
+            DawnGpuDevice{state.queue}.write_texture(&destination, floats, palette.bytes, &layout,
+                                                     &extent);
         });
 }
 #endif
@@ -431,7 +444,7 @@ void write_pinned_float_texture(DawnState& state, WGPUTexture texture, const flo
     copy.bytesPerRow = layout.row_bytes;
     copy.rowsPerImage = layout.height;
     WGPUExtent3D extent{layout.width, layout.height, 1};
-    wgpuQueueWriteTexture(state.queue, &destination, data, layout.bytes, &copy, &extent);
+    DawnGpuDevice{state.queue}.write_texture(&destination, data, layout.bytes, &copy, &extent);
 }
 
 void write_pinned_vat_texture(DawnState& state, DawnMesh& mesh, const MeshRecord& record,
@@ -461,8 +474,8 @@ void write_pinned_vat_texture(DawnState& state, DawnMesh& mesh, const MeshRecord
                 mesh.pinned_vat_settings_version = 0;
             }
             if (mesh.pinned_vat_settings_version != vat.settings_version) {
-                wgpuQueueWriteBuffer(state.queue, mesh.pinned_vat_settings, 0, vat.settings.data(),
-                                     sizeof(float) * 8);
+                DawnGpuDevice{state.queue}.write_buffer(mesh.pinned_vat_settings, 0,
+                                                        vat.settings.data(), sizeof(float) * 8);
                 mesh.pinned_vat_settings_version = vat.settings_version;
             }
         },
@@ -678,6 +691,7 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
             std::exchange(draw_state.material_uniforms, uniform_buffer(entry.material_ubo_bytes))) {
         wgpuBufferRelease(old);
     }
+    draw_state.material_upload.reset();
     draw_state.group = build_pinned_draw_group(state, mesh, variant, draw_state.mesh_uniforms,
                                                draw_state.material_uniforms, nullptr, record);
     draw_state.group_key = variant;
@@ -710,15 +724,23 @@ DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
 
 void write_pinned_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                               const upstream::RenderDrawCommand& draw, std::size_t variant,
-                              WGPUBuffer mesh_uniforms, WGPUBuffer material_uniforms) {
+                              DawnDrawState& draw_state) {
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
     const upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
-    wgpuQueueWriteBuffer(state.queue, mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
+    DawnGpuDevice{state.queue}.write_buffer(draw_state.mesh_uniforms, 0, &mesh_block,
+                                            sizeof(mesh_block));
+    const auto& material = handle_at(engine.materials, draw.item.material);
+    const auto upload =
+        std::tuple(state.material_upload_frame, material_ubo_version(engine, &material), variant,
+                   draw.item.material.value);
+    if (draw_state.material_upload == upload)
+        return;
     std::vector<std::uint8_t> material_block(entry.material_ubo_bytes, 0);
-    upstream::write_pbr_variant_material(variant, handle_at(engine.materials, draw.item.material),
-                                         material_block.data(), entry.material_ubo_bytes);
-    wgpuQueueWriteBuffer(state.queue, material_uniforms, 0, material_block.data(),
-                         entry.material_ubo_bytes);
+    upstream::write_pbr_variant_material(variant, material, material_block.data(),
+                                         entry.material_ubo_bytes);
+    DawnGpuDevice{state.queue}.write_buffer(draw_state.material_uniforms, 0, material_block.data(),
+                                            entry.material_ubo_bytes);
+    draw_state.material_upload = upload;
 }
 
 void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engine& engine,
@@ -746,8 +768,7 @@ void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engi
             DawnMesh& mesh = state.meshes[draw.item_index];
             DawnDrawState& draw_state = ensure_pinned_geometry_bindings(
                 state, mesh, variant, geometry.pinned_geometry_params);
-            write_pinned_draw_blocks(state, scene, engine, draw, variant, draw_state.mesh_uniforms,
-                                     draw_state.material_uniforms);
+            write_pinned_draw_blocks(state, scene, engine, draw, variant, draw_state);
         }
     }
 }
@@ -757,11 +778,11 @@ void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engi
 void write_pinned_frame_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                                const upstream::SceneUniforms& scene_block) {
     ensure_pinned_frame_buffers(state);
-    wgpuQueueWriteBuffer(state.queue, state.pinned_scene_uniforms, 0, &scene_block,
-                         sizeof(scene_block));
+    DawnGpuDevice{state.queue}.write_buffer(state.pinned_scene_uniforms, 0, &scene_block,
+                                            sizeof(scene_block));
     const std::vector<std::uint8_t> lights = pinned_lights_block(scene, engine);
-    wgpuQueueWriteBuffer(state.queue, state.pinned_lights_uniforms, 0, lights.data(),
-                         lights.size());
+    DawnGpuDevice{state.queue}.write_buffer(state.pinned_lights_uniforms, 0, lights.data(),
+                                            lights.size());
 }
 
 InstanceStreams instance_streams_for([[maybe_unused]] const MeshRecord& record,
@@ -1080,30 +1101,34 @@ StandardRenderViews standard_render_views(DawnState& state, const Engine& engine
 
 void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                                 const upstream::RenderDrawCommand& draw, WGPUBuffer mesh_uniforms,
-                                WGPUBuffer material_uniforms, WGPUBuffer uv_uniforms,
-                                [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
+                                DawnDrawState& material_state,
                                 const PinnedVelocityHistory* velocity_history) {
     const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
-    upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
-    if (velocity_history) {
-        write_pinned_velocity_tail(*velocity_history, draw.item.mesh, mesh_block);
-    }
-    wgpuQueueWriteBuffer(state.queue, mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
+    const upstream::MeshUniforms mesh_block =
+        pinned_mesh_block(scene, engine, draw.item.mesh, velocity_history);
+    DawnGpuDevice{state.queue}.write_buffer(mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
     std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
     if (material && material->no_color) {
         features |= upstream::standard_no_color_output_flag;
     }
+    const auto upload =
+        std::tuple(state.material_upload_frame, material_ubo_version(engine, material),
+                   static_cast<std::size_t>(features), draw.item.material.value);
+    if (material_state.material_upload == upload)
+        return;
     const upstream::StandardMaterialUniforms material_block =
         standard_material_block(material, features);
-    wgpuQueueWriteBuffer(state.queue, material_uniforms, 0, &material_block,
-                         sizeof(material_block));
+    DawnGpuDevice{state.queue}.write_buffer(material_state.material_uniforms, 0, &material_block,
+                                            sizeof(material_block));
     const upstream::StandardUvTransformUniforms uv_block = standard_uv_block(material, features);
-    wgpuQueueWriteBuffer(state.queue, uv_uniforms, 0, &uv_block, sizeof(uv_block));
+    DawnGpuDevice{state.queue}.write_buffer(material_state.uv_uniforms, 0, &uv_block,
+                                            sizeof(uv_block));
 #if BBLITE_HAS_STANDARD_UV_TRANSFORM
     const upstream::StandardUvTxUniforms uv_transform = standard_uv_transform_block(material);
-    wgpuQueueWriteBuffer(state.queue, uv_transform_uniforms, 0, &uv_transform,
-                         sizeof(uv_transform));
+    DawnGpuDevice{state.queue}.write_buffer(material_state.uv_transform_uniforms, 0, &uv_transform,
+                                            sizeof(uv_transform));
 #endif
+    material_state.material_upload = upload;
 }
 
 void write_standard_geometry_task(DawnState& state, const Scene& scene, const Engine& engine,
@@ -1153,8 +1178,7 @@ void write_standard_geometry_task(DawnState& state, const Scene& scene, const En
                 }
             }
             write_standard_draw_blocks(state, scene, engine, draw, draw_state.mesh_uniforms,
-                                       colour_state.material_uniforms, colour_state.uv_uniforms,
-                                       colour_state.uv_transform_uniforms, &geometry.velocity);
+                                       colour_state, &geometry.velocity);
             if (!draw_state.group) {
                 draw_state.group = build_standard_draw_group(
                     state, mesh, material, variant, draw_state.mesh_uniforms,
@@ -1825,9 +1849,9 @@ void fill_node_draw_buffers(DawnState& state, DawnDrawState& draw_state,
         draw_state.material_uniforms = uniform_buffer(static_cast<std::uint64_t>(view.ubo_bytes));
         // The constants the graph declared, written with the buffer that
         // holds them: nothing a reached scene does changes them.
-        wgpuQueueWriteBuffer(state.queue, draw_state.material_uniforms, 0,
-                             &upstream::node_variant_uniform_floats[view.first_uniform_float],
-                             view.ubo_bytes);
+        DawnGpuDevice{state.queue}.write_buffer(
+            draw_state.material_uniforms, 0,
+            &upstream::node_variant_uniform_floats[view.first_uniform_float], view.ubo_bytes);
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
         state.node_capture.write(draw_state.material_uniforms,
                                  &upstream::node_variant_uniform_floats[view.first_uniform_float],
@@ -2089,7 +2113,7 @@ const upstream::NodeMeshUniforms& node_mesh_block_for(NodeMeshBlockCache& cache,
 
 void write_node_mesh_block(DawnState& state, const upstream::NodeMeshUniforms& block,
                            const DawnDrawState& draw_state) {
-    wgpuQueueWriteBuffer(state.queue, draw_state.mesh_uniforms, 0, &block, sizeof(block));
+    DawnGpuDevice{state.queue}.write_buffer(draw_state.mesh_uniforms, 0, &block, sizeof(block));
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
     state.node_capture.write(draw_state.mesh_uniforms, &block, sizeof(block));
 #endif

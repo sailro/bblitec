@@ -1,4 +1,5 @@
-import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
+import { EmissionSet, writable } from "./emission-transaction.js";
+import { fileTypes } from "../file-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
@@ -32,13 +33,6 @@ export interface BrowserFileContext extends Pick<
     | "reachFileReader"
     | "fail"
 > {}
-
-const knownAcceptMimeExtensions = new EmissionMap<string, readonly string[]>([
-    ["application/json", ["json"]],
-    ["text/json", ["json"]],
-    ["text/plain", ["txt"]],
-    ["text/csv", ["csv"]],
-]);
 
 type DefaultGlobalContext = Pick<
     BrowserFileContext,
@@ -533,14 +527,14 @@ export function validateFileAccept(
             );
         }
         const mime = token.toLowerCase();
-        const inferred = knownAcceptMimeExtensions.get(mime);
+        const inferred = fileTypes.find((type) => type.mime === mime);
         if (!inferred) {
             context.fail(
                 node,
                 `File input accept entry '${token}' cannot be mapped to a safe extension.`,
             );
         }
-        for (const extension of inferred) extensions.add(extension);
+        extensions.add(inferred.extension);
         canonical.push(mime);
     }
     if (extensions.size === 0) {

@@ -113,7 +113,7 @@ export function characterTransportSchema(
                     )
                         return node.questionDotToken
                             ? {
-                                  cpp: `(${body.cpp} ? std::optional<double>{_body_motion_type(${body.cpp})} : std::nullopt)`,
+                                  cpp: `(${body.cpp} ? bbl::js::Nullable<double>{_body_motion_type(${body.cpp})} : std::nullopt)`,
                                   type: optionalOf(recordScalars.number),
                               }
                             : {

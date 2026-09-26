@@ -1,6 +1,11 @@
 // Dawn scene meshes: vertex, material and diagnostic bindings, shader
 // storage, the scene mesh upload and its release. SDL_GPU's twin is
 // pal_sdl_gpu_scene_meshes.cpp.
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_shader_passes.hpp"
 #include <bblite/features/compute_buffers.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -9,6 +14,9 @@
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_dawn_scene.hpp"
+#if BBLITE_GPU_MORPH_STORAGE
+#include <bblite/upstream/morph_targets.hpp>
+#endif
 
 namespace bbl::pal {
 inline namespace dawn_scene {
@@ -49,7 +57,7 @@ void sync_shader_storage_buffers(DawnState& state, const Engine& engine) {
             return create_buffer(state, WGPUBufferUsage_Storage, bytes, size);
         },
         [&](WGPUBuffer buffer, const void* bytes, std::size_t size) {
-            wgpuQueueWriteBuffer(state.queue, buffer, 0, bytes, size);
+            DawnGpuDevice{state.queue}.write_buffer(buffer, 0, bytes, size);
         },
         [](const Engine::StorageBufferRecord& source) -> DawnState::ShaderStorageBuffer {
             if (!source.gpu || source.disposed)
@@ -70,11 +78,11 @@ void sync_shader_storage_buffers(DawnState& state, const Engine& engine) {
 void write_mesh_stage_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                              const MeshRecord& mesh, const DawnMeshResources& gpu) {
     const std::array<float, 16> world = mesh_block_world(scene, engine, mesh);
-    wgpuQueueWriteBuffer(state.queue, gpu.mesh_world_uniform, 0, world.data(), sizeof(world));
+    DawnGpuDevice{state.queue}.write_buffer(gpu.mesh_world_uniform, 0, world.data(), sizeof(world));
 #if BBLITE_GPU_DEFORMATION
     const DeformationUniforms deformation = build_deformation_uniforms(mesh);
-    wgpuQueueWriteBuffer(state.queue, gpu.deformation_uniforms, 0, &deformation,
-                         sizeof(deformation));
+    DawnGpuDevice{state.queue}.write_buffer(gpu.deformation_uniforms, 0, &deformation,
+                                            sizeof(deformation));
 #endif
 }
 

@@ -1,6 +1,10 @@
 // SDL_GPU scene targets: depth, color, transmission and frame-graph
 // textures and the geometry id readback. Dawn's twin is
 // pal_dawn_scene_targets.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
@@ -121,7 +125,7 @@ void create_processed_color(GpuState& state, SDL_GPUTextureFormat format, std::u
 
 void create_transmission_color(GpuState& state) {
     // The pin's refraction grab: the shared fixed-extent, shortened-chain
-    // contract (pal_gpu_shared.hpp), whatever the surface size
+    // contract (shared GPU helpers), whatever the surface size
     // (frame-graph/transmission.ts).
     const std::uint32_t width = transmission_grab_size;
     const std::uint32_t height = transmission_grab_size;
@@ -186,8 +190,8 @@ fragment float copy_fs(float4 p [[position]], depth2d<float> t [[texture(0)]]) {
         pipeline.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
         pipeline.target_info.num_color_targets = 1;
         pipeline.target_info.color_target_descriptions = &color;
-        state.depth_copy_pipeline =
-            OwnedSdlPipeline{create_sdl_graphics_pipeline(state.device, &pipeline), {state.device}};
+        state.depth_copy_pipeline = OwnedSdlPipeline{
+            create_sdl_gpu_graphics_pipeline(state.device, vertex, &pipeline), {state.device}};
         if (!state.depth_copy_pipeline)
             gpu_error("SDL_CreateGPUGraphicsPipeline depth copy");
     }
@@ -306,7 +310,8 @@ SDL_GPUTextureFormat depth_texture_format(const GpuState& state, const RenderTar
 void create_frame_graph_textures(GpuState& state, const Engine& engine,
                                  SDL_GPUTextureFormat surface_format, std::uint32_t width,
                                  std::uint32_t height) {
-    if (state.render_targets.size() == engine.render_targets.size() &&
+    if (state.render_targets_version == engine.render_targets_version &&
+        state.render_targets.size() == engine.render_targets.size() &&
         state.frame_graph_width == width && state.frame_graph_height == height &&
         !surface_targets_changed(engine, state.render_targets, width, height)) {
         synchronize_render_target_lifecycles(engine);
@@ -325,6 +330,8 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
     state.render_targets.resize(engine.render_targets.size());
     for (std::size_t index = 0; index < target_plans.size(); ++index) {
         const RenderTargetRecord record = engine.render_targets[index];
+        if (record.retired)
+            continue;
         const auto& planned = target_plans[index];
         auto& current = state.render_targets[index];
         std::shared_ptr<GpuRenderTarget> replacement;
@@ -458,6 +465,7 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
                                           SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET);
     }
     state.frame_graph_width = width;
+    state.render_targets_version = engine.render_targets_version;
     state.frame_graph_height = height;
 }
 
@@ -502,7 +510,8 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
         color_owner.reset();
         gpu_error("SDL_AcquireGPUCommandBuffer ID buffer");
     }
-    SDL_PushGPUVertexUniformData(command, 0, view_projection.data(), sizeof(view_projection));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, view_projection.data(),
+                                             sizeof(view_projection));
 
     SDL_GPUColorTargetInfo target{};
     target.texture = color;
@@ -539,17 +548,14 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
             if (cluster_ids) {
                 const DiagnosticClusterUniforms uniforms =
                     diagnostic_cluster_uniforms(current_cluster_base, alpha_options);
-                SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
+                SdlGpuWriteDevice{}.write_fragment_uniform(command, 0, &uniforms, sizeof(uniforms));
             } else {
                 const DiagnosticIdUniforms uniforms = diagnostic_id_uniforms(
                     static_cast<std::uint32_t>(mesh_index + 1), alpha_options);
-                SDL_PushGPUFragmentUniformData(command, 0, &uniforms, sizeof(uniforms));
+                SdlGpuWriteDevice{}.write_fragment_uniform(command, 0, &uniforms, sizeof(uniforms));
             }
 
-            const std::array<float, 16> world =
-                mesh_block_world(scene, engine, handle_at(engine.meshes, item.mesh));
-            SDL_PushGPUVertexUniformData(command, mesh_world_uniform_slot, world.data(),
-                                         sizeof(world));
+            push_mesh_stage_blocks(command, scene, engine, handle_at(engine.meshes, item.mesh));
             const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
             const SDL_GPUTextureSamplerBinding texture_binding{
                 mesh.base_color,

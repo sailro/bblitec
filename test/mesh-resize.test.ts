@@ -60,7 +60,7 @@ int main(){using namespace bbl;Engine engine;
  const auto a=create_mesh_from_data(engine,"a",p,n,i,uv,{},{},{});
  const auto b=clone_mesh_node(engine,a),omitted=clone_mesh_node(engine,b);
  assert(!engine.meshes[b.value].detached_imported_mesh && engine.geometries[0].owners==3);
- auto scene=std::make_shared<Scene>();scene->engine=&engine;engine.registered_scenes.push_back(scene);
+ auto scene=std::make_shared<Scene>();scene->engine=&engine;engine.rendering_contexts.push_back("scene", scene);
  const auto topology=scene->render_topology_version,epoch=engine.draw_list_epoch;
  const std::vector<float> bigger{0,0,0,2,0,0,0,2,0,2,2,0},bn(12);const std::vector<std::uint32_t> bi{0,1,2,1,3,2};
  const js::Array<MeshHandle> family{a,b};

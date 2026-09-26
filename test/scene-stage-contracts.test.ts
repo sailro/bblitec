@@ -38,7 +38,7 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
         const stages = encode.slice(stageStart, stageEnd);
         const sprites = cppFunction(
             encode,
-            "if (!engine.registered_sprite_renderers.empty())",
+            "if (!engine.sprite_renderer_contexts().empty())",
         );
         writeFileSync(
             join(output, `${backend}Stages.hpp`),

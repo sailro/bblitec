@@ -477,7 +477,7 @@ int main() {
         if (!styles.empty()) std::memcpy(styles.data(), data->styles.buffer().data() + data->styles.byte_offset(), styles.size() * 4);
         nlohmann::json runs = nlohmann::json::array();
         for (const auto& run : data->runs) {
-            const auto rec = bbl::pinned::map_get(data->run_records, run);
+            const auto rec = data->run_records.get_owned(run).value();
             runs.push_back({rec->group_idx, std::vector<double>(rec->slots.begin(), rec->slots.end()), std::vector<double>(rec->style_slots.begin(), rec->style_slots.end())});
         }
         nlohmann::json groups = nlohmann::json::array();

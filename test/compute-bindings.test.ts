@@ -36,7 +36,7 @@ std::shared_ptr<const ComputeBindingResolver> get_compute_binding_resolver(doubl
  return resolver;
 }
 }
-struct Allocation final:bbl::pal::StorageBufferAllocation{void destroy()override{}void write(std::size_t,std::span<const std::uint8_t>)override{}};
+struct Allocation final:bbl::pal::StorageBufferAllocation{void destroy()override{}void write_buffer_bytes(std::size_t,std::span<const std::uint8_t>) override{}};
 struct Device final:bbl::pal::OffscreenDevice{
  std::vector<bbl::pal::ComputeBindGroupDescriptor> groups;
  std::shared_ptr<bbl::pal::ComputeBindGroup> create_compute_bind_group(const bbl::pal::ComputeBindGroupDescriptor& descriptor)override{groups.push_back(descriptor);return std::make_shared<bbl::pal::ComputeBindGroup>();}

@@ -335,8 +335,13 @@ int main() {
     dawn.surface_texture.texture = &screenshot;
     const auto setup = [](Engine& engine) {
         engine.sprite_renderers.resize(3);
-        engine.registered_sprite_renderers = {SpriteRendererHandle{2}, SpriteRendererHandle{0},
-                                              SpriteRendererHandle{1}};
+        {
+            const std::initializer_list<SpriteRendererHandle> contexts = {
+                SpriteRendererHandle{2}, SpriteRendererHandle{0}, SpriteRendererHandle{1}};
+            engine.rendering_contexts.clear();
+            for (const auto& context : contexts)
+                engine.rendering_contexts.push_back("sprite-renderer", context);
+        }
         engine.sprite_renderers[2].clear = false;
         engine.sprite_renderers[0].clear = true;
         engine.sprite_renderers[0].clear_value.r = .25;

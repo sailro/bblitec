@@ -32,7 +32,7 @@ void validate_compute_texture_resource(const std::shared_ptr<ComputeTextureResou
 bool is_compute_texture_sample_type_compatible(const std::string& actual,const std::string& declared){return actual==declared;}
 }
 struct Image final:bbl::pal::ComputeTextureAllocation{void destroy()override{}};
-struct Buffer final:bbl::pal::StorageBufferAllocation{void destroy()override{}void write(std::size_t,std::span<const std::uint8_t>)override{}};
+struct Buffer final:bbl::pal::StorageBufferAllocation{void destroy()override{}void write_buffer_bytes(std::size_t,std::span<const std::uint8_t>) override{}};
 struct Device final:bbl::pal::OffscreenDevice{bbl::pal::ComputeShaderLimits compute_shader_limits()const override{return {};}};
 template<class F> void error(const char* expected,F fn){try{fn();}catch(const std::exception& e){if(std::string(e.what())==expected)return;throw std::runtime_error(std::string("Expected ")+expected+", got "+e.what());}throw std::runtime_error(std::string("Expected ")+expected+", no error");}
 int main(){

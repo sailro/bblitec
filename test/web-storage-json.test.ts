@@ -396,7 +396,7 @@ test("the Web Storage PAL keeps its file work behind an encoded key", () => {
     assert.match(fileIo, /MoveFileExW|std::filesystem::rename/);
     // Reads are bounded and removing an absent key is not a failure.
     assert.match(source, /kMaximumEntryBytes/);
-    assert.match(source, /error == std::errc::no_such_file_or_directory/);
+    assert.match(source, /try_read_binary_file_bounded/);
     // A test root keeps the user's own preferences out of a run.
     assert.match(source, /BBLITE_LOCAL_STORAGE_ROOT/);
     // No OS API outside PAL: the header the scene includes is a thin shim.
@@ -428,7 +428,7 @@ test("the JSON runtime is included only by the scenes that reach it", () => {
     // Object key order is the writer's call order, so nothing sorts it:
     // the parsed value keeps the document's order and the writer keeps the
     // record's, which is why neither side is a sorted associative map.
-    assert.match(runtime, /nlohmann::ordered_json::parse/);
+    assert.match(runtime, /nlohmann::json::sax_parse/);
     assert.match(runtime, /using Object = std::vector<Entry>;/);
     // ts_runtime.hpp includes nlohmann's header unconditionally, and the
     // static shipping tree carries that include directory only behind the

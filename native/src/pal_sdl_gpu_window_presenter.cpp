@@ -1,5 +1,5 @@
 #include "pal_window_presenter.hpp"
-#include "pal_gpu_shared.hpp"
+
 #include "pal_sdl_gpu_offscreen.hpp"
 #include "pal_sdl_gpu_sprite_ui.hpp"
 #include <deque>
@@ -23,7 +23,7 @@ public:
     ~SdlWindowPresenter() override {
         SDL_WaitForGPUIdle(device_.get());
         in_flight_.clear();
-        release_sprite_ui_sdl_resources(device_.get(), ui_);
+        release_sprite_ui_sdl_gpu_resources(device_.get(), ui_);
         composite_.release(device_.get());
         SDL_ReleaseWindowFromGPUDevice(device_.get(), window_);
     }
@@ -98,8 +98,8 @@ public:
             return image->texture;
         };
         SpriteUiSdlCpuSample ui_sample;
-        render_sprite_ui_sdl_frame(device_.get(), command, destination, format, ui_, ui,
-                                   external_texture, cpu_profile_ ? &ui_sample : nullptr);
+        render_sprite_ui_sdl_gpu_frame(device_.get(), command, destination, format, ui_, ui,
+                                       external_texture, cpu_profile_ ? &ui_sample : nullptr);
         const double ui_recorded = cpu_profile_ ? monotonic_milliseconds() : 0;
         UiSdlReadableSurface::present(command, destination, swapchain, width, height);
         const double blit_recorded = cpu_profile_ ? monotonic_milliseconds() : 0;
@@ -164,7 +164,7 @@ private:
     std::size_t presented_ = 0;
 };
 } // namespace
-std::shared_ptr<WindowPresenter> create_window_sdl_presenter(SDL_Window* window) {
+std::shared_ptr<WindowPresenter> create_window_sdl_gpu_presenter(SDL_Window* window) {
     return std::make_shared<SdlWindowPresenter>(window);
 }
 } // namespace bbl::pal

@@ -212,7 +212,7 @@ const records: readonly RecordSpec[] = [
                 {
                     shape: {
                         kind: "native",
-                        cpp: "bbl::TextGpuHandle",
+                        cpp: "bbl::GpuHandle",
                         nullable: true,
                     },
                 },

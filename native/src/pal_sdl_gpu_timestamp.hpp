@@ -49,7 +49,8 @@ inline std::uint64_t sdl_timestamp_nanoseconds(std::uint64_t ticks, std::uint64_
 }
 
 /** Keep backward samples backward so the source timer can reject them. */
-inline void normalize_sdl_timestamps(std::vector<std::uint64_t>& values, std::uint64_t frequency) {
+inline void normalize_sdl_gpu_timestamps(std::vector<std::uint64_t>& values,
+                                         std::uint64_t frequency) {
     if (values.empty())
         return;
     const auto origin = *std::min_element(values.begin(), values.end());
@@ -145,7 +146,7 @@ struct SdlGpuTimestampReadback final : GpuTimestampReadback {
             gpu_error("SDL timestamp readback map");
         std::memcpy(values.data(), mapped, values.size() * sizeof(Uint64));
         SDL_UnmapGPUTransferBuffer(queries->device, transfer->buffer.get());
-        normalize_sdl_timestamps(values, queries->frequency);
+        normalize_sdl_gpu_timestamps(values, queries->frequency);
         return values;
     }
 };

@@ -29,6 +29,8 @@
 #include <SDL3/SDL.h>
 #include "pal_window.hpp"
 #include "pal_gpu_dispatch.hpp"
+#include "pal_sdl_application.hpp"
+#include "pal_gpu_frame.hpp"
 
 namespace bbl {
 
@@ -227,12 +229,12 @@ enum class RendererKind { scene, sprites, canvas, effects, frame_graph, text };
 RendererKind renderer_kind(const Engine& engine) {
     if (bbl::has_text_renderers(engine))
         return RendererKind::text;
-    if (!engine.registered_scenes.empty())
+    if (!engine.scenes().empty())
         return RendererKind::scene;
-    if (!engine.registered_frame_graph_contexts.empty()) {
+    if (!engine.frame_graph_contexts().empty()) {
         return RendererKind::frame_graph;
     }
-    if (!engine.registered_effect_renderers.empty()) {
+    if (!engine.effect_renderer_contexts().empty()) {
         return RendererKind::effects;
     }
     if (bbl::has_sprite_renderers(engine)) {
@@ -270,8 +272,8 @@ const char* renderer_name(RendererKind kind) {
 }
 
 #if !BBLITE_WORKERS
-void run_renderer(Engine& engine, RendererKind kind, const pal::GpuBackend& backend) {
-    void (*context)(Engine&) = nullptr;
+pal::SceneRun run_renderer(Engine& engine, RendererKind kind, const pal::GpuBackend& backend) {
+    pal::SceneRun (*context)(Engine&) = nullptr;
     switch (kind) {
     case RendererKind::sprites:
     case RendererKind::text:
@@ -285,13 +287,12 @@ void run_renderer(Engine& engine, RendererKind kind, const pal::GpuBackend& back
         context = backend.run_frame_graph;
         break;
     case RendererKind::scene:
-        if (!backend.run_scene || !backend.run_scene(engine))
-            refuse_uncompiled_renderer(kind, backend);
-        return;
+        context = backend.run_scene;
+        break;
     }
     if (!context)
         refuse_uncompiled_renderer(kind, backend);
-    context(engine);
+    return context(engine);
 }
 #else
 js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
@@ -331,13 +332,9 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
 
 } // namespace
 
-void pal::run_engine(Engine& engine) {
-    require_runtime_execution("renderer or input execution");
-#if BBLITE_WORKERS
-    static_cast<void>(engine);
-    throw std::logic_error("A Worker-enabled application must use asynchronous engine startup.");
-#else
-    SdlWindowRun window_run;
+#if !BBLITE_WORKERS
+static pal::Iteration<int> run_engine_iterations(Engine& engine) {
+    pal::SdlWindowRun window_run;
 #if BBLITE_HAS_AUDIO
     // Finish this engine's audio before releasing its window services.
     struct AudioRunEnd {
@@ -362,7 +359,11 @@ void pal::run_engine(Engine& engine) {
         }
         engine.renderer_restart_requested = false;
         try {
-            run_renderer(engine, kind, pal::selected_gpu_backend());
+            auto renderer = run_renderer(engine, kind, pal::selected_gpu_backend());
+            while (renderer.advance())
+                co_yield true;
+            if (!renderer.result())
+                refuse_uncompiled_renderer(kind, pal::selected_gpu_backend());
 #if BBLITE_DEVICE_RECOVERY
             if (engine.device_recovery && engine.device_recovery->requested)
                 begin_device_recovery(engine);
@@ -378,8 +379,21 @@ void pal::run_engine(Engine& engine) {
             throw;
         }
         if (!engine.renderer_restart_requested)
-            return;
+            co_return 0;
     }
+}
+#endif
+
+void pal::run_engine(Engine& engine) {
+    require_runtime_execution("renderer or input execution");
+#if BBLITE_WORKERS
+    static_cast<void>(engine);
+    throw std::logic_error("A Worker-enabled application must use asynchronous engine startup.");
+#else
+    const int result =
+        run_sdl_application(run_engine_iterations(engine), read_frame_options().interactive());
+    if (result != 0)
+        throw std::runtime_error("SDL application callbacks failed.");
 #endif
 }
 

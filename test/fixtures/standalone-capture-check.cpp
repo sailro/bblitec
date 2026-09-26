@@ -1,6 +1,8 @@
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 #include "pal_sdl_gpu_commands.hpp"
+#include "pal_sdl_gpu_resources.hpp"
+#include "pal_sdl_gpu_writes.hpp"
 #include "pal_dawn_resources.hpp"
 #include <cassert>
 #include <cmath>
@@ -43,6 +45,13 @@ WGPURenderPassEncoderImpl dawn_pass;
 WGPUSurfaceImpl dawn_surface;
 SDL_GPUCopyPass sdl_copy;
 std::deque<SDL_GPUTransferBuffer> transfers;
+bool texture_uploads_enabled = false;
+struct TextureWrite {
+    SDL_GPUTextureRegion destination;
+    Uint32 pixels, rows;
+    std::vector<std::uint8_t> bytes;
+};
+std::vector<TextureWrite> texture_writes;
 std::deque<WGPUTextureImpl> dawn_render_textures;
 std::vector<WGPUTextureDescriptor> dawn_texture_descriptors;
 std::vector<WGPUTexture> dawn_released_textures;
@@ -115,7 +124,7 @@ extern "C" void SDLCALL SDL_ReleaseGPUTransferBuffer(SDL_GPUDevice*,
 }
 extern "C" void* SDLCALL SDL_MapGPUTransferBuffer(SDL_GPUDevice*, SDL_GPUTransferBuffer* buffer,
                                                   bool cycle) {
-    assert(cycle && !buffer->mapped && !buffer->released);
+    assert((cycle || texture_uploads_enabled) && !buffer->mapped && !buffer->released);
     buffer->mapped = true;
     return buffer->bytes.data();
 }
@@ -138,6 +147,14 @@ extern "C" void SDLCALL SDL_UploadToGPUBuffer(SDL_GPUCopyPass*,
     std::memcpy(destination->buffer->bytes.data() + destination->offset,
                 source->transfer_buffer->bytes.data() + source->offset, destination->size);
     ++copied_regions;
+}
+extern "C" void SDLCALL SDL_UploadToGPUTexture(SDL_GPUCopyPass*,
+                                               const SDL_GPUTextureTransferInfo* source,
+                                               const SDL_GPUTextureRegion* destination,
+                                               bool cycle) {
+    assert(!cycle && !source->transfer_buffer->mapped && !source->transfer_buffer->released);
+    texture_writes.push_back({*destination, source->pixels_per_row, source->rows_per_layer,
+                              source->transfer_buffer->bytes});
 }
 extern "C" WGPUTexture wgpuDeviceCreateTexture(WGPUDevice,
                                                const WGPUTextureDescriptor* descriptor) {
@@ -194,6 +211,7 @@ void CaptureGate::maybe_write_standalone_render_capture(const char*, const Engin
 [[noreturn]] void dawn_error(const std::string& operation) { throw std::runtime_error(operation); }
 #include "clear-color.hpp"
 #include "buffer-batch.hpp"
+#include "texture-copy.hpp"
 SDL_GPUSampleCount gpu_sample_count_from(std::uint32_t samples) {
     assert(samples == 4);
     return SDL_GPU_SAMPLECOUNT_4;
@@ -271,7 +289,7 @@ struct Context {
 #include "frame-session.hpp"
     Context() {
         engine.effect_renderers.emplace_back();
-        engine.registered_effect_renderers.push_back(EffectRendererHandle{0});
+        engine.rendering_contexts.push_back("effect-renderer", EffectRendererHandle{0});
         engine.sprite_renderers.emplace_back();
     }
 };
@@ -449,16 +467,28 @@ template <typename Renderer> void check_registration() {
     Renderer renderer;
     auto& engine = renderer.engine;
     engine.sprite_renderers.emplace_back();
-    engine.registered_sprite_renderers = {SpriteRendererHandle{1}, SpriteRendererHandle{0}};
+    {
+        const std::initializer_list<SpriteRendererHandle> contexts = {SpriteRendererHandle{1},
+                                                                      SpriteRendererHandle{0}};
+        engine.rendering_contexts.clear();
+        for (const auto& context : contexts)
+            engine.rendering_contexts.push_back("sprite-renderer", context);
+    }
     pass_creations = pass_releases = 0;
     renderer.sync_renderer_passes();
     assert(pass_creations == 2 && pass_releases == 0 && renderer.passes[0].renderer.value == 1);
     renderer.sync_renderer_passes();
     assert(pass_creations == 2 && pass_releases == 0);
-    engine.registered_sprite_renderers = {SpriteRendererHandle{0}, SpriteRendererHandle{1}};
+    {
+        const std::initializer_list<SpriteRendererHandle> contexts = {SpriteRendererHandle{0},
+                                                                      SpriteRendererHandle{1}};
+        engine.rendering_contexts.clear();
+        for (const auto& context : contexts)
+            engine.rendering_contexts.push_back("sprite-renderer", context);
+    }
     renderer.sync_renderer_passes();
     assert(pass_creations == 4 && pass_releases == 2 && renderer.passes[0].renderer.value == 0);
-    engine.registered_sprite_renderers.clear();
+    engine.rendering_contexts.clear();
     renderer.sync_renderer_passes();
     assert(renderer.passes.empty() && pass_releases == 4);
 
@@ -495,8 +525,13 @@ void check_batched_uploads() {
     {
         SdlSprite renderer;
         renderer.engine.sprite_renderers.emplace_back();
-        renderer.engine.registered_sprite_renderers = {SpriteRendererHandle{0},
-                                                       SpriteRendererHandle{1}};
+        {
+            const std::initializer_list<SpriteRendererHandle> contexts = {SpriteRendererHandle{0},
+                                                                          SpriteRendererHandle{1}};
+            renderer.engine.rendering_contexts.clear();
+            for (const auto& context : contexts)
+                renderer.engine.rendering_contexts.push_back("sprite-renderer", context);
+        }
         for (unsigned frame = 0; frame < 3; ++frame) {
             reset_observations();
             updated_renderers.clear();
@@ -507,12 +542,50 @@ void check_batched_uploads() {
             assert(sprite_buffer.bytes == std::vector<std::uint8_t>({1, 2, 0, 0}));
             assert(transfers.size() == first_transfer + 1 && !transfers.back().released);
         }
-        renderer.engine.registered_sprite_renderers.clear();
+        renderer.engine.rendering_contexts.clear();
         reset_observations();
         renderer.synchronize();
         assert(submissions == 0);
     }
     assert(transfers.back().released);
+}
+
+void check_texture_writes() {
+    texture_uploads_enabled = true;
+    texture_writes.clear();
+    auto* device = reinterpret_cast<SDL_GPUDevice*>(1);
+    SDL_GPUTexture texture;
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
+    std::vector<OwnedSdlTransfer> leases;
+    const std::array<std::uint8_t, 16> block{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+    // A block-compressed tail has padded transfer strides and a smaller logical destination.
+    SdlCopyTextureDestination compressed{device, copy, {&texture, 3, 4, 0, 0, 0, 0, 0, 1},
+                                         leases, 4,    4};
+    SdlGpuWriteDevice{device}.write_texture(compressed, block, {}, {3, 2, 1});
+    // Independent face/mip writes stay in the caller's single copy pass.
+    SdlCopyTextureDestination face{device, copy, {&texture, 1, 5, 0, 0, 0, 0, 0, 1}, leases};
+    SdlGpuWriteDevice{device}.write_texture(face, block, {}, {2, 2, 1});
+    SdlCopyTextureDestination flipped{device, copy, {&texture, 0, 2, 0, 0, 0, 0, 0, 1}, leases, 0,
+                                      0,      8};
+    SdlGpuWriteDevice{device}.write_texture(flipped, block, {}, {2, 2, 1});
+    assert(leases.size() == 3 && texture_writes.size() == 3);
+    for (const auto& lease : leases)
+        assert(!lease->released);
+    const auto& first = texture_writes[0];
+    assert(first.destination.mip_level == 3 && first.destination.layer == 4);
+    assert(first.destination.w == 3 && first.destination.h == 2 && first.pixels == 4 &&
+           first.rows == 4);
+    assert(first.bytes == std::vector<std::uint8_t>(block.begin(), block.end()));
+    assert(texture_writes[1].destination.mip_level == 1 &&
+           texture_writes[1].destination.layer == 5);
+    assert(texture_writes[1].pixels == 2 && texture_writes[1].rows == 2);
+    assert((texture_writes[2].bytes ==
+            std::vector<std::uint8_t>{8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7}));
+    copy.end();
+    assert(command.submit());
+    leases.clear();
+    texture_uploads_enabled = false;
 }
 
 int main() {
@@ -522,6 +595,7 @@ int main() {
     check_registration<SdlSprite>();
     check_registration<DawnSprite>();
     check_batched_uploads();
+    check_texture_writes();
     surface_available = false;
     SdlEffect sdl_effect;
     SdlSprite sdl_sprite;

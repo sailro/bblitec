@@ -14,16 +14,35 @@ struct MeshHandle {
 struct Scene {
     std::uint64_t render_topology_version = 0;
 };
+struct Engine {
+    std::vector<std::array<float, 16>> meshes;
+};
+const auto& handle_at(const auto& meshes, MeshHandle mesh) { return meshes.at(mesh.value); }
 namespace upstream {
+enum class RenderMaterialKind { standard, pbr };
+struct RenderItem {
+    MeshHandle mesh;
+    int material = 0;
+    RenderMaterialKind material_kind = RenderMaterialKind::standard;
+};
+RenderItem bind_render_item(RenderItem item, const Engine&, int) { return item; }
 // The Standard geometry output's mesh block: the world, then the velocity
 // tail its `~geometry-params` fragment appends.
 struct MeshUniforms {
     std::array<float, 16> world{};
+#if FIXTURE_VELOCITY
     std::array<float, 16> previousWorld{};
     float velocityEnabled = -1.0f;
+#endif
 };
 } // namespace upstream
 namespace pal {
+int world_compositions = 0;
+std::array<float, 16> mesh_block_world(const Scene&, const Engine&,
+                                       const std::array<float, 16>& world) {
+    ++world_compositions;
+    return world;
+}
 #include "velocity.hpp"
 } // namespace pal
 } // namespace bbl
@@ -57,6 +76,19 @@ int main() {
     Scene scene;
     PinnedVelocityHistory history;
     const MeshHandle mesh{2, 1};
+    Engine engine;
+    engine.meshes.resize(3);
+    engine.meshes[2] = world_at(1.0f);
+    const std::vector<upstream::RenderItem> items{{mesh}, {mesh}};
+    update_pinned_velocity_frame(history, scene, engine, items);
+#if !FIXTURE_VELOCITY
+    check(history.frame == 0 && history.renderables.empty() && world_compositions == 0,
+          "a block without a velocity tail never builds history or composes worlds");
+    (void)draw(history, mesh);
+#else
+    check(world_compositions == 1, "duplicate draws compose the world once per frame");
+    check(draw(history, mesh).world == world_at(1.0f), "draw uses the frame's composed world");
+    history = {};
 
     // The renderable's first frame: built with this world, velocity off.
     begin_pinned_velocity_frame(history, scene);
@@ -67,6 +99,7 @@ int main() {
     // A second draw of the mesh in the frame binds the same block.
     update_pinned_velocity(history, mesh, world_at(9.0f));
     block = draw(history, mesh);
+    check(block.world == world_at(1.0f), "repeated draws retain the first world in the frame");
     check(block.velocityEnabled == 0.0f && block.previousWorld == world_at(1.0f),
           "one update per frame");
 
@@ -105,6 +138,7 @@ int main() {
         refused = true;
     }
     check(refused, "an unreached draw refuses");
+#endif
     std::puts("pinned-velocity-history-check: ok");
     return 0;
 }

@@ -1,5 +1,5 @@
 #include "pal_window_presenter.hpp"
-#include "pal_gpu_shared.hpp"
+
 #include "pal_dawn_offscreen.hpp"
 #include "pal_dawn_sprite_ui.hpp"
 #include <deque>

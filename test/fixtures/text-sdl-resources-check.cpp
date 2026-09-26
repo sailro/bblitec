@@ -7,32 +7,24 @@ using namespace bbl::pal;
 // The WebGPU half of the SDL text device, without its pipeline cache.
 struct Device final : SdlTextGpuResources {
     using SdlTextGpuResources::SdlTextGpuResources;
-    TextPipelineSet text_pipeline(const std::string&, double, const std::optional<std::string>&,
-                                  bool, const std::shared_ptr<const void>&,
-                                  const std::string&) override {
-        throw std::logic_error("no pipelines");
-    }
-    TextPipelineDeviceCacheHandle text_pipeline_cache() override {
-        throw std::logic_error("no pipelines");
-    }
 };
 
 int main() {
     // Uniform buffers are the SDL CPU/push transport; no native device is needed.
     auto device = std::make_shared<Device>(nullptr, false);
     const auto uniform = [](Device& owner) {
-        return owner.create_buffer(TextBufferDescriptor{std::string("text-renderable-ubo"), 96,
-                                                        text_buffer_usage_uniform | 0x08});
+        return owner.create_buffer(GpuBufferDescriptor{std::string("text-renderable-ubo"), 96,
+                                                       text_buffer_usage_uniform | 0x08});
     };
     auto layout = std::make_shared<SdlTextGpuLayout>();
     layout->bindings = {{0u, TextBindingRole::uniform}};
-    const auto group_of = [&](const TextGpuHandle& buffer) {
-        TextBindGroupDescriptor descriptor;
+    const auto group_of = [&](const GpuHandle& buffer) {
+        GpuBindGroupDescriptor descriptor;
         descriptor.layout = layout;
-        descriptor.entries = {TextBindGroupEntry{0, TextBufferBinding{buffer, {}, {}}}};
+        descriptor.entries = {GpuBindGroupEntry{0, GpuBufferBinding{buffer, {}, {}}}};
         return sdl_text_object<SdlTextGpuGroup>(device->create_bind_group(descriptor));
     };
-    const auto write = [](Device& owner, const TextGpuHandle& buffer, double offset,
+    const auto write = [](Device& owner, const GpuHandle& buffer, double offset,
                           const std::array<std::uint8_t, 4>& bytes) {
         owner.write_buffer(buffer, offset,
                            js::ArrayBuffer(std::vector<std::uint8_t>(bytes.begin(), bytes.end())),

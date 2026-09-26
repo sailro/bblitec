@@ -1,5 +1,5 @@
 // The bodies of the scene-shaped helpers both GPU backends share, one
-// section per concern header in pal_gpu_shared.hpp's order. They read the
+// section per concern header. They read the
 // scene's generated headers, so this unit compiles once per scene -- once,
 // rather than in every backend unit that includes the headers.
 #include <bblite/features/has_billboards.hpp>
@@ -15,7 +15,36 @@
 #include <bblite/features/shadow_morph_bounds.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_images.hpp"
+#include "pal_gpu_textures.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_shadows.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_picking.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_gpu_pipeline.hpp"
+#include "pal_gpu_shader_passes.hpp"
+
+#if BBLITE_HAS_PBR_RENDERER
+#include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/pinned_rgbd.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
+#endif
+#if BBLITE_GPU_MORPH_STORAGE
+#include <bblite/upstream/morph_targets.hpp>
+#endif
+#if BBLITE_HAS_SPRITE_RENDERER
+#include <bblite/upstream/sprite_layer.hpp>
+#endif
+
+#include <cstring>
+#include <iterator>
+#include <sstream>
 
 namespace bbl::pal {
 
@@ -107,15 +136,16 @@ std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scen
                                                 std::uint32_t target_width,
                                                 std::uint32_t target_height) {
 #if BBLITE_HAS_UI
-    if (engine.registered_scenes.empty())
+    const auto scenes = engine.scenes();
+    if (scenes.empty())
         return std::nullopt;
     std::size_t pane_count = 1;
     std::size_t pane_index = npos;
-    const std::shared_ptr<Scene>& primary = engine.registered_scenes.front();
+    const std::shared_ptr<Scene>& primary = scenes.front();
     if (primary && primary->shares_identity(scene))
         pane_index = 0;
-    for (std::size_t i = 1; i < engine.registered_scenes.size(); ++i) {
-        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
+    for (auto at = std::next(scenes.begin()); at != scenes.end(); ++at) {
+        const auto& registered = *at;
         if (!registered || !unplaced_surface_scene(engine, *registered))
             continue;
         if (registered->shares_identity(scene))
@@ -162,8 +192,7 @@ std::optional<PixelViewport> surface_canvas_pane(const Engine& engine,
     if (surface_canvas_laid_out(engine, *surface_canvas)) {
         return laid_out_canvas_pane(engine, *surface_canvas, target_width, target_height);
     }
-    for (std::size_t i = 0; i < engine.registered_scenes.size(); ++i) {
-        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
+    for (const auto& registered : engine.scenes()) {
         if (!registered || !registered->surface_canvas)
             continue;
         if (registered->surface_canvas->value != surface_canvas->value)
@@ -233,9 +262,9 @@ void apply_light_floating_origin(std::span<upstream::LightEntry> entries, std::u
     for (const LightHandle handle : scene.lights) {
         if (written >= count)
             break;
-        if (handle.value >= engine.lights.size())
+        const LightRecord* light = handle_find(engine.lights, handle);
+        if (!light)
             continue;
-        const LightRecord& light = handle_at(engine.lights, handle);
         // The pin's own test: the type tag in `vLightData.w`, 0 for a point
         // light and 2 for a spot. A direction-only entry is left alone.
         const float type = entries[written].vLightData[3];
@@ -250,9 +279,9 @@ void apply_light_floating_origin(std::span<upstream::LightEntry> entries, std::u
             // flattened world there and leaves `local_matrix` alone, so
             // reading that instead would put an imported light at the
             // origin.
-            entries[written].vLightData[0] = static_cast<float>(light.position.x - offset.x);
-            entries[written].vLightData[1] = static_cast<float>(light.position.y - offset.y);
-            entries[written].vLightData[2] = static_cast<float>(light.position.z - offset.z);
+            entries[written].vLightData[0] = static_cast<float>(light->position.x - offset.x);
+            entries[written].vLightData[1] = static_cast<float>(light->position.y - offset.y);
+            entries[written].vLightData[2] = static_cast<float>(light->position.z - offset.z);
         }
         ++written;
     }
@@ -322,7 +351,7 @@ bool sprite_scene_pipeline_compatible(const Sprite2DLayerRecord& left,
 }
 
 void refuse_disposed_sprite_render_texture_in_use(const Engine& engine) {
-    for (const SpriteRendererHandle& renderer_handle : engine.registered_sprite_renderers) {
+    for (const SpriteRendererHandle& renderer_handle : engine.sprite_renderer_contexts()) {
         const SpriteRendererRecord& renderer = handle_at(engine.sprite_renderers, renderer_handle);
         for (const Sprite2DLayerHandle& layer_handle : renderer.layers) {
             const SpriteAtlasRecord& atlas = handle_at(
@@ -1041,14 +1070,14 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
     // composed.
     std::uint32_t light_count = 0;
     for (const LightHandle handle : scene.lights) {
-        if (handle.value >= engine.lights.size())
+        const LightRecord* light = handle_find(engine.lights, handle);
+        if (!light)
             continue;
-        const LightRecord& light = handle_at(engine.lights, handle);
-        if (!upstream::light_affects_mesh(light, draw.item.mesh)) {
+        if (!upstream::light_affects_mesh(*light, draw.item.mesh)) {
             continue;
         }
         ++light_count;
-        key.single_light_type = upstream::pinned_single_light_type(light);
+        key.single_light_type = upstream::pinned_single_light_type(*light);
     }
     // The receive bit rides the mesh row rather than the material, which is
     // why it is read back from the mesh half of the key; the arm it selects
@@ -1580,12 +1609,12 @@ std::vector<std::uint8_t> pinned_lights_block(const Scene& scene, const Engine& 
     for (const LightHandle handle : scene.lights) {
         if (count >= upstream::pinned_max_lights)
             break;
-        if (handle.value >= engine.lights.size())
+        const LightRecord* light = handle_find(engine.lights, handle);
+        if (!light)
             continue;
-        const LightRecord& light = handle_at(engine.lights, handle);
         // Which writer each kind takes is generated: the scene compiles arms
         // only for the kinds it reaches, so the mapping cannot be restated here.
-        upstream::write_pinned_light(light, entries[count]);
+        upstream::write_pinned_light(*light, entries[count]);
         ++count;
     }
     header[0] = count;
@@ -1601,10 +1630,14 @@ std::vector<std::uint8_t> pinned_lights_block(const Scene& scene, const Engine& 
 #endif
 
 #if BBLITE_PINNED_MATERIALS && BBLITE_PINNED_MATERIAL_VARIANTS
-upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engine,
-                                         MeshHandle mesh) {
+upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engine, MeshHandle mesh,
+                                         const PinnedVelocityHistory* velocity_history) {
     upstream::MeshUniforms block{};
-    block.world = mesh_block_world(scene, engine, handle_at(engine.meshes, mesh));
+    if (velocity_history && PinnedVelocityBlock<upstream::MeshUniforms>) {
+        write_pinned_velocity_tail(*velocity_history, mesh, block);
+    } else {
+        block.world = mesh_block_world(scene, engine, handle_at(engine.meshes, mesh));
+    }
     pinned_mesh_light_selection(scene, engine, mesh, block);
     return block;
 }
@@ -1612,12 +1645,20 @@ upstream::MeshUniforms pinned_mesh_block(const Scene& scene, const Engine& engin
 void update_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& scene,
                                   const Engine& engine,
                                   const std::vector<upstream::RenderItem>& items) {
+    if constexpr (!PinnedVelocityBlock<upstream::MeshUniforms>) {
+        return;
+    }
     begin_pinned_velocity_frame(history, scene);
     for (const upstream::RenderItem& source : items) {
         const upstream::RenderItem item =
             upstream::bind_render_item(source, engine, source.material);
         if (item.material_kind != upstream::RenderMaterialKind::standard) {
             continue;
+        }
+        if (item.mesh.value < history.renderables.size()) {
+            const auto& renderable = history.renderables[item.mesh.value];
+            if (renderable.mesh == item.mesh && renderable.updated_frame == history.frame)
+                continue;
         }
         update_pinned_velocity(
             history, item.mesh,
@@ -1627,11 +1668,8 @@ void update_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& s
 
 void write_pinned_velocity_tail(const PinnedVelocityHistory& history, MeshHandle mesh,
                                 upstream::MeshUniforms& block) {
-    [&](auto& dependent) {
-        if constexpr (requires {
-                          dependent.previousWorld;
-                          dependent.velocityEnabled;
-                      }) {
+    [&]<typename Block>(Block& dependent) {
+        if constexpr (PinnedVelocityBlock<Block>) {
             if (mesh.value >= history.renderables.size() ||
                 !(history.renderables[mesh.value].mesh == mesh) ||
                 history.renderables[mesh.value].updated_frame != history.frame) {
@@ -1639,6 +1677,7 @@ void write_pinned_velocity_tail(const PinnedVelocityHistory& history, MeshHandle
                                        "velocity update did not reach.");
             }
             const PinnedVelocityHistory::Renderable& renderable = history.renderables[mesh.value];
+            dependent.world = renderable.previous_world;
             dependent.previousWorld = renderable.written_previous_world;
             dependent.velocityEnabled = renderable.written_velocity_enabled;
         }

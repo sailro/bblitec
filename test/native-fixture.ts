@@ -123,22 +123,25 @@ export function cppDeclaration(source: string, signature: string): string {
 
 /**
  * The GPU backends' shared concerns as one text, in the order
- * `pal_gpu_shared.hpp` includes them, then the units holding their bodies:
+ * their implementation units include them, then the units holding their bodies:
  * what a fixture that lifts the shared helpers by name reads, whichever
  * concern header or unit holds one.
  */
 export function sharedGpuSource(): string {
-    const umbrella = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
-    const parts = [umbrella];
-    for (const [, name] of umbrella.matchAll(
-        /^#include "(pal_gpu_\w+\.hpp)"/gm,
-    )) {
-        parts.push(readFileSync(join("native/src", name!), "utf8"));
-    }
-    for (const unit of sharedGpuUnits) {
-        parts.push(readFileSync(unit, "utf8"));
-    }
-    return parts.join("\n");
+    const units = sharedGpuUnits.map((unit) => readFileSync(unit, "utf8"));
+    const headers = new Set(
+        units.flatMap((source) =>
+            [...source.matchAll(/^#include "(pal_gpu_\w+\.hpp)"/gm)].map(
+                (match) => match[1]!,
+            ),
+        ),
+    );
+    return [
+        ...[...headers].map((name) =>
+            readFileSync(join("native/src", name), "utf8"),
+        ),
+        ...units,
+    ].join("\n");
 }
 
 /** The feature families each scene renderer backend compiles as its own unit. */

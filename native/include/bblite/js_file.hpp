@@ -274,6 +274,18 @@ inline void replace_browser_file(Engine& engine, BrowserFileHandle& destination,
 
 namespace detail {
 
+struct FileTypeDescriptor {
+    std::string_view mime;
+    std::string_view extension;
+    std::string_view label;
+};
+
+inline constexpr FileTypeDescriptor file_types[]{
+#define BBLITE_FILE_TYPE(mime, extension, label) {mime, extension, label},
+#include <bblite/file_types.inc>
+#undef BBLITE_FILE_TYPE
+};
+
 [[nodiscard]] inline bool safe_extension(std::string_view extension) {
     if (extension.empty() || extension.size() > 16u)
         return false;
@@ -285,12 +297,10 @@ namespace detail {
 }
 
 [[nodiscard]] inline std::string mime_extension(std::string_view mime) {
-    if (mime == "application/json" || mime == "text/json")
-        return "json";
-    if (mime == "text/plain")
-        return "txt";
-    if (mime == "text/csv")
-        return "csv";
+    for (const FileTypeDescriptor& type : file_types) {
+        if (mime == type.mime)
+            return std::string(type.extension);
+    }
     return {};
 }
 
@@ -310,13 +320,10 @@ inline bool append_mime_extensions(std::vector<std::string>& extensions, std::st
 }
 
 [[nodiscard]] inline std::string mime_label(std::string_view mime, std::string_view extension) {
-    if ((mime == "application/json" || mime == "text/json") && extension == "json") {
-        return "JSON files";
+    for (const FileTypeDescriptor& type : file_types) {
+        if (mime == type.mime && extension == type.extension)
+            return std::string(type.label);
     }
-    if (mime == "text/plain" && extension == "txt")
-        return "Text files";
-    if (mime == "text/csv" && extension == "csv")
-        return "CSV files";
     std::string label(extension);
     std::transform(label.begin(), label.end(), label.begin(), [](unsigned char character) {
         return static_cast<char>(std::toupper(character));

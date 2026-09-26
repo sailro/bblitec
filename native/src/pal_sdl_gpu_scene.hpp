@@ -64,7 +64,14 @@
 #include <vector>
 
 #include "pal_camera_controls.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_gpu_pipeline.hpp"
+#include "pal_sdl_gpu_post_process.hpp"
 #include "pal_pass_camera.hpp"
 #include "pal_scene_synchronize.hpp"
 #include "pal_texture_upload_cache.hpp"
@@ -123,7 +130,7 @@ namespace bbl::pal {
 inline namespace sdl_scene {
 
 /** The shared cull enum in this API's; the pipeline-kind facts come from
- *  `pipeline_kind_traits` (pal_gpu_shared.hpp). */
+ *  `pipeline_kind_traits` (shared GPU helpers). */
 /**
  * `buildPrimitiveState`'s own table, in SDL_GPU's names. A triangle strip
  * never reaches here: the loader expands one into the list it describes.
@@ -551,7 +558,8 @@ struct ShaderTaskPipeline {
         info.depth_stencil_state.enable_depth_write &= info.target_info.has_depth_stencil_target;
         info.multisample_state.sample_count = target.samples;
         info.multisample_state.enable_alpha_to_coverage = coverage;
-        OwnedSdlPipeline pipeline{create_sdl_graphics_pipeline(device, &info), {device}};
+        OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(device, vertex, &info),
+                                  {device}};
         if (!pipeline)
             gpu_error("SDL_CreateGPUGraphicsPipeline shader render task");
         return pipelines.emplace(key, std::move(pipeline)).first->second.get();
@@ -599,15 +607,6 @@ inline constexpr std::size_t max_post_process_textures = 8;
  * so building per pass would read the same files and compile the same shaders
  * once each. The key is everything a pipeline is made of.
  */
-struct GpuPostProcessProgram {
-    std::uint32_t module_index = 0;
-    SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_INVALID;
-    SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
-    std::uint32_t alpha_mode = 0;
-    OwnedSdlPipeline pipeline;
-    PinnedStageSlots vertex_slots;
-    PinnedStageSlots fragment_slots;
-};
 
 struct GpuPostProcessTask {
     /**
@@ -834,8 +833,7 @@ struct GpuState : SdlGpuDevice {
      * rows) streams through, grown to the largest upload and cycled by
      * SDL when a submitted upload still reads it.
      */
-    SDL_GPUTransferBuffer* pinned_float_transfer = nullptr;
-    std::uint32_t pinned_float_transfer_bytes = 0;
+    SdlTextureTransferCache pinned_float_transfer;
 #endif
 #if BBLITE_SHADOW_RECEIVERS
     /**
@@ -887,8 +885,24 @@ struct GpuState : SdlGpuDevice {
          * nmeLights, meshU and nodeU before this one arrives.
          */
         SDL_GPUBuffer* params_buffer = nullptr;
+        void clear(SDL_GPUDevice* device) {
+
+            if (blur_h)
+                SDL_ReleaseGPUTexture(device, blur_h);
+            if (blur_v)
+                SDL_ReleaseGPUTexture(device, blur_v);
+            if (pipeline) {
+                SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+            }
+            if (params_buffer) {
+                SDL_ReleaseGPUBuffer(device, params_buffer);
+            }
+
+            *this = {};
+        }
     };
     std::vector<EsmBlur> esm_blurs;
+    std::vector<bool> active_esm_maps;
 #endif
     /** The shared walk's carriers, whose layout it owns. */
     pal::ShadowRefreshState shadow_refresh;
@@ -992,6 +1006,7 @@ struct GpuState : SdlGpuDevice {
     std::uint32_t depth_width = 0;
     std::uint32_t depth_height = 0;
     std::uint32_t frame_graph_width = 0;
+    std::uint64_t render_targets_version = 0;
     std::uint32_t frame_graph_height = 0;
     std::vector<GpuMesh> meshes;
     /**
@@ -1375,6 +1390,10 @@ pinned_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPi
 void sync_morph_weights(GpuBufferUploadBatch& uploads, GpuMesh& mesh, const ModelGeometry& geometry,
                         const MeshRecord& record);
 #endif
+
+/** The shared vertex stage's world and optional skin/morph uniforms. */
+void push_mesh_stage_blocks(SDL_GPUCommandBuffer* command, const Scene& scene, const Engine& engine,
+                            const MeshRecord& mesh);
 
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
 /**
@@ -1774,11 +1793,6 @@ void prune_shared_composed_material_textures(GpuState& state);
 void release(GpuState& state);
 
 #if BBLITE_HAS_POST_PROCESS
-/** Builds the entry `post_process_program` below found missing. */
-GpuPostProcessProgram build_post_process_program(GpuState& state, std::uint32_t module_index,
-                                                 SDL_GPUTextureFormat format,
-                                                 SDL_GPUSampleCount samples,
-                                                 std::uint32_t alpha_mode);
 
 /**
  * The program a post-process pass draws with, built once per distinct one.
@@ -1821,8 +1835,9 @@ struct PreparedSdlPostProcessPass {
     Uint32 texture_count = 0;
 };
 
-void write_sdl_post_process_uniforms(GpuState& state, Engine& engine, TaskHandle handle,
-                                     std::size_t index, std::uint32_t width, std::uint32_t height);
+void write_sdl_gpu_post_process_uniforms(GpuState& state, Engine& engine, TaskHandle handle,
+                                         std::size_t index, std::uint32_t width,
+                                         std::uint32_t height);
 
 /** Resource and CPU work completes here; encoding only consumes this packet. */
 template <typename SourceTexture, typename TargetTexture>
@@ -1883,7 +1898,7 @@ prepare_post_process_pass(GpuState& state, Engine& engine, TaskHandle handle,
     }
     const GpuPostProcessProgram& program = state.post_process_programs[gpu.program];
     if (write_uniforms)
-        write_sdl_post_process_uniforms(state, engine, handle, index, width, height);
+        write_sdl_gpu_post_process_uniforms(state, engine, handle, index, width, height);
     prepared.vertex_uniforms = !program.vertex_slots.uniforms.empty();
     prepared.fragment_uniforms = !program.fragment_slots.uniforms.empty();
     prepared.pipeline = program.pipeline.get();
@@ -2068,25 +2083,27 @@ void record_cloud_pick_draw(SDL_GPUCommandBuffer* command, SDL_GPURenderPass* pa
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER
-GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::RenderItem& item,
-                              GpuBufferUploadBatch* buffer_uploads = nullptr);
+GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstream::RenderItem& item,
+                                  GpuBufferUploadBatch* buffer_uploads = nullptr);
 
 #if BBLITE_HAS_SPRITE_RENDERER
-void sync_sdl_scene_sprites(GpuState& state, Engine& engine, std::vector<SpritePass>& sprite_passes,
-                            std::vector<SDL_GPUTexture*>& sprite_render_textures,
-                            SDL_GPUTextureFormat swapchain_format);
+void sync_sdl_gpu_scene_sprites(GpuState& state, Engine& engine,
+                                std::vector<SpritePass>& sprite_passes,
+                                std::vector<SDL_GPUTexture*>& sprite_render_textures,
+                                SDL_GPUTextureFormat swapchain_format);
 #endif
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_PICKING
-PickingInfo pick_sdl_scene(GpuState& state, Engine& engine, const upstream::RenderPlan& root_plan,
-                           const std::vector<upstream::RenderPlan>& overlay_plans,
-                           const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
-                           [[maybe_unused]] GpuPickerHandle picker, double x, double y,
-                           const Engine::PickFilter* filter
+PickingInfo pick_sdl_gpu_scene(GpuState& state, Engine& engine,
+                               const upstream::RenderPlan& root_plan,
+                               const std::vector<upstream::RenderPlan>& overlay_plans,
+                               const std::vector<std::shared_ptr<Scene>>& active_registered_scenes,
+                               [[maybe_unused]] GpuPickerHandle picker, double x, double y,
+                               const Engine::PickFilter* filter
 #if BBLITE_HAS_BILLBOARDS
-                           ,
-                           BillboardPickContributor& billboard_pick
+                               ,
+                               BillboardPickContributor& billboard_pick
 #endif
 );
 #endif

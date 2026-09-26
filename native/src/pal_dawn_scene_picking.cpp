@@ -1,5 +1,8 @@
 // Dawn scene picking: the pick pipelines and the scene pick. SDL_GPU's
 // twin is pal_sdl_gpu_scene_picking.cpp.
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_picking.hpp"
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_detailed_picking.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -190,7 +193,7 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
     const auto& render_plan = *layer == 0 ? root_plan : overlay_plans[*layer - 1];
     auto& pick_meshes = *layer == 0 ? state.meshes : state.overlay_meshes[*layer - 1];
     // The pin's preamble -- camera, pointer mapping, scene block -- is
-    // shared with the SDL pick (pal_gpu_shared.hpp).
+    // shared with the SDL pick (shared GPU helpers).
     const std::optional<PickRequest> request = prepare_gpu_pick(engine, picker, scene, x, y);
     if (!request)
         return PickingInfo{};
@@ -263,8 +266,8 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
     }
 
     const PickSceneUniforms& scene_uniforms = request->scene_uniforms;
-    wgpuQueueWriteBuffer(state.queue, state.pick_scene_buffer, 0, &scene_uniforms,
-                         sizeof(scene_uniforms));
+    DawnGpuDevice{state.queue}.write_buffer(state.pick_scene_buffer, 0, &scene_uniforms,
+                                            sizeof(scene_uniforms));
 
     // Every candidate's block is written before the pass opens,
     // because WebGPU forbids a queue write between draws inside one.
@@ -338,8 +341,8 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
         state.pick_mesh_group = wgpuDeviceCreateBindGroup(state.device, &group);
     }
     if (!blocks.empty()) {
-        wgpuQueueWriteBuffer(state.queue, state.pick_mesh_buffer, 0, blocks.data(),
-                             blocks.size() * sizeof(DawnPickMeshUniforms));
+        DawnGpuDevice{state.queue}.write_buffer(state.pick_mesh_buffer, 0, blocks.data(),
+                                                blocks.size() * sizeof(DawnPickMeshUniforms));
     }
 #if BBLITE_GPU_INSTANCING
     // Membership is stable across picks. Uniform contents are dynamic,
@@ -438,12 +441,12 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
         sync_dawn_splat_data(state.queue, handle_at(engine.splat_meshes, splat.mesh), splat);
         std::array<float, 16> shear{};
         compute_cloud_pick_matrix(shear, pointer.sample_x, pointer.sample_y, pointer.w, pointer.h);
-        wgpuQueueWriteBuffer(state.queue, state.pick_cloud_shear, 0, shear.data(),
-                             shear.size() * sizeof(float));
+        DawnGpuDevice{state.queue}.write_buffer(state.pick_cloud_shear, 0, shear.data(),
+                                                shear.size() * sizeof(float));
         const std::array<float, 3> color = encode_pick_id_to_color(next_id);
         const std::array<float, 4> picking_block{color[0], color[1], color[2], 0.0f};
-        wgpuQueueWriteBuffer(state.queue, state.pick_cloud_color, 0, picking_block.data(),
-                             picking_block.size() * sizeof(float));
+        DawnGpuDevice{state.queue}.write_buffer(state.pick_cloud_color, 0, picking_block.data(),
+                                                picking_block.size() * sizeof(float));
         ranges.push_back({next_id, PickedNodeKind::splat_mesh, splat.mesh.value});
         ++next_id;
     }
@@ -672,33 +675,8 @@ PickingInfo pick_dawn_scene(DawnState& state, Engine& engine, const upstream::Re
     commands.reset();
     encoder.reset();
 
-    WGPUBufferMapCallbackInfo map_callback = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
-    map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
-    // Recorded rather than thrown: the callback runs inside
-    // `wgpuInstanceWaitAny`, so an exception would unwind through
-    // Dawn's own C frame. Every other wait in this backend reports a
-    // map failure the same way.
-    map_callback.callback = [](WGPUMapAsyncStatus status, WGPUStringView message, void* userdata1,
-                               void*) {
-        if (status != WGPUMapAsyncStatus_Success) {
-            auto* error = static_cast<std::string*>(userdata1);
-            if (error->empty())
-                *error = view_text(message);
-        }
-    };
-    map_callback.userdata1 = &state.uncaptured_error;
-    wait_for(state.instance, wgpuBufferMapAsync(state.pick_targets.staging, WGPUMapMode_Read, 0,
-                                                pick_staging_bytes, map_callback));
-    if (!state.uncaptured_error.empty()) {
-        dawn_error("pick buffer map failed: " + state.uncaptured_error);
-    }
-    const void* mapped =
-        wgpuBufferGetConstMappedRange(state.pick_targets.staging, 0, pick_staging_bytes);
-    if (!mapped)
-        dawn_error("pick map returned no data.");
-    const PickReadback readback =
-        decode_pick_readback(static_cast<const std::uint8_t*>(mapped), detailed);
-    wgpuBufferUnmap(state.pick_targets.staging);
+    const DawnReadbackMap mapped(state, state.pick_targets.staging, pick_staging_bytes);
+    const PickReadback readback = decode_pick_readback(mapped.bytes().data(), detailed);
     return resolve_gpu_pick(engine, *request, ranges, readback);
 }
 #endif

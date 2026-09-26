@@ -11,17 +11,18 @@ namespace bbl::pal {
 
 bool registered_scene_set_changed(const Engine& engine,
                                   const std::vector<std::shared_ptr<Scene>>& planned) {
-    if (engine.registered_scenes.size() != planned.size())
-        return true;
-    for (std::size_t i = 0; i < planned.size(); ++i) {
-        const std::shared_ptr<Scene>& current = engine.registered_scenes[i];
+    std::size_t i = 0;
+    for (const auto& current : engine.scenes()) {
+        if (i == planned.size())
+            return true;
         if (static_cast<bool>(current) != static_cast<bool>(planned[i])) {
             return true;
         }
         if (current && !current->shares_identity(*planned[i]))
             return true;
+        ++i;
     }
-    return false;
+    return i != planned.size();
 }
 
 bool request_renderer_restart_if_scene_set_changed(
@@ -32,7 +33,7 @@ bool request_renderer_restart_if_scene_set_changed(
 #endif
     if (!registered_scene_set_changed(engine, planned))
         return false;
-    engine.renderer_restart_requested = !engine.registered_scenes.empty();
+    engine.renderer_restart_requested = !engine.scenes().empty();
     return true;
 }
 
@@ -125,7 +126,7 @@ double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock, doub
     // the utility layer's camera forwarding and each gizmo's follow live
     // there -- and upstream runs a scene's callbacks as part of rendering
     // it, so a layer that is drawn is a layer whose callbacks ran.
-    const auto registered_scenes = engine.registered_scenes;
+    const auto registered_scenes = engine.scenes();
     for (const std::shared_ptr<Scene>& registered : registered_scenes) {
         if (!registered || registered->shares_identity(scene))
             continue;

@@ -1,4 +1,5 @@
 #pragma once
+#include "pal_gpu_frame.hpp"
 #include "pal_ui_filter.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 
@@ -105,19 +106,19 @@ struct UiFilterSdlResources {
         info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
         info.target_info.color_target_descriptions = &target;
         info.target_info.num_color_targets = 1;
-        pipeline = create_sdl_graphics_pipeline(device, &info);
+        pipeline = create_sdl_gpu_graphics_pipeline(device, vertex, &info);
         if (!pipeline)
             gpu_error("SDL_CreateGPUGraphicsPipeline UI filter");
     }
 };
 
-inline void render_ui_composite_sdl(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
-                                    SDL_GPUTexture* root, SDL_GPUTextureFormat format,
-                                    SDL_GPUBuffer* vertices, SDL_GPUBuffer* indices,
-                                    SDL_GPUSampler* sampler,
-                                    SDL_GPUGraphicsPipeline* composite_pipeline,
-                                    UiFilterSdlResources& resources, const UiRenderFrame& frame,
-                                    std::size_t index) {
+inline void render_ui_composite_sdl_gpu(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
+                                        SDL_GPUTexture* root, SDL_GPUTextureFormat format,
+                                        SDL_GPUBuffer* vertices, SDL_GPUBuffer* indices,
+                                        SDL_GPUSampler* sampler,
+                                        SDL_GPUGraphicsPipeline* composite_pipeline,
+                                        UiFilterSdlResources& resources, const UiRenderFrame& frame,
+                                        std::size_t index) {
     const auto& composite = frame.composites[index];
     if (!composite.index_count)
         return;
@@ -154,7 +155,8 @@ inline void render_ui_composite_sdl(SDL_GPUDevice* device, SDL_GPUCommandBuffer*
             {{textures.get(draw.input).value, sampler},
              {textures.get(draw.secondary).value, sampler}}};
         SDL_BindGPUFragmentSamplers(pass, 0, bindings.data(), static_cast<Uint32>(bindings.size()));
-        SDL_PushGPUFragmentUniformData(command, 0, &draw.uniforms, sizeof(draw.uniforms));
+        SdlGpuWriteDevice{}.write_fragment_uniform(command, 0, &draw.uniforms,
+                                                   sizeof(draw.uniforms));
         SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
         pass.end();
     }
@@ -174,8 +176,8 @@ inline void render_ui_composite_sdl(SDL_GPUDevice* device, SDL_GPUCommandBuffer*
     const std::array<float, 16> projection{
         2.0f / frame.width, 0, 0, 0, 0, -2.0f / frame.height, 0, 0, 0, 0, .0001f, 0, -1, 1, 0, 1};
     const std::array<float, 2> translation{0, 0};
-    SDL_PushGPUVertexUniformData(command, 0, projection.data(), sizeof(projection));
-    SDL_PushGPUVertexUniformData(command, 1, translation.data(), sizeof(translation));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(), sizeof(projection));
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(), sizeof(translation));
     SDL_DrawGPUIndexedPrimitives(pass, composite.index_count, 1, composite.first_index, 0, 0);
     pass.end();
     textures.finish([&](auto& target) { target.release(device); });

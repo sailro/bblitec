@@ -30,7 +30,8 @@
 #include <vector>
 
 #include "pal_platform_events.hpp"
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_frame.hpp"
+#include "pal_gpu_sprites.hpp"
 #include "pal_render_capture.hpp"
 #include "pal_frame_session.hpp"
 #if BBLITE_HAS_DAWN && BBLITE_HAS_TEXT_RENDERER
@@ -123,7 +124,7 @@ class DawnSpriteRun : public RendererRun<DawnSpriteRun> {
             release_dawn_sprite_pass(pass);
         }
         passes.clear();
-        for (const SpriteRendererHandle& handle : engine.registered_sprite_renderers) {
+        for (const SpriteRendererHandle& handle : engine.sprite_renderer_contexts()) {
             passes.push_back(create_dawn_sprite_pass(state.device, state.queue, mips, engine,
                                                      handle, render_textures, render_texture_views,
                                                      state.surface_format));
@@ -369,7 +370,7 @@ public:
 };
 } // namespace
 
-void run_sprite_dawn_engine(Engine& engine) { DawnSpriteRun::run(engine); }
+SceneRun run_sprite_dawn_engine(Engine& engine) { return DawnSpriteRun::run(engine); }
 #endif
 
 } // namespace bbl::pal

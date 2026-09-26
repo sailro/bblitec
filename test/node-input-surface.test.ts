@@ -320,6 +320,7 @@ test(
                         "void drain_scene_deferred_builders(",
                         "void register_scene(",
                         "void unregister_scene(",
+                        "void retire_scene_shadow_states(",
                         "void dispose_scene(",
                     ].map((signature) => cppFunction(scene, signature)),
                 ].join("\n") +

@@ -142,8 +142,8 @@ struct CommonData {
     upstream::RenderPlan render_plan{{10}};
     std::vector<upstream::RenderPlan> overlay_plans{{{20}}};
     explicit CommonData(Engine& target)
-        : engine(target), active_registered_scenes(target.registered_scenes),
-          scene(*target.registered_scenes.front()) {}
+        : engine(target), active_registered_scenes(target.scenes()),
+          scene(*target.scenes().front()) {}
 };
 struct SdlData : CommonData {
     struct Resources {
@@ -224,7 +224,7 @@ template <typename Operation> void expect_failure(Operation operation) {
 
 void surface_boundaries() {
     Engine engine;
-    engine.registered_scenes.push_back(std::make_shared<Scene>());
+    engine.rendering_contexts.push_back("scene", std::make_shared<Scene>());
     reset();
     {
         SdlScene renderer(engine);
@@ -316,20 +316,25 @@ void surface_boundaries() {
 }
 
 template <typename Renderer> void scene_replacement(bool sdl) {
-    for (bool remove : {false, true}) {
+    enum class Mutation { replace, remove, append };
+    for (const auto mutation : {Mutation::replace, Mutation::remove, Mutation::append}) {
         reset();
         Engine engine;
-        engine.registered_scenes.push_back(std::make_shared<Scene>());
+        engine.rendering_contexts.push_back("scene", std::make_shared<Scene>());
         on_advance = [&] {
-            if (remove)
-                engine.registered_scenes.clear();
-            else
-                engine.registered_scenes = {std::make_shared<Scene>()};
+            if (mutation == Mutation::remove)
+                engine.rendering_contexts.clear();
+            else if (mutation == Mutation::append)
+                engine.rendering_contexts.push_back("scene", std::make_shared<Scene>());
+            else {
+                engine.rendering_contexts.clear();
+                engine.rendering_contexts.push_back("scene", std::make_shared<Scene>());
+            }
         };
         {
             Renderer renderer(engine);
             assert(conduct_frame(renderer) == FrameOutcome::restart);
-            assert(engine.renderer_restart_requested == !remove);
+            assert(engine.renderer_restart_requested == (mutation != Mutation::remove));
             assert((events == (sdl ? std::vector<std::string>{"acquire", "advance"}
                                    : std::vector<std::string>{"advance"})));
             assert(submissions == (sdl ? 1u : 0u));
@@ -338,9 +343,11 @@ template <typename Renderer> void scene_replacement(bool sdl) {
     }
     reset();
     Engine engine;
-    engine.registered_scenes.push_back(std::make_shared<Scene>());
+    engine.rendering_contexts.push_back("scene", std::make_shared<Scene>());
     on_advance = [&] {
-        engine.registered_scenes = {std::make_shared<Scene>(*engine.registered_scenes.front())};
+        auto replacement = std::make_shared<Scene>(*engine.scenes().front());
+        engine.rendering_contexts.clear();
+        engine.rendering_contexts.push_back("scene", std::move(replacement));
     };
     {
         Renderer renderer(engine);
@@ -352,9 +359,15 @@ template <typename Renderer> void scene_replacement(bool sdl) {
 void task_growth() {
     reset();
     Engine engine;
-    engine.registered_scenes = {std::make_shared<Scene>(), std::make_shared<Scene>()};
+    {
+        const std::initializer_list<std::shared_ptr<Scene>> contexts = {std::make_shared<Scene>(),
+                                                                        std::make_shared<Scene>()};
+        engine.rendering_contexts.clear();
+        for (const auto& context : contexts)
+            engine.rendering_contexts.push_back("scene", context);
+    }
     engine.frame_tasks.resize(1);
-    engine.registered_scenes[0]->tasks = {TaskHandle{0}};
+    engine.scenes()[0]->tasks = {TaskHandle{0}};
     SdlScene sdl(engine);
     DawnScene dawn(engine);
     sdl.rebuild_task_draw_lists();
@@ -367,7 +380,7 @@ void task_growth() {
     engine.frame_tasks.resize(3);
     engine.frame_tasks[1].kind = FrameTaskKind::copy;
     engine.frame_tasks[2].kind = FrameTaskKind::geometry;
-    engine.registered_scenes[1]->tasks = {TaskHandle{1}, TaskHandle{2}};
+    engine.scenes()[1]->tasks = {TaskHandle{1}, TaskHandle{2}};
     sdl.rebuild_task_draw_lists();
     dawn.rebuild_task_draw_lists();
     assert(sdl.data_.task_draw_lists.size() == 3 && dawn.data_.state.render_tasks.size() == 3);
@@ -381,10 +394,10 @@ void task_growth() {
     assert(sdl.data_.task_draw_lists[2].items == std::vector<unsigned>{30});
     assert(dawn.data_.state.render_tasks[2].draw_lists.items == std::vector<unsigned>{30});
     assert(dawn.data_.state.render_tasks[0].view_projection == first && buffers.size() == 2);
-    engine.registered_scenes[0]->tasks.clear();
+    engine.scenes()[0]->tasks.clear();
     sdl.rebuild_task_draw_lists();
     assert(sdl.data_.task_draw_lists[0].items.empty());
-    engine.registered_scenes[1]->tasks.push_back(TaskHandle{3});
+    engine.scenes()[1]->tasks.push_back(TaskHandle{3});
     expect_failure([&] { sdl.rebuild_task_draw_lists(); });
     expect_failure([&] { dawn.rebuild_task_draw_lists(); });
     assert(buffers.size() == 2);

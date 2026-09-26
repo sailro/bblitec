@@ -82,7 +82,13 @@
 #if BBLITE_HAS_EFFECT_TASK
 #include "pal_dawn_effect.hpp"
 #endif
-#include "pal_gpu_shared.hpp"
+#include "pal_gpu_common.hpp"
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_scene_blocks.hpp"
+#include "pal_gpu_targets.hpp"
+#include "pal_dawn_post_process.hpp"
 #include "pal_pass_camera.hpp"
 #include "pal_scene_synchronize.hpp"
 #include "pal_texture_upload_cache.hpp"
@@ -154,7 +160,7 @@ struct DawnShaderBindingKey {
 void release_dawn_shader_bindings(DawnShaderBindings& bindings);
 
 /** The shared cull enum in this API's; the pipeline-kind facts come from
- *  `pipeline_kind_traits` (pal_gpu_shared.hpp). */
+ *  `pipeline_kind_traits` (shared GPU helpers). */
 inline WGPUCullMode dawn_cull_mode(upstream::RenderCullMode cull) {
     return cull == upstream::RenderCullMode::none ? WGPUCullMode_None : WGPUCullMode_Back;
 }
@@ -242,6 +248,8 @@ struct DawnDrawResources {
     /** The variant, times two plus the Standard unfilterable-emissive bit. */
     std::size_t group_key = npos;
     std::vector<std::uint32_t> plugin_texture_allocations;
+    std::optional<std::tuple<std::uint64_t, std::uint64_t, std::size_t, std::uint32_t>>
+        material_upload;
 };
 
 using DawnDrawState = OwnedGpuRecord<DawnDrawResources, DawnState>;
@@ -513,6 +521,9 @@ struct DawnRenderTarget {
 struct DawnDepthOnlyGroup {
     WGPUBuffer mesh_world = nullptr;
     DawnBindGroup group{};
+#if BBLITE_GPU_MORPH_STORAGE
+    DawnBindGroup morph{};
+#endif
 };
 
 struct DawnRenderTask {
@@ -565,19 +576,6 @@ struct DawnGeometryTask {
  * the same WGSL and compile the same pipeline once each. The key is
  * everything the layout and the pipeline are made of.
  */
-struct DawnPostProcessProgram {
-    std::uint32_t module_index = 0;
-    WGPUTextureFormat format = WGPUTextureFormat_Undefined;
-    std::uint32_t samples = 1;
-    std::uint32_t alpha_mode = 0;
-    std::size_t extra_textures = 0;
-    std::uint32_t uniform_binding = 0;
-    std::uint32_t uniform_size = 0;
-    DawnShaderModule module{};
-    DawnBindGroupLayout group_layout{};
-    DawnPipelineLayout pipeline_layout{};
-    DawnRenderPipeline pipeline{};
-};
 
 struct DawnPostProcessTask {
     /**
@@ -750,6 +748,7 @@ struct DawnBackgroundArm {
 #endif
 
 struct DawnState : DawnDevice {
+    std::uint64_t material_upload_frame = 0;
     // Declared first so it is destroyed last: every pipeline and bind group
     // built over these layouts is released before them.
     DawnLayoutCache layouts;
@@ -964,6 +963,7 @@ struct DawnState : DawnDevice {
     // Blit pipelines keyed by target (format, samples).
     std::map<std::pair<WGPUTextureFormat, std::uint32_t>, WGPURenderPipeline> blit_pipelines;
     std::uint32_t frame_graph_width = 0;
+    std::uint64_t render_targets_version = 0;
     std::uint32_t frame_graph_height = 0;
 
 #if BBLITE_PINNED_MATERIALS
@@ -1001,6 +1001,7 @@ struct DawnState : DawnDevice {
      * the texture the receiver samples.
      */
     struct EsmBlur {
+        WGPUTextureView source = nullptr;
         WGPUTexture blur_h = nullptr;
         WGPUTextureView blur_h_view = nullptr;
         WGPUTexture blur_v = nullptr;
@@ -1011,8 +1012,36 @@ struct DawnState : DawnDevice {
         WGPUBuffer vertical_uniforms = nullptr;
         WGPUBindGroup horizontal = nullptr;
         WGPUBindGroup vertical = nullptr;
+        void clear() {
+
+            if (horizontal)
+                wgpuBindGroupRelease(horizontal);
+            if (vertical)
+                wgpuBindGroupRelease(vertical);
+            if (pipeline)
+                wgpuRenderPipelineRelease(pipeline);
+            if (layout)
+                wgpuBindGroupLayoutRelease(layout);
+            if (horizontal_uniforms) {
+                wgpuBufferRelease(horizontal_uniforms);
+            }
+            if (vertical_uniforms) {
+                wgpuBufferRelease(vertical_uniforms);
+            }
+            if (blur_h_view)
+                wgpuTextureViewRelease(blur_h_view);
+            if (blur_h)
+                wgpuTextureRelease(blur_h);
+            if (blur_v_view)
+                wgpuTextureViewRelease(blur_v_view);
+            if (blur_v)
+                wgpuTextureRelease(blur_v);
+
+            *this = {};
+        }
     };
     std::vector<EsmBlur> esm_blurs;
+    std::vector<bool> active_esm_maps;
 #endif
     /**
      * Refilled per generator by the caster fold, never reallocated.
@@ -1693,30 +1722,8 @@ struct DawnState : DawnDevice {
             if (buffer)
                 wgpuBufferRelease(buffer);
         }
-        for (EsmBlur& blur : esm_blurs) {
-            if (blur.horizontal)
-                wgpuBindGroupRelease(blur.horizontal);
-            if (blur.vertical)
-                wgpuBindGroupRelease(blur.vertical);
-            if (blur.pipeline)
-                wgpuRenderPipelineRelease(blur.pipeline);
-            if (blur.layout)
-                wgpuBindGroupLayoutRelease(blur.layout);
-            if (blur.horizontal_uniforms) {
-                wgpuBufferRelease(blur.horizontal_uniforms);
-            }
-            if (blur.vertical_uniforms) {
-                wgpuBufferRelease(blur.vertical_uniforms);
-            }
-            if (blur.blur_h_view)
-                wgpuTextureViewRelease(blur.blur_h_view);
-            if (blur.blur_h)
-                wgpuTextureRelease(blur.blur_h);
-            if (blur.blur_v_view)
-                wgpuTextureViewRelease(blur.blur_v_view);
-            if (blur.blur_v)
-                wgpuTextureRelease(blur.blur_v);
-        }
+        for (EsmBlur& blur : esm_blurs)
+            blur.clear();
         esm_blurs.clear();
 #endif
 #endif
@@ -2061,7 +2068,7 @@ struct PipelineKindTraits {
 };
 
 // The API-enum residue of the shared `pipeline_kind_traits` decode
-// (pal_gpu_shared.hpp): the facts exist once for both backends; what
+// (shared GPU helpers): the facts exist once for both backends; what
 // stays here is the WGPU translation and this mesh path's node refusal
 // -- node draws bind their own compiled graphs and never take the mesh
 // pipeline paths that ask for these traits.
@@ -2317,7 +2324,7 @@ DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
  */
 void write_pinned_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                               const upstream::RenderDrawCommand& draw, std::size_t variant,
-                              WGPUBuffer mesh_uniforms, WGPUBuffer material_uniforms);
+                              DawnDrawState& draw_state);
 
 /**
  * Writes one geometry task's pinned blocks for the frame.
@@ -2592,8 +2599,7 @@ StandardRenderViews standard_render_views(DawnState& state, const Engine& engine
  */
 void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engine& engine,
                                 const upstream::RenderDrawCommand& draw, WGPUBuffer mesh_uniforms,
-                                WGPUBuffer material_uniforms, WGPUBuffer uv_uniforms,
-                                [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
+                                DawnDrawState& material_state,
                                 const PinnedVelocityHistory* velocity_history = nullptr);
 
 /**
@@ -3062,13 +3068,6 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
                                   const Engine& engine, const std::string& path, bool cluster_ids);
 
 #if BBLITE_HAS_POST_PROCESS
-/** Builds the entry `post_process_program` below found missing. */
-DawnPostProcessProgram build_post_process_program(DawnState& state,
-                                                  const upstream::PostProcessShaderInfo& info,
-                                                  WGPUTextureFormat format, std::uint32_t samples,
-                                                  std::uint32_t alpha_mode,
-                                                  std::size_t extra_textures,
-                                                  std::uint32_t uniform_size);
 
 /**
  * The program a post-process pass draws with, built once per distinct one.

@@ -1,6 +1,11 @@
 // SDL_GPU scene meshes: vertex and material bindings, shader storage,
 // the scene mesh upload and its release. Dawn's twin is
 // pal_dawn_scene_meshes.cpp.
+#include "pal_gpu_surface.hpp"
+#include "pal_gpu_sprites.hpp"
+#include "pal_gpu_vertex.hpp"
+#include "pal_gpu_materials.hpp"
+#include "pal_gpu_pipeline.hpp"
 #include <bblite/features/compute_buffers.hpp>
 #include <bblite/features/device_recovery.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
@@ -10,11 +15,25 @@
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
+#if BBLITE_GPU_MORPH_STORAGE
+#include <bblite/upstream/morph_targets.hpp>
+#endif
 
 namespace bbl::pal {
 inline namespace sdl_scene {
 
 #if BBLITE_HAS_PBR_RENDERER
+void push_mesh_stage_blocks(SDL_GPUCommandBuffer* command, const Scene& scene, const Engine& engine,
+                            const MeshRecord& mesh) {
+    const std::array<float, 16> world = mesh_block_world(scene, engine, mesh);
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, mesh_world_uniform_slot, world.data(),
+                                             sizeof(world));
+#if BBLITE_GPU_DEFORMATION
+    const DeformationUniforms deformation = build_deformation_uniforms(mesh);
+    SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, &deformation, sizeof(deformation));
+#endif
+}
+
 SDL_GPUBuffer* morph_storage_buffer_for(const GpuMesh& mesh, const std::string& name) {
 #if BBLITE_GPU_MORPH_STORAGE
     if (name == "morphDeltas")
@@ -404,8 +423,8 @@ void prune_shared_composed_material_textures(GpuState& state) {
 namespace bbl::pal {
 
 #if BBLITE_HAS_PBR_RENDERER
-GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::RenderItem& item,
-                              GpuBufferUploadBatch* buffer_uploads) {
+GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstream::RenderItem& item,
+                                  GpuBufferUploadBatch* buffer_uploads) {
     const ModelGeometry& geometry = engine.geometries[item.geometry];
     const MeshRecord& mesh_record = handle_at(engine.meshes, item.mesh);
     const bool use_source_indices = mesh_record.detached_imported_mesh
@@ -732,9 +751,10 @@ GpuMesh upload_sdl_scene_mesh(GpuState& state, Engine& engine, const upstream::R
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_SPRITE_RENDERER
-void sync_sdl_scene_sprites(GpuState& state, Engine& engine, std::vector<SpritePass>& sprite_passes,
-                            std::vector<SDL_GPUTexture*>& sprite_render_textures,
-                            SDL_GPUTextureFormat swapchain_format) {
+void sync_sdl_gpu_scene_sprites(GpuState& state, Engine& engine,
+                                std::vector<SpritePass>& sprite_passes,
+                                std::vector<SDL_GPUTexture*>& sprite_render_textures,
+                                SDL_GPUTextureFormat swapchain_format) {
     sprite_render_textures.resize(engine.sprite_render_textures.size(), nullptr);
     sync_retained_textures(
         engine.sprite_render_textures,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bblite/features/offscreen_surfaces.hpp>
+#include <bblite/gpu.hpp>
 
 #include <bblite/pal_compute_texture.hpp>
 #include <bblite/pal_compute_mipmaps.hpp>
@@ -29,7 +30,7 @@ struct OffscreenCompletion {
     virtual ~OffscreenCompletion() = default;
 };
 
-struct OffscreenDevice {
+struct OffscreenDevice : GpuDevice {
     virtual ~OffscreenDevice() = default;
     virtual bool supports_gpu_timestamps() const { return false; }
     virtual std::shared_ptr<GpuTimestampQuerySet> create_gpu_timestamp_query_set(std::uint32_t) {

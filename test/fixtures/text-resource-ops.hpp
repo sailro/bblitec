@@ -36,18 +36,33 @@ struct Ops {
 };
 
 /** A recorded GPU object: its id, label and, for a texture, itself as view. */
-struct Resource final : TextGpuObject, std::enable_shared_from_this<Resource> {
+struct Resource final : GpuObject, std::enable_shared_from_this<Resource> {
     Ops* ops = nullptr;
     int id = 0;
     std::string label;
     void destroy() override { ops->event("destroy", id); }
-    TextGpuHandle create_view() override { return shared_from_this(); }
+    GpuHandle create_view() override { return shared_from_this(); }
+    std::optional<std::size_t> buffer_capacity() const override { return gpu_size(size); }
+    void write_buffer_bytes(std::size_t offset, std::span<const std::uint8_t> bytes) override {
+        ops->failure("write:" + label);
+        ops->event("write", id, offset, bytes.size());
+        ops->write(bytes);
+    }
+    void write_texture_bytes(std::span<const std::uint8_t> data,
+                             const GpuTextureWriteLayout& layout,
+                             const GpuWriteExtent& extent) override {
+        const auto count =
+            static_cast<std::size_t>(layout.bytes_per_row.value_or(0)) * extent.height;
+        ops->failure("write:" + label);
+        ops->event("write", id, 0, count);
+        ops->write(gpu_bytes(data, static_cast<double>(layout.offset), static_cast<double>(count)));
+    }
 };
-inline int id_of(const TextGpuHandle& handle) {
+inline int id_of(const GpuHandle& handle) {
     const auto resource = std::dynamic_pointer_cast<Resource>(handle);
     return resource ? resource->id : 0;
 }
-inline TextGpuHandle named(int id) {
+inline GpuHandle named(int id) {
     auto resource = std::make_shared<Resource>();
     resource->id = id;
     resource->label = "fixed";
@@ -55,10 +70,10 @@ inline TextGpuHandle named(int id) {
 }
 
 /** A recorded render bundle: its commands, replayed as events. */
-struct Bundle final : TextGpuObject {
+struct Bundle final : GpuObject {
     std::vector<std::function<void(Ops&)>> commands;
 };
-struct RecorderEncoder final : TextGpuEncoder {
+struct RecorderEncoder final : GpuEncoder {
     Ops& ops;
     std::shared_ptr<Bundle> bundle;
     explicit RecorderEncoder(Ops& target, bool recording = false) : ops(target) {
@@ -71,15 +86,15 @@ struct RecorderEncoder final : TextGpuEncoder {
         else
             command(ops);
     }
-    void set_pipeline(const TextGpuHandle& pipeline) override {
+    void set_pipeline(const GpuHandle& pipeline) override {
         const int id = id_of(pipeline);
         record([id](Ops& target) { target.event("pipeline", id); });
     }
-    void set_vertex_buffer(double slot, const TextGpuHandle& buffer) override {
+    void set_vertex_buffer(double slot, const GpuHandle& buffer) override {
         const int id = id_of(buffer);
         record([slot, id](Ops& target) { target.event("vertex", slot, id); });
     }
-    void set_bind_group(double index, const TextGpuHandle& group) override {
+    void set_bind_group(double index, const GpuHandle& group) override {
         if (index != 0)
             throw std::runtime_error("bind group slot");
         const int id = id_of(group);
@@ -88,8 +103,8 @@ struct RecorderEncoder final : TextGpuEncoder {
     void draw(double a, double b, double c, double d) override {
         record([a, b, c, d](Ops& target) { target.event("draw", a, b, c, d); });
     }
-    TextGpuHandle finish() override { return std::exchange(bundle, nullptr); }
-    void execute_bundles(const js::Array<TextGpuHandle>& bundles) override {
+    GpuHandle finish() override { return std::exchange(bundle, nullptr); }
+    void execute_bundles(const js::Array<GpuHandle>& bundles) override {
         for (const auto& handle : bundles)
             for (const auto& command : std::dynamic_pointer_cast<Bundle>(handle)->commands)
                 command(ops);
@@ -98,12 +113,12 @@ struct RecorderEncoder final : TextGpuEncoder {
 };
 
 /** The JavaScript recorder device, as the pinned functions call it. */
-struct RecorderDevice final : TextGpuDevice {
+struct RecorderDevice final : GpuDevice, TextPipelineProvider {
     Ops& ops;
     TextPipelineSet pipelines;
     int bundles = 0;
     RecorderDevice(Ops& target, TextPipelineSet set) : ops(target), pipelines(std::move(set)) {}
-    std::shared_ptr<Resource> resource(const std::optional<std::string>& label, double size) {
+    std::shared_ptr<Resource> resource(const bbl::js::Nullable<std::string>& label, double size) {
         const std::string name = label.value_or("");
         ops.failure("create:" + name);
         auto created = std::make_shared<Resource>();
@@ -113,15 +128,15 @@ struct RecorderDevice final : TextGpuDevice {
         ops.event("create", name, created->id, size);
         return created;
     }
-    TextGpuHandle create_buffer(const TextBufferDescriptor& descriptor) override {
+    GpuHandle create_buffer(const GpuBufferDescriptor& descriptor) override {
         auto created = resource(descriptor.label, descriptor.size);
         created->size = descriptor.size;
         return created;
     }
-    TextGpuHandle create_texture(const TextTextureDescriptor& descriptor) override {
+    GpuHandle create_texture(const GpuTextureDescriptor& descriptor) override {
         return resource(descriptor.label, descriptor.size.width * descriptor.size.height * 16);
     }
-    TextGpuHandle create_bind_group(const TextBindGroupDescriptor& descriptor) override {
+    GpuHandle create_bind_group(const GpuBindGroupDescriptor& descriptor) override {
         ops.failure("group");
         auto group = std::make_shared<Resource>();
         group->ops = &ops;
@@ -129,38 +144,20 @@ struct RecorderDevice final : TextGpuDevice {
         std::ostringstream line;
         line << "group " << group->id << ' ' << id_of(descriptor.layout) << ' ';
         for (const auto& entry : descriptor.entries) {
-            const auto* binding = std::get_if<TextBufferBinding>(&entry.resource);
-            line << id_of(binding ? binding->buffer : std::get<TextGpuHandle>(entry.resource))
-                 << ' ';
+            const auto* binding = std::get_if<GpuBufferBinding>(&entry.resource);
+            line << id_of(binding ? binding->buffer : std::get<GpuHandle>(entry.resource)) << ' ';
         }
         ops.events << line.str() << '\n';
         return group;
     }
-    TextGpuEncoderHandle
-    create_render_bundle_encoder(const TextRenderBundleEncoderDescriptor& descriptor) override {
-        if (descriptor.color_formats.size() != 1 || descriptor.sample_count != 1.0)
+    GpuEncoderHandle
+    create_render_bundle_encoder(const GpuRenderBundleEncoderDescriptor& descriptor) override {
+        if (descriptor.color_formats.size() != 1 || descriptor.sample_count.value_or(1) != 1.0)
             throw std::runtime_error("bundle descriptor");
         ++bundles;
         return std::make_shared<RecorderEncoder>(ops, true);
     }
-    void write_buffer(const TextGpuHandle& buffer, double offset, const js::ArrayBuffer& data,
-                      double data_offset, double size) override {
-        const auto target = std::dynamic_pointer_cast<Resource>(buffer);
-        ops.failure("write:" + target->label);
-        ops.event("write", target->id, offset, size);
-        ops.write(
-            {data.data() + static_cast<std::size_t>(data_offset), static_cast<std::size_t>(size)});
-    }
-    void write_texture(const TextTexelCopyTextureInfo& destination, const js::ArrayBuffer& data,
-                       const TextTexelCopyBufferLayout& layout, const TextExtent3D& size) override {
-        const auto target = std::dynamic_pointer_cast<Resource>(destination.texture);
-        const double count = layout.bytes_per_row.value_or(0) * size.height;
-        ops.failure("write:" + target->label);
-        ops.event("write", target->id, 0.0, count);
-        ops.write({data.data() + static_cast<std::size_t>(layout.offset.value_or(0)),
-                   static_cast<std::size_t>(count)});
-    }
-    TextPipelineSet text_pipeline(const std::string&, double, const std::optional<std::string>&,
+    TextPipelineSet text_pipeline(const std::string&, double, const bbl::js::Nullable<std::string>&,
                                   bool, const std::shared_ptr<const void>&,
                                   const std::string&) override {
         return pipelines;

@@ -23,7 +23,7 @@ struct SdlComputeMipmapLevel final : ComputeMipmapLevel {
             throw std::runtime_error(SDL_GetError());
     }
 };
-inline std::shared_ptr<ComputeMipmapLevel> create_sdl_compute_mipmap_level(
+inline std::shared_ptr<ComputeMipmapLevel> create_sdl_gpu_compute_mipmap_level(
     SDL_GPUDevice* device, const std::shared_ptr<ComputeMipmapPipeline>& pipeline,
     const std::shared_ptr<ComputeTextureAllocation>& allocation,
     const ComputeTextureDescriptor& descriptor, std::uint32_t source_mip, std::uint32_t target_mip,

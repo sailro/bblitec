@@ -18,7 +18,7 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
  *    storage on copy exactly as a JavaScript reference does;
  *  - typed arrays are `bbl::js::TypedArray`, including views over another
  *    array's buffer;
- *  - `T | undefined` is `std::optional<T>` for a value and the same null
+ *  - `T | undefined` is `js::Nullable<T>` for a value and the same null
  *    handle for a reference; a union of distinct shapes is a
  *    `std::variant`. A read the checker narrowed converts at the read.
  *
@@ -4163,7 +4163,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                             : `(${values.map((value) => `${place}.push_back(${value})`).join(", ")})`;
                     }
                     case "pop":
-                        return `bbl::pinned::array_pop(${receiver()})`;
+                        return this.collectionResult(
+                            `bbl::js::array_pop_or_absent(${receiver()})`,
+                            element,
+                        );
                     case "indexOf":
                         return `bbl::js::array_index_of(${receiver()}, ${this.convert(node.arguments[0]!, element)})`;
                     case "slice":
@@ -4199,7 +4202,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "typed":
                 switch (name) {
                     case "set":
-                        return `bbl::pinned::typed_set(${receiver()}, ${this.value(node.arguments[0]!)}${node.arguments[1] ? `, ${this.value(node.arguments[1])}` : ""})`;
+                        return `bbl::js::typed_array_set(${receiver()}, ${this.value(node.arguments[0]!)}, ${node.arguments[1] ? this.value(node.arguments[1]) : "0.0"})`;
                     case "subarray":
                         return `bbl::js::typed_array_subarray(${receiver()}, ${node.arguments[0] ? this.value(node.arguments[0]) : "0.0"}, ${node.arguments[1] ? this.value(node.arguments[1]) : "std::numeric_limits<double>::infinity()"})`;
                     case "copyWithin":
@@ -4218,7 +4221,10 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "map":
                 switch (name) {
                     case "get":
-                        return `bbl::pinned::map_get(${receiver()}, ${this.convert(node.arguments[0]!, shape.key)})`;
+                        return this.collectionResult(
+                            `${receiver()}.get_owned(${this.convert(node.arguments[0]!, shape.key)})`,
+                            shape.value,
+                        );
                     case "has":
                         return `${receiver()}.has(${this.convert(node.arguments[0]!, shape.key)})`;
                     case "set":
@@ -4234,13 +4240,16 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "weakmap":
                 switch (name) {
                     case "get":
-                        return `bbl::pinned::weak_get(${receiver()}, ${this.value(node.arguments[0]!)})`;
+                        return this.collectionResult(
+                            `${receiver()}.get_owned(std::weak_ptr<const void>(${this.value(node.arguments[0]!)}))`,
+                            shape.value,
+                        );
                     case "has":
-                        return `bbl::pinned::weak_has(${receiver()}, ${this.value(node.arguments[0]!)})`;
+                        return `${receiver()}.has(std::weak_ptr<const void>(${this.value(node.arguments[0]!)}))`;
                     case "set":
-                        return `bbl::pinned::weak_set(${receiver()}, ${this.value(node.arguments[0]!)}, ${this.convert(node.arguments[1]!, shape.value)})`;
+                        return `${receiver()}.set(std::weak_ptr<const void>(${this.value(node.arguments[0]!)}), ${this.convert(node.arguments[1]!, shape.value)})`;
                     case "delete":
-                        return `bbl::pinned::weak_delete(${receiver()}, ${this.value(node.arguments[0]!)})`;
+                        return `${receiver()}.erase(std::weak_ptr<const void>(${this.value(node.arguments[0]!)}))`;
                     default:
                         break;
                 }
@@ -4275,11 +4284,11 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "weakset":
                 switch (name) {
                     case "add":
-                        return `bbl::pinned::weak_set(${receiver()}, ${this.value(node.arguments[0]!)}, true)`;
+                        return `${receiver()}.set(std::weak_ptr<const void>(${this.value(node.arguments[0]!)}), true)`;
                     case "has":
-                        return `bbl::pinned::weak_has(${receiver()}, ${this.value(node.arguments[0]!)})`;
+                        return `${receiver()}.has(std::weak_ptr<const void>(${this.value(node.arguments[0]!)}))`;
                     case "delete":
-                        return `bbl::pinned::weak_delete(${receiver()}, ${this.value(node.arguments[0]!)})`;
+                        return `${receiver()}.erase(std::weak_ptr<const void>(${this.value(node.arguments[0]!)}))`;
                     default:
                         break;
                 }
@@ -4607,6 +4616,13 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
     }
 
     // ── Constructions ───────────────────────────────────────────────────
+
+    /** Native reference handles encode absence themselves; value lookups use js::Nullable. */
+    private collectionResult(value: string, element: RecordShape): string {
+        return this.model.representations.nullable(element)
+            ? `${value}.value_or(${this.cpp(element)}{})`
+            : value;
+    }
 
     private objectLiteral(
         node: ts.ObjectLiteralExpression,

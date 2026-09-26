@@ -260,7 +260,7 @@ int main() {
     assert(fallback_color.size()==3 && fallback_color[0]==1 && fallback_color[1]==1 && fallback_color[2]==1);
     assert(fallback_color!=*material_color(engine,materials[5],MaterialColorSlot::diffuse_color));
     register_scene(scene);
-    assert(engine.registered_scenes.size()==1);
+    assert(engine.scenes().size()==1);
     for(std::size_t i=0;i<materials.size();++i) {
         const auto& color=engine.materials[materials[i].value].diffuse_color;
         assert(color.r==static_cast<float>(i==0?.875:expected[i][0].get<double>()));

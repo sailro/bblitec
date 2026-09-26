@@ -45,9 +45,9 @@ inline SDL_GPUSamplerAddressMode sdl_compute_address(std::string_view value) {
     throw std::runtime_error("Invalid compute sampler address mode.");
 }
 
-inline void create_sdl_compute_texture(SDL_GPUDevice* device,
-                                       const ComputeTextureDescriptor& options,
-                                       ComputeTextureCreated complete) {
+inline void create_sdl_gpu_compute_texture(SDL_GPUDevice* device,
+                                           const ComputeTextureDescriptor& options,
+                                           ComputeTextureCreated complete) {
     std::shared_ptr<SdlComputeTexture> image;
     std::exception_ptr error;
     try {

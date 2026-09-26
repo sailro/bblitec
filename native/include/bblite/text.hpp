@@ -50,9 +50,9 @@ using TextRenderable = std::shared_ptr<TextRenderableState>;
 
 /** The pin's `RenderTargetSignature`, as a scene pass describes its target. */
 struct TextTargetSignature {
-    std::optional<std::string> color_format;
-    std::optional<std::string> depth_format;
-    std::optional<std::string> depth_compare;
+    bbl::js::Nullable<std::string> color_format;
+    bbl::js::Nullable<std::string> depth_format;
+    bbl::js::Nullable<std::string> depth_compare;
     double sample_count = 1;
 };
 
@@ -77,8 +77,8 @@ struct TextDrawUpdateContext {
  */
 struct TextDrawBinding {
     TextRenderable renderable;
-    TextGpuHandle pipeline;
-    js::Callback<double(TextGpuEncoderHandle, TextSurfaceHandle)> draw;
+    GpuHandle pipeline;
+    js::Callback<double(GpuEncoderHandle, TextSurfaceHandle)> draw;
     js::Callback<void(TextDrawUpdateContext)> update;
 };
 using TextDrawBindingHandle = std::shared_ptr<TextDrawBinding>;

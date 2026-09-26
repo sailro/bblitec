@@ -55,7 +55,14 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
         join(directory, "buffer-batch.hpp"),
         cppRecord(
             readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"),
-            "class GpuBufferUploadBatch {",
+            "class GpuBufferUploadBatch : public SdlGpuWriteDevice {",
+        ),
+    );
+    writeFileSync(
+        join(directory, "texture-copy.hpp"),
+        cppRecord(
+            readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"),
+            "struct SdlCopyTextureDestination final : GpuObject {",
         ),
     );
     writeFileSync(

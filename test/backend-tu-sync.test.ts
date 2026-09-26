@@ -128,12 +128,12 @@ test("scene replacement restarts both backends without retaining a dead root", (
     assert.match(runtime, /bool renderer_restart_requested = false;/);
     assert.match(
         dispatch,
-        /if \(!engine\.renderer_restart_requested\)\s+return;/,
+        /if \(!engine\.renderer_restart_requested\)\s+co_return 0;/,
     );
     for (const backend of backends) {
         assert.match(
             backend,
-            /const std::vector<std::shared_ptr<Scene>> active_registered_scenes =\s*engine\.registered_scenes;/,
+            /const std::vector<std::shared_ptr<Scene>> active_registered_scenes =\s*engine\.scenes\(\);/,
         );
         assert.match(
             backend,
@@ -143,17 +143,8 @@ test("scene replacement restarts both backends without retaining a dead root", (
     const shared = sharedGpuSource();
     assert.match(
         shared,
-        /engine\.renderer_restart_requested = !engine\.registered_scenes\.empty\(\);/,
+        /engine\.renderer_restart_requested = !engine\.scenes\(\)\.empty\(\);/,
     );
-});
-
-test("late auxiliary scene registration rebuilds both backend plans", () => {
-    const shared = sharedGpuSource();
-    assert.match(
-        shared,
-        /engine\.registered_scenes\.size\(\) != planned\.size\(\)/,
-    );
-    assert.match(shared, /current->shares_identity\(\*planned\[i\]\)/);
 });
 
 test("diagnostic input resumes across renderer restarts", () => {
@@ -179,10 +170,7 @@ test("frame dispatch survives a callback disposing its own scene", () => {
         shared,
         /const auto root_callbacks = scene\.before_render;\s*for \(const auto& callback : root_callbacks\)/,
     );
-    assert.match(
-        shared,
-        /const auto registered_scenes = engine\.registered_scenes;/,
-    );
+    assert.match(shared, /const auto registered_scenes = engine\.scenes\(\);/);
     assert.match(
         shared,
         /const auto callbacks = registered->before_render;\s*for \(const auto& callback : callbacks\)/,
@@ -253,15 +241,12 @@ test("Dawn caches thin-pick bindings and invalidates them with their buffers", (
 test("Dawn completes canvas readback before post-copy UI", () => {
     const dawn = sceneBackendSource("dawn");
     const capture = dawn.indexOf("const bool capture_frame");
-    const copy = dawn.indexOf(
-        "wgpuCommandEncoderCopyTextureToBuffer(",
-        capture,
-    );
+    const copy = dawn.indexOf("begin_dawn_surface_capture(", capture);
     const firstSubmit = dawn.indexOf(
         "submit_dawn_command(state.queue, command);",
         copy,
     );
-    const map = dawn.indexOf("wgpuBufferMapAsync(", firstSubmit);
+    const map = dawn.indexOf("finish_dawn_surface_capture(", firstSubmit);
     const deferredUi = dawn.indexOf("if (ui_after_capture_copy)", map);
     assert.ok(capture >= 0 && copy > capture);
     assert.ok(firstSubmit > copy && map > firstSubmit);

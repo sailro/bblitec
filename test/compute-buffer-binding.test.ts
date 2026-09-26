@@ -25,7 +25,7 @@ test("compute buffer bindings retain ranges, dynamic limits and live registratio
         `${lowerComputeBufferBinding(new LoweringContext()).source}
 #include <cassert>
 struct Allocation final:bbl::pal::StorageBufferAllocation{
- void destroy()override{}void write(std::size_t,std::span<const std::uint8_t>)override{}
+ void destroy()override{}void write_buffer_bytes(std::size_t,std::span<const std::uint8_t>) override{}
 };
 int main(){
  auto engine=std::make_shared<bbl::Engine>();

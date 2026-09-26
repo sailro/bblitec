@@ -99,6 +99,11 @@ struct FrameOptions {
         return benchmark_frames > 0 ? benchmark_frames + benchmark_warmup() : max_frames;
     }
     [[nodiscard]] bool benchmarking() const { return benchmark_frames > 0; }
+    [[nodiscard]] bool interactive() const {
+        return !test_pass && !benchmark_requested && frame_budget() == 0 &&
+               screenshot_path.empty() && id_buffer_path.empty() && cluster_buffer_path.empty() &&
+               render_capture_path.empty();
+    }
     /**
      * Whether a benchmark was asked for at all. Present mode keys on the
      * request rather than the count, because the recorded frame-time
